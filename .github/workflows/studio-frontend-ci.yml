@@ -24,6 +24,9 @@ on:
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/playwright_keyboard_shortcuts.py'
+      - 'tests/studio/playwright_find_in_page.py'
+      - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
@@ -424,8 +427,36 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
 
+      # A listener is not a pure function: what a chord does to a focused button, to a
+      # text field, on auto-repeat, or under AltGr is only answerable in a browser, and
+      # the node suite pins those through source text. Chromium here because that is what
+      # this job installs; SMOKE_ENGINES=chromium,firefox,webkit runs the same checks
+      # against all three when the matcher or the reserved sets change.
+      - name: Browser smoke for keyboard shortcuts
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_keyboard_shortcuts.py
+
+      # The node suite reaches the flatten, the offset map and the search, which are pure.
+      # A Range has no geometry off a document, CSS.highlights paints nothing, and a chord
+      # the browser owns cannot be taken from it in a unit test, so the count, the walk and
+      # the teardown are only answerable here. The run also degrades the engine three ways:
+      # no highlight registry, a checkVisibility that honours only the historic option
+      # names, and no checkVisibility at all, which between them are Firefox below 140,
+      # Chrome 105-120, and the WebKitGTK the desktop build is handed. Chromium here
+      # because that is what this job installs; SMOKE_ENGINES=chromium,firefox,webkit
+      # runs all three locally.
+      - name: Browser smoke for find in page
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_find_in_page.py
+
+      - name: Browser smoke for tool activity collapse
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_ENGINE: chromium
+        run: python3 tests/studio/playwright_tool_activity.py --json
+
       # A panel that cannot be fetched is new with lazy loading, and nothing above the
-      # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
+      # root-mounted dialog catches, so unguarded it unmounts Unsloth, not one panel.
       - name: Browser smoke for a settings panel that cannot load
         working-directory: ${{ github.workspace }}
         env:

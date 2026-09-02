@@ -22,7 +22,7 @@
 # and asserting the machine is clean -- that is the teardown for the whole job,
 # so nothing needing Unsloth installed may follow it.
 
-name: Mac Studio UI + API + Update + Inference CI
+name: Mac Unsloth UI + API + Update + Inference CI
 
 on:
   pull_request:

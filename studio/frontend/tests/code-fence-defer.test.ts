@@ -464,3 +464,133 @@ test("token coalescing was measured at zero and is not carried as code", () => {
     "the cited reproducer must exist in this repository",
   );
 });
+
+test("the idle pre-warm drives the tokenizer over real text, not an empty string", () => {
+  /*
+   * Loading a grammar is cheap; running it over text the first time is not, and `""` never does
+   * the second. With deferral on the whole one-off cost therefore landed in one frame on the fence
+   * the reader scrolled to: 1200 and 1085 ms at the 100K rung on WebKitGTK, against 183 and 190 ms
+   * on real text. Asserted at the source because the invariant is structural, and the alternative
+   * is a benchmark noticing it two days later, which is how it was found.
+   */
+  const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
+  const body = warm.slice(0, warm.indexOf("\n};"));
+  assert.ok(
+    body.includes("gate.warm(true)"),
+    "warming on an empty string leaves the first real tokenization to happen during a scroll",
+  );
+  // The only surviving `gate.warm(false)` is the eager grammar-load pass, which runs BEFORE the
+  // real warm and is deliberately not gated on size. Nothing may reach `warm(false)` afterwards.
+  assert.match(
+    body,
+    /grammarsLoaded\.add\(language\);\s*gate\.warm\(false\);[\s\S]*gate\.warm\(true\)/,
+    "an unconditional false warm in place of the real one is the regression this test catches",
+  );
+  assert.equal(
+    (body.match(/gate\.warm\(false\)/g) ?? []).length,
+    1,
+    "one false warm, in the load pass; a second one means a language can be marked warmed on nothing",
+  );
+  // Anti-vacuity: renamed or restructured, the checks above would pass on an empty slice.
+  assert.ok(body.length > 60 && body.includes("grammarsWarmed"), "found the real warmGrammars body");
+});
+
+test("a speculative warm is capped, and the cap is the shared one", () => {
+  /*
+   * The chat renderer never applies MAX_HIGHLIGHT_CHARS: `markdown-text.tsx` supplies the code
+   * plugin unconditionally and `FenceBlock` warms the whole body, so a real-text warm would
+   * tokenize an arbitrarily large off-screen fence, and `code-plugin.ts`'s `evict` keeps the last
+   * fence whatever its size. The latch is demanded work and stays uncapped; this half is
+   * speculative, so it is bounded.
+   */
+  assert.match(
+    SOURCE,
+    /import \{ MAX_HIGHLIGHT_CHARS \} from "@\/lib\/markdown-plugins";/,
+    "the cap must be the shared constant, not a second copy that can drift",
+  );
+  assert.ok(
+    !/const MAX_HIGHLIGHT_CHARS\s*=/.test(SOURCE),
+    "a local redefinition would let this cap drift away from the one every other reader uses",
+  );
+  assert.ok(
+    /gate\.chars === 0 \|\| gate\.chars > MAX_HIGHLIGHT_CHARS/.test(SOURCE),
+    "the warm must consult the fence's size before tokenizing it",
+  );
+  // An EMPTY fence trims to "", so warming it teaches the grammar nothing and would still mark the
+  // language done, leaving every later fence in it to tokenize on the scroll path.
+  assert.match(
+    SOURCE,
+    /if \(gate\.chars === 0 \|\| gate\.chars > MAX_HIGHLIGHT_CHARS\) continue;/,
+    "both cases must `continue`, so the language is left unwarmed for a fence that can warm it",
+  );
+  // The other half: the latch must NOT have grown a cap.
+  const latch = SOURCE.slice(SOURCE.indexOf("const latchNow"));
+  assert.ok(
+    !latch.slice(0, latch.indexOf("\n};")).includes("MAX_HIGHLIGHT_CHARS"),
+    "a fence the reader has actually reached is highlighted whatever its size",
+  );
+  assert.match(
+    MARKDOWN_TEXT,
+    /useFenceReached\([\s\S]{0,200}?trimmedLength\(source\),/,
+    "the hook can only cap what the caller tells it about, and `warm` tokenizes the TRIMMED body",
+  );
+});
+
+test("the idle warm yields between languages", () => {
+  /*
+   * requestIdleCallback only controls when a callback STARTS, and WebKitGTK has none at all, so
+   * this venue takes the setTimeout fallback and cannot even do that. A warm tokenizes
+   * synchronously once its grammar is loaded, so every language in one callback is one unyieldable
+   * block: 746 ms for the 100K rung's five languages driven through shiki, worst single 334 ms.
+   *
+   * The LOADS are the other half and must NOT be yielded: 500 ms x N on that fallback would leave
+   * a jump or a print inside the window with an unloaded grammar, which is the plain-fallback
+   * frame this whole pre-warm exists to prevent.
+   */
+  const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
+  const body = warm.slice(0, warm.indexOf("\n};"));
+  assert.match(
+    body,
+    /gate\.warm\(true\);[\s\S]*scheduleGrammarWarm\(\);[\s\S]*return;/,
+    "one tokenization per task: warm, re-schedule, and leave the rest to the next idle slot",
+  );
+  // Everything before the second loop, which is the one that tokenizes.
+  const loadPass = body.slice(0, body.indexOf("grammarsWarmed.has"));
+  assert.ok(
+    !loadPass.includes("scheduleGrammarWarm") && !loadPass.includes("return;"),
+    "the grammar loads all start in the first pass; yielding them costs the jump and the print",
+  );
+  assert.ok(
+    !loadPass.includes("MAX_HIGHLIGHT_CHARS") && !loadPass.includes("gate.chars"),
+    "a load ignores size: it tokenizes nothing, and an over-cap language still needs its grammar",
+  );
+  assert.ok(
+    body.includes("grammarsWarmed.add(language)"),
+    "the chain terminates only because each task marks one more language done",
+  );
+});
+
+test("the warm dedupes on the grammar, not on the spelling", async () => {
+  /*
+   * `grammarsWarmed` keyed the raw fence tag while `code.highlight` lower-cases and resolves
+   * aliases, so a thread mixing ```py and ```python warmed one grammar twice -- and after this PR
+   * each spelling is a real tokenization of a different fence, not the old empty-string cache hit.
+   */
+  const { normalizeLanguage } = await import(
+    "../src/components/assistant-ui/code-plugin.ts"
+  );
+  // Run the identity rather than describe it: aliases, overrides and case all collapse.
+  for (const [tag, canonical] of [["py", "python"], ["Python", "python"], ["JS", "javascript"],
+                                  ["c++", "cpp"], ["bash", "shellscript"], ["text", "text"]]) {
+    assert.equal(normalizeLanguage(tag), canonical, tag);
+  }
+  assert.match(
+    SOURCE,
+    /const grammarOf = \(gate: FenceGate\): string =>\s*normalizeLanguage\(gate\.language \?\? "text"\);/,
+    "the warm sets must be keyed by the same identity the highlighter uses",
+  );
+  assert.ok(
+    CODE_PLUGIN.includes("export const normalizeLanguage"),
+    "one definition, exported, so the two keyings cannot drift apart",
+  );
+});

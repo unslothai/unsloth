@@ -14,7 +14,7 @@ function textOnlyMmprojUnavailableReason(
     return null;
   }
   const label = activeModel?.name || activeModel?.id || "This vision model";
-  return `${label}'s vision projector failed to start, so Studio reloaded it in text-only mode. Free memory or update Studio, then reload the model before attaching images.`;
+  return `${label}'s vision projector failed to start, so Unsloth reloaded it in text-only mode. Free memory or update Unsloth, then reload the model before attaching images.`;
 }
 
 export function getImageInputUnavailableReason({

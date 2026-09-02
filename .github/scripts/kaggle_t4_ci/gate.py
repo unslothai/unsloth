@@ -3,10 +3,10 @@
 
 """Decide whether this invocation is allowed to spend Kaggle GPU quota.
 
-The account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator budget shared
-with every other use of that account, and a kernel on every push would drain a
-week of it in a day. So the default answer is "no" and a job earns "yes" through
-four checks, in this order:
+Each Kaggle account CI may spend has a WEEKLY accelerator budget shared with
+every other use of that account, and a kernel on every push would drain a week
+of it in a day. So the default answer is "no" and a job earns "yes" through five
+checks, in this order:
 
 0. **Was this event a request at all?** A run started by APPLYING a label is a
    request only when that label is the opt-in one. The trigger fires on all
@@ -17,10 +17,23 @@ four checks, in this order:
 2. **Sampling.** Roughly one invocation in ten, derived from the run id so a
    re-run of the same run gives the same answer (otherwise anyone could reroll
    until it fires) while different runs stay independent.
-3. **Remaining quota.** Refuses when what is left would not cover this
+3. **Which account.** There is more than one, with different weekly
+   allowances, and traffic is split in proportion to them: an account with
+   twice the hours takes twice the runs. The weights are READ from each
+   account's own ``quota_view()`` rather than written down here, so a plan
+   changed on Kaggle's side changes the split without anyone editing this file.
+   The draw is keyed on the run id ALONE -- not the attempt -- so a re-run
+   picks the SAME account as the attempt whose kernels may still be in flight.
+   An account that cannot take the run (no quota, no free session, no readable
+   answer) hands over to the other rather than standing the run down; see
+   FALLBACK_ELIGIBLE.
+4. **Remaining quota.** Refuses when what is left would not cover this
    invocation's worst case plus a reserve, so CI never drains the account. This
-   is the ONE stand-down that is a failure rather than a skip; see below.
-4. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, per ACCOUNT
+   is the ONE stand-down that is a failure rather than a skip; see below. The
+   reserve SCALES with the account: a flat 20h held back from a 30h account is
+   two thirds of it and one third of a 60h one, which would quietly make the
+   smaller account the stricter one. See ``scaled_reserve``.
+5. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, per ACCOUNT
    rather than per workflow. The survey splits kernels this workflow pushed
    from the rest because they call for opposite answers: a FOREIGN kernel means
    a human is on the shared account and this invocation stands down entirely,
@@ -103,7 +116,7 @@ ALLOWED_IN_FLIGHT_FOREIGN_KERNELS = 0
 # account is shared with human use, so a run held every seat there was. And
 # kaggle-t4-studio-gpu-ci.yml is on the same account: with no slot left it could
 # not push at all, and the shared concurrency group meant it did not even try
-# until the notebook job had finished (measured: Studio's run 32607617804 queued
+# until the notebook job had finished (measured: Unsloth's run 32607617804 queued
 # about 40 minutes behind notebook run 32607621452).
 #
 # The legs did not have to be split to fit. They now queue INSIDE one kernel --
@@ -183,6 +196,41 @@ QUOTA_EXHAUSTED_MESSAGE = (
     "GPU capacity exhausted - please wait until next week - you can ignore this CI failure"
 )
 
+# The accounts CI may spend, in order. The env var names are the SECRET names
+# the workflows pass through; the account id is the position, which is what the
+# concurrency group and the job summary use.
+#
+# Deliberately not carrying each account's weekly hours: they are read from
+# `quota_view()` per run, so a plan changed on Kaggle's side changes the traffic
+# split with nothing here to update and nothing here to go stale.
+DEFAULT_ACCOUNT_ENVS = ("KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2")
+
+# `--reserve-hours` was calibrated against an account of this size. See
+# `scaled_reserve`: the reserve is a FRACTION of the plan, not a fixed number of
+# hours, or the smaller account keeps back proportionally more.
+DEFAULT_RESERVE_BASIS_HOURS = 60.0
+
+# An account answering with one of these hands over to the next one instead of
+# standing the whole run down: none of them says anything about the code under
+# test, and the other account may be perfectly able to run it.
+#
+# `credential_absent` is here so a repo holding one secret still works, which is
+# also what a fork sees. What is NOT here is every decision made ABOVE the
+# account -- not sampled, wrong label, bad input -- because those are answers
+# about the run, and trying a second account would be answering a question
+# nobody asked.
+FALLBACK_ELIGIBLE = frozenset(
+    {
+        "credential_absent",
+        "auth_failed",
+        "username_unreadable",
+        "quota_unreadable",
+        "insufficient_quota",
+        "capacity_occupied",
+        "capacity_unreadable",
+    }
+)
+
 
 def _looks_gone(exc: BaseException) -> bool:
     """Did this status lookup fail because the kernel no longer exists?"""
@@ -232,12 +280,49 @@ def sampled_in(run_id: str, percent: int) -> tuple[bool, int]:
     return draw < percent, draw
 
 
-def kaggle_client():
+def kaggle_client(token: str | None = None):
+    """An authenticated client, optionally for a NAMED account's token.
+
+    `authenticate()` reads the credential from the environment, so selecting an
+    account means putting that account's token there for the length of the call
+    and putting back whatever was there before. The restore is not tidiness: the
+    launcher further down this job reads `KAGGLE_API_TOKEN` for itself, and a
+    probe that left the last-tried account's token behind would hand the pushing
+    step a different account from the one this gate cleared.
+    """
     from kaggle.api.kaggle_api_extended import KaggleApi
 
-    api = KaggleApi()
-    api.authenticate()
+    if token is None:
+        api = KaggleApi()
+        api.authenticate()
+        return api
+
+    previous = os.environ.get("KAGGLE_API_TOKEN")
+    os.environ["KAGGLE_API_TOKEN"] = token
+    try:
+        api = KaggleApi()
+        api.authenticate()
+    finally:
+        if previous is None:
+            os.environ.pop("KAGGLE_API_TOKEN", None)
+        else:
+            os.environ["KAGGLE_API_TOKEN"] = previous
     return api
+
+
+def client_username(api) -> str | None:
+    """The account this client authenticated AS, from the client's own record.
+
+    `_authenticate_with_access_token` introspects the token and stores the name
+    it comes back with, so this is Kaggle's answer rather than ours. It is not a
+    nicety: a kernel id carries its owner, so the pushing step needs the real
+    username, and a hardcoded one silently belongs to whichever account happened
+    to be first when it was written.
+    """
+    try:
+        return api.config_values.get(api.CONFIG_NAME_USER) or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def remaining_gpu_hours(api) -> dict:
@@ -256,6 +341,122 @@ def remaining_gpu_hours(api) -> dict:
         "remaining_hours": round(max(0.0, total - used), 3),
         "refresh_at": refresh.isoformat() if refresh else None,
     }
+
+
+def scaled_reserve(reserve_hours: float, total_hours: float, basis_hours: float) -> float:
+    """The reserve this account keeps for humans, in proportion to its size.
+
+    `--reserve-hours` was calibrated against one account. Applied flat to a
+    smaller one it is a much bigger bite: 20h held out of a 30h plan is two
+    thirds of it against one third of a 60h plan, so the SMALLER account would
+    silently become the stricter one and take even less traffic than its weight
+    already gives it. Scaling keeps "what fraction is kept back" the constant,
+    which is what the number was chosen to express.
+    """
+    if basis_hours <= 0 or total_hours <= 0:
+        return reserve_hours
+    return round(reserve_hours * (total_hours / basis_hours), 3)
+
+
+def weighted_pick(run_id: str, weights: dict[str, float]) -> tuple[str, float]:
+    """Deterministic weighted choice of account, keyed on the run id ALONE.
+
+    Not the attempt, for the same reason `sampled_in` excludes it and a sharper
+    one: a re-run of a run whose kernels are still in flight must return to the
+    SAME account, or the second attempt pushes to an account the first one is
+    not watching and the first one's kernels are reaped by nobody.
+
+    Salted differently from `sampled_in` so the two draws off one run id are
+    independent -- without the salt, whether a run is sampled in would correlate
+    with which account it lands on, and one account would quietly get a
+    different SHARE of the forced runs than of the sampled ones.
+    """
+    ids = sorted(weights)
+    total = sum(max(0.0, weights[i]) for i in ids)
+    digest = hashlib.sha256(("account:" + run_id).encode("utf-8")).hexdigest()
+    draw = (int(digest[:8], 16) % 1_000_000) / 1_000_000.0
+    if not ids or total <= 0:
+        return (ids[0] if ids else ""), draw
+    cumulative = 0.0
+    for account_id in ids:
+        cumulative += max(0.0, weights[account_id]) / total
+        if draw < cumulative:
+            return account_id, draw
+    return ids[-1], draw
+
+
+def probe_account(
+    account_id: str,
+    env_name: str,
+    *,
+    budget_hours: float,
+    reserve_hours: float,
+    reserve_basis_hours: float,
+) -> tuple[dict, object]:
+    """What this account can tell us before a single kernel is pushed.
+
+    Returns (record, client). The record is JSON-safe and goes in the log and
+    the job summary; the client is kept only in memory, for the survey that runs
+    on whichever account is actually chosen.
+
+    Every unusable answer gets a CODE rather than a sentence, because the
+    fallback branches on it. Parsing the human-readable reason would make the
+    wording load bearing, and the wording is written for a person who did not
+    cause the problem and cannot fix it.
+    """
+    record: dict = {"account": account_id, "env": env_name, "outcome": "ok"}
+    token = os.environ.get(env_name)
+    if not token:
+        record["outcome"] = "credential_absent"
+        record["detail"] = (
+            f"{env_name} is not available to this context (expected on a fork "
+            "pull request, where secrets are withheld)"
+        )
+        return record, None
+
+    try:
+        api = kaggle_client(token)
+    except BaseException as exc:  # noqa: BLE001
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        record["outcome"] = "auth_failed"
+        record["error"] = type(exc).__name__
+        record["detail"] = f"could not authenticate to Kaggle: {type(exc).__name__}"
+        return record, None
+
+    # Refused rather than defaulted. The launcher names the kernel's owner, and
+    # a run that cannot say who it authenticated as cannot name it correctly --
+    # which is exactly the state a hardcoded username hides.
+    username = client_username(api)
+    if not username:
+        record["outcome"] = "username_unreadable"
+        record["detail"] = (
+            "could not determine which Kaggle account this token belongs to, so "
+            "the kernel could not be pushed under an owner that can delete it"
+        )
+        return record, None
+    record["user"] = username
+
+    try:
+        quota = remaining_gpu_hours(api)
+    except Exception as exc:  # noqa: BLE001
+        quota = {"ok": False, "error": type(exc).__name__}
+    if not quota.get("ok"):
+        record["outcome"] = "quota_unreadable"
+        record["error"] = quota.get("error")
+        record["detail"] = (
+            "could not read the Kaggle accelerator quota, so the remaining budget is unknown"
+        )
+        return record, api
+
+    record["quota"] = quota
+    record["total_hours"] = quota["total_hours"]
+    record["remaining_hours"] = quota["remaining_hours"]
+    reserve = scaled_reserve(reserve_hours, quota["total_hours"], reserve_basis_hours)
+    record["reserve_hours"] = reserve
+    if quota["remaining_hours"] < budget_hours + reserve:
+        record["outcome"] = "insufficient_quota"
+    return record, api
 
 
 def _as_naive_utc(value):
@@ -486,7 +687,22 @@ def main() -> int:
         "--reserve-hours",
         type = float,
         default = 6.0,
-        help = "quota CI refuses to dip into, left for humans",
+        help = "quota CI refuses to dip into, left for humans. Scaled to each "
+        "account's own weekly total against --reserve-basis-hours",
+    )
+    ap.add_argument(
+        "--reserve-basis-hours",
+        type = float,
+        default = DEFAULT_RESERVE_BASIS_HOURS,
+        help = "the account size --reserve-hours was calibrated against, so the "
+        "reserve stays the same FRACTION of a smaller plan",
+    )
+    ap.add_argument(
+        "--account-env",
+        action = "append",
+        default = None,
+        help = "env var holding an account's token; repeat for each account, in "
+        f"order. Default: {', '.join(DEFAULT_ACCOUNT_ENVS)}",
     )
     ap.add_argument(
         "--kernels",
@@ -593,12 +809,13 @@ def main() -> int:
             f"invocations",
         )
 
-    if not os.environ.get("KAGGLE_API_TOKEN"):
+    account_envs = [e.strip() for e in (args.account_env or DEFAULT_ACCOUNT_ENVS) if e.strip()]
+    if not any(os.environ.get(e) for e in account_envs):
         return _decide(
             False,
-            "KAGGLE_API_TOKEN is not available to this "
-            "context (expected on a fork pull request, "
-            "where secrets are withheld)",
+            "no Kaggle credential is available to this context (expected on a "
+            "fork pull request, where secrets are withheld). Looked for: "
+            + ", ".join(account_envs),
         )
 
     # Before the first network call, and globally: authenticate(), quota_view()
@@ -608,86 +825,190 @@ def main() -> int:
     # SOCKET_TIMEOUT_SEC.
     socket.setdefaulttimeout(SOCKET_TIMEOUT_SEC)
 
-    try:
-        api = kaggle_client()
-    except BaseException as exc:  # noqa: BLE001
-        if isinstance(exc, KeyboardInterrupt):
-            raise
-        msg = f"could not authenticate to Kaggle: {type(exc).__name__}"
-        if not errors_are_skips:
-            print(f"[gate] {msg}", flush = True)
-            return 1
-        return _decide(False, msg)
-
-    try:
-        quota = remaining_gpu_hours(api)
-    except Exception as exc:  # noqa: BLE001
-        quota = {"ok": False, "error": type(exc).__name__}
-    print("[gate] quota " + json.dumps(quota), flush = True)
-    _out("quota", json.dumps(quota))
-
-    if quota.get("ok"):
-        need = args.budget_hours + args.reserve_hours
-        if quota["remaining_hours"] < need:
-            # THE ONE RED STAND-DOWN, and it is answered here rather than after
-            # the survey on purpose: one quota call, no kernel pushed, no
-            # session spent to report that there are no sessions left. The
-            # required sentence comes first and whole; the numbers behind it
-            # follow so the reader can see when the hours come back.
-            return _decide(
-                False,
-                f"{QUOTA_EXHAUSTED_MESSAGE}. "
-                f"{quota['remaining_hours']}h of the weekly {quota['total_hours']}h "
-                f"accelerator quota is left, and this run needs up to "
-                f"{args.budget_hours}h on top of a {args.reserve_hours}h reserve. "
-                f"Quota refreshes at {quota.get('refresh_at')}",
-                exit_code = 0 if exhaustion_is_soft else 1,
+    # Every account's quota is read BEFORE the draw, because the draw is
+    # weighted by what those calls report. Two quota calls, no session, and the
+    # weights are then a measurement rather than a number somebody typed.
+    probes: dict[str, dict] = {}
+    clients: dict[str, object] = {}
+    for index, env_name in enumerate(account_envs, start = 1):
+        account_id = str(index)
+        try:
+            record, api = probe_account(
+                account_id,
+                env_name,
+                budget_hours = args.budget_hours,
+                reserve_hours = args.reserve_hours,
+                reserve_basis_hours = args.reserve_basis_hours,
             )
+        except BaseException as exc:  # noqa: BLE001
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            record, api = (
+                {
+                    "account": account_id,
+                    "env": env_name,
+                    "outcome": "auth_failed",
+                    "error": type(exc).__name__,
+                },
+                None,
+            )
+        probes[account_id] = record
+        clients[account_id] = api
+    print("[gate] accounts " + json.dumps(list(probes.values())), flush = True)
+    _out("accounts", json.dumps(list(probes.values())))
+
+    # An account whose quota could not be read has no weight, because a weight
+    # is what its plan says and we did not get to hear it. It stays a CANDIDATE
+    # -- the order below still reaches it -- so an unreadable answer costs the
+    # account its share of the traffic and not its place in the queue.
+    weights = {i: p["total_hours"] for i, p in probes.items() if p.get("total_hours")}
+    sampled_account, account_draw = weighted_pick(args.run_id, weights)
+    if weights:
+        share = max(0.0, weights.get(sampled_account, 0.0)) / sum(weights.values())
+        print(
+            f"[gate] account draw={account_draw:.6f} sampled={sampled_account} "
+            f"p={share:.3f} weights=" + json.dumps({i: weights[i] for i in sorted(weights)}),
+            flush = True,
+        )
     else:
-        # An unreadable quota is not permission to spend it -- and it is not
-        # evidence of exhaustion either, so it stays a green skip.
-        return _decide(
-            False,
-            "could not read the Kaggle accelerator quota, so the remaining budget is unknown",
+        print(
+            f"[gate] account draw={account_draw:.6f} sampled={sampled_account or '(none)'} "
+            "with NO readable weights, so this is the declaration order rather "
+            "than a weighted choice",
+            flush = True,
         )
 
-    try:
-        survey = survey_kernels(api)
-    except Exception as exc:  # noqa: BLE001
+    # The sampled account first, then the rest in declaration order. Only the
+    # account actually being considered pays for a survey, which is the
+    # expensive call here.
+    order = [sampled_account] + [i for i in probes if i != sampled_account]
+    handovers: list[str] = []
+
+    for account_id in order:
+        if not account_id:
+            continue
+        record = probes[account_id]
+        if record["outcome"] != "ok":
+            handovers.append(f"account {account_id} {record['outcome']}")
+            continue
+
+        api = clients[account_id]
+        try:
+            survey = survey_kernels(api)
+        except Exception as exc:  # noqa: BLE001
+            record["outcome"] = "capacity_unreadable"
+            record["error"] = type(exc).__name__
+            handovers.append(
+                f"account {account_id} kernels could not be listed ({type(exc).__name__})"
+            )
+            continue
+        print(
+            f"[gate] concurrency account={account_id} "
+            + json.dumps(
+                {k: v for k, v in survey.items() if k not in ("busy", "own", "foreign")}
+                | {
+                    "busy": len(survey["busy"]),
+                    "own": len(survey["own"]),
+                    "foreign": len(survey["foreign"]),
+                }
+            ),
+            flush = True,
+        )
+
+        clear, why_not = concurrency_verdict(survey, args.kernels, args.allow_foreign_in_flight)
+        if not clear:
+            record["outcome"] = "capacity_occupied"
+            record["detail"] = why_not
+            handovers.append(f"account {account_id} {why_not}")
+            continue
+
+        quota = record["quota"]
+        _out("quota", json.dumps(quota))
+        _out("account", account_id)
+        _out("account_env", record["env"])
+        _out("account_user", record["user"])
+        # A ONE-ELEMENT matrix, and the token is not in it. The GPU job indexes
+        # the secrets context with `secret_name`, which is the only shape that
+        # cannot end up holding a different account's token than the metadata
+        # beside it claims. See the workflow.
+        _out(
+            "matrix",
+            json.dumps(
+                {
+                    "include": [
+                        {
+                            "account_id": account_id,
+                            "secret_name": record["env"],
+                            "kaggle_user": record["user"],
+                            "weekly_hours": quota["total_hours"],
+                            "reserve_hours": record["reserve_hours"],
+                        }
+                    ]
+                }
+            ),
+        )
+
+        why = (
+            "forced by override"
+            if override
+            else f"sampled in (draw {draw} of 100, threshold {args.percent})"
+        )
+        moved = ""
+        if account_id != sampled_account and handovers:
+            moved = f"; sampled account {sampled_account} handed over ({'; '.join(handovers)})"
+        return _decide(
+            True,
+            f"{why}; running on account {account_id} ({record['user']}) with "
+            f"{quota['remaining_hours']}h of its weekly {quota['total_hours']}h "
+            f"left and {args.kernels} of that account's "
+            f"{MAX_CONCURRENT_GPU_KERNELS} kernel slots free{moved}",
+        )
+
+    # Nobody could run. WHICH stand-down this is depends on what every account
+    # said, and only one of the answers is a failure: an account out of hours is
+    # a fact about the week, while an unreadable one is a fact about the minute.
+    # "Unknown" is not "exhausted", so a single unreadable account keeps the
+    # whole verdict green -- the same rule the one-account gate applied, now over
+    # a set.
+    #
+    # An account with no credential is not a candidate at all. It is what a fork
+    # sees, and what a repo holding one of the two secrets sees, so counting it
+    # as "not exhausted" would turn the exhausted RED into a green skip for
+    # everyone with a single account configured.
+    candidates = {i: p for i, p in probes.items() if p["outcome"] != "credential_absent"}
+    outcomes = {i: p["outcome"] for i, p in candidates.items()}
+
+    if outcomes and all(o == "insufficient_quota" for o in outcomes.values()):
+        detail = "; ".join(
+            f"account {i} has {candidates[i]['remaining_hours']}h of its weekly "
+            f"{candidates[i]['total_hours']}h left against a "
+            f"{candidates[i]['reserve_hours']}h reserve"
+            for i in sorted(candidates)
+        )
+        first = candidates[sorted(candidates)[0]]
         return _decide(
             False,
-            "could not list this account's kernels "
-            f"({type(exc).__name__}), so concurrency cannot "
-            "be established",
+            f"{QUOTA_EXHAUSTED_MESSAGE}. "
+            f"{detail}, and this run needs up to {args.budget_hours}h on top of "
+            f"that reserve. Quota refreshes at {first['quota'].get('refresh_at')}",
+            exit_code = 0 if exhaustion_is_soft else 1,
         )
-    print(
-        "[gate] concurrency "
-        + json.dumps(
-            {k: v for k, v in survey.items() if k not in ("busy", "own", "foreign")}
-            | {
-                "busy": len(survey["busy"]),
-                "own": len(survey["own"]),
-                "foreign": len(survey["foreign"]),
-            }
-        ),
-        flush = True,
-    )
 
-    clear, why_not = concurrency_verdict(survey, args.kernels, args.allow_foreign_in_flight)
-    if not clear:
-        return _decide(False, why_not)
+    if not errors_are_skips and any(
+        o in ("auth_failed", "username_unreadable") for o in outcomes.values()
+    ):
+        print("[gate] no account could be authenticated: " + json.dumps(outcomes), flush = True)
+        return 1
 
-    why = (
-        "forced by override"
-        if override
-        else f"sampled in (draw {draw} of 100, threshold {args.percent})"
-    )
-    return _decide(
-        True,
-        f"{why}; {quota['remaining_hours']}h of GPU quota "
-        f"remaining and {args.kernels} of the account's "
-        f"{MAX_CONCURRENT_GPU_KERNELS} kernel slots are free",
-    )
+    # The per-account sentences, not the codes: these are read by whoever opened
+    # the pull request, who did not cause any of this and cannot fix it. With one
+    # account configured this reads exactly as the single-account gate did.
+    details = [
+        probes[i].get("detail") or probes[i]["outcome"]
+        for i in sorted(probes)
+        if probes[i]["outcome"] != "ok"
+    ]
+    return _decide(False, "; ".join(details) or "; ".join(handovers))
 
 
 if __name__ == "__main__":

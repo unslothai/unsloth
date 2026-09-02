@@ -820,15 +820,28 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await listStoredChatMessages\(remoteId\)[\s\S]*?return completeLoad/,
+    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
   );
   assert.match(
     runtimeProviderSource,
     /!reloadReadyThreadId \|\| loadedThreadId === reloadReadyThreadId/,
   );
+  // The rejection arm is a .then(onFulfilled, onRejected) pair since #8908, which needs
+  // both outcomes: that PR retires the switch's claim on either. What this guards is
+  // unchanged -- a failed switchToThread still releases the retained shell -- and the
+  // call must stay AHEAD of that PR's staleness guard, since a superseded attempt is
+  // still an attempt that ended and the shell would otherwise wait for ever.
   assert.match(
     runtimeProviderSource,
-    /switchToThread\(threadId\)[\s\S]*?\.catch\(\(\) => \{[\s\S]*?onSwitchFailed\?\.\(\)/,
+    /switchToThread\(threadId\)[\s\S]*?\.then\([\s\S]*?onSwitchFailed\?\.\(\)/,
+  );
+  const rejectionArm = runtimeProviderSource.slice(
+    runtimeProviderSource.indexOf("onSwitchFailed?.()"),
+  );
+  assert.ok(
+    rejectionArm.indexOf("onSwitchFailed?.()") <
+      rejectionArm.indexOf("attempt !== attemptAtStart"),
+    "onSwitchFailed must fire before the staleness guard can return early",
   );
   assert.match(
     runtimeProviderSource,
@@ -902,7 +915,8 @@ test("media pages retire the shell only after gallery and preview hydration", ()
   );
   assert.match(
     audioPageSource,
-    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(\)/,
+    // audio-page-policy.test.ts pins the argument list: reactivation asks for the loaded window.
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(/,
   );
   assert.match(
     audioPageSource,
@@ -1042,7 +1056,7 @@ test("keeps what a display:contents wrapper renders, drops what is offscreen", (
           tag: "div",
           display: "contents",
           children: [
-            { tag: "main", rect: [0, 1440, 900, 0], text: "Studio is ready" },
+            { tag: "main", rect: [0, 1440, 900, 0], text: "Unsloth is ready" },
           ],
         },
         { tag: "aside", rect: [-400, 1440, -100, 0], text: "Scrolled past" },
@@ -1055,7 +1069,7 @@ test("keeps what a display:contents wrapper renders, drops what is offscreen", (
   });
 
   const { html } = storedSnapshot(environment.storage);
-  assert.match(html, /Studio is ready/);
+  assert.match(html, /Unsloth is ready/);
   assert.doesNotMatch(html, /Scrolled past/);
   assert.doesNotMatch(html, /Collapsed/);
 });

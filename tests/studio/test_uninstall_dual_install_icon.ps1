@@ -19,7 +19,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($uninstallPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "uninstall.ps1 has parse errors" }
 # _RemoveTreeKeeping does the actual deleting: the helper delegates to it so a
-# directory a previous pass decided to keep (a live Studio's private %TEMP%)
+# directory a previous pass decided to keep (a live Unsloth's private %TEMP%)
 # survives the data-dir removal.
 $wanted = @("_RemoveDataDirKeepingWslIcon", "_RemoveTreeKeeping")
 $fn = @()

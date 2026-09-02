@@ -8,7 +8,7 @@ Windows PowerShell 5.1 -- the interpreter studio/src-tauri/src/install.rs spawns
 -- compiles by writing the source into %TEMP% and running csc.exe, so a %TEMP%
 that cannot hold a file (or a scanner that eats what was just written there)
 makes Add-Type throw CS2001. That exception used to travel up Get-StudioPathHash
-and end a first launch as "Could not create the Studio install lock" (#9140),
+and end a first launch as "Could not create the Unsloth install lock" (#9140),
 with nothing about the message pointing at the compiler.
 
 These run under pwsh on any platform: the failure being guarded is that a thrown
@@ -387,7 +387,7 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
     # TEMP was absent; restoring it as "" would change how every later child
     # resolves its own temp directory.
     assert _lines(result, "TEMPSET:") == ["TEMPSET:False"]
-    # It survives on purpose: an autostarted Studio inherited it as its own %TEMP%,
+    # It survives on purpose: an autostarted Unsloth inherited it as its own %TEMP%,
     # and the host's real one is broken. Stale ones are swept on the next run.
     assert _lines(result, "KEPT:") == ["KEPT:True"]
 
@@ -651,7 +651,7 @@ def test_final_normalization_strips_every_extended_prefix():
     not rooted. That is true, and it matters while a LINK TARGET is being
     anchored, which is why Resolve-StudioLinkTarget still keeps the extended
     form. It does not matter here, and keeping it made the installer and a
-    running Studio compute different names for one directory.
+    running Unsloth compute different names for one directory.
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     body = _extract(r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source)
@@ -731,7 +731,7 @@ def test_a_subst_drive_folds_onto_its_target(path: str, expected: str):
     """The Python runtime gate resolves a SUBST drive; Path.resolve does that.
 
     Left unresolved here, one directory reached under two spellings produces two
-    different install mutexes, and a Studio running from the physical spelling is
+    different install mutexes, and an Unsloth running from the physical spelling is
     invisible to the in-use scan. Measured on windows-latest: subst.exe is the
     only source available without a compiler -- Get-PSDrive.DisplayRoot,
     Win32_LogicalDisk.ProviderName, GetFullPath and Resolve-Path all reveal
@@ -759,9 +759,9 @@ def test_a_subst_drive_folds_onto_its_target(path: str, expected: str):
 def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
     """The PID in the name is the INSTALLER's, and it exits.
 
-    The process that keeps using the directory is the Studio the installer
+    The process that keeps using the directory is the Unsloth the installer
     autostarted, which is what owner.pid records. Reading only the name would
-    clear a live Studio's %TEMP% on the next run.
+    clear a live Unsloth's %TEMP% on the next run.
     """
     root = tmp_path / "root"
     root.mkdir()
@@ -792,7 +792,7 @@ def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
 
 @requires_pwsh
 def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path):
-    """A Studio autostarted by an earlier install owns one of these as its %TEMP%.
+    """An Unsloth autostarted by an earlier install owns one of these as its %TEMP%.
 
     It can outlive the one-day cutoff without ever writing to the directory, and
     the sweep runs before the runtime mutex is taken, so age alone must not be
@@ -950,7 +950,7 @@ def test_a_root_that_fails_its_probe_is_not_left_behind(tmp_path: Path):
 
     The probe creates each candidate before testing it, so on a host where
     every root fails, giving up used to leave a "Unsloth Studio" tree on a
-    machine Studio was never installed on.
+    machine Unsloth was never installed on.
     """
     local_app_data = tmp_path / "localappdata"
     local_app_data.mkdir()
@@ -993,7 +993,7 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
     assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
     # Not just the ust-* leaf: -Force built the whole chain, so "Unsloth Studio"
     # and "temp" were conjured too and a run that gave up must not leave a data
-    # directory tree on a machine Studio was never installed on.
+    # directory tree on a machine Unsloth was never installed on.
     # ~\.unsloth itself is shared and stays; everything the probe made under it goes.
     assert not (user_profile / ".unsloth" / ".cache").exists()
     assert not list(user_profile.rglob("ust-*")), list(user_profile.rglob("*"))
@@ -1087,11 +1087,11 @@ Write-Output "PATH:$($info.Path)"
 
 @requires_pwsh
 def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
-    """The name's PID is the installer's, and it can be dead while Studio is not.
+    """The name's PID is the installer's, and it can be dead while Unsloth is not.
 
     An installer killed between Start-Process and the owner.pid write leaves a
     directory whose only owner evidence is a dead installer PID, while the
-    Studio it started is using that directory as its own %TEMP%. Reading is
+    Unsloth it started is using that directory as its own %TEMP%. Reading is
     proof; guessing from the name is not, so the two get different patience.
     """
     root = tmp_path / "root"
@@ -1102,7 +1102,7 @@ def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
     # No owner.pid, dead name PID, two days old: unknown, so it stays.
     unknown = root / f"ust-{_DEAD_PID}-aaaaaaaa"
     unknown.mkdir()
-    (unknown / "in-use.txt").write_text("a live Studio may own this", encoding = "utf-8")
+    (unknown / "in-use.txt").write_text("a live Unsloth may own this", encoding = "utf-8")
     os.utime(unknown, (two_days, two_days))
 
     # Same, but a week past: collected, so the pile still stays bounded.
@@ -1255,9 +1255,9 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
 
 @requires_pwsh
 def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_path: Path):
-    """An uninstall stops the Studios under the roots it knows about, not others.
+    """An uninstall stops the Unsloth instances under the roots it knows about, not others.
 
-    A Studio from another install root, or another user, can be alive on one of
+    An Unsloth from another install root, or another user, can be alive on one of
     these directories as its %TEMP%; install.ps1's own sweep preserves it and so
     must this one. And a temp directory that is itself a link must not be walked:
     the target's children carry no ReparsePoint attribute, so a recursive delete
@@ -1299,7 +1299,7 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     victim.mkdir()
     (victim / "ust-1234-abcdef03").mkdir()
     (victim / "ust-1234-abcdef03" / "precious.txt").write_text("not ours", encoding = "utf-8")
-    linked = tmp_path / "Linked Studio" / "temp"
+    linked = tmp_path / "Linked Unsloth" / "temp"
     linked.parent.mkdir()
     linked.symlink_to(victim, target_is_directory = True)
 
@@ -1325,7 +1325,7 @@ def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
     """Preserving a directory is worth nothing if the next line deletes its parent.
 
     The primary private temp directory sits inside the data directory, and the
-    data directory is removed wholesale. A Studio from another install root can
+    data directory is removed wholesale. An Unsloth from another install root can
     be alive on that temp directory as its %TEMP%, so the sweep has to run first
     and the removal has to be told what the sweep kept.
     """
@@ -1392,7 +1392,7 @@ def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert _lines(result, "DONE:") == ["DONE:1"]
     assert _lines(result, "KEPT:") == ["KEPT:1"]
-    assert (live / "scratch.bin").exists(), "a live Studio's %TEMP% went with the data dir"
+    assert (live / "scratch.bin").exists(), "a live Unsloth's %TEMP% went with the data dir"
     assert not dead.exists()
     assert not other.exists(), "the rest of the data dir was left behind"
 
@@ -1421,7 +1421,7 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
         '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
     )
 
-    # The real profile, with a Studio temp tree in it that belongs to a dead
+    # The real profile, with an Unsloth temp tree in it that belongs to a dead
     # owner: nothing about the entries themselves protects them.
     real = tmp_path / "real profile"
     real_temp = real / "localappdata" / "Unsloth Studio" / "temp"
@@ -1522,7 +1522,7 @@ def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_
     """The alternate LocalAppData spelling can be another user's profile.
 
     install.ps1 reads a missing owner.pid as unknown rather than abandoned,
-    because an installer killed before writing it leaves a live Studio holding
+    because an installer killed before writing it leaves a live Unsloth holding
     the directory. Deleting that out of somebody else's profile is not this
     uninstall's business. Under our own profile the shape is enough, since that
     is what is being removed.

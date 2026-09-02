@@ -405,7 +405,7 @@ class TestOnRealAppleSilicon:
         IF.patch_psutil_cpu_freq()
         reader = getattr(psutil, "cpu_freq", None)
         if reader is None:
-            # Nothing was wrapped, so there is nothing to assert about. Studio's
+            # Nothing was wrapped, so there is nothing to assert about. Unsloth's
             # own helper covers this host, and its test asserts that path.
             pytest.skip("psutil exposes no cpu_freq on this host")
         try:

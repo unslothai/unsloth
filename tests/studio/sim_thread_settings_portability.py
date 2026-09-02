@@ -4,7 +4,7 @@
 """Portability checks for the per-chat settings column.
 
 `settings_json` is added to an existing `chat_threads` by an idempotent ALTER, and
-every Studio install that upgrades runs it exactly once against a database it has
+every Unsloth install that upgrades runs it exactly once against a database it has
 been writing to for months. The interesting differences between platforms are the
 bundled SQLite, the filesystem and the path handling, none of which CI exercises
 today: the chat settings tests only ever run on Linux.
@@ -45,7 +45,7 @@ def check(
 
 
 def fresh_home():
-    """A Studio home under a real temp dir, so path handling is the platform's own."""
+    """An Unsloth home under a real temp dir, so path handling is the platform's own."""
     home = Path(tempfile.mkdtemp(prefix = "sim8686_"))
     os.environ["UNSLOTH_STUDIO_HOME"] = str(home)
     return home
@@ -242,7 +242,7 @@ def main():
     except Exception as exc:  # noqa: BLE001 - that would be the finding
         check("unparseable JSON reads as no snapshot", False, f"{type(exc).__name__}: {exc}")
 
-    print("\n--- WAL, which is what a running Studio uses ---")
+    print("\n--- WAL, which is what a running Unsloth uses ---")
     conn = sqlite3.connect(str(db_path))
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     conn.close()

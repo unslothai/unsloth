@@ -78,16 +78,18 @@ test("hf_cache rows stay out of the local list", () => {
   assert.deepEqual(chatLocalModelOptions([row({ source: "hf_cache" })]), []);
 });
 
-test("LM Studio rows prefer the model id and keep their label", () => {
+test("LM Studio rows use the model name without the publisher folder", () => {
+  const modelPath = "N:\\AI Models\\Qwen\\Qwen3.6-40B-Deck-Opus";
   const options = chatLocalModelOptions([
     row({
-      id: "/lm/x",
+      id: modelPath,
       source: "lmstudio",
-      model_id: "publisher/model",
-      display_name: "x",
+      model_id: "Qwen/Qwen3.6-40B-Deck-Opus",
+      display_name: "Qwen3.6-40B-Deck-Opus",
     }),
   ]);
-  assert.equal(options[0]?.name, "publisher/model");
+  assert.equal(options[0]?.id, modelPath);
+  assert.equal(options[0]?.name, "Qwen3.6-40B-Deck-Opus");
   assert.equal(options[0]?.baseModel, "LM Studio");
 });
 

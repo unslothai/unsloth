@@ -3757,7 +3757,7 @@ def test_a_batch_mixing_a_search_with_an_ordinary_tool_keeps_its_transcript_span
 
 
 def test_a_system_prompt_does_not_stall_the_branch_seed(conn):
-    """Studio prepends chat and project instructions to every outbound request.
+    """Unsloth prepends chat and project instructions to every outbound request.
 
     That synthetic `system` message is not part of the stored chain, so a strict cursor
     stalled on it: no leaf could advance past `wanted[0]`, every one scored zero, and the

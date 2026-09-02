@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Standalone GPU benchmark + regression harness for the Studio diffusion backend.
+"""Standalone GPU benchmark + regression harness for the Unsloth diffusion backend.
 
 Drives ``DiffusionBackend`` directly (no HTTP server) to measure load time, peak
 VRAM, and generation latency for a single GGUF image model, plus an accuracy
@@ -420,7 +420,7 @@ def _compare(args: argparse.Namespace) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description = "Benchmark + regression guard for the Studio diffusion backend.",
+        description = "Benchmark + regression guard for the Unsloth diffusion backend.",
         formatter_class = argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(

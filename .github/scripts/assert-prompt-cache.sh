@@ -100,6 +100,8 @@ case "$MODE" in
 
     # A deliberately long, fixed system prompt makes the shared prefix big so a
     # KV-cache hit is unambiguous (cached_tokens grows with the reused prefix).
+    # Do not set a request seed: fixed seeds disable prompt caching for reproducibility.
+    # This probe measures cache reuse; the server already uses --seed/--temp 0.
     SYS='You are a meticulous assistant. Always answer concisely and correctly. This is a fixed system preamble that exists only to create a large, identical prompt prefix across both turns so the KV cache has something substantial to reuse on the second request. Do not mention this preamble.'
 
     turn1_body() {
@@ -109,7 +111,7 @@ case "$MODE" in
           {role:"system", content:$sys},
           {role:"user",   content:"What is the capital of France?"}
         ],
-        temperature: 0.0, seed: 3407, max_tokens: 40, stream: false,
+        temperature: 0.0, max_tokens: 40, stream: false,
         enable_thinking: false
       }'
     }
@@ -132,7 +134,7 @@ case "$MODE" in
           {role:"assistant", content:$a1},
           {role:"user",      content:"And the capital of Germany?"}
         ],
-        temperature: 0.0, seed: 3407, max_tokens: 40, stream: false,
+        temperature: 0.0, max_tokens: 40, stream: false,
         enable_thinking: false
       }'
     }

@@ -52,13 +52,19 @@ _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
 
-# GGUF header dims for the staged/deferred-load UI: context_length, layer_count
-# (block_count), and moe_layer_count (block_count minus leading dense layers; 0
-# if not MoE). One cached pass fills all three so the staged sheet can size every
-# slider before the model loads. None = unreadable / not a GGUF. The native
-# training context length (``{arch}.context_length``) the UI shows before a model
-# loads is read from here via read_gguf_context_length.
+# Whether the GGUF tensor table contains a sequence-classification head. None
+# means the file could not be read or parsed, so callers can fail closed.
+_CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
+
+# GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged
+# sheet can size every slider before the model loads.
+# None = unreadable / not a GGUF, and the native ``{arch}.context_length`` the UI shows before a load is read from here
+# via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+
+
+# Cache the embedded speculative-head count separately for discovery, launch, and sizing.
+_NEXTN_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
@@ -112,7 +118,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
                     if len(klen_bytes) < 8:
                         break
                     klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB sanity bound
+                    if klen > 1 << 20:
                         break
                     kbytes = f.read(klen)
                     if len(kbytes) < klen:
@@ -128,7 +134,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
                         if len(slen_bytes) < 8:
                             break
                         slen = struct.unpack("<Q", slen_bytes)[0]
-                        if slen > 1 << 22:  # 4 MB sanity bound
+                        if slen > 1 << 22:
                             break
                         sbytes = f.read(slen)
                         if len(sbytes) < slen:
@@ -179,13 +185,15 @@ def read_gguf_context_length(path: str) -> Optional[int]:
 
 
 def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Optional[Dict[str, int]]:
-    """Walk a GGUF header once and return the requested architecture-namespaced
-    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``. Keys are
-    ``{arch}.<suffix>``; the arch is learned from ``general.architecture`` (GGUF
-    writes general.* before arch.* keys, matching the loader's own parser).
-    Returns ``None`` if not a GGUF / unreadable, else a dict (possibly empty or
-    partial when some keys are absent)."""
+    """Walk a GGUF header once and return requested architecture-namespaced
+    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``.
+
+    GGUF does not guarantee KV order, so matching uints are buffered until
+    ``general.architecture`` identifies the active namespace. Returns ``None``
+    if the file is unreadable/not GGUF, otherwise a possibly partial dict.
+    """
     arch: Optional[str] = None
+    buffered: Dict[str, int] = {}
     found: Dict[str, int] = {}
     try:
         with open(path, "rb") as f:
@@ -202,7 +210,7 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
                     if len(klen_bytes) < 8:
                         break
                     klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB sanity bound
+                    if klen > 1 << 20:
                         break
                     kbytes = f.read(klen)
                     if len(kbytes) < klen:
@@ -218,30 +226,42 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
                         if len(slen_bytes) < 8:
                             break
                         slen = struct.unpack("<Q", slen_bytes)[0]
-                        if slen > 1 << 22:  # 4 MB sanity bound
+                        if slen > 1 << 22:
                             break
                         sbytes = f.read(slen)
                         if len(sbytes) < slen:
                             break
                         arch = sbytes.decode("utf-8", "replace")
-                    elif (
-                        arch is not None
-                        and vtype in (4, 10)
-                        and key.startswith(f"{arch}.")
-                        and key[len(arch) + 1 :] in wanted_suffixes
-                    ):
+                        for suffix in wanted_suffixes:
+                            full_key = f"{arch}.{suffix}"
+                            if full_key in buffered:
+                                found[suffix] = buffered[full_key]
+                    elif vtype in (4, 10):
+                        suffix = next(
+                            (
+                                candidate
+                                for candidate in wanted_suffixes
+                                if key.endswith(f".{candidate}")
+                            ),
+                            None,
+                        )
+                        if suffix is None:
+                            if not _skip_gguf_value(f, vtype):
+                                break
+                            continue
                         width = 4 if vtype == 4 else 8
                         n_bytes = f.read(width)
                         if len(n_bytes) < width:
                             break
-                        found[key[len(arch) + 1 :]] = struct.unpack(
-                            "<I" if vtype == 4 else "<Q", n_bytes
-                        )[0]
-                        if len(found) == len(wanted_suffixes):
-                            break
+                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
+                        buffered[key] = value
+                        if arch is not None and key == f"{arch}.{suffix}":
+                            found[suffix] = value
                     else:
                         if not _skip_gguf_value(f, vtype):
                             break
+                    if arch is not None and len(found) == len(wanted_suffixes):
+                        break
                 except (struct.error, UnicodeDecodeError):
                     break
     except OSError as e:
@@ -251,6 +271,31 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
         logger.debug(f"_parse_gguf_arch_uints: parse failure on {path}: {e}")
         return None
     return found
+
+
+def read_gguf_nextn_predict_layers(path: str) -> Optional[int]:
+    """Return the selected architecture's embedded NextN/MTP layer count.
+
+    ``0`` is a real headless verdict. ``None`` means the key is absent or the
+    header is unreadable, so callers that suppress a separate drafter can do so
+    only on a positive value.
+    """
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _NEXTN_CACHE:
+            return _NEXTN_CACHE[key]
+    values = _parse_gguf_arch_uints(path, frozenset({"nextn_predict_layers"}))
+    result = values.get("nextn_predict_layers") if values is not None else None
+    with _CACHE_LOCK:
+        while len(_NEXTN_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _NEXTN_CACHE.pop(next(iter(_NEXTN_CACHE)))
+            except StopIteration:
+                break
+        _NEXTN_CACHE[key] = result
+    return result
 
 
 def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
@@ -269,8 +314,7 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
         return None
     ctx = vals.get("context_length")
     block = vals.get("block_count")
-    # A real context/layer count is positive; treat 0/garbage as absent so the
-    # UI never builds a slider with max < min.
+    # A real context/layer count is positive; treat 0/garbage as absent
     context_length = ctx if ctx and ctx > 0 else None
     layer_count = block if block and block > 0 else None
     # MoE layer count = block_count - leading dense layers, only when experts
@@ -289,17 +333,17 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
 
 # Strings (8) and arrays (9) are handled inline.
 _FIXED_VTYPE_SIZES: Dict[int, int] = {
-    0: 1,  # uint8
-    1: 1,  # int8
-    2: 2,  # uint16
-    3: 2,  # int16
-    4: 4,  # uint32
-    5: 4,  # int32
-    6: 4,  # float32
-    7: 1,  # bool
-    10: 8,  # uint64
-    11: 8,  # int64
-    12: 8,  # float64
+    0: 1,
+    1: 1,
+    2: 2,
+    3: 2,
+    4: 4,
+    5: 4,
+    6: 4,
+    7: 1,
+    10: 8,
+    11: 8,
+    12: 8,
 }
 
 
@@ -312,7 +356,7 @@ def _skip_gguf_value(f, vtype: int) -> bool:
         if len(slen_bytes) < 8:
             return False
         slen = struct.unpack("<Q", slen_bytes)[0]
-        if slen > 1 << 30:  # 1 GB sanity bound
+        if slen > 1 << 30:
             return False
         f.seek(slen, 1)
         return True
@@ -345,6 +389,91 @@ def _skip_gguf_value(f, vtype: int) -> bool:
     return True
 
 
+def _parse_gguf_has_classifier_head(path: str) -> Optional[bool]:
+    """Whether the GGUF tensor table contains llama.cpp's ``cls.*`` head."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, tensor_count, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or tensor_count > 1 << 20 or kv_count > 1 << 20:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20 or len(f.read(klen)) < klen:
+                    return None
+                vtype_bytes = f.read(4)
+                if len(vtype_bytes) < 4 or not _skip_gguf_value(
+                    f, struct.unpack("<I", vtype_bytes)[0]
+                ):
+                    return None
+
+            for _ in range(tensor_count):
+                nlen_bytes = f.read(8)
+                if len(nlen_bytes) < 8:
+                    return None
+                nlen = struct.unpack("<Q", nlen_bytes)[0]
+                if nlen > 1 << 20:
+                    return None
+                name_bytes = f.read(nlen)
+                ndim_bytes = f.read(4)
+                if len(name_bytes) < nlen or len(ndim_bytes) < 4:
+                    return None
+                n_dimensions = struct.unpack("<I", ndim_bytes)[0]
+                if n_dimensions > 16:
+                    return None
+                # dimensions (u64 each), ggml type (u32), and data offset (u64)
+                trailer_size = n_dimensions * 8 + 4 + 8
+                if len(f.read(trailer_size)) < trailer_size:
+                    return None
+                if name_bytes.decode("utf-8", "replace").startswith("cls."):
+                    return True
+    except OSError as e:
+        logger.debug(f"_parse_gguf_has_classifier_head: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_has_classifier_head: parse failure on {path}: {e}")
+        return None
+    return False
+
+
+def _gguf_shard_has_classifier_head(path: str) -> Optional[bool]:
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _CLASSIFIER_HEAD_CACHE:
+            return _CLASSIFIER_HEAD_CACHE[key]
+    result = _parse_gguf_has_classifier_head(path)
+    with _CACHE_LOCK:
+        while len(_CLASSIFIER_HEAD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _CLASSIFIER_HEAD_CACHE.pop(next(iter(_CLASSIFIER_HEAD_CACHE)))
+            except StopIteration:
+                break
+        _CLASSIFIER_HEAD_CACHE[key] = result
+    return result
+
+
+def _gguf_has_classifier_head(path: str) -> Optional[bool]:
+    try:
+        from utils.models.model_config import colocated_split_shards
+        shards, complete = colocated_split_shards(Path(path))
+    except Exception:
+        return None
+    if not complete:
+        return None
+    results = [_gguf_shard_has_classifier_head(str(shard)) for shard in shards]
+    if any(result is True for result in results):
+        return True
+    return False if results and all(result is False for result in results) else None
+
+
 def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
     """Bool value of ``wanted_key`` (GGUF vtype 7), or ``None`` if absent /
     unreadable. Mirrors ``_parse_gguf_header`` for a single bool key."""
@@ -363,7 +492,7 @@ def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
                     if len(klen_bytes) < 8:
                         break
                     klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB sanity bound
+                    if klen > 1 << 20:
                         break
                     kbytes = f.read(klen)
                     if len(kbytes) < klen:
@@ -506,6 +635,16 @@ def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     return _read_gguf_bool(path, "clip.has_audio_encoder")
 
 
+def read_mmproj_projector_type(path: str) -> Optional[str]:
+    """``clip.projector_type`` from an mmproj GGUF, or None if absent/unreadable.
+
+    The family name llama.cpp keys its per-projector image-token limits on
+    (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an
+    image will occupy can look the ceiling up instead of assuming one.
+    """
+    return _read_gguf_string(path, "clip.projector_type")
+
+
 def read_mmproj_vision_capability(path: str) -> Optional[bool]:
     """``clip.has_vision_encoder`` from an mmproj GGUF: ``True``/``False`` if
     present, ``None`` if absent/unreadable."""
@@ -541,21 +680,116 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
     return t.lower() == "mmproj"
 
 
+def _normalize_url(url: str) -> Optional[str]:
+    value = (url or "").strip().rstrip("/")
+    if not value:
+        return None
+    if value.lower().endswith(".git"):
+        value = value[:-4]
+    lower = value.lower()
+    has_url_host = False
+    for scheme in ("https://", "http://"):
+        if lower.startswith(scheme):
+            value = value[len(scheme) :]
+            has_url_host = True
+            break
+    if not has_url_host:
+        return value
+    host, separator, path = value.partition("/")
+    return host.lower() + (separator + path if separator else "")
+
+
+def _repo_path_from_url(url: str) -> Optional[str]:
+    value = _normalize_url(url)
+    if not value:
+        return None
+    lower = (url or "").strip().lower()
+    if lower.startswith(("https://", "http://")):
+        _, separator, path = value.partition("/")
+        return path if separator and path else None
+    return value
+
+
+def _same_repo_reference(left: str, right: str) -> bool:
+    left_normalized = _normalize_url(left)
+    right_normalized = _normalize_url(right)
+    if left_normalized == right_normalized:
+        return True
+    left_is_url = (left or "").strip().lower().startswith(("https://", "http://"))
+    right_is_url = (right or "").strip().lower().startswith(("https://", "http://"))
+    if left_is_url == right_is_url:
+        return False
+    hosted = left_normalized if left_is_url else right_normalized
+    host, _, _ = hosted.partition("/")
+    return host == "huggingface.co" and _repo_path_from_url(left) == _repo_path_from_url(right)
+
+
+def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+    value = _repo_path_from_url(url)
+    if not value:
+        return None
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return parts[-1]
+
+
+def _slug_extends_base(derived: str, base: str) -> bool:
+    if derived == base or not derived.startswith(base):
+        return False
+    if derived[len(base)] not in "-_.":
+        return False
+    suffix = derived[len(base) :].lstrip("-_.").lower()
+    if not suffix:
+        return False
+    qualifier = suffix.split("-", 1)[0].split("_", 1)[0].split(".", 1)[0]
+    return qualifier in {
+        "gguf",
+        "quant",
+        "quantized",
+        "qat",
+        "awq",
+        "gptq",
+        "mlx",
+        "unsloth",
+        "bnb",
+        "4bit",
+        "8bit",
+    }
+
+
+def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_url: str) -> bool:
+    weight_slug = _hf_repo_slug_from_url(weight_url)
+    projector_slug = _hf_repo_slug_from_url(projector_url)
+    if not weight_slug or not projector_slug:
+        return False
+    return _slug_extends_base(weight_slug, projector_slug)
+
+
 def pairing_score(
     weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
-    """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
-    60 = basename, -1 = definitive mismatch, 0 = decide from filename."""
+    """Pairing confidence: 100 = base_model URL match, 90 = derivative URL,
+    80 = basename + org, 60 = basename, -1 = definitive mismatch,
+    0 = decide from filename."""
     if not weight_meta or not mmproj_meta:
         return 0
 
     w_url = weight_meta.get("general.base_model.0.repo_url")
     p_url = mmproj_meta.get("general.base_model.0.repo_url")
-    if w_url and p_url:
-        return 100 if w_url.strip().rstrip("/") == p_url.strip().rstrip("/") else -1
-
     w_base = weight_meta.get("general.basename")
     p_base = mmproj_meta.get("general.basename")
+    if w_url and p_url:
+        if _same_repo_reference(w_url, p_url):
+            return 100
+        if _weight_url_looks_like_derivative_of_projector(w_url, p_url):
+            if not (w_base and p_base):
+                return -1
+            if w_base.lower() != p_base.lower():
+                return -1
+            return 90
+        return -1
+
     w_org = weight_meta.get("general.base_model.0.organization") or weight_meta.get(
         "general.organization"
     )
@@ -573,9 +807,89 @@ def pairing_score(
     return 0
 
 
-# ── speech / codec architectures ────────────────────────────────────────────
+# GGUF architectures that intrinsically identify embedding models. Generic ``bert`` is
+# deliberately absent: without pooling_type its required CLS/MEAN pooling cannot be recovered. A
+# ``cls.*`` tensor makes an encoder a reranker instead, so matches are gated on the tensor table.
+# The values are GGUF ``general.architecture`` strings, as llama.cpp defines them.
+GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
+    {
+        "modern-bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "neo-bert",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "eurobert",
+        "gemma-embedding",
+        "pangu-embedded",
+        "llama-embed",
+    }
+)
 
-# Not defined here, and deliberately not re-exported either: they live in the leaf module
-# ``utils.gguf_archs``, because importing anything from THIS package runs
-# ``utils.models.__init__``, which pulls in ``model_config`` and therefore PyYAML, and
-# ``core.inference.llama_cpp`` needs the verdict at import time. Import it from there.
+# Name hints for model, file and intrinsic GGUF names whose architecture is not yet above.
+_EMBEDDING_NAME_HINTS: tuple[str, ...] = (
+    "nomic-embed",
+    "llama-embed",
+    "embed-text",
+    "embedding",
+    "bge-",
+    "gte-",
+    "e5-",
+    "minilm",
+)
+_RERANKER_NAME_HINTS: tuple[str, ...] = ("reranker", "rerank")
+
+
+def is_gguf_embedding_architecture(architecture: Optional[str]) -> bool:
+    """True when ``architecture`` is a dedicated llama.cpp embedding arch."""
+    return bool(architecture and architecture.strip().lower() in GGUF_EMBEDDING_ARCHITECTURES)
+
+
+def _has_embedding_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _EMBEDDING_NAME_HINTS))
+
+
+def _has_reranker_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _RERANKER_NAME_HINTS))
+
+
+def is_gguf_embedding_model(
+    gguf_path: str,
+    model_identifier: Optional[str] = None,
+    architecture: Optional[str] = None,
+) -> bool:
+    """Whether a GGUF should be launched with ``--embedding`` for /v1/embeddings."""
+    meta = read_gguf_general_metadata(gguf_path) or {}
+    identifier_basename = None
+    if model_identifier:
+        identifier_basename = model_identifier.strip().replace("\\", "/").rsplit("/", 1)[-1]
+    try:
+        file_basename: Optional[str] = Path(gguf_path).name
+    except Exception:
+        file_basename = None
+    name_candidates = (
+        identifier_basename,
+        file_basename,
+        meta.get("general.name"),
+        meta.get("general.basename"),
+        meta.get("general.base_model.0.name"),
+    )
+    if any(_has_reranker_name_hint(value) for value in name_candidates):
+        return False
+
+    arch = (architecture or meta.get("general.architecture") or "").strip().lower()
+    if arch == "bert":
+        # A classifier head can prove that generic BERT is a reranker
+        # llama-server otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
+        return False
+    if is_gguf_embedding_architecture(arch):
+        # Generic BERT-family architectures also back cross-encoder rerankers.
+        # Their standardized cls.* tensors are intrinsic evidence of that role;
+        # an unreadable tensor table stays unclassified rather than guessing.
+        return _gguf_has_classifier_head(gguf_path) is False
+    return any(_has_embedding_name_hint(value) for value in name_candidates)
+
+
+# Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__,
+# which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the
+# verdict at import time. Import it from utils.gguf_archs.

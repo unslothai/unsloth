@@ -176,9 +176,7 @@ def test_dmg_icon_label_stays_legible_over_the_halo() -> None:
 
 def test_desktop_release_asset_names_are_human_readable() -> None:
     workflow = read(REPO / ".github/workflows/release-desktop.yml")
-    assert "re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')" in workflow
-
-    assert "base_name = f'Unsloth-Desktop-{os.environ[\"ASSET_VERSION\"]}'" in workflow
+    assert "base_name = 'Unsloth-Desktop'" in workflow
     expected_suffixes = {
         "MacOS.dmg",
         "ARM64.app.tar.gz",
@@ -191,6 +189,14 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
     }
     for suffix in expected_suffixes:
         assert f"f'{{base_name}}-{suffix}'" in workflow
+
+    for name in (
+        "Unsloth-Desktop-MacOS.dmg",
+        "Unsloth-Desktop-Linux.AppImage",
+        "Unsloth-Desktop-Ubuntu.deb",
+        "Unsloth-Desktop-Windows.exe",
+    ):
+        assert name in workflow
 
 
 LOCALES = FRONTEND / "src/i18n/locales"

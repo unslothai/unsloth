@@ -472,7 +472,7 @@ def run(page, state: Runtime) -> None:
 
     # ── A blip on a runtime that IS holding something ───────────────────
     # A failed read is not evidence the runtime is empty. Dropping the rows for
-    # it takes a loaded model off the card, and on a remote Studio a blip can
+    # it takes a loaded model off the card, and on a remote Unsloth a blip can
     # take all four at once, so the whole card would go while everything stayed
     # resident. The row must survive the failure and outlive it.
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])

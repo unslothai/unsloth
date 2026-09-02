@@ -54,6 +54,13 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    find: {
+      label: "Поиск на странице",
+      previous: "Предыдущее совпадение",
+      next: "Следующее совпадение",
+      close: "Закрыть поиск",
+      truncated: "Эта страница слишком длинная, чтобы выполнить поиск целиком.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -219,22 +226,14 @@ export const ru = {
       clear: "Удалить сочетание",
       reset: "Вернуть значение по умолчанию",
       resetAll: "Сбросить всё до значений по умолчанию",
-      groups: {
-        general: "Общие",
-        chat: "Чат",
-      },
+      primarySlot: "Сочетание",
+      alternateSlot: "Альтернативное сочетание",
+      browserReserved:
+        "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       actions: {
-        newChat: {
-          label: "Новый чат",
-          description: "Начать новый чат",
-        },
-        searchChats: {
-          label: "Поиск по чатам",
-          description: "Открыть окно поиска по чатам",
-        },
-        toggleSidebar: {
-          label: "Показать/скрыть боковую панель",
-          description: "Показать или скрыть боковую панель",
+        findInPage: {
+          label: "Поиск на странице",
+          description: "Искать текст на этой странице",
         },
         openSettings: {
           label: "Открыть настройки",
@@ -243,6 +242,206 @@ export const ru = {
         openKeyboardShortcuts: {
           label: "Сочетания клавиш",
           description: "Открыть этот список сочетаний",
+        },
+        searchChats: {
+          label: "Поиск по чатам",
+          description: "Открыть окно поиска по чатам",
+        },
+        openMcpServers: {
+          label: "Серверы MCP",
+          description: "Настроить серверы MCP для этого чата",
+        },
+        logOut: {
+          label: "Выйти",
+          description: "Выйти из Unsloth",
+        },
+        approveToolRequest: {
+          label: "Одобрить запрос",
+          description: "Разрешить ожидающий вызов инструмента",
+        },
+        declineToolRequest: {
+          label: "Отклонить запрос",
+          description: "Запретить ожидающий вызов инструмента",
+        },
+        newChat: {
+          label: "Новый чат",
+          description: "Начать новый чат",
+        },
+        newTemporaryChat: {
+          label: "Новый временный чат",
+          description: "Начать чат, который не сохраняется в истории",
+        },
+        newStandaloneChat: {
+          label: "Новый отдельный чат",
+          description: "Начать чат вне какого-либо проекта",
+        },
+        archiveChat: {
+          label: "Архивировать чат",
+          description: "Архивировать выбранные чаты или текущий чат",
+        },
+        markChatUnread: {
+          label: "Отметить как непрочитанный",
+          description: "Отметить выбранные чаты или текущий чат как непрочитанные",
+        },
+        togglePinChat: {
+          label: "Закрепить или открепить",
+          description: "Закрепить или открепить выбранные чаты или текущий чат",
+        },
+        selectAllChats: {
+          label: "Выбрать все чаты",
+          description: "Выбрать все чаты на боковой панели",
+        },
+        clearChatSelection: {
+          label: "Снять выделение",
+          description: "Снять выделение с выбранных чатов. Escape тоже снимает выделение",
+        },
+        deleteSelectedChats: {
+          label: "Удалить выбранные чаты",
+          description: "Удалить все выбранные чаты",
+        },
+        nextRecentlyViewedChat: {
+          label: "Следующий просмотренный чат",
+          description: "Листать вперёд по недавно открытым чатам",
+        },
+        previousRecentlyViewedChat: {
+          label: "Предыдущий просмотренный чат",
+          description: "Листать назад по недавно открытым чатам",
+        },
+        nextChat: {
+          label: "Следующий чат",
+          description: "Перейти к следующему чату в боковой панели",
+        },
+        previousChat: {
+          label: "Предыдущий чат",
+          description: "Перейти к предыдущему чату в боковой панели",
+        },
+        nextChatNeedingAttention: {
+          label: "Следующий чат с активностью",
+          description: "Перейти к следующему генерирующему, ожидающему или непрочитанному чату",
+        },
+        clearAllUnreads: {
+          label: "Отметить всё прочитанным",
+          description: "Отметить все чаты прочитанными",
+        },
+        goToRecentChat1: {
+          label: "Перейти к недавнему чату 1",
+          description: "Открыть чат 1 в разделе «Недавние»",
+        },
+        goToRecentChat2: {
+          label: "Перейти к недавнему чату 2",
+          description: "Открыть чат 2 в разделе «Недавние»",
+        },
+        goToRecentChat3: {
+          label: "Перейти к недавнему чату 3",
+          description: "Открыть чат 3 в разделе «Недавние»",
+        },
+        goToRecentChat4: {
+          label: "Перейти к недавнему чату 4",
+          description: "Открыть чат 4 в разделе «Недавние»",
+        },
+        goToRecentChat5: {
+          label: "Перейти к недавнему чату 5",
+          description: "Открыть чат 5 в разделе «Недавние»",
+        },
+        goToRecentChat6: {
+          label: "Перейти к недавнему чату 6",
+          description: "Открыть чат 6 в разделе «Недавние»",
+        },
+        switchToChat: {
+          label: "Перейти в Чат",
+          description: "Открыть рабочую область чата",
+        },
+        switchToProjects: {
+          label: "Перейти в Проекты",
+          description: "Открыть рабочую область проектов",
+        },
+        switchToHub: {
+          label: "Перейти в Хаб моделей",
+          description: "Открыть хаб моделей",
+        },
+        switchToTrain: {
+          label: "Перейти в Обучение",
+          description: "Открыть рабочую область обучения",
+        },
+        switchToRecipes: {
+          label: "Перейти в Recipes",
+          description: "Открыть Data Recipes",
+        },
+        switchToImages: {
+          label: "Перейти в Изображения",
+          description: "Открыть рабочую область изображений",
+        },
+        switchToVideo: {
+          label: "Перейти в Видео",
+          description: "Открыть рабочую область видео",
+        },
+        switchToAudio: {
+          label: "Перейти в Аудио",
+          description: "Открыть рабочую область аудио",
+        },
+        switchToExport: {
+          label: "Перейти в Экспорт",
+          description: "Открыть рабочую область экспорта",
+        },
+        toggleSidebar: {
+          label: "Показать/скрыть боковую панель",
+          description: "Показать или скрыть боковую панель",
+        },
+        toggleApiMonitor: {
+          label: "Показать/скрыть активность API",
+          description: "Показать или скрыть монитор активности API",
+        },
+        openModelPicker: {
+          label: "Открыть выбор модели",
+          description: "Выбрать модель для этого чата",
+        },
+        openProjectPicker: {
+          label: "Открыть выбор проекта",
+          description: "Перейти к другому проекту из заголовка чата",
+        },
+        startDictation: {
+          label: "Диктовка",
+          description: "Начать или остановить диктовку в поле ввода",
+        },
+        attachFiles: {
+          label: "Прикрепить фото и файлы",
+          description: "Добавить вложение в поле ввода",
+        },
+        sendMessage: {
+          label: "Отправить сообщение",
+          description: "Отправить содержимое поля ввода",
+        },
+        cycleReasoningEffort: {
+          label: "Переключать усилие рассуждения",
+          description: "Перебрать уровни усилия рассуждения",
+        },
+        increaseReasoningEffort: {
+          label: "Увеличить усилие рассуждения",
+          description: "Поднять усилие рассуждения на один уровень",
+        },
+        decreaseReasoningEffort: {
+          label: "Уменьшить усилие рассуждения",
+          description: "Снизить усилие рассуждения на один уровень",
+        },
+        toggleFastMode: {
+          label: "Переключить режим Fast",
+          description: "Включить или выключить режим Fast",
+        },
+        renameChat: {
+          label: "Переименовать чат",
+          description: "Переименовать текущий чат",
+        },
+        forkChat: {
+          label: "Ответвить чат",
+          description: "Создать новый чат от последнего сообщения",
+        },
+        copyChatAsMarkdown: {
+          label: "Скопировать как Markdown",
+          description: "Скопировать весь чат в буфер обмена как Markdown",
+        },
+        copySessionId: {
+          label: "Скопировать ID сессии",
+          description: "Скопировать ID песочницы этого чата",
         },
       },
     },
@@ -417,6 +616,16 @@ export const ru = {
           "Использует загруженную аудиомодель (например, Orpheus)",
         engineSystem: "Системные голоса",
         engineStudio: "Загрузить модель TTS",
+        engineCustom: "Пользовательский эндпоинт",
+        engineCustomDescription:
+          "OpenAI-совместимый TTS-сервер из ваших подключений (например, Kokoro)",
+        connectionLabel: "Подключение",
+        connectionDescription:
+          "Добавьте OpenAI-совместимый сервер на вкладке «Подключения»",
+        connectionPlaceholder: "Выберите подключение",
+        customModelLabel: "Модель",
+        customVoiceDescription:
+          "Имя голоса, которое ожидает эндпоинт; по умолчанию alloy",
         modelLabel: "Модель TTS",
         modelDescription:
           "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",
@@ -495,7 +704,7 @@ export const ru = {
         sectionTitle: "Автопереключение модели (OpenAI API)",
         enable: "Переключать модель по запросу",
         enableDescription:
-          "Загружать скачанную модель GGUF, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
+          "Загружать скачанную модель, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
         idleUnload: "Автовыгрузка при простое",
         idleUnloadDescription:
           "Освобождать VRAM после указанного числа секунд простоя. 0 оставляет модель загруженной; минимальное значение: 60.",
@@ -567,6 +776,29 @@ export const ru = {
         loadError: "Не удалось загрузить настройку автозапуска.",
         saveError: "Не удалось обновить настройку автозапуска.",
       },
+      downloads: {
+        sectionTitle: "Загрузки",
+        transport: "Транспорт загрузки",
+        transportDescription:
+          "Как файлы моделей и наборов данных приходят с Hugging Face. HTTPS продолжает с места остановки; Xet часто быстрее при первой загрузке, но начинает файл заново после отмены.",
+        transportHint:
+          "HTTPS - это обычный TLS: его пропускают любые сети, прокси и VPN, отменённая или оборванная передача продолжается с уже сохранённых байтов, а расход памяти остаётся ровным. Xet скачивает дедуплицированные блоки, поэтому репозиторий, у которого есть общие данные с уже скачанным, может прийти намного быстрее, но ему нужен hf_xet и больше ОЗУ, а отмена отбрасывает текущий файл. Auto решает для конкретной машины: учитывает ОЗУ и то, зависал ли здесь Xet, и переходит на HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Стандартный TLS. Продолжает после отмены, работает в любой сети, ровный расход памяти.",
+        transportDescriptionNoResume:
+          "Как файлы моделей и наборов данных загружаются с Hugging Face. В этой установке ни один транспорт не может продолжить загрузку, поэтому отменённая загрузка начинается заново; Xet обычно быстрее при первой загрузке.",
+        httpsHintNoResume:
+          "Обычный TLS. Работает в любой сети, стабильное использование памяти. Эта установка не может продолжить отменённую загрузку.",
+        xetHint:
+          "Передача дедуплицированными блоками. Обычно быстрее при первой загрузке, начинает файл заново после отмены, требует больше памяти.",
+        autoHint:
+          "Выбирает для этой машины и переключается на HTTPS, если Xet зависает или падает.",
+        autoCurrently: "Auto использует {transport} на этой машине.",
+        xetMissing: "Xet недоступен, так как hf_xet не установлен.",
+      },
       uploads: {
         sectionTitle: "Загрузки",
         maxUploadSize: "Лимит загрузки датасета для обучения",
@@ -577,7 +809,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
-        searchPlaceholder: "Поиск embedding-моделей",
+        searchPlaceholder: "Поиск любой модели на HF",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",
@@ -585,7 +817,24 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Восстановить значение по умолчанию",
+        recommended: "Рекомендуется",
+        onDevice: "На устройстве",
+        searching: "Поиск в Hugging Face…",
+        checking: "Проверка…",
+        noResults: "Модели эмбеддингов не найдены",
+        download: "Скачать",
+        unload: "Выгрузить",
+        unloadFailed: "Не удалось выгрузить модель эмбеддингов",
+        downloadingStatus: "Загрузка…",
+        notDownloaded: "Не загружено",
+        notDownloadedSized: "Не загружено · {size}",
+        loaded: "Загружено",
+        downloading: "Загрузка {model}",
+        downloadingDescription:
+          "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
+        downloadFailed: "Не удалось начать загрузку",
+        downloadConflict: "Возобновите эту загрузку в Hub",
+        downloadBusy: "Загрузка уже выполняется",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -596,6 +845,16 @@ export const ru = {
         copied: "Путь скопирован",
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
+      },
+      repairInstall: {
+        label: "Восстановить установку",
+        description:
+          "Повторно запускает установщик для управляемой среды. Пригодится, если графический процессор не определяется или приложение не запускается.",
+        action: "Восстановить установку",
+        confirmTitle: "Восстановить эту установку?",
+        confirmDescription:
+          "Останавливает сервер и повторно запускает установщик, который переустанавливает PyTorch для графического процессора этого компьютера. Чаты и настройки сохраняются. Это может занять несколько минут.",
+        confirmAction: "Восстановить",
       },
       resetPreferences: {
         sectionTitle: "Опасная зона",
@@ -650,9 +909,9 @@ export const ru = {
           "Всё ниже считается по вашей собственной истории. Ничего не собирается и не отправляется в Unsloth.",
         retry: "Повторить",
         privacyNote:
-          "Статистика рассчитывается по истории чатов и обучения, которая хранится в вашей установке Unsloth. Ничего не собирается и ничего не отправляется ни в Unsloth, ни третьим лицам.",
+          "Статистика рассчитывается по локальной истории чатов, использования API и обучения в вашей установке Unsloth. Запросы, ответы и ключи API для статистики никогда не сохраняются. Ничего не отправляется ни в Unsloth, ни третьим лицам.",
         emptyChats:
-          "Чатов пока нет. Начните разговор, и статистика появится здесь.",
+          "Чатов и использования API пока нет. Начните разговор или выполните аутентифицированный запрос к локальному API.",
         lifetimeTokens: "Токенов за всё время",
         peakTokens: "Пиковый день",
         longestChat: "Самый длинный чат",
@@ -674,6 +933,9 @@ export const ru = {
         totalMessages: "Всего сообщений",
         tokensIn: "Отправлено токенов",
         tokensOut: "Сгенерировано токенов",
+        totalTokens: "Всего токенов",
+        studioChatTokens: "Токены Unsloth Chat",
+        apiTokens: "Токены API",
         cachedTokens: "Токенов из кеша",
         cachedValue: "{tokens} ({percent}% ввода)",
         avgTokensPerChat: "В среднем токенов на чат",
@@ -850,13 +1112,23 @@ export const ru = {
         currentLoad: "Текущая нагрузка",
         free: "{value} свободно",
         noGpu: "GPU не обнаружен",
+        gpuUnusable: "GPU недоступен",
+        gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
       },
       gpu: {
         title: "Устройства GPU",
         ggufInference: "Инференс GGUF",
         unavailable: "недоступно",
+        detecting: "Поиск GPU...",
+        unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
           "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
+        noUsableGpu: "Ни один GPU на этой машине недоступен для PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) не может инициализировать GPU ниже, поэтому использовать их нельзя. Проверьте драйвер видеокарты или восстановите установку.",
+        unusableDevice: "недоступен",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -969,6 +1241,7 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+        vramWithShared: "{vram} VRAM + {shared} общей памяти",
       },
     },
     agents: {
@@ -976,7 +1249,7 @@ export const ru = {
       description:
         "Подключение кодинг-агентов, таких как Claude Code и Codex, к локальной модели с помощью unsloth start.",
       intro:
-        "подключает Claude Code, Codex, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
+        "подключает Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
       readDocs: "Открыть документацию",
       copy: "Копировать",
       copied: "Скопировано",
@@ -998,6 +1271,15 @@ export const ru = {
       docs: "Документация",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
@@ -1090,6 +1372,9 @@ export const ru = {
         showAllQuantizations: "Показывать все квантизации",
         showAllQuantizationsDescription:
           "Включено: показываются все квантизации из раздела «On Device», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+        showMemoryBar: "Показывать шкалу использования VRAM",
+        showMemoryBarDescription:
+          "Показывает под строкой каждой скачанной модели её ожидаемое потребление VRAM: веса, KV-кеш при той длине контекста, с которой модель будет загружена, и резерв для спекулятивного черновика.",
       },
       menu: {
         title: "Меню чата",
@@ -1102,7 +1387,7 @@ export const ru = {
         exportChat: "Экспортировать чат",
       },
       pastedTextThreshold: "Сворачивать длинные вставки",
-      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения.",
+      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения. Нажмите {shortcut}, чтобы всё равно вставить в поле сообщения.",
       pastedTextThresholdOff: "Выкл.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
@@ -1116,16 +1401,46 @@ export const ru = {
       rememberParamsPerModel: "Запоминать настройки для каждой модели",
       rememberParamsPerModelDescription:
         "При переключении модели восстанавливаются температура, промпт и другие настройки, которые вы использовали с ней в последний раз. Если выключено, для всех моделей действует один набор настроек.",
+      autoCompact: "Автоматически сжимать длинные чаты",
+      autoCompactDescription:
+        "Когда локальный чат GGUF достигает заданной длины контекста, удалять старые ходы вместо возврата ошибки. Это не зависит от свободной VRAM.",
+      compactionStyle: "Когда контекст заполнен",
+      compactionStyleDescription:
+        "Настройка сервера сохраняет UNSLOTH_CONTEXT_POLICY. Сброс беседы оставляет последний ход и постоянные инструкции. Скользящее окно удаляет самые старые ходы и может сохранить больше недавней истории.",
+      compactionStyleInherit: "Использовать настройку сервера",
+      compactionStyleCheckpoint: "Сбросить беседу",
+      compactionStyleRollingDefault:
+        "Удалять старые ходы (~25% дополнительного места)",
+      compactionStyleRolling10:
+        "Удалять старые ходы (~10% дополнительного места)",
+      compactionStyleRolling5:
+        "Удалять старые ходы (~5% дополнительного места)",
+      compactionStyleRollingNone:
+        "Удалять старые ходы (без дополнительного сокращения)",
+      autoCompactKeywords:
+        "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:
           "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
       },
+      currentDate: {
+        label: "Сообщать модели сегодняшнюю дату",
+        description:
+          "Добавляет текущую дату в запрос, чтобы веб-поиск и Deep Research искали свежие источники, а не исходили из даты окончания обучения модели.",
+        loadError: "Не удалось загрузить настройки текущей даты",
+        saveError: "Не удалось обновить настройки текущей даты",
+      },
+      tools: {
+        collapseByDefault: "Сворачивать действия инструментов по умолчанию",
+        collapseByDefaultDescription:
+          "Входные и выходные данные инструментов остаются свёрнутыми во время работы. Разверните строку инструмента для просмотра.",
+      },
       webSearch: {
         title: "Веб-поиск",
         images: "Показывать изображения из веб-поиска",
         imagesDescription:
-          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Studio, поэтому браузер никогда не обращается к хостам изображений.",
+          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Unsloth, поэтому браузер никогда не обращается к хостам изображений.",
       },
       artifacts: {
         title: "Canvas",
@@ -1138,6 +1453,11 @@ export const ru = {
         blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
         blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
         blockedBannerAction: "Разрешить для этого Canvas",
+        blockedTitle: "Доступ Canvas к сети отключён",
+        blockedHint:
+          "Включите «{setting}» в разделе Настройки → Чат, чтобы Canvas мог загружать внешние ресурсы, или разрешите только для этого Canvas.",
+        blockedSettingsAction: "Открыть настройки",
+        blockedDismiss: "Закрыть",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",
@@ -1146,7 +1466,7 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Raw JSONL, CSV или ShareGPT JSONL, объединённо или по чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV или ShareGPT JSONL, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
@@ -1210,6 +1530,8 @@ export const ru = {
       archivedImagesDescription: "Просмотр и управление изображениями, которые вы архивировали.",
       archivedVideos: "Архивные видео",
       archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
+      archivedAudio: "Архивированные аудио",
+      archivedAudioDescription: "Просмотр и управление аудиоклипами, которые вы архивировали.",
       manageAction: "Управлять",
       manageChats: "Управление чатами",
       manageChatsDescription:
@@ -1396,7 +1718,7 @@ export const ru = {
         desktopAvailable:
           "Доступна версия {version} настольного приложения",
         desktopAvailableDescription:
-          "Установите обновление сейчас. После установки настольное приложение перезапустится.",
+          "Установите обновление сейчас, чтобы подготовить его в фоновом режиме. Вы можете продолжать работу и перезапустить приложение, когда всё будет готово.",
         desktopExternalServer:
           "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
         desktopManualInstall:
@@ -1408,11 +1730,20 @@ export const ru = {
           "Установлена последняя версия настольного приложения",
         desktopCurrentDescription:
           "Unsloth продолжит автоматически проверять наличие обновлений.",
+        desktopPreparingDescription:
+          "Обновление готовится в фоновом режиме. Вы можете продолжать работу.",
+        desktopReadyToRestartDescription:
+          "Всё готово. Перезапустите приложение, чтобы завершить установку обновления.",
+        desktopReadyToInstallDescription:
+          "Обновление приложения загружено. Завершите обновление бэкенда, чтобы установить его.",
         checkForUpdates: "Проверить наличие обновлений",
         checkAgain: "Проверить снова",
         retryCheck: "Повторить попытку",
         checking: "Проверка…",
+        preparing: "Подготовка…",
         updateNow: "Обновить сейчас",
+        restartToUpdate: "Перезапустить для обновления",
+        finishUpdate: "Завершить обновление",
         openReleasePage: "Открыть страницу выпуска",
         unknownInstall:
           "Не удалось определить способ установки Unsloth. Для установки через установщик или PyPI используйте команды выше.",
@@ -1578,8 +1909,8 @@ export const ru = {
       reasonNotTrainable: "Эта модель на устройстве не поддерживает обучение.",
       reasonUnsupportedFormat:
         "Этот формат модели не поддерживается для обучения.",
-      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГБ)",
-      vramTight: "~{est} ГБ VRAM (впритык для {total} ГБ)",
+      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГиБ)",
+      vramTight: "~{est} ГБ VRAM (впритык для {total} ГиБ)",
       vramApprox: "~{est} ГБ VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "Впритык",
@@ -2126,5 +2457,14 @@ export const ru = {
       datasetStreaming: "Датасет: потоковая передача (без полной загрузки)",
       modelWeights: "Веса модели",
     },
+  },
+  modelMemory: {
+    readout:
+      "Веса {model} + контекст {context} = {total} из {budget} доступной VRAM",
+    readoutWithSpec:
+      "Веса {model} + KV {kv} + черновик MTP {spec} = {total} из {budget} доступной VRAM",
+    kvRate: "KV зарезервирован, ~{rate}/токен",
+    oomLikely: "При текущих настройках вероятна нехватка памяти",
+    tooLarge: "Больше объёма VRAM, часть уйдёт на CPU. Меньшая квантизация работает быстрее",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

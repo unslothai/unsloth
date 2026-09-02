@@ -587,6 +587,67 @@ def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     assert conversation[-1]["tool_calls"] == [{"id": "c1"}]
 
 
+def test_a_resumed_partial_keeps_the_metadata_the_continuation_does_not_repeat():
+    """Gemini pins the text part's signature back on from extra_content alone.
+
+    The merge used to assign the continuation into the slot, so every key the
+    partial carried and the continuation did not was dropped and the replayed
+    turn was rejected.
+    """
+    conversation = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "Looking that ",
+            "extra_content": {"google": {"thought_signature": "SIG-PARTIAL"}},
+        },
+    ]
+    append_assistant_turn(
+        conversation,
+        {"role": "assistant", "content": "up now."},
+        continue_final_message = True,
+    )
+
+    assert conversation[-1]["content"] == "Looking that up now."
+    assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "SIG-PARTIAL"}}
+
+
+def test_a_merge_leaves_the_callers_message_alone():
+    """The caller owns the dict it passed and may still read it afterwards."""
+    conversation = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "Looking that "},
+    ]
+    generated = {"role": "assistant", "content": "up now."}
+    append_assistant_turn(conversation, generated, continue_final_message = True)
+
+    assert conversation[-1]["content"] == "Looking that up now."
+    assert generated["content"] == "up now."
+
+
+def test_a_continuation_still_wins_on_a_key_it_does_repeat():
+    """Merging must not resurrect a stale value the new turn deliberately set."""
+    conversation = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "Looking that ",
+            "extra_content": {"google": {"thought_signature": "STALE"}},
+        },
+    ]
+    append_assistant_turn(
+        conversation,
+        {
+            "role": "assistant",
+            "content": "up now.",
+            "extra_content": {"google": {"thought_signature": "FRESH"}},
+        },
+        continue_final_message = True,
+    )
+
+    assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "FRESH"}}
+
+
 def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():
     """Self-limiting: after a tool result or a nudge the partial is not trailing."""
     after_tool = [
@@ -720,7 +781,11 @@ def test_the_manual_splice_appends_the_fallback_swept_partial():
 
 # ── Non-streaming tool loop: the prefill mode belongs to the turn that produced the text ──
 
-_THINK_TEMPLATE = "{% if x %}<think>\n{% endif %}</think>"
+# R1/QwQ shape: the generation prompt opens an unclosed <think>.
+_THINK_TEMPLATE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n{% endif %}"
+)
 # A resumed turn that calls a tool: the kept text is the POST-tool turn, which rendered
 # an ordinary generation prompt, so its output opens inside the template's <think>.
 _RESUMED_TOOL_EVENTS = [

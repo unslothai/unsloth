@@ -20,6 +20,7 @@ import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { startDictationLevelMeter } from "./dictation-level";
+import { type SegmentRecorder, createAudioRecorder } from "./pcm-recorder";
 import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
 // Re-exported so the one public entry point for dictation is unchanged.
 export { SttModelNotDownloadedError } from "./stt-errors";
@@ -483,7 +484,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       chunks: Blob[];
       startedAt: number;
       voiced: boolean;
-      recorder: MediaRecorder;
+      recorder: SegmentRecorder;
     };
     const results: string[] = [];
     const queue: { index: number; blob: Blob }[] = [];
@@ -633,10 +634,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         chunks: [],
         startedAt: performance.now(),
         voiced: false,
-        recorder: new MediaRecorder(
-          stream,
-          mimeType ? { mimeType } : undefined,
-        ),
+        recorder: createAudioRecorder(stream, mimeType),
       };
       currentSeg = seg;
       silenceMs = 0;

@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import sys
 import uuid
 from typing import Annotated
 from urllib.parse import urlparse
@@ -13,15 +14,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth.authentication import (
     authenticated_via_api_key,
     get_current_subject,
+    request_admitted_without_credential,
     require_ui_session_for_local_commands,
 )
 from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     clear_oauth_tokens_async,
-    close_stdio_sessions,
+    close_mcp_sessions,
     invalidate_tool_cache,
     is_stdio,
+    join_stdio_command,
     list_tools_async,
     parse_server_headers,
     parse_stdio_command,
@@ -40,6 +43,9 @@ from models.mcp_servers import (
     McpServerResponse,
     McpServerTestRequest,
     McpServerUpdate,
+    McpStdioCommand,
+    McpStdioDecodeRequest,
+    McpStdioEncodeResponse,
 )
 from storage import mcp_servers_db
 from utils.utils import safe_curated_detail, log_and_http_error
@@ -52,6 +58,7 @@ router = APIRouter()
 # Annotated, not a Depends default: these routes are also called directly by the
 # tests, where a Depends object is truthy and would read as "API key".
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
+WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 
 
 def _looks_like_command(value: str) -> bool:
@@ -61,34 +68,49 @@ def _looks_like_command(value: str) -> bool:
     return any(ch.isspace() for ch in value)
 
 
+def _normalize_stdio_command(url: str) -> str:
+    raw = url or ""
+    trimmed = raw.strip()
+    if not trimmed:
+        raise HTTPException(status_code = 400, detail = "command must not be empty")
+    # Leading whitespace is executable-field padding. At the other end, only
+    # space/tab delimit arguments on Windows. POSIX quoting protects whitespace.
+    normalized = raw.lstrip().rstrip(" \t") if sys.platform == "win32" else trimmed
+    try:
+        parts = parse_stdio_command(normalized)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            "Invalid command. Check quoting and try again.",
+            event = "mcp_servers.invalid_command",
+            log = logger,
+        )
+    if not parts or not parts[0].strip():
+        raise HTTPException(status_code = 400, detail = "command must not be empty")
+    if any("\x00" in part for part in parts):
+        raise HTTPException(
+            status_code = 400,
+            detail = "command and arguments must not contain NUL characters",
+        )
+    if "://" in parts[0]:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Enter an http(s):// URL, or a local command whose "
+            "first token is an executable (not a URL).",
+        )
+    return normalized
+
+
 def _validate_url(url: str) -> str:
-    trimmed = (url or "").strip()
+    raw = url or ""
+    trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
-    # When stdio is enabled, a non-HTTP value is a local command (reuses this
-    # field so stdio servers ride existing CRUD/storage).
+    # Non-HTTP values reuse the URL field for local commands. Syntax validation
+    # is policy-free, but persistence and execution stay behind the stdio gate.
     if stdio_mcp_enabled() and is_stdio(trimmed):
-        try:
-            parts = parse_stdio_command(trimmed)
-        except ValueError as exc:
-            raise log_and_http_error(
-                exc,
-                400,
-                "Invalid command. Check quoting and try again.",
-                event = "mcp_servers.invalid_command",
-                log = logger,
-            )
-        if not parts or not parts[0].strip():
-            raise HTTPException(status_code = 400, detail = "command must not be empty")
-        if "://" in parts[0]:
-            # A URL-scheme first token is a mistyped URL, not a command. Reject
-            # cleanly instead of exec-ing it (mirrors the frontend check).
-            raise HTTPException(
-                status_code = 400,
-                detail = "Enter an http(s):// URL, or a local command whose "
-                "first token is an executable (not a URL).",
-            )
-        return trimmed
+        return _normalize_stdio_command(raw)
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
         if _looks_like_command(trimmed):
@@ -112,16 +134,27 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     for raw_key, value in headers.items():
         key = str(raw_key).strip()
         if key:
-            out[key] = str(value)
+            normalized_value = str(value)
+            if "\x00" in key or "\x00" in normalized_value:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "headers and environment variables must not contain NUL characters",
+                )
+            if "=" in key:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "header and environment variable names must not contain '='",
+                )
+            out[key] = normalized_value
     return out or None
 
 
-def _row_to_response(row: dict) -> McpServerResponse:
+def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
         display_name = row["display_name"],
         url = row["url"],
-        headers = parse_server_headers(row) or {},
+        headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         created_at = row["created_at"],
@@ -129,18 +162,54 @@ def _row_to_response(row: dict) -> McpServerResponse:
     )
 
 
+@router.post("/stdio/decode", response_model = McpStdioCommand)
+def decode_stdio_command(
+    payload: McpStdioDecodeRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    require_ui_session_for_local_commands(via_api_key)
+    if not is_stdio(payload.url.strip()):
+        raise HTTPException(status_code = 400, detail = "HTTP(S) MCP servers do not have arguments")
+    url = _normalize_stdio_command(payload.url)
+    parts = parse_stdio_command(url)
+    return McpStdioCommand(command = parts[0], arguments = parts[1:])
+
+
+@router.post("/stdio/encode", response_model = McpStdioEncodeResponse)
+def encode_stdio_command(
+    payload: McpStdioCommand,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    require_ui_session_for_local_commands(via_api_key)
+    command = payload.command.strip()
+    if not command:
+        raise HTTPException(status_code = 400, detail = "command must not be empty")
+    if "://" in command:
+        raise HTTPException(
+            status_code = 400,
+            detail = "command must be a local executable, not a URL",
+        )
+    url = join_stdio_command([command, *payload.arguments])
+    _normalize_stdio_command(url)
+    return McpStdioEncodeResponse(url = url)
+
+
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[McpServerResponse])
 def list_mcp_servers(
-    current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     rows = mcp_servers_db.list_servers()
-    if via_api_key:
+    if via_api_key or no_credential:
         # Drop the row, not just its fields: `url` is the argv (carries
         # credentials), `headers` is the subprocess env, and a blanked url would
         # round-trip into update as a bogus command.
         rows = [row for row in rows if not is_stdio(row["url"])]
-    return [_row_to_response(row) for row in rows]
+    return [_row_to_response(row, include_headers = not no_credential) for row in rows]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
@@ -207,6 +276,7 @@ async def update_mcp_server(
     payload: McpServerUpdate,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     old = mcp_servers_db.get_server(server_id)
     if not old:
@@ -228,25 +298,18 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
-    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled;
-    # fastmcp keys tokens by URL and would otherwise let a re-pointed server
-    # silently inherit the old account's credentials.
+    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
         await clear_oauth_tokens_async(old["url"])
-        # That await hands the loop to other requests, so re-read and re-gate
-        # before writing: a UI conversion to stdio landing in the window would
-        # otherwise let an API key's headers become the command's env.
+        # That await hands the loop to other requests.
         current = mcp_servers_db.get_server(server_id)
         if current is not None and (
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
             require_ui_session_for_local_commands(via_api_key)
-    # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable, so drop
-    # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
-    # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
-    # resends url/headers/oauth unchanged on a rename, which must not drop the session.
+    # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable.
     invalidates_tools = any(
         changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
     )
@@ -256,8 +319,8 @@ async def update_mcp_server(
     if invalidates_tools:
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
-        await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+        await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
+    return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
 
 
 @router.delete("/{server_id}", status_code = 204)
@@ -270,7 +333,7 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
-    await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
+    await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
@@ -282,8 +345,7 @@ async def refresh_mcp_server_tools(
     server = mcp_servers_db.get_server(server_id)
     if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
-    # Refresh uses the stored address, so re-check the stdio gate here too: a
-    # stdio row from a desktop DB must not spawn on a hosted/network host.
+    # Refresh uses the stored address.
     if is_stdio(server["url"]):
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
@@ -297,7 +359,7 @@ async def refresh_mcp_server_tools(
             timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
         )
-    except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
+    except Exception as exc:  # noqa: BLE001 - surface transport+timeout errors to UI
         logger.error(
             "mcp_servers.refresh_failed",
             server_id = server_id,
@@ -308,14 +370,12 @@ async def refresh_mcp_server_tools(
         if current is not None and not any(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
-            # Start the cool-off so the next chat send doesn't immediately re-hang
-            # on this server's timeout. If the row changed while the probe was
-            # awaiting, the failure belongs to the old config and must not park
+            # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row
+            # changed while the probe was awaiting, the FAILURE belongs to the old config and must not park
             # the newly edited server.
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
-    # Warm the chat-path cache so the next send skips re-probing.
     current = mcp_servers_db.get_server(server_id)
     if current is not None and not any(
         current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
@@ -348,13 +408,13 @@ async def import_mcp_servers(
             # http entries and reports the stdio ones.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
+            headers = _normalize_headers(entry.headers)
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")
             continue
         if url in seen_urls:
             skipped.append(entry.display_name)
             continue
-        headers = _normalize_headers(entry.headers)
         server_id = uuid.uuid4().hex[:16]
         mcp_servers_db.create_server(
             id = server_id,
@@ -376,21 +436,20 @@ async def test_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    # URL/header validation must surface as 400 like create/update so the
-    # frontend's create-form pre-flight gets the same error semantics as the
-    # save call. Only catch transport/timeout errors below.
+    # URL/header validation must surface as 400 like create/update
     url = _validate_url(payload.url)
     # Caller-supplied and unstored, so the gate has to land before
     # list_tools_async -- after it the process has already started.
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
+    use_oauth = payload.use_oauth and not is_stdio(url)
     try:
         tools = await list_tools_async(
             url = url,
             headers = headers,
-            timeout = probe_timeout(url, payload.use_oauth),
-            use_oauth = payload.use_oauth,
+            timeout = probe_timeout(url, use_oauth),
+            use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(

@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -48,57 +48,51 @@ UNITS_JSONL = FROZEN_DIR / "units.jsonl"
 MANIFEST_JSON = FROZEN_DIR / "manifest.json"
 
 CORPUS_SEED = 20260819
-CORPUS_VERSION = 1
+# 2 added math. A number taken on v1 and one on v2 measure two different films, so
+# `floor_table` refuses to pool them. Bump this whenever the generated text changes.
+CORPUS_VERSION = 2
 
-# Span density, calibrated against the field capture. See the module docstring. These are now the
-# MEANS of a jittered distribution rather than fixed sizes -- see `_jitter`.
+# Span density, calibrated against the field capture (see the module docstring). These are
+# MEANS of a jittered distribution rather than fixed sizes; see `_jitter`.
 PROSE_CHARS = 1250
 FENCE_CHARS = 1800
 PREAMBLE_FRACTION = 0.25
 
-# How far each block's size may wander from its mean, as a fraction. Real replies do not emit
-# identically sized paragraphs and fences, and a fixture that does lets a cost that is really
-# per-block masquerade as per-character (and vice versa): with every block the same size the two
-# are perfectly collinear and no measurement can separate them. Jitter breaks that.
-#
-# Applied through the PER-UNIT rng, so unit 40 is still the same text whether it was reached by
-# generating 41 units or by asking for that one. Randomised is not the same as nondeterministic:
-# the corpus hash still pins every byte.
+# How far each block's size may wander from its mean. With every block the same size,
+# per-block and per-character cost are perfectly collinear and no measurement can separate
+# them; jitter breaks that. Applied through the PER-UNIT rng, so unit 40 is the same text
+# however it was reached, and the corpus hash still pins every byte.
 BLOCK_JITTER = 0.55
 
-# Unit sizes wander too, around the escalating nominal. Same reason at the turn level: a thread of
-# turns that are all exactly 10,000 characters is not the shape of a real session, and the rung
-# planner then has no short turns to land its target on.
+# Unit sizes wander too, around the escalating nominal: a thread of turns all exactly 10,000
+# characters is not the shape of a real session, and the rung planner then has no short turns
+# to land its target on.
 UNIT_JITTER = 0.35
 
-# Tool calls per unit, as a range. The thread renders a tool group for each, which is a component
-# with its own mount and update cost and which nothing in the corpus previously exercised.
+# Tool calls per unit, as a range. The thread renders a tool group for each, a component with
+# its own mount and update cost that nothing in the corpus previously exercised.
 TOOL_CALLS_PER_UNIT = (0, 3)
 
-#: The stored part shape that actually renders a tool block. VERIFIED, not assumed: seeding a flat
-#: `{"type": "tool-call", ...}` and an assistant-ui style `{"type": "tool-invocation", ...}` both
-#: rendered their sibling text and NO tool UI, while this shape produced a "Used tool" group. A
-#: corpus full of parts the app ignores looks richer and measures nothing.
+#: The stored part shape that actually renders a tool block. VERIFIED, not assumed: a flat
+#: `{"type": "tool-call"}` and an assistant-ui `{"type": "tool-invocation"}` both rendered
+#: their sibling text and NO tool UI, while this shape produced a "Used tool" group.
 TOOL_NAMES = ("web_search", "code_execution", "python", "terminal", "search_knowledge_base")
 
 # The escalating cycle. Reasoning first because a turn's reasoning is what the pane holds open.
 CYCLE_BASE = ((("reasoning", 10_000), ("code", 8_000)),)
-# Doubling stops here. Without a cap the eighth cycle is a single 2.5M-character reply, which is
-# not a thread, it is one document -- and it makes the 1M rung one turn deep, where every
-# per-message cost this tool exists to measure is multiplied by one.
+# Doubling stops here: without a cap the eighth cycle is a single 2.5M-character reply, making
+# the 1M rung one turn deep, where every per-message cost this tool measures is x1.
 MAX_UNIT_CHARS = 320_000
 
-# Text below `units.jsonl` ships for every rung up to and including this many characters. Beyond
-# it the units are regenerated on the tester's machine and checked against the manifest hash, so
-# drift is still impossible; only the bytes are not carried in the artifact.
+# Text below `units.jsonl` ships for every rung up to this many characters; beyond it units
+# are regenerated on the tester's machine and checked against the manifest hash.
 SHIPPED_CHARS_BUDGET = 460_000
 
 
-# ── the vocabulary ──────────────────────────────────────────────────
-#
-# Deliberately mundane. The point of the corpus is span density and uniqueness, not realism of
-# meaning, and a vocabulary a reader can skim is a vocabulary a reader can spot a bug in.
+# Deliberately mundane vocabulary. The point of the corpus is span density and uniqueness, not
+# realism of meaning, and a vocabulary a reader can skim is one a reader can spot a bug in.
 
+# ── the vocabulary ──────────────────────────────────────────────────
 _NOUNS = (
     "buffer",
     "scheduler",
@@ -201,20 +195,57 @@ _SHORT = (
     "tmp",
 )
 
+# Corpus v1 contained not one dollar sign across 519,859 characters, making every math cost
+# unmeasurable by construction: `preprocessLaTeX` measured as a real cost in isolation and as
+# an exact NULL in the browser, because the fixture gave it nothing to do. Both delimiter
+# families are here on purpose: `$...$` is what remark-math consumes directly, while `\(...\)`
+# is what `preprocessLaTeX` exists to REWRITE.
+# ── math ────────────────────────────────────────────────────────────
+_MATH_OPS = ("+", "-", "\\cdot", "\\times", "\\oplus")
+_MATH_RELS = ("=", "\\le", "\\ge", "\\approx", "\\equiv")
+_MATH_FUNCS = ("\\log", "\\exp", "\\sin", "\\cos", "\\tanh")
+_MATH_GREEK = (
+    "\\alpha",
+    "\\beta",
+    "\\gamma",
+    "\\delta",
+    "\\theta",
+    "\\lambda",
+    "\\mu",
+    "\\sigma",
+    "\\phi",
+    "\\omega",
+)
+
+# Chance that a non-preamble prose BLOCK is a display-math block instead. Math takes prose's
+# slot rather than being appended alongside it, drawn from the same jittered size
+# distribution, so the fence count and sizes, and the Shiki span density the corpus is
+# calibrated to, are untouched by construction.
+MATH_BLOCK_PROB = 0.16
+
+# Chance that a sentence in a non-preamble prose block carries an inline expression. Inline
+# math is the common case in real chat replies and interleaves with text rather than sitting
+# in its own block, a different path through the markdown pipeline. Spent from the prose
+# block's own character budget.
+INLINE_MATH_PROB = 0.22
+
+# The PREAMBLE stays pure prose, deliberately: its job is to be the stretch that builds no
+# spans and holds 60 fps, so the onset of cost has somewhere to be visible against.
+
 
 @dataclass(frozen = True)
 class Unit:
     """One assistant turn's worth of content."""
 
     index: int
-    kind: str  # "reasoning" | "code"
-    reasoning: str  # goes out as delta.reasoning_content
-    content: str  # goes out as delta.content
+    kind: str
+    reasoning: str
+    content: str
     chars: int
     sha256: str
-    #: Stored tool-call parts for this turn, in the shape the app renders. Not counted in `chars`:
-    #: `chars` is the rung's size axis and must stay comparable with every earlier measurement,
-    #: while a tool call's cost is a mount, not a character count. Reported separately.
+    #: Stored tool-call parts for this turn, in the shape the app renders. Not counted in `chars`,
+    #: which is the rung's size axis and must stay comparable with every earlier measurement,
+    #: while a tool call's cost is a mount.
     tool_calls: tuple = ()
 
     @property
@@ -259,8 +290,8 @@ class Unit:
                 size += len(b) + 2
             return "\n\n".join(out)
 
-        # Keep the unit's own reasoning/content split, so a clipped turn has the same shape as a
-        # whole one and the smallest rung is not accidentally all-visible or all-reasoning.
+        # Keep the unit's own reasoning/content split, so a clipped turn has the same shape as a whole
+        # one and the smallest rung is not accidentally all-visible or all-reasoning.
         reasoning_budget = max(1, int(chars * (len(self.reasoning) / self.chars)))
         reasoning = take(self.reasoning, reasoning_budget)
         content = take(self.content, max(1, chars - len(reasoning)))
@@ -271,13 +302,13 @@ class Unit:
             reasoning = reasoning,
             content = content,
             chars = len(text),
-            # A DIFFERENT digest, deliberately. A clipped unit is not the frozen unit and must not
-            # be checked against its hash or reported under it.
+            # A DIFFERENT digest, deliberately: a clipped unit is not the frozen unit and must not be
+            # checked against its hash.
             sha256 = "clip:"
             + hashlib.sha256(f"{self.sha256}\x00{chars}".encode("utf-8")).hexdigest(),
-            # Tool calls survive clipping. They carry no `chars` weight, so dropping them would
-            # silently remove a whole component from exactly the rung -- the smallest -- that every
-            # growth ratio is taken against.
+            # Tool calls survive clipping: they carry no `chars` weight, so dropping them would silently
+            # remove a whole component from exactly the rung, the smallest, that every growth ratio is
+            # taken against.
             tool_calls = self.tool_calls,
         )
 
@@ -297,28 +328,114 @@ class Unit:
 # ── generation ──────────────────────────────────────────────────────
 
 
-def _sentence(rng: random.Random, salt: str) -> str:
+def _expression(rng: random.Random, salt: str, terms: int) -> str:
+    """One LaTeX expression body, unique to `salt`.
+
+    Salted in a SUBSCRIPT rather than a comment, for the same reason `_fence` salts identifiers:
+    KaTeX caches nothing today, but Streamdown memoises rendered blocks on their source, and a
+    salt that a later normalisation pass could strip would silently restore the caching and halve a
+    measured cost without changing a number in the report.
+    """
+    parts = [f"{rng.choice(_MATH_GREEK)}_{{{salt}}}", rng.choice(_MATH_RELS)]
+    for i in range(terms):
+        if i:
+            parts.append(rng.choice(_MATH_OPS))
+        shape = rng.random()
+        if shape < 0.30:
+            parts.append(
+                f"\\frac{{{rng.choice(_MATH_GREEK)}^{{{rng.randint(2, 9)}}}}}"
+                f"{{{rng.randint(1, 99)} {rng.choice(_MATH_GREEK)}}}"
+            )
+        elif shape < 0.50:
+            parts.append(
+                f"\\sum_{{{rng.choice(_SHORT)}={rng.randint(0, 3)}}}^{{{rng.randint(4, 99)}}} "
+                f"{rng.choice(_MATH_GREEK)}_{{{rng.choice(_SHORT)}}}"
+            )
+        elif shape < 0.65:
+            parts.append(f"\\sqrt{{{rng.choice(_MATH_GREEK)} {rng.randint(2, 99)}}}")
+        elif shape < 0.80:
+            parts.append(
+                f"{rng.choice(_MATH_FUNCS)}\\left({rng.choice(_MATH_GREEK)}"
+                f"^{{{rng.randint(2, 5)}}}\\right)"
+            )
+        else:
+            parts.append(f"{rng.choice(_MATH_GREEK)}^{{{rng.randint(2, 9)}}}")
+    return " ".join(parts)
+
+
+def _inline_math(rng: random.Random, salt: str) -> str:
+    """One inline expression, in whichever delimiter family this draw lands on.
+
+    `\\(...\\)` is not markdown's own syntax: it reaches the renderer only if `preprocessLaTeX`
+    rewrites it first, so this is the draw that covers the preprocessor rather than the renderer.
+    """
+    body = _expression(rng, salt, rng.randint(1, 2))
+    return f"$ {body} $" if rng.random() < 0.65 else f"\\( {body} \\)"
+
+
+def _sentence(
+    rng: random.Random,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
+    tail = f" where {_inline_math(rng, salt)} holds" if math else ""
     return (
         f"The {rng.choice(_ADJS)} {rng.choice(_NOUNS)} {rng.choice(_VERBS)} the "
         f"{rng.choice(_ADJS)} {rng.choice(_NOUNS)}_{salt}, {rng.choice(_CONNECTIVES)} the "
-        f"{rng.choice(_NOUNS)} stays {rng.choice(_ADJS)}."
+        f"{rng.choice(_NOUNS)} stays {rng.choice(_ADJS)}{tail}."
     )
 
 
-def _prose(rng: random.Random, target: int, salt: str) -> str:
-    """`target` characters of fence-free prose. No span will ever be built over any of it."""
+def _prose(
+    rng: random.Random,
+    target: int,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
+    """`target` characters of fence-free prose. No Shiki span will be built over any of it.
+
+    With `math`, a share of the sentences carry an inline expression. Those characters are spent
+    from `target` like any other, so a prose block is the same size whether or not it has math in
+    it and the corpus keeps the block-size distribution it was calibrated with.
+    """
     out: list[str] = []
     size = 0
     while size < target:
         para: list[str] = []
         for _ in range(rng.randint(3, 6)):
-            s = _sentence(rng, salt)
+            s = _sentence(rng, salt, math = math and rng.random() < INLINE_MATH_PROB)
             para.append(s)
             size += len(s) + 1
         out.append(" ".join(para))
         size += 2
         if size >= target:
             break
+    return "\n\n".join(out)
+
+
+def _math_block(rng: random.Random, target: int, salt: str) -> str:
+    """`target` characters of display math, as a run of blocks with prose between them.
+
+    Not one enormous equation: a reply with math in it is a handful of displayed lines threaded
+    through explanation, and a single block would measure the cost of one very large KaTeX tree
+    rather than the cost of many, which is the shape that actually accumulates in a long thread.
+    """
+    out: list[str] = []
+    size = 0
+    i = 0
+    while size < target:
+        body = _expression(rng, f"{salt}m{i}", rng.randint(3, 6))
+        block = f"$$\n{body}\n$$" if rng.random() < 0.65 else f"\\[\n{body}\n\\]"
+        out.append(block)
+        size += len(block) + 2
+        i += 1
+        if size >= target:
+            break
+        gloss = _prose(rng, _jitter(rng, 260, floor = 60), f"{salt}g{i}", math = True)
+        out.append(gloss)
+        size += len(gloss) + 2
     return "\n\n".join(out)
 
 
@@ -340,23 +457,20 @@ def _fence(
     size = len(lines[0]) + 1
     i = 0
     # SHORT identifiers and dense punctuation, because the density target is a SPAN count, not a
-    # character count. Long descriptive names are cheap to highlight per character: the field
-    # capture ran at 5.6 characters per span, and a first version of this generator with
-    # `cumulative_buffer_0007_12`-style names measured 10.1, i.e. half the highlighter work per
-    # character of the content it is standing in for. Real code is mostly operators.
+    # character count: the field capture ran at 5.6 characters per span, and a first generator
+    # with `cumulative_buffer_0007_12`-style names measured 10.1, half the work per character.
     r = rng.randint
 
     def v() -> str:
-        # A MIX of short and long names. All-short measured 3.95 characters per span against the
-        # field's 5.6 and all-long measured 10.1, so neither extreme stands in for real code. The
-        # mix is the tuning knob for the offline proxy; the number that actually gets reported is
-        # the span density MEASURED in the DOM at run time, because Shiki merges adjacent
-        # same-scope tokens and no offline count can predict that exactly.
+        # A MIX of short and long names: all-short measured 3.95 characters per span against the
+        # field's 5.6 and all-long 10.1, so neither extreme stands in for real code. The mix tunes the
+        # offline proxy; the reported number is the span density MEASURED in the DOM at run time,
+        # because Shiki merges adjacent same-scope tokens.
         return rng.choice(_SHORT) if rng.random() < 0.55 else rng.choice(_NOUNS)
 
     while size < target:
-        # ONE salted identifier per line is all the uniqueness Shiki's source-keyed cache needs,
-        # and it leaves the rest of the line free to be dense.
+        # ONE salted identifier per line is all the uniqueness Shiki's source-keyed cache needs, and
+        # it leaves the rest of the line free to be dense.
         u = f"{rng.choice(_SHORT)}{salt}{i}"
         if lang == "python":
             line = (
@@ -416,7 +530,14 @@ def _body(rng: random.Random, target: int, salt: str, *, preamble: bool) -> str:
         parts.append(head)
         size += len(head) + 2
     while size < target:
-        p = _prose(rng, _jitter(rng, PROSE_CHARS), f"{salt}{len(parts)}")
+        # Math takes the prose slot rather than being added alongside it, drawn from the same size
+        # distribution, so the fence blocks keep their count and sizes and the span-density
+        # calibration still holds.
+        want = _jitter(rng, PROSE_CHARS)
+        if rng.random() < MATH_BLOCK_PROB:
+            p = _math_block(rng, want, f"{salt}{len(parts)}")
+        else:
+            p = _prose(rng, want, f"{salt}{len(parts)}", math = True)
         parts.append(p)
         size += len(p) + 2
         if size >= target:
@@ -530,11 +651,10 @@ def freeze(
     """Write `units.jsonl` and `manifest.json`. Run deliberately; never on a benchmark run."""
     out_dir.mkdir(parents = True, exist_ok = True)
     shipped = units_for_chars(max_chars, seed)
-    # The manifest covers every unit any rung can reach, including the ones whose text is not
-    # shipped, so a regenerated unit at the 1M rung is still checked byte for byte. SIZED FROM THE
-    # LADDER, by `manifest_unit_count`, rather than from a bare character budget: the streamed turn
-    # and its follow-ups live PAST the seeded prefix, and a manifest that stops where the prefix
-    # stops leaves them nothing to point at.
+    # The manifest covers every unit any rung can reach, including ones whose text is not shipped,
+    # so a regenerated unit at 1M is still checked byte for byte. SIZED FROM THE LADDER by
+    # `manifest_unit_count` rather than from a character budget: the streamed turn and its
+    # follow-ups live PAST the seeded prefix.
     all_units = [generate_unit(i, seed) for i in range(manifest_unit_count(seed))]
     with (out_dir / "units.jsonl").open("w", encoding = "utf-8") as fh:
         for u in shipped:
@@ -545,6 +665,8 @@ def freeze(
         "prose_chars": PROSE_CHARS,
         "fence_chars": FENCE_CHARS,
         "preamble_fraction": PREAMBLE_FRACTION,
+        "math_block_prob": MATH_BLOCK_PROB,
+        "inline_math_prob": INLINE_MATH_PROB,
         "max_unit_chars": MAX_UNIT_CHARS,
         "shipped_units": len(shipped),
         "shipped_chars": sum(u.chars for u in shipped),
@@ -573,6 +695,8 @@ def corpus_hash(manifest: dict) -> str:
         "prose_chars",
         "fence_chars",
         "preamble_fraction",
+        "math_block_prob",
+        "inline_math_prob",
         "max_unit_chars",
     ):
         h.update(f"{key}={manifest[key]}\x00".encode("utf-8"))
@@ -594,9 +718,8 @@ class Corpus:
 
     @classmethod
     def load(cls, frozen_dir: Optional[Path] = None) -> "Corpus":
-        # Through the resource loader, NOT a filesystem path. Inside `studiobench.pyz` the frozen
-        # corpus is a zip member and every Path built from __file__ points at something that
-        # cannot exist; the built artifact's own --doctor is what caught it.
+        # Through the resource loader, NOT a filesystem path: inside `studiobench.pyz` the frozen
+        # corpus is a zip member and every Path built from __file__ points at nothing.
         from ..runtime import resources
 
         if frozen_dir is not None:
@@ -685,42 +808,37 @@ RUNGS: dict[str, int] = {
     "1M": 1_000_000,
 }
 
-# The PROVISIONAL ratio used to size the corpus before anything has been tokenised. It is never
-# reported: `chars_per_token` in every row is the MEASURED one, and it is measured per rung.
+# The PROVISIONAL ratio used to size the corpus before anything has been tokenised. Never
+# reported: `chars_per_token` in every row is the MEASURED one, per rung.
 PROVISIONAL_CHARS_PER_TOKEN = 4.0
 
-# How much of the last turn STREAMS, at every rung. See the long note in `plan_rung`.
-#
-# Sized from the film, not chosen round: the quick scene's during-generation slots occupy the
-# first 16 s and the first after-generation slot opens at 22.5 s, so the stream has to finish
-# inside roughly 20 s. At the field cadence of 24 characters every 73 ms -- 328.8 chars/s -- that
-# is about 6,500 characters. Rounded DOWN so the stream reliably drains before the first action
-# that claims the reply is complete, rather than finishing exactly as it starts.
+# How much of the last turn STREAMS, at every rung (see the long note in `plan_rung`). Sized
+# from the film: the quick scene's first after-generation slot opens at 22.5 s, so the stream
+# must finish inside roughly 20 s, which at the field cadence of 328.8 chars/s is about 6,500
+# characters. Rounded DOWN so the stream drains before the first action that claims the reply
+# is complete.
 STREAM_TAIL_CHARS = 6_000
 
-# How many turns actually stream per cell: the opening one plus the follow-ups the `send_turn`
-# action sends mid-film. They SHARE the budget above rather than each getting it, so three turns
-# and one turn take the same wall clock. Three because the corpus alternates reasoning-heavy and
-# code-heavy units, so three consecutive turns are guaranteed to cover both kinds.
+# How many turns stream per cell: the opening one plus the `send_turn` follow-ups. They SHARE
+# the budget above rather than each getting it, so three turns and one turn take the same wall
+# clock. Three because the corpus alternates reasoning-heavy and code-heavy units.
 STREAM_TURNS = 3
 
-# Each follow-up's size. Small on purpose: the follow-ups exist to sample "what does a chunk cost
-# given what is already on screen" at two more points inside the cell, not to add mass.
+# Each follow-up's size. Small on purpose: the follow-ups sample "what does a chunk cost given
+# what is already on screen" at two more points, not to add mass.
 FOLLOW_UP_CHARS = 1_500
 
-# Below this the rung streams ONCE. Three turns need about 9,000 characters of budget and the 1K
-# rung is 4,000 characters in total, so splitting it three ways produced an opening stream that
-# drained in four seconds -- shorter than the during-generation slots timed against it -- and a
-# rung 40% over its own target. A small rung is allowed to be a single exchange, which is also
-# what a 1K-token conversation actually is.
+# Below this the rung streams ONCE: three turns need about 9,000 characters of budget while
+# the 1K rung is 4,000 in total, so splitting it three ways gave an opening stream draining in
+# four seconds, shorter than the during-generation slots timed against it, and a rung 40% over
+# target.
 MULTI_TURN_MIN_CHARS = 20_000
 
-# The largest characters-per-token the FROZEN CORPUS is sized for, which is not the same number as
-# the provisional ratio used to plan a rung. `plan_rung` takes a measured ratio, and a corpus sized
-# at exactly the provisional 4.0 has no material left the moment a machine measures 4.1. A quarter
-# of headroom costs a handful of extra manifest entries -- the text of an unshipped unit is
-# regenerated only when a rung actually reaches it -- and buys every ratio the seeder can plausibly
-# report. Past it `plan_rung` refuses rather than degrades.
+# The largest characters-per-token the FROZEN CORPUS is sized for, which is not the
+# provisional ratio used to plan a rung: a corpus sized at exactly 4.0 has no material left
+# the moment a machine measures 4.1. A quarter of headroom costs a handful of extra manifest
+# entries and buys every ratio the seeder can plausibly report; past it `plan_rung` refuses
+# rather than degrades.
 MANIFEST_CHARS_PER_TOKEN = 5.0
 
 
@@ -754,8 +872,8 @@ class RungPlan:
     target_chars: int
     seeded_units: list[Unit] = field(default_factory = list)
     streamed_unit: Optional[Unit] = None
-    #: Further turns streamed DURING the film by the `send_turn` action. They come out of the same
-    #: fixed streaming budget as the first, split between them, so more turns cost no wall clock.
+    #: Further turns streamed DURING the film by `send_turn`. They come out of the same fixed
+    #: streaming budget as the first, split between them, so more turns cost no wall clock.
     follow_up_units: list[Unit] = field(default_factory = list)
 
     @property
@@ -772,10 +890,70 @@ class RungPlan:
 
     @property
     def total_chars(self) -> int:
-        # The follow-ups are part of the rung's mass: they are streamed INTO the thread during the
-        # film and are on screen for most of it. Leaving them out understated every rung by the
-        # follow-up budget, which at the 1K rung is most of the rung.
+        # The follow-ups are part of the rung's mass: they are streamed INTO the thread and are on
+        # screen for most of it, so leaving them out understated every rung by the follow-up budget,
+        # which at 1K is most of the rung.
         return self.seeded_chars + self.streamed_chars + self.follow_up_chars
+
+
+def dollarise(text: str, salt: str) -> str:
+    """Give `text` the CURRENCY AND SHELL dollars a real reply has, deterministically.
+
+    WHAT THIS IS FOR, AND WHAT IT IS NO LONGER FOR. This was written when the frozen corpus
+    contained zero `$`, zero `\\[` and zero `\\(` across all 519,859 characters, so that
+    `preprocessLaTeX` -- which runs on the whole reply once per animation frame -- always took its
+    cheap path. That path is an early return after `text.includes("$")` fails
+    (`studio/frontend/src/lib/latex.ts`), and the two regimes are an order of magnitude apart:
+    measured over one 96,000 character reply, 15.3 ms against 281.3 ms.
+
+    CORPUS v2 CHANGED THAT AND THIS DOCSTRING WOULD OTHERWISE LIE. The frozen corpus now carries
+    well-formed LaTeX throughout, and the streamed unit is drawn from it, so the streamed reply
+    already contains `$` without this flag: 10 of them at the 10K rung and 6 at 100K, measured.
+    The early return is therefore already defeated by default, and the claim that the expensive
+    regime "has never been exercised" is dead. Anyone reaching for this flag to reach that regime
+    does not need it any more.
+
+    WHAT IT STILL DOES, which is narrower and worth stating exactly. The early return is keyed on
+    the reply BEING PROCESSED -- `preprocessLaTeX(displayText)` is called per message
+    (`components/assistant-ui/markdown-text.tsx`) -- and past it the cost is the `CURRENCY_REGEX`
+    pass, whose callback has three branches: skip inside a code region, skip inside a math region
+    just created from `\\(...\\)`, and escape everything else. v2's dollars are well-formed math,
+    so they take the SKIP branches. The dollars added here are deliberately not math: `$HOME/...`
+    inside fences exercises the code-region exclusion, and `$12.99` in prose exercises the escape
+    branch and `hasInlineMathCloser`. That is the false-positive half of the function, and it is
+    the half that rewrites the string rather than leaving it alone.
+
+    So the two mechanisms are complementary rather than redundant: v2 puts renderable math in the
+    SEEDED thread and exercises the renderer, and this puts malformed-on-purpose dollars in the
+    turn that STREAMS and exercises the heuristics, per chunk, on the path a streaming-cost metric
+    measures. Expect a far smaller effect from this flag than the 15.3-to-281.3 figure above,
+    because that transition now happens without it.
+
+    Applied to the STREAMED unit only, and never to the frozen corpus on disk: the frozen units
+    and their hashes are exactly what they were, so a run with this off is byte-identical to a run
+    of the same corpus version without it. A run with it on records the fact in its payload,
+    because a corpus difference that is not in the payload is a difference two runs will be
+    compared across without knowing.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    fenced = False
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            out.append(line)
+            continue
+        # Inside a fence, shell-shaped lines; outside it, prices in prose. They exercise different
+        # branches: the code-region scan must EXCLUDE the first and the currency heuristic must escape
+        # the second.
+        if fenced and index % 11 == 0:
+            out.append(f"{line}  # $HOME/{salt}{index} costs $1{index % 10}.99")
+        elif not fenced and line and index % 17 == 0:
+            out.append(f"{line} It costs ${index % 9}{index % 10}.99 or ${index % 7},200 a year.")
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) -> ValueError:
@@ -791,6 +969,51 @@ def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) ->
         "`python -m tests.studio.studiobench.fixture.corpus --freeze` after raising "
         "MANIFEST_CHARS_PER_TOKEN, and note that a re-freeze changes corpus_hash and so ends "
         "comparability with everything measured before it."
+    )
+
+
+def _tail_not_deliverable(
+    rung: str,
+    requested: int,
+    source_index: int,
+    deliverable: int,
+    thread_chars: int,
+    target_chars: int,
+) -> ValueError:
+    """An explicit `--stream-tail-chars` the corpus cannot actually deliver.
+
+    Deliberately an ERROR and not a shortfall field, for the same reason `_too_small` is. The
+    quantity this flag exists to vary is the ONLY variable in a reply-length experiment, so a run
+    that silently measures a fraction of it has no honest reading at all -- there is nothing to
+    caveat, the axis simply did not move.
+
+    TWO EFFECTS COMPOUND HERE and the message names both, because fixing only the one you noticed
+    leaves the other. The tail is one corpus unit and `clipped_to` returns the unit unchanged when
+    the ask exceeds it, so delivery is capped at that unit's size. And asking for MORE tail lowers
+    that cap rather than raising it: a bigger tail shrinks `seed_target`, which moves the streamed
+    turn to a lower index, and the corpus escalates in size, so the ceiling falls as the request
+    rises. At the extreme the seeded prefix is evacuated entirely and the rung's own thread goes
+    with it, while the cell keeps its rung label, its rung weight and its place in the table.
+
+    Measured before this guard existed: `--rungs 100K --stream-tail-chars 400000` delivered 15,405
+    characters of the 400,000 asked for (3.9%) on a thread of 18,122 characters against the rung's
+    397,755 (4.6%), and `--assert-liveness` returned `0 scene problems, 0 missed slots`, exit 0,
+    byte-identical to the default run -- because a saturated tail drains FASTER than the film it
+    was supposed to outlast, so the one check that could have noticed goes quieter as the input
+    gets more wrong.
+    """
+    return ValueError(
+        f"the frozen corpus cannot deliver a {requested:,} character streamed tail at the {rung} "
+        f"rung: the streamed turn is unit {source_index}, which is {deliverable:,} characters, so "
+        f"the reply would be {deliverable / requested:.1%} of the one asked for. Asking for more "
+        f"tail makes this worse rather than better, because the seeded prefix shrinks to pay for "
+        f"it and the streamed turn moves to a smaller unit -- here the thread would collapse to "
+        f"{thread_chars:,} characters against the rung's {target_chars:,}, while still being "
+        f"recorded, weighted and reported as {rung}. Ask for less, or move the same request to a "
+        f"higher rung. NOT 'at most {deliverable:,}': that is this unit's size at THIS request, "
+        f"and the ceiling RISES as the request falls, because a smaller tail leaves a longer "
+        f"seeded prefix which draws the streamed turn from a larger unit. Lower the ask until "
+        f"this stops firing rather than reading a maximum off this line."
     )
 
 
@@ -842,6 +1065,8 @@ def plan_rung(
     corpus: Corpus,
     rung: str,
     chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
+    stream_tail_chars: Optional[int] = None,
+    dollars: bool = False,
 ) -> RungPlan:
     """Which units are SEEDED and which one STREAMS.
 
@@ -854,32 +1079,33 @@ def plan_rung(
     target_chars = int(tokens * chars_per_token)
 
     # THE STREAMED TAIL IS THE SAME SIZE AT EVERY RUNG, and the whole size ladder lives in the
-    # seeded prefix. This is not tidiness, it is what makes the film mean anything above 10K.
-    #
-    # The scene is a FIXED-DURATION film whose slots are wall-clock times: three actions run
-    # "during generation" and ten run "after the reply is complete". At the field's own cadence
-    # of 24 characters every 73 ms, a streamed tail that grows with the rung takes 11 s at 1K,
-    # 54 s at 10K, 354 s at 100K and 811 s at 1M -- against a film 135 s long. Above 10K the
-    # stream outlasts the entire film, so every action labelled "after the reply is complete"
-    # runs mid-generation. The run still completes and still prints a full table; the labels are
-    # simply false, which is worse than a crash.
-    #
-    # Holding the tail constant also isolates the variable under investigation. The question is
-    # what a streamed chunk costs AS A FUNCTION OF THE THREAD ALREADY ON SCREEN, and that needs
-    # the chunk workload held fixed while the thread grows, not both moving together.
+    # seeded prefix. The scene is a FIXED-DURATION film whose slots are wall-clock times, and at
+    # the field cadence a tail that grew with the rung would take 54 s at 10K, 354 s at 100K and
+    # 811 s at 1M against a 135 s film, so above 10K every action labelled "after the reply is
+    # complete" would run mid-generation while the run still printed a full table under false
+    # labels. Holding the tail constant also isolates the variable: what a streamed chunk costs
+    # AS A FUNCTION OF THE THREAD ALREADY ON SCREEN.
+    # The field's own cadence is 24 characters every 73 ms.
+    # `stream_tail_chars` overrides the constant and is the ONLY way to vary reply length in this
+    # tool. The consequence, which cost a whole investigation to rediscover, is that a cost
+    # scaling with the length of the reply BEING STREAMED is constant across every rung and reads
+    # as a floor: such a mechanism is real and this ladder cannot see it at any effect size.
+    # Raising this makes the film's labels false as described above, which is why it is a
+    # parameter rather than a second constant.
     turns = STREAM_TURNS if target_chars >= MULTI_TURN_MIN_CHARS else 1
-    tail_target = min(STREAM_TAIL_CHARS, target_chars)
+    tail_budget = STREAM_TAIL_CHARS if stream_tail_chars is None else max(1, stream_tail_chars)
+    tail_target = min(tail_budget, target_chars) if stream_tail_chars is None else tail_budget
     follow_budget = FOLLOW_UP_CHARS * (turns - 1)
     seed_target = max(0, target_chars - tail_target - follow_budget)
 
-    # Size the SEEDED PREFIX to the remainder, then trim its last unit to land on the target.
-    # Growing it a whole unit at a time instead overshoots by up to one turn, which at the 1K
-    # rung means 13,333 characters against a 4,000-character budget.
+    # Size the SEEDED PREFIX to the remainder, then trim its last unit to land on the target:
+    # growing it a whole unit at a time overshoots by up to one turn, which at 1K means 13,333
+    # characters against a 4,000-character budget.
     last_index = max(e["index"] for e in corpus.manifest["units"])
     try:
         seeded = corpus.units_for_chars(seed_target) if seed_target > 0 else []
     except KeyError as exc:
-        # The prefix alone outgrew the manifest, before any streamed turn was even asked for.
+        # The prefix alone outgrew the manifest, before any streamed turn was asked for.
         raise _too_small(rung, chars_per_token, last_index, "its seeded prefix alone") from exc
     if seeded:
         overshoot = sum(u.chars for u in seeded) - seed_target
@@ -887,15 +1113,10 @@ def plan_rung(
             seeded[-1] = seeded[-1].clipped_to(max(1, seeded[-1].chars - overshoot))
 
     # The streamed turn is the next one after the prefix, clipped to the fixed tail, and each
-    # follow-up is the one after that.
-    #
-    # NO CLAMP HERE, deliberately. This used to be `min(index, last_index)`, so a rung whose prefix
-    # reached the end of the manifest silently got the final unit three times over: the opening
-    # stream re-sent text the seeded prefix already held, both follow-ups were byte-identical, and
-    # every fence in all three hit Shiki's source-keyed cache. Running off the end is a corpus that
-    # is too small for the ladder, and the only honest answer is to say so and stop. `--freeze`
-    # sizes the manifest from the ladder (`manifest_unit_count`) precisely so this cannot be
-    # reached by any supported configuration.
+    # follow-up is the one after that. NO CLAMP HERE, deliberately: `min(index, last_index)`
+    # silently gave a rung whose prefix reached the end of the manifest the final unit three times
+    # over, so both follow-ups were byte-identical and every fence hit Shiki's source-keyed cache.
+    # `--freeze` sizes the manifest from the ladder precisely so this cannot be reached.
     needed = len(seeded) + turns - 1
     if needed > last_index:
         raise _too_small(
@@ -907,15 +1128,43 @@ def plan_rung(
         )
 
     # The streaming budget is SPLIT across the opening turn and the follow-ups, so a cell that
-    # streams three times takes the same wall clock as one that streams once. Turns are taken from
-    # consecutive corpus units, which alternate reasoning-heavy and code-heavy, so the follow-ups
-    # exercise the `<think>` re-parse and the Streamdown path rather than repeating one of them.
-    # The opening turn keeps the FULL tail budget and the follow-ups are extra. The three
-    # during-generation slots are timed against the opening stream, so it has to outlast them;
-    # splitting the budget between turns left it draining in four seconds and those slots then ran
-    # against a finished reply while still being labelled "during generation".
-    streamed = corpus.unit(len(seeded)).clipped_to(tail_target)
+    # streams three times takes the same wall clock as one that streams once. Turns are
+    # consecutive corpus units, which alternate reasoning-heavy and code-heavy. The opening turn
+    # keeps the FULL tail budget and the follow-ups are extra: the three during-generation slots
+    # are timed against the opening stream, and splitting the budget left it draining in four
+    # seconds.
+    source = corpus.unit(len(seeded))
+    # THE REQUESTED TAIL HAS TO BE DELIVERABLE, keyed on `clipped_to`'s own early return rather
+    # than a tolerance: clipping at a whole BLOCK boundary loses at most one block and is what
+    # keeps a prefix from ending inside a fence, while exceeding the unit loses everything above
+    # it and is unbounded, and a percentage bound cannot tell those apart. The DEFAULT path is
+    # exempt on purpose, since `STREAM_TAIL_CHARS` is a ceiling the small rungs are under.
+    if stream_tail_chars is not None and tail_target >= source.chars:
+        raise _tail_not_deliverable(
+            rung,
+            tail_target,
+            len(seeded),
+            source.chars,
+            sum(u.chars for u in seeded) + source.chars + FOLLOW_UP_CHARS * (turns - 1),
+            target_chars,
+        )
+    streamed = source.clipped_to(tail_target)
     follow_ups = [corpus.unit(len(seeded) + i).clipped_to(FOLLOW_UP_CHARS) for i in range(1, turns)]
+    if dollars:
+        # The streamed turns only: the seeded prefix is rendered once at mount and never
+        # re-preprocessed, so dollars there would change the corpus without changing what the
+        # per-frame path is asked to do.
+        streamed = replace(
+            streamed,
+            reasoning = dollarise(streamed.reasoning, "r"),
+            content = dollarise(streamed.content, "c"),
+        )
+        streamed = replace(streamed, chars = len(streamed.reasoning) + len(streamed.content))
+        follow_ups = [
+            replace(u, reasoning = dollarise(u.reasoning, "r"), content = dollarise(u.content, "c"))
+            for u in follow_ups
+        ]
+        follow_ups = [replace(u, chars = len(u.reasoning) + len(u.content)) for u in follow_ups]
 
     plan = RungPlan(
         rung = rung,

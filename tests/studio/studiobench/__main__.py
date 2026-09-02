@@ -24,21 +24,22 @@ import time
 from pathlib import Path
 from typing import Optional
 
-TOOL_VERSION = "0.1.0"
+# BUMPED BECAUSE THE INSTRUMENTS CHANGED, not because the tool gained features: corpus, tier
+# and rungs all match, so this is the only key field that can separate runs across it.
+# Bump whenever what an instrument MEASURES changes.
+TOOL_VERSION = "0.2.0"
 TIERS = ("fast", "quick", "standard", "full")
 TIER_RUNGS = {
-    # One rung, and it is 100K on purpose. The 10K rung was measured across six PRs and could
-    # not separate any of them from the null control: at that size the UI work disappears
-    # underneath the scene's own scripted timings (copy_markdown read 204 ms on all fourteen
-    # arms). 100K is the smallest rung that carries real load -- jank index 29 against 0.6,
-    # worst frame 1,855 ms against 214 -- so it is the only rung worth an iteration loop.
+    # One rung, 100K on purpose: 10K separated none of six PRs from the null control, while 100K
+    # carries real load (jank index 29 against 0.6).
+    # At 10K `copy_markdown` read 204 ms on all fourteen arms; the worst frame is 1,855 ms against 214.
     "fast": ["100K"],
     "quick": ["1K", "10K"],
     "standard": ["1K", "10K", "100K"],
     "full": ["1K", "10K", "100K", "500K", "1M"],
 }
-# Wall clock budgets, from the design. The deficit-scheduled pacer is what makes them honest: a
-# slow machine gets the same stream duration, so it misses SLOTS rather than overrunning the tier.
+# Wall clock budgets from the design. The deficit-scheduled pacer keeps them honest: a slow
+# machine gets the same stream duration, so it misses SLOTS rather than overrunning the tier.
 TIER_BUDGET_S = {"fast": 5 * 60, "quick": 5 * 60, "standard": 20 * 60, "full": 60 * 60}
 
 
@@ -94,10 +95,8 @@ def doctor(args) -> int:
         import subprocess
         import playwright  # noqa: F401
 
-        # In a SUBPROCESS. Starting and stopping Playwright's node driver just to read the engine
-        # paths leaves asyncio tearing down a cancelled task, and it prints a TargetClosedError
-        # traceback to stderr after the check has already passed. A doctor that prints a
-        # traceback next to `[ok]` is a doctor nobody believes.
+        # In a SUBPROCESS: starting Playwright's node driver just to read engine paths leaves asyncio
+        # printing a TargetClosedError traceback next to `[ok]`.
         probe = (
             "from playwright.sync_api import sync_playwright\n"
             "with sync_playwright() as pw:\n"
@@ -117,15 +116,8 @@ def doctor(args) -> int:
         if got.returncode != 0:
             raise RuntimeError((got.stderr or "the engine probe failed").strip().splitlines()[-1])
         text = got.stdout.strip()
-        # THE PACKAGE IS NOT THE ENGINE. `pip install playwright` and `playwright install` are two
-        # steps and the README says so, so the machine with the package and no downloaded binary is
-        # the ordinary case rather than an exotic one. Say so in the line the reader sees, with the
-        # command that fixes it, rather than reporting a bare `[ok]` they will act on.
-        #
-        # REPORTED, NOT FATAL, and deliberately so. This doctor has to keep running on a machine
-        # with no engine at all, because that is exactly the machine an external tester points it
-        # at first; a non-zero exit there would turn the one command that explains the problem
-        # into another thing that fails without saying why.
+        # THE PACKAGE IS NOT THE ENGINE: `pip install playwright` and `playwright install` are two steps.
+        # Reported, not fatal -- a machine with no engine is the first one a tester points this at.
         if not engines_installed(text):
             return (
                 f"{text}; no engine is downloaded. Run `playwright install webkit` "
@@ -211,6 +203,26 @@ def doctor(args) -> int:
 # ── the run ─────────────────────────────────────────────────────────
 
 
+def _windowed_arms(spec: str, labels: list) -> set:
+    """The arms `--windowed-arm` names, checked against the arms this run will actually have.
+
+    A PURE ARGUMENT CHECK, WHICH IS WHY IT RUNS BEFORE ANYTHING IS STARTED. It used to run after
+    both Unsloth installs had been launched, the pacer bound and the browser opened -- and the
+    `SystemExit` it raises for a typo (`--windowed-arm treatments`) left every one of them running,
+    because the cleanup `finally` does not begin until the cell loop much further down. No
+    `bundle.close()`, no `pacer.stop()`, no `stop_studio()`, no watchdog cancellation: a mistyped
+    flag cost a browser and up to two Unsloth servers, still holding their ports.
+    """
+    names = {name.strip() for name in (spec or "").split(",") if name.strip()}
+    unknown = names - set(labels)
+    if unknown:
+        raise SystemExit(
+            f"--windowed-arm names {sorted(unknown)}, which is not an arm in this run "
+            f"({sorted(labels)})"
+        )
+    return names
+
+
 def side_home(explicit, out, label: str, *, ab: bool) -> Path:
     """`UNSLOTH_STUDIO_HOME` for one side. THE TWO A/B SIDES NEVER SHARE ONE.
 
@@ -228,11 +240,11 @@ def side_home(explicit, out, label: str, *, ab: bool) -> Path:
 def side_specs(args, ab_ref) -> list:
     """`(label, ref, attach url, port, password)` per side. One without `--ab`, two with it.
 
-    EACH SIDE CARRIES ITS OWN PASSWORD. Studio mints a bootstrap password per home, so two Studios
+    EACH SIDE CARRIES ITS OWN PASSWORD. Unsloth mints a bootstrap password per home, so two Unsloth instances
     the caller booted separately have two different ones; authenticating both with the single
     `--password` meant the base logged in and the treatment answered 401 every time, which made the
     advertised `--attach` + `--attach-b` A/B unusable unless both servers had been preconfigured
-    with the same secret. `--password-b` defaults to `--password`, so one Studio, one home or two
+    with the same secret. `--password-b` defaults to `--password`, so one Unsloth, one home or two
     homes already rotated to the bench password all behave as before.
     """
     specs = [("base", args.branch, args.attach, args.port, args.password)]
@@ -268,8 +280,7 @@ def planned_rungs(args) -> list:
     """
     if not args.rungs:
         return list(TIER_RUNGS[args.tier])
-    # Imported here, not at module scope, on the same rule the rest of this file follows: `--help`
-    # has to answer on a machine with nothing installed.
+    # Imported here, not at module scope: `--help` has to answer on a machine with nothing installed.
     from .fixture.corpus import RUNGS
 
     rungs = [label.strip().upper() for label in args.rungs.split(",")]
@@ -284,19 +295,17 @@ def planned_rungs(args) -> list:
     return rungs
 
 
-#: What a cell costs BESIDES its film, measured from the steps `CellRunner._run_inner` runs around
-#: it: seeding the thread and reading it back, the navigation and thread wait, the 1.5 s idle
-#: calibration, the chars-per-token measurement, the drain and the two censuses. Comfortably over
-#: what the small rungs cost and about what 1M costs.
+#: What a cell costs BESIDES its film: seeding and read-back, navigation, the 1.5 s idle
+#: calibration, chars-per-token, the drain and the two censuses.
+# Measured from the steps `CellRunner._run_inner` runs around the film.
 CELL_OVERHEAD_S = 60
 #: One optional `--surfaces` sweep per arm, before the cells.
 SURFACE_SWEEP_S = 120
 #: The same generosity the tier budget already carries, applied to the planned work.
 WATCHDOG_MARGIN = 3
-#: An absolute ceiling on the MEASUREMENT half of the deadline. The point of a watchdog is that a
-#: wedged run cannot outlive it, so scaling with the plan must not scale without limit: `--reps
-#: 1000` would otherwise arm a deadline measured in months and the watchdog would guarantee
-#: nothing at all. 24 hours is past any plan this tool supports and short of forever.
+#: An absolute ceiling on the MEASUREMENT half of the deadline: without it `--reps 1000` arms a
+#: deadline measured in months and the watchdog guarantees nothing.
+#: 24 hours is past any plan this tool supports and short of forever.
 WATCHDOG_MAX_MEASUREMENT_S = 24 * 60 * 60
 
 
@@ -339,7 +348,7 @@ def watchdog_deadline_s(
     multi-gigabyte clone and build, which this tool itself allows 45 minutes for, against a fast
     tier's 15 minutes; an A/B does that twice, serially, before the first cell. The watchdog then
     fired during setup on a perfectly healthy run, and it fires through `os._exit`, so the `finally`
-    that stops the Studios it started never ran either. Every side this run INSTALLS adds its own
+    that stops the Unsloth instances it started never ran either. Every side this run INSTALLS adds its own
     documented budget; an attached side installs nothing and adds nothing.
 
     AND THE TIER BUDGET IS NOT THE PLAN. It is one number per tier, and three things the caller
@@ -349,7 +358,7 @@ def watchdog_deadline_s(
     film, 5,832 seconds of film before a single thread is seeded, against a deadline of
     `20 min * 3 = 3,600` seconds for an attached pair that adds no install budget. The watchdog
     hard-exited a healthy run 40% of the way through it, through `os._exit`, taking the payload's
-    remaining rows and the `finally` that stops the Studios with it. Reps 2 clears it as well once
+    remaining rows and the `finally` that stops the Unsloth instances with it. Reps 2 clears it as well once
     seeding is counted.
 
     So the measurement half is the LARGER of the tier's own budget and the planned work with the
@@ -395,18 +404,18 @@ def is_null_control(sides: list) -> bool:
     comparing a build with itself. Equal refs on two builds this run installed itself is a null
     control whatever ports they landed on.
 
-    Two ATTACHED Studios are a different matter: the refs are whatever the caller typed and the
+    Two ATTACHED Unsloth instances are a different matter: the refs are whatever the caller typed and the
     harness cannot see what is deployed at either URL, so those are only a null control when both
     sides are the same URL.
 
     WHICH IS WHY THE URL IS ASKED FIRST. That rule was stated here and then not applied: the ref
     comparison ran ahead of it, so `--attach U --attach-b U --branch main --ab fix` -- one server,
     two labels the harness cannot check -- returned False on the unequal labels before the equal
-    URL was ever looked at. One Studio measured against itself was then rendered as an ordinary
+    URL was ever looked at. One Unsloth measured against itself was then rendered as an ordinary
     A/B, free to publish temporal noise as an improvement, and `noise_floor_from_null_control` was
     skipped so nothing downstream had a floor to refuse it with. Two sides on one URL are one
     build whatever they were called. The owned case is untouched: `side_specs` gives the second
-    side `port + 1`, so two Studios this run launched never share a URL and still fall through to
+    side `port + 1`, so two Unsloth instances this run launched never share a URL and still fall through to
     the commit comparison below.
 
     AND A REF IS A POINTER, which is the rule `commit_problems` already states for `--resume` and
@@ -460,13 +469,85 @@ def _ab_label(sides: list, is_null: bool) -> str:
     return f"{sides[0]['ref']} -> {sides[1]['ref']}"
 
 
+def arm_origins(specs: list) -> list:
+    """Each side's ORIGIN, resolved exactly as the acquisition loop resolves its base URL.
+
+    An attached side is the URL the caller typed; one this run installs is launched by
+    `launch_studio` on the port `side_specs` handed it and `StudioInstall.base_url` is
+    `http://127.0.0.1:{port}`. Read from the specs rather than from the sides so the answer is
+    available BEFORE anything is cloned, built or launched.
+
+    CANONICALISED, because a typed URL is not an origin. `origin_scoped` gates on
+    `window.location.origin`, which lower-cases the scheme and host, drops a port the scheme
+    implies and keeps no path -- so `http://studio:80` and `http://studio` are ONE origin to the
+    browser and were two to a comparison on the strings. See `browser_origin`, which is what
+    `origin_scoped` now gates on too, so the refusal below and the predicate it protects are
+    reading the same thing.
+    """
+    from .runtime.ab import browser_origin
+    return [
+        (browser_origin(attach) if attach else f"http://127.0.0.1:{port}")
+        for _label, _ref, attach, port, _password in specs
+    ]
+
+
+def stream_cost_injection_problem(specs: list, inject_ms) -> str | None:
+    """Why `--inject-stream-cost-ms` cannot be honoured against these sides. `None` when it can.
+
+    THE INJECTION IS GATED BY ORIGIN AND NOTHING ELSE. Both arms are driven by one browser
+    context and one page, so the init scripts assembled in `run` are the context's, not an arm's:
+    `add_init_script` fires on every document. `origin_scoped` is the only discriminator available
+    and it discriminates on `window.location.origin`, so two arms served from ONE origin both
+    match the treatment's predicate and both burn the injected cost.
+
+    That configuration is not a mistake the caller has to be warned off in general -- one attached
+    Unsloth driven twice is a null control `is_null_control` detects on purpose, and
+    `test_one_attached_studio_driven_twice_is_a_null_control` pins it. It is only fatal WITH the
+    injection, and it is fatal quietly: `evaluate_stream_cost_recovery_gate` reads back
+    `(injected_rate - base_rate) * chars`, both rates carry the burn, the difference is zero, and
+    the gate fails with "the accumulator is under-attributing" -- a verdict against a metric that
+    was working, delivered by the one flag whose entire job is to tell those two apart.
+
+    ONE ORIGIN CAN BE TWO SPELLINGS, which is why `arm_origins` canonicalises rather than
+    comparing what was typed. `--attach http://studio --attach-b http://studio:80` is one server
+    under two names and a browser reports `http://studio` for both, so the treatment's injection is
+    gated on an origin no document has: it burns on NEITHER arm and the difference is zero for the
+    other reason. Spelled the other way round the base's predicate is the dead one, the treatment's
+    matches every document, and both arms burn. Either way the run reaches the same false verdict,
+    and neither is visible in the two URLs the caller typed -- so the refusal names the origin both
+    resolve to alongside the spellings.
+
+    Refused rather than isolated. Isolating by arm would mean toggling the burn at every cell
+    boundary from the driver, which puts the injection's own timing inside the measured window;
+    the cheap and honest answer is to give the two arms two origins.
+    """
+    if not inject_ms or len(specs) < 2:
+        return None
+    origins = arm_origins(specs)
+    if origins[0] != origins[1]:
+        return None
+    typed = [spec[2] for spec in specs[:2]]
+    spelling = (
+        f" ({typed[0]} and {typed[1]} are one origin under two names)"
+        if all(typed) and typed[0].rstrip("/") != typed[1].rstrip("/")
+        else ""
+    )
+    return (
+        f"--inject-stream-cost-ms needs the two arms on DIFFERENT origins, and both are "
+        f"{origins[0]}{spelling}. The injection is installed as a context init script gated on "
+        f"window.location.origin, so one origin means both arms burn the cost, the difference "
+        f"between them is zero and the recovery gate blames the metric for it. Point --attach and "
+        f"--attach-b at two Unsloth instances, or drop --attach and let this run install both."
+    )
+
+
 def stop_owned_sides(
     installs: list,
     stop,
     *,
     keep: bool = False,
 ) -> None:
-    """Stop every Studio THIS RUN launched. An attached one belongs to the caller and is left alone.
+    """Stop every Unsloth THIS RUN launched. An attached one belongs to the caller and is left alone.
 
     `installs` is the `(install, owns)` list the acquisition loop builds, so a side that has not
     been reached yet is simply not in it. `keep` is `--keep-studio`, which asks for exactly this
@@ -480,6 +561,47 @@ def stop_owned_sides(
 
 
 def run(args, ab_ref = None) -> int:
+    """Take the output directory FIRST, then run inside it.
+
+    THE LOCK IS THE FIRST THING THE RUN DOES, and it used to be almost the last. It was taken where
+    the `Recorder` opens `payload.jsonl`, which is after `prepare_payload` has archived what was
+    already in the directory and after every clone, build and launch. So a second invocation into a
+    busy `--out` without `--resume` was refused only once it had:
+
+      * RENAMED THE LIVE PAYLOAD of the run it was about to be refused in favour of. `rename` does
+        not disturb a writer -- the first run's descriptor names the inode, not the path -- so that
+        run went on recording into `payload-<stamp>.jsonl` while `payload.jsonl`, the one name
+        `--report`, `--assert-liveness` and the next `--resume` all open, was gone. The rule
+        `prepare_payload` states for itself is that a refusal leaves the payload exactly as it
+        found it, and this broke it in the one case the guard exists for.
+      * CLONED, BUILT AND LAUNCHED A STUDIO ON A MACHINE THAT WAS MEASURING. Contention between two
+        runs sharing one `--out` is the whole reason for the guard, so it may not be the price of
+        the refusal.
+
+    Held through setup and the cells, and handed to the `Recorder` rather than taken twice. The
+    `finally` releases it on every path, including the refusals that leave by returning, so a
+    second `run()` in one process -- which is how the tests drive this -- still gets the directory.
+    """
+    from .runtime.types import OutDirLock, Paths
+
+    # THE ARM NAMES, BEFORE ANY PROCESS OR DIRECTORY EXISTS -- nothing below here undoes without the
+    # far-away cleanup `finally`. Labels are read off the specs so the check and the sides agree.
+    # Ahead of the output directory too: a mistyped `--windowed-arm` must not cost a lock file.
+    # Pinned by test_studiobench_windowed_arm_names.
+    specs = side_specs(args, ab_ref)
+    arm_labels = [label for label, _ref, _attach, _port, _password in specs]
+    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
+
+    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
+    paths = Paths.under(out)
+    out_lock = OutDirLock.take(paths.out)
+    try:
+        return _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock)
+    finally:
+        out_lock.release()
+
+
+def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_lock) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
     from .pacer import Pacer
@@ -497,29 +619,72 @@ def run(args, ab_ref = None) -> int:
         wait_for_healthz,
     )
     from .runtime.seeder import Seeder
+    from .runtime.readiness import MODE_FULL, MODE_WINDOWED
     from .runtime.session import CellRunner, build_cells, ensure_probe_image, make_context
     from .runtime import resources
-    from .runtime.types import Paths
 
-    out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
-    paths = Paths.under(out)
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
 
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
-    # BEFORE the first install, the first launch and the first recorded row. See `prepare_payload`:
-    # a refusal that arrives after two clones and two builds has cost the caller an hour to say
-    # something it could have said in a millisecond, and an archive that arrives after the Recorder
-    # has opened the file has already appended this run's header to the payload it was moving.
-    prepare_payload(
+    # READ NOW, BEFORE ANYTHING IS STARTED OR MOVED: reading the probe at launch time raises after
+    # Unsloth is up but before the cleanup `finally`, leaving a detached server on its port.
+    # Ahead of `prepare_payload`, or a late refusal takes payload.jsonl off its standard path.
+    extra_init = os.environ.get("SBENCH_EXTRA_INIT_SCRIPT")
+    extra_init_source = ""
+    if extra_init:
+        try:
+            extra_init_source = Path(extra_init).read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            _log(
+                f"  FATAL: SBENCH_EXTRA_INIT_SCRIPT={extra_init} could not be read: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return 2
+
+    # EVERY A/B ARGUMENT CHECK, AHEAD OF `prepare_payload`: these refuse the INVOCATION and read only
+    # `args` and `specs`. Below the archive they cost the previous run its payload's path, so the
+    # next `--resume` found nothing. See `rollback_session_rows`.
+    if ab_ref:
+        if args.attach and not args.attach_b:
+            _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
+            return 2
+        # Here rather than beside the init script it guards: by then two Unsloth instances have been
+        # built and launched to run a validation that cannot say anything.
+        injection_problem = stream_cost_injection_problem(
+            specs, getattr(args, "inject_stream_cost_ms", None)
+        )
+        if injection_problem:
+            _log(f"  {injection_problem}")
+            return 2
+        # ONE HOME CANNOT HOLD TWO BUILDS: `install_studio` derives the checkout from the home, so two
+        # arms sharing a home share one checkout: the second install overwrites the first and both
+        # arms then serve whichever build was installed last, so the A/B compares a build with itself.
+        # Measured: two runs of the same pair, equal within each and 3.6x apart between them.
+        # The pair read 716 ms and 718 ms within one run.
+        if not args.attach and args.home:
+            _log(
+                "  --home cannot be used with --ab: both arms would install into that one "
+                "directory, the second install would overwrite the first, and both arms would "
+                "then serve the same build. Drop --home and each arm gets its own "
+                "studio_home_<label> under --out."
+            )
+            return 2
+
+    # BEFORE the first install, launch and recorded row: a refusal after two builds costs an hour to
+    # say what a millisecond could, and a late archive has already appended this run's header.
+    archived = prepare_payload(
         paths, requested_identity(args, ab_ref, corpus.corpus_hash), resume = bool(args.resume)
     )
 
-    specs = side_specs(args, ab_ref)
-    # Armed AFTER the sides are known, because what it has to cover depends on them: see
-    # `watchdog_deadline_s`. Nothing between here and there can hang -- `Corpus.load` reads a
-    # generated fixture and `side_specs` builds a list.
+    # AND THE REPORTS THE ARCHIVE LEFT BEHIND: the one point every reuse of an output directory
+    # passes through. See `invalidate_stale_reports`.
+    invalidate_stale_reports(paths.out, archived = archived, extra_init = extra_init)
+
+    # Armed AFTER the sides are known, because what it covers depends on them. Nothing between the
+    # `side_specs` call and here can hang.
+    # The budget is `watchdog_deadline_s`.
     watchdog = browser_mod.install_wall_clock_watchdog(
         watchdog_deadline_s(
             args.tier,
@@ -532,27 +697,15 @@ def run(args, ab_ref = None) -> int:
         _log,
     )
     if ab_ref:
-        if args.attach and not args.attach_b:
-            _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
-            return 2
         _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
 
     installs = []
     sides = []
-    # EVERY SIDE THIS RUN LAUNCHED IS STOPPED WHEN THE SETUP AROUND IT FAILS. The sides are
-    # acquired one after another, so the base is already SERVING while the treatment clones and
-    # builds, and the cleanup that stops them both is the `finally` under the cells -- which a
-    # failure up here never reaches. The Studios are the resources that outlive this process:
-    # `launch_studio` detaches the server with `setsid -f`, so an abandoned one keeps its port.
-    # It is not idle there. Studio's own launcher ABORTS rather than binding when it finds one of
-    # its own servers on the requested port (`studio/backend/run.py`, `_resolve_port` with
-    # `avoid_own_studio`), so the next attempt's server exits and `wait_for_healthz` takes its 200
-    # from the STALE process: that run measures the build this one installed while `run_meta`
-    # records the ref it was asked for.
-    #
-    # A RETURN IS A FAILURE HERE TOO. The health check below and the development-build gate leave
-    # by returning, with both Studios up, which is the same abandoned server by a quieter route --
-    # so the guard is a `finally` on the whole of setup rather than an `except` on the install.
+    # EVERY SIDE THIS RUN LAUNCHED IS STOPPED WHEN THE SETUP AROUND IT FAILS: the base is already
+    # SERVING while the treatment builds, and the cleanup `finally` under the cells is never reached
+    # from up here. A stale detached server makes the next run's `wait_for_healthz` take its 200 from
+    # the wrong build. A RETURN IS A FAILURE HERE TOO, so this is a `finally` over all of setup.
+    # The next server exits on `avoid_own_studio` rather than binding.
     setup_complete = False
     try:
         for label, ref, attach, port, password in specs:
@@ -561,12 +714,12 @@ def run(args, ab_ref = None) -> int:
                 side_install, owns = None, False
                 _log(f"  {label}: attaching to {side_url}")
             else:
-                home = side_home(args.home, out, label, ab = bool(ab_ref))
-                _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
+                home = side_home(args.home, paths.out, label, ab = bool(ab_ref))
+                _log(f"  {label}: installing Unsloth from {ref} into {home} (this takes a while)")
                 side_install = install_studio(ref, home)
-                launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
+                launch_studio(side_install, port, paths.out / "logs" / f"studio_{label}.log")
                 side_url, owns = side_install.base_url, True
-                _log(f"  {label}: Studio up at {side_url}")
+                _log(f"  {label}: Unsloth up at {side_url}")
             installs.append((side_install, owns))
             sides.append(
                 {
@@ -579,10 +732,9 @@ def run(args, ab_ref = None) -> int:
                 }
             )
 
-        # THE BUILD, NOW THAT IT IS KNOWN. `prepare_payload` has already agreed the refs match,
-        # and a ref is a pointer: see `commit_problems`. This is the first moment the commit
-        # behind it exists, and it is still before the browser, the pacer and every cell, so a
-        # resume onto a moved branch costs the install it has already paid and nothing more.
+        # THE BUILD, NOW THAT IT IS KNOWN: `prepare_payload` has agreed the refs match, and a ref is a
+        # pointer. Still before the browser and every cell, so a moved branch costs only the install.
+        # `checkout_ref` is the only place a ref becomes a commit.
         if args.resume:
             resolved = resolved_commits(sides)
             commit_issues: list = []
@@ -609,8 +761,9 @@ def run(args, ab_ref = None) -> int:
                 _log(f"  FATAL: {side['base_url']}/healthz did not answer 200")
                 return 2
 
+        # THE GATE, before anything else is measured. Both sides: an A/B where one side is a development
+        # build puts the whole 3.2x inflation on one arm and reads as a colossal regression or win.
         # ── THE GATE. Before anything else is measured. Both sides, because an A/B where one side
-        # is a development build is worse than no A/B: the 3.2x inflation lands entirely on one arm
         # and reads as a colossal regression or win. ────────────────────
         verdict = None
         for side in sides:
@@ -639,15 +792,10 @@ def run(args, ab_ref = None) -> int:
         from .runtime.ab import origin_scoped
 
         init_scripts = []
-        # ONE PROVIDER PER ORIGIN, because the provider lives in the BACKEND and localStorage is
-        # per-origin. An ATTACHED null control is `--attach U --attach-b U`, which `is_null_control`
-        # accepts on purpose: two sides, one Studio. Registering per SIDE there registers the pacer
-        # twice against the same backend, and `lifecycle.register_provider` is idempotent by DISPLAY
-        # NAME -- so the second registration DELETES the id the first side's seed script had already
-        # captured, and that script keeps selecting the dead id on every navigation it wins (the
-        # order init scripts run in is not defined, and `StudioAuth.rotate` re-adds them mid-run).
-        # A base cell that boots with a deleted provider selected renders "No longer offered" and
-        # throws `Connection not found` without ever asking for a completion.
+        # ONE PROVIDER PER ORIGIN: the provider lives in the backend and localStorage is per-origin, so
+        # an attached null control is two sides on one Unsloth. `register_provider` is idempotent by
+        # DISPLAY NAME, so registering per side deletes the id the first side's seed script captured.
+        # `is_null_control` is what recognises it.
         registered: dict = {}
         for index, side in enumerate(sides):
             side_install = installs[index][0]
@@ -658,16 +806,15 @@ def run(args, ab_ref = None) -> int:
             )
             _log(f"  {side['label']}: authenticated as {side_auth.username}")
 
-            # BOTH sides register the SAME pacer, so the bytes on the wire are identical by
-            # construction rather than by two configurations that are meant to agree.
+            # BOTH sides register the SAME pacer, so the bytes on the wire are identical by construction
+            # rather than by two configurations meant to agree.
             side_origin = side["base_url"].rstrip("/")
             shared = registered.get(side_origin)
             if shared is None:
                 side_provider = pacer_provider(pacer.base_url, [model_id])
-                # Registered in the BACKEND, and the id it assigns is what the selection names. See
-                # lifecycle.register_provider: a provider that exists only in localStorage renders
-                # in the picker as "No longer offered" and send throws `Connection not found`
-                # without ever asking for a completion.
+                # Registered in the BACKEND, and the id it assigns is what the selection names: a provider
+                # existing only in localStorage renders as "No longer offered" and send throws
+                # `Connection not found`.
                 register_provider(side["base_url"], side_auth, side_provider)
                 side_checkpoint = external_checkpoint_id(side_provider, model_id)
                 registered[side_origin] = (side_provider, side_checkpoint)
@@ -691,27 +838,52 @@ def run(args, ab_ref = None) -> int:
                         auth_now,
                         [provider],
                         extra_local_storage = {
-                            # The SELECTION, without which nothing is ever generated. See
-                            # lifecycle.external_checkpoint_id.
+                            # The SELECTION, without which nothing is ever generated.
+                            # See lifecycle.external_checkpoint_id.
                             "unsloth_chat_last_external_checkpoint": cp,
                             "unsloth_chat_connections_enabled": "true",
                         },
                     ),
                 )
 
-            # Origin-gated even in the single-target case, so the one-build and two-build paths are
-            # the same code and the gate cannot rot while unused.
+            # Origin-gated even in the single-target case, so the one-build and two-build paths are the same
+            # code and the gate cannot rot while unused.
             side["seed_script"] = _side_seed
             init_scripts.append(_side_seed(side_auth))
 
+            if getattr(args, "inject_stream_cost_ms", None) and side is not sides[0]:
+                # VALIDATION, not a measurement mode: burns known main-thread time per SSE chunk on the TREATMENT
+                # side only, so an otherwise-identical A/B has a known answer. Origin-gated, or recovery reads 0.
+                from .instruments.selfcheck import stream_cost_injection_init_script
+                init_scripts.append(
+                    origin_scoped(
+                        side["base_url"],
+                        stream_cost_injection_init_script(args.inject_stream_cost_ms),
+                    )
+                )
+                _log(
+                    f"  {side['label']}: INJECTING {args.inject_stream_cost_ms} ms of main-thread "
+                    f"time per SSE chunk. This arm is not a measurement of the build."
+                )
+
         auth = sides[0]["auth"]
+
+        # ONE `add_init_script` CALL PER SCENE SCRIPT. Concatenating them was a regression caught by CI:
+        # one parse error stops all three. Separate scripts are separate failure domains. surfaces.js
+        # loads even without --surfaces, so the film cannot depend on whether a later phase was asked for.
         init_scripts.append(resources.read_text("scene/dom.js"))
         init_scripts.append(resources.read_text("scene/parity.js"))
-        # Loaded unconditionally, even without --surfaces. It defines selectors and reads dom.js and
-        # parity.js; it never runs on its own. Making the page's JS depend on a CLI flag would mean
-        # the flag changes what is on the page during the FILM as well, and the film's numbers must
-        # not depend on whether a later phase was asked for.
         init_scripts.append(resources.read_text("scene/surfaces.js"))
+
+        # AN EXTERNAL PROBE OR ABLATION ARM, in its own script. One env var rather than a flag per
+        # experiment, and WITH IT UNSET NOTHING IS APPENDED, so the probe run and the scored run are
+        # different runs. Script order is undefined, so a probe cannot read `window.__sb` at install.
+        if extra_init:
+            init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))
+            _log(
+                f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and "
+                f"is NOT a clean measurement of the build"
+            )
 
         procs_before = {}
         try:
@@ -723,74 +895,133 @@ def run(args, ab_ref = None) -> int:
         bundle = browser_mod.launch(
             args.engine, headless = not args.headed, init_scripts = init_scripts, log = _log
         )
+        # THE RETURN PATH for a probe installed above: Unsloth ships `connect-src 'self'` so a beacon is
+        # blocked by CSP, and the schema has no row for a one-off probe. Filtered on a caller prefix.
+        console_prefix = os.environ.get("SBENCH_PAGE_CONSOLE")
+        if console_prefix:
+            bundle.page.on(
+                "console",
+                lambda m: _log(f"  [page] {m.text}") if m.text.startswith(console_prefix) else None,
+            )
+        if extra_init:
+            # A probe that throws on load is the same silence as one never installed, and the console filter
+            # cannot show it. Both channels are listened to: a wrapper's `console.error` is not a page error.
+            bundle.page.on("pageerror", lambda err: _log(f"  [page error] {err}"))
+            bundle.page.on(
+                "console",
+                lambda m: _log(f"  [page error] {m.text}")
+                if m.type == "error" and "SBENCH_EXTRA_INIT_SCRIPT" in m.text
+                else None,
+            )
+
         procs = []
         if new_roots is not None:
             time.sleep(1.0)
             procs = new_roots(os.getpid(), procs_before)
 
-        # AN INIT SCRIPT IS A SNAPSHOT AND THE RUN OUTLIVES IT. The scripts above carry the access
-        # token this run logged in with, they re-run on EVERY navigation, and there is one
-        # navigation per cell -- so after `StudioAuth` re-mints a token, the next `page.goto` would
-        # write the DEAD one back over whatever the SPA had rotated to for itself, which is the
-        # failure this fixes wearing a different hat. Playwright has no way to replace an init
-        # script and does not define the order they run in, so the seed script decides for itself
-        # whether to write: it compares its token's `exp` against the one in storage and defers to
-        # the later one. See `seed_init_script`. At most one extra script per hour of run.
+        # AN INIT SCRIPT IS A SNAPSHOT AND THE RUN OUTLIVES IT: the scripts carry this run's access token
+        # and re-run on every navigation, so after a re-mint the next `goto` would write the dead one
+        # back. Playwright cannot reorder them, so the seed script defers to the later `exp`.
         for side in sides:
             side["auth"].on_rotate = lambda auth_now, side = side: bundle.context.add_init_script(
                 side["seed_script"](auth_now)
             )
 
-        # WHAT WAS IN THE FILE BEFORE THIS SESSION COULD WRITE A BYTE. `make_context` opens the
-        # `Recorder` on the next line, and the only check left after that point -- the ladder ratio,
-        # which is not known until the corpus has been measured -- has to be able to put the payload
-        # back the way it found it. See `rollback_session_rows`.
+        # WHAT WAS IN THE FILE BEFORE THIS SESSION COULD WRITE A BYTE: `make_context` opens the Recorder
+        # next, and the ladder-ratio check has to be able to put the payload back.
         mark = payload_mark(paths.payload_jsonl)
         ctx, session = make_context(
-            bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
+            bundle,
+            base_url,
+            args.tier,
+            args.instrument_level,
+            paths,
+            _log,
+            procs,
+            # ADOPTED, NOT TAKEN AGAIN: `run()` has held this directory since before the payload was
+            # archived, so the `Recorder` writes its session id into the marker it already holds.
+            out_lock = out_lock,
         )
         rec = ctx.recorder
-        # The ladder this run PROMISED, resolved before it is announced. Recorded rather than
-        # left to be re-derived from the tier later: `--report` reads it back to decide which rungs
-        # a payload owes, and a `--rungs` override the payload did not carry made that answer wrong.
+        # The ladder this run PROMISED, recorded rather than re-derived: `--report` reads it back to
+        # decide which rungs a payload owes, and a `--rungs` override it did not carry made that wrong.
         rungs = planned_rungs(args)
+        meta_row = {
+            "row_type": "run_meta",
+            "tier": args.tier,
+            "tool_version": TOOL_VERSION,
+            "corpus_hash": corpus.corpus_hash,
+            "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
+            # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from a branch that
+            # moved. Empty for an attached Unsloth. See `commit_problems`.
+            "studio_commit": sides[0].get("commit") or "",
+            "bundle": verdict.as_dict(),
+            "platform": {
+                "system": platform.system(),
+                "machine": platform.machine(),
+                # WHICH PHYSICAL MACHINE, which `system` and `machine` do not answer: `platform.machine()` is the
+                # ARCHITECTURE, so two Linux x86_64 boxes report identically. `platform.node()` is the only
+                # recorded thing that differs; empty when undeterminable.
+                "node": platform.node(),
+                "python": sys.version.split()[0],
+                "engine": bundle.engine,
+                "engine_note": bundle.engine_note,
+            },
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pacer_base_url": pacer.base_url,
+            "cadence": args.cadence,
+            "rungs": rungs,
+            "tier_rungs": TIER_RUNGS[args.tier],
+            "reps": args.reps,
+            "instrument_level": args.instrument_level,
+            # In the payload, not only in the log: two runs with different fixtures are not comparable, and
+            # an unrecorded difference is one a later reader cannot notice before quoting a ratio across it.
+            "stream_tail_chars": args.stream_tail_chars,
+            "corpus_dollars": bool(args.corpus_dollars),
+            # WHICH PROBE, IF ANY, WAS IN THE PAGE: a payload nobody can audit against the page it measured
+            # has to be taken on trust. `null` is the normal case and the only scorable one.
+            "probe_init_script": extra_init or None,
+            # WHETHER THE PROBE RAN BEFORE THE FILM: it changes what the cell measures without moving the
+            # cell id, so `--resume` needs it on the record to refuse a toggle.
+            "click_probe": bool(getattr(args, "click_probe", False)),
+            # AN ARM RUNNING THIS IS NOT A MEASUREMENT OF THE BUILD, and the payload has to say so: nothing
+            # else tells a reader the harness put the 40% there. `--resume` reads it as an identity axis.
+            "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+            # WHICH BROWSER ACTUALLY RENDERED THIS, which the engine name does not settle: since Playwright
+            # 1.57 headed resolves to `chrome` and headless to `chrome-headless-shell`, which is measured at
+            # two to three times chrome-stable and falls back to software rendering. This tool measures
+            # frames and jank, so the payload must name the renderer.
+            # This workflow pins `playwright>=1.45,<2`, so the split is inside the pinned range.
+            "headed": bool(getattr(args, "headed", False)),
+        }
+        rec.emit(meta_row)
+
+        from .scoring import payload_rules
+
+        # THE COMPARABILITY KEY, its own row so a prose comparison can be checked later. `floor_table`
+        # refuses to pool across tiers and corpora but cannot reach a comparison made in PROSE, which
+        # nearly propagated a wrong number twice. Keyed on the COMPUTED corpus hash: one tree ran a
+        # corpus matching neither the pre-fix nor the post-fix hash, and only printing it revealed that.
+        # `floor_table.load` is the refusal.
         rec.emit(
             {
-                "row_type": "run_meta",
-                "tier": args.tier,
-                "tool_version": TOOL_VERSION,
-                "corpus_hash": corpus.corpus_hash,
-                "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
-                # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
-                # a branch that moved. Empty for an attached Studio, whose build is not visible
-                # from here. See `commit_problems`.
-                "studio_commit": sides[0].get("commit") or "",
-                "bundle": verdict.as_dict(),
-                "platform": {
-                    "system": platform.system(),
-                    "machine": platform.machine(),
-                    "python": sys.version.split()[0],
-                    "engine": bundle.engine,
-                    "engine_note": bundle.engine_note,
-                },
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "pacer_base_url": pacer.base_url,
-                "cadence": args.cadence,
-                "rungs": rungs,
-                "tier_rungs": TIER_RUNGS[args.tier],
-                "reps": args.reps,
-                "instrument_level": args.instrument_level,
+                "row_type": "comparability",
+                "key": payload_rules.comparability_key(meta_row),
+                "fields": payload_rules.comparability_fields(meta_row),
+                "note": (
+                    "quote this key beside any number taken from this payload. Two numbers with "
+                    "different keys are not comparable, and `--compare` will name the field that "
+                    "differs."
+                ),
             }
         )
+        _log(f"  comparability {payload_rules.comparability_key(meta_row)}")
+
         rec.gate("production_build", verdict.production, verdict.as_dict())
 
         if args.tier == "fast":
-            # Said in the log AND recorded in the payload. A fast-tier reading is a DIRECTION, not
-            # a number: it runs one rung, a 47 s film and however few repetitions the caller asked
-            # for, so its detection floor is wider than the standard tier's and it has no null
-            # control of its own unless one is run alongside. The gate exists so the analysis layer
-            # can refuse to pool a fast payload with a standard one -- a fast reading quoted against
-            # a standard floor is the single most likely way this tier gets somebody a wrong answer.
+            # Said in the log AND recorded. A fast-tier reading is a DIRECTION, not a number: one rung, a 47 s
+            # film, a wider detection floor and no null control, so the analysis layer must refuse to pool it.
             _log("")
             _log("  FAST TIER: for iteration while you are changing something, not for reporting.")
             _log(
@@ -812,8 +1043,50 @@ def run(args, ab_ref = None) -> int:
                 else "standard measurement protocol",
             },
         )
+        # THE SAME SHAPE OF GATE: a probe forces layout on its own schedule, so its payload is perturbed,
+        # and "probe payloads are never scored" is a convention rather than a gate. The run still renders
+        # an A/B table, so a probe invocation reads like a result unless `floor_table` can refuse it.
+        rec.gate(
+            "probe_free",
+            not extra_init,
+            {
+                "probe_init_script": extra_init or None,
+                "reason": (
+                    "an external init script was installed via SBENCH_EXTRA_INIT_SCRIPT, so this "
+                    "page was instrumented while it was measured"
+                )
+                if extra_init
+                else "no external init script was installed",
+            },
+        )
+        if extra_init:
+            _log("")
+            _log("  PROBE RUN: this payload is NOT scorable. floor_table will refuse it.")
+            _log("")
 
         image_path = ensure_probe_image(paths)
+        # WHICH SIDE, IF ANY, IS ALLOWED THE WINDOWED READINESS GATE. Per side and never global: relaxing
+        # both would compare two half-mounted arms with the ratio still looking fine. Parsed earlier;
+        # only its application is left here.
+        for side in sides:
+            side["readiness_mode"] = MODE_WINDOWED if side["label"] in windowed else MODE_FULL
+            if side["readiness_mode"] == MODE_WINDOWED:
+                _log(
+                    f"  {side['label']}: WINDOWED readiness gate. This arm is permitted to mount "
+                    "fewer messages than the thread contains; it must publish aria-setsize matching "
+                    "the seeded count, mount the end of the thread, settle, and pass the "
+                    "scroll-to-top completeness probe. See runtime/readiness.py."
+                )
+                rec.gate(
+                    f"windowed_readiness:{side['label']}",
+                    True,
+                    {
+                        "arm": side["label"],
+                        "reason": "declared on the command line with --windowed-arm",
+                        "note": "structural UI parity is NOT APPLICABLE to this arm; run "
+                        "sweep/ui_parity.py --mode behaviour",
+                    },
+                )
         for side in sides:
             side_seeder = Seeder(
                 base_url = side["base_url"], auth = side["auth"], model_id = model_id, log = _log
@@ -824,6 +1097,8 @@ def run(args, ab_ref = None) -> int:
                 pacer = pacer,
                 seeder = side_seeder,
                 corpus = corpus,
+                click_probe = bool(getattr(args, "click_probe", False)),
+                readiness_mode = side["readiness_mode"],
                 base_url = side["base_url"],
                 model_id = model_id,
                 tier = args.tier,
@@ -831,6 +1106,9 @@ def run(args, ab_ref = None) -> int:
                 log = _log,
                 cadence = args.cadence,
                 image_path = image_path,
+                parity_raw = args.parity_raw,
+                parity_shots = args.parity_shots,
+                arm_label = side["label"],
             )
 
         seeder = sides[0]["seeder"]
@@ -839,9 +1117,8 @@ def run(args, ab_ref = None) -> int:
         if args.surfaces:
             _sweep_surfaces(sides, ctx, paths)
 
-        # The ladder is sized by the ratio MEASURED on this corpus, not by the provisional 4.0.
-        # Measured here, before any cell is built, because a rung named in tokens is planned in
-        # characters and the ratio is what makes those the same claim.
+        # The ladder is sized by the ratio MEASURED on this corpus, not the provisional 4.0, and
+        # measured before any cell is built because a rung named in tokens is planned in characters.
         cells = build_cells(
             rungs,
             corpus,
@@ -853,15 +1130,24 @@ def run(args, ab_ref = None) -> int:
             auth = seeder.auth,
             model_id = model_id,
             log = _log,
+            stream_tail_chars = args.stream_tail_chars,
+            corpus_dollars = args.corpus_dollars,
         )
+        if args.stream_tail_chars or args.corpus_dollars:
+            # Loud, because both change the fixture: a payload produced under either is not comparable with
+            # one produced without.
+            _log(
+                f"  FIXTURE CHANGED: stream tail {args.stream_tail_chars or 'default'}, "
+                f"dollars {'on' if args.corpus_dollars else 'off'}. Compare only against a run "
+                f"with the same pair."
+            )
         if cells:
             ladder_ratio = cells[0][0].meta["ladder_chars_per_token"]
             rec.gate("ladder_ratio_measured", not ladder_ratio["provisional"], ladder_ratio)
 
-            # THE RATIO IS PART OF WHAT THE PAYLOAD MEASURED, and this is the first moment it is
-            # known -- the same shape as the commit check above, and for the same reason: the
-            # rungs already in the file were built at the ratio they record, the rungs still owed
-            # would be built at the one measured now, and one report prints both as one ladder.
+            # THE RATIO IS PART OF WHAT THE PAYLOAD MEASURED, and this is the first moment it is known: rungs
+            # already in the file were built at the ratio they record, rungs still owed at the one measured
+            # now, and one report prints both as one ladder.
             if args.resume:
                 ratio_issues: list = []
                 for recorded in recorded_identities(paths.payload_jsonl):
@@ -869,12 +1155,8 @@ def run(args, ab_ref = None) -> int:
                         if problem not in ratio_issues:
                             ratio_issues.append(problem)
                 if ratio_issues:
-                    # AND NOTHING THIS SESSION WROTE SURVIVES THE REFUSAL. Unlike the commit check
-                    # above, this one runs after the `Recorder` has opened the payload, so refusing
-                    # is not enough on its own: `run_meta` is already in the file and
-                    # `recorded_ladder` folds every one of them, so a refused
-                    # `--resume --rungs 1K,10K` would leave 10K promised and unrecorded in a
-                    # payload that was complete. See `rollback_session_rows`.
+                    # AND NOTHING THIS SESSION WROTE SURVIVES THE REFUSAL: this runs after the Recorder opened the
+                    # payload, so a refused `--resume --rungs 1K,10K` would leave 10K promised and unrecorded.
                     rec.close()
                     rollback_session_rows(paths.payload_jsonl, mark)
                     raise SystemExit(
@@ -888,6 +1170,8 @@ def run(args, ab_ref = None) -> int:
                     )
 
         done = _resume_set(paths) if args.resume else set()
+        if done:
+            _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
 
         if ab_ref:
             from .runtime.ab import Target, interleave, order_is_balanced
@@ -904,9 +1188,8 @@ def run(args, ab_ref = None) -> int:
             ]
             work = interleave(cells, targets)
             if not order_is_balanced(work):
-                # Said out loud rather than silently absorbed: with an odd number of reps one side
-                # always runs first, so anything drifting monotonically through the session lands on
-                # the other one instead of cancelling.
+                # Said out loud rather than absorbed: with an odd number of reps one side always runs first, so
+                # anything drifting monotonically through the session lands on the other rather than cancelling.
                 _log(
                     "  WARNING: the run order is not balanced (use an even --reps). Linear drift "
                     "within the session is charged to whichever side runs second."
@@ -916,11 +1199,8 @@ def run(args, ab_ref = None) -> int:
                     "row_type": "ab_plan",
                     "base_ref": sides[0]["ref"],
                     "treatment_ref": sides[1]["ref"],
-                    # WHICH SERVER THE TREATMENT WAS, when the caller attached one. `run_meta`
-                    # already records the base that way in `studio_ref`; without the same for the
-                    # treatment a resume can only compare the `--ab` label, which says nothing about
-                    # the build that answered on the port. See `requested_identity`. Empty when this
-                    # run installed the treatment itself: then the ref above is the identity.
+                    # WHICH SERVER THE TREATMENT WAS, when the caller attached one: without it a resume compares only
+                    # the `--ab` label, which says nothing about the build that answered. Empty when we installed it.
                     "treatment_url": "" if sides[1]["owns"] else sides[1]["base_url"],
                     # The treatment's half of `studio_commit`. Same reason, same emptiness rule.
                     "treatment_commit": sides[1].get("commit") or "",
@@ -932,10 +1212,8 @@ def run(args, ab_ref = None) -> int:
             work = [(None, cell, plan) for cell, plan in cells]
 
         if done:
-            # AT PAIR GRANULARITY. An A/B pair whose two arms are not both recorded is re-run
-            # whole, so the resumed session never measures one arm on its own -- see
-            # `ab.skippable_cells`. For a run without --ab every pair holds one cell and this is the
-            # set it already was.
+            # AT PAIR GRANULARITY: an A/B pair whose two arms are not both recorded is re-run whole, so a
+            # resumed session never measures one arm on its own.
             from .runtime.ab import skippable_cells
             done = skippable_cells(work, done)
             _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
@@ -969,9 +1247,9 @@ def run(args, ab_ref = None) -> int:
         rec.close()
 
     if ab_ref:
-        # The cells THIS session was asked to measure. A resumed A/B skips whole pairs or none
-        # (`ab.skippable_cells`), so this is either every planned cell or none of them, and it is
-        # what `_render_ab` checks the payload against before it is allowed to print a verdict.
+        # The cells THIS session was asked to measure: a resumed A/B skips whole pairs or none, so this
+        # is every planned cell or none, and it is what `_render_ab` checks the payload against.
+        # The skip set comes from `ab.skippable_cells`.
         _render_ab(
             paths,
             sides,
@@ -1014,8 +1292,8 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
                 recorder = ctx.recorder,
             )
         except Exception as exc:  # noqa: BLE001
-            # Recorded as a failed gate rather than swallowed. A sweep that raised and a sweep
-            # that found nothing look identical in a payload that only carries the rows.
+            # Recorded as a failed gate rather than swallowed: a sweep that raised and a sweep that found
+            # nothing look identical in a payload that only carries rows.
             _log(f"  the surface sweep failed: {type(exc).__name__}: {exc}")
             ctx.recorder.gate(
                 f"surface_sweep:{label}", False, {"error": f"{type(exc).__name__}: {exc}"}
@@ -1028,11 +1306,90 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         out = paths.out / f"surfaces_{label}.md"
         out.write_text(text, encoding = "utf-8")
         _log(f"surface coverage manifest written to {out}")
-        # PASSES only when every non-conditional surface was reached AND the digests were scoped.
-        # An unscoped sweep reports one page-wide digest per surface, which agrees everywhere for
-        # reasons that have nothing to do with the surfaces.
+        # PASSES only when every non-conditional surface was reached AND the digests were scoped: an
+        # unscoped sweep reports one page-wide digest per surface, which agrees everywhere.
         passed = manifest["not_reached_hard"] == 0 and manifest["digests_scoped"]
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
+
+
+def _probe_init_scripts(path: str, source: str) -> list[str]:
+    """The external script AS SOURCE, plus a separate script that says when it did not install.
+
+    NO `eval`, AND THAT IS THE WHOLE POINT. This used to hand the file to indirect eval as a
+    string, so that a malformed probe degraded to a caught `SyntaxError` instead of taking the
+    scene scripts with it. Unsloth serves `script-src 'self'` with no `'unsafe-eval'`
+    (`studio/backend/main.py::_build_csp`), and `runtime/browser.py::default_engine` picks WEBKIT
+    on both Linux and macOS, so on the DEFAULT engine that eval was refused by CSP and the probe
+    never installed at all. Measured against a page served with Unsloth's own header:
+
+        chromium   indirect eval runs;      a bad init script leaves the other init scripts alone
+        firefox    indirect eval runs;      a bad init script leaves the other init scripts alone
+        webkit     indirect eval REFUSED;   a bad init script kills every other init script
+
+    So the isolation the wrapper was bought for does not exist on webkit either way -- Playwright
+    installs webkit's init scripts as one bootstrap unit -- and on the two engines where it does
+    exist, separate `add_init_script` calls already provide it without evaluating a string. The
+    source is therefore installed as its own script, opening it, exactly as it reads on disk.
+
+    THE STAMP GOES AFTER THE SOURCE, NOT BEFORE IT. A directive prologue is the run of expression
+    statements a Script or FunctionBody OPENS with (ECMA-262, "Directive Prologues and the Use
+    Strict Directive"), so a statement in front of a probe's leading `"use strict"` demotes it to a
+    string expression that does nothing. The probe then runs sloppy: an undeclared assignment
+    silently creates a global instead of throwing, and the harness is no longer executing the file
+    as it reads on disk. Playwright wraps every init script in `(() => { ... })();`
+    (`playwright-core/src/server/page.ts`, `class InitScript`), which keeps the file's own prologue
+    working as a FunctionBody prologue -- until something is prepended to it.
+
+    THE EMPTY STATEMENT BETWEEN THEM IS THE ATTESTATION. This used to append the stamp on a bare
+    newline, on the reasoning that ASI made that safe because the appended line opens with an
+    identifier. That reasoning only covers a source whose last line is COMPLETE. ASI does not
+    terminate a source that ends mid-expression, so a probe truncated after an assignment operator
+    -- `var result =` -- is a SyntaxError on its own and STOPS BEING ONE once the stamp is
+    concatenated onto it: the stamp becomes that variable's initializer, `window.__sbExtraInitScript`
+    is set by the very assignment that was supposed to prove the probe finished, and the deferred
+    check below returns early. The probe reported nothing and the harness called that a clean run,
+    which is the one conclusion this pair of scripts exists to prevent. Measured on webkit and
+    chromium alike: stamp set, no `pageerror`, console silent, byte-identical to a healthy probe.
+
+    A bare `;` closes any pending operand slot, so that class stays a parse error. It goes AFTER the
+    source and never in front of it, because a leading empty statement is not a StringLiteral
+    ExpressionStatement and would end the directive prologue before the probe's own `"use strict"`
+    was reached.
+
+    WHAT THIS STILL DOES NOT CLOSE, stated so nobody reads the `;` as more than it is: a source
+    truncated after a STATEMENT HEAD rather than inside an expression -- `if (x)`, `while (a)`,
+    `for (;;)` -- takes the empty statement as its body and parses either way, so the stamp still
+    lands. Closing that needs the probe to be PARSED, which this harness deliberately does not do
+    (that is the whole point of the no-`eval` note above). The `;` narrows the hole; it does not
+    seal it, and the attestation is a smoke alarm rather than a proof.
+
+    The second script is the report. The last line of the probe script stamps
+    `window.__sbExtraInitScript`, so a probe that failed to PARSE, or that THREW on the way down,
+    leaves it unset and the deferred check names it on the console. A throw also arrives as a
+    `pageerror`, which `bundle.page.on("pageerror", ...)` already logs, and that is what separates
+    the two cases. On webkit the check dies in the same bootstrap unit as the probe, and the
+    `pageerror` is what reports there.
+    """
+    where = json.dumps(path)
+    return [
+        f"{source}\n;\nwindow.__sbExtraInitScript = {where};\n",
+        (
+            "(function () {\n"
+            "  setTimeout(function () {\n"
+            "    if (window.__sbExtraInitScript) { return; }\n"
+            "    try {\n"
+            "      window.console.error(\n"
+            f"        'SBENCH_EXTRA_INIT_SCRIPT ' + {where} + ' never installed: it did not "
+            "parse, or it threw before it finished. '" + " +\n"
+            "        'This probe reported nothing, which is NOT the same as an arm that did not '"
+            " +\n"
+            "        'fire.'\n"
+            "      );\n"
+            "    } catch (ignored) {}\n"
+            "  }, 0);\n"
+            "})();\n"
+        ),
+    ]
 
 
 def _render_ab(
@@ -1066,18 +1423,39 @@ def _render_ab(
                 continue
 
     out = paths.out / "ab.md"
-    # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN. `--resume` against a finished output skips
-    # every cell and is a success, but the ratio is scoped to THIS session, so re-rendering here
-    # replaced a real table with NO READING and exited 0 while doing it. The run that measured
-    # keeps its report; a run with no prior table still gets one, since there is nothing to lose.
+
+    # NO TABLE AT ALL for a probe run, rather than a table with a warning above it: the warning
+    # scrolls off while `ab.md` gets pasted into a pull request.
+    from .scoring.from_payload import probe_scripts
+
+    probes = probe_scripts(records)
+    if probes:
+        reason = (
+            f"NO A/B TABLE: this run carried an external init script ({', '.join(probes)}), so "
+            f"its timings measure the page and the instrument together. The payload is kept "
+            f"for the probe's own output and for --assert-liveness; it is not scorable."
+        )
+        _log("")
+        _log(reason)
+        # OVERWRITTEN, not left alone and not deleted: `--resume` reuses the directory, so an earlier
+        # clean `ab.md` would read as this run's result, while deleting it explains nothing.
+        stale = paths.out / "ab.md"
+        if stale.exists():
+            stale.write_text(f"# No A/B table\n\n{reason}\n", encoding = "utf-8")
+            _log(f"  a previous {stale} was replaced by this refusal")
+        _log("")
+        return
+
+    # A FULLY RESUMED A/B MEASURED NOTHING OF ITS OWN: the ratio is scoped to THIS session, so
+    # re-rendering replaced a real table with NO READING and exited 0. AFTER the probe refusal, or
+    # this returns early for exactly the sequence that needs the refusal most.
     if not any(r.get("row_type") == "cell" and r.get("session_id") == session_id for r in records):
         if out.exists():
             _log(f"\nno cell ran in this session; keeping the A/B table already at {out}")
             return
 
-    # Detected, not declared. `--ab main` IS a null control whether or not the caller says so, and
-    # a null control that renders as an ordinary A/B invites somebody to quote "7.7% faster" from a
-    # build compared with itself. See `is_null_control`.
+    # Detected, not declared: `--ab main` IS a null control whether the caller says so or not, and
+    # one rendered as an ordinary A/B invites somebody to quote a build compared with itself.
     is_null = is_null_control(sides)
     label = _ab_label(sides, is_null)
 
@@ -1100,8 +1478,8 @@ def _render_ab(
     if missing:
         result.void = True
         result.void_reason = (
-            f"{len(missing)} of {len(planned)} planned cells did not complete, so what remains is "
-            "a selection rather than the plan: " + ", ".join(missing)
+            f"{len(missing)} of {len(planned)} planned cells left no usable reading, so what "
+            "remains is a selection rather than the plan: " + ", ".join(missing)
         )
 
     text = render_ab_table(result)
@@ -1109,8 +1487,8 @@ def _render_ab(
     out.write_text(text, encoding = "utf-8")
     _log(f"A/B table written to {out}")
     if missing:
-        # A noise floor derived from a partial null control is a number about the cells that did
-        # not die, quoted afterwards at every real A/B on this machine.
+        # A noise floor derived from a partial null control is a number about the cells that did not
+        # die, quoted afterwards at every real A/B on this machine.
         _log("the plan did not complete, so no noise floor is derived from it")
         return
     if is_null:
@@ -1130,60 +1508,79 @@ def _render_ab(
         )
 
 
-#: THE PAYLOAD IDENTITY. The axes that decide whether a cell already in a payload measures the
-#: same thing a new invocation is asking for.
-#:
-#: `cell_id` is `r{rung}.{arm}.rep{rep}` and nothing else, so every one of these can change under a
-#: cell id that stays identical: the tier picks the FILM (the standard film runs 243 s, the quick
-#: one 77.5 s and the fast one 47 s, with different budgets), the cadence picks the rate the reply
-#: streams at, the instrument level decides how much of the number is the instrument, the corpus
-#: hash is the fixture, the engine is what rendered every frame, and the two refs are the builds
-#: under test.
-#:
-#: `rungs` and `reps` are deliberately NOT here. Resuming with more repetitions or another rung is
-#: a legitimate continuation -- it ADDS cells rather than reinterpreting the ones already recorded.
+#: THE PAYLOAD IDENTITY: the axes deciding whether a recorded cell measures what a new invocation
+#: asks for. `cell_id` is only `r{rung}.{arm}.rep{rep}`, so tier, cadence, instrument level,
+#: corpus, engine and both refs can change under one id. `rungs`/`reps` are NOT here: they ADD
+#: cells rather than reinterpreting recorded ones.
 IDENTITY_AXES = (
     "tier",
     "cadence",
     "engine",
+    # THE INSTRUMENTS THEMSELVES: `TOOL_VERSION` moves only when what an instrument MEASURES changes,
+    # and none of that moves a cell id, so `--resume` appended 0.2.0 measurements under 0.1.0 ids.
+    # Plain `--report` takes the FIRST header and pools the two quantities without a word.
+    # 0.2.0 was the bump: `reasoning_toggle.open_ms` now ends on a settled mount, not the
+    # `data-state` flip.
+    "tool_version",
     "instrument_level",
     "corpus_hash",
     "studio_ref",
     "treatment_ref",
     "treatment_url",
+    # `--stream-tail-chars` / `--corpus-dollars`: both change the reply the cell streams without
+    # moving its id. A payload from before them reads back as the defaults.
+    "stream_tail_chars",
+    "corpus_dollars",
+    # `--click-probe`, whose help text says it makes timings incomparable: it drives a real click,
+    # focus and hover before the film and adds a `click_attribution` block, none of it in the id.
+    "click_probe",
+    # `--inject-stream-cost-ms`, a larger perturbation on the TREATMENT arm only. Off this list, a
+    # resume could answer the recovery gate from cells never injected, which reads as a blind metric.
+    "inject_stream_cost_ms",
+    # `SBENCH_EXTRA_INIT_SCRIPT`, the external probe. It cannot end in a wrong number, so it is here
+    # for what the refusal COSTS: an env var survives in a shell, and a resume would append a probed
+    # `run_meta` that makes every previously clean cell unscorable, irreversibly.
+    "probe_init_script",
+    # `--headed`, for the same reason `engine` is here: headed and headless resolve to different
+    # executables with different rendering, so toggling it builds one ladder from two renderers.
+    "headed",
 )
 
-#: The axes that describe the SECOND side, which only exist when a run has one. See
-#: `identity_problems`: an A/B judged against a run that is not one may not differ on them.
+#: The axes that describe the SECOND side, which only exist when a run has one. An A/B judged
+#: against a run that is not one may not differ on them.
 TREATMENT_AXES = ("treatment_ref", "treatment_url")
 
-#: THE RATIO THE LADDER WAS SIZED BY, carried on every cell's `meta` by `session.build_cells`.
-#: Not in `IDENTITY_AXES`: those are checked by `prepare_payload` before anything is installed,
-#: and this one is not known until `build_cells` has measured the corpus. Checked instead by
-#: `ladder_ratio_problems`, on the same footing as `COMMIT_AXES` -- late enough to have the answer,
-#: early enough that nothing has been measured under it.
+#: The axes whose ABSENCE from a payload is itself a reading. `identity_problems` otherwise skips
+#: an undeclared axis, which is wrong for these: they arrived with the flag that sets them, so an
+#: older payload ran under the default by construction and one ladder was built from two films.
+HISTORICAL_DEFAULTS = {
+    "stream_tail_chars": None,
+    "corpus_dollars": False,
+    "click_probe": False,
+    "inject_stream_cost_ms": None,
+    "probe_init_script": None,
+    "headed": False,
+}
+
+#: THE RATIO THE LADDER WAS SIZED BY, carried on every cell's `meta`. Not in `IDENTITY_AXES`,
+#: which are checked before anything is installed, because this is not known until `build_cells`
+#: has measured the corpus; `ladder_ratio_problems` checks it instead.
+# Carried by `session.build_cells`.
 LADDER_RATIO_AXIS = "ladder_chars_per_token"
 
-#: How close two ratios must be to be the same ratio. `measure_chars_per_token` rounds its answer
-#: to three decimals and `PROVISIONAL_CHARS_PER_TOKEN` is exact, so every value that reaches a
-#: payload sits on a 0.001 grid: half a grid step separates "the same measurement, re-read through
-#: JSON" from "a different one". Wide enough that 5.0 never refuses 5.0 for a float's sake, narrow
-#: enough that the case this exists for -- a provisional 4.0 against tiktoken's 3.336 on this
-#: corpus, a fifth of the character load of every rung -- can never be inside it.
+#: How close two ratios must be to be the same ratio. Payload values sit on a 0.001 grid, so half
+#: a step separates a re-read from a different measurement: 5.0 never refuses 5.0, and a
+#: provisional 4.0 can never be inside tiktoken's 3.336.
+# `measure_chars_per_token` rounds its answer onto that grid.
 LADDER_RATIO_TOLERANCE = 5e-4
 
-#: The arm a run without `--ab` records every cell under. `Cell.arm` in `runtime.types`; an A/B
-#: overwrites it with the target's label, `base` or `treatment`. Named here because it is what
-#: tells `recorded_identities` which of the two a session already in the payload was.
+#: The arm a run without `--ab` records every cell under; an A/B overwrites it with base or
+#: treatment. Named here because it tells `recorded_identities` which a recorded session was.
+# `Cell.arm` in `runtime.types`.
 SINGLE_ARM = "A0"
 
-#: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER: `main`, a topic
-#: branch and a movable tag all resolve afresh on every install, and `checkout_ref` is the only
-#: thing that ever knows which commit one named. So these are not in `IDENTITY_AXES` and are not
-#: checked by `prepare_payload`: that refusal is deliberately made BEFORE anything is installed,
-#: and a commit cannot be known before the fetch that resolves it. They are checked instead by
-#: `commit_problems`, once the sides are up and before the first cell -- late enough to have the
-#: answer, early enough that nothing has been measured under it. See `run`.
+#: THE BUILD, as opposed to the name it was asked for by. A ref is a POINTER that resolves afresh
+#: on every install, so `commit_problems` checks these once the sides are up, not earlier.
 COMMIT_AXES = ("studio_commit", "treatment_commit")
 
 
@@ -1200,24 +1597,34 @@ def requested_identity(args, ab_ref, corpus_hash: str) -> dict:
     return {
         "tier": args.tier,
         "cadence": args.cadence,
-        # THE ENGINE THAT WILL RENDER, not the flag that asked for it. `--engine` defaults to
-        # nothing and `browser.launch` resolves the platform's desktop webview family, so the
-        # requested value has to be resolved the same way `launch` resolves it -- otherwise the
-        # commonest engine change of all, one run naming `--engine chromium` and the resume
-        # naming none, reads as no difference at all. Resolvable here, before anything is
-        # installed, because `default_engine` reads `platform.system()` and nothing else.
+        # THE INSTRUMENTS THIS TREE CARRIES, a module constant rather than anything the caller can ask
+        # for: a payload recorded by another version was measured by other instruments.
+        "tool_version": TOOL_VERSION,
+        # THE ENGINE THAT WILL RENDER, not the flag that asked for it: `--engine` defaults to nothing and
+        # `browser.launch` resolves the platform's webview family, so the request must resolve the same
+        # way or the commonest engine change of all reads as no difference.
+        # Resolvable before anything is installed: `default_engine` reads `platform.system()` and
+        # nothing else.
         "engine": getattr(args, "engine", "") or default_engine()[0],
         "instrument_level": args.instrument_level,
         "corpus_hash": corpus_hash,
         "studio_ref": base_ref,
         "treatment_ref": ab_ref or "",
-        # THE ATTACHED TREATMENT IS THE SERVER, NOT THE LABEL. `studio_ref` folds an attached base
-        # down to its URL because that is the only thing about it this harness can see; the
-        # treatment carried nothing but the name typed after `--ab`, and that name is free. So
-        # `--attach A --attach-b B --ab fix --resume`, re-run later against `--attach-b C`, passed
-        # the identity check, skipped every completed treatment cell and reported B's measurements
-        # as C's result. Empty for a treatment this run installs itself, whose ref IS its identity.
+        # THE ATTACHED TREATMENT IS THE SERVER, NOT THE LABEL: carrying only the free-form name let
+        # `--attach-b B` pass the identity check against a later `--attach-b C` and report B's numbers
+        # as C's. Empty for a treatment this run installs itself.
+        # The field is `studio_ref`; the resolved build is `requested_identity`.
         "treatment_url": attach_b if (ab_ref and attach_b) else "",
+        "stream_tail_chars": args.stream_tail_chars,
+        "corpus_dollars": bool(args.corpus_dollars),
+        "click_probe": bool(getattr(args, "click_probe", False)),
+        "inject_stream_cost_ms": getattr(args, "inject_stream_cost_ms", None),
+        # Spelled the same way `run_meta` records it, through `bool`, so the recorded False and the
+        # requested value are the same type; without this every resume refused itself.
+        "headed": bool(getattr(args, "headed", False)),
+        # FROM THE ENVIRONMENT, because the probe hook is a variable rather than a flag, so `args` never
+        # sees it. Spelled exactly as `run_meta` records it, so requested and recorded compare directly.
+        "probe_init_script": os.environ.get("SBENCH_EXTRA_INIT_SCRIPT") or None,
     }
 
 
@@ -1252,17 +1659,13 @@ def recorded_identities(payload_path) -> list:
                 by_session[session] = {}
                 order.append(session)
             if row_type == "cell":
-                # THE MODE A SESSION MEASURED IN, declared by the cells it actually wrote rather
-                # than by a header it wrote before it measured anything. A run that died between
-                # `run_meta` and `ab_plan` recorded no cells and so declares no mode, and resuming
-                # it is not a transition; a session holding cells declares the mode those cells
-                # were recorded under, whichever row types the version that wrote them emitted.
+                # THE MODE A SESSION MEASURED IN, declared by the cells it wrote rather than a header written
+                # before it measured anything: a run that died before `ab_plan` declares no mode.
                 arm = str((row.get("cell") or {}).get("arm") or row.get("arm") or "")
                 if arm:
                     by_session[session].setdefault("mode", "single" if arm == SINGLE_ARM else "ab")
-                # THE RATIO THE SESSION'S RUNGS WERE SIZED BY, on the same rule as the mode: read
-                # off a cell the session actually wrote, so a session that recorded none declares
-                # none. See `ladder_ratio_problems`.
+                # THE RATIO THE SESSION'S RUNGS WERE SIZED BY, on the same rule as the mode: read off a cell the
+                # session actually wrote. See `ladder_ratio_problems`.
                 sized = ((row.get("cell") or {}).get("meta") or {}).get("ladder_chars_per_token")
                 if isinstance(sized, dict) and sized.get("chars_per_token") is not None:
                     by_session[session].setdefault(
@@ -1272,13 +1675,9 @@ def recorded_identities(payload_path) -> list:
             for axis in IDENTITY_AXES + COMMIT_AXES:
                 if axis in row:
                     by_session[session][axis] = row[axis]
-            # THE ENGINE IS NESTED, under `run_meta.platform`, so the loop above cannot see it.
-            # Read from there rather than from a new top-level field for the same reason as
-            # everything else here: a payload written before this check existed still declares
-            # what it rendered with, and is judged on it. `run_meta` is emitted AFTER
-            # `browser.launch` returns, so what is recorded is the RESOLVED engine and a session
-            # that never got a browser up declares none -- and an axis a row never declared
-            # cannot be a difference, so that session still resumes.
+            # THE ENGINE IS NESTED under `run_meta.platform`, so the loop above cannot see it. `run_meta` is
+            # emitted after `browser.launch`, so the RESOLVED engine is recorded and a session that never got
+            # a browser up declares none -- and an undeclared axis cannot be a difference.
             if row_type == "run_meta":
                 engine = str((row.get("platform") or {}).get("engine") or "")
                 if engine:
@@ -1292,16 +1691,10 @@ def recorded_identities(payload_path) -> list:
 def identity_problems(recorded: dict, requested: dict) -> list:
     """Every axis on which a recorded session and this invocation disagree."""
     problems = []
-    # AN A/B AND A RUN THAT IS NOT ONE MAY NOT SHARE A PAYLOAD. The arm in the cell id ("A0"
-    # against "base"/"treatment") keeps the new cells from being SKIPPED, which is why this used
-    # to be waved through -- but it does not keep them out of each other's REPORT. `score_payload`
-    # hands every cell to `measures_from_records`, which keys by rung and keeps the first reading,
-    # and `_completion_by_rung` keeps a failure over a success at the same rung. So a single-build
-    # run that died at 10K, resumed as `--ab fix` and re-measured successfully on both arms, still
-    # printed `INCOMPLETE: the base died at 10K`, scored the rung 0 and reported ONSET RUNG: none,
-    # while the identical resume WITHOUT `--ab` -- same crash, same repair, same cell id, so the
-    # dead attempt is superseded -- scored it 82.2. The mode is part of what a payload measures,
-    # so a run that changes it resumes nothing: it starts a payload of its own.
+    # AN A/B AND A RUN THAT IS NOT ONE MAY NOT SHARE A PAYLOAD. The arm in the cell id keeps the new
+    # cells from being SKIPPED but not out of each other's REPORT: `measures_from_records` keeps the
+    # first reading per rung and `_completion_by_rung` keeps a failure over a success, so a resume as
+    # `--ab fix` scored a rung 0 where the same resume without `--ab` scored 82.2.
     requested_mode = "ab" if requested.get("treatment_ref") else "single"
     recorded_mode = recorded.get("mode")
     if recorded_mode is not None and recorded_mode != requested_mode:
@@ -1310,30 +1703,37 @@ def identity_problems(recorded: dict, requested: dict) -> list:
             f"mode: the payload was recorded by a run measuring {names[recorded_mode]}, "
             f"this run measures {names[requested_mode]}"
         )
-    # Is there a second side on BOTH sides of this comparison? When there is not, the treatment
-    # axes describe a side one of them does not have, and the mode difference above is the whole
-    # of what they disagree on. Decided from the ref, so that an A/B whose treatment this run
-    # installed -- which records no treatment URL -- is still judged against an attached one on
-    # the axis where the two of them do differ.
+    # Is there a second side on BOTH sides of this comparison? When there is not, the treatment axes
+    # describe a side one of them lacks. Decided from the ref, so an installed treatment still
+    # compares against an attached one on the axis where they do differ.
     both_ab = bool(requested.get("treatment_ref")) and bool(recorded.get("treatment_ref"))
     for axis in IDENTITY_AXES:
-        if axis not in recorded:
-            # An axis this payload never declared. See `recorded_identities`.
+        declared = axis in recorded
+        if declared:
+            got = recorded[axis]
+        elif axis in HISTORICAL_DEFAULTS:
+            # Not declared, but not silent either: this axis postdates the payload, so the payload ran under
+            # the default. See `HISTORICAL_DEFAULTS`.
+            got = HISTORICAL_DEFAULTS[axis]
+        else:
             continue
         if axis in TREATMENT_AXES and not both_ab:
             continue
-        want, got = requested.get(axis), recorded[axis]
+        want = requested.get(axis)
         if str(want) != str(got):
-            problems.append(
-                f"{axis}: the payload was recorded with {got!r}, this run asks {want!r}"
+            where = (
+                f"the payload was recorded with {got!r}"
+                if declared
+                else f"the payload predates this axis and therefore ran with {got!r}"
             )
+            problems.append(f"{axis}: {where}, this run asks {want!r}")
     return problems
 
 
 def resolved_commits(sides: list) -> dict:
     """The commits the sides of THIS run were actually installed from. `""` when unknowable.
 
-    Unknowable for an attached Studio: the caller pointed this harness at a URL and nothing about
+    Unknowable for an attached Unsloth: the caller pointed this harness at a URL and nothing about
     what is deployed behind it is visible from here, which is why `studio_ref` folds an attached
     base down to that URL instead.
     """
@@ -1499,6 +1899,80 @@ def rollback_session_rows(
     return dropped
 
 
+def invalidate_stale_reports(
+    out,
+    *,
+    archived,
+    extra_init,
+    log = _log,
+) -> list:
+    """Replace `summary.md` and `ab.md` when the payload they describe is no longer the one there.
+
+    `archive_payload` moves `payload.jsonl` and nothing else, so a `summary.md` written by an
+    earlier `--report` of this directory -- step three of the README quickstart, into the same
+    `--out` -- stays at the standard artifact path while the payload underneath it is replaced.
+    Nothing later puts that right, because the report that would overwrite it is a command the
+    next run has no reason to issue: a plain run writes `summary.md` never (only `--report` does)
+    and `ab.md` only under `--ab`, so a single-arm run produces no report-shaped file at all and
+    both stale ones survive it.
+
+    TWO INDEPENDENT INVALIDATIONS, and each is sufficient on its own.
+
+    `archived` is the general case: the payload these reports described has been moved aside, so
+    they describe a file that is no longer at the path they name, whatever the incoming run is.
+    This is the half that was missing. Keying only on `extra_init` closed the clean-then-probed
+    direction and left probed-then-clean open, where a probe run's refusal text -- which says in
+    so many words that the payload beside it is not scorable -- survives into a directory whose
+    payload is now perfectly scorable. A refusal that outlives its reason is worse than no file,
+    because it is read as a finding about the run that is actually there.
+
+    `extra_init` is the narrower case and is NOT covered by `archived`: a `--resume` that
+    `prepare_payload` accepts archives nothing, so `archived` is `None` while the continued
+    payload is being extended by a probed run and becomes unscorable under the old summary.
+
+    OVERWRITTEN, not deleted, for the reason `_render_ab` gives: whoever opens the path gets the
+    reason rather than a missing file. HERE, not at the probe banner further down, for the reason
+    52fc3e848 moved the `ab.md` refusal above its early return: everything between this point and
+    the banner can `return`, raise or be killed by the wall-clock watchdog, and every one of those
+    paths has already archived the payload the summary belongs to. After `prepare_payload`,
+    though, because a `--resume` it refuses touched nothing.
+
+    BOTH ARTIFACTS, and `ab.md` is not already covered by the refusal inside `_render_ab`. That
+    function runs only under `if ab_ref`, so a fresh SINGLE-ARM run into a directory left by an
+    earlier `--ab` run never reaches it, and the old table survives beside the new payload for as
+    long as the directory lasts.
+
+    Returns the paths it rewrote, so a caller can assert on them.
+    """
+    if not archived and not extra_init:
+        return []
+    if extra_init:
+        why = (
+            f"this output directory was reused by a run carrying an external init script "
+            f"({extra_init}), so its timings measure the page and the instrument together. The "
+            f"payload beside it now is not scorable. Re-run with SBENCH_EXTRA_INIT_SCRIPT unset."
+        )
+    else:
+        why = (
+            f"this output directory was reused by a later run, which moved the payload this "
+            f"described to {Path(archived).name} and recorded a new one beside it. Re-report the "
+            f"payload that is there now, or read the archived one directly."
+        )
+
+    rewritten = []
+    for name, heading, what in (
+        ("summary.md", "# No summary", "summary"),
+        ("ab.md", "# No A/B table", "table"),
+    ):
+        stale = Path(out) / name
+        if not stale.exists():
+            continue
+        stale.write_text(f"{heading}\n\nNO {what.upper()}: {why}\n", encoding = "utf-8")
+        log(f"  a previous {stale} was replaced by this refusal")
+        rewritten.append(stale)
+    return rewritten
+
+
 def prepare_payload(
     paths,
     requested: dict,
@@ -1521,7 +1995,7 @@ def prepare_payload(
     the arm and the repetition -- not the tier, the cadence, the instrument level, the corpus or
     either ref. So resuming after changing one of those skips cells that measured something else:
     at the extreme, `--branch main --ab other --resume` into a directory holding a finished
-    `main -> fix` run installs and launches two Studios, skips every cell, exits 0, and leaves the
+    `main -> fix` run installs and launches two Unsloth instances, skips every cell, exits 0, and leaves the
     OLD comparison standing in `ab.md` for somebody to read as the answer for `other`.
     """
     if not resume:
@@ -1573,8 +2047,8 @@ def _resume_set(paths) -> set:
             except ValueError:
                 continue
     for row in latest_attempt_rows(records):
-        # Only a COMPLETED cell is skipped. A cell that died is re-run, because its failure
-        # may have been the machine and not the build.
+        # Only a COMPLETED cell is skipped: a cell that died is re-run, because its failure may have
+        # been the machine and not the build.
         if row.get("row_type") == "cell" and row.get("completed"):
             done.add(row.get("cell_id"))
     return done
@@ -1592,8 +2066,8 @@ def _summarise(rows: list, paths) -> None:
     for r in rows:
         actions = r.get("actions") or []
         ran = sum(1 for a in actions if a.get("ran"))
-        # The PEAK, not the end state: the film's last two actions reopen the thread and delete
-        # a message, so an end-of-film census describes a thread that is no longer there.
+        # The PEAK, not the end state: the film's last two actions reopen the thread and delete a
+        # message, so an end-of-film census describes a thread that is no longer there.
         census = r.get("census_peak") or r.get("census_after") or {}
         _log(
             f"{r['cell_id']:<16} {r.get('assistant_chars_in_dom') or 0:>10,} "
@@ -1606,6 +2080,14 @@ def _summarise(rows: list, paths) -> None:
         if not r.get("completed"):
             f = r.get("failure") or {}
             _log(f"    FAILED: {f.get('kind')}: {str(f.get('message'))[:100]}")
+    # SAID UNDER THE TABLE THAT PRINTS THEM: `elems` and `spans` come from `census_peak`, whose action
+    # is chosen by a max() over censuses racing their own teardown, so it is not the same moment on
+    # two arms. Differencing them produced a withdrawn "43% more standing DOM" claim.
+    _log(
+        "\n  elems/spans are census_peak: a diagnostic high-water mark, taken at whichever "
+        "action mounted most.\n  Do NOT difference them between arms. For a cross-arm census use "
+        "a settled measure."
+    )
 
 
 def _rung_tokens(labels: list) -> list:
@@ -1658,7 +2140,7 @@ def recorded_ladder(path) -> list:
 
 
 def report_only(args) -> int:
-    """Score and render a payload that already exists. No browser, no Studio, no network.
+    """Score and render a payload that already exists. No browser, no Unsloth, no network.
 
     Separate from `run` so a payload produced on somebody else's desktop reports identically here,
     which is the whole point of shipping a single-file benchmark: the numbers come back as a file
@@ -1671,9 +2153,8 @@ def report_only(args) -> int:
         _log(f"no payload at {path}")
         return 2
 
-    # `--rungs` first, then the payload's own ladder, then the tier. An explicit `--tier` still
-    # wins over the recording, so a reader can deliberately score a payload against another tier's
-    # ladder; what is gone is the DEFAULT tier silently shortening somebody else's run.
+    # `--rungs` first, then the payload's own ladder, then the tier. An explicit `--tier` still wins;
+    # what is gone is the DEFAULT tier silently shortening somebody else's run.
     recorded = [] if getattr(args, "tier_explicit", True) else recorded_ladder(path)
     if args.rungs:
         declared = _rung_tokens(args.rungs.split(","))
@@ -1682,19 +2163,90 @@ def report_only(args) -> int:
         _log(f"scoring against the ladder this run recorded: {','.join(recorded)}")
     else:
         declared = _rung_tokens(TIER_RUNGS[args.tier])
+    out = path.parent / "summary.md"
     try:
         text, ladder, _payload = build_report(path, declared)
+    except SystemExit as exc:
+        # A REFUSAL, not a crash, and it has to reach the artefact rather than only the terminal:
+        # `SystemExit` is not an `Exception`, so without this clause a clean `summary.md` would sit next
+        # to a now-probed payload. Overwritten rather than deleted, as with the stale `ab.md`.
+        _log(str(exc))
+        if out.exists():
+            out.write_text(f"# No summary\n\n{exc}\n", encoding = "utf-8")
+            _log(f"  a previous {out} was replaced by this refusal")
+        return 2
     except Exception as exc:  # noqa: BLE001
-        # A payload that cannot be scored is reported as such rather than half-rendered: a
-        # partial report is exactly the artefact that gets quoted without its caveats.
+        # A payload that cannot be scored is reported as such rather than half-rendered: a partial
+        # report is exactly the artefact that gets quoted without its caveats.
         _log(f"could not build a report from {path}: {type(exc).__name__}: {exc}")
         return 1
 
     print(text)
-    out = path.parent / "summary.md"
     out.write_text(text, encoding = "utf-8")
     _log(f"summary written to {out}")
     return 0
+
+
+def compare_payloads(args) -> int:
+    """Are these two payloads comparable, and if not, exactly which field stops them?
+
+    The guard in `floor_table.load` refuses to POOL payloads across tiers and corpora and it
+    works. It cannot reach a comparison made in prose across two separately published runs, which
+    is how a withdrawn number nearly propagated twice in one campaign. Quoting the comparability
+    key beside a number turns that check from an act of memory into one command.
+    """
+    from .report.payload import read_records
+    from .scoring import payload_rules
+
+    metas = []
+    for raw in args.compare:
+        path = Path(raw)
+        if not path.exists():
+            print(f"no such payload: {path}")
+            return 2
+        # EVERY header, not the first: `--resume` appends a second `run_meta` and may legitimately have
+        # extended the ladder, so keying on the first hashes a ladder the file has outgrown. Read the way
+        # every other reader does -- a run killed mid-append leaves a torn last line that
+        # `report.read_records` counts rather than raising on.
+        records, discarded = read_records(path)
+        if discarded:
+            print(
+                f"  {path}: {discarded} malformed line(s) skipped, which is what a run killed "
+                f"mid-append leaves. The check below reads the intact records."
+            )
+        meta, conflicts = payload_rules.merged_run_meta(records)
+        if meta is None:
+            print(f"{path} carries no run_meta row, so it cannot be checked at all")
+            return 2
+        if conflicts:
+            # A file whose own headers disagree is not one measurement, so no single key can stand for it
+            # and the honest answer is a refusal.
+            print(f"{path} disagrees with ITSELF across its own run_meta rows:")
+            for line in conflicts:
+                print(f"  {line}")
+            print(
+                "\nThis payload holds more than one run and they were not measuring the same "
+                "thing, so no comparability key describes it. Score the sessions apart."
+            )
+            return 2
+        metas.append((path, meta))
+
+    (pa, a), (pb, b) = metas
+    ka = payload_rules.comparability_key(a)
+    kb = payload_rules.comparability_key(b)
+    print(f"  {pa}  {ka}")
+    print(f"  {pb}  {kb}")
+    if ka == kb:
+        print("\ncomparable: every field the key covers matches.")
+        return 0
+    print("\nNOT COMPARABLE. These differ:")
+    for line in payload_rules.explain_incomparable(a, b):
+        print(f"  {line}")
+    print(
+        "\nA number from one of these must not be quoted against a number from the other. "
+        "Re-run the older side."
+    )
+    return 1
 
 
 def assert_liveness(args) -> int:
@@ -1711,6 +2263,23 @@ def assert_liveness(args) -> int:
     per cell. This turns the README's advice to check `ran` before reading a timing into something
     a machine does, which is the only way it gets done every time.
 
+    TWO KINDS OF NOT RUN, and they are not the same finding.
+
+    A SCENE problem is the harness lying: the action was never planned, the button was not there,
+    the thread was shorter than the viewport. That is always a failure, on any machine, because it
+    means a column of the report is empty and nothing said so.
+
+    A MISSED SLOT is a fact about the machine. The scene is a fixed-duration film on the wall
+    clock (see `scene/schedule.py`), so a machine too slow to reach a slot records `slot_missed`
+    and the film rolls on BY DESIGN, precisely so a slow machine does not silently take a
+    different path through a different-length session. Failing on that turns an honest reading
+    into an error, and on a two-core shared CI runner it makes the gate a speed test of the runner.
+
+    So they are counted apart. Scene problems always fail. Missed slots are always PRINTED, and
+    fail once they pass `--allow-slot-misses`, which defaults to 0 so a measurement run on a quiet
+    machine keeps the strict behaviour and only a caller who knows its machine is contended
+    loosens it, in one visible place.
+
     Offline, so a payload from anyone's laptop or from CI checks identically.
     """
     path = Path(args.assert_liveness)
@@ -1719,7 +2288,8 @@ def assert_liveness(args) -> int:
         return 2
 
     allowed = {a.strip() for a in (args.allow_not_run or "").split(",") if a.strip()}
-    rows, problems = [], []
+    slack = max(0, int(getattr(args, "allow_slot_misses", 0) or 0))
+    rows, problems, missed = [], [], []
     for line in path.read_text(encoding = "utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -1729,24 +2299,16 @@ def assert_liveness(args) -> int:
         except ValueError:
             problems.append("a payload line is not valid JSON")
 
-    # A CELL THAT WAS RE-RUN IS JUDGED ON THE RUN THAT FINISHED IT, which is the same rule the
-    # report and the A/B already apply and the same helper that applies it. `--resume` appends to
-    # the payload it continues and re-runs the cells that died under the SAME deterministic
-    # `cell_id`, so the dead attempt's `completed: false` and its NOT RUN actions are still in the
-    # file after a resumed run has succeeded. Read raw, this loop found them forever: the resumed
-    # run exited 0 and `--report` scored the retry, while `--assert-liveness` on the same payload
-    # failed permanently on a cell that had already been re-run. A gate that cannot be satisfied
-    # by fixing the run is a gate people learn to pass with `--allow-not-run`.
+    # A CELL THAT WAS RE-RUN IS JUDGED ON THE RUN THAT FINISHED IT, as the report and the A/B do:
+    # the dead attempt's `completed: false` stays in the file, so read raw, `--assert-liveness`
+    # failed permanently on a cell that had already been re-run.
     from .scoring.from_payload import ATTEMPT_ROW_TYPES, latest_attempt_rows
 
-    # AN ATTEMPT THAT NEVER REACHED ITS CELL ROW IS A FAILURE, NOT AN ABSENCE. `latest_attempt_rows`
-    # names the latest attempt from ANY attempt-keyed row, because the Recorder flushes and fsyncs
-    # every action and window row while `CellRunner.run` writes the terminal `cell` row in a
-    # `finally` a SIGKILL, an OOM kill or a lost machine never reaches. So the killed attempt
-    # supersedes the completed one and then contributes no cell row of its own -- and this loop,
-    # reading cell rows only, dropped the cell out of the payload entirely. A resume killed inside a
-    # cell whose first attempt had already recorded `completed: false` with NOT RUN actions turned
-    # `1` into `0`: the gate stopped reporting a failure that is still written in the file.
+    # AN ATTEMPT THAT NEVER REACHED ITS CELL ROW IS A FAILURE, NOT AN ABSENCE: the Recorder fsyncs
+    # every action row while the terminal `cell` row is written in a `finally` a SIGKILL never
+    # reaches, so reading cell rows only turned a recorded failure into a 0.
+    # `CellRunner.run` writes it.
+    # `latest_attempt_rows` is what has to notice.
     attempted, recorded = set(), set()
     kept = latest_attempt_rows(rows)
     for row in kept:
@@ -1769,31 +2331,23 @@ def assert_liveness(args) -> int:
         for action in row.get("actions") or []:
             name = action.get("action") or action.get("name") or "?"
             if action.get("slot_missed"):
-                # A MISSED SLOT IS NOT AN ACTION THE PLATFORM CANNOT PERFORM, so it is checked
-                # before the allowance rather than inside it. `scene/schedule.py` records an
-                # overrun as `ran = False, slot_missed = True`, so a listed name reached the
-                # not-ran branch and inherited an excuse written for a different failure: the
-                # machine was too slow to reach a window it could otherwise have used. That is
-                # the scheduling regression this gate is for, and on the only allowance the repo
-                # actually ships it would have been the difference between a timed benchmark and
-                # an untimed one.
-                problems.append(f"{where}: {name} missed its slot")
+                # A MISSED SLOT IS NOT AN ACTION THE PLATFORM CANNOT PERFORM, so it is classified before the
+                # allowance: an excuse written for "the fixture cannot mount this" was swallowing a fact about
+                # the machine. It lands in `missed` and is judged against `--allow-slot-misses`.
+                # `scene/schedule.py` records an overrun as `ran=False, slot_missed=True`.
+                missed.append(f"{where}: {name} missed its slot ({action.get('reason') or '?'})")
             elif not action.get("ran"):
-                # THE ALLOWANCE IS EXACTLY WHAT ITS NAME SAYS. `--allow-not-run` excuses an action
-                # the fixture cannot mount at all; it is not a blanket exemption from the gate.
-                # `image_upload` is listed in studiobench-ci.yml only because the fixture cannot
-                # mount it, so if it ever does mount, an upload that produces no attachment must
-                # be a failure rather than an excuse inherited from a different reason.
+                # THE ALLOWANCE IS EXACTLY WHAT ITS NAME SAYS: `--allow-not-run` excuses an action the fixture
+                # cannot mount at all. If `image_upload` ever does mount, an upload with no attachment fails.
                 if name in allowed:
                     continue
                 problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
             elif action.get("expect_ok") is False:
-                # RAN IS NOT DID WHAT IT CLAIMED. `scoring/from_payload.py` and
-                # `report/payload.py` both already refuse a timing whose own assertion failed;
-                # this loop did not, so `ran = True` with `expect_ok = False` fell past both
-                # branches above and the gate exited 0. A selector regression that fails EVERY
-                # cell's assertion left the workflow green with the surface non-functional --
-                # the same "absent reported as no effect" this gate exists for, one branch over.
+                # RAN IS NOT DID WHAT IT CLAIMED: the scoring and report layers both refuse a timing whose
+                # assertion failed, but this loop did not, so a selector regression failing every cell's
+                # assertion left the workflow green. A scene problem, so no allowance reaches it.
+                # The two layers are `scoring/from_payload.py` and `report/payload.py`.
+                # The shape that fell through both branches was `ran=True` with `expect_ok=False`.
                 problems.append(
                     f"{where}: {name} ran but its own assertion failed "
                     f"({action.get('reason') or 'no reason'})"
@@ -1805,11 +2359,22 @@ def assert_liveness(args) -> int:
         return 2
     for line in problems:
         _log(f"  {line}")
+    for line in missed:
+        _log(f"  {line}")
+    over = len(missed) > slack
     _log(
-        f"{cells} cell(s), {len(problems)} liveness problem(s)"
+        f"{cells} cell(s), {len(problems)} scene problem(s), {len(missed)} missed slot(s) "
+        f"against a slack of {slack}"
         + (f", {len(allowed)} action(s) allowed not to run" if allowed else "")
     )
-    return 1 if problems else 0
+    if missed and not over:
+        # Said out loud rather than passed over: a run with missed slots has holes in its table, and the
+        # only thing this exit code claims is that the harness was not the cause.
+        _log(
+            "  the missed slots above are machine speed, not a harness fault, but every one of "
+            "them is a hole in this run's table. Do not quote a number from this payload."
+        )
+    return 1 if (problems or over) else 0
 
 
 def parse_args(argv: list):
@@ -1820,9 +2385,8 @@ def parse_args(argv: list):
     ap.add_argument(
         "--tier",
         choices = TIERS,
-        # No default here, and `quick` is applied below instead. `--report` needs to tell "the
-        # caller asked for this ladder" apart from "the caller said nothing", because a payload
-        # records the ladder its run promised and that answer beats a CLI default.
+        # No default here, and `quick` is applied below: `--report` must tell "the caller asked for this
+        # ladder" from "the caller said nothing", because a payload's recorded ladder beats a CLI default.
         default = None,
         help = (
             "fast ~5min (100K only, the iteration loop), quick ~5min (1K,10K, a wiring check), "
@@ -1837,7 +2401,7 @@ def parse_args(argv: list):
     ap.add_argument(
         "--attach",
         metavar = "URL",
-        help = "drive a Studio that is already running instead of installing one",
+        help = "drive an Unsloth that is already running instead of installing one",
     )
     ap.add_argument(
         "--resume", action = "store_true", help = "skip cells already completed in the output payload"
@@ -1851,7 +2415,7 @@ def parse_args(argv: list):
         "--attach-b",
         metavar = "URL",
         dest = "attach_b",
-        help = "the treatment side's already-running Studio, when --ab is used "
+        help = "the treatment side's already-running Unsloth, when --ab is used "
         "together with --attach",
     )
     ap.add_argument(
@@ -1859,6 +2423,16 @@ def parse_args(argv: list):
         metavar = "PAYLOAD",
         help = "score and render an existing payload.jsonl, then exit. Runs offline, "
         "so a payload mailed in from another machine reports here",
+    )
+    ap.add_argument(
+        "--compare",
+        metavar = ("PAYLOAD_A", "PAYLOAD_B"),
+        nargs = 2,
+        dest = "compare",
+        help = "offline. Say whether two payloads may be compared at all, and if not, name the "
+        "field that differs. `floor_table` already refuses to POOL across tiers and corpora; "
+        "this is for the case it cannot reach, a comparison made in PROSE between two "
+        "separately published runs",
     )
     ap.add_argument(
         "--assert-liveness",
@@ -1877,6 +2451,77 @@ def parse_args(argv: list):
         "only. A listed action that does run is still held to its slot and its own "
         "assertion. Use only for an action a platform genuinely cannot perform, and say "
         "which in the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--windowed-arm",
+        metavar = "ARMS",
+        dest = "windowed_arm",
+        # An ENV FALLBACK as well as the flag: `scripts/pr_perf_sweep.py` builds this command line
+        # itself and is shared with other in-flight sweeps, so adding an argument mid-run is a hazard.
+        default = os.environ.get("SBENCH_WINDOWED_ARM", ""),
+        help = "comma-separated arm labels (base, treatment) that mount a WINDOW of the thread "
+        "rather than all of it, and are therefore gated on the windowed readiness signal "
+        "instead of on every message being mounted. Not a relaxation: the named arm must "
+        "publish aria-setsize equal to the seeded message count, mount the end of the "
+        "thread, settle, and pass a scroll-to-top completeness probe. Naming an arm that "
+        "does NOT virtualise makes no difference to it beyond the extra conditions. "
+        "Structural UI parity is not applicable to a windowed arm; score it with "
+        "sweep/ui_parity.py --mode behaviour",
+    )
+    ap.add_argument(
+        "--click-probe",
+        dest = "click_probe",
+        action = "store_true",
+        help = "before the film starts, split the composer click into what a USER pays and "
+        "what Playwright's actionability check pays, plus a hover-only reading. Off by "
+        "default: it costs seconds at large rungs and makes the cell's timings "
+        "incomparable with a cell that did not run it",
+    )
+    ap.add_argument(
+        "--allow-slot-misses",
+        metavar = "N",
+        dest = "allow_slot_misses",
+        type = int,
+        default = 0,
+        help = "how many MISSED SLOTS --assert-liveness tolerates before failing. A "
+        "missed slot is a fact about the machine, not about the harness, and the "
+        "film is designed to roll on through one. Default 0, which is right for a "
+        "quiet measurement machine; raise it only on a contended runner, where the "
+        "gate is proving the plumbing works rather than that the runner is fast",
+    )
+    ap.add_argument(
+        "--stream-tail-chars",
+        type = int,
+        dest = "stream_tail_chars",
+        help = "override how many characters of the last turn STREAM. The rung ladder "
+        "pins this at 6,000 on every rung so that the thread is the only thing that "
+        "varies, which means a cost scaling with the length of the reply being streamed "
+        "is constant across the whole ladder and reads as a floor. This is the axis that "
+        "can see one. Raising it makes the film's after-generation slots run mid-stream, "
+        "so check the payload with --assert-liveness rather than trusting the labels",
+    )
+    ap.add_argument(
+        "--inject-stream-cost-ms",
+        type = float,
+        dest = "inject_stream_cost_ms",
+        help = "VALIDATION. Burn this many milliseconds of main-thread time per SSE chunk on the "
+        "treatment side, inside the task chain the chunk starts. Needs --ab. The point is to "
+        "check that the streaming-cost metric reads back a cost this harness injected itself: a "
+        "metric that cannot see a known cost cannot see an unknown one, and the recovery fraction "
+        "is what says which of the two a null result was. An arm running this is not a "
+        "measurement of the build",
+    )
+    ap.add_argument(
+        "--corpus-dollars",
+        action = "store_true",
+        dest = "corpus_dollars",
+        help = "give the STREAMED turns the CURRENCY AND SHELL dollars a real reply has "
+        "($HOME, $12.99). Not the same thing as the LaTeX the frozen corpus carries since "
+        "corpus v2: that is well-formed math in the SEEDED thread, which exercises the "
+        "renderer, and this is malformed-on-purpose dollars in the turn that STREAMS, "
+        "which exercises preprocessLaTeX's currency-escape and code-region heuristics. "
+        "Measured over one 96,000 character reply, the cheap regime is 15.3 ms and the "
+        "expensive one 281.3 ms. The frozen units on disk and their hashes are untouched",
     )
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)
@@ -1898,20 +2543,19 @@ def parse_args(argv: list):
         choices = ["chromium", "webkit", "firefox"],
         help = "default matches the platform's desktop webview family",
     )
-    ap.add_argument("--branch", default = "main", help = "Studio ref to install when not attaching")
+    ap.add_argument("--branch", default = "main", help = "Unsloth ref to install when not attaching")
     ap.add_argument("--home", help = "UNSLOTH_STUDIO_HOME for an install")
     ap.add_argument("--port", type = int, default = 5399)
-    # `unsloth`, not `admin`. Studio's first run prints "DEFAULT ADMIN ACCOUNT CREATED / username:
-    # unsloth", and the wrong one answers 401 with a message about resetting the PASSWORD, which
-    # sends you looking in the wrong place.
+    # `unsloth`, not `admin`: Unsloth's first run prints "DEFAULT ADMIN ACCOUNT CREATED / username:
+    # unsloth", and the wrong one answers 401 with a message about resetting the PASSWORD.
     ap.add_argument("--username", default = "unsloth")
     ap.add_argument("--password", default = "")
     ap.add_argument(
         "--password-b",
         dest = "password_b",
         default = "",
-        help = "the treatment Studio's password, when --ab is used together with --attach-b. "
-        "Two Studios booted separately mint two different bootstrap passwords, so one "
+        help = "the treatment Unsloth's password, when --ab is used together with --attach-b. "
+        "Two Unsloth instances booted separately mint two different bootstrap passwords, so one "
         "--password cannot authenticate both. Defaults to --password",
     )
     ap.add_argument("--out", help = "output directory")
@@ -1924,6 +2568,23 @@ def parse_args(argv: list):
         "the rest of the app. Off by default: it costs about a minute per arm "
         "and it does not measure performance",
     )
+    ap.add_argument(
+        "--parity-shots",
+        metavar = "DIR",
+        dest = "parity_shots",
+        help = "write a viewport PNG per action per arm into DIR, taken at the same instant as "
+        "the parity digest, so a mismatch can be SEEN rather than read as a hex pair. Off by "
+        "default",
+    )
+    ap.add_argument(
+        "--parity-raw",
+        action = "store_true",
+        dest = "parity_raw",
+        help = "record the NORMALISED signature text beside every parity digest, so "
+        "`sweep/parity_null_control.py --hunt` can name which bytes moved between two arms "
+        "instead of only that they did. Off by default: it multiplies a payload's size by "
+        "roughly a hundred, and only the hunt reads it",
+    )
     ap.add_argument("--headed", action = "store_true")
     ap.add_argument("--keep-studio", action = "store_true")
     ap.add_argument(
@@ -1934,8 +2595,7 @@ def parse_args(argv: list):
         "investigation by about 3.2x",
     )
     args = ap.parse_args(argv)
-    # Whether the ladder was ASKED FOR or merely defaulted. Only `--report` cares; everything else
-    # sees the tier it always saw.
+    # Whether the ladder was ASKED FOR or merely defaulted. Only `--report` cares.
     args.tier_explicit = args.tier is not None
     if args.tier is None:
         args.tier = "quick"
@@ -1949,6 +2609,8 @@ def main(argv: list) -> int:
         return doctor(args)
     if args.report:
         return report_only(args)
+    if args.compare:
+        return compare_payloads(args)
     if args.assert_liveness:
         return assert_liveness(args)
     if args.ab:

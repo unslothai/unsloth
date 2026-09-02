@@ -76,7 +76,7 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, _FIT_MIN_CTX, LlamaCppBackend
 
 # Helpers
 
@@ -1668,7 +1668,11 @@ class TestServerFlags:
     def test_fit_threads_swa_full_through_estimator(self):
         # SWA model, generous budget; both should fit but cache size differs.
         b = self._swa_backend()
-        ctx = 8192
+        # Above the fit floor, so the search has somewhere to shrink TO. Spelled
+        # 8192 this sat exactly on the floor once it moved there, and the assert
+        # below stopped testing that swa_full costs more: the fit could not return
+        # anything smaller than the request, whatever the estimator said.
+        ctx = 2 * _FIT_MIN_CTX
         kv_default = b._estimate_kv_cache_bytes(ctx, "f16")
         kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
         assert kv_full > kv_default

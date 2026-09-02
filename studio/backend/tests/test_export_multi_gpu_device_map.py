@@ -3,8 +3,9 @@
 
 """Export checkpoint loading must shard across every visible GPU (#7053): the
 ``device_map="sequential"`` loader default stacks the whole model on GPU0 and OOMs
-while the other GPUs sit empty. The loader now passes ``device_map="balanced"``, but
-only on a real multi-GPU CUDA/ROCm host, so single-GPU, CPU and MLX are untouched."""
+while the other GPUs sit empty. The loader now passes whichever sharding map
+``get_device_map`` resolves (``"unsloth"`` on CUDA, ``"balanced"`` elsewhere), but only
+on a real multi-GPU host, so single-GPU, CPU and MLX are untouched."""
 
 from __future__ import annotations
 
@@ -46,6 +47,16 @@ def test_multi_gpu_host_gets_balanced(monkeypatch):
     monkeypatch.setattr(mod, "_IS_MLX", False)
     _stub_hardware(monkeypatch, [0, 1, 2], "balanced")
     assert mod._multi_gpu_device_map_kwargs() == {"device_map": "balanced"}
+
+
+def test_multi_gpu_cuda_host_passes_the_unsloth_planner_through(monkeypatch):
+    """CUDA multi-GPU now resolves to "unsloth". A whitelist of just "balanced"
+    dropped the map and left the export on the loader default, which is the
+    single-GPU stacking this file exists to prevent."""
+    mod = _export_mod(monkeypatch)
+    monkeypatch.setattr(mod, "_IS_MLX", False)
+    _stub_hardware(monkeypatch, [0, 1, 2], "unsloth_balanced")
+    assert mod._multi_gpu_device_map_kwargs() == {"device_map": "unsloth_balanced"}
 
 
 def test_single_gpu_host_keeps_loader_default(monkeypatch):
@@ -251,7 +262,9 @@ def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch,
     assert ok, message
     assert len(calls) == 2
     assert calls[0]["device_map"] == "balanced"
-    assert "device_map" not in calls[1]
+    # Named, not omitted: an omitted map is unsloth's marked default, which is upgraded
+    # back to the planner rather than being the single-device load this retry wants.
+    assert calls[1]["device_map"] == "sequential"
 
 
 def test_single_gpu_offload_is_left_alone(monkeypatch, tmp_path):
@@ -278,7 +291,11 @@ def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "balanced"})
+    monkeypatch.setattr(
+        mod,
+        "_multi_gpu_device_map_kwargs",
+        lambda: {"device_map": "balanced"},
+    )
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -287,3 +304,141 @@ def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
     ok, message = backend.load_checkpoint(str(checkpoint))
     assert ok, message
     assert len(_AlwaysSpills.calls) == 2
+
+
+# ── the "unsloth" planner refusing to place the model ──
+
+
+def test_is_device_map_infeasible_matches_by_class_name(monkeypatch):
+    mod = _export_mod(monkeypatch)
+
+    class DeviceMapInfeasible(RuntimeError):
+        pass
+
+    assert mod._is_device_map_infeasible(DeviceMapInfeasible("needs 7.5 GiB free on cuda:0"))
+    assert not mod._is_device_map_infeasible(RuntimeError("needs 7.5 GiB free on cuda:0"))
+
+
+def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_path):
+    """The planner budgets from memory read before this process opens a context, so a
+    training or chat job holding the other cards can make it refuse a model the old
+    single-device load still fits. That was a working export before the switch."""
+    mod = _export_mod(monkeypatch)
+
+    class DeviceMapInfeasible(RuntimeError):
+        pass
+
+    class _RefusesThenLoads:
+        calls: list[dict] = []
+
+        @classmethod
+        def from_pretrained(cls, **kwargs):
+            cls.calls.append(kwargs)
+            if len(cls.calls) == 1:
+                raise DeviceMapInfeasible("2 x 8 GiB is not enough for the head")
+            return types.SimpleNamespace(
+                hf_device_map = {"model.layers.0": 0}
+            ), types.SimpleNamespace()
+
+    monkeypatch.setattr(mod, "FastLanguageModel", _RefusesThenLoads)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "unsloth_balanced"}
+    )
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+
+    assert ok, message
+    assert len(_RefusesThenLoads.calls) == 2
+    assert _RefusesThenLoads.calls[0]["device_map"] == "unsloth_balanced"
+    assert _RefusesThenLoads.calls[1]["device_map"] == "sequential"
+
+
+def test_an_unrelated_error_is_still_reported_rather_than_retried(monkeypatch, tmp_path):
+    # The retry is for placement, not for every failure: a broken checkpoint must not
+    # be loaded twice and reported against the second attempt.
+    mod = _export_mod(monkeypatch)
+
+    class _AlwaysBroken:
+        calls: list[dict] = []
+
+        @classmethod
+        def from_pretrained(cls, **kwargs):
+            cls.calls.append(kwargs)
+            raise ValueError("adapter_config.json is not valid JSON")
+
+    monkeypatch.setattr(mod, "FastLanguageModel", _AlwaysBroken)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "unsloth_balanced"}
+    )
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+
+    assert not ok
+    assert len(_AlwaysBroken.calls) == 1
+    assert "not valid JSON" in message
+
+
+def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypatch, tmp_path):
+    """An omitted device_map is not the loader default any more.
+
+    unsloth's signature default is `DEFAULT_DEVICE_MAP`, a marked "sequential" that
+    `requested_device_map` upgrades back to the planner unless UNSLOTH_AUTO_DEVICE_MAP=0.
+    So `_device_map_override = {}` would re-run the very placement that just failed and
+    report the same error, and the retry would look like a fallback while being none.
+    """
+    mod = _export_mod(monkeypatch)
+
+    class DeviceMapInfeasible(RuntimeError):
+        pass
+
+    class _RefusesAnyPlan:
+        calls: list[dict] = []
+
+        @classmethod
+        def from_pretrained(cls, **kwargs):
+            cls.calls.append(kwargs)
+            # Stands in for the planner: it refuses whenever it is the one asked to place.
+            if (
+                kwargs.get("device_map") in ("unsloth", "unsloth_balanced", None)
+                or "device_map" not in kwargs
+            ):
+                raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
+            return types.SimpleNamespace(
+                hf_device_map = {"model.layers.0": 0}
+            ), types.SimpleNamespace()
+
+    monkeypatch.setattr(mod, "FastLanguageModel", _RefusesAnyPlan)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "unsloth_balanced"}
+    )
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+
+    assert ok, message
+    assert len(_RefusesAnyPlan.calls) == 2
+    assert _RefusesAnyPlan.calls[0]["device_map"] == "unsloth_balanced"
+    assert _RefusesAnyPlan.calls[1]["device_map"] == "sequential"
