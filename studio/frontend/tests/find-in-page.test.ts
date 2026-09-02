@@ -1447,6 +1447,70 @@ test("an engine without lookbehind falls back rather than throwing", () => {
   }
 });
 
+test("no Hangul match ever begins or ends inside a grapheme", () => {
+  // Five rounds of review found five ways to stop or start half way through a Hangul syllable,
+  // each a range that had not been thought of. So this asserts the property rather than the cases,
+  // against `Intl.Segmenter` as the authority on where a grapheme ends.
+  const segmenter = new Intl.Segmenter("ko", { granularity: "grapheme" });
+  const boundaries = (body: string) => {
+    const edges = new Set([0]);
+    let at = 0;
+    for (const { segment } of segmenter.segment(body)) {
+      at += segment.length;
+      edges.add(at);
+    }
+    return edges;
+  };
+
+  // Leading, vowel and trailing Jamo from the main block and from Extended-A and Extended-B.
+  const leads = ["\u1100", "\u1101", "\ua960"];
+  const vowels = ["\u1161", "\u1162", "\ud7b0"];
+  const trails = ["\u11a8", "\u11a9", "\ud7cb"];
+  const corpus = new Set([
+    "hello \uac00",
+    "\uac00 hello",
+    "\uac00\ub098\ub2e4",
+  ]);
+  for (const lead of leads) {
+    corpus.add(lead);
+    for (const vowel of vowels) {
+      const open = lead + vowel;
+      corpus.add(open);
+      corpus.add(open.normalize("NFC"));
+      for (const other of vowels) corpus.add(open + other);
+      for (const other of leads) corpus.add(lead + other + vowel);
+      for (const trail of trails) {
+        const closed = open + trail;
+        corpus.add(closed);
+        corpus.add(closed.normalize("NFC"));
+        corpus.add(open.normalize("NFC") + trail);
+        for (const other of trails) corpus.add(closed + other);
+      }
+    }
+  }
+
+  let checked = 0;
+  for (const body of corpus) {
+    const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
+    const edges = boundaries(index.text);
+    for (const query of corpus) {
+      for (const hit of findMatches(index, query, 50)) {
+        checked += 1;
+        assert.ok(
+          edges.has(hit.start) && edges.has(hit.end),
+          `${escape(body)} searched for ${escape(query)} gave ${hit.start}..${hit.end}`,
+        );
+      }
+    }
+    // And every string still finds itself, which is what a fence is easiest to break.
+    assert.ok(
+      findMatches(index, body, 10).length >= 1,
+      `${escape(body)} cannot find itself`,
+    );
+  }
+  assert.ok(checked > 200, `only ${checked} matches exercised`);
+});
+
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
   const dom = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),

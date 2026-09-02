@@ -388,7 +388,7 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
  *  combining marks, so the general branch made three clusters of one syllable and composed none
  *  back, and every Korean query missed. */
 const CLUSTER_PATTERN =
-  /[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]*[\u11a8-\u11ff\ud7cb-\ud7fb]*|[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+  /[\u1100-\u115f\ua960-\ua97c]+[\u1160-\u11a7\ud7b0-\ud7c6]*[\u11a8-\u11ff\ud7cb-\ud7fb]*|[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
 
 /** A trailing Jamo closing a syllable, and a leading Jamo with the vowel that makes it a syllable.
  *  The vowel is required: a bare leading Jamo is its own grapheme, not a syllable waiting to be
@@ -396,6 +396,16 @@ const CLUSTER_PATTERN =
 const HANGUL_TRAILING_PATTERN = /[\u11a8-\u11ff\ud7cb-\ud7fb]/;
 /** A leading Jamo, and a leading Jamo followed by the vowel that makes the two a syllable. */
 const HANGUL_LEADING_PATTERN = /^[\u1100-\u115f\ua960-\ua97c]/;
+/** Any Hangul Jamo or precomposed syllable. */
+const HANGUL_ANY_PATTERN =
+  /[\u1100-\u11ff\ua960-\ua97c\ud7b0-\ud7fb\uac00-\ud7a3]/;
+
+/** What may still join a grapheme, by the last Jamo the query got to (UAX 29 GB6/GB7/GB8). */
+const HANGUL_AFTER_L =
+  "(?![\\u1100-\\u115f\\ua960-\\ua97c\\u1160-\\u11a7\\ud7b0-\\ud7c6\\uac00-\\ud7a3])";
+const HANGUL_AFTER_V = "(?![\\u1160-\\u11ff\\ud7b0-\\ud7c6\\ud7cb-\\ud7fb])";
+const HANGUL_AFTER_T = "(?![\\u11a8-\\u11ff\\ud7cb-\\ud7fb])";
+
 const HANGUL_SYLLABLE_PATTERN =
   /^[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]/;
 
@@ -437,12 +447,17 @@ function canonicalSource(needle: string, dotted: boolean): string {
       spellings.length === 1
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
-    // ... nor may it STOP inside one. Closed as well as open: a query carrying one trailing Jamo
-    // could otherwise match the prefix of a grapheme that carries two, highlighting part of a
-    // letter. A bare leading Jamo is exempt, being its own grapheme rather than a syllable
-    // waiting to be closed.
-    if (HANGUL_SYLLABLE_PATTERN.test(cluster)) {
-      out += "(?![\\u11a8-\\u11ff\\ud7cb-\\ud7fb])";
+    // ... nor may it STOP inside one. What can still join depends on how far the syllable has got,
+    // which is what UAX 29 says about Hangul: a leading Jamo takes another leading Jamo, a vowel or
+    // a whole syllable; a vowel takes another vowel or a trailing Jamo; a trailing Jamo takes only
+    // another trailing Jamo. Guessing this rule one range at a time is what kept getting it wrong.
+    if (HANGUL_LEADING_PATTERN.test(cluster)) {
+      out +=
+        trailing !== null
+          ? HANGUL_AFTER_T
+          : HANGUL_SYLLABLE_PATTERN.test(cluster)
+            ? HANGUL_AFTER_V
+            : HANGUL_AFTER_L;
     }
   }
   return out;
@@ -456,7 +471,14 @@ function escapeForRegex(text: string): string {
  *  while its node holds the newline; the separator is not whitespace, so blocks stay shut. */
 function matchPattern(variants: string[], needle: string): RegExp | null {
   const dotted = variants.some((variant) => variant.includes(COMBINING_DOT));
-  if (variants.length === 1 && !/\s/.test(needle)) return null;
+  // Hangul always takes the pattern, even when it has only one spelling: the grapheme fences live
+  // there, and the literal scan below would happily stop half way through a syllable.
+  if (
+    variants.length === 1 &&
+    !/\s/.test(needle) &&
+    !HANGUL_ANY_PATTERN.test(needle)
+  )
+    return null;
   try {
     const pattern = new RegExp(canonicalSource(needle, dotted), "g");
     // V8 compiles lazily, so an oversized pattern is accepted here and throws on the first `exec`,
