@@ -1629,6 +1629,31 @@ test("plain text does not pay for the boundary check", () => {
   assert.ok(before > 0 && before < asks, "the cheap test comes first");
 });
 
+test("the cheap boundary test looks at both sides of each edge", () => {
+  // The shortcut asked what sat outside the match and not what sat at its edges, so a query that
+  // itself ends in a character joining forwards slipped through: a Prepend at the start of the
+  // text has nothing before it and an ordinary letter after it, and both outside looks passed.
+  const index = (body: string) =>
+    buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  assert.deepEqual(findMatches(index("\u0600a"), "\u0600", 10), []);
+  // The same from the other side, where the match begins with a mark that joins backwards.
+  assert.deepEqual(findMatches(index("a\u0301"), "\u0301", 10), []);
+});
+
+test("text with no whitespace for hundreds of characters is still fenced", () => {
+  // The window is anchored at the nearest whitespace or block separator, and where there is none
+  // in reach the match used to be waved through. A log line, a URL or a long identifier has none
+  // for hundreds of characters, which put the original hole straight back.
+  const index = (body: string) =>
+    buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  const run = "a".repeat(257);
+  assert.deepEqual(findMatches(index(`${run}\uac01\u11a8`), "\uac01", 10), []);
+  // ... while a match that really is whole is still found out there.
+  assert.deepEqual(findMatches(index(`${run}\uac01 x`), "\uac01", 10), [
+    { start: 257, end: 258 },
+  ]);
+});
+
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
   const dom = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),

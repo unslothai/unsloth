@@ -503,8 +503,12 @@ function alignsToGraphemes(text: string, start: number, end: number): boolean {
   // far more than looking. Nothing below U+0300 extends a grapheme: the lowest combining mark is
   // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and
   // everything astral arrives here as a surrogate. Latin prose therefore pays one comparison.
+  // Both sides of each edge, not just the outside: a query can itself begin with a mark that joins
+  // what precedes it, or end with one that joins what follows.
   if (
     !(start > 0 && JOINS_GRAPHEME.test(text[start - 1])) &&
+    !JOINS_GRAPHEME.test(text[start]) &&
+    !JOINS_GRAPHEME.test(text[end - 1]) &&
     !(end < text.length && JOINS_GRAPHEME.test(text[end]))
   ) {
     return true;
@@ -516,8 +520,17 @@ function alignsToGraphemes(text: string, start: number, end: number): boolean {
     if (BOUNDARY_ANCHOR.test(text[from - 1])) break;
     from -= 1;
   }
-  if (from > 0 && start - from >= ANCHOR_SCAN) return true;
-  const to = Math.min(text.length, end + ANCHOR_SCAN);
+  // Forward only as far as the next anchor, for the same reason: what decides the boundary at the
+  // end of the match is the handful of characters after it, and in prose the next space is close.
+  let to = end;
+  while (to < text.length && to - end < ANCHOR_SCAN) {
+    if (BOUNDARY_ANCHOR.test(text[to])) break;
+    to += 1;
+  }
+  // A run with no anchor in reach is still segmented, from as far back as the scan went, rather
+  // than waved through: a log line or a URL has no whitespace for hundreds of characters, and
+  // accepting there put the hole straight back. Only the first cluster of such a window can be
+  // misread, and by `start` the segmentation has long resynchronised.
   let sawStart = start === from;
   let sawEnd = false;
   for (const { index } of segments.segment(text.slice(from, to))) {
