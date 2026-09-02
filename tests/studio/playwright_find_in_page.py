@@ -91,7 +91,13 @@ failures: list[str] = []
 passed = 0
 
 
-def check(engine: str, mode: str, name: str, ok: bool, detail: str = "") -> None:
+def check(
+    engine: str,
+    mode: str,
+    name: str,
+    ok: bool,
+    detail: str = "",
+) -> None:
     global passed
     if ok:
         passed += 1
@@ -137,8 +143,7 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
         engine,
         mode,
         "the chord re-focuses the field instead of closing",
-        state(page).get("open") is True
-        and state(page).get("focusToken") != before,
+        state(page).get("open") is True and state(page).get("focusToken") != before,
     )
     close_bar(page)
     check(engine, mode, "Escape closes the bar", state(page).get("open") is False)
@@ -228,8 +233,7 @@ def check_streaming(page, engine: str, mode: str, mod: str) -> None:
         mode,
         "a streamed reply does not move the reader",
         page.evaluate("() => window.__findSmoke.scrollTop()") == before_scroll,
-        f"scrollTop {before_scroll} -> "
-        f"{page.evaluate('() => window.__findSmoke.scrollTop()')}",
+        f"scrollTop {before_scroll} -> " f"{page.evaluate('() => window.__findSmoke.scrollTop()')}",
     )
     close_bar(page)
 
@@ -259,9 +263,7 @@ def check_paint_and_teardown(page, engine: str, mode: str, mod: str) -> None:
         # back - so the invariant here is the one that is not negotiable: the field still works.
         # Moving the selection out from under a focused field used to swallow every keystroke after
         # the first, which froze the query at one character on exactly the engines that land here.
-        typed = page.evaluate(
-            "() => document.querySelector('[role=\"search\"] input')?.value"
-        )
+        typed = page.evaluate("() => document.querySelector('[role=\"search\"] input')?.value")
         check(
             engine,
             mode,
@@ -454,8 +456,7 @@ def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
     # observer's own batch, leaving the region counted until something else
     # happened to mutate.
     page.evaluate(
-        "() => document.getElementById('probe-skip')"
-        "?.setAttribute('data-find-skip', '')"
+        "() => document.getElementById('probe-skip')?.setAttribute('data-find-skip', '')"
     )
     page.wait_for_timeout(900)
     after = counter(page)
@@ -532,8 +533,7 @@ def run_engine(pw, engine: str) -> None:
         ):
             context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
             context.add_init_script(
-                "Object.defineProperty(navigator, 'platform', "
-                "{ get: () => 'Linux x86_64' });"
+                "Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });"
             )
             context.add_init_script(script)
             page = new_page(context)
