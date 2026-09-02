@@ -5175,7 +5175,7 @@ def _stdout_supports_color() -> bool:
 _HAS_COLOR = _stdout_supports_color()
 
 
-# Column layout — matches setup.sh step() helper:
+# Column layout - matches setup.sh step() helper:
 #   2-space indent, 15-char label (dim), then value.
 _LABEL = "deps"
 _COL = 15
