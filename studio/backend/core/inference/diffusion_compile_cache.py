@@ -89,13 +89,8 @@ def _portable_mode() -> bool:
 
 
 def _default_root() -> Path:
-    """Bundle root under the Studio cache, resolved per call.
-
-    Not a module constant: storage_roots reads UNSLOTH_STUDIO_HOME, and this
-    module is imported early enough that a constant would freeze the pre-startup
-    value. Falls back to the old ~/.cache/unsloth path when the backend package
-    is not importable, which is how the standalone diffusion tools run.
-    """
+    """Resolved per call, not a module constant: this module is imported before
+    startup sets UNSLOTH_STUDIO_HOME, which storage_roots reads."""
     try:
         from utils.paths.storage_roots import cache_root as studio_cache_root
     except ImportError:
@@ -108,12 +103,9 @@ def cache_root() -> Path:
     if root:
         return Path(root)
     default = _default_root()
-    # A bundle written by an older build is still valid, and re-compiling for a
-    # path change alone would cost every existing user a cold start. Not in
-    # portable mode: this root is also where begin() points inductor, so keeping
-    # it would write GBs of bundles into the home directory of whatever machine a
-    # self-contained install is plugged into, which is the one thing that mode
-    # promises not to do.
+    # Reuse old bundles rather than force a cold start, except in portable mode:
+    # begin() points inductor here too, so this would write GBs into the home
+    # directory of whatever machine the install is plugged into.
     if not default.exists() and _LEGACY_ROOT.exists() and not _portable_mode():
         return _LEGACY_ROOT
     return default

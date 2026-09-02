@@ -341,10 +341,7 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
 
 
-# ---------------------------------------------------------------------------- cache root
 def test_legacy_bundles_are_kept_on_a_normal_install(monkeypatch, tmp_path):
-    # A bundle written by an older build is still valid: re-compiling for a path
-    # change alone would cost every existing user a cold start.
     monkeypatch.delenv(cc._ENV_DIR, raising = False)
     monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
@@ -357,9 +354,8 @@ def test_legacy_bundles_are_kept_on_a_normal_install(monkeypatch, tmp_path):
 
 
 def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_path):
-    # begin() also points TORCHINDUCTOR_CACHE_DIR inside this root, so falling
-    # back here would write GBs into the home directory of whatever machine a
-    # self-contained install is plugged into.
+    # begin() points TORCHINDUCTOR_CACHE_DIR inside this root, so falling back
+    # here would write GBs into the host machine's home directory.
     monkeypatch.delenv(cc._ENV_DIR, raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))

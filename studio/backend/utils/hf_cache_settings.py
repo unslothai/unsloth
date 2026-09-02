@@ -110,14 +110,9 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 
 
 def _stored_cache_home() -> Optional[Path]:
-    # Skip the read when nothing here uses a database: no file on disk AND
-    # nothing has imported the database module. get_app_setting opens a
-    # connection, which CREATES and migrates studio.db, and this resolver is now
-    # reached from the CLI (unsloth train / inference / export seed the cache
-    # environment), so asking unconditionally built a ~250 KB database on
-    # machines that had never opened Studio. Either condition holding means a
-    # database is in play and the stored setting is worth reading; neither
-    # holding means there is no setting to find, so the answer is the same.
+    # get_app_setting CREATES and migrates studio.db, so reading unconditionally
+    # built one on machines that had never opened Studio. No file and no imported
+    # db module means there is no stored setting to find anyway.
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
@@ -162,14 +157,9 @@ def configured_cache_key() -> str:
 
 
 def _portable_cache_home() -> Optional[Path]:
-    """The HF cache home a portable install uses, or None.
-
-    Only a portable install redirects this. A normal install keeps the platform
-    default so models fetched before Unsloth, or shared with LM Studio / Ollama /
-    plain huggingface_hub, are found rather than downloaded a second time.
-
-    Imported lazily: storage_roots reaches into this module during startup, and a
-    module-level import would close that loop.
+    """The HF cache home a portable install uses, or None. A normal install keeps
+    the platform default so models shared with other tools are not re-downloaded.
+    Imported lazily: storage_roots reaches into this module during startup.
     """
     try:
         from utils.paths.storage_roots import cache_root, portable_mode
@@ -196,8 +186,8 @@ def get_hf_cache_paths() -> HuggingFaceCachePaths:
             _canonical(xet) if xet else stored / "xet",
             "studio",
         )
-    # Below an explicit env var and the user's own Settings choice: portable mode
-    # is an install-time default, not an instruction to override either of those.
+    # Below an explicit env var and the user's Settings choice: portable mode is
+    # an install-time default, not an instruction to override either.
     home = _portable_cache_home() or _default_cache_home()
     xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
     return HuggingFaceCachePaths(
