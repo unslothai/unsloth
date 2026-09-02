@@ -214,6 +214,10 @@ _FRAGMENTS = (
     # driven rather than constant.
     '{"name": "terminal", "parameters": {"command": "id"}};'
     '{"name": "get_weather", "parameters": {"city": "Paris"}}',
+    # Chunk boundaries mid-call, so the streaming holds are driven rather than constant.
+    "Here is prose call:get_weather{city:",
+    "Here is prose cal",
+    '{"name": "terminal", "parameters": {"command": "id"}}; call:get_weather{city:1}',
     '<|python_tag|>{"name": "get_weather", "parameters": {"city": "Paris"}}',
     '<|python_tag|>get_weather.call(city="Paris")',
     '{"name": "get_weather", "parameters": {"city": "Paris"}}',

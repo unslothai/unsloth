@@ -2869,6 +2869,10 @@ def promotable_gemma_call_pos(
     return -1
 
 
+# ``call`` plus separators and any name worth holding; the candidate can only sit at the end.
+_MAX_GEMMA_PREFIX_TAIL = 256
+
+
 def _last_bare_call_word(text: str) -> int:
     """Offset of the last ``call`` that starts a word, or -1 (so ``recall`` is skipped)."""
     idx = text.rfind("call")
@@ -2918,18 +2922,24 @@ def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> in
     first. STREAMING holds this tail as it holds a split ``NAME[ARGS]`` rehearsal. Prose
     releases it, and so does a closed call, whose boundary the signal scan already owns.
     """
-    partial = _GEMMA_BARE_TC_PREFIX_RE.search(text)
+    # ``search(text, pos)`` over a bounded window, not a slice, so ``(?<!\w)`` still sees the
+    # character before it. This runs per streamed chunk on the whole cumulative text, so an
+    # unanchored scan of the response would make an ordinary long reply quadratic.
+    partial = _GEMMA_BARE_TC_PREFIX_RE.search(text, max(0, len(text) - _MAX_GEMMA_PREFIX_TAIL))
     if partial is not None:
         return len(text) - partial.start()
-    idx = _last_bare_call_word(text)
-    if idx >= 0:
-        m = _GEMMA_BARE_TC_RE.match(text, idx)
-        if (
-            m is not None
-            and _markerless_promotable(m.group(1), enabled_tool_names)
-            and _gemma_body_brace_end(text, m.end() - 1) is None
-        ):
-            return len(text) - idx
+    # Only an unclosed brace can still be an open call body, and that is a pair of rfinds
+    # instead of a scan back to the opener on every chunk of ordinary prose.
+    if text.rfind("{") > text.rfind("}"):
+        idx = _last_bare_call_word(text)
+        if idx >= 0:
+            m = _GEMMA_BARE_TC_RE.match(text, idx)
+            if (
+                m is not None
+                and _markerless_promotable(m.group(1), enabled_tool_names)
+                and _gemma_body_brace_end(text, m.end() - 1) is None
+            ):
+                return len(text) - idx
     return _partial_call_word_len(text)
 
 
