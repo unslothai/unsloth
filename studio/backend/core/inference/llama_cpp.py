@@ -454,9 +454,12 @@ logger = get_logger(__name__)
 _SUPPORTS_REASONING_FLAG_CAPABILITY = "supports_reasoning_flag"
 _ENABLE_THINKING_KWARG = "enable_thinking"
 _PRESERVE_THINKING_KWARG = "preserve_thinking"
+_MTP_PROBE_INCONCLUSIVE_CAPABILITY = "mtp_probe_inconclusive"
 _REASONING_FLAG = "--reasoning"
 _REASONING_ON = "on"
 _REASONING_OFF = "off"
+_REASONING_AUTO = "auto"
+_EXPLICIT_REASONING_ENV_VALUES = frozenset({_REASONING_ON, _REASONING_OFF})
 _CHAT_TEMPLATE_KWARGS_FLAG = "--chat-template-kwargs"
 _LLAMA_REASONING_ENV = "LLAMA_ARG_REASONING"
 
@@ -6679,13 +6682,26 @@ class LlamaCppBackend:
     ) -> None:
         """Append reasoning defaults, retaining kwargs for older llama-server builds."""
         reasoning_kwargs = self._reasoning_kwargs(thinking_default)
+        env_reasoning = os.environ.get(_LLAMA_REASONING_ENV, "").strip().lower()
+        if env_reasoning == _REASONING_AUTO:
+            explicit_env_reasoning = None
+        else:
+            explicit_env_reasoning = (
+                env_reasoning if env_reasoning in _EXPLICIT_REASONING_ENV_VALUES else None
+            )
+        if explicit_env_reasoning is not None:
+            self._reasoning_default = explicit_env_reasoning == _REASONING_ON
         if (
             server_caps.get(_SUPPORTS_REASONING_FLAG_CAPABILITY)
             and _ENABLE_THINKING_KWARG in reasoning_kwargs
         ):
             enabled = reasoning_kwargs.pop(_ENABLE_THINKING_KWARG)
-            if not os.environ.get(_LLAMA_REASONING_ENV, "").strip():
+            if explicit_env_reasoning is None:
                 cmd.extend([_REASONING_FLAG, _REASONING_ON if enabled else _REASONING_OFF])
+        elif explicit_env_reasoning is not None and server_caps.get(
+            _MTP_PROBE_INCONCLUSIVE_CAPABILITY
+        ):
+            reasoning_kwargs.pop(_ENABLE_THINKING_KWARG, None)
         if self._supports_preserve_thinking:
             reasoning_kwargs[_PRESERVE_THINKING_KWARG] = self._preserve_thinking_default
         if reasoning_kwargs:
