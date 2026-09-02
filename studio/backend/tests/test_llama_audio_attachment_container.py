@@ -747,16 +747,11 @@ def test_a_compressed_wav_is_not_measured_with_pcm_arithmetic(monkeypatch):
     rate, block_align, samples_per_block = 8_000, 256, 505
     byte_rate = round(rate / samples_per_block * block_align)
     payload = b"\x00" * (byte_rate * 120)
-    adpcm = (
-        _wav_header(rate, 1, 4, len(payload), byte_rate = byte_rate, format_tag = 0x11)
-        + payload
-    )
+    adpcm = _wav_header(rate, 1, 4, len(payload), byte_rate = byte_rate, format_tag = 0x11) + payload
     assert inference_route._wav_seconds(adpcm) is None
 
     _decode_instead_of_forwarding(monkeypatch)
-    _encoded, container = inference_route._prepare_audio_for_llama(
-        base64.b64encode(adpcm).decode()
-    )
+    _encoded, container = inference_route._prepare_audio_for_llama(base64.b64encode(adpcm).decode())
     assert container == "wav"
 
     # Uncompressed tags keep their header arithmetic, extensible included.
@@ -769,14 +764,12 @@ def test_an_extensible_wav_is_measured_by_its_sub_format():
     """WAVE_FORMAT_EXTENSIBLE carries the real tag in its SubFormat GUID, and a
     file claiming the tag without the extension has not said what it holds."""
     payload = b"\x80" * 8_000
-    pcm_sub = _wav_header(
-        8_000, 1, 8, len(payload), format_tag = 0xFFFE, sub_format = 0x0001
-    ) + payload
+    pcm_sub = _wav_header(8_000, 1, 8, len(payload), format_tag = 0xFFFE, sub_format = 0x0001) + payload
     assert inference_route._wav_seconds(pcm_sub) == pytest.approx(1.0, rel = 1e-6)
 
-    adpcm_sub = _wav_header(
-        8_000, 1, 8, len(payload), format_tag = 0xFFFE, sub_format = 0x0011
-    ) + payload
+    adpcm_sub = (
+        _wav_header(8_000, 1, 8, len(payload), format_tag = 0xFFFE, sub_format = 0x0011) + payload
+    )
     assert inference_route._wav_seconds(adpcm_sub) is None
 
     bare = _wav_header(8_000, 1, 8, len(payload), format_tag = 0xFFFE) + payload
@@ -808,9 +801,7 @@ def test_the_last_resort_decoder_reads_a_bounded_range(monkeypatch):
             ranges.append((start, stop))
             return _Samples()
 
-    monkeypatch.setitem(
-        sys.modules, "torchcodec", types.SimpleNamespace(decoders = None)
-    )
+    monkeypatch.setitem(sys.modules, "torchcodec", types.SimpleNamespace(decoders = None))
     monkeypatch.setitem(
         sys.modules,
         "torchcodec.decoders",
@@ -838,9 +829,7 @@ def test_the_last_resort_decoder_refuses_an_overlong_file(monkeypatch):
         def get_samples_played_in_range(self, _start, _stop):
             raise AssertionError("an over-limit file must not be decoded")
 
-    monkeypatch.setitem(
-        sys.modules, "torchcodec", types.SimpleNamespace(decoders = None)
-    )
+    monkeypatch.setitem(sys.modules, "torchcodec", types.SimpleNamespace(decoders = None))
     monkeypatch.setitem(
         sys.modules,
         "torchcodec.decoders",
@@ -1201,9 +1190,7 @@ def test_torchaudio_alone_can_still_decode_audio(monkeypatch):
             pass
 
     monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
-    monkeypatch.setitem(
-        sys.modules, "torchcodec", types.SimpleNamespace(decoders = None)
-    )
+    monkeypatch.setitem(sys.modules, "torchcodec", types.SimpleNamespace(decoders = None))
     monkeypatch.setitem(
         sys.modules,
         "torchcodec.decoders",
