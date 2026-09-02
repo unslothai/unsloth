@@ -759,6 +759,23 @@ _export_portable_roots() {
 }
 _export_portable_roots
 
+# mkdir -p follows a layout directory the user pre-symlinked to another volume, so
+# the tree lands there and the `rm -rf '<root>'` printed below leaves it behind.
+# Named rather than refused: the big-disk layout is deliberate, our promise is what
+# is wrong.
+_portable_escapes() {
+    [ "$_PORTABLE_MODE" = true ] || return 0
+    for _esc_name in studio share bin cache llama.cpp; do
+        _esc_link="$UNSLOTH_ROOT/$_esc_name"
+        [ -L "$_esc_link" ] || continue
+        # No readlink -f / realpath: neither is POSIX and BSD readlink lacks -f.
+        _esc_target="$(CDPATH= cd -P -- "$_esc_link" 2>/dev/null && pwd -P)" || _esc_target=""
+        [ -n "$_esc_target" ] || continue
+        case "$_esc_target" in "$UNSLOTH_ROOT"|"$UNSLOTH_ROOT"/*) continue ;; esac
+        printf '%s -> %s\n' "$_esc_name" "$_esc_target"
+    done
+}
+
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks
 # whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it
 # several times (uv bootstrap, venv), so testing $PATH there answers yes for a shell that would
@@ -6465,6 +6482,14 @@ if [ "$_PORTABLE_MODE" = true ]; then
     _uninstall_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
     substep "remove it with:"
     substep "  rm -rf '$_uninstall_root'"
+    _escapes="$(_portable_escapes)"
+    if [ -n "$_escapes" ]; then
+        substep "these were already symlinks out of the root, so their contents" "$C_WARN"
+        substep "live elsewhere and that command will not remove them:" "$C_WARN"
+        printf '%s\n' "$_escapes" | while IFS= read -r _escape; do
+            substep "  $_escape" "$C_WARN"
+        done
+    fi
     # scripts/uninstall.sh treats UNSLOTH_HOME as an ADDITION to the default install it
     # always removes, so offering it here would delete a coexisting ~/.unsloth/studio.
     substep "scripts/uninstall.sh is not scoped to this root: it also clears"

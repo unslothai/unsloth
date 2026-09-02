@@ -261,6 +261,41 @@ case "$done_block" in
     *) printf '  PASS  %s\n' "closing message does not offer UNSLOTH_HOME=... scripts/uninstall.sh" ;;
 esac
 
+# A layout dir the user pre-symlinked to another volume is not covered by that
+# rm -rf, so the closing message has to say so.
+case "$done_block" in
+    *"_portable_escapes"*) printf '  PASS  %s\n' "closing message reports symlinks out of the root" ;;
+    *) printf '  FAIL  %s\n' "closing message reports symlinks out of the root"; fails=$((fails+1)) ;;
+esac
+
+esc_block="$(awk '
+    /^_portable_escapes\(\) \{$/ {grab = 1}
+    grab {print}
+    grab && /^\}$/ {exit}
+' "$INSTALL")"
+case "$esc_block" in *'pwd -P'*) : ;; *) echo "FAIL: esc_block extraction broke"; exit 1 ;; esac
+
+ESCSNIP='_PORTABLE_MODE=true
+UNSLOTH_ROOT="$1"
+'"$esc_block"'
+_portable_escapes'
+escapes() { bash -c "$ESCSNIP" _ "$1"; }
+
+mkdir -p "$T/escroot/studio" "$T/escroot/share" "$T/bigdisk/cache"
+ER="$(CDPATH= cd -P -- "$T/escroot" && pwd -P)"
+BIG="$(CDPATH= cd -P -- "$T/bigdisk/cache" && pwd -P)"
+check "a contained root reports no escapes" "" "$(escapes "$ER")"
+ln -s "$BIG" "$ER/cache"
+check "a cache symlinked off the root is named" "cache -> $BIG" "$(escapes "$ER")"
+rm "$ER/cache"
+mkdir -p "$ER/inside"
+ln -s "$ER/inside" "$ER/cache"
+check "a symlink inside the root is not an escape" "" "$(escapes "$ER")"
+rm "$ER/cache"
+rmdir "$ER/studio"
+ln -s "$BIG" "$ER/studio"
+check "a studio symlinked off the root is named" "studio -> $BIG" "$(escapes "$ER")"
+
 # setup.sh clears the desktop app's WebView caches under $HOME. Portable mode
 # prints "the desktop app and shell PATH were left untouched", so it must not.
 SETUP="$HERE/../../studio/setup.sh"

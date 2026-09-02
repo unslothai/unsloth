@@ -703,8 +703,10 @@ function Install-UnslothStudio {
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
         return (Exit-InstallFailure (Deny-PortableMode "UNSLOTH_HOME"))
     }
+    # -notin is already case-insensitive, so spelling "False" out bought nothing and
+    # left off/no -- off everywhere else -- failing an otherwise normal install.
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_PORTABLE) -and
-        $env:UNSLOTH_PORTABLE.Trim() -notin @("0", "false", "False")) {
+        $env:UNSLOTH_PORTABLE.Trim() -notin @("0", "false", "off", "no")) {
         return (Exit-InstallFailure (Deny-PortableMode "UNSLOTH_PORTABLE"))
     }
 

@@ -55,6 +55,7 @@ print("__JSON__" + json.dumps({
     "master": str(master) if master else None,
     "llama": os.environ.get("UNSLOTH_LLAMA_CPP_PATH"),
     "exported_home": os.environ.get("UNSLOTH_HOME"),
+    "studio_home_env": os.environ.get("UNSLOTH_STUDIO_HOME"),
     "caches": {k: os.environ.get(k) for k in (
         "UNSLOTH_PORTABLE", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_TOOL_DIR",
         "UV_TOOL_BIN_DIR", "UV_PYTHON_BIN_DIR", "UV_INSTALL_DIR", "UV_NO_MODIFY_PATH",
@@ -219,6 +220,33 @@ def main() -> int:
             str(tmp / "mine"),
             r["caches"].get("UV_CACHE_DIR"),
         )
+
+        # `--portable` with its default root: STUDIO_HOME equals the legacy path, so
+        # the custom-root test says no and the marker is the only portable signal.
+        dflt_home = tmp / "defaulthome"
+        dflt_home.mkdir()
+        dflt_root = dflt_home / ".unsloth"
+        dflt_prefix = _make_install(dflt_root, flat = False)
+        r = _run(CLI_PROBE, {"_PREFIX": str(dflt_prefix)}, dflt_home)
+        check("cli: default portable root is found", str(dflt_root), r["master"])
+        check("cli: default portable exports the master root", str(dflt_root), r["exported_home"])
+        for key, want in {
+            "UNSLOTH_PORTABLE": "1",
+            "UV_CACHE_DIR": str(dflt_root / "cache" / "uv"),
+            "NPM_CONFIG_CACHE": str(dflt_root / "cache" / "npm"),
+            "PIP_CACHE_DIR": str(dflt_root / "cache" / "pip"),
+        }.items():
+            check(f"cli: default portable exports {key}", want, r["caches"].get(key))
+
+        # The same shape without the marker is a plain install: it must export nothing.
+        plain_home = tmp / "plainhome"
+        (plain_home / ".unsloth" / "studio" / "unsloth_studio" / "bin").mkdir(parents = True)
+        plain_prefix = plain_home / ".unsloth" / "studio" / "unsloth_studio"
+        r = _run(CLI_PROBE, {"_PREFIX": str(plain_prefix)}, plain_home)
+        check("cli: a plain install names no portable root", None, r["master"])
+        check("cli: a plain install exports no UNSLOTH_HOME", None, r["exported_home"])
+        check("cli: a plain install exports no uv cache", None, r["caches"].get("UV_CACHE_DIR"))
+        check("cli: a plain install exports no UNSLOTH_STUDIO_HOME", None, r["studio_home_env"])
 
         dev = tmp / "dev"
         (dev / "unsloth_studio" / "bin").mkdir(parents = True)
