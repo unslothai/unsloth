@@ -690,9 +690,7 @@ async def _wall_clock_timeout(seconds: float | None) -> AsyncIterator[None]:
         handle.cancel()
 
 
-def _prompt_char_budget(
-    reserve_tokens: int, inference: dict[str, Any] | None = None
-) -> int | None:
+def _prompt_char_budget(reserve_tokens: int, inference: dict[str, Any] | None = None) -> int | None:
     """Chars the whole prompt may occupy on the loaded context, or None when it is unknown.
 
     The output reserve is capped at half the window: a flat reserve at or above the context

@@ -269,7 +269,6 @@ def test_resolve_max_tokens_clamps_to_loaded_context(monkeypatch):
 
 def _pin_local_context(monkeypatch, tokens: int) -> None:
     import routes.inference as inference_routes
-
     monkeypatch.setattr(
         inference_routes,
         "get_llama_cpp_backend",
@@ -376,9 +375,7 @@ def test_prompt_budget_never_empties_the_question_or_evidence(monkeypatch):
     # A flat 4096-token reserve on the 4096-token GGUF floor made the budget 0, which sliced the
     # question to "" so the planner never saw the request. Reserve at most half the window.
     for ctx in (1024, 2048, 4096):
-        monkeypatch.setattr(
-            research_runs, "_loaded_context_length", lambda _inf = None, c = ctx: c
-        )
+        monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None, c = ctx: c)
         total = research_runs._prompt_char_budget(research_runs._SYNTHESIS_CONTEXT_RESERVE_TOKENS)
         assert total is not None and total > 0
         assert total < int(ctx * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
