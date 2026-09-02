@@ -258,15 +258,44 @@ def _oauth_store():
     return _oauth_token_store
 
 
+def _strip_client_id_under_basic_auth(auth) -> None:
+    """The SDK leaves client_id in the body under Basic auth; strict servers (Notion) read
+    that as two auth methods -- RFC 6749 2.3 -- and 401. Safe to drop: 3.2.1 makes client_id
+    a MAY once authenticated, and an unauthenticated client sends no header, so it keeps it."""
+    context = getattr(auth, "context", None)
+    prepare = getattr(context, "prepare_token_auth", None)
+    if prepare is None:
+        logger.warning("MCP OAuth: prepare_token_auth missing; client_id fixup skipped")
+        return
+
+    def prepare_token_auth(data, headers = None):
+        data, headers = prepare(data, headers)
+        if "Authorization" in headers:
+            data = {k: v for k, v in data.items() if k != "client_id"}
+        return data, headers
+
+    try:
+        context.prepare_token_auth = prepare_token_auth
+    except Exception as exc:  # noqa: BLE001
+        # The SDK reach-in must never break OAuth: without it only strict servers fail, as before.
+        logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
+
+
+def _oauth(url: str):
+    from fastmcp.client.auth import OAuth
+
+    auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+    _strip_client_id_under_basic_auth(auth)
+    return auth
+
+
 async def clear_oauth_tokens_async(url: str) -> None:
     """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by MCP
     URL, so on server delete / URL change / OAuth disable we must clear them, else
     re-registering the same URL reuses the old account's token. Best-effort: store
     / OAuth failures must not 500 the delete / update route."""
     try:
-        from fastmcp.client.auth import OAuth
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
-        await auth.token_storage_adapter.clear()
+        await _oauth(url).token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
@@ -448,10 +477,7 @@ def _client(
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
 
-    auth = None
-    if use_oauth:
-        from fastmcp.client.auth import OAuth
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+    auth = _oauth(url) if use_oauth else None
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport

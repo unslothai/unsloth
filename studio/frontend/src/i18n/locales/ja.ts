@@ -54,6 +54,13 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
+    find: {
+      label: "ページ内検索",
+      previous: "前の一致",
+      next: "次の一致",
+      close: "検索を閉じる",
+      truncated: "このページは長すぎるため、全体を検索できません。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ja = {
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       actions: {
+        findInPage: {
+          label: "ページ内検索",
+          description: "このページ内のテキストを検索します",
+        },
         openSettings: {
           label: "設定を開く",
           description: "設定ダイアログを開きます",

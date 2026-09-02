@@ -39,14 +39,12 @@ if str(_STUDIO_TESTS) not in sys.path:
 
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 
-#: A running thread: the stop button is what `isRunning()` looks for. The viewport is scrollable so
-#: "at the bottom" is a real question.
-#:
+#: A running thread: the stop button is what `isRunning()` looks for, and the viewport is scrollable
+#: so "at the bottom" is a real question.
 #: The jump-to-bottom control is present and its `invisible` class is kept in sync with the scroll
 #: position by a listener, because that class IS the app's own answer to "are we at the bottom" and
-#: `appSaysAtBottom()` reads nothing else. Omitting the control makes every sample `running_unknown`
-#: and `pinned_fraction` null, which is correct behaviour on a build that renders no control and
-#: useless as a fixture for scoring one.
+#: `appSaysAtBottom()` reads nothing else. Omitting the control makes every sample
+#: `running_unknown` and `pinned_fraction` null.
 FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -230,23 +228,20 @@ def test_the_coverage_travels_with_the_verdict(page):
     )
 
 
-# ── the run the user started is a fresh intent to be at the end ─────
-#
-# THE GESTURE ON THE REAL FILM NEVER ENDS AT THE BOTTOM. `scene/actions.py::SCROLL_JS` jumps to
-# the bottom and then steps 14 x 420px away from it, so on any thread taller than 5,880px the
-# gesture ends thousands of pixels up and the `resume()` re-attachment above cannot fire. The film
-# then starts two more runs of its own -- `stop_generation` and `send_turn` both submit a turn --
-# and the app pins to the bottom for them, which `runtime/session.py` already documents as
-# intended rather than a violation.
-#
+# The run the user started is a fresh intent to be at the end. THE GESTURE ON THE REAL FILM NEVER
+# ENDS AT THE BOTTOM: `SCROLL_JS` jumps to the bottom and then steps 14 x 420px away, so on any
+# thread taller than 5,880px the gesture ends thousands of pixels up and the `resume()`
+# re-attachment cannot fire. The film then starts two more runs of its own and the app pins to the
+# bottom for them, which `runtime/session.py` documents as intended.
+# `stop_generation` and `send_turn` both submit a turn.
 # Measured at head over every 100K payload in `outputs/`: attached_fraction_of_stream 0.07 to 0.15
-# with reattachments 0, on the BASE arm as well as the treatment and on pure null controls, so the
-# gate's FOLLOW_MIN_STREAM_COVERAGE of 0.50 failed every 100K cell of every run -- two copies of
-# the shipped build included -- and a failed gate excludes the cell from scoring entirely. It
-# passed only on the 1K smoke film, where the thread is short enough that the gesture's reversal
-# lands back at the bottom by accident: a verdict about the thread's height, not about the app.
+# with reattachments 0, on the BASE arm as well as the treatment and on pure null controls, so
+# FOLLOW_MIN_STREAM_COVERAGE of 0.50 failed every 100K cell of every run and a failed gate excludes
+# the cell from scoring. It passed only on the 1K smoke film, where the gesture's reversal lands
+# back at the bottom by accident: a verdict about the thread's height, not the app.
 
 
+# ── the run the user started is a fresh intent to be at the end ─────
 def _end_run(page) -> None:
     """The reply finishes: the stop control goes, so `isRunning()` is false."""
     page.evaluate(

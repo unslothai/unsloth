@@ -34,8 +34,7 @@ import os
 
 import torch
 
-# A table instead of `eval`, so the field NAMES a dtype rather than being an
-# arbitrary expression.
+# A table instead of eval, so the field NAMES a dtype rather than being an arbitrary expression.
 DTYPE_ALIASES = {
     "None": None,
     "none": None,
@@ -53,9 +52,8 @@ DTYPE_ALIASES = {
     "fp32": torch.float32,
 }
 
-# `unsloth_zoo==2026.8.15`, which this package's floor resolves to, still `eval`s the
-# dtype field, and `eval("fp16")` is a NameError. So a field this package accepts is
-# canonicalised to the one spelling both readers evaluate.
+# unsloth_zoo==2026.8.15, which this package's floor resolves to, still evals the dtype field, and
+# eval("fp16") is a NameError, so canonicalise to the one spelling both readers evaluate.
 _CANONICAL_DTYPE_NAMES = {
     None: "None",
     torch.float16: "torch.float16",

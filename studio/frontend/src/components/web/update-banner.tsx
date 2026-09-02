@@ -157,7 +157,6 @@ export function WebUpdateBanner({
               version={status.latestVersion}
               open={notesOpen}
               releaseNotesUrl={RELEASE_NOTES_URL}
-              className="min-h-0 flex-1"
             />
 
             {/* one row at one type size; wraps only on narrow viewports, and

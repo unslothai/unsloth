@@ -1439,11 +1439,10 @@ test("unset nullable settings ask for the default, not for the resident value", 
       `${key} pinned on the resident load must not be adopted by a blank config`,
     );
   }
-  // spec_draft_n_max is the exception, and it is the backend's: _runtime_matches_intent
-  // rejects a draft-count difference only when `intent.spec_draft_n_max is not None`, so
-  // an unset limit asks for no change and /load answers already_loaded. Reloading for it
-  // could not deliver the default anyway, since that same answer leaves the count alone.
-  assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), true);
+  // spec_draft_n_max is no exception either: _runtime_matches_intent rejects the
+  // null-against-explicit flip, so a blank pick against a resident override reloads and
+  // that reload does deliver the platform default.
+  assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), false);
   assert.equal(
     matches(
       { ...DEFAULTS, spec_draft_n_max: 16 },
@@ -1769,4 +1768,103 @@ test("selectModel asks about a repairable drafter before adopting", () => {
     "selectModel no longer reloads a degraded drafter",
   );
   assert.ok(repairCheck < confirmPrompt);
+});
+
+/**
+ * The store's mapping is what the comparator runs on both sides, so it has to agree with
+ * the backend's `_LEGACY_SPEC_MODE_MAP`. A stored per-model override reaches the config
+ * unnormalized (`model-overrides.ts` binds `speculative_type` straight through), so a
+ * spelling the backend canonicalises to "off" must not read as Auto here: the comparator
+ * would then weigh Auto against a status already reading "off" and re-send /load on every
+ * pick. The store cannot be imported in this suite, its module graph reaching the auth
+ * pages, so the function is lifted out of the source the way chat-model-residency.test.ts
+ * reads it -- but evaluated, so this asserts behavior rather than spelling.
+ */
+test("the speculative normalizer reads llama.cpp's disable spellings as off", () => {
+  const store = readFileSync(
+    new URL(
+      "../src/features/chat/stores/chat-runtime-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = store.indexOf("export function normalizeSpeculativeType");
+  assert.ok(start > 0, "normalizeSpeculativeType moved; follow it here");
+  const source = store
+    .slice(start, store.indexOf("\n}\n", start) + 2)
+    .replace("export function", "function")
+    .replace("  v: string | null | undefined,\n): string | null {", "v) {");
+  const normalize = new Function(
+    `${source}; return normalizeSpeculativeType;`,
+  )() as (v: string | null | undefined) => string | null;
+
+  for (const spelling of [
+    "off",
+    "none",
+    "None",
+    "NONE",
+    "  none  ",
+    "disable",
+    "Disabled",
+    "disabled",
+  ]) {
+    assert.equal(normalize(spelling), "off", `${spelling} must read as off`);
+  }
+  // The rest of the mapping is untouched, so an alias cannot swallow a real mode.
+  assert.equal(normalize("default"), "auto");
+  assert.equal(normalize("draft-mtp"), "mtp");
+  assert.equal(normalize("mtp+ngram"), "mtp+ngram");
+  assert.equal(normalize("bogus"), "auto");
+  assert.equal(normalize(null), null);
+});
+
+/**
+ * Forced ngram-mod on a build that does not advertise the mode stands down and records
+ * "binary_outdated". The settings comparison cannot see that -- the request the picker
+ * would send is identical to the one that stood down -- so the repair check is the only
+ * thing that reloads onto an updated llama.cpp. ngram-mod runs no drafter, so this is the
+ * one reason that reaches it.
+ */
+test("a forced ngram stand-down reloads onto an updated binary", () => {
+  const stoodDown = {
+    spec_fallback_reason: "binary_outdated",
+    spec_fallback_binary_changed: true,
+  };
+  assert.equal(residentSpeculativeNeedsRepair(stoodDown, "ngram"), true);
+  // Same shape as every other binary stand-down: an unchanged binary repairs nothing,
+  // so the prompt must not fire on each re-pick.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { ...stoodDown, spec_fallback_binary_changed: false },
+      "ngram",
+    ),
+    false,
+  );
+  // A healthy forced-ngram runtime still adopts.
+  assert.equal(
+    residentSpeculativeNeedsRepair({ spec_fallback_reason: null }, "ngram"),
+    false,
+  );
+});
+
+/**
+ * The MTP-free recovery clears `_spec_draft_n_max` while `_runtime_matches_intent`
+ * keeps comparing against the count retained in `_last_load_intent`, so the status
+ * reports null for a load the backend still measures against 8. Reading that null as
+ * "the platform default" would agree with a blank pick and skip the reload that
+ * clearing the override is supposed to cause.
+ */
+test("a runtime_error resident does not claim its draft depth is the default", () => {
+  const recovered = { ...DEFAULTS, spec_fallback_reason: "runtime_error" };
+  assert.equal(matches(recovered, BLANK), false);
+  assert.equal(matches(recovered, { ...BLANK, specDraftNMax: 8 }), false);
+  // Every other fallback still compares normally, so this costs one round trip in
+  // exactly the state whose depth the status cannot express.
+  for (const reason of [null, "binary_no_mtp", "drafter_not_found", "mtp_partial_offload"]) {
+    assert.equal(
+      matches({ ...DEFAULTS, spec_fallback_reason: reason }, BLANK),
+      true,
+      `${reason} must still adopt a default-against-default pick`,
+    );
+  }
 });

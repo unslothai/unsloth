@@ -4,6 +4,7 @@
 """llama.cpp prebuilt update endpoints -- the single main update item.
 
 GET  /api/llama/update-status  -> is a newer prebuilt available + job state
+GET  /api/llama/update-changelog -> new carried changes since the installed build
 POST /api/llama/update         -> download + atomically swap to the latest
 
 Detection reuses utils.llama_cpp_freshness; the swap reuses
@@ -30,6 +31,7 @@ from auth.authentication import get_current_subject
 from loggers import get_logger
 from utils.llama_cpp_update import (
     get_backend_status,
+    get_update_changelog,
     get_update_status,
     start_backend_switch,
     start_update,
@@ -117,6 +119,30 @@ class LlamaUpdateStatusResponse(BaseModel):
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
 
+class LlamaUpdateChangeLink(BaseModel):
+    label: str
+    url: str
+
+
+class LlamaUpdateChange(BaseModel):
+    summary: str
+    links: list[LlamaUpdateChangeLink] = Field(default_factory = list)
+
+
+class LlamaUpdateChangelogResponse(BaseModel):
+    matched: bool = Field(
+        False,
+        description = "True when both releases were resolved and compared.",
+    )
+    installed_tag: Optional[str] = None
+    latest_tag: Optional[str] = None
+    changes: list[LlamaUpdateChange] = Field(default_factory = list)
+    total_changes: int = 0
+    truncated: bool = False
+    release_url: Optional[str] = None
+    error: Optional[str] = None
+
+
 class LlamaUpdateActionResponse(BaseModel):
     started: bool
     reason: Optional[str] = None
@@ -141,7 +167,7 @@ def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
             return
         _last_llama_update_step = step
         if step < prev:
-            return  # new update; resync without logging
+            return
     logger.info("llama_update_progress", to_tag = job.to_tag or "", percent = step * 10)
 
 
@@ -165,6 +191,31 @@ async def llama_update(
 ) -> LlamaUpdateActionResponse:
     action = await asyncio.to_thread(start_update)
     return LlamaUpdateActionResponse(**action)
+
+
+@router.get("/update-changelog", response_model = LlamaUpdateChangelogResponse)
+async def llama_update_changelog(
+    force_refresh: bool = Query(False, description = "Retry the exact release lookups."),
+    installed_tag: Optional[str] = Query(
+        None,
+        max_length = 200,
+        description = "Installed tag the caller is displaying; ignored unless it still matches.",
+    ),
+    latest_tag: Optional[str] = Query(
+        None,
+        max_length = 200,
+        description = "Target the caller is displaying, so a newer one cached meanwhile "
+        "does not retarget the comparison.",
+    ),
+    current_subject: str = Depends(get_current_subject),
+) -> LlamaUpdateChangelogResponse:
+    result = await asyncio.to_thread(
+        get_update_changelog,
+        force_refresh = force_refresh,
+        installed_tag = installed_tag,
+        latest_tag = latest_tag,
+    )
+    return LlamaUpdateChangelogResponse(**result)
 
 
 class LlamaBackendOption(BaseModel):

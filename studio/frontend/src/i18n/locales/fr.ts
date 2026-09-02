@@ -55,6 +55,13 @@ export const fr = {
     shutdown: "Arrêter",
   },
   shell: {
+    find: {
+      label: "Rechercher dans la page",
+      previous: "Résultat précédent",
+      next: "Résultat suivant",
+      close: "Fermer la recherche",
+      truncated: "Cette page est trop longue pour être parcourue en entier.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -226,6 +233,10 @@ export const fr = {
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
       actions: {
+        findInPage: {
+          label: "Rechercher dans la page",
+          description: "Rechercher le texte de cette page",
+        },
         openSettings: {
           label: "Ouvrir les paramètres",
           description: "Ouvrir la fenêtre des paramètres",

@@ -426,7 +426,7 @@ function specFallbackMessage({
   updateAvailable,
 }: {
   reason: string;
-  drafter: "MTP" | "DSpark" | "DFlash";
+  drafter: "MTP" | "DSpark" | "DFlash" | "ngram-mod";
   isLocalGguf: boolean;
   updateAvailable: boolean;
 }): string {
@@ -565,15 +565,22 @@ export function ChatSettingsPanel({
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
   const specDrafterKind = useChatRuntimeStore((s) => s.specDrafterKind);
+  const loadedSpeculativeType = useChatRuntimeStore(
+    (s) => s.loadedSpeculativeType,
+  );
   // The loaded model's own kind, not the pending control: the notice explains a
   // fallback that already happened, so a staged edit (or a preset applied without
   // a reload) must not re-label it and point at the wrong file.
-  const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" =
-    (specDrafterKind ?? speculativeType) === "dspark"
-      ? "DSpark"
-      : (specDrafterKind ?? speculativeType) === "dflash"
-        ? "DFlash"
-        : "MTP";
+  const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" | "ngram-mod" =
+    // The LOADED mode, per the comment above. Before the drafter kind, not after:
+    // ngram-mod opens none, so spec_drafter_kind still holds the MTP resolution's.
+    loadedSpeculativeType === "ngram"
+      ? "ngram-mod"
+      : (specDrafterKind ?? speculativeType) === "dspark"
+        ? "DSpark"
+        : (specDrafterKind ?? speculativeType) === "dflash"
+          ? "DFlash"
+          : "MTP";
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -609,7 +616,10 @@ export function ChatSettingsPanel({
       speculativeType === "mtp" ||
       speculativeType === "mtp+ngram" ||
       speculativeType === "dspark" ||
-      speculativeType === "dflash");
+      speculativeType === "dflash" ||
+      // ngram-mod runs no drafter, so only the binary stand-down reaches it. Without
+      // this the panel shows ngram selected, no speculation running, and no reason.
+      speculativeType === "ngram");
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
@@ -1047,15 +1057,16 @@ export function ChatSettingsPanel({
   const settingsContent = (
     <>
       <div className="flex h-full min-h-0 flex-col">
-      {/* Header is outside the scroll area so the scrollbar never shifts the close button. */}
-      <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
+      {/* Header is outside the scroll area so the scrollbar never shifts the close button.
+          Reuse the chat header metrics so the toggle stays put when the panel opens. */}
+      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[18px] pt-[var(--studio-chat-header-padding-top,11px)]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+          <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
             <Tooltip>
@@ -1063,7 +1074,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon

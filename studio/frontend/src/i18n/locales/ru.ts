@@ -54,6 +54,13 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    find: {
+      label: "Поиск на странице",
+      previous: "Предыдущее совпадение",
+      next: "Следующее совпадение",
+      close: "Закрыть поиск",
+      truncated: "Эта страница слишком длинная, чтобы выполнить поиск целиком.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ru = {
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       actions: {
+        findInPage: {
+          label: "Поиск на странице",
+          description: "Искать текст на этой странице",
+        },
         openSettings: {
           label: "Открыть настройки",
           description: "Открыть окно настроек",
