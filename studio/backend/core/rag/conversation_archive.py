@@ -1119,7 +1119,7 @@ def _flushes_local_pair(part: dict) -> bool:
     return part.get("result") is not None
 
 
-def _as_wire(messages: list[dict]) -> list[dict]:
+def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
     The store keeps a tool call as a ``tool-call`` CONTENT PART carrying its own result,
@@ -1139,6 +1139,11 @@ def _as_wire(messages: list[dict]) -> list[dict]:
     it. Only the id goes into `tool_calls`: the arguments stay on the content part, where
     `_probe_text` already offers both JSON spellings, and `_is_injected` still sees the id
     it filters our own injections by.
+
+    `sanitise_assistant` is the STORED side of that comparison. A caller projecting the
+    request's own messages against something written WITHOUT this projection must pass
+    False: `_branch_boundary_anchor` records an anchor straight off the request, so
+    `_archive_as_wire` has to hand the same bytes back or the rebase stops matching.
     """
     wire: list[dict] = []
     for message in messages:
@@ -1157,7 +1162,7 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 if not (isinstance(part, dict) and part.get("type") == "reasoning")
             ]
             content = parts
-        if str(message.get("role") or "") == "assistant":
+        if sanitise_assistant and str(message.get("role") or "") == "assistant":
             content = _sanitised_assistant_content(content)
             parts = content if isinstance(content, list) else None
         # A provider-side builtin with no native part is not replayed, so it is not a call

@@ -2720,6 +2720,35 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
     )
 
 
+def test_the_boundary_projection_hands_the_anchor_back_unchanged():
+    """One side writes the anchor, the other reads it, and only one goes through `_as_wire`.
+
+    `_branch_boundary_anchor` records it straight off the request, so the archive
+    projection has to return the same bytes. A client that sends the image tokens or
+    inline audio raw, which the Studio one never does, otherwise found no anchor at all
+    and replayed the stale count instead of rebasing it against its own branch.
+    """
+    from core.inference import llama_cpp
+    for text in (
+        '<audio-player src="data:audio/wav;base64,QUJDRA==" />',
+        "here [[img:aabbccddeeff]]",
+        "ordinary reply",
+    ):
+        branch = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": text},
+            {"role": "user", "content": "next"},
+        ]
+
+        written = llama_cpp._branch_boundary_anchor(branch[1:], branch)
+        read_back = [
+            llama_cpp._anchor_text(message)
+            for message in llama_cpp._branch_non_system(llama_cpp._archive_as_wire(branch))
+        ]
+
+        assert written and written in read_back, text
+
+
 def test_a_caller_owned_carried_forward_tag_is_left_alone():
     """The delimiter is prompt text, and prompt text belongs to whoever wrote it.
 

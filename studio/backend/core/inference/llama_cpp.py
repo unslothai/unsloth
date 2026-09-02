@@ -1496,10 +1496,16 @@ def _archive_branch_chain(
 
 
 def _archive_as_wire(messages: Optional[list[dict]]) -> list[dict]:
-    """Project persisted rows and wire messages into boundary-counting wire units."""
+    """Project persisted rows and wire messages into boundary-counting wire units.
+
+    Unsanitised: `_branch_boundary_anchor` writes the anchor off the request itself, so a
+    projection that rewrote assistant text here would look for something nobody wrote. A
+    client sending the tokens raw, which the Studio one never does, then found no anchor
+    and replayed the stale count instead of rebasing it.
+    """
     try:
         from core.rag import conversation_archive
-        return conversation_archive._as_wire(list(messages or ()))
+        return conversation_archive._as_wire(list(messages or ()), sanitise_assistant = False)
     except Exception:
         return list(messages or ())
 

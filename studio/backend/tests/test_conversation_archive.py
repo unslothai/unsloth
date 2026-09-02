@@ -3913,6 +3913,13 @@ def test_an_audio_reply_is_replayed_as_the_sentinel_the_request_carried():
     assert conversation_archive._probe_text(conversation_archive._as_wire(row)[0]) == (
         '<audio-player src="[audio]" />'
     )
+    # Off for a caller comparing the request against something written without it.
+    assert (
+        conversation_archive._probe_text(
+            conversation_archive._as_wire(row, sanitise_assistant = False)[0]
+        )
+        == '<audio-player src="data:audio/wav;base64,QUJD" />'
+    )
     # The assistant side only: the serializer sanitises replies, not what the user typed.
     user = [{"role": "user", "content": [{"type": "text", "text": "[[img:%s]]" % _IMAGE_ID}]}]
     assert conversation_archive._probe_text(conversation_archive._as_wire(user)[0]) == (
