@@ -265,40 +265,44 @@ def apply_lora_mlp_swiglu(
     return out
 
 
-from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
-
-
-def apply_lora_mlp_geglu_exact(
-    self,
-    X,
-    inplace = True,
-):
-    X = _maybe_fake_quantize_activations(X, self.gate_proj)
-    gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
-    upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
-    downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        geglu_exact_forward_kernel,
-        geglu_exact_backward_kernel,
-        inplace,
-    )
-    return out
+# DEAD CODE : apply_lora_mlp_geglu_exact was never dispatched;
+# the MLP dispatch table (unsloth/models/llama.py) selects swiglu or
+# geglu_approx only. Its kernels are commented out in kernels/geglu.py. Keep for
+# reference / re-enable if an exact-erf path is ever wired in.
+# from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
+#
+#
+# def apply_lora_mlp_geglu_exact(
+#     self,
+#     X,
+#     inplace = True,
+# ):
+#     X = _maybe_fake_quantize_activations(X, self.gate_proj)
+#     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
+#     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
+#     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
+#     out = LoRA_MLP.apply(
+#         X,
+#         gateW,
+#         gateW_quant,
+#         gateA,
+#         gateB,
+#         gateS,
+#         upW,
+#         upW_quant,
+#         upA,
+#         upB,
+#         upS,
+#         downW,
+#         downW_quant,
+#         downA,
+#         downB,
+#         downS,
+#         geglu_exact_forward_kernel,
+#         geglu_exact_backward_kernel,
+#         inplace,
+#     )
+#     return out
 
 
 from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel

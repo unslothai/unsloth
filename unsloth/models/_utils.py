@@ -75,7 +75,7 @@ __all__ = [
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
     "set_task_config_attr",
-    "patch_fast_lora",
+    # "patch_fast_lora",  # DEAD CODE: function is commented out (orphaned / superseded by unsloth_zoo)
     "validate_loftq_config",
     "RaiseUninitialized",
     "fast_inference_setup",
@@ -3588,10 +3588,14 @@ def patch_tokenizer(model, tokenizer):
     return model, tokenizer
 
 
-def patch_fast_lora():
-    import peft.tuners.lora.bnb
-    from ..kernels.fast_lora import fast_lora_forward
-    peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
+# DEAD CODE : patch_fast_lora is orphaned - nothing calls it. The
+# real LoRA fast-path patching is done by unsloth_zoo.compiler.patch_lora_forwards
+# (driven by the fast_lora_forwards flag). Re-enable only if a local
+# Linear4bit.forward override is ever needed.
+# def patch_fast_lora():
+#     import peft.tuners.lora.bnb
+#     from ..kernels.fast_lora import fast_lora_forward
+#     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 
 
 def unsloth_compile_transformers(
