@@ -264,7 +264,10 @@ class LoadRequest(BaseModel):
             "'cpu' keeps them in CPU RAM rather than the GPU -- slower generation, "
             "but it leaves VRAM for other models and runs checkpoints too large for "
             "the card. 'gpu' prefers the accelerator; 'auto' (default) detects. "
-            "Ignored for every non-audio model."
+            "Ignored for every non-audio model, and for GGUF audio: llama.cpp "
+            "placement comes from gpu_memory_mode and gpu_layers, which are decided "
+            "before anything can know a GGUF is audio. Send gpu_memory_mode='manual' "
+            "with gpu_layers=0 and speculative_type='off' to hold a GGUF TTS in RAM."
         ),
     )
     gpu_memory_mode: Literal["auto", "manual"] = Field(

@@ -64,7 +64,16 @@ def normalize_audio_device(value: Optional[str]) -> str:
 
 
 def audio_device_default() -> str:
-    """The preference for a request that carries none (``UNSLOTH_AUDIO_DEVICE``)."""
+    """The preference for a request that carries none (``UNSLOTH_AUDIO_DEVICE``).
+
+    Scope: the native audio backend and the three STT sidecars. It does NOT reach a
+    GGUF TTS model. llama.cpp placement is decided from ``gpu_memory_mode`` and
+    ``gpu_layers`` at request time, but nothing knows a GGUF is audio until
+    llama-server reports its ``_audio_type`` after the load, so there is no point
+    early enough to translate the default into zero offload. The Audio page does it
+    from the catalog it already has; a headless caller must send the GGUF placement
+    fields itself.
+    """
     return normalize_audio_device(os.environ.get("UNSLOTH_AUDIO_DEVICE"))
 
 
