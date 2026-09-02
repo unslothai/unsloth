@@ -1293,7 +1293,7 @@ def test_a_forged_container_duration_cannot_ask_for_a_huge_buffer(monkeypatch):
         time_base = None
 
     class _Container:
-        duration = 10 ** 18
+        duration = 10**18
         streams = types.SimpleNamespace(audio = [_Stream()])
 
     assert inference_route._av_expected_samples(_Container(), 48_000) == (
