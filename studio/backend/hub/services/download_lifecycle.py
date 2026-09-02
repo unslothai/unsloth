@@ -1343,8 +1343,7 @@ def forget_download_initiator(key: str) -> None:
 
 
 def require_download_cancel_permission(
-    key: str,
-    registry: Optional[download_registry.DownloadRegistry] = None,
+    key: str, registry: Optional[download_registry.DownloadRegistry] = None
 ) -> None:
     """Only the account that started a download, or the owner, may cancel it.
 
