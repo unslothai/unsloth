@@ -684,7 +684,9 @@ class DiffusionTrainingService:
                 from .training import _ambient_credentials_suppressed_for
 
                 with (
-                    child_environment_for_spawn(_ambient_credentials_suppressed_for(workspace_subject)),
+                    child_environment_for_spawn(
+                        _ambient_credentials_suppressed_for(workspace_subject)
+                    ),
                     native_path_secret_removed_for_child_start(),
                 ):
                     self._proc.start()
