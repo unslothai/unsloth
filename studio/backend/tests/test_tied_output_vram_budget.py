@@ -642,7 +642,6 @@ def test_an_unclassified_rocm_arch_is_not_proved_discrete(backend, monkeypatch, 
         "gfx906",
         "gfx908",
         "gfx90a",
-        "gfx942",
         "gfx950",
         "gfx1010",
         "gfx1011",
@@ -671,6 +670,42 @@ def test_a_known_discrete_rocm_arch_is_proved_discrete(backend, monkeypatch, arc
 
     monkeypatch.setitem(sys.modules, "torch", _Torch())
     monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    assert backend._torch_unified_memory_classification_known([0]) is True
+
+
+def test_gfx942_alone_is_not_proof_of_a_private_vram_pool(backend, monkeypatch):
+    """MI300X (discrete) and MI300A (unified-memory APU) share gcnArchName gfx942.
+
+    hipDeviceProp_t.integrated only reports the MI300A's shared pool once clr reads
+    HSA_AMD_MEMORY_PROPERTY_AGENT_IS_APU (ROCm 6.1.2+); on 6.0.x/6.1.0/6.1.1 the only
+    signal is HSA_PROFILE_FULL and the MI300A GPU agent is BASE_PROFILE, so the flag
+    reads 0. The arch string must not stand in for it, or the host-pinned discount is
+    taken out of memory the CPU shares.
+    """
+
+    class _Props:
+        gcnArchName = "gfx942"
+        is_integrated = 0
+        name = "AMD Instinct MI300A"
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.0.0"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0+rocm"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    assert backend._torch_unified_memory_classification_known([0]) is False
+    # A newer wheel that does surface the APU flag still classifies the device.
+    _Props.is_integrated = 1
     assert backend._torch_unified_memory_classification_known([0]) is True
 
 

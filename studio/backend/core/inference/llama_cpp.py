@@ -9271,6 +9271,19 @@ class LlamaCppBackend:
 
     # Neighbours are deliberately absent: gfx1103 is Phoenix integrated graphics and
     # gfx1150-1152 are unified-memory APUs. An unknown arch stays conservative.
+    #
+    # gfx942 is absent for a stronger reason: the arch itself is ambiguous. The discrete
+    # MI300X/MI325X and the unified-memory MI300A APU all report gcnArchName "gfx942"
+    # (ROCm/ROCm#4825), so the string is no evidence of a private VRAM pool. The driver
+    # flag does answer -- rocminfo shows the MI300A GPU agent with "Memory Properties:
+    # APU" -- but only through clr's HSA_AMD_MEMORY_PROPERTY_AGENT_IS_APU read in
+    # rocclr/device/rocm/rocdevice.cpp, which first appears in the rocm-6.1.2 tag and is
+    # absent from rocm-6.0.x/6.1.0/6.1.1. Before that the only source of
+    # hostUnifiedMemory_ is HSA_PROFILE_FULL, and the MI300A GPU agent is BASE_PROFILE,
+    # so props.is_integrated reads 0 and _rocm_classify_unified_memory says "discrete".
+    # Trusting the arch there would subtract host-pinned embeddings from a pool the CPU
+    # shares, which is the under-count that fails a launch. An MI300X pays an over-count
+    # instead, which only costs context.
     _ROCM_PROVED_DISCRETE_ARCHS = frozenset(
         {
             "gfx803",
@@ -9278,7 +9291,6 @@ class LlamaCppBackend:
             "gfx906",
             "gfx908",
             "gfx90a",
-            "gfx942",
             "gfx950",
             "gfx1010",
             "gfx1011",
