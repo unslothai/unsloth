@@ -447,6 +447,11 @@ def _synthesis_length_limit_error(
     requested_max_tokens: int,
     inference: dict[str, Any] | None = None,
 ) -> str:
+    # A saved connection never touched the loaded context, so neither half of the local
+    # wording holds: the cap it reached is the provider's own output limit, and Context
+    # Length in chat settings does not move it.
+    if _external_provider_run(inference):
+        return "Connected model report reached its output limit before completion"
     if _completion_hit_context_wall(
         usage, requested_max_tokens = requested_max_tokens, inference = inference
     ):

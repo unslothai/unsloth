@@ -314,6 +314,17 @@ def test_a_saved_connection_run_is_not_blamed_on_the_loaded_context(monkeypatch)
         usage, requested_max_tokens = 1_096, inference = _EXTERNAL_INFERENCE
     )
 
+    # Synthesis asks for 16_384 and a provider stops at its own output cap, so
+    # completion_tokens < requested is what an ordinary cloud run reports. That is the
+    # shape the notice has to get right, and the case above cannot see it.
+    capped = {"prompt_tokens": 40_000, "completion_tokens": 8_192, "total_tokens": 48_192}
+    message = _synthesis_length_limit_error(
+        capped, requested_max_tokens = 16_384, inference = _EXTERNAL_INFERENCE
+    )
+    assert "Increase Context Length" not in message
+    assert "Local model" not in message
+    assert "output limit" in message
+
 
 def test_completion_hit_context_wall_matches_live_probe():
     usage = {
