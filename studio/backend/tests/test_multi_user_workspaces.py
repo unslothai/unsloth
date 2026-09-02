@@ -4968,9 +4968,7 @@ def test_only_the_loading_account_may_cancel_its_load(monkeypatch):
             self.model_path = "unsloth/gemma-3-4b-it-GGUF"
             self.subject = subject
 
-    monkeypatch.setattr(
-        inference_routes, "_running_load_attempt", _Attempt("alice"), raising = False
-    )
+    monkeypatch.setattr(inference_routes, "_running_load_attempt", _Attempt("alice"), raising = False)
 
     token = _bind("alice")
     try:
