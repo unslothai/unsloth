@@ -24,7 +24,6 @@ if _BACKEND_DIR not in sys.path:
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
-    has_embedded_mtp_name_hint,
     is_mtp_drafter_path,
     list_local_gguf_variants as list_hub_local_gguf_variants,
 )
@@ -162,21 +161,7 @@ def test_baked_in_repo_plans_unchanged():
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
 
 
-@pytest.mark.parametrize(
-    ("path", "expected"),
-    [
-        ("RVN-Q6_K-mtp.gguf", True),
-        ("Qwen3.6-27B-MTP-Q4_K_M.gguf", True),
-        ("prompt-mtp-test-Q4_K_M.gguf", False),
-        ("gemma-4-12b-it-Q4_K_M.gguf", False),
-        ("mtp-gemma-4-12b-it-Q8_0.gguf", False),
-    ],
-)
-def test_embedded_mtp_name_hint_is_bounded_to_the_quant(path, expected):
-    assert has_embedded_mtp_name_hint(path) is expected
-
-
-def test_embedded_mtp_variant_omits_root_compatibility_sidecar():
+def test_variant_plan_keeps_root_mtp_sidecar_until_metadata_is_available():
     siblings = [
         _sib("RVN-Q6_K-mtp.gguf", 4_000, "main"),
         _sib("mtp-RVN.gguf", 100, "drafter"),
@@ -185,10 +170,10 @@ def test_embedded_mtp_variant_omits_root_compatibility_sidecar():
 
     plan = build_gguf_variant_plans(siblings)["q6_k"]
 
-    assert plan.target_filenames == ("RVN-Q6_K-mtp.gguf", "mmproj-F16.gguf")
-    assert plan.companion_hashes == frozenset({"mmproj"})
-    assert plan.required_hashes == frozenset({"main", "mmproj"})
-    assert plan.download_size_bytes == 4_500
+    assert plan.target_filenames == ("RVN-Q6_K-mtp.gguf", "mmproj-F16.gguf", "mtp-RVN.gguf")
+    assert plan.companion_hashes == frozenset({"drafter", "mmproj"})
+    assert plan.required_hashes == frozenset({"drafter", "main", "mmproj"})
+    assert plan.download_size_bytes == 4_600
 
 
 def test_old_manifest_resume_reclassifies_drafter():

@@ -13,7 +13,6 @@ from hub.utils.gguf import (
     extract_quant_label,
     gguf_variant_family,
     gguf_variant_key,
-    has_embedded_mtp_name_hint,
     is_big_endian_gguf_path,
     is_gguf_filename,
     is_imatrix_filename,
@@ -285,16 +284,10 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             [n for n in all_weight_names if n != target_weight_name],
             max_bytes = sum(max(0, int(file.size or 0)) for file in kept_main),
         )
-        # Skip the compatibility sidecar when this variant advertises an embedded head.
-        variant_mtp_expected = (
-            None
-            if any(has_embedded_mtp_name_hint(file.path) for file in kept_main)
-            else mtp_expected
-        )
         expected_files = (
             *main_expected,
             *common_companions_expected,
-            *((variant_mtp_expected,) if variant_mtp_expected is not None else ()),
+            *((mtp_expected,) if mtp_expected is not None else ()),
             *dflash_expected,
         )
         plans[quant] = plan_from_expected_files(
