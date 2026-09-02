@@ -4064,9 +4064,7 @@ def test_only_media_loaded_from_the_deleted_workspace_is_unloaded(tmp_path):
 
     # A local path names one account's private weights.
     assert (
-        auth_storage._status_names_a_path_under(
-            {"repo_id": str(private / "models" / "mine")}, root
-        )
+        auth_storage._status_names_a_path_under({"repo_id": str(private / "models" / "mine")}, root)
         is True
     )
     # A hub repo id is install-wide by design and must not be torn down.

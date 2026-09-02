@@ -6309,7 +6309,9 @@ class VideoBackend:
         return gen
 
     def forget_terminal_video(
-        self, video_id: Optional[str] = None, subject: Optional[str] = None
+        self,
+        video_id: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> bool:
         """Drop the completed terminal record when its clip leaves the gallery.
 
