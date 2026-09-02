@@ -104,8 +104,8 @@ def _resolve_load_dir(p):
     return p
 
 
-def _resolve_gguf_load_dir(p, loader_id: str):
-    """Newest cached snapshot containing at least one complete main GGUF.
+def _resolve_gguf_load_snapshot(p):
+    """Inventory result for the newest complete snapshot in this exact cache repo.
 
     A later Hub revision can contain only a newly fetched companion such as an
     MTP drafter or mmproj while the complete model weights remain in an older
@@ -119,15 +119,15 @@ def _resolve_gguf_load_dir(p, loader_id: str):
     except OSError:
         return None
 
-    # Reuse the Hub inventory's selector so its On Device row and the OpenAI
-    # catalog cannot choose different revisions of the same cached repo.
-    from hub.utils.gguf import select_gguf_cache_snapshot
+    # Reuse the Hub inventory's selection rule, scoped to the row's exact repo
+    # directory so case-colliding repos cannot cross-load or trigger another root scan.
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
 
-    selected = select_gguf_cache_snapshot(loader_id, root = p.parent)
+    selected = select_gguf_cache_snapshot_for_repo_dir(p)
     if selected is None:
         return None
-    _variants, _has_vision, complete, snapshot = selected
-    return snapshot if complete else None
+    _variants, _has_vision, complete, _snapshot = selected
+    return selected if complete else None
 
 
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
@@ -152,10 +152,25 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
-        load_dir = _resolve_gguf_load_dir(p, loader_id)
-        if load_dir is None:
+        try:
+            is_cache_repo = (p / "snapshots").is_dir()
+        except OSError:
             return None
-        variants, _ = list_local_gguf_variants(str(load_dir))
+        if is_cache_repo:
+            selected = _resolve_gguf_load_snapshot(p)
+            if selected is None:
+                return None
+            variants, _has_vision, complete, load_dir = selected
+            complete_keys = {str(quant).casefold() for quant in complete}
+            variants = [
+                variant
+                for variant in variants
+                if getattr(variant, "quant", None)
+                and str(variant.quant).casefold() in complete_keys
+            ]
+        else:
+            load_dir = p
+            variants, _ = list_local_gguf_variants(str(load_dir))
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None

@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterable, Optional, Sequence
 
 from loggers import get_logger
 from utils.paths.path_utils import (
@@ -1050,22 +1050,12 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
     return {label for key, label in empty.items() if key not in nonempty}
 
 
-def select_gguf_cache_snapshot(
-    repo_id: str, root: Optional[Path] = None
+def _select_gguf_snapshot(
+    snapshots: Iterable[Path],
 ) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
-    """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
-
-    A repo dir holds every revision, so a caller that then reads metadata from wherever this
-    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
-    """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
 
-    snapshots = (
-        iter_hf_cache_snapshots(repo_id, root = root)
-        if root is not None
-        else iter_hf_cache_snapshots(repo_id)
-    )
     # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
     fallback: Optional[tuple[list[GgufVariantInfo], bool, set, Path]] = None
     for snapshot in snapshots:
@@ -1078,6 +1068,38 @@ def select_gguf_cache_snapshot(
         if fallback is None and (variants or has_vision):
             fallback = (variants, has_vision, complete, snapshot)
     return fallback
+
+
+def select_gguf_cache_snapshot(
+    repo_id: str, root: Optional[Path] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
+    """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
+
+    A repo dir holds every revision, so a caller that then reads metadata from wherever this
+    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
+    """
+    snapshots = (
+        iter_hf_cache_snapshots(repo_id, root = root)
+        if root is not None
+        else iter_hf_cache_snapshots(repo_id)
+    )
+    return _select_gguf_snapshot(snapshots)
+
+
+def select_gguf_cache_snapshot_for_repo_dir(
+    repo_dir: Path,
+) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
+    """Select only among snapshots belonging to the exact scanned cache directory."""
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    snapshots_dir = Path(repo_dir) / "snapshots"
+    try:
+        snapshots = [snapshot for snapshot in snapshots_dir.iterdir() if snapshot.is_dir()]
+    except OSError as exc:
+        logger.debug("Skipping unreadable cache snapshots dir %s: %s", snapshots_dir, exc)
+        return None
+    snapshots.sort(key = snapshot_selection_key, reverse = True)
+    return _select_gguf_snapshot(snapshots)
 
 
 def merge_sibling_snapshot_variants(

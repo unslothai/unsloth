@@ -1891,6 +1891,80 @@ def test_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     assert resolver.local_servable_model(info) == (True, ("UD-Q4_K_XL",))
 
 
+def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
+    """A cache row must load from its exact repo directory, not a case-folded peer."""
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    scanned_repo = tmp_path / "models--Org--Repo"
+    scanned_snapshot = scanned_repo / "snapshots" / "scanned-revision"
+    scanned_snapshot.mkdir(parents = True)
+    (scanned_snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    other_repo = tmp_path / "models--org--repo"
+    other_snapshot = other_repo / "snapshots" / "other-revision"
+    other_snapshot.mkdir(parents = True)
+    (other_snapshot / "model-Q8_0.gguf").write_bytes(b"GGUF stub")
+    os.utime(scanned_snapshot, (1_000, 1_000))
+    os.utime(other_snapshot, (2_000, 2_000))
+
+    entry = resolver._local_gguf_entry(
+        "Org/Repo",
+        SimpleNamespace(id = "Org/Repo", path = str(scanned_repo)),
+    )
+
+    assert entry is not None
+    assert Path(entry.load_path) == scanned_snapshot
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_hf_cache_entry_excludes_torn_quant_from_selected_snapshot(tmp_path):
+    """Only complete quants from the selected snapshot may be advertised as loadable."""
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Repo"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+    (snapshot / "model-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF stub")
+
+    entry = resolver._local_gguf_entry(
+        "org/Repo",
+        SimpleNamespace(id = "org/Repo", path = str(repo)),
+    )
+
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+
+
+def test_hf_cache_entries_do_not_rescan_the_cache_root(monkeypatch, tmp_path):
+    """Each scanned row already owns an exact repo directory under the cache root."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    infos = []
+    for index in range(3):
+        repo = tmp_path / f"models--org--Repo-{index}"
+        snapshot = repo / "snapshots" / "revision"
+        snapshot.mkdir(parents = True)
+        (snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+        infos.append(SimpleNamespace(id = f"org/Repo-{index}", path = str(repo)))
+
+    original_iterdir = Path.iterdir
+    root_scans = 0
+
+    def counting_iterdir(path):
+        nonlocal root_scans
+        if path == tmp_path:
+            root_scans += 1
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
+    assert all(resolver._local_gguf_entry(info.id, info) is not None for info in infos)
+    assert root_scans == 0
+
+
 # ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
 
 
