@@ -43,7 +43,10 @@ const STATUS = {
 } as never;
 
 /** applyActiveModelStatusToStore's update, which the last test pins. */
-function applyStatus(modelId: string) {
+function applyStatus(
+  modelId: string,
+  { adoptingExistingServerModel = false } = {},
+) {
   const store = useChatRuntimeStore.getState();
   store.setParams(
     mergeBackendRecommendedInference({
@@ -53,7 +56,10 @@ function applyStatus(modelId: string) {
       presetSource: store.activePresetSource,
       loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
-    { fromModelDefaults: true },
+    {
+      fromModelDefaults: true,
+      migrateOwnedGlobalQwenDefaults: adoptingExistingServerModel,
+    },
   );
 }
 
@@ -310,7 +316,7 @@ test("the resident model keeps the settings saved for it", async () => {
   });
   const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
 
-  applyStatus(QWEN);
+  applyStatus(QWEN, { adoptingExistingServerModel: true });
 
   settingsHttp.release?.();
   await hydrating;

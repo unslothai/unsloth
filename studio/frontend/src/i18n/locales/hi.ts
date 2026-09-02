@@ -55,6 +55,13 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    find: {
+      label: "पेज में खोजें",
+      previous: "पिछला मिलान",
+      next: "अगला मिलान",
+      close: "खोज बंद करें",
+      truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -225,6 +232,10 @@ export const hi = {
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
       actions: {
+        findInPage: {
+          label: "पेज में खोजें",
+          description: "इस पेज के टेक्स्ट में खोजें",
+        },
         openSettings: {
           label: "सेटिंग्स खोलें",
           description: "सेटिंग्स संवाद खोलें",
@@ -1237,7 +1248,7 @@ export const hi = {
       description:
         "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
       intro:
-        "Claude Code, Codex, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
       readDocs: "दस्तावेज़ पढ़ें",
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",

@@ -98,6 +98,7 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | Hermes Agent | `unsloth start hermes` |
 | OpenClaw | `unsloth start openclaw` |
 | OpenCode | `unsloth start opencode` |
+| DeepSeek Harness | `unsloth start dsh` |
 
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
@@ -178,16 +179,6 @@ Headless starts:
 ```bash
 UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
 ```
-If you do not supply one, a public launch (`--secure`, `--cloudflare`, or Colab)
-generates a strong admin password and shows it once. On a terminal launch it goes
-to the console only, and the Studio server never writes it to disk or to the
-server log. In Colab it is rendered into the notebook cell instead, and Colab
-saves cell output with the notebook, so clear that cell before sharing or
-exporting the notebook. Copy it when it appears: it is not shown again, and
-recovering from a lost one means `unsloth studio reset-password`. A launch with
-no console at all (a detached service with redirected output) refuses to start
-rather than rotate a password nobody could read, as does a relaunch after a
-generated password was committed but never reached you.
 Reset your password:
 ```bash
 unsloth studio reset-password
@@ -242,7 +233,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 
 ## 🦥 Unsloth News
 - **AMD training**: Train, run RL, chat and deploy on AMD GPUs across Windows, WSL and Linux. [Guide](https://unsloth.ai/docs/basics/amd)
-- **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
+- **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw, DeepSeek Harness and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
 - **GLM-5.2**: Run Z.ai's 744B-parameter, 1M-context open model locally with Unsloth Dynamic GGUFs. [Guide](https://unsloth.ai/docs/models/glm-5.2)
 - **DeepSeek-V4**: Run DeepSeek-V4-Flash locally with corrected multi-turn and tool-calling behavior. [Guide](https://unsloth.ai/docs/models/deepseek-v4)
 - **Gemma 4**: Run and train Gemma 4 text, image and audio models with QAT, MTP, GGUF and MLX support. [Guide](https://unsloth.ai/docs/models/gemma-4)

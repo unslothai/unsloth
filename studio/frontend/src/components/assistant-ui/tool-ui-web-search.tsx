@@ -13,6 +13,7 @@ import {
   isSearchImagesToolResult,
   useToolAwaitingApproval,
 } from "@/features/chat";
+import { openLink } from "@/lib/open-link";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
@@ -97,7 +98,16 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   // object here, and .trim() on one crashes the card that was meant to show the call.
   const query = toolArgText((args as { query?: unknown })?.query);
   const url = toolArgText((args as { url?: unknown })?.url).trim();
-  const isUrlFetch = !!url;
+  // gpt-5.x agentic search: `open_page` carries a url, `find_in_page` a url and
+  // a pattern. Older streams send neither, so a url with a pattern is the same
+  // call by shape.
+  const pattern = toolArgText((args as { pattern?: unknown })?.pattern);
+  const actionType = toolArgText(
+    (args as { action_type?: unknown })?.action_type,
+  );
+  const isFindInPage =
+    actionType === "find_in_page" || (!!url && !!pattern.trim());
+  const isUrlFetch = !!url && !isFindInPage;
   const rawImageQueries = (args as { image_queries?: unknown })?.image_queries;
   const imageQueries = Array.isArray(rawImageQueries)
     ? rawImageQueries
@@ -106,20 +116,21 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         .slice(0, 5)
     : [];
   const imageLabel = imageQueries.join(", ");
-  const isImageOnly = !isUrlFetch && !query.trim() && imageQueries.length > 0;
+  const isImageOnly =
+    !isUrlFetch && !isFindInPage && !query.trim() && imageQueries.length > 0;
   // The header speaks for the result: a call that found nothing must not claim it did.
   const foundImages = isSearchImagesToolResult(result);
+  // new URL() throws on the bare hosts the backend fetches, so mirror that
+  // grammar or the card names no host for exactly the URLs it does fetch.
+  const bareUrl = url.startsWith("//") ? url.slice(2) : url;
+  const candidateUrl = isBareHostFetchedAsHttps(bareUrl)
+    ? `https://${bareUrl}`
+    : url;
+  const safeUrl = isSafeHttpUrl(candidateUrl) ? candidateUrl : "";
   const displayDomain = (() => {
-    if (!url) return "";
-    // new URL() throws on the bare hosts the backend fetches, so mirror that
-    // grammar or the card names no host for exactly the URLs it does fetch.
-    const bare = url.startsWith("//") ? url.slice(2) : url;
-    const candidate = isBareHostFetchedAsHttps(bare) ? `https://${bare}` : url;
+    if (!safeUrl) return "";
     try {
-      const parsed = new URL(candidate);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-        return "";
-      return parsed.hostname.replace(/^www\./, "");
+      return new URL(safeUrl).hostname.replace(/^www\./, "");
     } catch {
       return "";
     }
@@ -157,21 +168,27 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     >
       <ToolFallbackTrigger
         toolName={
-          isUrlFetch
-            ? displayDomain
-              ? `Read ${displayDomain}`
-              : "Read page"
-            : isImageOnly
-              ? isRunning
-                ? `Finding images for “${imageLabel}”`
-                : foundImages
-                  ? `Found images for “${imageLabel}”`
-                  : `No images for “${imageLabel}”`
-              : query
-                ? imageLabel && foundImages
-                  ? `Searched "${query}" · images for ${imageLabel}`
-                  : `Searched "${query}"`
-                : "Web Search"
+          isFindInPage
+            ? // Neutral: the action carries no match status, so a finished call
+              // is not evidence the pattern was there.
+              pattern
+              ? `Searched for "${pattern}" in ${displayDomain || "page"}`
+              : `Searched ${displayDomain || "page"}`
+            : isUrlFetch
+              ? displayDomain
+                ? `Read ${displayDomain}`
+                : "Read page"
+              : isImageOnly
+                ? isRunning
+                  ? `Finding images for “${imageLabel}”`
+                  : foundImages
+                    ? `Found images for “${imageLabel}”`
+                    : `No images for “${imageLabel}”`
+                : query
+                  ? imageLabel && foundImages
+                    ? `Searched "${query}" · images for ${imageLabel}`
+                    : `Searched "${query}"`
+                  : "Web Search"
         }
         status={status}
         icon={GlobeIcon}
@@ -180,65 +197,106 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         {isRunning ? (
           <div className="flex items-center text-sm text-muted-foreground">
             <span>
-              {isUrlFetch ? (
+              {isFindInPage ? (
+                pattern ? (
+                  <>
+                    Finding &ldquo;{pattern}&rdquo; in {displayDomain || "page"}
+                    &hellip;
+                  </>
+                ) : (
+                  <>Searching {displayDomain || "page"}&hellip;</>
+                )
+              ) : isUrlFetch ? (
                 <>Reading {displayDomain || "page"}&hellip;</>
               ) : isImageOnly ? (
                 <>Finding images for &ldquo;{imageLabel}&rdquo;&hellip;</>
-              ) : (
+              ) : query ? (
                 <>Searching for &ldquo;{query}&rdquo;&hellip;</>
+              ) : (
+                <>Searching&hellip;</>
               )}
             </span>
           </div>
-        ) : sources.length === 0 && images.length > 0 ? (
+        ) : (
           <div className="flex flex-col gap-2">
-            <div
-              className="flex flex-wrap gap-1.5"
-              data-testid="web-search-images"
-            >
-              {images.map((entry) => (
-                <SearchImageThumb key={entry.id} entry={entry} size="strip" />
-              ))}
-            </div>
-            {resultText && (
+            {/* The page a url action read. Above the body rather than inside one
+            branch: the terminal citation backfill can replace this card's result
+            with the run's sources, and the card must still name what it opened. */}
+            {safeUrl ? (
+              <a
+                href={safeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                // Same as the Source pills below: a bare target="_blank" does
+                // nothing in the Desktop webview, so hand the url to the opener.
+                onClick={(e) => {
+                  if (openLink(safeUrl)) {
+                    e.preventDefault();
+                  }
+                }}
+                className="break-all text-xs text-primary underline-offset-4 hover:underline"
+              >
+                {url}
+              </a>
+            ) : null}
+            {sources.length === 0 && images.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <div
+                  className="flex flex-wrap gap-1.5"
+                  data-testid="web-search-images"
+                >
+                  {images.map((entry) => (
+                    <SearchImageThumb
+                      key={entry.id}
+                      entry={entry}
+                      size="strip"
+                    />
+                  ))}
+                </div>
+                {resultText && (
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                    {resultText}
+                  </pre>
+                )}
+              </div>
+            ) : sources.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {sources.map((source, i) => (
+                    <Source
+                      key={`${source.url}-${i}`}
+                      href={source.url}
+                      variant="outline"
+                      size="sm"
+                      className="inline-flex items-center gap-1.5"
+                    >
+                      <SourceIcon url={source.url} size={3} />
+                      <SourceTitle>{source.title}</SourceTitle>
+                    </Source>
+                  ))}
+                </div>
+                {images.length > 0 && (
+                  <div
+                    className="flex flex-wrap gap-1.5"
+                    data-testid="web-search-images"
+                  >
+                    {images.map((entry) => (
+                      <SearchImageThumb
+                        key={entry.id}
+                        entry={entry}
+                        size="strip"
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : resultText ? (
               <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
                 {resultText}
               </pre>
-            )}
+            ) : null}
           </div>
-        ) : sources.length > 0 ? (
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap gap-1.5">
-              {sources.map((source, i) => (
-                <Source
-                  key={`${source.url}-${i}`}
-                  href={source.url}
-                  variant="outline"
-                  size="sm"
-                  className="inline-flex items-center gap-1.5"
-                >
-                  <SourceIcon url={source.url} size={3} />
-                  <SourceTitle>{source.title}</SourceTitle>
-                </Source>
-              ))}
-            </div>
-            {images.length > 0 && (
-              <div
-                className="flex flex-wrap gap-1.5"
-                data-testid="web-search-images"
-              >
-                {images.map((entry) => (
-                  <SearchImageThumb key={entry.id} entry={entry} size="strip" />
-                ))}
-              </div>
-            )}
-          </div>
-        ) : resultText ? (
-          <div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {resultText}
-            </pre>
-          </div>
-        ) : null}
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

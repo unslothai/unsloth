@@ -54,6 +54,13 @@ export const es = {
     shutdown: "Apagar",
   },
   shell: {
+    find: {
+      label: "Buscar en la página",
+      previous: "Coincidencia anterior",
+      next: "Coincidencia siguiente",
+      close: "Cerrar búsqueda",
+      truncated: "Esta página es demasiado larga para buscarla por completo.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -225,6 +232,10 @@ export const es = {
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
       actions: {
+        findInPage: {
+          label: "Buscar en la página",
+          description: "Buscar el texto de esta página",
+        },
         openSettings: {
           label: "Abrir ajustes",
           description: "Abrir el diálogo de ajustes",
@@ -1257,7 +1268,7 @@ export const es = {
       description:
         "Conecta agentes de programación como Claude Code y Codex a un modelo local con unsloth start.",
       intro:
-        "conecta Claude Code, Codex, Hermes, OpenClaw, OpenCode y otros agentes a un modelo servido localmente por Unsloth, totalmente sin conexión. Ejecuta un servidor compatible con OpenAI y nunca modifica los archivos de configuración de tu agente.",
+        "conecta Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode y otros agentes a un modelo servido localmente por Unsloth, totalmente sin conexión. Ejecuta un servidor compatible con OpenAI y nunca modifica los archivos de configuración de tu agente.",
       readDocs: "Leer la documentación",
       copy: "Copiar",
       copied: "Copiado",

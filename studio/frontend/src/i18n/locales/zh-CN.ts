@@ -50,6 +50,13 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    find: {
+      label: "在页面中查找",
+      previous: "上一个匹配项",
+      next: "下一个匹配项",
+      close: "关闭查找",
+      truncated: "此页面过长，无法搜索全部内容。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -220,6 +227,10 @@ export const zhCN = {
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
+        findInPage: {
+          label: "在页面中查找",
+          description: "搜索此页面上的文本",
+        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",
@@ -1207,7 +1218,7 @@ export const zhCN = {
       description:
         "使用 unsloth start 将 Claude Code、Codex 等编程智能体连接到本地模型。",
       intro:
-        "可将 Claude Code、Codex、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
+        "可将 Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
       readDocs: "查看文档",
       copy: "复制",
       copied: "已复制",
