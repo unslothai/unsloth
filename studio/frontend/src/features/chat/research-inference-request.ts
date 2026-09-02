@@ -78,10 +78,9 @@ export function buildResearchInferenceRequest(input: {
     input.reasoningStyle === "reasoning_effort" &&
     input.supportsReasoningOff
   ) {
-    // reasoning_effort sends no enableThinking, so an off that emits nothing is
-    // thinking on wherever the provider defaults it on: ollama sets Think true
-    // whenever the model can think and no control arrives. Send the same
-    // explicit off the chat path sends, gated on off being a legal value.
+    // reasoning_effort has no enableThinking to carry the off, and ollama thinks
+    // when no control arrives. Same explicit off the chat path sends; gated
+    // because "none" is not in every ladder (gpt-5, gpt-5-codex).
     request.reasoningEffort = "none";
   }
   return request;

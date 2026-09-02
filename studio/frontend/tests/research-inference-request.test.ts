@@ -59,10 +59,7 @@ test("invalid optional settings do not leak into a local research request", () =
   );
 });
 
-// A reasoning_effort provider has no enableThinking to carry an off, so a
-// research request that emits nothing leaves ollama on its Think-true default
-// (server/routes.go sets it whenever the model can think and no control
-// arrives), which is the #9649 report reappearing in the synthesis call.
+// #9649 reappearing in synthesis: ollama thinks when no control arrives.
 test("Thinking off reaches research synthesis as an explicit none", () => {
   assert.deepEqual(
     buildResearchInferenceRequest({
@@ -95,8 +92,7 @@ test("Thinking off reaches research synthesis as an explicit none", () => {
   );
 });
 
-// gpt-5 rejects reasoning_effort "none", so its caps clear supportsReasoningOff
-// and the off must stay unsent rather than 400 the synthesis call.
+// gpt-5 has no "none": its caps clear supportsReasoningOff, so nothing is sent.
 test("a provider without an off value sends no effort when reasoning is off", () => {
   assert.deepEqual(
     buildResearchInferenceRequest({
