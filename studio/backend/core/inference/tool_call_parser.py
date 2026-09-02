@@ -2878,10 +2878,9 @@ def _last_bare_call_word(text: str) -> int:
 
 
 def _partial_call_word_len(text: str) -> int:
-    """Length of a trailing ``c``/``ca``/``cal`` that could still become ``call``.
-
-    A chunk can end mid-word. The leading-position buffer covers these with
-    ``"call:".startswith``; the mid-prose scans need the same reach from the other end."""
+    """Length of a trailing ``c``/``ca``/``cal`` that could still become ``call``: a chunk can
+    end mid-word, and the leading-position buffer already covers these via
+    ``"call:".startswith``."""
     for n in (3, 2, 1):
         start = len(text) - n
         if start >= 0 and text[start:] == "call"[:n]:
