@@ -3083,13 +3083,10 @@ def test_every_reuse_path_syncs_the_arch_coverage():
 
 @pytest.mark.parametrize("visual_server", [True, False], ids = ["present", "missing"])
 def test_a_published_bundle_owes_its_visual_server(tmp_path, monkeypatch, visual_server):
-    """The marker's source label decides, exactly as it does on the canonical reuse path.
-
-    runtime_payload_health_groups only adds llama-diffusion-gemma-visual-server for a
-    published bundle, so omitting the label let an incomplete published Vulkan tree read
-    as validated. setup.sh's source build has its own target for the binary, so exit 2 is
-    a recovery here rather than a detour.
-    """
+    """The marker's source label decides, exactly as on the canonical reuse path.
+    runtime_payload_health_groups only adds llama-diffusion-gemma-visual-server for a published
+    bundle, so omitting the label let an incomplete published Vulkan tree read as validated.
+    setup.sh's source build has its own target for the binary, so exit 2 is a recovery here."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(
         tmp_path, backend = "vulkan", source = "published", visual_server = visual_server
@@ -3116,12 +3113,10 @@ def test_an_upstream_bundle_does_not_owe_a_visual_server(tmp_path, monkeypatch):
 
 
 def test_a_reused_install_backfills_the_paired_runtime_asset(tmp_path: Path):
-    """An install predating runtime_asset only gains it on the reuse path.
-
-    The pairing is in install_fingerprint, but that is a hash: the kept-install payload
-    check reads the field, so without this backfill a paired Windows CUDA tree stays
-    "pair-less" forever and its cudart trio is never required.
-    """
+    """An install predating runtime_asset only gains it on the reuse path. The pairing is in
+    install_fingerprint, but that is a hash: the kept-install payload check reads the field, so
+    without this backfill a paired Windows CUDA tree stays "pair-less" forever and its cudart
+    trio is never required."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -5603,7 +5598,70 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
-# Shared platform payload plus any files required by a named backend.
+def test_multiline_fallback_reason_logs_one_prefixed_line_each(tmp_path, monkeypatch, capsys):
+    """Every line of the reason has to carry the component prefix.
+
+    The preflight failure lists one binary per line, and the unprefixed system
+    report follows immediately, so a reader (the Studio updater) can only tell
+    the reason's continuation lines from the report by that prefix.
+    """
+
+    def boom(*args, **kwargs):
+        raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+            "linux extracted binary preflight failed:\n"
+            "llama-server: missing=libcuda.so.1 ld_library_path=none\n"
+            "llama-quantize: missing=libgomp.so.1 ld_library_path=none"
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_LOG_TO_STDOUT", True)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    with pytest.raises(SystemExit):
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    reason = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "preflight failed" in line or "missing=" in line
+    ]
+    assert len(reason) == 3
+    assert all(line.startswith("[llama-prebuilt] ") for line in reason)
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_github_api_rate_limit_status_carries_the_token_hint(monkeypatch, status):
+    """GitHub answers an exceeded rate limit with 403 or 429, and the raw
+    "HTTP Error 429: Too Many Requests" says nothing a user can act on."""
+    url = "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b10679-mix-67dfc8b"
+
+    def raise_status(_url, **_kw):
+        raise urllib.error.HTTPError(_url, status, "rate limited", {}, io.BytesIO(b""))
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", raise_status)
+    with pytest.raises(RuntimeError) as caught:
+        INSTALL_LLAMA_PREBUILT.fetch_json(url)
+    assert f"GitHub API returned {status}" in str(caught.value)
+    assert "GH_TOKEN" in str(caught.value)
+
+
+def test_non_github_rate_limit_status_is_not_rewritten(monkeypatch):
+    """huggingface.co has its own 429; it must not collect GitHub token advice."""
+    url = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+
+    def raise_429(_url, **_kw):
+        raise urllib.error.HTTPError(_url, 429, "Too Many Requests", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", raise_429)
+    with pytest.raises(urllib.error.HTTPError):
+        INSTALL_LLAMA_PREBUILT.fetch_json(url)
+
+
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -5619,8 +5677,6 @@ _BACKEND_PAYLOAD = {
     ("windows", "cuda"): ["ggml-cuda.dll"],
     ("linux", "vulkan"): ["libggml-vulkan.so"],
 }
-# Only a published bundle owes this one, which is why the marker's source label has to
-# reach runtime_payload_health_groups.
 _PUBLISHED_PAYLOAD = {"linux": ["llama-diffusion-gemma-visual-server"]}
 
 
@@ -5671,24 +5727,19 @@ def _complete_existing_llama_install(
         elif path.name == "UNSLOTH_PREBUILT_INFO.json":
             path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
         elif path.name.startswith("llama-"):
-            # The root copy is what _find_llama_server_binary reaches first, and it can
-            # rot alone when symlinking was unavailable.
             ok = (
                 runnable
                 if path.parent != install_dir
                 else (runnable if runnable_root is None else runnable_root)
             )
-            # A runnable stub, not an empty file: the kept-install check execs these, and
-            # a zero-byte file that kept its mode bits is the ENOEXEC case below.
+            # These get exec'd; a zero-byte file that kept its mode bits is ENOEXEC.
             path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
-            # Match setup.sh's executable reuse gate.
             os.chmod(path, 0o755 if executable else 0o644)
         else:
             path.write_text("", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
-        # Complete installs always carry the shared platform payload.
         for name in _SHARED_PAYLOAD[platform]:
             (runtime_dir / name).write_text("", encoding = "utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
@@ -5994,8 +6045,7 @@ def test_the_probe_gets_the_runtime_line_the_marker_recorded(tmp_path, monkeypat
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
-    # preflight_linux_installed_binaries also builds an env and correctly passes none,
-    # since it only matters on Windows; what is asserted is that the probe kept it.
+    # preflight_linux_installed_binaries also builds an env and correctly passes none.
     assert (
         "cuda-12.4" in seen
     ), f"the kept-install probe built its env without the marker's runtime_line: {seen}"

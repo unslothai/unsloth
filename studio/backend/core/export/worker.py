@@ -574,16 +574,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             return
 
     # ── 1b. Check Triton on Windows (must precede import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1c. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent).

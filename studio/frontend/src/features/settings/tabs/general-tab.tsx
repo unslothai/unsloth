@@ -59,6 +59,7 @@ import {
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
@@ -742,6 +743,10 @@ export function GeneralTab() {
             {t("settings.general.resetPreferences.action")}
           </Button>
         </SettingsRow>
+        {/* Same section as the reset row: both rewrite state the user cannot easily put
+            back, and the desktop-only repair renders nothing on the web build, which
+            would leave a section header with no rows under it if it had its own. */}
+        <DesktopRepairControl />
       </SettingsSection>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

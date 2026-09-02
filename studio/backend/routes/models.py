@@ -192,8 +192,31 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.dependencies import get_hf_token, get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
+from utils.utils import anonymous_and_offline
+
+
+_UNAUTHORIZED_OFFLINE = "This request cannot be authorized without network access."
+
+
+def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> HfTokenArg:
+    """Pick the credential for a route that still accepts the legacy ``?hf_token=``.
+
+    Header first, as it was before these routes resolved their token through a
+    dependency: the header is the caller's real credential and a stale query parameter
+    must not displace it. With neither explicit token present the sentinel is rebuilt
+    rather than the header handed back as-is: an ``or`` chain ending on the query value
+    would fall through ``False`` to ``None`` and restore the ambient token, while
+    returning ``header_token`` itself would return whatever a caller that bypassed
+    FastAPI's injection left in the parameter -- an unresolved ``Depends`` object.
+    """
+    explicit = _normalize_hf_token(header_token) or _normalize_hf_token(query_token)
+    if explicit:
+        return explicit
+    return False if is_anonymous(header_token) else None
+
 
 try:
     from utils.models import (
@@ -2248,18 +2271,22 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
 
 
 def _get_max_position_embeddings(config) -> Optional[int]:
-    """Extract max_position_embeddings from a config, with text_config fallback."""
-    if hasattr(config, "max_position_embeddings"):
-        return config.max_position_embeddings
-    if hasattr(config, "text_config") and hasattr(config.text_config, "max_position_embeddings"):
-        return config.text_config.max_position_embeddings
-    return None
+    """The window this model was trained for, by the rule a load resolves it with.
+
+    Reading one field name showed a dash for a model spelling it another way -- Kimi
+    Linear carries model_max_length alone -- and a number as soon as it loaded.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import mlx_native_context_length
+
+    return mlx_native_context_length(SimpleNamespace(config = config))
 
 
 _MODEL_WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
 
 
-def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
+def _get_model_size_bytes(model_name: str, hf_token: HfTokenArg = None) -> Optional[int]:
     """Total size of model weight files from HF Hub."""
     try:
         from huggingface_hub import HfApi
@@ -2328,9 +2355,16 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
 
 
 def _model_config_inspection_target(
-    model_name: str, prefer_local_cache: bool, local_path: Optional[str]
+    model_name: str,
+    prefer_local_cache: bool,
+    local_path: Optional[str],
+    hf_token: HfTokenArg = None,
 ) -> str:
     if not prefer_local_cache or is_local_path(model_name):
+        return model_name
+    # The cached snapshot answers from disk without consulting the token, so a caller
+    # denied the ambient credential is sent to the Hub, which refuses a private repo.
+    if is_anonymous(hf_token):
         return model_name
     from hub.utils.hf_cache_state import (
         latest_snapshot_from_cache_path,
@@ -2358,16 +2392,24 @@ async def get_model_config(
     prefer_local_cache: bool = False,
     local_path: Optional[str] = None,
     header_hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
-    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
+    hf_token = hf_token_arg(
+        _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
     def _resolve(model_name: str) -> ModelDetails:
         # Each probe below can reach the hub, so the guard wraps the whole handler: offline they
         # must all resolve from the HF cache. Local paths stay on disk and skip the probe.
         with _hf_offline_if_unreachable_for(model_name):
+            # Inside the context, not before: the guard forces offline itself when the hub
+            # is unreachable, and every probe below then resolves from disk.
+            if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+                raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
             if not is_local_path(model_name):
                 resolved = resolve_cached_repo_id_case(model_name)
                 if resolved != model_name:
@@ -2385,19 +2427,23 @@ async def get_model_config(
                 model_name,
                 prefer_local_cache,
                 local_path,
+                hf_token,
             )
             config_dict = load_model_defaults(model_name)
 
+            # The bare repo id above only helps if the probes then go over the wire:
+            # local_files_only resolves config.json out of the cache, unauthorized.
+            probe_local_only = prefer_local_cache and not is_anonymous(hf_token)
             is_vision = is_vision_model(
                 inspection_target,
                 hf_token = hf_token,
-                local_files_only = prefer_local_cache,
+                local_files_only = probe_local_only,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
             audio_type, audio_type_definitive = detect_audio_type_checked(
                 _audio_probe_target(inspection_target),
                 hf_token = hf_token,
-                local_files_only = prefer_local_cache,
+                local_files_only = probe_local_only,
             )
 
             is_lora = False
@@ -2449,9 +2495,11 @@ async def get_model_config(
                 model_type = derive_model_type(is_vision, audio_type, is_embedding),
                 base_model = base_model,
                 max_position_embeddings = max_position_embeddings,
+                # Keyed on the target, not the flag: the bare repo id an anonymous caller
+                # gets sizes as a relative path and returns None, public repos included.
                 model_size_bytes = (
                     _get_snapshot_model_size_bytes(inspection_target)
-                    if prefer_local_cache
+                    if prefer_local_cache and inspection_target != model_name
                     else _get_model_size_bytes(model_name, hf_token)
                 ),
             )
@@ -2497,6 +2545,7 @@ async def scan_model_remote_code(
     model_local_path: Optional[str] = Body(None, embed = True),
     model_snapshot_path: Optional[str] = Body(None, embed = True),
     model_snapshot_repo_id: Optional[str] = Body(None, embed = True),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan a model's ``auto_map`` custom code so the UI can show findings before
@@ -2507,6 +2556,13 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    # Without this an absent body token reads as None, i.e. ambient-authorized, and the
+    # scan returns source snippets from a cached private repo.
+    hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+    # Offline the scanner's hf_hub_download calls resolve config.json and the repo's
+    # Python out of the cache, and the response carries source snippets.
+    if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+        raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
     try:
         from utils.security import (
             load_scan_target,
@@ -2548,8 +2604,11 @@ async def scan_model_remote_code(
                 exact_snapshot_repo_id,
                 True,
                 normalize_path(exact_snapshot_path),
+                hf_token,
             )
-        elif prefer_local_cache is True and not local_model:
+        elif prefer_local_cache is True and not local_model and not is_anonymous(hf_token):
+            # Same guard as the exact_snapshot branch: resolving to a cached snapshot
+            # hands the scanner a private repo's Python, unauthorized.
             from core.training.training import _resolve_model_snapshot
             local_path = normalize_path(model_local_path) if model_local_path else None
             scan_target = _resolve_model_snapshot(model_name, local_path) or model_name
@@ -2831,7 +2890,7 @@ async def scan_loras(
     exports_dir: str = Query(
         default = str(exports_root()), description = "Directory to scan for exported models"
     ),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan for trained LoRA adapters and exported models.
@@ -3454,6 +3513,7 @@ async def check_vision_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
     header_hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -3461,7 +3521,10 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
-    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
+    hf_token = hf_token_arg(
+        _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision). Offline
@@ -3496,6 +3559,7 @@ async def check_embedding_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
     header_hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -3503,7 +3567,10 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
-    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
+    hf_token = hf_token_arg(
+        _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         # Same guard as /check-vision: is_embedding_model hits the hub with a 15s timeout.
@@ -3742,8 +3809,8 @@ def _resolve_mtp_drafter(
     loader's own ``_pick_mtp`` for an HF snapshot, and ``detect_mtp_file`` for a
     local folder, which is what ``model_config`` calls when it builds the launch.
     A bespoke scan here is how the estimate ends up pricing a different file from
-    the one llama-server opens: ``_pick_mtp`` is root-level and prefix-matched, so
-    it cannot be fooled by a directory that happens to be named ``mtp``, it finds
+    the one llama-server opens: ``_pick_mtp`` is prefix-matched, so it cannot be
+    fooled by a directory that happens to be named ``mtp``, it finds
     the snapshot-root companion when the weights sit in a quant subdirectory, it
     sorts on relative strings rather than ``Path`` objects (whose ordering is
     case-folded on Windows and not on POSIX, so two hosts really can disagree),
@@ -3752,17 +3819,24 @@ def _resolve_mtp_drafter(
     """
     try:
         from core.inference.llama_cpp import (
+            LlamaCppBackend,
             _companion_snapshot_sibling,
             _pick_mtp,
+            _pick_mtp_root_only,
             _snapshot_dir_of,
         )
 
         if _snapshot_dir_of(main_gguf_path) is not None:
-            # An HF snapshot. ``_download_mtp`` resolves through ``_pick_mtp``,
-            # which is root-level only, so the ``MTP/`` precision copies are not
-            # auto-fetched and must not be priced: charging one would report a
-            # reserve for a drafter the load will not open.
-            drafter = _companion_snapshot_sibling(main_gguf_path, _pick_mtp)
+            # An HF snapshot. ``_download_mtp`` takes the ``MTP/`` fallback only
+            # for qwen4exp with no head of its own, so the same gate applies here:
+            # pricing a nested copy for any other model reports a reserve for a
+            # drafter the load will not open.
+            pick = (
+                _pick_mtp
+                if LlamaCppBackend._gguf_path_wants_nested_mtp(main_gguf_path)
+                else _pick_mtp_root_only
+            )
+            drafter = _companion_snapshot_sibling(main_gguf_path, pick)
         else:
             # A local folder, where the load path (model_config) pairs the drafter
             # to the weight by name so a multi-model folder cannot attach a foreign
@@ -3777,8 +3851,6 @@ def _resolve_mtp_drafter(
         # the load planner sizes the drafter with _get_gguf_size_bytes, and a
         # split companion reserves every shard. Billing shard 1 alone reports a
         # fit for a launch that allocates several times as much.
-        from core.inference.llama_cpp import LlamaCppBackend
-
         return drafter, LlamaCppBackend._get_gguf_size_bytes(drafter)
     except Exception:
         return None, 0
@@ -4435,12 +4507,12 @@ async def get_gguf_variants(
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
-    hf_token_header: Optional[str] = Depends(get_hf_token),
+    hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
     try:
-        hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
+        hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
 
         answer = await hub_gguf_variants.get_gguf_variants_answer(
@@ -4502,7 +4574,7 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache progress service."""
@@ -4529,7 +4601,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache progress service."""
@@ -5028,7 +5100,7 @@ def _cached_repo_partial(
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -5318,7 +5390,7 @@ async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache deletion service."""
