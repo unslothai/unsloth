@@ -2,18 +2,12 @@ import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/rea
 import { saveChatMessage } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import { exportedItemToRecord } from "./delete-thread-message";
+import { RESEARCH_METADATA_KEYS } from "./research-message-sync";
 
-// Mirrors studio_db._SERVER_MANAGED_LINK_KEYS: the fields that say a run, not the user, owns
-// this turn. A manual edit asks the backend to hand the turn over, and it refuses to detach the
-// run while the record still claims server ownership -- the save is answered 409 and the catch
-// below rolls the edit back out of the thread. Timing, incomplete and context usage are what
-// the reply is displayed with rather than who owns it, so they stay.
-const SERVER_OWNED_METADATA_KEYS = [
-  "researchRunId",
-  "researchRun",
-  "researchStatus",
-  "researchPlanRevision",
-  "serverManaged",
+// Mirrors studio_db._SERVER_MANAGED_LINK_KEYS. The backend detaches a finished run only when
+// the edit drops its ownership claim; display fields such as timing and incomplete stay.
+const SERVER_OWNED_METADATA_KEYS: readonly string[] = [
+  ...RESEARCH_METADATA_KEYS,
   "generationRunId",
   "generationSeq",
   "generationStatus",

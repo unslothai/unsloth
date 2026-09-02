@@ -44,8 +44,7 @@ function snapshotContent(
     : [];
 }
 
-// A Date from assistant-ui's export, or the epoch millis a rehydrated record carries.
-// `getTime?.()` alone re-dated such a turn to now, which reorders the thread.
+// Epoch millis pass through; `getTime?.()` alone re-dated them to now and reordered the thread.
 function toEpochMillis(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   return typeof value === "number" && Number.isFinite(value) ? value : Date.now();

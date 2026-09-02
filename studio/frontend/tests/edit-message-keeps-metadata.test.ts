@@ -71,6 +71,7 @@ function harness() {
         },
       },
       "./delete-thread-message": RECORD_MODULE,
+      "./research-message-sync": researchSync,
     },
   );
   return { module, saved };
@@ -170,8 +171,7 @@ test("an incognito edit is never written at all", async () => {
 });
 
 test("the turn keeps its timestamp when the export carries epoch millis", async () => {
-  // assistant-ui hands back a Date, but a record rehydrated from storage can carry the
-  // millis it was stored as; re-dating the turn to now would reorder the thread.
+  // Re-dating the turn to now would reorder the thread.
   const h = harness();
   const exported = thread([{ type: "text", text: "hi" }]);
   (exported.messages[1].message as Record<string, unknown>).createdAt = 2000;
@@ -187,11 +187,8 @@ test("the turn keeps its timestamp when the export carries epoch millis", async 
   assert.equal(h.saved[0].createdAt, 2000);
 });
 
-// A reply the durable generation path produced is stored with the run's ownership fields, and
-// the thread hands them straight back on `metadata.custom` after a reload. Sending them back
-// tells the backend the run still owns the turn, so it refuses to detach it and answers the
-// edit 409 -- reproduced against studio_db: the same payload without these keys saves and keeps
-// `timing`/`contextUsage`, with them it raises ChatMessageProtectedError.
+// What a generated reply carries on `metadata.custom` after a reload. Sent back with an edit,
+// the backend refuses to detach the run and answers 409.
 const GENERATION_OWNERSHIP = {
   serverManaged: true,
   generationRunId: "run-1",
@@ -230,7 +227,8 @@ test("editing a generated reply drops the run's claim on the turn", async () => 
   assert.deepEqual(record.content, [{ type: "text", text: "an edited reply" }]);
 });
 
-test("a research report's ownership is dropped the same way", async () => {
+test("the strip covers the backend's whole server-managed key set", async () => {
+  // Parity only: research reports have no pencil and the backend still refuses to edit them.
   const record = await saveOwnedReply({
     ...CUSTOM,
     serverManaged: true,
