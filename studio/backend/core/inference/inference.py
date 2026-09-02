@@ -973,30 +973,39 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
+        # The usage of the LATEST turn, so the loop can size a search against a real
+        # token count. Cleared before every turn and written when that turn ends, so a
+        # turn that failed or reported nothing leaves it empty rather than stale.
+        _turn_stats: dict = {}
+
         def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
             # tools such as render_html can be removed from later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
-            yield from self._generate_chat_response_inner(
-                messages = conv,
-                system_prompt = "",
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                min_p = min_p,
-                max_new_tokens = max_new_tokens,
-                repetition_penalty = repetition_penalty,
-                cancel_event = cancel_event,
-                tools = turn_tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                # Self-limiting: after a tool call the conversation ends on a tool
-                # result, so later turns render as ordinary new turns.
-                continue_final_message = continue_final_message,
-                presence_penalty = presence_penalty,
-            )
+            _turn_stats["stats"] = None
+            try:
+                yield from self._generate_chat_response_inner(
+                    messages = conv,
+                    system_prompt = "",
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    min_p = min_p,
+                    max_new_tokens = max_new_tokens,
+                    repetition_penalty = repetition_penalty,
+                    cancel_event = cancel_event,
+                    tools = turn_tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    # Self-limiting: after a tool call the conversation ends on a tool
+                    # result, so later turns render as ordinary new turns.
+                    continue_final_message = continue_final_message,
+                    presence_penalty = presence_penalty,
+                )
+            finally:
+                _turn_stats["stats"] = self.last_generation_stats
 
         initial = list(messages)
         if system_prompt:
@@ -1042,6 +1051,7 @@ class InferenceBackend:
             # So a conversation search can be sized against what this model can hold.
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
+            generation_stats_holder = _turn_stats,
         )
 
     def generate_chat_response(

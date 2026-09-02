@@ -97,6 +97,8 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   releasePageBaseUrl: "https://github.com/unslothai/unsloth/releases/tag/",
   releaseTagPrefix: "v",
 };
+const STARTUP_UPDATE_CHECK_DELAY_MS = 5000;
+const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 const PREPARATION_STATUSES: ReadonlySet<UpdateStatus> = new Set([
   "available",
@@ -165,7 +167,7 @@ export function useTauriUpdate(isExternalServer = false) {
   const preparingVersionRef = useRef<string | null>(null);
   const updateRef = useRef<DesktopUpdateMetadata | null>(null);
   const checkedRef = useRef(false);
-  const startupScheduledRef = useRef(false);
+  const lastCheckAtRef = useRef<number | null>(null);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
   // Windows kill-on-close: false once a re-arm has failed, and every path that
@@ -198,7 +200,16 @@ export function useTauriUpdate(isExternalServer = false) {
     setInfo(nextInfo);
   }
 
-  function offerUpdate(nextInfo: UpdateInfo) {
+  function restoredPreparationStatus(previousStatus: UpdateStatus): UpdateStatus {
+    if (previousStatus === "available") return previousStatus;
+    const nextStatus = preparationStatus(preparationRef.current);
+    if (nextStatus === "ready" && previousStatus !== "ready") {
+      setDismissed(false);
+    }
+    return nextStatus;
+  }
+
+  function offerUpdate(nextInfo: UpdateInfo, previousStatus?: UpdateStatus) {
     const isNewOffer = infoRef.current?.version !== nextInfo.version;
     replaceInfo(nextInfo);
     if (isNewOffer) {
@@ -207,7 +218,11 @@ export function useTauriUpdate(isExternalServer = false) {
       setError(null);
       setDismissed(false);
     }
-    updateStatus("available");
+    updateStatus(
+      !isNewOffer && previousStatus && PREPARATION_STATUSES.has(previousStatus)
+        ? restoredPreparationStatus(previousStatus)
+        : "available",
+    );
   }
 
   function replaceLogs(nextLogs: string[]) {
@@ -287,7 +302,10 @@ export function useTauriUpdate(isExternalServer = false) {
     }
   }
 
-  async function checkManualUpdate(policy: DesktopUpdatePolicy) {
+  async function checkManualUpdate(
+    policy: DesktopUpdatePolicy,
+    previousStatus: UpdateStatus,
+  ) {
     if (policy.mode !== "manual_linux_package") return false;
     const { invoke } = await import("@tauri-apps/api/core");
     const manualUpdate = await invoke<ManualUpdateInfo | null>(
@@ -295,13 +313,16 @@ export function useTauriUpdate(isExternalServer = false) {
     );
     if (!manualUpdate) return false;
     updateRef.current = null;
-    offerUpdate({
-      version: manualUpdate.version,
-      currentVersion: manualUpdate.currentVersion,
-      pypiVersion: manualUpdate.pypiVersion ?? undefined,
-      body: manualUpdate.body,
-      date: manualUpdate.date,
-    });
+    offerUpdate(
+      {
+        version: manualUpdate.version,
+        currentVersion: manualUpdate.currentVersion,
+        pypiVersion: manualUpdate.pypiVersion ?? undefined,
+        body: manualUpdate.body,
+        date: manualUpdate.date,
+      },
+      previousStatus,
+    );
     return true;
   }
 
@@ -316,8 +337,10 @@ export function useTauriUpdate(isExternalServer = false) {
 
   async function checkForUpdate() {
     if (checkingRef.current || updatingRef.current) return;
+    const previousStatus = statusRef.current;
     // A manual check covers startup, so the delayed timer must not repeat it.
     checkedRef.current = true;
+    lastCheckAtRef.current = Date.now();
     checkingRef.current = true;
     setCheckError(null);
     updateStatus("checking");
@@ -327,13 +350,13 @@ export function useTauriUpdate(isExternalServer = false) {
 
       if (policy.mode === "manual_linux_package") {
         // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
-        if (await checkManualUpdate(policy)) return;
+        if (await checkManualUpdate(policy, previousStatus)) return;
         if (resolved) {
           // latest.json has no deb/rpm key, so the in-app updater would offer an
           // AppImage this install cannot apply. Stop instead.
           updateRef.current = null;
-          await clearPreparedBackendUpdate();
           replaceInfo(null);
+          await clearPreparedBackendUpdate();
           updateStatus("idle");
           return;
         }
@@ -344,24 +367,33 @@ export function useTauriUpdate(isExternalServer = false) {
       const update = await checkDesktopUpdate();
       if (update) {
         updateRef.current = update;
-        offerUpdate({
-          version: update.version,
-          currentVersion: update.currentVersion,
-          pypiVersion: rawPypiVersion(update.rawJson),
-          body: update.body,
-          date: update.date,
-        });
+        offerUpdate(
+          {
+            version: update.version,
+            currentVersion: update.currentVersion,
+            pypiVersion: rawPypiVersion(update.rawJson),
+            body: update.body,
+            date: update.date,
+          },
+          previousStatus,
+        );
       } else {
         updateRef.current = null;
-        await clearPreparedBackendUpdate();
         replaceInfo(null);
         resetPreparation();
+        await clearPreparedBackendUpdate();
         updateStatus("idle");
       }
     } catch (e) {
       console.error("Update check failed:", e);
       setCheckError(String(e));
-      updateStatus(infoRef.current ? preparationStatus(preparationRef.current) : "idle");
+      updateStatus(
+        infoRef.current
+          ? PREPARATION_STATUSES.has(previousStatus)
+            ? restoredPreparationStatus(previousStatus)
+            : previousStatus
+          : "idle",
+      );
     } finally {
       checkingRef.current = false;
       setHasChecked(true);
@@ -373,19 +405,48 @@ export function useTauriUpdate(isExternalServer = false) {
     if (staged.staging) await cancelStagedUpdate();
     await discardStagedUpdate();
   }
-  // Startup owns one delayed check; this ref keeps a per-render function out of
-  // the empty dep list. The closure reads only refs/setState, so it cannot stale.
-  const initialCheckRef = useRef(checkForUpdate);
+
+  function checkForUpdateWhenSafe() {
+    // preparation and recovery own version-specific state until they settle.
+    if (statusRef.current === "preparing" || statusRef.current === "error") return;
+    void checkForUpdate();
+  }
+
+  // scheduled checks use the mount's stable closure, which only reads refs and state setters.
+  const scheduledCheckRef = useRef(checkForUpdateWhenSafe);
 
   useEffect(() => {
-    if (!isTauri || startupScheduledRef.current) return;
-    startupScheduledRef.current = true;
+    if (!isTauri) return;
 
-    const timer = setTimeout(() => {
+    const startupTimer = setTimeout(() => {
       if (checkedRef.current) return;
-      void initialCheckRef.current();
-    }, 5000);
-    return () => clearTimeout(timer);
+      scheduledCheckRef.current();
+    }, STARTUP_UPDATE_CHECK_DELAY_MS);
+    const periodicTimer = setInterval(() => {
+      scheduledCheckRef.current();
+    }, PERIODIC_UPDATE_CHECK_INTERVAL_MS);
+    const checkWhenVisibleAndDue = () => {
+      if (document.hidden) return;
+      const lastCheckAt = lastCheckAtRef.current;
+      if (lastCheckAt === null) return;
+      const elapsed = Date.now() - lastCheckAt;
+      if (
+        elapsed >= 0 &&
+        elapsed < PERIODIC_UPDATE_CHECK_INTERVAL_MS
+      ) {
+        return;
+      }
+      scheduledCheckRef.current();
+    };
+    window.addEventListener("focus", checkWhenVisibleAndDue);
+    document.addEventListener("visibilitychange", checkWhenVisibleAndDue);
+
+    return () => {
+      clearTimeout(startupTimer);
+      clearInterval(periodicTimer);
+      window.removeEventListener("focus", checkWhenVisibleAndDue);
+      document.removeEventListener("visibilitychange", checkWhenVisibleAndDue);
+    };
   }, []);
 
   async function prepareUpdate(version: string, policy: DesktopUpdatePolicy) {

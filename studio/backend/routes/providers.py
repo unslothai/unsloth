@@ -822,18 +822,25 @@ async def list_provider_models(
 
     try:
         models = await client.list_models()
-        # Registry model-id filters only apply to the native Gemini base. A
-        # custom OAI-compatible proxy returns prefixed IDs the native allowlist
-        # would strip, leaving the picker empty; match the host check here so the
-        # model list and chat dispatch agree on what counts as "native".
+        # Registry model-id filters describe one vendor's own catalog, so they
+        # only apply on that vendor's host. A Gemini OAI-compat proxy returns
+        # prefixed ids the allowlist strips, and an Azure or self-hosted OpenAI
+        # base returns operator-chosen deployment names that can carry any word
+        # the denylist reads as non-chat (`gpt-5.5-image-analysis`). Either way
+        # the picker empties out for a connection that works.
+        _NATIVE_HOSTS = {
+            "gemini": ("generativelanguage.googleapis.com",),
+            "openai": ("api.openai.com",),
+        }
         apply_registry_model_filters = True
-        if payload.provider_type == "gemini":
+        native_hosts = _NATIVE_HOSTS.get(payload.provider_type)
+        if native_hosts is not None:
             try:
                 from urllib.parse import urlparse as _urlparse
                 _host = (_urlparse(base_url).hostname or "").lower()
             except Exception:
                 _host = ""
-            apply_registry_model_filters = _host == "generativelanguage.googleapis.com"
+            apply_registry_model_filters = _host in native_hosts
 
         if apply_registry_model_filters:
             allow_prefixes = info.get("model_id_allow_prefixes")

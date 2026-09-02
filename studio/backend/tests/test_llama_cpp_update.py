@@ -759,6 +759,130 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     assert "boom" in (job["error"] or "")
 
 
+def test_start_update_rate_limit_reports_actionable_error(monkeypatch, tmp_path):
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 403 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518; "
+        "set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits\n",
+        "windows_runtime_dirs=C:\\\\very\\\\long\\\\path\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    assert "GH_TOKEN" in (job["error"] or "")
+    assert "windows_runtime_dirs" not in (job["error"] or "")
+
+
+def test_start_update_reports_a_github_429_as_a_rate_limit(monkeypatch, tmp_path):
+    # GitHub answers an exceeded rate limit with 403 or 429.
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 429 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518; "
+        "set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    assert "GH_TOKEN" in (job["error"] or "")
+
+
+def test_start_update_tells_an_authenticated_run_to_wait_for_the_limit(monkeypatch, tmp_path):
+    # An authenticated run has spent the larger quota (or tripped a secondary
+    # limit); it already holds the token this message used to ask it to set.
+    monkeypatch.setenv("GH_TOKEN", "x")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 429 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    error = job["error"] or ""
+    assert "rate-limiting" in error
+    assert "GH_TOKEN" not in error
+    assert "Wait for the limit to reset" in error
+
+
+def test_start_update_does_not_blame_github_for_a_hugging_face_rate_limit(monkeypatch, tmp_path):
+    # The tiny validation model comes from huggingface.co, whose own rate limit
+    # also surfaces as installer exit 2. GH_TOKEN cannot fix that one.
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: validation model unavailable: "
+        "429 Client Error: Too Many Requests for url "
+        "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf "
+        "(Rate limit reached)\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    error = job["error"] or ""
+    assert "GH_TOKEN" not in error
+    assert "validation model unavailable" in error
+
+
 # --- installer-argument construction (mirrors the post-#5963 setup scripts) ---
 
 

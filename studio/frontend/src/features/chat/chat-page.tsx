@@ -3998,13 +3998,23 @@ export function ChatPage({
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
-    void refresh({ includeLoras: false });
+    const controller = new AbortController();
+    // Models and status only: a LoRA scan that hangs or 500s takes the whole Promise.all
+    // with it and leaves the picker empty. The deferred refresh below owns that inventory.
+    void refresh({
+      includeLoras: false,
+      signal: controller.signal,
+      waitForServerModel: !useChatRuntimeStore.getState().params.checkpoint,
+    });
     const timeoutId = window.setTimeout(() => {
       if (!inventoryRefreshStartedRef.current) {
         refreshDeferredModelInventories();
       }
     }, 1200);
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
   }, [refresh, refreshDeferredModelInventories]);
 
   useEffect(() => {
