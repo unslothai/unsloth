@@ -88,9 +88,7 @@ def workspace_binding_is_stale() -> bool:
 def assert_workspace_binding_current() -> None:
     """Refuse to name a workspace from a binding the account outlived."""
     if workspace_binding_is_stale():
-        raise RetiredWorkspaceError(
-            "This account was deleted while the request was in flight."
-        )
+        raise RetiredWorkspaceError("This account was deleted while the request was in flight.")
 
 
 def set_workspace_subject(subject: str) -> WorkspaceBinding:
