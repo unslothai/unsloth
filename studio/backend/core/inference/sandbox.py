@@ -78,7 +78,11 @@ class UnsafeSandboxWorkdirError(RuntimeError):
 class SandboxArgv(list[str]):
     """Sandbox command plus the narrow file descriptors it must inherit."""
 
-    def __init__(self, values: list[str], pass_fds: tuple[int, ...] = ()):
+    def __init__(
+        self,
+        values: list[str],
+        pass_fds: tuple[int, ...] = (),
+    ):
         super().__init__(values)
         self.pass_fds = pass_fds
 
@@ -529,9 +533,7 @@ def _linux_socket_seccomp_fd() -> int:
 
         if not hasattr(os, "memfd_create"):
             raise UnsafeSandboxWorkdirError("memfd_create is required for the Linux seccomp filter")
-        fd = os.memfd_create(
-            "unsloth-studio-sandbox-seccomp", flags = getattr(os, "MFD_CLOEXEC", 1)
-        )
+        fd = os.memfd_create("unsloth-studio-sandbox-seccomp", flags = getattr(os, "MFD_CLOEXEC", 1))
         if lib.seccomp_export_bpf(context, fd) != 0:
             raise UnsafeSandboxWorkdirError("could not export the Linux socket seccomp filter")
         os.lseek(fd, 0, os.SEEK_SET)
@@ -579,7 +581,9 @@ def _linux_probe() -> _ProbeResult:
         return _ProbeResult(ok = False)
     probe_path = _linux_bwrap_probe_path()
     if probe_path is None:
-        logger.warning("No trusted bwrap probe executable found; tool execution will run unsandboxed")
+        logger.warning(
+            "No trusted bwrap probe executable found; tool execution will run unsandboxed"
+        )
         return _ProbeResult(ok = False)
     try:
         seccomp_fd = _linux_socket_seccomp_fd()
@@ -1286,9 +1290,7 @@ def _linux_sandbox_identity_files(workdir: str) -> tuple[str, str]:
             raise UnsafeSandboxWorkdirError(
                 "cannot create sandbox identity files outside the writable workdir"
             )
-        identity_dir = tempfile.mkdtemp(
-            prefix = "unsloth-studio-sandbox-identity-", dir = temp_root
-        )
+        identity_dir = tempfile.mkdtemp(prefix = "unsloth-studio-sandbox-identity-", dir = temp_root)
         os.chmod(identity_dir, 0o700)
         passwd_path = os.path.join(identity_dir, "passwd")
         group_path = os.path.join(identity_dir, "group")

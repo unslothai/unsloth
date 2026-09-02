@@ -313,7 +313,9 @@ def test_linux_binds_detected_oneapi_runtime_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox, "_LINUX_ONEAPI_ROOTS", (str(runtime),))
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
-    monkeypatch.setattr(sandbox, "_assert_external_read_paths_have_no_special_nodes", lambda *_: None)
+    monkeypatch.setattr(
+        sandbox, "_assert_external_read_paths_have_no_special_nodes", lambda *_: None
+    )
 
     argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
     assert any(
@@ -839,7 +841,10 @@ def test_macos_profile_keeps_nested_editable_runtime_writable(tmp_path, monkeypa
     profile = sandbox._macos_seatbelt_profile(str(workdir))
 
     assert f'(allow file-write* (subpath "{wd.replace(chr(92), "/")}"))' in profile
-    assert f'(deny file-write* file-ioctl\n    (subpath "{rp.replace(chr(92), "/")}")\n)' not in profile
+    assert (
+        f'(deny file-write* file-ioctl\n    (subpath "{rp.replace(chr(92), "/")}")\n)'
+        not in profile
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX identity file permissions")
