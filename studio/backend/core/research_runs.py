@@ -162,6 +162,12 @@ def _synthesis_needs_recovery(report: str, finish_reason: str | None) -> bool:
     return finish_reason == "length" or not report
 
 
+# A shorter recovery outranks a usable first draft only when the provider positively says
+# it reached a natural stop. Missing and unknown reasons can instead mean a bare EOF after
+# partial text, while every supported report path normalizes natural completion to "stop".
+_NATURAL_FINISH_REASONS = frozenset({"stop"})
+
+
 def _auto_scrape_default() -> int:
     """Server default for ``budgets["maxAutoScrape"]``: 0 (off) unless
     ``UNSLOTH_RESEARCH_AUTO_SCRAPE`` enables it (``1``/``true`` -> ``_AUTO_SCRAPE_TOP_K``, or an
@@ -2564,6 +2570,18 @@ class ResearchSupervisor:
         )
         await self._check_active(run["id"])
         report = _select_synthesis_report(report, synthesis_reasoning)
+        truncation_notice = ""
+
+        def _delivered(draft: str) -> str:
+            """What the reader would actually get from this draft.
+
+            The validators below drop a model-authored source list and every citation the
+            catalogs do not back, and a model that ran out of budget is exactly the one
+            liable to pad with both, so raw length is not what the drafts should be judged
+            on. Used only to compare them; whichever wins is stored as the model wrote it."""
+            validated = _validate_report_sources(draft, sources)
+            return _validate_report_document_sources(validated, document_sources)
+
         if _synthesis_needs_recovery(report, synthesis_finish_reason):
             recovery_reason = (
                 "exhausted its output budget"
@@ -2601,24 +2619,51 @@ class ResearchSupervisor:
                 enable_thinking = False,
             )
             synthesis_reasoning += recovery_reasoning
-            report = _select_synthesis_report(recovered_report, recovery_reasoning)
-            synthesis_finish_reason = recovery_finish_reason
-            synthesis_usage = recovery_usage
-            await self._check_active(run["id"])
-            if synthesis_finish_reason == "length":
-                raise ValueError(
-                    _synthesis_length_limit_error(
-                        synthesis_usage,
-                        requested_max_tokens = recovery_max_tokens,
-                    )
+            recovered = _select_synthesis_report(recovered_report, recovery_reasoning)
+            # A second attempt at the SAME report under the same budget, not a correction of
+            # the first. Reaching here means the first draft is empty or unfinished, so a
+            # recovery that ran to a natural stop wins outright, and only between two drafts
+            # of equal standing does the longer one win. Both tests measure the drafts
+            # through the same validators that run below, because those delete a
+            # model-authored source list and any invented citation: a draft must not win on
+            # padding that is about to be removed.
+            comparable_recovered = _delivered(recovered)
+            comparable_report = _delivered(report)
+            recovered_whole = (
+                bool(comparable_recovered) and recovery_finish_reason in _NATURAL_FINISH_REASONS
+            )
+            take_recovery = recovered_whole or len(comparable_recovered) >= len(comparable_report)
+            requested_max_tokens = recovery_max_tokens
+            if take_recovery:
+                report = recovered
+                synthesis_finish_reason = recovery_finish_reason
+                synthesis_usage = recovery_usage
+            else:
+                requested_max_tokens = _resolve_max_tokens(
+                    16384,
+                    run["config"].get("inferenceRequest") or {},
+                    synthesis_messages,
                 )
+            await self._check_active(run["id"])
+            if report and synthesis_finish_reason == "length":
+                truncation_notice = _synthesis_length_limit_error(
+                    synthesis_usage,
+                    requested_max_tokens = requested_max_tokens,
+                ).rstrip(".")
+        report = _validate_report_sources(report, sources)
+        report = _validate_report_document_sources(report, document_sources)
         if not report:
             raise ValueError(
                 "Local model returned no safely identifiable final report. Disable thinking or "
                 "use a compatible chat template and retry."
             )
-        report = _validate_report_sources(report, sources)
-        report = _validate_report_document_sources(report, document_sources)
+        # Above the report, and after the validators so they only ever see what the model
+        # wrote. Above, because a report that ran out of budget stops wherever it happened to
+        # be -- inside a code fence, a list, a quote -- and anything appended under an
+        # unterminated container is swallowed by it, whereas the first line of a document is
+        # inside nothing. The reader also learns the report is cut short before reading it.
+        if truncation_notice:
+            report = f"> **Incomplete report.** {truncation_notice}.\n\n{report.lstrip()}"
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:
             reasoning += synthesis_reasoning
