@@ -18,6 +18,7 @@ const DIST = resolve(HERE, "..", "dist");
 
 /** Transfer crosses the wire; raw is what the main thread parses and executes. */
 export const BUDGET = {
+  // Measured 1,566.3 KB transfer / 5,254.9 KB raw at efc35ea4d, 6.0 KB inside this ceiling.
   // Find in page is carried eagerly rather than split behind `lazy`: the shell prevents the chord's
   // default before the chunk would exist, so an early press gets no native find and no bar either,
   // and idle warming never runs on Safari, which keeps requestIdleCallback behind a flag.
