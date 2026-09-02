@@ -5713,12 +5713,10 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
-                # Same whole-model offload lifecycle as the image path: diffusers has offloaded
-                # every component and dropped its transfer copies, so ask the host allocator to
-                # return those pages before the next request. Video weights are larger than image
-                # weights, so the retention is worse here. Placed AFTER progress is cleared: the
-                # trim can block for a few hundred ms on a large heap, and the page should not
-                # still be showing an active generation while it runs.
+                # Whole-model offload leaves the freed component copies sitting in the host
+                # allocator's arenas; hand them back before the next request. Costs 34-300 ms on
+                # a large heap, so it runs after self._gen is cleared (a background job still
+                # reads active via _generate_job_active, only the synchronous path goes idle).
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
