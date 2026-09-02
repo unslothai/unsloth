@@ -1210,53 +1210,53 @@ def _retire_workspace_directory(username: str) -> bool:
     from storage import schema_cache
 
     schema_cache.forget_all()
-    # The preview token names the username, so a namesake's run at the same ref
-    # would answer the old links.
-    try:
-        clear_preview_link_incarnation(username)
-    except Exception:  # noqa: BLE001 - a link we cannot revoke must not block a deletion
-        logger.warning("Could not revoke preview links for %s", username, exc_info = True)
-    # Process-lifetime memos keyed by the username outlive the files, so a
-    # namesake would index into the previous holder's embedding space.
-    try:
-        from utils.embedding_model_settings import forget_workspace as forget_embedding_memos
-        forget_embedding_memos(username)
-    except Exception:  # noqa: BLE001 - a cache we cannot reach must not block a deletion
-        logger.warning("Could not clear embedding memos for %s", username, exc_info = True)
-    # Private-dataset grants key on the same reusable username.
-    try:
-        from hub.services.datasets.cache_access import forget_workspace as forget_dataset_grants
-        forget_dataset_grants(username)
-    except Exception:  # noqa: BLE001 - same
-        logger.warning("Could not clear dataset grants for %s", username, exc_info = True)
-    # The scan records authorize discarding remote code, so a namesake could
-    # delete a dependency another account's model still needs.
-    try:
-        from routes.models import forget_scan_created_remote_code
-        forget_scan_created_remote_code(username)
-    except Exception:  # noqa: BLE001 - same
-        logger.warning("Could not clear remote-code grants for %s", username, exc_info = True)
-    # Downloads are not workspace jobs, so the sweep never saw them, and their
-    # initiator sets name the account.
-    try:
-        from hub.services.download_lifecycle import forget_workspace_initiators
-        forget_workspace_initiators(username)
-    except Exception:  # noqa: BLE001 - same
-        logger.warning("Could not clear download initiators for %s", username, exc_info = True)
-    try:
-        from routes.inference import forget_stt_model_downloader
-        forget_stt_model_downloader(username)
-    except Exception:  # noqa: BLE001 - same
-        logger.warning("Could not clear dictation grants for %s", username, exc_info = True)
-    # The video route's own job map, which the sweep did not reach.
-    try:
-        from routes.video import forget_workspace_jobs
-        forget_workspace_jobs(username)
-    except Exception:  # noqa: BLE001 - same
-        logger.warning("Could not clear video jobs for %s", username, exc_info = True)
+    _forget_workspace_registries(username)
     # Moving the files is not enough: a worker still bound to this subject
     # recreates the pathname on its next lookup.
     return retired_all and not _workspace_jobs_active(username)
+
+
+# Every registry that keys on the username and outlives the account's files, as
+# (what, module, function taking the subject).
+#
+# A table rather than seven copies of the same lazy import and try/except. Each of
+# these was reported separately, one per review round, because nothing said out
+# loud that a per-account registry has to be retired with the account: this list
+# is that statement, and it is the one place a new one has to be added.
+#
+# Imported by name, at call time. A reduced install where one of these modules
+# will not import must still be able to delete an account.
+_WORKSPACE_REGISTRIES: tuple[tuple[str, str, str], ...] = (
+    # The preview token names the username, so a namesake's run at the same ref
+    # would answer links the previous holder shared.
+    ("preview links", "auth.storage", "clear_preview_link_incarnation"),
+    # Process-lifetime memos, which would index into the previous embedding space.
+    ("embedding memos", "utils.embedding_model_settings", "forget_workspace"),
+    ("dataset grants", "hub.services.datasets.cache_access", "forget_workspace"),
+    # The scan records authorize discarding remote code, so a namesake could
+    # delete a dependency another account's model still needs.
+    ("remote-code grants", "routes.models", "forget_scan_created_remote_code"),
+    # Downloads are not workspace jobs, so the sweep never saw them.
+    ("download initiators", "hub.services.download_lifecycle", "forget_workspace_initiators"),
+    ("dictation grants", "routes.inference", "forget_stt_model_downloader"),
+    # The video route's own job map, beside the backend state the sweep reached.
+    ("video jobs", "routes.video", "forget_workspace_jobs"),
+)
+
+
+def _forget_workspace_registries(username: str) -> None:
+    """Drop what every per-account registry still holds for a deleted account.
+
+    Never fatal: a registry that cannot be reached must not block the deletion
+    itself, which would leave an account the owner cannot remove.
+    """
+    import importlib
+
+    for what, module_path, attr in _WORKSPACE_REGISTRIES:
+        try:
+            getattr(importlib.import_module(module_path), attr)(username)
+        except Exception:  # noqa: BLE001 - see the docstring
+            logger.warning("Could not clear %s for %s", what, username, exc_info = True)
 
 
 def _quiesce_workspace_jobs(username: str) -> None:

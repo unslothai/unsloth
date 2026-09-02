@@ -5458,3 +5458,35 @@ def test_a_managed_account_cannot_point_the_backend_at_a_private_image_url(monke
         guard("")
     finally:
         reset_workspace_subject(token)
+
+
+def test_every_registry_the_delete_path_names_actually_resolves():
+    """The table trades an import error for a logged warning, so pin it here.
+
+    _forget_workspace_registries imports by name at call time, which is what lets
+    a reduced install still delete an account. The cost is that a typo, or a
+    helper someone renames, degrades to a warning nobody reads while the state it
+    was meant to clear is inherited by the next holder of the name.
+    """
+    import importlib
+
+    from auth import storage as auth_storage
+
+    assert auth_storage._WORKSPACE_REGISTRIES, "the delete path clears no registries"
+    for what, module_path, attr in auth_storage._WORKSPACE_REGISTRIES:
+        module = importlib.import_module(module_path)
+        hook = getattr(module, attr, None)
+        assert callable(hook), (what, module_path, attr)
+
+
+def test_the_registries_a_deletion_clears_are_listed_in_one_place():
+    import inspect
+
+    from auth import storage as auth_storage
+
+    source = inspect.getsource(auth_storage._retire_workspace_directory)
+    # One call, not seven copies of the same lazy import and try/except. Eight of
+    # these were reported one at a time, so the list being findable is the point.
+    assert "_forget_workspace_registries(username)" in source
+    for helper in ("forget_workspace_initiators", "forget_scan_created_remote_code"):
+        assert helper not in source, helper
