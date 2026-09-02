@@ -354,10 +354,15 @@ def test_unknown_charset_still_reaches_the_bom_codec(monkeypatch):
     assert "MARKERWORD" in out
 
 
-@pytest.mark.parametrize("charset", ["base64", "hex", "zlib", "quopri", "rot13", "uu", "bz2"])
-def test_non_text_codec_charset_falls_back(monkeypatch, charset):
-    # These names pass codecs.lookup but bytes.decode refuses them, so guarding
-    # the lookup alone still lost the page to "is not a text encoding".
+@pytest.mark.parametrize(
+    "charset",
+    ["base64", "hex", "zlib", "quopri", "rot13", "uu", "bz2", "undefined", "idna"],
+)
+def test_unusable_codec_charset_falls_back(monkeypatch, charset):
+    # Every one of these passes codecs.lookup and fails the decode instead:
+    # base64 and friends are not text codecs, "undefined" raises on every decode
+    # by design, and idna rejects errors = "replace". Guarding the lookup alone,
+    # or probing the codec separately from the real decode, still lost the page.
     body = b"<html><body><p>MARKERWORD in a page a browser renders fine.</p></body></html>"
     out = _fetch_with(monkeypatch, body, f"text/html; charset={charset}")
     assert "MARKERWORD" in out

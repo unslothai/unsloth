@@ -12108,23 +12108,25 @@ def _fetch_url_raw(
         try:
             if declared:
                 declared_codec = codecs.lookup(declared).name
-                # base64/hex/zlib and friends pass lookup but are not text codecs,
-                # so they raise only here, where the decode below would fail the fetch.
-                b"a".decode(declared)
-        except UnicodeError:
-            # A real text codec that simply cannot decode this probe (utf-16 and
-            # other wide codecs reject a lone byte). Keep it.
-            pass
         except (LookupError, ValueError):
-            # A label we cannot decode with is no better than none: names Python
-            # does not ship, non-text codecs, and malformed values alike.
+            # A name Python does not ship, or one malformed enough to fail lookup.
             declared = None
-            declared_codec = None
         bom_codec = next(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
-        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        try:
+            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        except (LookupError, ValueError):
+            # The label survived lookup but cannot decode this page the way we do:
+            # non-text codecs (base64/hex/zlib), the always-failing "undefined",
+            # and codecs that reject errors = "replace" (idna). A label we cannot
+            # decode with is no better than none, so take the fallback instead of
+            # losing a page the bytes of which we already have. Every codec here is
+            # a real text codec from _UNICODE_BOM_CODECS or utf-8, so it cannot raise.
+            declared = None
+            declared_codec = None
+            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
