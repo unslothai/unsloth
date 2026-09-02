@@ -27306,9 +27306,7 @@ class LlamaCppBackend:
                             last_prefill_progress is None or processed > last_prefill_progress
                         ):
                             last_prefill_progress = processed
-                            first_token_deadline = (
-                                time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                            )
+                            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 if chunk and starts_output:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
