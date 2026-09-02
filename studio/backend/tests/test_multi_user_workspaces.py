@@ -1204,12 +1204,6 @@ def test_a_username_whose_files_could_not_be_released_cannot_be_recreated(
         assert not (root / "private.txt").exists()
 
 
-def test_streamed_tool_workers_keep_the_callers_workspace():
-    from core.inference import tool_stream_exec
-    src = inspect.getsource(tool_stream_exec.stream_tool_execution)
-    assert "run_in_workspace(bound_subject" in src
-
-
 def test_signed_media_links_name_the_workspace_that_minted_them():
     from utils import signed_media_links
 
@@ -1543,14 +1537,6 @@ def test_the_export_log_stream_stops_when_another_account_takes_the_buffer():
     assert "owns_workspace(current_subject)" in src[loop - 700 : loop]
 
 
-def test_training_refuses_to_start_over_another_accounts_export():
-    import routes.training as training_routes
-
-    src = inspect.getsource(training_routes.start_training)
-    assert "export_owns(current_subject)" in src
-    assert "An export is running in another account" in src
-
-
 def test_the_diffusion_dataset_interlock_only_blocks_the_running_account():
     from core.training.diffusion_training_service import DiffusionTrainingService
 
@@ -1882,19 +1868,6 @@ def test_destroying_the_shared_cache_is_owner_only():
         assert getattr(default, "dependency", None) is require_install_admin
 
 
-def test_a_managed_accounts_preview_prompts_are_filed_under_their_own_name():
-    import inspect
-
-    from routes import preview as preview_routes
-
-    src = inspect.getsource(preview_routes._serve_chat)
-    # The context manager binds the filesystem, but these two take the subject as
-    # an explicit argument, and the chat one records the prompt in the
-    # process-global API monitor.
-    assert "subject = current_workspace_subject()" in src
-    assert "DEFAULT_ADMIN_USERNAME" not in src
-
-
 def test_unloading_the_image_engine_cannot_end_another_accounts_generation():
     from core.inference.diffusion import DiffusionBackend, _GenState
     from utils.workspace_context import ForeignWorkspaceActiveError
@@ -1966,18 +1939,6 @@ def test_workspace_jobs_active_fails_closed(tmp_path: Path, monkeypatch: pytest.
     assert auth_storage._workspace_jobs_active("casey") is True
 
 
-def test_remote_code_training_and_export_are_owner_only():
-    import inspect
-
-    from routes import export as export_routes
-    from routes import training as training_routes
-
-    start = inspect.getsource(training_routes.start_training)
-    assert "_reject_remote_code_from_a_managed_account(request.trust_remote_code)" in start
-    load = inspect.getsource(export_routes.load_checkpoint)
-    assert "_reject_remote_code_from_a_managed_account(request.trust_remote_code)" in load
-
-
 def test_controlnets_are_per_account_like_the_diffusion_loras(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1997,29 +1958,6 @@ def test_controlnets_are_per_account_like_the_diffusion_loras(
             reset_workspace_subject(token)
     assert seen["unsloth"] != seen["alice"]
     assert seen["unsloth"] == (studio_root() / "controlnets" / "diffusion").resolve()
-
-
-def test_media_and_export_loads_refuse_paths_outside_the_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    import inspect
-
-    from routes import export as export_routes
-    from routes import inference as inference_routes
-    from routes import video as video_routes
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    # The text load path got containment through _resolve_model_identifier_for_request;
-    # these three never went near it and their validators accept any local path.
-    assert '_reject_uncontained_local_path(request.model_path, "load")' in inspect.getsource(
-        inference_routes.load_diffusion_model_gated
-    )
-    assert '_reject_uncontained_local_path(request.model_path, "load")' in inspect.getsource(
-        video_routes.load_video_model_gated
-    )
-    assert '_reject_uncontained_local_path(request.checkpoint_path, "export")' in inspect.getsource(
-        export_routes.load_checkpoint
-    )
 
 
 def test_a_recipe_cannot_seed_from_another_accounts_files(
@@ -2053,17 +1991,6 @@ def test_a_recipe_cannot_seed_from_another_accounts_files(
         _reject_uncontained_recipe_paths({"path": "some/relative/thing"})
     finally:
         reset_workspace_subject(token)
-
-
-def test_the_embedding_model_setting_cannot_name_another_workspace():
-    import inspect
-
-    from routes import settings as settings_routes
-
-    src = inspect.getsource(settings_routes.update_embedding_model)
-    # Caching the choice per workspace stopped it reaching another account's RAG;
-    # it did not stop the choice itself naming a path the loader then opens.
-    assert '_reject_uncontained_local_path(model, "use embedding models from")' in src
 
 
 def test_the_embedding_resolution_memo_is_per_account():
@@ -3403,17 +3330,6 @@ def test_training_refuses_rather_than_cancelling_a_foreign_render(monkeypatch):
     assert _foreign_media_render_active("bob") is None
 
 
-def test_the_video_backend_can_be_asked_before_it_is_torn_down():
-    import inspect
-
-    from core.inference.video import VideoBackend
-
-    # unload() must ask through the same helper the training guard asks, so the
-    # two can never disagree about what counts as a foreign render.
-    assert hasattr(VideoBackend, "_refuse_foreign_teardown")
-    assert "_refuse_foreign_teardown(subject)" in inspect.getsource(VideoBackend.unload)
-
-
 def test_the_github_env_token_status_matches_what_the_worker_inherits(monkeypatch):
     from routes.data_recipe.seed import get_github_env_token_status
 
@@ -3812,19 +3728,6 @@ def test_an_unanswerable_hub_probe_falls_back_to_the_shared_cache(monkeypatch):
         reset_workspace_subject(token)
 
 
-def test_the_video_load_asks_the_same_credential_question():
-    import inspect
-
-    from routes import video as video_routes
-
-    source = inspect.getsource(video_routes)
-    # The video backend builds its own HfApi and calls from_pretrained with the
-    # request's token, so the guard has to run on the route, beside containment.
-    assert "_reject_private_hub_repo_without_an_account_token(request.model_path" in source
-    # And on the base repo, which is fetched the same way under a separate id.
-    assert "_reject_private_hub_repo_without_an_account_token(request.base_repo" in source
-
-
 def test_embedding_resolution_is_contained_like_the_save(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
@@ -3967,27 +3870,6 @@ def test_a_finished_recipe_job_survives_another_accounts_start():
         assert manager.get_analysis("alice-job") is None
     finally:
         reset_workspace_subject(token)
-
-
-def test_the_delete_path_also_clears_state_that_outlived_the_work(monkeypatch):
-    import inspect
-
-    from auth import storage as auth_storage
-
-    source = inspect.getsource(auth_storage._quiesce_workspace_jobs)
-    # Everything above the divider stops something that is running. These clear
-    # what a finished job leaves behind, which nothing above reaches because by
-    # then there is nothing left to stop.
-    for step in (
-        "retained diffusion training state",
-        "retained training state",
-        "idle export worker",
-        "retained recipe job",
-        "completed video record",
-        "API monitor entries",
-        "private resident media models",
-    ):
-        assert step in source, step
 
 
 def test_a_finished_training_run_does_not_outlive_its_account():
@@ -5151,19 +5033,6 @@ def test_openai_video_jobs_do_not_outlive_their_account():
     video_routes._jobs.clear()
 
 
-def test_the_external_tool_loop_cancel_keys_are_scoped_once():
-    import inspect
-
-    from routes import inference as inference_routes
-
-    source = inspect.getsource(inference_routes._proxy_to_external_provider)
-    # _TrackedCancel scopes what it is given, so scoping here as well stored
-    # subject\0subject\0id while /cancel looks up subject\0id, and Stop could
-    # not reach these tool calls at all.
-    marker = "cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)"
-    assert marker in source
-
-
 def test_the_cache_paths_are_owner_only_in_both_directions():
     import inspect
 
@@ -5172,21 +5041,6 @@ def test_the_cache_paths_are_owner_only_in_both_directions():
         signature = inspect.signature(getattr(settings_routes, route))
         dependency = signature.parameters["current_subject"].default
         assert dependency.dependency is settings_routes.require_install_admin, route
-
-
-def test_the_image_load_asks_the_same_credential_question():
-    import inspect
-
-    from routes import inference as inference_routes
-
-    source = inspect.getsource(inference_routes.load_diffusion_model_gated)
-    # load_pipeline normalises a missing token to None and the Hub client then
-    # sends the installation's implicit login, so a managed account naming an
-    # owner-private repo downloaded and ran it. Containment lets a Hub id
-    # through on purpose, which is exactly why the credential question has to be
-    # asked here too, as the video load already does.
-    assert "_reject_private_hub_repo_without_an_account_token(request.model_path" in source
-    assert "_reject_private_hub_repo_without_an_account_token(request.base_repo" in source
 
 
 def test_generation_time_adapters_are_not_fetched_on_the_loaders_token(monkeypatch):
@@ -5217,20 +5071,6 @@ def test_generation_time_adapters_are_not_fetched_on_the_loaders_token(monkeypat
         guard("org/alices-private-lora", "LoRA", "hf_bobs_own_token")
     finally:
         reset_workspace_subject(token)
-
-
-def test_the_image_routes_ask_about_every_adapter_they_pass_down():
-    import inspect
-
-    from routes import inference as inference_routes
-
-    generate = inspect.getsource(inference_routes.generate_diffusion_image)
-    # The resident-model guard answers for the model. These arrive per request.
-    assert "_reject_private_generation_time_repo(_lora.id" in generate
-    assert "_reject_private_generation_time_repo(request.controlnet.id" in generate
-    load = inspect.getsource(inference_routes.load_diffusion_model_gated)
-    # And the load bakes its own selection in on the same credential.
-    assert "_reject_private_generation_time_repo(_lora.id" in load
 
 
 def test_a_request_admitted_before_deletion_cannot_name_the_workspace_again():
@@ -5282,16 +5122,6 @@ def test_the_fence_is_raised_before_the_quiescence_sweep():
     assert fence < sweep
 
 
-def test_a_fenced_request_answers_401_rather_than_500():
-    import inspect
-
-    from utils import api_errors
-
-    source = inspect.getsource(api_errors.install_api_error_handlers)
-    assert "RetiredWorkspaceError" in source
-    assert "status_code = 401" in source
-
-
 def test_a_managed_account_cannot_turn_the_code_tool_sandbox_off(monkeypatch):
     from core.inference import tools as tools_module
 
@@ -5326,3 +5156,142 @@ def test_a_managed_account_cannot_turn_the_code_tool_sandbox_off(monkeypatch):
         assert seen == [True, False]
     finally:
         reset_workspace_subject(token)
+
+
+# Wiring, not behaviour: each guard below has its own behavioural test above, and
+# what these pin is that it is CALLED from the path that needs it. A guard quietly
+# dropped from one route is otherwise invisible until somebody reports it. One
+# table rather than one test each, because every entry is the same assertion, and
+# because thirteen copies of it drifted apart every time a formatter moved an
+# anchor. Ordering properties are NOT here: "the guard runs before the fallible
+# work" is a different claim and keeps its own test.
+_GUARD_WIRING = (
+    (
+        "core.inference.tool_stream_exec::stream_tool_execution",
+        ("run_in_workspace(bound_subject",),
+        (),
+    ),
+    (
+        "routes.training::start_training",
+        (
+            "export_owns(current_subject)",
+            "An export is running in another account",
+            "_reject_remote_code_from_a_managed_account(request.trust_remote_code)",
+        ),
+        (),
+    ),
+    (
+        "routes.export::load_checkpoint",
+        (
+            "_reject_remote_code_from_a_managed_account(request.trust_remote_code)",
+            '_reject_uncontained_local_path(request.checkpoint_path, "export")',
+        ),
+        (),
+    ),
+    # The chat one records the prompt in the process-global API monitor, so it
+    # takes the subject explicitly rather than inheriting the bound filesystem.
+    (
+        "routes.preview::_serve_chat",
+        ("subject = current_workspace_subject()",),
+        ("DEFAULT_ADMIN_USERNAME",),
+    ),
+    # The text load path got containment through _resolve_model_identifier_for_request;
+    # the media ones never went near it and their validators accept any local path.
+    (
+        "routes.inference::load_diffusion_model_gated",
+        (
+            '_reject_uncontained_local_path(request.model_path, "load")',
+            # load_pipeline normalises a missing token to None, so the Hub client
+            # sends the installation's implicit login unless this is asked.
+            "_reject_private_hub_repo_without_an_account_token(request.model_path",
+            "_reject_private_hub_repo_without_an_account_token(request.base_repo",
+            "_reject_private_generation_time_repo(_lora.id",
+        ),
+        (),
+    ),
+    (
+        "routes.video::load_video_model_gated",
+        ('_reject_uncontained_local_path(request.model_path, "load")',),
+        (),
+    ),
+    (
+        "routes.video",
+        (
+            "_reject_private_hub_repo_without_an_account_token(request.model_path",
+            "_reject_private_hub_repo_without_an_account_token(request.base_repo",
+        ),
+        (),
+    ),
+    # The resident-model guard answers for the model; these arrive per request and
+    # are resolved on the resident pipeline's token.
+    (
+        "routes.inference::generate_diffusion_image",
+        (
+            "_reject_private_generation_time_repo(_lora.id",
+            "_reject_private_generation_time_repo(request.controlnet.id",
+        ),
+        (),
+    ),
+    # Caching the choice per workspace stopped it reaching another account's RAG;
+    # it did not stop the choice itself naming a path the loader then opens.
+    (
+        "routes.settings::update_embedding_model",
+        ('_reject_uncontained_local_path(model, "use embedding models from")',),
+        (),
+    ),
+    # unload() asks through the same helper the training guard asks, so the two
+    # can never disagree about what counts as a foreign render.
+    ("core.inference.video::VideoBackend", ("def _refuse_foreign_teardown",), ()),
+    (
+        "core.inference.video::VideoBackend.unload",
+        ("_refuse_foreign_teardown(subject)",),
+        (),
+    ),
+    # _TrackedCancel scopes what it is given, so scoping here as well stored
+    # subject\0subject\0id while /cancel looks up subject\0id, and Stop could not
+    # reach these tool calls at all.
+    (
+        "routes.inference::_proxy_to_external_provider",
+        (
+            "cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)",
+        ),
+        (),
+    ),
+    # Everything the quiescence sweep stops is running. These clear what a
+    # finished job leaves behind, which nothing above them reaches.
+    (
+        "auth.storage::_quiesce_workspace_jobs",
+        (
+            "retained diffusion training state",
+            "retained training state",
+            "idle export worker",
+            "retained recipe job",
+            "completed video record",
+            "API monitor entries",
+            "private resident media models",
+        ),
+        (),
+    ),
+    ("utils.api_errors::install_api_error_handlers", ("RetiredWorkspaceError", "status_code = 401"), ()),
+)
+
+
+def _guard_wiring_source(target: str) -> str:
+    import importlib
+
+    module_path, _, attr = target.partition("::")
+    obj = importlib.import_module(module_path)
+    for part in attr.split(".") if attr else ():
+        obj = getattr(obj, part)
+    return inspect.getsource(obj)
+
+
+@pytest.mark.parametrize(
+    "target, required, forbidden", _GUARD_WIRING, ids = [row[0] for row in _GUARD_WIRING]
+)
+def test_the_guard_is_wired_into_the_path_that_needs_it(target, required, forbidden):
+    source = _guard_wiring_source(target)
+    for fragment in required:
+        assert fragment in source, (target, fragment)
+    for fragment in forbidden:
+        assert fragment not in source, (target, fragment)
