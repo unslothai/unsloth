@@ -9,9 +9,9 @@
 # and nothing in the script consults it.
 #
 # A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH,
-# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
-# the pipe would be read as an option to sh itself; a local run takes the equivalent flags
-# (--no-torch, --python, --local).
+# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME)
+# because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local
+# run takes the equivalent flags (--no-torch, --isolated-uv-cache, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -61,6 +61,7 @@ TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
+_ISOLATE_UV_CACHE=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -92,6 +93,7 @@ for arg in "$@"; do
         --tauri) TAURI_MODE=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
+        --isolated-uv-cache) _ISOLATE_UV_CACHE=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
@@ -101,6 +103,7 @@ done
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
+case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -649,10 +652,69 @@ _resolve_studio_destinations() {
 }
 
 _configure_uv_cache() {
+    _uv_studio_cache="$STUDIO_HOME/cache/uv"
     case "${UV_CACHE_DIR-}" in
-        *[![:space:]]*) ;;
-        *) UV_CACHE_DIR="$STUDIO_HOME/cache/uv" ;;
+        *[![:space:]]*)
+            _UV_CACHE_MODE=custom
+            export UV_CACHE_DIR
+            step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+            return 0
+            ;;
     esac
+
+    _uv_default_cache=""
+    if [ -n "${XDG_CACHE_HOME:-}" ]; then
+        _uv_default_cache="${XDG_CACHE_HOME}/uv"
+    elif [ -n "${HOME:-}" ]; then
+        _uv_default_cache="${HOME}/.cache/uv"
+    fi
+    _uv_default_populated=false
+    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
+        # Shell globs enumerate only direct children. Stop on the first entry that is
+        # not one of uv's marker files; never walk, size, or mutate the shared cache.
+        for _uv_entry in \
+            "$_uv_default_cache"/* \
+            "$_uv_default_cache"/.[!.]* \
+            "$_uv_default_cache"/..?*; do
+            if [ ! -e "$_uv_entry" ] && [ ! -L "$_uv_entry" ]; then
+                continue
+            fi
+            case "${_uv_entry##*/}" in
+                CACHEDIR.TAG|.gitignore) continue ;;
+            esac
+            _uv_default_populated=true
+            break
+        done
+    fi
+
+    if [ "$_ISOLATE_UV_CACHE" = true ]; then
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=isolated
+    elif [ "$_uv_default_populated" = true ]; then
+        UV_CACHE_DIR="$_uv_default_cache"
+        _UV_CACHE_MODE=shared
+    else
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=studio
+    fi
+    export UV_CACHE_DIR
+
+    case "$_UV_CACHE_MODE" in
+        shared)
+            step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
+            ;;
+        isolated)
+            step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+            ;;
+        studio)
+            step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+            ;;
+    esac
+}
+
+_prepare_studio_uv_cache_for_launch() {
+    [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
 }
 _resolve_studio_destinations
@@ -2246,6 +2308,15 @@ _maybe_reroute_strixhalo_to_2404() {
     # install matches what was asked for, not a default install.
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
+
+    # Automatic paths belong to the origin distro. Let the target recompute its own
+    # platform default; only an explicit caller override is portable by intent.
+    if [ "$_UV_CACHE_MODE" = custom ]; then
+        _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
+    else
+        _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+    fi
+    [ "$_ISOLATE_UV_CACHE" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_ISOLATE_UV_CACHE=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
     # GPU instead of falling back to the desktop-app prompt path.
@@ -6296,6 +6367,8 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+
+            _prepare_studio_uv_cache_for_launch
             # Detach stdin from the piped web install's pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).

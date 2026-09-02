@@ -5,8 +5,9 @@
 # AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
-# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
-# local run takes the equivalent flags (--no-torch, --skip-autostart, --python, --local).
+# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
+# UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the equivalent flags
+# (--no-torch, --skip-autostart, --isolated-uv-cache, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -649,6 +650,7 @@ function Install-UnslothStudio {
     $TauriMode = $false
     $SkipTorch = $false
     $SkipAutostart = $false
+    $IsolateUvCache = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -657,6 +659,7 @@ function Install-UnslothStudio {
             "--local"    { $StudioLocalInstall = $true }
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
+            "--isolated-uv-cache" { $IsolateUvCache = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -682,6 +685,7 @@ function Install-UnslothStudio {
     # Env-var equivalent for web installs; an explicit flag still wins.
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
+    if ($env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')) { $IsolateUvCache = $true }
 
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
@@ -1226,9 +1230,67 @@ public static class UnslothStudioFinalPathV2
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
     function Set-StudioUvCacheEnvironment {
+        param(
+            [Parameter(Mandatory = $true)][string]$StudioRoot,
+            [bool]$Isolated = $false
+        )
+        $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
+        if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
+            $script:StudioUvCacheMode = "custom"
+            step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"
+            return
+        }
+
+        $sharedCache = $null
+        $sharedCachePopulated = $false
+        try {
+            if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                $sharedCache = Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"
+                if (Test-Path -LiteralPath $sharedCache -PathType Container) {
+                    # Get-ChildItem is non-recursive by default. Stop after the first
+                    # non-marker entry and never size or modify the shared cache.
+                    $entry = Get-ChildItem -LiteralPath $sharedCache -Force -ErrorAction Stop |
+                        Where-Object { $_.Name -notin @("CACHEDIR.TAG", ".gitignore") } |
+                        Select-Object -First 1
+                    $sharedCachePopulated = ($null -ne $entry)
+                }
+            }
+        } catch {
+            # An unavailable default is not an installation error. Studio isolation is
+            # deterministic and safe when the shared cache cannot be inspected.
+            $sharedCache = $null
+            $sharedCachePopulated = $false
+        }
+
+        if ($Isolated) {
+            $selectedCache = $studioCache
+            $script:StudioUvCacheMode = "isolated"
+        } elseif ($sharedCachePopulated) {
+            $selectedCache = $sharedCache
+            $script:StudioUvCacheMode = "shared"
+        } else {
+            $selectedCache = $studioCache
+            $script:StudioUvCacheMode = "studio"
+        }
+        Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
+
+        switch ($script:StudioUvCacheMode) {
+            "shared" {
+                step "uv cache" "reusing existing shared cache ($selectedCache) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
+            }
+            "isolated" {
+                step "uv cache" "forced Studio cache isolation ($selectedCache); already-cached packages may download again" "Yellow"
+            }
+            "studio" {
+                step "uv cache" "using new Studio-owned cache ($selectedCache)"
+            }
+        }
+    }
+
+    function Set-StudioUvCacheForLaunch {
         param([Parameter(Mandatory = $true)][string]$StudioRoot)
-        if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
-            $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioRoot "cache") "uv"
+        if ($script:StudioUvCacheMode -eq "shared") {
+            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value (Join-Path (Join-Path $StudioRoot "cache") "uv")
         }
     }
 
@@ -3144,7 +3206,7 @@ exit 0
     $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
     $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
     try {
-        Set-StudioUvCacheEnvironment -StudioRoot $StudioHome
+        Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache
         if ($studioNeedsRuntimeLock) {
             try {
                 $studioRuntimeMutexNames = @(
@@ -6503,6 +6565,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
                 # Through the interpreter, not the generated console script: the
                 # autostart must not be the one step an Application Control policy
                 # can still refuse after a clean install.
+                Set-StudioUvCacheForLaunch -StudioRoot $StudioHome
+
                 $studioAutoStartProcess = Start-Process -FilePath $VenvPython `
                     -ArgumentList (Get-ManagedUnslothCliCommandLine -Arguments @("studio", "-p", "8888")) `
                     -NoNewWindow -PassThru
