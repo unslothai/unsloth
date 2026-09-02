@@ -23,10 +23,10 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
-import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
+import type { GgufFitClass } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -65,6 +65,7 @@ import {
   ggufSelectionOverrideMatchesIntent,
 } from "../lib/gguf-filename";
 import {
+  classifyGgufVariantFit,
   ggufVariantDisplayLabel,
   ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
@@ -269,7 +270,7 @@ function createGgufVariantMenuItems(
     key: normalizeGgufVariantIdentity(variant.quant),
     quant: variant.quant,
     label: ggufVariantDisplayLabel(variant),
-    fit: classifyGgufFit(variant.size_bytes, resources),
+    fit: classifyGgufVariantFit(variant, resources),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
     downloadSizeLabel: ggufVariantTransferLabel(variant),
@@ -783,18 +784,14 @@ export function GgufDownloadCard({
   // No verdict beats a wrong one: a media repo's fit is the diffusion planner's question, and
   // this card only knows how to answer llama.cpp's. The picker still badges those rows.
   const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));
-  const selectedFit = useMemo(
-    () =>
-      selected
-        ? classifyGgufFit(selected.size_bytes, {
-            gpuGb,
-            gpuCount,
-            systemRamGb,
-            budgetFraction,
-          })
-        : null,
-    [gpuGb, gpuCount, selected?.size_bytes, systemRamGb, budgetFraction],
-  );
+  const selectedFit = selected
+    ? classifyGgufVariantFit(selected, {
+        gpuGb,
+        gpuCount,
+        systemRamGb,
+        budgetFraction,
+      })
+    : null;
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)
     : null;

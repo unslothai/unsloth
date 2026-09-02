@@ -12,9 +12,12 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { ggufVariantTransferBytes, ggufVariantTransferLabel } = await import(
-  "../src/features/hub/lib/gguf-variant-sort.ts"
-);
+const {
+  classifyGgufVariantFit,
+  ggufVariantFitSizeBytes,
+  ggufVariantTransferBytes,
+  ggufVariantTransferLabel,
+} = await import("../src/features/hub/lib/gguf-variant-sort.ts");
 
 const GB = 1000 ** 3;
 
@@ -75,4 +78,30 @@ test("a partial with nothing left reads as zero rather than the total", () => {
   };
 
   assert.equal(ggufVariantTransferBytes(variant), 0);
+});
+
+test("fit includes required companion files rather than only the main weights", () => {
+  // Bartowski Muse Glimmer Q3_K_S is a 12.79 GB quant plus a 3.85 GB
+  // projector and a 1.45 GB DFlash drafter. The main file alone fits the
+  // loader's 97% budget on a 16 GiB card; the variant that actually gets
+  // installed and loaded does not.
+  const variant = {
+    size_bytes: 12_789_199_648,
+    download_size_bytes: 12_789_199_648 + 3_849_173_920 + 1_451_094_176,
+  };
+
+  assert.equal(ggufVariantFitSizeBytes(variant), variant.download_size_bytes);
+  assert.equal(
+    classifyGgufVariantFit(variant, { gpuGb: 16, systemRamGb: 32 }),
+    "partial",
+  );
+});
+
+test("fit never trusts a missing or zero total below the main weights", () => {
+  const sizeBytes = 12 * GB;
+  assert.equal(ggufVariantFitSizeBytes({ size_bytes: sizeBytes }), sizeBytes);
+  assert.equal(
+    ggufVariantFitSizeBytes({ size_bytes: sizeBytes, download_size_bytes: 0 }),
+    sizeBytes,
+  );
 });
