@@ -229,7 +229,11 @@ def test_nothing_resident_reads_as_holding_the_gpu():
 
 def _inference_source() -> str:
     import pathlib
-    return pathlib.Path(ri.__file__).read_text()
+
+    # encoding is explicit: read_text() defaults to the locale encoding, which is
+    # cp1252 on Windows, and this file is UTF-8. Without it these tests die with a
+    # UnicodeDecodeError on windows-latest while passing everywhere else.
+    return pathlib.Path(ri.__file__).read_text(encoding = "utf-8")
 
 
 def test_the_already_loaded_branch_guards_its_acquire():
@@ -274,7 +278,7 @@ def test_the_mask_runs_before_hardware_detection():
     import pathlib
     from core.inference import worker
 
-    src = pathlib.Path(worker.__file__).read_text()
+    src = pathlib.Path(worker.__file__).read_text(encoding = "utf-8")
     assert src.index("mask_accelerators_for_cpu_audio(os.environ)") < src.index(
         "_hw.detect_hardware()"
     )
