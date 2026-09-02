@@ -28,7 +28,16 @@ done
 
 WORK=$(mktemp -d)
 PROBE="$WORK/probe.sh"
+UV_STUB_DIR="$WORK/bin"
+export UV_STUB_DIR
 trap 'rm -rf "$WORK"' EXIT INT TERM
+mkdir -p "$UV_STUB_DIR"
+cat > "$UV_STUB_DIR/uv" <<'UV'
+#!/bin/sh
+[ "$1" = cache ] && [ "$2" = dir ] || exit 2
+printf '%s\n' "$TEST_UV_EFFECTIVE_CACHE"
+UV
+chmod +x "$UV_STUB_DIR/uv"
 printf '%s\n' "$HELPERS" > "$PROBE"
 cat >> "$PROBE" <<'PROBE'
 step() { printf 'message=%s\n' "$2"; }
@@ -46,6 +55,11 @@ case "$5" in
     *) exit 2 ;;
 esac
 STUDIO_HOME=$7
+
+TEST_UV_EFFECTIVE_CACHE=$9
+export TEST_UV_EFFECTIVE_CACHE
+PATH="$UV_STUB_DIR:$PATH"
+export PATH
 _configure_uv_cache
 _child=$($8 -c 'printf "%s" "${UV_CACHE_DIR+x}:$UV_CACHE_DIR"')
 printf 'value=%s\nmode=%s\nchild=%s\n' "$UV_CACHE_DIR" "$_UV_CACHE_MODE" "$_child"
@@ -53,7 +67,7 @@ _prepare_studio_uv_cache_for_launch
 printf 'launch=%s\n' "$UV_CACHE_DIR"
 PROBE
 
-run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, value, mode, message, launch
+run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, effective, value, mode, message, launch
     _shell=$1
     _label=$2
     _state=$3
@@ -64,11 +78,12 @@ run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, 
     _xdg=$8
     _root=$9
     shift 9
-    _expected=$1
-    _mode=$2
-    _message=$3
-    _launch=$4
-    _actual=$($_shell "$PROBE" "$_state" "$_input" "$_isolate" "$_home" "$_xdg_state" "$_xdg" "$_root" "$_shell")
+    _effective=$1
+    _expected=$2
+    _mode=$3
+    _message=$4
+    _launch=$5
+    _actual=$($_shell "$PROBE" "$_state" "$_input" "$_isolate" "$_home" "$_xdg_state" "$_xdg" "$_root" "$_shell" "$_effective")
     _wanted=$(printf 'message=%s\nvalue=%s\nmode=%s\nchild=x:%s\nlaunch=%s' \
         "$_message" "$_expected" "$_mode" "$_expected" "$_launch")
     if [ "$_actual" = "$_wanted" ]; then
@@ -92,14 +107,14 @@ for shell in sh bash; do
     mkdir -p "$HOME_DIR" "$ROOT"
 
     run_case "$shell" "missing default selects Studio" unset "" false \
-        "$HOME_DIR" unset "" "$ROOT" "$STUDIO_CACHE" studio \
+        "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$STUDIO_CACHE" studio \
         "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
     mkdir -p "$HOME_CACHE/CACHEDIR.TAG/inside"
     : > "$HOME_CACHE/CACHEDIR.TAG/inside/payload"
     : > "$HOME_CACHE/.gitignore"
     run_case "$shell" "marker-only default stays Studio and is not traversed" unset "" false \
-        "$HOME_DIR" unset "" "$ROOT" "$STUDIO_CACHE" studio \
+        "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$STUDIO_CACHE" studio \
         "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
     if [ -f "$HOME_CACHE/CACHEDIR.TAG/inside/payload" ] && [ -f "$HOME_CACHE/.gitignore" ]; then
         ok "$shell: marker-only probe is non-destructive"
@@ -107,55 +122,76 @@ for shell in sh bash; do
         bad "$shell: marker-only probe modified the shared cache"
     fi
 
-    : > "$HOME_CACHE/archive-v0"
+    mkdir -p "$HOME_CACHE/sdists-v9" "$HOME_CACHE/interpreter-v4/key"
+    : > "$HOME_CACHE/sdists-v9/.git"
+    : > "$HOME_CACHE/sdists-v9/.gitignore"
+    : > "$HOME_CACHE/interpreter-v4/key/metadata.msgpack"
+    : > "$HOME_CACHE/.lock"
+    run_case "$shell" "uv venv scaffolding stays Studio-owned" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$STUDIO_CACHE" studio \
+        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+
+    mkdir -p "$HOME_CACHE/archive-v0/package"
+    : > "$HOME_CACHE/archive-v0/package/payload.py"
     run_case "$shell" "populated HOME cache is reused" unset "" false \
-        "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" shared \
+        "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$HOME_CACHE" shared \
         "reusing existing shared cache ($HOME_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
 
     run_case "$shell" "blank override still reuses populated default" value "   " false \
-        "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" shared \
+        "$HOME_DIR" unset "" "$ROOT" "$HOME_CACHE" "$HOME_CACHE" shared \
         "reusing existing shared cache ($HOME_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
 
-    mkdir -p "$XDG_CACHE"
-    : > "$XDG_CACHE/wheels-v5"
+    mkdir -p "$XDG_CACHE/wheels-v5/package"
+    : > "$XDG_CACHE/wheels-v5/package/cached.whl"
     run_case "$shell" "XDG default wins over HOME" unset "" false \
-        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$XDG_CACHE" shared \
+        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$XDG_CACHE" "$XDG_CACHE" shared \
         "reusing existing shared cache ($XDG_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
 
     EMPTY_XDG="$CASE/empty xdg"
-    mkdir -p "$EMPTY_XDG"
+    EMPTY_XDG_CACHE="$EMPTY_XDG/uv"
+    mkdir -p "$EMPTY_XDG_CACHE"
     run_case "$shell" "empty XDG does not fall back to populated HOME" unset "" false \
-        "$HOME_DIR" value "$EMPTY_XDG" "$ROOT" "$STUDIO_CACHE" studio \
+        "$HOME_DIR" value "$EMPTY_XDG" "$ROOT" "$EMPTY_XDG_CACHE" "$STUDIO_CACHE" studio \
         "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
+    CONFIG_CACHE="$CASE/uv.toml cache"
+    mkdir -p "$CONFIG_CACHE/wheels-v5/package"
+    : > "$CONFIG_CACHE/wheels-v5/package/torch.whl"
+    run_case "$shell" "uv-configured cache is resolved and reused" unset "" false \
+        "$HOME_DIR" value "$EMPTY_XDG" "$ROOT" "$CONFIG_CACHE" "$CONFIG_CACHE" shared \
+        "reusing existing shared cache ($CONFIG_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+
     run_case "$shell" "custom override is exact" value "$OVERRIDE" false \
-        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$OVERRIDE" custom \
+        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$XDG_CACHE" "$OVERRIDE" custom \
         "preserving custom UV_CACHE_DIR ($OVERRIDE)" "$OVERRIDE"
 
     run_case "$shell" "custom override wins over isolation" value "$OVERRIDE" true \
-        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$OVERRIDE" custom \
+        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$XDG_CACHE" "$OVERRIDE" custom \
         "preserving custom UV_CACHE_DIR ($OVERRIDE)" "$OVERRIDE"
 
     run_case "$shell" "forced isolation uses Studio despite populated default" unset "" true \
-        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$STUDIO_CACHE" isolated \
+        "$HOME_DIR" value "$XDG_DIR" "$ROOT" "$XDG_CACHE" "$STUDIO_CACHE" isolated \
         "forced Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" "$STUDIO_CACHE"
 
     run_case "$shell" "unresolvable default safely selects Studio" unset "" false \
-        "" unset "" "$ROOT" "$STUDIO_CACHE" studio \
+        "" unset "" "$ROOT" "" "$STUDIO_CACHE" studio \
         "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 done
 
 _resolve_line=$(grep -n '^_resolve_studio_destinations$' "$INSTALL_SH" | head -n1 | cut -d: -f1)
 _configure_line=$(grep -n '^_configure_uv_cache$' "$INSTALL_SH" | head -n1 | cut -d: -f1)
 _uv_line=$(grep -n '^# ── Install uv ──$' "$INSTALL_SH" | head -n1 | cut -d: -f1)
-if [ -n "$_resolve_line" ] && [ -n "$_configure_line" ] && [ -n "$_uv_line" ] \
-   && [ "$_resolve_line" -lt "$_configure_line" ] && [ "$_configure_line" -lt "$_uv_line" ]; then
-    ok "helper runs after destination resolution and before uv setup"
+_venv_line=$(grep -n '^# ── Create venv ' "$INSTALL_SH" | head -n1 | cut -d: -f1)
+if [ -n "$_resolve_line" ] && [ -n "$_configure_line" ] && [ -n "$_uv_line" ] && [ -n "$_venv_line" ] \
+   && [ "$_resolve_line" -lt "$_uv_line" ] && [ "$_uv_line" -lt "$_configure_line" ] \
+   && [ "$_configure_line" -lt "$_venv_line" ]; then
+    ok "helper runs after uv setup and before venv setup"
 else
-    bad "helper ordering (resolve=$_resolve_line configure=$_configure_line uv=$_uv_line)"
+    bad "helper ordering (resolve=$_resolve_line uv=$_uv_line configure=$_configure_line venv=$_venv_line)"
 fi
 
 for _required in \

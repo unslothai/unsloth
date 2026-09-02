@@ -662,35 +662,48 @@ _configure_uv_cache() {
             ;;
     esac
 
-    _uv_default_cache=""
-    if [ -n "${XDG_CACHE_HOME:-}" ]; then
-        _uv_default_cache="${XDG_CACHE_HOME}/uv"
-    elif [ -n "${HOME:-}" ]; then
-        _uv_default_cache="${HOME}/.cache/uv"
-    fi
-    _uv_default_populated=false
-    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
-        # Shell globs enumerate only direct children. Stop on the first entry that is
-        # not one of uv's marker files; never walk, size, or mutate the shared cache.
-        for _uv_entry in \
-            "$_uv_default_cache"/* \
-            "$_uv_default_cache"/.[!.]* \
-            "$_uv_default_cache"/..?*; do
-            if [ ! -e "$_uv_entry" ] && [ ! -L "$_uv_entry" ]; then
-                continue
-            fi
-            case "${_uv_entry##*/}" in
-                CACHEDIR.TAG|.gitignore) continue ;;
-            esac
-            _uv_default_populated=true
-            break
-        done
-    fi
-
     if [ "$_ISOLATE_UV_CACHE" = true ]; then
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
-    elif [ "$_uv_default_populated" = true ]; then
+        export UV_CACHE_DIR
+        step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+        return 0
+    fi
+
+    # Ask the verified uv binary for the path it will actually use. This includes
+    # uv.toml, pyproject, UV_CONFIG_FILE and platform defaults. A blank inherited
+    # variable is intentionally removed so it cannot override those sources.
+    _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null) || _uv_default_cache=""
+    if [ -z "$_uv_default_cache" ]; then
+        if [ -n "${XDG_CACHE_HOME:-}" ]; then
+            _uv_default_cache="${XDG_CACHE_HOME}/uv"
+        elif [ -n "${HOME:-}" ]; then
+            _uv_default_cache="${HOME}/.cache/uv"
+        fi
+    fi
+
+    _uv_default_populated=false
+    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
+        # uv venv alone creates root markers, interpreter metadata and empty
+        # sdists scaffolding. Reuse only when a package-data bucket contains an
+        # actual artifact; stop at the first file and never size or mutate it.
+        for _uv_bucket in \
+            "$_uv_default_cache"/archive-* \
+            "$_uv_default_cache"/wheels-* \
+            "$_uv_default_cache"/built-wheels-* \
+            "$_uv_default_cache"/sdists-*; do
+            [ -d "$_uv_bucket" ] || continue
+            _uv_artifact=$(find "$_uv_bucket" -type f \
+                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore ! -name .lock \
+                -print 2>/dev/null | head -n 1) || _uv_artifact=""
+            if [ -n "$_uv_artifact" ]; then
+                _uv_default_populated=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$_uv_default_populated" = true ]; then
         UV_CACHE_DIR="$_uv_default_cache"
         _UV_CACHE_MODE=shared
     else
@@ -702,9 +715,6 @@ _configure_uv_cache() {
     case "$_UV_CACHE_MODE" in
         shared)
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
-            ;;
-        isolated)
-            step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
             ;;
         studio)
             step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
@@ -718,7 +728,6 @@ _prepare_studio_uv_cache_for_launch() {
     export UV_CACHE_DIR
 }
 _resolve_studio_destinations
-_configure_uv_cache
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks
 # whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it
 # several times (uv bootstrap, venv), so testing $PATH there answers yes for a shell that would
@@ -2311,11 +2320,14 @@ _maybe_reroute_strixhalo_to_2404() {
 
     # Automatic paths belong to the origin distro. Let the target recompute its own
     # platform default; only an explicit caller override is portable by intent.
-    if [ "$_UV_CACHE_MODE" = custom ]; then
-        _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
-    else
-        _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
-    fi
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*)
+            _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
+            ;;
+        *)
+            _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+            ;;
+    esac
     [ "$_ISOLATE_UV_CACHE" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_ISOLATE_UV_CACHE=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
@@ -2926,6 +2938,8 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
         export PATH="$_UNSLOTH_UV_BIN_DIR:$PATH"
     fi
 fi
+
+_configure_uv_cache
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"

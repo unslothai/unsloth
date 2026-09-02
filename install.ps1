@@ -1232,7 +1232,8 @@ public static class UnslothStudioFinalPathV2
     function Set-StudioUvCacheEnvironment {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
-            [bool]$Isolated = $false
+            [bool]$Isolated = $false,
+            [string]$UvExecutable = ""
         )
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
@@ -1241,36 +1242,57 @@ public static class UnslothStudioFinalPathV2
             return
         }
 
-        $sharedCache = $null
-        $sharedCachePopulated = $false
-        try {
-            if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-                $sharedCache = Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"
-                if (Test-Path -LiteralPath $sharedCache -PathType Container) {
-                    # Get-ChildItem is non-recursive by default. Stop after the first
-                    # non-marker entry and never size or modify the shared cache.
-                    $entry = Get-ChildItem -LiteralPath $sharedCache -Force -ErrorAction Stop |
-                        Where-Object { $_.Name -notin @("CACHEDIR.TAG", ".gitignore") } |
-                        Select-Object -First 1
-                    $sharedCachePopulated = ($null -ne $entry)
-                }
-            }
-        } catch {
-            # An unavailable default is not an installation error. Studio isolation is
-            # deterministic and safe when the shared cache cannot be inspected.
-            $sharedCache = $null
-            $sharedCachePopulated = $false
-        }
-
         if ($Isolated) {
             $selectedCache = $studioCache
             $script:StudioUvCacheMode = "isolated"
-        } elseif ($sharedCachePopulated) {
-            $selectedCache = $sharedCache
-            $script:StudioUvCacheMode = "shared"
         } else {
-            $selectedCache = $studioCache
-            $script:StudioUvCacheMode = "studio"
+            $sharedCache = $null
+            $sharedCachePopulated = $false
+            try {
+                # Ask the verified uv binary for the path it will actually use, including
+                # uv.toml, pyproject, UV_CONFIG_FILE and the platform default. Remove a
+                # blank inherited variable so it cannot override those sources.
+                Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+                if ($UvExecutable) {
+                    $resolvedCache = (& $UvExecutable cache dir 2>$null | Select-Object -First 1)
+                    $uvCacheExit = $LASTEXITCODE
+                    if ($uvCacheExit -eq 0 -and -not [string]::IsNullOrWhiteSpace($resolvedCache)) {
+                        $sharedCache = ([string]$resolvedCache).Trim()
+                    }
+                }
+                if (-not $sharedCache -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                    $sharedCache = Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"
+                }
+                if ($sharedCache -and (Test-Path -LiteralPath $sharedCache -PathType Container)) {
+                    # uv venv alone creates root markers, interpreter metadata and empty
+                    # sdists scaffolding. Reuse only when a package-data bucket contains
+                    # an actual artifact; stop on the first file and never mutate it.
+                    $buckets = Get-ChildItem -LiteralPath $sharedCache -Directory -Force -ErrorAction Stop |
+                        Where-Object { $_.Name -match '^(archive|wheels|built-wheels|sdists)-' }
+                    foreach ($bucket in $buckets) {
+                        $entry = Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force -ErrorAction Stop |
+                            Where-Object { $_.Name -notin @("CACHEDIR.TAG", ".git", ".gitignore", ".lock") } |
+                            Select-Object -First 1
+                        if ($null -ne $entry) {
+                            $sharedCachePopulated = $true
+                            break
+                        }
+                    }
+                }
+            } catch {
+                # An unavailable cache is not an installation error. Studio isolation is
+                # deterministic and safe when the effective cache cannot be inspected.
+                $sharedCache = $null
+                $sharedCachePopulated = $false
+            }
+
+            if ($sharedCachePopulated) {
+                $selectedCache = $sharedCache
+                $script:StudioUvCacheMode = "shared"
+            } else {
+                $selectedCache = $studioCache
+                $script:StudioUvCacheMode = "studio"
+            }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
 
@@ -3206,7 +3228,6 @@ exit 0
     $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
     $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
     try {
-        Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache
         if ($studioNeedsRuntimeLock) {
             try {
                 $studioRuntimeMutexNames = @(
@@ -4000,6 +4021,8 @@ exit 0
         substep "Install it from https://docs.astral.sh/uv/" "Yellow"
         return (Exit-InstallFailure "uv could not be installed")
     }
+
+    Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
 
     # When bytecode compilation is enabled, large installs can exceed uv's 60s
     # default on slow machines. Default to 180s, preserving overrides ("0" disables).

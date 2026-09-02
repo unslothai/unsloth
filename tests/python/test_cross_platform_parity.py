@@ -1114,44 +1114,43 @@ class TestInstallUvCacheRootParity:
         assert "${XDG_CACHE_HOME}/uv" in sh
         assert "${HOME}/.cache/uv" in sh
         assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
-        assert "Get-ChildItem -LiteralPath" in ps1
-        assert (
-            "-Recurse"
-            not in ps1.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
-                "function Set-StudioUvCacheForLaunch", 1
-            )[0]
-        )
+        selector = ps1.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+            "function Set-StudioUvCacheForLaunch", 1
+        )[0]
+        assert "Get-ChildItem -LiteralPath $sharedCache -Directory -Force" in selector
+        assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
 
     def test_shell_order_wsl_handoff_and_autostart_boundary(self):
         source = INSTALL_SH.read_text(encoding = "utf-8")
         resolved = source.index("\n_resolve_studio_destinations\n")
-        configured = source.index("\n_configure_uv_cache\n")
         uv_setup = source.index("\n# ── Install uv ──\n")
-        launch_boundary = source.index("_prepare_studio_uv_cache_for_launch\n", uv_setup)
+        configured = source.index("\n_configure_uv_cache\n", uv_setup)
+        launch_boundary = source.index("_prepare_studio_uv_cache_for_launch\n", configured)
         autostart = source.index(
             '(trap - INT; exec "$VENV_DIR/bin/unsloth" studio', launch_boundary
         )
 
         assert "_configure_uv_cache() {" in source
         assert "_prepare_studio_uv_cache_for_launch() {" in source
-        assert resolved < configured < uv_setup < launch_boundary < autostart
+        assert resolved < uv_setup < configured < launch_boundary < autostart
         reroute = source.split("_maybe_reroute_strixhalo_to_2404() {", 1)[1].split(
             "_maybe_reroute_strixhalo_to_2404 || true", 1
         )[0]
         assert "export UNSLOTH_ISOLATE_UV_CACHE=1" in reroute
         assert "unset UV_CACHE_DIR" in reroute
-        assert "_UV_CACHE_MODE" in reroute
+        assert 'case "${UV_CACHE_DIR-}" in' in reroute
+        assert "*[![:space:]]*)" in reroute
 
     def test_powershell_order_handoff_and_restoration(self):
         source = INSTALL_PS1.read_text(encoding = "utf-8")
         resolved = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
         captured = source.index("$hadPreviousUvCacheDir =")
+        uv_setup = source.index("if (-not (Test-UvVersionOk))", captured)
         configured = source.index(
             "Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache",
-            captured,
+            uv_setup,
         )
-        uv_setup = source.index("if (-not (Test-UvVersionOk))", configured)
-        tauri_return = source.index("if ($TauriMode)", uv_setup)
+        tauri_return = source.index("if ($TauriMode)", configured)
         handoff = source.index("Set-StudioUvCacheForLaunch -StudioRoot $StudioHome", tauri_return)
         autostart = source.index("$studioAutoStartProcess = Start-Process", handoff)
         restored = source.index("Restore-StudioUvCacheEnvironment -WasPresent", autostart)
@@ -1159,8 +1158,8 @@ class TestInstallUvCacheRootParity:
         assert (
             resolved
             < captured
-            < configured
             < uv_setup
+            < configured
             < tauri_return
             < handoff
             < autostart

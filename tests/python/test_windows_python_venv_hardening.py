@@ -452,19 +452,26 @@ def test_uv_cache_lifecycle_wraps_all_install_time_uv_work():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     root = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
     capture = source.index("$hadPreviousUvCacheDir =")
-    configure = source.index(
-        "Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache",
-        capture,
+    first_uv_probe = source.index("if (-not (Test-UvVersionOk))", capture)
+    final_uv_gate = source.index(
+        'return (Exit-InstallFailure "uv could not be installed")', first_uv_probe
     )
-    first_uv_probe = source.index("if (-not (Test-UvVersionOk))", configure)
-    handoff = source.index("Set-StudioUvCacheForLaunch -StudioRoot $StudioHome", first_uv_probe)
+    configure = source.index(
+        "Set-StudioUvCacheEnvironment -StudioRoot $StudioHome "
+        "-Isolated $IsolateUvCache -UvExecutable $script:UvExe",
+        final_uv_gate,
+    )
+    first_uv_work = source.index("& $script:UvExe venv", configure)
+    handoff = source.index("Set-StudioUvCacheForLaunch -StudioRoot $StudioHome", first_uv_work)
     autostart = source.index("$studioAutoStartProcess = Start-Process", handoff)
     restore = source.index("Restore-StudioUvCacheEnvironment -WasPresent", autostart)
 
-    assert root < capture < configure < first_uv_probe < handoff < autostart < restore
+    assert root < capture < first_uv_probe < final_uv_gate < configure < first_uv_work
+    assert first_uv_work < handoff < autostart < restore
     assert '[Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")' in source
     assert "$previousUvCacheDir = [Environment]::GetEnvironmentVariable(" in source
     assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source
+
 
 
 def test_uv_cache_option_and_environment_parsers_cannot_drift():
@@ -493,8 +500,18 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
         (shared / "CACHEDIR.TAG" / "inside").mkdir(parents = True)
         (shared / "CACHEDIR.TAG" / "inside" / "payload").write_text("keep", encoding = "utf-8")
         (shared / ".gitignore").write_text("*\n", encoding = "utf-8")
+    elif state == "scaffolding":
+        (shared / "sdists-v9").mkdir()
+        (shared / "sdists-v9" / ".git").write_text("", encoding = "utf-8")
+        (shared / "sdists-v9" / ".gitignore").write_text("", encoding = "utf-8")
+        (shared / "interpreter-v4" / "key").mkdir(parents = True)
+        (shared / "interpreter-v4" / "key" / "metadata.msgpack").write_bytes(b"metadata")
+        (shared / ".lock").write_text("", encoding = "utf-8")
     elif state == "populated":
-        (shared / "archive-v0").write_text("used", encoding = "utf-8")
+        (shared / "archive-v0" / "package").mkdir(parents = True)
+        (shared / "archive-v0" / "package" / "payload.py").write_text(
+            "cached = True\n", encoding = "utf-8"
+        )
     else:
         raise AssertionError(f"unknown uv cache fixture: {state}")
     return shared
@@ -507,7 +524,9 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
     [
         ("missing", None, False, "missing", "studio"),
         ("marker-only", None, False, "markers", "studio"),
+        ("venv-scaffolding", None, False, "scaffolding", "studio"),
         ("populated", None, False, "populated", "shared"),
+        ("configured", None, False, "missing", "shared"),
         ("unavailable", None, False, "unavailable", "studio"),
         ("blank-populated", "   ", False, "populated", "shared"),
         ("custom", "CUSTOM", False, "populated", "custom"),
@@ -531,8 +550,23 @@ def test_uv_cache_selector_precedence_and_launch_handoff(
     shared = _prepare_uv_default(local_app_data, default_state)
     studio = studio_root / "cache" / "uv"
     custom = tmp_path / "caller cache" / "uv artifacts"
+    configured = tmp_path / "uv.toml cache"
+    effective_cache = configured if case == "configured" else shared
+    if case == "configured":
+        (configured / "wheels-v5" / "package").mkdir(parents = True)
+        (configured / "wheels-v5" / "package" / "torch.whl").write_bytes(b"wheel")
     if initial_value == "CUSTOM":
         initial_value = str(custom)
+
+    if os.name == "nt":
+        uv_stub = tmp_path / "uv-cache-dir.cmd"
+        uv_stub.write_text("@echo %TEST_UV_EFFECTIVE_CACHE%\r\n", encoding = "utf-8")
+    else:
+        uv_stub = tmp_path / "uv-cache-dir"
+        uv_stub.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$TEST_UV_EFFECTIVE_CACHE"\n', encoding = "utf-8"
+        )
+        uv_stub.chmod(0o755)
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -549,7 +583,8 @@ $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("U
 $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
 $providerPresentBefore = Test-Path -LiteralPath Env:UV_CACHE_DIR
 try {{
-    Set-StudioUvCacheEnvironment -StudioRoot $env:TEST_STUDIO_HOME -Isolated ($env:TEST_ISOLATED -eq "1")
+    Set-StudioUvCacheEnvironment -StudioRoot $env:TEST_STUDIO_HOME `
+        -Isolated ($env:TEST_ISOLATED -eq "1") -UvExecutable $env:TEST_UV_EXE
     $selected = [string][Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
     $mode = $script:StudioUvCacheMode
     $message = $script:UvMessage
@@ -577,12 +612,14 @@ try {{
     env["TEST_INITIAL_VALUE"] = initial_value or ""
     env["TEST_STUDIO_HOME"] = str(studio_root)
     env["TEST_ISOLATED"] = "1" if isolated else "0"
+    env["TEST_UV_EXE"] = str(uv_stub)
+    env["TEST_UV_EFFECTIVE_CACHE"] = str(effective_cache)
     env["LOCALAPPDATA"] = str(local_app_data)
     result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
 
     expected_selected = {
         "custom": custom,
-        "shared": shared,
+        "shared": effective_cache,
         "studio": studio,
         "isolated": studio,
     }[expected_mode]
@@ -590,7 +627,7 @@ try {{
     expected_message = {
         "custom": f"preserving custom UV_CACHE_DIR ({custom})",
         "shared": (
-            f"reusing existing shared cache ({shared}) to avoid duplicate Torch/CUDA downloads; "
+            f"reusing existing shared cache ({effective_cache}) to avoid duplicate Torch/CUDA downloads; "
             "use --isolated-uv-cache to isolate"
         ),
         "studio": f"using new Studio-owned cache ({studio})",
@@ -612,6 +649,7 @@ try {{
             encoding = "utf-8"
         ) == "keep"
         assert (shared / ".gitignore").read_text(encoding = "utf-8") == "*\n"
+
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
