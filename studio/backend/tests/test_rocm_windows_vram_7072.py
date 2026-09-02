@@ -92,15 +92,13 @@ def _adapter_output(adapters):
 
 
 def _engine_output(samples):
-    """``GPU Engine`` counter rows, the shape Get-Counter is asked to emit."""
+    """``GPU Engine`` rows in the shape Get-Counter is asked to emit."""
     if not samples:
         return "__NONE__\n"
     return "".join(f"{name}|{value}\n" for name, value in samples)
 
 
-# One 3D engine on the solo host's own adapter. The sum is 12.0 whether or not
-# the query is narrowed to that LUID, so a test that does not care about the
-# narrowing reads the same figure either way.
+# One engine on the solo host's own adapter, so 12.0 narrowed or not.
 _DEFAULT_ENGINES = [("pid_1_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 12.0)]
 
 
@@ -1040,8 +1038,7 @@ def test_hip_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
     assigned, aggregate, whole_adapter = join(SOLO_ADAPTERS, dev_meta)
     assert assigned[0] == pytest.approx(3 * GB)
     assert aggregate == pytest.approx(3 * GB)
-    # One ordinal owning every node its LUID names, so the engine counters for
-    # that LUID are this device's and nothing else's.
+    # One ordinal owning every node its LUID names, so the LUID is this device's.
     assert whole_adapter == [0x15369]
 
 
@@ -2201,17 +2198,7 @@ def test_a_discrete_card_on_the_same_runtime_keeps_the_dedicated_counter(win_roc
     assert aggregate == pytest.approx(7.90, abs = 0.01)
 
 
-# ----------------------------------------------------------------------------- #
-# GPU Engine utilization
-#
-# The engine counters are instanced per adapter, exactly like the memory ones,
-# so the unfiltered 3D sum is every adapter's work: the display iGPU's and the
-# Basic Render Driver's alongside the card being monitored.
-# ----------------------------------------------------------------------------- #
-# This card at 17%, the display iGPU and the Basic Render Driver at 61% between
-# them. The unfiltered sum is 78, which is the reading being corrected, so every
-# test below asserts a number: a query that merely mentions the right LUID but
-# selects the wrong instances still reads 78 and has to fail.
+# This card at 17%, other adapters at 61%, so a wrong selection still reads 78.
 FOREIGN_ENGINES = [
     ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 12.0),
     ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_3D", 5.0),
@@ -2225,7 +2212,7 @@ def _engine_query(
     adapters,
     engine_samples = None,
 ):
-    """Run the Train page's poll; hand back the devices and the counter path."""
+    """Run the poll; hand back the devices and the counter path."""
     seen = []
     inner = _subprocess_run(adapter_output = _adapter_output(adapters), engine_samples = engine_samples)
 
@@ -2254,8 +2241,7 @@ def test_gpu_utilization_counts_only_this_adapters_engines(win_rocm, monkeypatch
 
 
 def test_gpu_utilization_falls_back_to_every_engine(win_rocm, monkeypatch):
-    """Without HIP identity there is no LUID to narrow to, and the whole-host
-    sum is still better than no reading."""
+    """No HIP identity means no LUID to narrow to, and the host sum beats no reading."""
     _solo_host(monkeypatch)
 
     (device,), _ = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)
@@ -2263,9 +2249,7 @@ def test_gpu_utilization_falls_back_to_every_engine(win_rocm, monkeypatch):
 
 
 def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, monkeypatch):
-    """A LUID covering a node this ordinal does not own would sum that node's
-    work in. The VRAM join is what establishes the device IS the whole adapter,
-    and here it does not: one ordinal holding one node of two."""
+    """Narrowing needs the VRAM join to prove the device is the whole adapter."""
     _solo_host(monkeypatch, (0x15369, 0b01))
     linked = [
         ("luid_0x00000000_0x00015369_phys_0", 3 * GB),
@@ -2273,22 +2257,18 @@ def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, m
     ]
 
     (device,), _ = _engine_query(monkeypatch, linked, FOREIGN_ENGINES)
-    assert device["vram_used_gb"] is None  # the VRAM join declined too
-    assert device["gpu_utilization_pct"] == 78.0  # so the sum stays the host's
+    assert device["vram_used_gb"] is None
+    assert device["gpu_utilization_pct"] == 78.0  # the join declined, so the host's sum
 
 
 def test_the_selection_is_ours_and_not_the_counter_paths(win_rocm, monkeypatch):
-    """A LUID in the counter path would work, and would hand the selection to PDH,
-    where nothing in this file can check it: every case above -- the prefix
-    collision, the lower-case spelling, the compute engines, the unusable samples
-    -- would be asserting what the mock chose to return. So the path stays a bare
-    wildcard and the rows are what get filtered."""
+    """A LUID in the path hands selection to PDH, which no test here can run."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     _, query = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)
     assert "\\GPU Engine(*)\\Utilization Percentage" in query
     assert "luid_" not in query
-    assert "InstanceName" in query  # the rows are what gets filtered
+    assert "InstanceName" in query
 
 
 def test_a_longer_luid_that_starts_the_same_is_not_this_adapter(win_rocm, monkeypatch):
@@ -2307,8 +2287,7 @@ def test_a_longer_luid_that_starts_the_same_is_not_this_adapter(win_rocm, monkey
 
 
 def test_engtype_spelled_in_lower_case_is_still_a_3d_engine(win_rocm, monkeypatch):
-    """Hosts emit engtype_3D and engtype_3d both; PDH folded the case for the
-    old path, and dropping one spelling here would silently halve a reading."""
+    """Hosts emit engtype_3D and engtype_3d both; PDH folded the case for us before."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     (device,), _ = _engine_query(
@@ -2323,8 +2302,7 @@ def test_engtype_spelled_in_lower_case_is_still_a_3d_engine(win_rocm, monkeypatc
 
 
 def test_only_3d_engines_count(win_rocm, monkeypatch):
-    """A compute engine is not the 3D reading, and a host with no 3D instance at
-    all has no reading rather than a zero."""
+    """A compute engine is not the 3D reading, and no 3D instance is unknown, not zero."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     (device,), _ = _engine_query(
@@ -2352,8 +2330,7 @@ def test_an_idle_engine_reads_zero_rather_than_unknown(win_rocm, monkeypatch):
 
 
 def test_unusable_samples_are_dropped_and_the_sum_is_bounded(win_rocm, monkeypatch):
-    """The clamp used to live in the PowerShell expression. It has to live here
-    now, along with the guards on values a cooked counter should never produce."""
+    """The clamp used to live in the PowerShell expression, so it has to live here now."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     (device,), _ = _engine_query(
@@ -2394,8 +2371,7 @@ def test_no_engine_instances_at_all_reads_unknown(win_rocm, monkeypatch):
 
 
 def test_a_high_luid_half_selects_its_own_adapter(win_rocm, monkeypatch):
-    """The high half is only ever zero on ordinary hardware, so nothing else
-    exercises the split."""
+    """The high half is only ever zero on ordinary hardware, so nothing else covers it."""
     high = (0xA << 32) | 0x15369
     _solo_host(monkeypatch, (high, 0))
 
@@ -2411,10 +2387,7 @@ def test_a_high_luid_half_selects_its_own_adapter(win_rocm, monkeypatch):
 
 
 def test_the_luid_is_internal_and_never_reaches_a_payload(win_rocm, monkeypatch):
-    """The per-device record carries the LUID so the engine query can be filtered
-    by it. Nothing serves it: both endpoints build their keys out explicitly. That
-    is a convention rather than a mechanism, so it gets a test -- including a
-    negative control, or a join that quietly declined would pass this too."""
+    """Keeping the internal LUID out of both payloads is a convention, not a mechanism."""
     _solo_host(monkeypatch, (0x15369, 0))
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(SOLO_ADAPTERS))
@@ -2429,7 +2402,7 @@ def test_the_luid_is_internal_and_never_reaches_a_payload(win_rocm, monkeypatch)
 
     internal, _ = hw._rocm_windows_per_device_vram([0])
     assert internal[0]["luid"] == 0x15369  # the join resolved, so absence below means something
-    assert carries_luid(internal[0])  # the control: this is what a leak would look like
+    assert carries_luid(internal[0])  # the control: what a leak would look like
 
     for payload in (hw.get_gpu_utilization(), hw.get_visible_gpu_utilization()):
         assert not carries_luid(payload)

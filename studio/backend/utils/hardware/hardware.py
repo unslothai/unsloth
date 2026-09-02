@@ -1964,11 +1964,7 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
 
 
 def _engine_instance_luid(instance_name: str) -> Optional[int]:
-    """The adapter LUID out of a ``GPU Engine`` instance name.
-
-    Same two halves ``_parse_adapter_luid`` reads, behind a ``pid_<pid>_`` prefix
-    the ``GPU Adapter Memory`` instances it was written for do not carry.
-    """
+    """Same two halves ``_parse_adapter_luid`` reads, behind a ``pid_<pid>_`` prefix."""
     head = instance_name.lower().find("luid_0x")
     if head < 0:
         return None
@@ -1978,36 +1974,12 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
     """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes).
 
-    Instances are named ``pid_<pid>_luid_0x<high>_0x<low>_phys_<n>_eng_<n>_engtype_3D``,
-    so ``luid`` narrows the sum to one adapter's engines. Without it every
-    adapter's work counts, including the iGPU driving the display and the Basic
-    Render Driver, which is the whole host's 3D load and not this card's.
-
-    Selection happens here rather than in the counter path, which PDH would also
-    have done: partial instance matches work, so a ``*luid_..._*engtype_3D*`` path
-    is not wrong. It is untestable and unguarded, which is the reason.
-
-    Untestable, because the selection would then be PDH's and no test in this repo
-    can run PDH. Mutating the path to drop ``engtype_3D``, or to union every engine
-    back in beside the LUID, both left the suite green while reintroducing the
-    reading this narrowing exists to correct.
-
-    Unguarded, because a path that returns pre-summed text makes the caller trust
-    whatever came back. ``Utilization Percentage`` is a cooked counter over an
-    ephemeral instance list and has been reported returning values that are not a
-    percentage; the earlier form passed one straight through, and a non-finite
-    sample reached the payload as ``inf``, which is not JSON a browser will parse.
-    The sum, the clamp and the sanity checks are all in Python now, where the tests
-    reach them.
-
-    ``_rocm_windows_perf_counter_vram_by_adapter`` -- which resolves the LUID being
-    matched here -- already enumerates and filters this way, so the two counters
-    stay on one mechanism.
+    ``luid`` narrows the sum to one adapter's engines, filtered here rather than in
+    the counter path so tests can reach it, as in ``..._vram_by_adapter``.
     """
     if platform.system() != "Windows":
         return None
     try:
-        # Emit "<InstanceName>|<CookedValue>" per sample, or a __NONE__ sentinel.
         ps = (
             "$s=(Get-Counter '\\GPU Engine(*)\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
@@ -2041,8 +2013,7 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
                 value = float(raw.strip())
             except (ValueError, TypeError):
                 continue
-            # An idle engine reports 0.0 and still counts as a reading; a sample
-            # that is NaN, infinite or negative is not one.
+            # 0.0 is an idle engine, so a reading; NaN / inf / negative is not.
             if value != value or value in (float("inf"), float("-inf")) or value < 0:
                 continue
             total += value
@@ -2398,11 +2369,8 @@ def _match_adapter_used_by_hip_luid(
     them, so several ordinals under one LUID report unknown per device and
     contribute only to the aggregate, which the pairing does not change.
 
-    The third return is that same LUID per device, but only where this
-    established that the device is the whole of what the LUID names. Anything
-    else keyed on a LUID -- the engine counters, which are instanced the same
-    way -- needs that, not the raw LUID, or it sums a node the device does not
-    own.
+    The third return is that LUID per device, but only where the device is the whole
+    of what it names, which is what the engine counters need to filter safely.
     """
     ordinals = [int(meta["visible_ordinal"]) for meta in dev_meta]
     identities = _rocm_windows_hip_adapter_ids(ordinals, [str(meta["name"]) for meta in dev_meta])
@@ -2448,8 +2416,6 @@ def _match_adapter_used_by_hip_luid(
             return None
         total_used += used
         if len(positions) == 1:
-            # One ordinal, and the count above says its nodes are the adapter's,
-            # so everything this LUID names belongs to this device.
             assigned[positions[0]] = used
             whole_adapter[positions[0]] = luid
     return assigned, total_used, whole_adapter
@@ -3137,8 +3103,6 @@ def _rocm_windows_per_device_vram(
     if adapters is None:
         adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
-    # Set only where the HIP join established that the device is the whole of
-    # what the LUID names, which is what the engine counters need to be filtered.
     whole_adapter: list[Optional[int]] = [None] * len(dev_meta)
     if adapters:
         # Identity first, in the order the keys are exact: HIP's own LUID, then
@@ -3241,8 +3205,7 @@ def _rocm_windows_per_device_vram(
                 "name": meta["name"],
                 "used_gb": used_gb,
                 "total_gb": total_gb,
-                # Internal: the caller filters the engine counters with it. Not
-                # in either endpoint's payload, which both build their keys out.
+                # Internal: filters the engine counters. Never served.
                 "luid": luid,
             }
         )
@@ -3345,13 +3308,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 _win_ids = list(range(_torch_get_physical_gpu_count() or 0))
             _win_devices, _win_aggregate = _rocm_windows_per_device_vram(_win_ids)
             if _win_devices:
-                # A single visible GPU can own the 3D-engine utilization; across
-                # several the sum isn't per-device, so leave it unset. Narrowed to
-                # this card's own LUID where the VRAM join established the device
-                # is the whole of what that LUID names, since the unfiltered sum
-                # is every adapter's work, the display iGPU's too. Where it did
-                # not, the LUID is absent and the sum stays the host's, which is
-                # what it has always been.
+                # Across several GPUs the engine sum isn't per-device, so leave it unset.
                 _win_util = (
                     _rocm_windows_perf_counter_gpu_util_pct(_win_devices[0].get("luid"))
                     if len(_win_devices) == 1
