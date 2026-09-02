@@ -1855,6 +1855,7 @@ fn windows_roots_from(
 /// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
 /// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
+    "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",

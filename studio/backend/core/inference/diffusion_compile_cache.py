@@ -77,6 +77,17 @@ def _save_enabled(mode: str) -> bool:
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
+def _portable_mode() -> bool:
+    try:
+        from utils.paths.storage_roots import portable_mode
+    except ImportError:
+        return False
+    try:
+        return bool(portable_mode())
+    except Exception:  # noqa: BLE001 - never fail a cache lookup over this
+        return False
+
+
 def _default_root() -> Path:
     """Bundle root under the Studio cache, resolved per call.
 
@@ -98,8 +109,12 @@ def cache_root() -> Path:
         return Path(root)
     default = _default_root()
     # A bundle written by an older build is still valid, and re-compiling for a
-    # path change alone would cost every existing user a cold start.
-    if not default.exists() and _LEGACY_ROOT.exists():
+    # path change alone would cost every existing user a cold start. Not in
+    # portable mode: this root is also where begin() points inductor, so keeping
+    # it would write GBs of bundles into the home directory of whatever machine a
+    # self-contained install is plugged into, which is the one thing that mode
+    # promises not to do.
+    if not default.exists() and _LEGACY_ROOT.exists() and not _portable_mode():
         return _LEGACY_ROOT
     return default
 

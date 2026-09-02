@@ -53,8 +53,21 @@ def unsloth_home() -> Path | None:
     """The master root every Unsloth-owned directory hangs off, or None.
 
     Set by a portable install (`install.sh --portable` / `--root DIR`). This is
-    one level above STUDIO_HOME: llama.cpp, node, whisper.cpp and the shared
-    caches are siblings of `studio/`, not children of it.
+    one level above STUDIO_HOME: `studio/` is a child of it, and the shared
+    caches hang off the tree.
+
+    The managed tools are NOT siblings of `studio/` today. llama.cpp, node and
+    whisper.cpp are resolved off studio_root() (main.py, run.py,
+    utils/node_runtime.py, core/inference/stt_ggml_sidecar.py), so they live at
+    <UNSLOTH_HOME>/studio/<tool>.
+
+    Careful with the name: studio/setup.sh and scripts/build_whisper_cpp.sh
+    already use UNSLOTH_HOME for the managed root ITSELF (the studio root, or
+    ~/.unsloth), not for its parent. Reading it here as the parent means a shell
+    that exports UNSLOTH_HOME=/portable and then runs the whisper builder gets
+    /portable/whisper.cpp while the resolver above looks in
+    /portable/studio/whisper.cpp. Settle the two spellings before the installer
+    starts exporting this.
     """
     override = (os.environ.get("UNSLOTH_HOME") or "").strip()
     return _resolved(override) if override else None
@@ -66,7 +79,12 @@ def portable_mode() -> bool:
     Implied by UNSLOTH_HOME, since nothing sets that but a portable install, and
     settable on its own so an existing UNSLOTH_STUDIO_HOME install can opt in.
     """
-    if (os.environ.get("UNSLOTH_PORTABLE") or "").strip() not in ("", "0", "false", "False"):
+    # Case-folded: an environment flag is written however the shell that set it
+    # felt like writing it, and reading UNSLOTH_PORTABLE=FALSE as "on" would move
+    # the HF caches out from under a user who asked for the opposite.
+    if (os.environ.get("UNSLOTH_PORTABLE") or "").strip().lower() not in (
+        "", "0", "false", "off", "no",
+    ):
         return True
     return unsloth_home() is not None
 
@@ -410,6 +428,62 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
     }
 
 
+def _triton_cache_defaults(root: Path) -> dict[str, str]:
+    """Triton's directories, without stepping on a TRITON_HOME the user set.
+
+    TRITON_HOME names the directory Triton creates its ".triton" under, not that
+    directory itself (triton/knobs.py: ``get_triton_dir`` joins
+    ``home_dir/".triton"/name``), so pinning it yields <cache>/.triton rather
+    than a redundant triton/.triton, and it is the one lever that covers the
+    cache, dump and override dirs at once (triton-lang/triton#4265).
+
+    TRITON_CACHE_DIR outranks that derivation for the cache, so it is only ours
+    to fill when TRITON_HOME is ours too: a user who exported TRITON_HOME asked
+    for <TRITON_HOME>/.triton/cache, and pinning TRITON_CACHE_DIR anyway would
+    split their kernels away from the dump and override dirs we just left there.
+    """
+    if (os.environ.get("TRITON_HOME") or "").strip():
+        return {}
+    return {
+        "TRITON_HOME": str(root),
+        "TRITON_CACHE_DIR": str(root / "triton"),
+    }
+
+
+def _data_designer_defaults(root: Path) -> dict[str, str]:
+    """Data Designer's home, unless the user already has one.
+
+    DATA_DESIGNER_HOME is not a cache: the library reads model_configs.yaml,
+    model_providers.yaml, mcp_providers.yaml and tool_configs.yaml out of it, and
+    `data-designer download personas` writes multi-GB parquet under its
+    managed-assets/. Repointing an existing ~/.data-designer therefore does not
+    move that state, it hides it, and the new home is silently re-seeded with
+    built-in defaults. So this pins the home only when there is nothing to
+    strand -- the same rule the HF hub cache follows above.
+
+    MANAGED_ASSETS_PATH is derived by the library as
+    <DATA_DESIGNER_HOME>/managed-assets, so it is only ours to set when the home
+    is ours as well. Forcing it against someone else's home splits the CLI
+    downloader (which always writes <HOME>/managed-assets/datasets) from the SDK
+    reader, and the reader then raises for a storage path that does not exist.
+
+    Read at import time by data_designer.config.utils.constants, so this has to
+    be set before the Data Recipes worker imports the package.
+    """
+    if (os.environ.get("DATA_DESIGNER_HOME") or "").strip():
+        return {}
+    try:
+        if (Path.home() / ".data-designer").exists():
+            return {}
+    except (OSError, RuntimeError):
+        pass
+    home = root.parent / "data-designer"
+    return {
+        "DATA_DESIGNER_HOME": str(home),
+        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(home / "managed-assets"),
+    }
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -436,13 +510,6 @@ def _setup_cache_env() -> None:
         # Ollama, must stay where the other tools look. Portable mode moves those
         # too, because there the whole point is a self-contained directory.
         "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
-        # TRITON_HOME names the directory Triton creates its ".triton" under,
-        # not that directory itself, so this yields <cache>/.triton rather than
-        # a redundant triton/.triton. Setting only TRITON_CACHE_DIR would leave
-        # the override and dump dirs in the home (triton-lang/triton#4265);
-        # TRITON_HOME is the one lever that covers all three.
-        "TRITON_HOME": str(root),
-        "TRITON_CACHE_DIR": str(root / "triton"),
         "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions"),
         # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
         "CUDA_CACHE_PATH": str(root / "cuda"),
@@ -450,12 +517,9 @@ def _setup_cache_env() -> None:
         # ~/.config/matplotlib and ~/.cache/matplotlib.
         "MPLCONFIGDIR": str(root / "matplotlib"),
         "NUMBA_CACHE_DIR": str(root / "numba"),
-        # Read at import time by data_designer.config.utils.constants, so this
-        # has to be set before the Data Recipes worker imports the package.
-        # Unset, the library builds its paths from Path.home() / ".data-designer".
-        "DATA_DESIGNER_HOME": str(root.parent / "data-designer"),
-        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(root.parent / "data-designer" / "managed-assets"),
     }
+    defaults.update(_triton_cache_defaults(root))
+    defaults.update(_data_designer_defaults(root))
     defaults.update(_portable_cache_defaults(root))
     for key, value in defaults.items():
         # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on

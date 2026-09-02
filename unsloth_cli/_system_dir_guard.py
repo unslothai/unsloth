@@ -281,6 +281,8 @@ def is_relocatable_invocation(argv, environ):
 # Path overrides written relative to the folder being left: Unsloth resolves them with
 # Path.resolve(), so moving first would silently retarget them.
 _RELATIVE_PATH_ENV = (
+    # Unsloth roots: storage_roots.py.
+    "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
