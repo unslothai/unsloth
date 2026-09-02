@@ -854,3 +854,107 @@ class TestResumingDoesNotThrash:
             "await_resume takes the lease back without checking the live cache"
         )
         assert "gave-up" in source, "giving up after the timeout must be visible"
+
+
+class TestTheCacheHoldsMoreThanTheLedgerKnows:
+    """`purging slot 1 with 16383 tokens`, observed 2026-09-01.
+
+    An idle slot held the ENTIRE 16384-cell cache, left behind by a request that had
+    already finished, while four chats were scheduled against a ledger that believed the
+    cache was nearly empty. llama.cpp keeps a slot's prompt cache for prefix reuse; the
+    admission ledger cannot see it and /metrics does not report it. That residue is why
+    the watermark kept firing too late and llama-server kept dropping into the
+    shrinking-batch retry where upstream #24840 throws.
+
+    The original design said explicitly not to add a GET /slots reader. That was written
+    before this was understood, and it is the only endpoint that can report it.
+    """
+
+    def test_residency_counts_what_the_ledger_cannot_see(self):
+        from core.inference.llama_preemption import read_slot_occupancy
+
+        slots = [
+            {"id": 0, "is_processing": False, "n_prompt_tokens_cache": 16383},
+            {"id": 1, "is_processing": True, "n_prompt_tokens_cache": 2000},
+            {"id": 2, "is_processing": False, "n_prompt_tokens_cache": 9209},
+        ]
+        occupancy = read_slot_occupancy(lambda: slots)
+        assert occupancy["resident"] == 27592
+        assert [slot for slot, _ in occupancy["idle"]] == [0, 2], "largest idle first"
+
+    def test_an_unreadable_endpoint_is_not_an_empty_cache(self):
+        from core.inference.llama_preemption import read_slot_occupancy
+
+        assert read_slot_occupancy(lambda: None) is None
+        assert read_slot_occupancy(lambda: []) is None
+
+    def test_the_controller_takes_the_larger_of_the_two(self):
+        controller = PreemptionController("resident")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("a", tokens = 2000, signal = PreemptSignal())
+        assert controller.committed_tokens() == 2000
+        controller.note_resident(16383)
+        assert controller.committed_tokens() == 16383, (
+            "the cache is full and the ledger does not know it"
+        )
+        controller.note_resident(None)
+        assert controller.committed_tokens() == 2000, "a failed read falls back, not to zero"
+
+    def test_a_resume_is_refused_against_a_cache_only_slots_can_see(self):
+        controller = PreemptionController("resident-room")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("a", tokens = 2000, signal = PreemptSignal())
+        controller.note_resident(16383)
+        assert controller.room_for("a", 4000) is False
+        controller.note_resident(3000)
+        assert controller.room_for("a", 4000) is True
+
+    def test_idle_residue_is_reclaimed_before_a_live_chat_is_paused(self):
+        from core.inference.llama_preemption import read_slot_occupancy, reclaim_idle_slots
+
+        slots = [
+            {"id": 0, "is_processing": False, "n_prompt_tokens_cache": 16383},
+            {"id": 1, "is_processing": True, "n_prompt_tokens_cache": 2000},
+        ]
+        occupancy = read_slot_occupancy(lambda: slots)
+        erased = []
+
+        def _erase(slot_id):
+            erased.append(slot_id)
+            return dict(occupancy["idle"])[slot_id]
+
+        freed = reclaim_idle_slots(occupancy, _erase, needed = 10000)
+        assert freed == 16383
+        assert erased == [0], "the busy slot must never be erased"
+
+    def test_a_failing_erase_does_not_take_the_generation_with_it(self):
+        from core.inference.llama_preemption import read_slot_occupancy, reclaim_idle_slots
+
+        occupancy = read_slot_occupancy(
+            lambda: [{"id": 0, "is_processing": False, "n_prompt_tokens_cache": 900}]
+        )
+
+        def _boom(_slot_id):
+            raise RuntimeError("endpoint disabled")
+
+        assert reclaim_idle_slots(occupancy, _boom, needed = 500) == 0
+
+    def test_nothing_is_erased_when_nothing_is_needed(self):
+        from core.inference.llama_preemption import read_slot_occupancy, reclaim_idle_slots
+
+        occupancy = read_slot_occupancy(
+            lambda: [{"id": 0, "is_processing": False, "n_prompt_tokens_cache": 900}]
+        )
+        assert reclaim_idle_slots(occupancy, lambda _i: 900, needed = 0) == 0
+
+    def test_the_route_polls_residency_and_reclaims_first(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        assert "_gguf_refresh_residency(controller)" in source
+        assert "controller.note_resident(" in source
+        assert "reclaim_idle_slots(" in source, (
+            "a live chat is paused without first freeing dead residue"
+        )

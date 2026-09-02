@@ -80,11 +80,14 @@ from core.inference.orchestrator import (
     MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
 )
+from core.inference.llama_stats import erase_llama_slot, fetch_llama_slots
 from core.inference.llama_preemption import (
     ControllerPreemptionPolicy,
     DeferredPreemptionPolicy,
     PreemptSignal,
     get_preemption_controller,
+    read_slot_occupancy,
+    reclaim_idle_slots,
 )
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -20880,6 +20883,26 @@ async def produce_openai_chat_completions(
             # the generator is not iterated until the reservation exists.
             _gguf_preempt_signal = PreemptSignal()
 
+            # GET /slots is an HTTP round trip and the token callback fires every 32
+            # tokens, so it is read on a TTL rather than per report. One second is far
+            # shorter than the time it takes a chat to fill a cache, and far longer than
+            # the interval between reports.
+            _gguf_slots_seen = {"at": 0.0}
+
+            def _gguf_refresh_residency(controller) -> None:
+                now = time.monotonic()
+                if now - _gguf_slots_seen["at"] < 1.0:
+                    return
+                _gguf_slots_seen["at"] = now
+                base = str(getattr(llama_backend, "base_url", "") or "")
+                if not base:
+                    return
+                occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base))
+                controller.note_resident(
+                    None if occupancy is None else occupancy.get("resident")
+                )
+                _gguf_slots_seen["occupancy"] = occupancy
+
             def _gguf_observe_tokens(generated: int) -> None:
                 """Live n_i, straight from the token stream.
 
@@ -20889,9 +20912,32 @@ async def produce_openai_chat_completions(
                 it is still growing, and evicting on the watermark.
                 """
                 try:
-                    get_preemption_controller(
+                    controller = get_preemption_controller(
                         str(getattr(llama_backend, "base_url", "llama-server"))
-                    ).observe(completion_id, generated)
+                    )
+                    _gguf_refresh_residency(controller)
+                    victims = controller.observe(completion_id, generated)
+                    if victims:
+                        # Dead residue first. An idle slot's cache belongs to a request
+                        # that has already finished, so erasing it costs a future
+                        # prefix-cache hit; pausing costs a live conversation its
+                        # progress. llama.cpp does the same thing itself, but only after
+                        # a decode has already failed, which is the path that trips the
+                        # speculative sub-batch bug.
+                        base = str(getattr(llama_backend, "base_url", "") or "")
+                        occupancy = _gguf_slots_seen.get("occupancy")
+                        if base and occupancy:
+                            freed = reclaim_idle_slots(
+                                occupancy,
+                                lambda slot_id: erase_llama_slot(base, slot_id),
+                                needed = sum(v.tokens for v in victims),
+                            )
+                            if freed:
+                                _llama_preemption_log(
+                                    "reclaimed-idle", freed = freed, gen_id = completion_id
+                                )
+                                # Re-read rather than assume the erase was enough.
+                                _gguf_slots_seen["at"] = 0.0
                 except Exception:
                     pass
             _gguf_preempt_policy_hold = DeferredPreemptionPolicy()

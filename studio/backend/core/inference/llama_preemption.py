@@ -420,7 +420,7 @@ class PreemptionController:
 
     __slots__ = (
         "key", "_lock", "_participants", "_seq", "_epoch_winner", "_budget",
-        "_kv_unified", "_draft_tokens", "_slots",
+        "_kv_unified", "_draft_tokens", "_slots", "_resident",
     )
 
     def __init__(self, key: str):
@@ -443,6 +443,10 @@ class PreemptionController:
         # preemption_buffer_tokens.
         self._draft_tokens = 0
         self._slots = 1
+        # True cells resident in the cache from the last GET /slots, or None when it
+        # could not be read. Includes the residue of FINISHED requests, which the ledger
+        # cannot see and which is what kept the watermark firing too late.
+        self._resident: Optional[int] = None
 
     def configure(
         self,
@@ -533,12 +537,20 @@ class PreemptionController:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
                 return True
             ceiling = max(0, self._budget - self._buffer_locked())
-            live = sum(
+            ledger_others = sum(
                 p.tokens
                 for gid, p in self._participants.items()
                 if p.holds_kv and gid != gen_id
             )
-            return live + max(0, int(want or 0)) <= ceiling
+            # Resident cells count too, minus whatever this generation itself still
+            # holds, or an idle slot's leftovers would be invisible here exactly as they
+            # were to the watermark. Reading only the ledger said "yes, resume" against a
+            # cache an idle slot had already filled.
+            others = ledger_others
+            if self._resident is not None:
+                mine = self._participants.get(gen_id)
+                others = max(others, self._resident - (mine.tokens if mine else 0))
+            return max(0, others) + max(0, int(want or 0)) <= ceiling
 
     def observe(self, gen_id: str, generated: int) -> List["Participant"]:
         """Live growth during generation, and the eviction check that follows it.
@@ -559,6 +571,11 @@ class PreemptionController:
                 participant.tokens = participant.base_tokens + max(0, int(generated or 0))
         # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
+
+    def note_resident(self, resident: Optional[int]) -> None:
+        """The cache as llama-server actually sees it. None means the read failed."""
+        with self._lock:
+            self._resident = None if resident is None else max(0, int(resident))
 
     def note_tokens(self, gen_id: str, tokens: int) -> None:
         with self._lock:
@@ -637,7 +654,15 @@ class PreemptionController:
 
     def _committed_locked(self) -> int:
         self._prune_locked()
-        return sum(p.tokens for p in self._participants.values() if p.holds_kv)
+        ledger = sum(p.tokens for p in self._participants.values() if p.holds_kv)
+        # Whichever is larger, because they measure different things and both are real.
+        # The ledger knows what live generations were admitted on; the resident figure
+        # knows what the cache is actually holding, including finished requests whose
+        # prompt cache llama.cpp keeps for prefix reuse. Trusting only the ledger is what
+        # let four chats be scheduled against a cache an idle slot had already filled.
+        if self._resident is None:
+            return ledger
+        return max(ledger, self._resident)
 
     def _winner_locked(self) -> Optional[Participant]:
         """The one generation that keeps decoding, stable for an epoch.
@@ -884,6 +909,80 @@ class ControllerPreemptionPolicy:
 
     def on_resumed(self) -> None:
         self._controller.note_resumed(self._gen_id)
+
+
+def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
+    """Tokens actually resident in the cache, INCLUDING slots that are idle.
+
+    The term everything else was missing. llama.cpp keeps a slot's prompt cache after its
+    request finishes, for prefix reuse, and that residue belongs to no live generation:
+    the admission ledger cannot see it, and /metrics does not report it. Measured
+    2026-09-01, the moment it mattered:
+
+        purging slot 1 with 16383 tokens
+
+    An idle slot holding the ENTIRE 16384-cell cache while four chats were being
+    scheduled against a ledger that believed the cache was nearly empty. That is why the
+    watermark kept firing too late and llama-server kept dropping into its
+    shrinking-batch retry, which is where upstream #24840 throws.
+
+    ``fetch`` returns the parsed ``GET /slots`` array, or None when unavailable (older
+    build, endpoint disabled). None here means "cannot say", never "empty": guessing zero
+    would restore exactly the blindness this exists to remove.
+    """
+    slots = fetch()
+    if not slots:
+        return None
+    resident = 0
+    idle = []
+    for slot in slots:
+        try:
+            tokens = int(
+                slot.get("n_prompt_tokens_cache")
+                or slot.get("n_prompt_tokens")
+                or 0
+            )
+        except (TypeError, ValueError):
+            tokens = 0
+        resident += max(0, tokens)
+        if not slot.get("is_processing") and tokens > 0:
+            idle.append((slot.get("id"), max(0, tokens)))
+    # Largest first: the fewest erases free the most.
+    idle.sort(key = lambda pair: -pair[1])
+    return {"resident": resident, "idle": idle, "slots": len(slots)}
+
+
+def reclaim_idle_slots(
+    occupancy: Optional[dict],
+    erase: Callable[[int], int],
+    *,
+    needed: int,
+) -> int:
+    """Free dead residue before asking a live chat to stop.
+
+    Strictly better than preempting: an idle slot's cache belongs to a finished request,
+    so erasing it costs a future prefix-cache hit and nothing else, while preempting
+    costs a running conversation its progress. llama.cpp does this itself on the KV-full
+    retry (``try_clear_idle_slots``), but only once the decode has ALREADY failed, which
+    is the path that trips the speculative sub-batch bug. Doing it earlier is the point.
+
+    Returns tokens freed.
+    """
+    if not occupancy or needed <= 0:
+        return 0
+    freed = 0
+    for slot_id, tokens in occupancy.get("idle") or ():
+        if freed >= needed:
+            break
+        if slot_id is None:
+            continue
+        try:
+            freed += max(0, int(erase(slot_id) or 0))
+        except Exception:
+            # An erase that fails leaves the residue in place; the caller falls back to
+            # preempting a live generation, which is the outcome without this at all.
+            continue
+    return freed
 
 
 _CONTROLLERS_LOCK = threading.Lock()

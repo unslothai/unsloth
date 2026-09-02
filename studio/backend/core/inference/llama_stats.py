@@ -14,11 +14,58 @@ import os
 import re
 import threading
 import time
+import json
 import urllib.request
 
 # Prometheus body lines: "llamacpp:<name>[{labels}] <value>" (skip "#" HELP/TYPE).
 _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MULTILINE)
 _OFF = {"0", "false", "no", "off"}
+
+
+def fetch_llama_slots(base_url, timeout_s = 3.0):
+    """One ``GET /slots`` read as a list, or None if it could not be read.
+
+    Added against the advice in the original design, which said to reuse the /metrics
+    scraper and NOT add a slots poller. That advice was written before the residue was
+    understood: /metrics reports requests_processing and token counters but nothing about
+    cells still held by IDLE slots, and llama.cpp keeps a slot's prompt cache after its
+    request finishes. Measured 2026-09-01, one idle slot held 16383 of a 16384 cache
+    while the scheduler believed it was nearly empty. This is the only endpoint that can
+    say so.
+
+    None means "cannot tell" -- endpoint disabled, older build, socket error -- and must
+    never be read as "the cache is empty".
+    """
+    url = f"{str(base_url).rstrip('/')}/slots"
+    try:
+        with urllib.request.urlopen(url, timeout = timeout_s) as r:
+            if r.status != 200:
+                return None
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, list) else None
+
+
+def erase_llama_slot(base_url, slot_id, timeout_s = 3.0) -> int:
+    """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure.
+
+    Cheaper than preempting: the cache belongs to a request that has already finished, so
+    this costs a future prefix-cache hit rather than a running conversation's progress.
+    """
+    url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
+    try:
+        request = urllib.request.Request(url, method = "POST", data = b"")
+        with urllib.request.urlopen(request, timeout = timeout_s) as r:
+            if r.status != 200:
+                return 0
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return 0
+    try:
+        return max(0, int(payload.get("n_erased") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
 
 
 def scrape_llama_metrics(base_url, timeout_s = 3.0):
