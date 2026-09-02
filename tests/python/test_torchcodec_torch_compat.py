@@ -1832,6 +1832,68 @@ def test_notebook_validator_keeps_substitution_commands_in_order():
     assert "torchcodec==0.11.0" in findings[0].message
 
 
+def test_git_sources_are_matched_case_insensitively():
+    """pip normalises `Git+https://` to the same link, so the ban has to see it."""
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!pip install Git+https://example.com/pkg.git",
+        "!pip install GIT+HTTPS://example.com/pkg.git",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+    # The allowlist still clears an allowlisted repository whatever the case.
+    assert nv.rule_inst_001_git_plus(
+        "!pip install Git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
+    ) == []
+
+
+def test_notebook_validator_skips_a_prefixs_own_options():
+    """`env -u VAR pip install ...` runs pip, and stripping only the word left the options in
+    front of it. Rather than an option table per prefix, skip to where pip starts."""
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!env -u UNUSED pip install git+https://example.com/pkg.git",
+        "!sudo -u root pip install git+https://example.com/pkg.git",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+    # Only after a prefix: an ordinary command that merely mentions pip is untouched.
+    assert nv.rule_inst_001_git_plus(
+        "!echo git+https://example.com/evil.git; pip install numpy", "nb.ipynb", 0
+    ) == []
+
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!env -u X pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
+
+
+def test_notebook_validator_keeps_redirections_and_quoted_process_forms():
+    """`>|` overrides noclobber rather than piping, and `<( )` inside double quotes is text."""
+    nv = _load_notebook_validator_module()
+
+    redirected = (
+        "!echo harmless >| pip install git+https://example.com/pkg.git; pip install unsloth"
+    )
+    assert nv.rule_inst_001_git_plus(redirected, "nb.ipynb", 0) == []
+
+    quoted = '!echo "<(pip install git+https://example.com/pkg.git)"; pip install unsloth'
+    assert nv.rule_inst_001_git_plus(quoted, "nb.ipynb", 0) == []
+
+    # Unquoted it runs, and a real pipeline still separates.
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
+        "!cat <(pip install git+https://example.com/pkg.git)", "nb.ipynb", 0
+    ))
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
+        "!echo x | pip install git+https://example.com/evil.git", "nb.ipynb", 0
+    ))
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it

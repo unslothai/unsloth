@@ -466,6 +466,7 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
 # `env FOO=1 pip install ...` install exactly as a bare `pip install ...` does.
 _SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", "builtin"})
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
+_PIP_WORD_RE = re.compile(r"(?:^|\s)((?:uv\s+)?pip|python[0-9.]*\s+-m\s+pip)\s+", re.IGNORECASE)
 
 _SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
 _SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
@@ -536,13 +537,21 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     if close is not None:
         stripped = stripped[close + 1 :].strip()
         conditional = True
+    prefixed = False
     while True:
         parts = stripped.split(maxsplit = 1)
         if not parts or not (
             parts[0].lower() in _SHELL_EXEC_PREFIXES or _ENV_ASSIGNMENT_RE.match(parts[0])
         ):
             break
+        prefixed = True
         stripped = parts[1].strip() if len(parts) > 1 else ""
+    if prefixed:
+        # A prefix brings its own options: `env -u VAR pip install ...`. Rather than a table
+        # per prefix, skip to where pip starts, which is the only thing any rule reads.
+        match = _PIP_WORD_RE.search(stripped)
+        if match and match.start():
+            stripped = stripped[match.start() :]
     return (f"!{stripped}" if bang and stripped else stripped), conditional
 
 
@@ -570,7 +579,10 @@ def _substitution_bodies(command: str) -> list[str]:
             quote = "" if ch == quote else (quote or ch)
             i += 1
             continue
-        opens = command.startswith("$(", i) or (ch in "<>" and command[i + 1 : i + 2] == "(")
+        # `$( )` and backticks expand inside double quotes; `<( )` and `>( )` do not.
+        opens = command.startswith("$(", i) or (
+            not quote and ch in "<>" and command[i + 1 : i + 2] == "("
+        )
         if opens:
             depth, j = 1, i + 2
             inner_quote = ""
@@ -693,7 +705,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `A & B` backgrounds A and runs B, `A | B` runs both: unconditional either way.
             # `>&` and `&>` are redirections, not separators.
             ch in "&|"
+            # `>&`, `&>` and `>|` are redirections rather than separators.
             and not (ch == "&" and (line[i - 1 : i] == ">" or line[i + 1 : i + 2] == ">"))
+            and not (ch == "|" and line[i - 1 : i] == ">")
         ):
             flush()
             tails[-1] = False
@@ -703,7 +717,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             if ch in "({":
                 # `$(`, `<(` and `>(` open a substitution, which lives inside a word and runs
                 # its own commands; a bare `(` groups this line's.
-                groupings.append(not (ch == "(" and buf and buf[-1] in "$<>"))
+                groupings.append(
+                    not (ch == "(" and buf and buf[-1] in "$<>")
+                )
                 tails.append(False)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
@@ -904,8 +920,9 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 # ----- Rules ----- #
 
 
-# A `git+` target runs to the next shell or quoting boundary.
-_GIT_SOURCE_RE = re.compile(r"""git\+[^\s'"]+""")
+# A `git+` target runs to the next shell or quoting boundary. Case-insensitive: pip
+# normalises `Git+https://` to the same link.
+_GIT_SOURCE_RE = re.compile(r"""git\+[^\s'"]+""", re.IGNORECASE)
 
 
 def _git_source_repository(source: str) -> str:
@@ -916,6 +933,7 @@ def _git_source_repository(source: str) -> str:
     that as permission.
     """
     remainder = source.split("+", 1)[1] if "+" in source else source
+    # pip normalises the scheme, so the comparison is on the lowered host and path below.
     remainder = remainder.split("://", 1)[-1]
     host, _, path = remainder.partition("/")
     host = host.rsplit("@", 1)[-1]  # drop any credentials
@@ -965,7 +983,7 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
             if inv is None:
                 continue
             sources += _GIT_SOURCE_RE.findall(command)
-            sources += [arg for arg in inv.packages if arg.startswith("git+")]
+            sources += [arg for arg in inv.packages if arg.lower().startswith("git+")]
         # Per source, not per line: one allowlisted repository beside a prohibited one must
         # not clear the whole line.
         if not sources or all(_git_source_is_allowed(source) for source in sources):
