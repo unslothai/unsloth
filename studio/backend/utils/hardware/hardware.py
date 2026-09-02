@@ -2396,6 +2396,20 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
 
 
+def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
+    """What is available right now, bounded by the Metal working set.
+
+    Total RAM minus GPU-only usage counts host RAM as free, which the
+    training-method policy then reads as room it does not have.
+    """
+    free = max(0, int(available_bytes or 0))
+    try:
+        recommended = int(device_info.get("max_recommended_working_set_size") or 0)
+    except Exception:
+        recommended = 0
+    return min(free, recommended) if recommended > 0 else free
+
+
 def _context_free_cuda_memory_info(
     idx: int,
     total_bytes: int,
@@ -2646,7 +2660,8 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             import psutil
 
             # Unified memory: total = system RAM, GPU used from IORegistry AGX.
-            total = psutil.virtual_memory().total
+            memory = psutil.virtual_memory()
+            total = memory.total
             agx = _read_apple_gpu_stats()
             allocated = agx.get("vram_used_bytes", 0) if agx else 0
 
@@ -2655,7 +2670,9 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 # prefer machine(); processor() can return "i386" on native arm64.
                 gpu_name = info.get("device_name") or platform.machine() or "arm64"
             except Exception:
+                info = {}
                 gpu_name = platform.machine() or "arm64"
+            free = _apple_unified_free_bytes(getattr(memory, "available", 0), info)
 
             return {
                 "available": True,
@@ -2665,7 +2682,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
                 "reserved_gb": allocated / (1024**3),
-                "free_gb": (total - allocated) / (1024**3),
+                "free_gb": free / (1024**3),
                 "utilization_pct": (allocated / total) * 100 if total else 0,
             }
         except Exception as e:

@@ -235,6 +235,49 @@ class TestGetGpuMemoryInfo:
         assert 0 <= result["utilization_pct"] <= 100
         assert "device_name" in result
 
+    def _mlx_memory_info(self, *, available_gb, recommended_gb, used_gb = 1.2):
+        fake_core = types.ModuleType("mlx.core")
+        fake_core.device_info = lambda: {
+            "device_name": "Apple M2",
+            "max_recommended_working_set_size": int(recommended_gb * (1024**3)),
+        }
+        fake_pkg = types.ModuleType("mlx")
+        fake_pkg.core = fake_core
+
+        with (
+            patch.dict(sys.modules, {"mlx": fake_pkg, "mlx.core": fake_core}),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch(
+                "psutil.virtual_memory",
+                return_value = types.SimpleNamespace(
+                    total = 16 * (1024**3),
+                    available = int(available_gb * (1024**3)),
+                ),
+            ),
+            patch(
+                "utils.hardware.hardware._read_apple_gpu_stats",
+                return_value = {"vram_used_bytes": int(used_gb * (1024**3))},
+            ),
+        ):
+            return get_gpu_memory_info()
+
+    def test_mlx_free_is_what_a_new_allocation_can_get(self):
+        result = self._mlx_memory_info(available_gb = 6, recommended_gb = 11)
+
+        assert result["available"] is True
+        assert abs(result["total_gb"] - 16.0) < 0.01
+        assert abs(result["free_gb"] - 6.0) < 0.01
+
+    def test_mlx_free_is_bounded_by_the_metal_working_set(self):
+        result = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
+
+        assert abs(result["free_gb"] - 11.0) < 0.01
+
+    def test_mlx_free_survives_a_missing_working_set_size(self):
+        result = self._mlx_memory_info(available_gb = 6, recommended_gb = 0)
+
+        assert abs(result["free_gb"] - 6.0) < 0.01
+
     # --- CUDA-specific mocked test ---
 
     @needs_torch
