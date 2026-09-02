@@ -43,6 +43,9 @@ import sys
 from pathlib import Path
 
 _NATIVE_TLS_ENV = "UNSLOTH_STUDIO_NATIVE_TLS"
+# main.py's _load_desktop_owner handshake marker. Read here, never popped:
+# activation happens before main's loader consumes it.
+_DESKTOP_OWNER_KIND_ENV = "UNSLOTH_STUDIO_DESKTOP_OWNER_KIND"
 _DEFAULT_ON_PLATFORMS = ("darwin", "win32")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
@@ -56,23 +59,56 @@ _activated = False
 
 
 def native_tls_enabled() -> bool:
-    """Resolve ``UNSLOTH_STUDIO_NATIVE_TLS`` against the platform default."""
+    """Resolve ``UNSLOTH_STUDIO_NATIVE_TLS`` against the platform default.
+
+    On Linux the default flips to on when the backend runs as the Tauri
+    desktop's owned process (#9218): the .deb/AppImage desktop is launched
+    from a desktop icon, not a shell, so a self-signed CA trusted only in
+    the OS store is unreachable both ways — the provider connectivity
+    check fails with CERTIFICATE_VERIFY_FAILED, and exporting
+    SSL_CERT_FILE replaces the roots instead of adding to them, taking
+    Hugging Face downloads down too. The headless ``unsloth studio``
+    server keeps the opt-in default (distro OpenSSL configurations vary
+    there, and an operator running from a shell can export the env).
+    """
     flag = os.environ.get(_NATIVE_TLS_ENV, "").strip().lower()
     if flag in _TRUTHY:
         return True
     if flag in _FALSEY:
         return False
-    return sys.platform in _DEFAULT_ON_PLATFORMS
+    if sys.platform in _DEFAULT_ON_PLATFORMS:
+        return True
+    if sys.platform.startswith("linux"):
+        return _desktop_owned_process()
+    return False
+
+
+def _desktop_owned_process() -> bool:
+    """True when this backend belongs to the Tauri desktop app.
+
+    Mirrors main._load_desktop_owner's handshake (kind == "tauri") without
+    consuming the env vars it pops: native_tls activates BEFORE main's
+    loader pops either variable, so reading the kind marker here cannot
+    race or steal it.
+    """
+    return os.environ.get(_DESKTOP_OWNER_KIND_ENV, "") == "tauri"
 
 
 # Children that cannot import this module (the `python -c` probes,
 # prebuilt_core.py) carry the gate as source; generating it from the same
-# constants stops it drifting from native_tls_enabled(). The child supplies os,
-# sys and _TRUSTSTORE_VENDOR itself, which is what keeps the gate identical
-# everywhere despite each child locating the vendor directory differently.
+# constants stops it drifting from native_tls_enabled(). The Linux
+# desktop-owner clause mirrors _desktop_owned_process, so a child launched
+# directly by the desktop app (not via the backend) resolves the same flip.
+# The child supplies os, sys and _TRUSTSTORE_VENDOR itself, which is what
+# keeps the gate identical everywhere despite each child locating the vendor
+# directory differently.
 _INLINE_GATE = """\
 _flag = os.environ.get({env!r}, '').strip().lower()
-if _flag in {truthy!r} or (_flag not in {falsey!r} and sys.platform in {platforms!r}):
+_owned = os.environ.get({owner_env!r}, '') == 'tauri'
+if _flag in {truthy!r} or (
+    _flag not in {falsey!r}
+    and (sys.platform in {platforms!r} or (sys.platform.startswith('linux') and _owned))
+):
     try:
         if _TRUSTSTORE_VENDOR not in sys.path:
             sys.path.append(_TRUSTSTORE_VENDOR)
@@ -80,7 +116,7 @@ if _flag in {truthy!r} or (_flag not in {falsey!r} and sys.platform in {platform
         truststore.inject_into_ssl()
     except Exception:
         pass
-del _flag
+del _flag, _owned
 """
 
 
@@ -96,6 +132,7 @@ def inline_gate_source() -> str:
     """
     return _INLINE_GATE.format(
         env = _NATIVE_TLS_ENV,
+        owner_env = _DESKTOP_OWNER_KIND_ENV,
         truthy = _TRUTHY,
         falsey = _FALSEY,
         platforms = _DEFAULT_ON_PLATFORMS,
@@ -113,6 +150,11 @@ def activate_native_tls() -> bool:
         return True
     if not native_tls_enabled():
         return False
+    # main.py pops the desktop-owner vars before the `python -c` probes are
+    # spawned, so those children re-resolve from the tri-state flag alone.
+    # Spell the resolved decision back into the env (same mirroring as the
+    # UV_* pair below) and the children agree with this process by default.
+    os.environ.setdefault(_NATIVE_TLS_ENV, "1")
     # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS,
     # older reads UV_NATIVE_TLS). Mirror one value across both: uv takes either as
     # an opt-in, so an opt-out in one spelling must carry to the other.
