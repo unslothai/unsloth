@@ -3715,6 +3715,86 @@ def test_require_speech_allows_a_speech_target(monkeypatch):
     assert len(rec.calls) == 1
 
 
+def test_a_prompt_too_long_for_the_target_is_refused_before_the_switch(monkeypatch):
+    # The whole point of the gate: a request that cannot run must not cost the resident
+    # model. The loaded-model guard cannot answer this one, since the target is different.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF",
+                object(),
+                "t",
+                require_speech = True,
+                speech_prompt_tokens = 9000,
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "8192-token context" in json.dumps(exc.value.detail)
+    assert rec.calls == []
+
+
+def test_a_prompt_that_fits_the_target_still_switches(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF",
+            object(),
+            "t",
+            require_speech = True,
+            speech_prompt_tokens = 100,
+        )
+    )
+    assert len(rec.calls) == 1
+
+
+def test_an_unreadable_target_context_does_not_block_the_switch(monkeypatch):
+    # A non-GGUF target has no cheap context answer; the post-switch guard covers it.
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: None)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF",
+            object(),
+            "t",
+            require_speech = True,
+            speech_prompt_tokens = 9_000_000,
+        )
+    )
+    assert len(rec.calls) == 1
+
+
 def test_minimax_without_a_description_is_refused_before_the_switch(monkeypatch):
     # The post-load path refuses MiniMax without a description. Reaching that only after
     # the swap costs the resident speech model, so the same rule runs in the preflight.

@@ -468,6 +468,11 @@ def _tts_max_new_tokens(
     return max(1, budget)
 
 
+def _speech_budget_exhausted(context_length: int, prompt_tokens: int) -> bool:
+    """Whether *prompt_tokens* leaves a context with no room to speak."""
+    return context_length - prompt_tokens - _TTS_PROMPT_FORMAT_RESERVE < _MIN_SPEECH_OUTPUT_TOKENS
+
+
 def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
     """400 when the prompt alone consumes the loaded context.
 
@@ -478,8 +483,7 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
     context_length = _monitor_context_length()
     if not context_length:
         return
-    remaining = context_length - _prompt_token_estimate(text) - _TTS_PROMPT_FORMAT_RESERVE
-    if remaining < _MIN_SPEECH_OUTPUT_TOKENS:
+    if _speech_budget_exhausted(context_length, _prompt_token_estimate(text)):
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -6996,6 +7000,39 @@ def _target_accepts_request_input(
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
+def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
+    """The .gguf the load would open, so a probe reads the same file."""
+    from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
+
+    local_path = os.path.expanduser(load_path)
+    if gguf_variant and Path(local_path).is_dir():
+        return _find_local_gguf_by_variant(local_path, gguf_variant)
+    return detect_gguf_model(local_path)
+
+
+def _target_native_context_length(
+    load_path: str,
+    is_gguf: bool,
+    gguf_variant: Optional[str] = None,
+) -> Optional[int]:
+    """The target's own training context, or None when it cannot be read cheaply.
+
+    GGUF carries it in the header, which the staged UI already reads before a load.
+    A non-GGUF checkpoint has no equally cheap answer here, so it returns None and the
+    post-switch guard stays the one that catches it.
+    """
+    if not is_gguf:
+        return None
+    try:
+        from utils.models.gguf_metadata import read_gguf_context_length
+
+        gguf_file = _resolve_target_gguf_file(load_path, gguf_variant)
+        return read_gguf_context_length(gguf_file) if gguf_file else None
+    except Exception as exc:
+        logger.debug("auto-switch: context probe failed for %s: %s", load_path, exc)
+        return None
+
+
 def _target_speech_audio_type(
     load_path: str,
     is_gguf: bool,
@@ -7027,11 +7064,7 @@ def _target_speech_audio_type(
             return audio_type if audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES else None
         from utils.models.gguf_metadata import read_gguf_tts_audio_type
 
-        local_path = os.path.expanduser(load_path)
-        if gguf_variant and Path(local_path).is_dir():
-            gguf_file = _find_local_gguf_by_variant(local_path, gguf_variant)
-        else:
-            gguf_file = detect_gguf_model(local_path)
+        gguf_file = _resolve_target_gguf_file(load_path, gguf_variant)
         audio_type = read_gguf_tts_audio_type(gguf_file) if gguf_file else None
         return audio_type if audio_type in _GGUF_TTS_AUDIO_TYPES else None
     except Exception as exc:
@@ -7868,6 +7901,7 @@ async def _maybe_auto_switch_model(
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
     speech_has_instructions: bool = False,
+    speech_prompt_tokens: Optional[int] = None,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -8210,6 +8244,24 @@ async def _maybe_auto_switch_model(
                 )
             # Same rule as the post-load check below, applied before the swap: MiniMax
             # needs a description, and finding that out afterwards costs the resident model.
+            if speech_prompt_tokens is not None:
+                target_context = await asyncio.to_thread(
+                    _target_native_context_length, target_id, target_is_gguf, variant
+                )
+                if target_context and _speech_budget_exhausted(
+                    target_context, speech_prompt_tokens
+                ):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = openai_error_body(
+                            f"Input is too long for the requested model's "
+                            f"{target_context}-token context. Shorten it, or pick a model "
+                            "with a larger context.",
+                            status = 400,
+                            code = "invalid_value",
+                            param = "input",
+                        ),
+                    )
             if speech_type == "minimax_music3" and not speech_has_instructions:
                 raise HTTPException(
                     status_code = 400,
@@ -16445,6 +16497,10 @@ async def _generate_tts_wav(
         claim_resident = False,
         require_speech = True,
         speech_has_instructions = bool(str(payload.audio_instructions or "").strip()),
+        # So a prompt that fits neither model is refused before the swap, not after it.
+        speech_prompt_tokens = (
+            None if requested_model == _RELOAD_ONLY_MODEL else _prompt_token_estimate(text)
+        ),
     )
     # Again, now that a context exists to measure against. The check above runs before the
     # restore so an invalid request never triggers a reload, but with nothing loaded it has
