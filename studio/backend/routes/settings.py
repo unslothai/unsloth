@@ -1065,10 +1065,8 @@ def _llama_cpp_path_response() -> LlamaCppPathResponse:
 
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def get_hugging_face_cache(
-    # Owner only, like the write beside it. The response is the installation's
-    # absolute cache paths, the environment variable behind them and their disk
-    # status, which is host layout a managed account has no way to act on and
-    # which may sit under the owner's own home.
+    # Owner only, like the write beside it: the response is absolute cache paths
+    # and the variable behind them, which may sit under the owner's home.
     current_subject: str = Depends(require_install_admin),
 ) -> HuggingFaceCacheResponse:
     return _hugging_face_cache_response()

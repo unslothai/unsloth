@@ -49,15 +49,11 @@ def workspace_generation(subject: str) -> int:
 def note_workspace_retired(subject: str) -> None:
     """Fence every binding taken before now for ``subject``.
 
-    Deletion quiesces what is *running*, which is a point-in-time answer. A
-    request that authenticated a moment earlier and had not yet reached the code
-    that starts work is invisible to that sweep: it resumes afterwards, opens
-    this account's databases under the same username-derived pathnames, and
-    recreates the directory the retirement just renamed away. If the name has
-    since been recreated, those writes land in the new account's workspace.
-
-    So the generation is bumped first, and any binding older than the bump stops
-    being able to name a workspace at all.
+    Deletion quiesces what is RUNNING, which cannot see a request admitted a
+    moment earlier and paused before it started work. That request resumes and
+    recreates the directory the retirement renamed away, and a recreated name
+    then inherits its writes. So the generation is bumped first, and an older
+    binding stops being able to name a workspace at all.
     """
     with _workspace_generations_lock:
         _workspace_generations[subject] = _workspace_generations.get(subject, 0) + 1
@@ -69,12 +65,9 @@ def current_workspace_subject() -> str:
 
 
 def workspace_binding_is_stale() -> bool:
-    """Whether this context authenticated into an account that has since been deleted.
-
-    False for anything that never bound explicitly: module-level defaults, the
-    legacy owner and every process-wide job keep working exactly as before. Only
-    a binding whose account was retired *after* it was taken is stale.
-    """
+    """Whether this context authenticated into an account since deleted. False for
+    anything that never bound explicitly, so the legacy owner and every
+    process-wide job are unaffected."""
     admitted = _workspace_admission.get()
     if admitted is None:
         return False
@@ -114,10 +107,9 @@ def reset_workspace_subject(token: WorkspaceBinding | Token[str]) -> None:
 def run_in_workspace(subject: str, target: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
     """Run ``target`` with an explicit workspace binding.
 
-    ``ContextVar`` values follow asyncio tasks and ``asyncio.to_thread`` calls,
-    but Python deliberately does not copy them into newly-created threads or
-    spawned processes. Long-running jobs must therefore carry their account
-    identity as data and bind it at their execution boundary.
+    ContextVars follow asyncio tasks and to_thread but are deliberately not
+    copied into new threads or spawned processes, so a long-running job carries
+    its account identity as data and binds it at its execution boundary.
     """
     token = set_workspace_subject(subject)
     try:
@@ -147,18 +139,13 @@ def workspace_thread(
 def workspace_key(subject: str | None = None) -> str:
     """Filesystem-safe, stable directory key for a non-legacy account.
 
-    The short readable prefix helps operators identify a workspace while the
-    digest prevents two differently-spelled usernames from collapsing onto the
-    same directory after sanitisation.
+    Readable prefix for operators, digest so two differently-spelled usernames
+    cannot collapse onto one directory after sanitisation.
 
-    Dots are folded away rather than kept. Usernames may legally contain them
-    (``^[a-z0-9][a-z0-9._-]*$``), but Windows resolves a reserved device name
-    followed by any extension back to the device: ``con.txt`` would key to
-    ``con.txt-<digest>``, whose base name is ``con``, and Windows refuses to
-    create it. With no dot the key is a single component ending in the digest,
-    which can never equal a device name. Distinct usernames still get distinct
-    keys because the digest hashes the original value, so ``a.b`` and ``a-b``
-    share a readable prefix but not a key.
+    Dots are folded away: Windows resolves a reserved device name plus any
+    extension back to the device, so ``con.txt`` would key to a directory whose
+    base name is ``con`` and refuse to be created. The digest hashes the
+    original, so ``a.b`` and ``a-b`` still differ.
     """
     value = subject or current_workspace_subject()
     readable = re.sub(r"[^a-z0-9_-]+", "-", value.casefold()).strip("-")
@@ -180,12 +167,8 @@ def known_workspace_subjects() -> list[str]:
 
 
 class RetiredWorkspaceError(RuntimeError):
-    """A request outlived the account it authenticated into.
-
-    Raised where a stale binding would otherwise recreate a deleted account's
-    workspace. The routes turn it into a 401: from the caller's point of view
-    the credential it presented no longer exists.
-    """
+    """A request outlived the account it authenticated into. Answered as 401: the
+    credential it presented no longer exists."""
 
 
 class ForeignWorkspaceActiveError(RuntimeError):

@@ -150,10 +150,8 @@ async def video_download_plan(
         _reject_uncontained_local_path,
     )
 
-    # The same two questions /video/load asks. resolve_local_single_file,
-    # validate_load_request and download_plan all read the target, so without
-    # these an absolute path from another workspace came back described as a
-    # plan even though the load would refuse it.
+    # The two questions /video/load asks: all three calls below read the target,
+    # so a foreign path came back described even though the load would refuse it.
     _reject_uncontained_local_path(request.model_path, "plan a download for")
     _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
     if request.base_repo:
@@ -277,13 +275,11 @@ async def load_video_model_gated(
         _reject_uncontained_local_path,
     )
 
-    # Same containment the text load path applies. The video validator accepts
-    # any existing local path, so without this an absolute path loaded another
-    # account's private checkpoint.
+    # The video validator accepts any existing local path, so without the text
+    # load path's containment an absolute one loaded a private checkpoint.
     _reject_uncontained_local_path(request.model_path, "load")
-    # And the same credential rule: the video backend builds its HfApi and calls
-    # from_pretrained with whatever token the request carried, so a tokenless
-    # managed load of a Hub repo ran on the installation's own login.
+    # And its credential rule: from_pretrained gets whatever token the request
+    # carried, so a tokenless managed load ran on the installation's login.
     _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
     if request.base_repo:
         # The base repo is fetched the same way and is a separate identifier.
@@ -864,9 +860,8 @@ class _VideoJob:
     progress: int = 0
     completed_at: Optional[int] = None
     error: Optional[dict] = None
-    # The account the job belongs to. _jobs is process-global while the gallery
-    # behind it is per account, so without this every response merges in every
-    # other account's open jobs and their ids accept a delete.
+    # _jobs is process-global while the gallery behind it is per account, so
+    # without this every response merged in everyone else's open jobs.
     subject: str = ""
 
     @property
@@ -888,12 +883,9 @@ def _job_is_mine(job: "_VideoJob") -> bool:
 
 
 def forget_workspace_jobs(subject: str) -> None:
-    """Drop a retired account's OpenAI video jobs.
-
-    The route keeps its own map beside the backend's state, and retirement only
-    cleared the backend, so a namesake matched the reusable subject on these and
-    /v1/videos handed back the predecessor's prompt, model and error.
-    """
+    """Drop a retired account's OpenAI video jobs: retirement cleared the backend
+    but not this map, so /v1/videos handed a namesake the predecessor's prompt
+    and model."""
     with _jobs_lock:
         for job_id in [
             job_id for job_id, job in _jobs.items() if getattr(job, "subject", None) == subject
@@ -1069,12 +1061,9 @@ def _remember_job(job: _VideoJob) -> None:
     for existing in pending:
         persisted = _job_from_record(video_gallery.get_job(existing.id) or {})
         if persisted is not None and persisted.terminal:
-            # Carry the account across, as _hydrate_job does. A record written
-            # before this field, or by a path that does not round-trip it, comes
-            # back with "", which _job_is_mine reads as the owner's legacy state:
-            # the managed caller could then still find and delete the clip through
-            # its own workspace-scoped record while this guard called the cleanup
-            # foreign, so the delete 500ed after the file was already gone.
+            # Carry the account across, as _hydrate_job does: a record that does
+            # not round-trip it returns "", which reads as owner legacy state, and
+            # the delete then 500ed after the file was already gone.
             persisted.subject = persisted.subject or existing.subject
             with _jobs_lock:
                 if _jobs.get(existing.id) is existing:
@@ -1155,9 +1144,8 @@ def _sync_jobs() -> None:
     for job in open_jobs:
         persisted_job = _job_from_record(video_gallery.get_job(job.id) or {})
         if persisted_job is not None and persisted_job.terminal:
-            # Same as _remember_job: the replacement inherits the account of the
-            # job it replaces, so a video that finishes between polls does not
-            # become owner state.
+            # The replacement inherits the account of the job it replaces, so a
+            # video finishing between polls does not become owner state.
             persisted_job.subject = persisted_job.subject or job.subject
             with _jobs_lock:
                 if _jobs.get(job.id) is job:
@@ -1519,9 +1507,8 @@ async def _create_openai_video(
         raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
     from routes.inference import _reject_foreign_private_resident_model
 
-    # Same question /api/video/generate asks. Omitting model here skips the
-    # switch entirely, so "some backend is loaded" was the only condition and the
-    # weights could be whatever another account's load left resident.
+    # Omitting model skips the switch, so "some backend is loaded" was the only
+    # condition and the weights could be another account's.
     _reject_foreign_private_resident_model(status, "video")
     defaults = status.get("defaults") or {}
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None

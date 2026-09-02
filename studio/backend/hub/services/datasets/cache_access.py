@@ -37,12 +37,9 @@ def note_dataset_download_attempt(key: str, repo_id: str) -> None:
 
 
 def confirm_dataset_download(key: str) -> None:
-    """Grant the access a finished download earned.
-
-    Only the account whose own job completed: an adopter of a running job never
-    recorded an attempt, so joining somebody's transfer does not inherit their
-    credential's reach.
-    """
+    """Grant the access a finished download earned. Only the account whose own job
+    completed: an adopter never recorded an attempt, so joining somebody's
+    transfer does not inherit their credential's reach."""
     with _lock:
         pending = _pending_downloads.pop(key, None)
         if pending is None:
@@ -54,12 +51,9 @@ def confirm_dataset_download(key: str) -> None:
 
 
 def forget_workspace(subject: str) -> None:
-    """Drop an account's grants and pending attempts, for retirement.
-
-    The subject is a reusable username, so a grant that outlives the account
-    lets the namesake list and preview the previous holder's cached private
-    datasets before any Hub check runs.
-    """
+    """Drop an account's grants and pending attempts, for retirement: the subject is
+    a reusable username, so a surviving grant lets a namesake preview the previous
+    holder's cached private datasets."""
     with _lock:
         for repo_id in list(_dataset_downloaders):
             holders = _dataset_downloaders.get(repo_id)
@@ -75,12 +69,10 @@ def forget_workspace(subject: str) -> None:
 def caller_may_read_cached_dataset(repo_id: Optional[str]) -> bool:
     """Whether this account could have obtained this dataset itself.
 
-    True for the owner, for an account that downloaded it here, and for a
-    repository the Hub confirms it serves anonymously, which is the ordinary
-    case. False for a private or gated repository somebody else pulled into the
-    shared cache, and for one whose visibility cannot be established: reading its
-    rows, or even listing it, is that account's disclosure, so an unreachable Hub
-    withholds rather than guesses. The owner is unaffected either way.
+    True for the owner, for whoever downloaded it here, and for a repo the Hub
+    confirms it serves anonymously, which is the ordinary case. False for one
+    somebody else pulled into the shared cache, and for one whose visibility
+    cannot be established: an unreachable Hub withholds rather than guesses.
     """
     from auth.storage import is_installation_owner
     from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject

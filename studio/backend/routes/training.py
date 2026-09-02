@@ -416,11 +416,9 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
 def _reject_remote_code_from_a_managed_account(trust_remote_code) -> None:
     """Only the installation owner may run a repository's own Python.
 
-    The same rule /inference/load applies. Containment cannot help: a Hub repo id
-    is not a path, and the consent scan is not an isolation boundary either,
-    because the caller approves the fingerprint it reports. The worker runs as
-    the same OS user as everything else, so repository code reaches every
-    account's files whatever the path routing says.
+    The rule /inference/load applies. Containment cannot help, since a repo id is
+    not a path, and neither can the consent scan, which the caller approves. The
+    worker runs as the same OS user, so that code reaches every account's files.
     """
     from routes.inference import _reject_remote_code_from_a_managed_account as _reject
     _reject(trust_remote_code)
@@ -429,11 +427,9 @@ def _reject_remote_code_from_a_managed_account(trust_remote_code) -> None:
 def _reject_uncontained_training_path(model_path: Optional[str]) -> None:
     """A managed account may only train from weights inside its own roots.
 
-    The same rule /inference/load applies, and for the same reason: the request
-    field reaches the worker verbatim, so an absolute path is a read of any file
-    the backend can reach. Training makes it worse than a load, because the
-    adapter that comes back is derived from those weights and outlives the run.
-    Hub repo ids are untouched; they are not paths and land in the shared cache.
+    The field reaches the worker verbatim, so an absolute path reads any file the
+    backend can. Worse than a load, because the adapter is derived from those
+    weights and outlives the run. Hub ids are not paths and are untouched.
     """
     from routes.inference import _reject_uncontained_local_path
     _reject_uncontained_local_path(model_path, "train from")
@@ -489,15 +485,10 @@ def _has_adapter_metadata(path: Path) -> bool:
 def _reject_wandb_without_an_account_token(enable_wandb: Any, wandb_token: Any) -> None:
     """A managed account logging to W&B must bring its own key.
 
-    The spawned worker only overwrites WANDB_API_KEY when the request carried a
-    token, so an owner key in the server's environment would otherwise be
-    inherited and the run would authenticate and upload under the owner's W&B
-    identity.
-
-    Refused here rather than only blanked in the child, so the account is told
-    why up front instead of watching a long run fail inside wandb.init(). The
-    child environment blanks it as well, for any path that does not come through
-    this route.
+    The worker only overwrites WANDB_API_KEY when the request carried a token, so
+    an owner key in the environment is inherited and uploads under the owner's
+    identity. Refused here as well as blanked in the child, so the account is
+    told up front rather than failing inside wandb.init().
     """
     if not enable_wandb:
         return
@@ -517,15 +508,10 @@ def _reject_wandb_without_an_account_token(enable_wandb: Any, wandb_token: Any) 
 def _reject_ambient_s3_for_a_managed_account(s3_config: Any) -> None:
     """A managed account reading a dataset from S3 must bring its own keys.
 
-    _build_s3_client falls back to boto3's default credential chain whenever
-    use_iam_role is set, which on an EC2 or container host is the installation's
-    own role. A managed account could therefore name any bucket that identity can
-    read and have the worker list and download it into their dataset. Same rule as
-    the ambient Hugging Face and W&B credentials: the host's identity is the
-    owner's, not a shared service credential.
-
-    Refused here rather than in the worker so the account is told why up front,
-    before anything is reserved or spawned.
+    use_iam_role takes boto3's default chain, which on EC2 is the installation's
+    role, so any bucket it can read became the caller's dataset. Same rule as the
+    ambient Hugging Face and W&B credentials. Refused here rather than in the
+    worker, before anything is reserved or spawned.
     """
     if s3_config is None:
         return
@@ -835,10 +821,8 @@ def _reject_untrainable_model_request(
                 if request.model_local_path == request.model_name
                 else normalize_path(request.model_local_path)
             )
-        # Scoping the subprocess to the caller's workspace scopes what it WRITES;
-        # the weights it reads are still whatever path arrived in the request. An
-        # absolute path is otherwise a read of another account's private
-        # checkpoint, and the adapter it trains is derived from it.
+        # Scoping the subprocess scopes what it WRITES; the weights it reads are
+        # still whatever path arrived, and the adapter is derived from them.
         _reject_uncontained_training_path(model_name)
         _reject_uncontained_training_path(model_local_path)
     else:
@@ -899,10 +883,8 @@ def _reject_untrainable_model_request(
                 )
             remote_format = _remote_untrainable_model_format(
                 request.model_name,
-                # False, not None: None lets huggingface_hub fall back to the
-                # process token or a cached login, which is the owner's, so a
-                # managed account would probe a private repo with it and learn
-                # whether it exists. The owner keeps the fallback.
+                # False, not None: None falls back to the process token or cached
+                # login, which is the owner's. The owner keeps the fallback.
                 request.hf_token or (None if is_installation_owner() else False),
             )
         except HTTPException as error:
@@ -1182,9 +1164,8 @@ async def get_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
-    # Authorized by the record, not by who owns the backend: ownership transfers
-    # only at start_training(), so a caller polling its own pending start during
-    # validation would otherwise get a 404 it can never reconcile.
+    # By the record, not the backend owner: ownership transfers only at
+    # start_training(), so polling a pending start would 404 forever.
     record = backend.get_start_request(start_request_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Training start request not found")

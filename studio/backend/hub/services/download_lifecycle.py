@@ -1311,15 +1311,11 @@ def launch_worker(
     return registry.get_job(key).state
 
 
-# Job key -> the workspace that started that download. The registry itself is
-# install-wide and keyed by repository, which is deliberate (the bytes land in the
-# shared cache and serve everyone), but that made a cancel reachable by anybody
-# who could name the repository, so one account could repeatedly abort another's
-# large or gated download.
-# A SET per key, not one subject: scoped jobs share one slot per repository, so a
-# second account asking for the same repo adopts the running job rather than
-# starting its own. Recording only the latest starter took the first one's right
-# to cancel their own download away, and would hide it from their own activity list.
+# Job key -> the workspaces that started that download. The registry is
+# install-wide and keyed by repository on purpose (the bytes serve everyone), but
+# that made a cancel reachable by anybody who could name the repo.
+# A SET per key: a second account asking for the same repo adopts the running
+# job, so recording only the latest starter took the first one's cancel right.
 _download_initiators: dict[str, set[str]] = {}
 _download_initiators_lock = threading.Lock()
 
@@ -1327,14 +1323,10 @@ _download_initiators_lock = threading.Lock()
 def note_download_initiator(key: str, *, replaces_previous_job: bool = False) -> None:
     """Record a workspace as one of this download's initiators.
 
-    A key names a repository, so it outlives the job that held it, and adding to
-    the set unconditionally carried yesterday's downloaders into today's job with
-    their cancel rights and their view of it.
-
-    ``replaces_previous_job`` is the caller saying it has just claimed the key for
-    a new job, so whatever the set holds belonged to the last one. Asking the
-    registry instead did not work: claim() publishes the replacement before this
-    runs, so the job always looked live and the previous set was never dropped.
+    A key names a repository, so it outlives the job, and adding unconditionally
+    carried yesterday's downloaders into today's job. ``replaces_previous_job``
+    is the caller saying the set belongs to the last one; asking the registry
+    cannot work, since claim() publishes the replacement before this runs.
     """
     from utils.workspace_context import current_workspace_subject
     with _download_initiators_lock:
@@ -1344,12 +1336,9 @@ def note_download_initiator(key: str, *, replaces_previous_job: bool = False) ->
 
 
 def forget_workspace_initiators(subject: str) -> None:
-    """Drop a retired account from every initiator set.
-
-    A download is not a workspace job, so retirement's quiescing never saw it,
-    and the sets are keyed by the reusable username: a namesake inherited both
-    the view of the predecessor's transfer and the right to cancel it.
-    """
+    """Drop a retired account from every initiator set: a download is not a
+    workspace job, so the quiescing never saw it, and the sets key on the
+    reusable username."""
     with _download_initiators_lock:
         for key in list(_download_initiators):
             holders = _download_initiators.get(key)
@@ -1362,11 +1351,8 @@ def forget_workspace_initiators(subject: str) -> None:
 
 def workspace_downloaded_repo(repo_id: str) -> bool:
     """Whether the current workspace initiated a download of this repository.
-
-    Job keys carry the repository and, for models, a variant, so this matches on
-    the repository half. Used where the Hub cannot be reached and cache presence
-    would otherwise be the only answer available.
-    """
+    Matches the repository half of the key. Used where the Hub is unreachable and
+    cache presence would otherwise be the only answer."""
     from utils.workspace_context import current_workspace_subject
 
     if not isinstance(repo_id, str) or not repo_id.strip():
@@ -1394,13 +1380,10 @@ def require_download_cancel_permission(
 ) -> None:
     """Only the account that started a download, or the owner, may cancel it.
 
-    An unknown key is left cancellable: a download from before a restart has no
-    recorded initiator, and refusing those would strand jobs nobody could stop.
-    A key the registry reports as *live* is the exception. The registry publishes
-    a job inside claim(), a moment before the caller records itself, so a cancel
-    landing in that window found no initiator and was allowed to kill somebody
-    else's transfer; repeated cancels can aim for it. Nothing is stranded by
-    refusing those, since the owner can still stop them.
+    An unknown key stays cancellable, since a download from before a restart has
+    no initiator and refusing would strand it. A key the registry reports LIVE is
+    the exception: claim() publishes the job a moment before the caller records
+    itself, and a cancel aimed at that window killed somebody else's transfer.
     """
     from auth.storage import is_installation_owner
     from utils.workspace_context import current_workspace_subject

@@ -3976,9 +3976,8 @@ _PENDING_CANCEL_TTL_S = 30.0
 
 
 def _scoped_cancel_key(key):
-    """Cancel keys are client-chosen (session_id, completion_id, cancel_id), so two
-    accounts can present the same one. Prefixing the workspace keeps a guessed or
-    observed id from stopping another account's generation."""
+    """Workspace-prefixed: cancel keys are client-chosen, so two accounts can
+    present the same one."""
     return f"{current_workspace_subject()}\x00{key}" if key else key
 
 
@@ -6676,13 +6675,8 @@ async def _lease_ollama_model_ref(
 
 
 def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
-    """A managed account may only name a local path inside its own roots.
-
-    Without a native-path lease the requested model_path is passed to the loader
-    verbatim, so an absolute host path is a read of any file the backend can
-    reach, including another account's workspace. Hub repo ids are untouched:
-    they are not paths, and their download lands in the shared cache.
-    """
+    """A managed account may only name a local path inside its own roots: without
+    a lease the path reaches the loader verbatim. Hub ids are not paths."""
     if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
         return
     if not isinstance(model_path, str) or not model_path.strip():
@@ -6695,11 +6689,8 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
         return
     from routes.models import _is_sizable_local_path, is_advertised_shared_model_path
 
-    # Asked FIRST, because a Hub cache path is under cache_root() and so passes
-    # the generic "inside an Unsloth data root" test below. Returning there
-    # skipped the credential question entirely, which is the one question a
-    # snapshot directory has to be asked: the path is predictable, and the
-    # loader would have opened another account's private weights from it.
+    # Before the data-root test below: a cache snapshot sits under cache_root(),
+    # so returning there skipped the one question a snapshot path has to be asked.
     repo_id = _hub_repo_id_for_cache_path(candidate)
     if repo_id is not None:
         _reject_private_hub_repo_without_an_account_token(
@@ -6710,20 +6701,10 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
         return
     if _is_sizable_local_path(candidate):
         return
-    # And what the catalog already offered this account: ./models, the Hugging
-    # Face caches and the LM Studio directories are scanned for everybody, so a
-    # model listed from one of them has to be loadable from it too. Without this
-    # the picker showed models that 403ed on load, and OpenAI auto-switch
-    # resolved one and then failed at the same gate.
+    # ./models, the HF caches and the LM Studio dirs are scanned for everybody, so
+    # a model the catalog listed from one has to be loadable from it.
     if is_advertised_shared_model_path(candidate):
-        # A Hub cache path is a repository under another name. Alice downloading a
-        # private repo with her token lands its snapshot in the shared cache, and
-        # naming that path skipped the credential check below because by then it
-        # is an existing local path, not a repo id. So ask the same question the
-        # repo id would have been asked, and let a path that names no repository
-        # through: ./models and the LM Studio directories are ordinary folders.
-        # The cache-path question is asked above, before the data-root test, so
-        # by here the path names no repository.
+        # The cache question is asked above, so by here the path names no repository.
         return
     raise HTTPException(
         status_code = 403,
@@ -6735,12 +6716,7 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
 
 
 def _hub_repo_id_for_cache_path(candidate: str) -> Optional[str]:
-    """The repository a Hugging Face cache path belongs to, or None.
-
-    Cache layout is ``<cache>/models--Org--Name/snapshots/<sha>/...``, so the
-    repository is recoverable from any path inside it. None for a path that is
-    not in that layout, which is every ordinary model folder.
-    """
+    """The repo a ``<cache>/models--Org--Name/snapshots/<sha>/...`` path holds, or None."""
     from hub.utils.inventory_scan import _hf_repo_identity
 
     try:
@@ -6754,22 +6730,16 @@ def _hub_repo_id_for_cache_path(candidate: str) -> Optional[str]:
     return None
 
 
-# Answered once per (repo, kind) per process: a managed load without a token pays
-# one anonymous metadata call, and the answer does not change often enough to pay
-# it on every load. Public repos are the overwhelming majority, so this is almost
-# always a hit after the first pick.
+# One anonymous metadata call per (repo, kind) per process. Public repos dominate,
+# so this is almost always a hit after the first pick.
 _ANONYMOUS_HUB_ACCESS: dict[tuple[str, str], bool] = {}
 _ANONYMOUS_HUB_ACCESS_LOCK = threading.Lock()
 
 
 def _hub_repo_is_anonymously_readable(repo_id: str, repo_type: str) -> Optional[bool]:
-    """Whether the Hub serves this repo with no credential at all.
+    """True public, False private or gated, None unanswerable (offline, rate limit).
 
-    True for a public repo, False for one that is private or gated, None when the
-    question could not be answered (offline, network failure, rate limit).
-
-    token = False, not None: None asks huggingface_hub to find an implicit login,
-    which here is the very credential whose reach is being measured.
+    token = False, not None: None would find the implicit login being measured.
     """
     key = (repo_id, repo_type)
     with _ANONYMOUS_HUB_ACCESS_LOCK:
@@ -6789,8 +6759,7 @@ def _hub_repo_is_anonymously_readable(repo_id: str, repo_type: str) -> Optional[
         from hub.utils.hf_errors import hf_error_status
         status = hf_error_status(exc)
         if status in (401, 403, 404):
-            # 404 as well: the Hub reports a private repo an anonymous caller
-            # cannot see as missing rather than forbidden.
+            # 404 too: the Hub reports a repo an anonymous caller cannot see as missing.
             answer = False
         else:
             return None
@@ -6808,23 +6777,12 @@ def _reject_private_hub_repo_without_an_account_token(
 ) -> None:
     """A managed account may not reach a non-public repo on the server's credential.
 
-    The load path hands the identifier down to ModelConfig, the Hub download and
-    from_pretrained with whatever token the request carried. With none, those use
-    the implicit HF_TOKEN or the cached CLI login, which belong to the
-    installation owner, so naming an owner-private repo downloaded and ran it.
-
-    Asked as "would an anonymous caller get this?" rather than refusing every
-    tokenless managed load: public repos are the ordinary case and need no
-    credential, so they load exactly as before. Only a repo the caller could not
-    otherwise reach requires them to bring their own token.
-
-    Unanswerable (offline, or the Hub unreachable) falls back to whether the repo
-    is already in the shared cache. That cache is install-wide by design here,
-    alongside model weights and executables, so a resident model is not a new
-    disclosure; anything else is refused rather than guessed at. Callers whose
-    question is *about* a cached snapshot pass
-    ``shared_cache_answers_offline = False``: for them the cache is the thing in
-    doubt, so it cannot also be the answer.
+    With no request token the Hub client falls back to the implicit HF_TOKEN or
+    CLI login, which are the owner's. Asked as "would an anonymous caller get
+    this?", so public repos load unchanged. Unanswerable falls back to the
+    install-wide cache, except for callers whose question is ABOUT a cached
+    snapshot: they pass shared_cache_answers_offline = False, since the cache
+    cannot be both the doubt and the answer.
     """
     from auth.storage import is_installation_owner
 
@@ -6842,9 +6800,8 @@ def _reject_private_hub_repo_without_an_account_token(
     if readable:
         return
     if readable is None and shared_cache_answers_offline:
-        # Unanswerable. Cache presence alone is what put another account's
-        # private weights within reach here, so pair it with this account having
-        # asked for that repository itself.
+        # Cache presence alone is what exposed the weights, so pair it with this
+        # account having asked for the repo.
         from hub.services.download_lifecycle import workspace_downloaded_repo
         if workspace_downloaded_repo(candidate) and _repo_is_in_the_shared_cache(
             candidate, repo_type
@@ -6873,12 +6830,10 @@ def _repo_is_in_the_shared_cache(repo_id: str, repo_type: str) -> bool:
 
 
 def _looks_like_a_local_model_path(candidate: str) -> bool:
-    """Whether this model identifier is a filesystem path rather than a Hub repo id.
+    """Whether this identifier is a filesystem path rather than a Hub repo id.
 
-    Decided on shape alone, with no filesystem access, so the answer does not
-    change when the path is renamed out from under a resident model. A Hub id is
-    ``owner/name`` (optionally with a revision): one forward slash, no separators
-    beyond it, not rooted, no drive letter, no home shorthand.
+    Shape alone, no filesystem access, so the answer survives a rename under a
+    resident model. A Hub id is ``owner/name``: one slash, not rooted.
     """
     if not candidate:
         return False
@@ -6896,26 +6851,15 @@ def _looks_like_a_local_model_path(candidate: str) -> bool:
 def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
     """Refuse generation on a model another account loaded from a private path.
 
-    One media engine serves the whole install, which is deliberate: weights and
-    the shared cache are install-wide in this design, and a Hub model one account
-    loads is meant to stay resident for whoever asks next. A model loaded from an
-    account's OWN workspace, outputs or exports is not that. Without this, the
-    load-time containment check was the only guard, and it does nothing once the
-    weights are resident: the next account could generate with them without ever
-    naming a model, and read the private path back out of the gallery recipe.
+    One media engine serves the install by design, so a Hub model stays resident
+    for whoever asks next; a model loaded from an account's own roots is not
+    that, and containment at load time does nothing once it is resident.
 
-    Decided against the CALLER's roots rather than by recording an owner, so the
-    answer stays right across a restart and needs nothing threaded through the
-    engines. The shared cache is tested first and on its own: the legacy owner's
-    workspace_root() is studio_root() and cache_root() sits inside it, so a plain
-    "under the workspace" test would call every shared model that account's
-    private one and stop everybody else generating with it.
-
-    A Hub repo id is told from a local path by SHAPE, never by asking the
-    filesystem whether it exists. Deleting an account renames its workspace while
-    an idle pipeline is still resident, so an existence test called the retired
-    path a Hub id and handed the departed account's private weights to whoever
-    generated next.
+    Decided against the CALLER's roots, testing the shared cache first and on its
+    own: the legacy owner's workspace_root() contains cache_root(), so a plain
+    containment test would make every shared model private to them. A Hub id is
+    told from a path by SHAPE, because deletion renames the workspace and an
+    existence test then called the retired path a Hub id.
     """
     if not _resident_model_is_foreign_private(status):
         return
@@ -6935,17 +6879,10 @@ def _reject_private_generation_time_repo(
 ) -> None:
     """A repo named at generation time is fetched on the LOADER's credential.
 
-    The resident-model guard above asks about the model that was loaded. LoRA and
-    ControlNet ids arrive per request and are resolved inside the engine with the
-    resident ``state.hf_token``, which belongs to whoever loaded the pipeline. So
-    a second account could name a private adapter repo it cannot read and have
-    the first account's token download and run it.
-
-    Asked with no caller token on the generation route because those requests
-    carry none: a public repo resolves exactly as before, and a non-public one
-    now needs the caller to own the pipeline's credential, which only its loader
-    does. The load route passes its own request token, since the adapters it
-    bakes in are fetched with that.
+    LoRA and ControlNet ids arrive per request and resolve inside the engine with
+    the resident state.hf_token, so a second account could have the first's token
+    fetch a private adapter. The generation route carries no token of its own;
+    the load route passes its request's, which is what bakes its adapters in.
     """
     if not isinstance(identifier, str) or not identifier.strip():
         return
@@ -7104,11 +7041,9 @@ def forget_text_model_owner(subject: Optional[str] = None) -> None:
 def retire_text_model_owner(subject: str) -> None:
     """Fence the resident model off from everyone, for a deleted account.
 
-    Clearing the record outright is only safe once the weights are gone. An
-    unload here is best effort and its failure is swallowed, and an unowned Hub
-    repository passes the containment fallback, so a failed teardown would have
-    handed a private model to the next caller. This keeps the fence and names an
-    owner nobody can be.
+    Clearing the record is only safe once the weights are gone: the unload here
+    is best effort, and an unowned Hub repo passes the containment fallback. So
+    name an owner nobody can be instead.
     """
     global _RESIDENT_TEXT_OWNER
     with _RESIDENT_TEXT_OWNER_LOCK:
@@ -7136,11 +7071,8 @@ def _resolve_model_identifier_for_request(
 
 
 def _running_load_attempt_is_mine() -> bool:
-    """Whether the load in flight, if any, was started by this account.
-
-    True when nothing is loading: there is no load to protect, and the unload
-    then falls through to the paths that decide on the resident model instead.
-    """
+    """Whether the load in flight, if any, was started by this account. True when
+    nothing is loading, so the unload falls through to the resident-model paths."""
     subject = current_workspace_subject()
     if subject == LEGACY_WORKSPACE_SUBJECT:
         return True
@@ -7169,12 +7101,10 @@ def _resident_text_model_identifiers() -> list[str]:
 
 
 def resident_text_model_workspace() -> Optional[str]:
-    """The workspace that asked for the resident text model, if one is recorded.
+    """The workspace that asked for the resident text model, if recorded.
 
-    The idle-unload loop is created at startup, outside any request, so it read
-    the owner's TTL and keep-KV choice whatever account had actually loaded the
-    model. This is what lets it consult the policy of the account whose model it
-    is about to unload.
+    The idle-unload loop is created at startup, outside any request, so without
+    this it read the owner's TTL whoever had loaded the model.
     """
     for identifier in _resident_text_model_identifiers():
         loader = _text_model_loader(identifier)
@@ -7186,10 +7116,9 @@ def resident_text_model_workspace() -> Optional[str]:
 def _caller_could_have_loaded(identifier: str) -> bool:
     """Whether this account could have named that identifier itself.
 
-    Both halves of the question the load path asks, so the two cannot drift: a
-    path inside this workspace or a shared root, and a repository this account
-    can actually reach. Containment alone was not enough, because a repo id is
-    not a path and every private repository passed it.
+    Both halves of the load path's question, so the two cannot drift: a contained
+    path, and a repo this account can reach. Containment alone let every private
+    repo through, since a repo id is not a path.
     """
     try:
         _reject_uncontained_local_path(identifier, "use")
@@ -7205,10 +7134,7 @@ def _caller_could_have_loaded(identifier: str) -> bool:
 
 def resident_text_model_is_foreign() -> bool:
     """Whether the resident text model is one this account could not have loaded.
-
-    True for another account's private checkpoint, and for a private one with no
-    recorded loader, which is the same answer the load path would have given.
-    """
+    True with no recorded loader too, which is what the load path would say."""
     subject = current_workspace_subject()
     if subject == LEGACY_WORKSPACE_SUBJECT:
         return False
@@ -7220,10 +7146,8 @@ def resident_text_model_is_foreign() -> bool:
         if loaders.get(identifier) == subject:
             return False
     for identifier in identifiers:
-        # Accessibility first, and who loaded it only when that fails. An
-        # ordinary public model is one every account may load for itself, so
-        # refusing it because somebody else got there first served a 409 for a
-        # model the caller could have loaded a moment later anyway.
+        # Accessibility first, loader identity only when that fails: refusing a
+        # public model because somebody else got there first was a 409 for nothing.
         if _caller_could_have_loaded(identifier):
             continue
         from auth.storage import is_installation_owner
@@ -7234,11 +7158,9 @@ def resident_text_model_is_foreign() -> bool:
 def _reject_generation_from_a_foreign_private_model() -> None:
     """Refuse to serve a model this account could not have loaded itself.
 
-    Both text backends are process-wide, so an account that could not browse or
-    load another's checkpoint could still run inference on it by asking the
-    shared endpoint for a completion. Refused rather than silently switched: the
-    resident model is somebody's live session, and taking it away to answer a
-    request is its own cross-account effect.
+    Both text backends are process-wide, so asking the shared endpoint for a
+    completion reached a checkpoint the caller could not browse or load. Refused
+    rather than switched: the resident model is somebody's live session.
     """
     if not resident_text_model_is_foreign():
         return
@@ -7273,9 +7195,8 @@ def _resolve_model_identifier_for_request_impl(
         return resolved_ollama_path, Path(resolved_ollama_path).name, False
     if not request.native_path_lease:
         _reject_uncontained_local_path(request.model_path, operation)
-        # And the credential half of the same question: a Hub id is not a path, so
-        # containment says nothing about it, but a tokenless managed load reaches
-        # the Hub on the installation's own login.
+        # The credential half: containment says nothing about a Hub id, and a
+        # tokenless managed load reaches the Hub on the installation's login.
         _reject_private_hub_repo_without_an_account_token(
             request.model_path, getattr(request, "hf_token", None)
         )
@@ -18080,13 +18001,8 @@ def _stt_model_is_foreign(model: Any) -> bool:
 
 
 def _redacted_stt_model(model: Any) -> Any:
-    """The model id, or None when it belongs to another account.
-
-    The sidecars are installation-wide, so the status route reported whichever
-    private repository somebody else had loaded, and answered a model= query
-    with whether that repository is in the shared cache. Both are the repository
-    name, which is the thing worth hiding.
-    """
+    """The model id, or None when it belongs to another account. The sidecars are
+    installation-wide, so status reported whatever private repo was loaded."""
     return None if _stt_model_is_foreign(model) else model
 
 
@@ -18103,11 +18019,9 @@ def _redacted_stt_download_status(status: Any) -> Any:
 def _claim_stt_download(engine: str, module) -> bool:
     """Take ownership of the engine's download slot if no transfer holds it.
 
-    Recording unconditionally handed the slot to whoever asked last, so a second
-    account naming the same engine took over a transfer already running under
-    somebody else's token and could then cancel it. The registry has one slot per
-    engine, so an already-running transfer keeps its owner and this returns False.
-    The status read happens under the lock: it is the test the claim is made on.
+    One slot per engine, so a running transfer keeps its owner and this returns
+    False; recording unconditionally handed it to whoever asked last, who could
+    then cancel it. The status read is under the lock: it is the test.
     """
     with _STT_DOWNLOAD_INITIATORS_LOCK:
         try:
@@ -18121,12 +18035,8 @@ def _claim_stt_download(engine: str, module) -> bool:
 
 
 def _release_stt_download_claim(engine: str, subject: str) -> None:
-    """Give the slot back when the start it was taken for never happened.
-
-    Validation rejecting the repo, or the downloader declining to start, leaves
-    nothing to own, and a stale owner would outlive the request and take the
-    cancel authority for whatever runs next.
-    """
+    """Give the slot back when the start it was taken for never happened: a stale
+    owner would take the cancel authority for whatever runs next."""
     with _STT_DOWNLOAD_INITIATORS_LOCK:
         if _STT_DOWNLOAD_INITIATORS.get(engine) == subject:
             _STT_DOWNLOAD_INITIATORS.pop(engine, None)
@@ -18140,11 +18050,9 @@ def _note_stt_download_initiator(engine: str) -> None:
 def _require_stt_download_cancel_permission(engine: str) -> None:
     """Only the account that started this download, or the owner, may stop it.
 
-    The route takes an optional payload that defaults to the shared Transformers
-    downloader, so without this a caller did not even need a job identifier to
-    kill somebody else's transfer. An unrecorded download stays cancellable, the
-    same rule the hub download cancel uses: refusing those strands a transfer
-    nobody can stop.
+    The payload is optional and defaults to the shared downloader, so a caller
+    needed no job id at all to kill somebody else's transfer. An unrecorded
+    download stays cancellable, as on the hub path: refusing strands it.
     """
     from auth.storage import is_installation_owner
 
@@ -33752,12 +33660,11 @@ async def generate_diffusion_image(
     )
 
     backend = get_active_diffusion_engine()
-    # This route names no model: it runs whatever is resident, so the load-time
-    # containment check is not enough on its own.
+    # Names no model, so it runs whatever is resident: load-time containment
+    # cannot answer for this.
     authorised_status = backend.status()
     _reject_foreign_private_resident_model(authorised_status, "image")
-    # The resident check covers the model. These two arrive per request and are
-    # downloaded on the resident pipeline's token, so they get their own.
+    # These arrive per request and download on the resident pipeline's token.
     for _lora in request.loras or ():
         _reject_private_generation_time_repo(_lora.id, "LoRA")
     if request.controlnet:

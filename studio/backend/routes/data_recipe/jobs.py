@@ -277,12 +277,9 @@ def _inject_local_structured_response_format(
 
 def reject_env_credentials_in_recipe(recipe: Any) -> None:
     """Guard every provider collection a recipe carries, wherever it enters.
-
-    Called from the job and validate entry points rather than from
-    _inject_local_providers, which returns early for a recipe with no local
-    providers and never sees mcp_providers at all, so the ordinary external-only
-    recipe walked straight past the check.
-    """
+    Called from the job and validate entry points, not _inject_local_providers,
+    which returns early for an external-only recipe and never sees
+    mcp_providers."""
     if not isinstance(recipe, dict):
         return
     for key in ("model_providers", "mcp_providers"):
@@ -295,16 +292,10 @@ def reject_env_credentials_in_recipe(recipe: Any) -> None:
 def _reject_private_destinations_from_a_managed_account(providers: list) -> None:
     """A recipe may not aim the worker at a loopback or LAN service.
 
-    The endpoints on these collections are caller-supplied and reach Data
-    Designer verbatim, which connects to them from the backend host during both
-    validation and the run. Saved inference providers and MCP servers already
-    refuse a private target for a managed account, for the reason that an
-    address the account cannot reach from its own browser would otherwise become
-    a probe of whatever else is on that network. A recipe is the same request
-    wearing different clothes.
-
-    Reuses the provider validator, so the two surfaces cannot drift on what
-    counts as private, including DNS aliases of one.
+    These endpoints reach Data Designer verbatim and it connects to them from the
+    backend host, during validation as well as the run, which is the same request
+    the saved providers and MCP servers already refuse. Reuses the provider
+    validator, so the surfaces cannot drift on what counts as private.
     """
     if is_installation_owner():
         return
@@ -334,16 +325,9 @@ def _reject_private_destinations_from_a_managed_account(providers: list) -> None
 def _reject_env_credentials_from_a_managed_account(providers: list) -> None:
     """Only the owner may have a recipe read a provider key out of the environment.
 
-    ``api_key_env`` is resolved with os.getenv in the spawned worker, which
-    inherits the backend environment. The variable name and the endpoint both
-    come from the request, so a managed account could name any secret the process
-    holds and have it sent to an endpoint of its choosing. That is not spending a
-    credential, it is handing it over, which no containment on the recipe's paths
-    can address.
-
-    The owner keeps it: the environment is theirs, and naming a variable in it is
-    how the feature is meant to be used. A managed account supplies the key
-    itself instead.
+    ``api_key_env`` is os.getenv in the spawned worker, and the variable name and
+    the endpoint both come from the request: that is handing a secret over, not
+    spending it. The owner keeps it, since the environment is theirs.
     """
     if is_installation_owner():
         return
@@ -696,12 +680,9 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     artifact_path = _workspace_artifact_path(artifact_path)
 
     if not (hf_token or "").strip() and not is_installation_owner():
-        # publish_recipe_dataset passes token=None straight into the Hub client and
-        # card.push_to_hub, where it means "use whatever is ambient". That is the
-        # owner's token or cached login, so a managed account could create or
-        # overwrite datasets under the owner's repositories. This path never goes
-        # near the download lifecycle, so the fallback made owner-only there does
-        # not cover it.
+        # publish_recipe_dataset passes token=None into the Hub client, which means
+        # ambient: the owner's login. This path never goes near the download
+        # lifecycle, so the fallback made owner-only there does not cover it.
         raise HTTPException(
             status_code = 403,
             detail = (

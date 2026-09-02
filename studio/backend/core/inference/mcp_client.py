@@ -430,17 +430,13 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
 def _revalidate_http_destination(url: str) -> None:
     """Re-apply the private-address policy when a connection is actually opened.
 
-    The routes check this when a row is written, which a hostname the account
-    controls can outlive: rebind the name afterwards and refresh or tool
-    execution reaches the private service anyway.
+    The routes check at row-write time, which a hostname the account controls can
+    outlive by rebinding afterwards.
 
-    PARTIAL by construction, and worth being plain about. This closes the case of
-    a name rebound between saving the row and using it, which previously had no
-    check at all. It does NOT close the gap between this lookup and the socket:
-    the name can move again in that window. Doing that needs the resolved address
-    pinned into the connection while the Host header and TLS SNI keep naming the
-    original host, which means supplying a custom httpx transport through
-    FastMCP's httpx_client_factory.
+    PARTIAL: this closes the rebind between saving and using, not the window
+    between this lookup and the socket. Closing that needs the resolved address
+    pinned into the connection while Host and TLS SNI keep the original name,
+    which means a custom httpx transport through FastMCP's httpx_client_factory.
     """
     from urllib.parse import urlparse
 
@@ -471,10 +467,9 @@ def _client(
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
         if not stdio_mcp_enabled():
             raise PermissionError("stdio MCP servers are disabled on this host")
-        # And never on behalf of a managed account, whatever row asked for it.
-        # The routes refuse to save one, but a row predating that, or reached by
-        # some path they do not cover, must not become a process running as the
-        # server's OS user for an account that cannot administer the install.
+        # Never for a managed account, whatever row asked: the routes refuse to
+        # save one, but an older row must not become a process as the server's
+        # OS user for an account that cannot administer the install.
         from auth.storage import is_installation_owner
 
         if not is_installation_owner():
@@ -959,10 +954,8 @@ def _mcp_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, 
 
 
 def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tuple:
-    # Workspace last: scope carries client-chosen session/thread ids, so two
-    # accounts can present the same one and would otherwise share a live stdio
-    # child and whatever browser or REPL state it holds. Appended rather than
-    # prepended because close_stdio_sessions matches on k[0]/k[1].
+    # Workspace last: scope carries client-chosen ids, so two accounts could
+    # share a live stdio child. Appended, since close_stdio_sessions matches k[0]/k[1].
     return (url, _headers_key(headers), scope or "", current_workspace_subject())
 
 
@@ -1174,14 +1167,10 @@ def _drop_session(key: tuple, session: _McpSession) -> None:
 def _eviction_candidates_locked(idle: list, subject: Optional[str] = None) -> list:
     """Which idle sessions may be taken, out of ``idle``, preferring greedy ones.
 
-    The cap is installation-wide, so plain LRU let one account open enough
-    distinct scopes to close another's idle browser, REPL or database session
-    and destroy the server-side state behind it. A workspace holding more than
-    an equal share of the cache pays for its own growth first; only when nobody
-    is over their share does this fall back to the global least-recently-used
-    session, which is a full cache rather than one account crowding out another.
-
-    ``subject`` is the workspace about to insert, counted as if it already had.
+    The cap is install-wide, so plain LRU let one account close another's idle
+    browser or REPL session. A workspace over an equal share pays for its own
+    growth first; falling back to global LRU means a full cache rather than one
+    account crowding out another. ``subject`` is counted as if already inserted.
     """
     counts: dict = {}
     for cached_key in _mcp_sessions:
@@ -1212,11 +1201,8 @@ def _evict_lru_locked(subject: Optional[str] = None) -> list:
 
 
 def workspace_has_cached_sessions(subject: Optional[str] = None) -> bool:
-    """Whether any cached session is still keyed to ``subject``.
-
-    Read for account deletion: the key holds the username, which is reusable, so
-    a session left behind is one a namesake could check out and inherit.
-    """
+    """Whether any cached session is still keyed to ``subject``. Read for deletion:
+    the key holds the reusable username, so a namesake could check one out."""
     from utils.workspace_context import current_workspace_subject
 
     expected = subject or current_workspace_subject()
@@ -1235,9 +1221,8 @@ def close_mcp_sessions(
     server rows can share an address with different envs; editing one must not
     kill the other's live state, so the routes pass the edited row's env.
 
-    Confined to the calling workspace, for the same reason: two accounts can
-    configure the same server, and editing one account's row must not kill the
-    other's live child. ``all_workspaces`` is the process-shutdown path.
+    Confined to the calling workspace for the same reason. ``all_workspaces`` is
+    the process-shutdown path.
     """
     global _mcp_close_all_gen
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
@@ -1276,11 +1261,8 @@ def close_mcp_sessions(
 
 def _close_sessions_at_exit() -> None:
     """Process teardown: every account's sessions, not only the exiting thread's.
-
-    atexit runs on the main thread, which carries the default workspace, so the
-    workspace-confined default would leave every managed account's stdio child
-    running after the server stops.
-    """
+    atexit runs on the main thread, so the confined default would leave every
+    managed account's stdio child running."""
     close_mcp_sessions(all_workspaces = True)
 
 

@@ -1120,36 +1120,21 @@ _AWS_TOKEN_ENV_KEYS = (
 def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
     """Env overrides that stop a managed account's worker using the owner's tokens.
 
-    The training child is spawned, so it copies the live parent environment: an
-    owner HF_TOKEN in the server's own environment, or a cached hub login, would
-    otherwise let a managed account train on a private repo it cannot read. That
-    is the same credential the hub download path already keeps owner-only, so the
-    two agree.
+    The child is spawned, so it copies the live parent environment: an owner
+    HF_TOKEN or cached hub login would let a managed account train on a private
+    repo, an inherited WANDB_API_KEY uploads under the owner's identity, and
+    GH_TOKEN turns the owner's private repositories into the caller's dataset.
+    AWS goes the same way, including the instance-metadata provider, since
+    use_iam_role deliberately takes boto3's default chain.
 
-    Blanked rather than removed because spawn takes no env argument: these are
-    applied to the parent environment for the duration of the start and restored
-    afterwards, and huggingface_hub reads an empty value as no token at all.
+    Blanked rather than removed because spawn takes no env argument: applied to
+    the parent for the duration of the start and restored after, and
+    huggingface_hub reads an empty value as no token.
 
-    The same applies to WANDB_API_KEY: the worker only overwrites it when the
-    request carried a token of its own, so an inherited owner key meant a managed
-    account's run authenticated and uploaded under the owner's W&B identity. And
-    to GH_TOKEN / GITHUB_TOKEN, which the GitHub seed plugin reads deliberately
-    when a recipe leaves its token blank, turning the owner's private
-    repositories into the caller's dataset.
-
-    And to the AWS credential variables, plus the instance-metadata provider that
-    hands out an EC2 or container role: an S3 dataset config with use_iam_role
-    deliberately takes boto3's default chain, so a managed account naming a bucket
-    that identity can read had the worker download it. The route refuses such a
-    config outright; this is the same rule applied to the child, for any path that
-    does not come through the route. A shared credentials file on disk belongs to
-    the same OS user and cannot be removed through the environment without
-    breaking a client built from explicit keys, so the route refusal is the
-    boundary for that one.
-
-    The owner gets an empty dict, so their runs are unchanged. An account that
-    supplies its own token is unaffected: that one travels in the config, and the
-    worker sets it after this.
+    A shared credentials file belongs to the same OS user and cannot be removed
+    through the environment, so the route refusal is the boundary for that one.
+    The owner gets an empty dict, and an account with its own token is
+    unaffected: that one travels in the config.
     """
     from auth.storage import is_installation_owner
 
@@ -1165,10 +1150,8 @@ def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
         )
     }
     suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-    # Blanking the variables does not stop the instance-metadata provider. boto3
-    # reads this as the shared "do not ask IMDS" setting, and a client built from
-    # explicit keys never consults IMDS, so an account using its own keys is
-    # unaffected.
+    # Blanking the variables does not stop IMDS; this is boto3's "do not ask"
+    # setting, which a client built from explicit keys never consults anyway.
     suppressed["AWS_EC2_METADATA_DISABLED"] = "true"
     return suppressed
 
@@ -1227,16 +1210,12 @@ class TrainingBackend:
         self.current_theme: str = "light"
 
         self.current_job_id: Optional[str] = None
-        # The active run's registry key. current_start_request_id below is a view
-        # onto it, so the two cannot drift: the cancel path decides ownership from
-        # the key, and a bare id assignment that left it stale would let another
-        # account's identical id read as this run's owner.
+        # The active run's registry key; current_start_request_id is a view onto
+        # it, so a stale id cannot read as another account's owner.
         self._current_start_key: Optional[tuple[str, str]] = None
-        # Keyed by (workspace, start request id). The id is chosen by the client,
-        # so two accounts can legitimately present the same one; keyed on the id
-        # alone, either could overwrite the other's pending record and then settle
-        # the wrong start. The pending-start interlock below stays install-wide,
-        # because it guards one GPU rather than one account's bookkeeping.
+        # Keyed by (workspace, start request id): the id is client-chosen, so two
+        # accounts can present the same one. The interlock below stays
+        # install-wide, because it guards one GPU rather than bookkeeping.
         self._start_requests: dict[tuple[str, str], TrainingStartRequestRecord] = {}
         self._start_cancel_tombstones: dict[
             tuple[str, str], tuple[float, TrainingStartRequestRecord]
@@ -1247,15 +1226,10 @@ class TrainingBackend:
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
-        # Raw threads do not inherit ContextVars. Every job-owned pump/watchdog
-        # is pinned to the account that started the job so DB and output helpers
-        # cannot silently fall back to the legacy owner workspace.
-        #
-        # None until a run claims it. The singleton is built lazily on first use
-        # (get_training_backend), so snapshotting the subject here would pin the
-        # idle backend to whichever account happened to touch it first, and every
-        # other account would then see 404/idle for state that is nobody's.
-        # Matches DiffusionTrainingService._active_workspace_subject.
+        # Raw threads do not inherit ContextVars, so every job-owned pump is
+        # pinned to the account that started the job. None until a run claims it:
+        # the singleton is built lazily, so snapshotting here would pin it to
+        # whoever touched it first and 404 everybody else.
         self._active_workspace_subject: Optional[str] = None
 
         self._metric_buffer: list[dict] = []
@@ -1277,13 +1251,9 @@ class TrainingBackend:
     # --- Public API (called by routes/training.py) ---
 
     def owns_workspace(self, subject: str) -> bool:
-        """Whether the retained job/status state belongs to ``subject``.
-
-        Unclaimed state (no run has started since this process did) belongs to
-        nobody, so every account may see it. From the moment a run claims the
-        backend the check is strict, which is what keeps one account out of
-        another's live or just-finished run.
-        """
+        """Whether the retained job/status state belongs to ``subject``. Unclaimed
+        state belongs to nobody, so every account may see it; from the first
+        claim the check is strict."""
         with self._lock:
             return self._active_workspace_subject in (None, subject)
 

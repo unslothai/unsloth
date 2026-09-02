@@ -39,16 +39,11 @@ _RECIPE_PATH_KEYS = ("path", "paths")
 def _reject_uncontained_recipe_paths(recipe: Any) -> None:
     """Refuse a recipe naming a local file outside the caller's own roots.
 
-    The recipe is an arbitrary dict forwarded to the worker unchanged, and the
-    local and unstructured seed sources open whatever ``path``/``paths`` they
-    carry. Binding the worker to a workspace scopes its OUTPUT; it does nothing
-    about what the recipe tells it to read.
-
-    Walked recursively rather than matched against the seed-source schema, which
-    lives in a third-party package and can grow a new source in any release. The
-    check only ever refuses, and a value that names nothing on disk is left alone
-    by the containment helper, so an ordinary string field called "path" is not
-    affected.
+    The recipe is forwarded to the worker unchanged and its seed sources open
+    whatever ``path``/``paths`` they carry; binding the worker scopes its OUTPUT
+    only. Walked recursively rather than matched against the seed-source schema,
+    which is third-party and can grow a source in any release. A value naming
+    nothing on disk is left alone, so an ordinary "path" field is unaffected.
     """
     from routes.inference import _reject_uncontained_local_path
 
@@ -163,12 +158,9 @@ class JobManager:
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
         self._workspace_subject: str | None = None
-        # The last FINISHED job per workspace. One subprocess runs at a time and
-        # the singleton holds one _job, so the next account to start a run used to
-        # erase the previous one's completed job: its status, analysis, dataset
-        # page and publish all answered not found even though the artifact was
-        # still on disk, which made any account able to render somebody else's
-        # finished run unpublishable just by starting their own.
+        # The last FINISHED job per workspace. One subprocess and one _job, so the
+        # next account to start a run erased the previous one's completed job and
+        # made an artifact still on disk unpublishable.
         self._finished_jobs: dict[str, Job] = {}
 
     def _retain_finished_job_locked(self) -> None:
@@ -180,13 +172,9 @@ class JobManager:
         self._finished_jobs[subject] = outgoing
 
     def _visible_job_locked(self, job_id: str | None = None) -> "Job | None":
-        """The job this workspace may read, live or finished.
-
-        The live job when it belongs to this workspace, otherwise that
-        workspace's retained finished one. Read paths only: is_active, cancel and
-        subscribe stay on the live job, since a retained job has no worker and no
-        event stream.
-        """
+        """The job this workspace may read: the live one when it owns it, else its
+        retained finished one. Read paths only, since a retained job has no worker
+        and no event stream."""
         if self._workspace_owned_locked() and self._job is not None:
             if job_id is None or self._job.job_id == job_id:
                 return self._job
@@ -200,13 +188,9 @@ class JobManager:
     def reset_retained_state(self, subject: str) -> None:
         """Forget everything this account left behind, for a deleted account.
 
-        cancel() on a terminal job returns success without clearing _job or the
-        ownership subject, and the liveness probe then reads the manager as idle,
-        so the name was released while the finished run was still resolvable. A
-        recreated namesake called /jobs/current for the old id and read its rows
-        and analysis back, since ownership is keyed on the reused username.
-
-        Refuses while the worker is alive; the delete path cancels first.
+        cancel() on a terminal job clears neither _job nor the subject and the
+        probe then reads idle, so the name was released while the finished run
+        was still resolvable to a namesake. Refuses while the worker is alive.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -233,12 +217,9 @@ class JobManager:
             return getattr(self, "_workspace_subject", None) in {None, expected}
 
     def is_active(self) -> bool:
-        """Whether a worker for the visible job is still able to write.
-
-        The process, not the status field: a terminated run's status is set from
-        the pump thread, so a job that has stopped reporting can still have a
-        live child holding its artifact root open.
-        """
+        """Whether a worker for the visible job can still write. The process, not the
+        status field: a job that stopped reporting can still hold its artifact
+        root open."""
         with self._lock:
             if not self._workspace_owned_locked() or self._job is None:
                 return False
@@ -269,12 +250,9 @@ class JobManager:
         if llm_column_count <= 0:
             llm_column_count = 1
 
-        # Before the lock and before anything is replaced. The artifact root only
-        # confines what the worker WRITES; the recipe is forwarded verbatim and
-        # its seed sources open the paths they name, so an absolute path was a
-        # read of another account's file straight into the generated dataset.
-        # Hoisted here because it needs nothing from the claim below, and
-        # refusing after it destroyed the previous account's finished job.
+        # Before the lock and before anything is replaced: the artifact root
+        # confines writes only, and refusing after the claim destroyed the
+        # previous account's finished job.
         _reject_uncontained_recipe_paths(recipe)
 
         with self._lock:
@@ -285,9 +263,8 @@ class JobManager:
             # Before the replacement, so the previous account keeps its finished
             # run rather than losing it to whoever starts next.
             self._retain_finished_job_locked()
-            # Captured so a failure between here and a live child hands the
-            # previous account its job back, rather than leaving them without one
-            # and this caller with a replacement that never starts.
+            # Captured so a failure before a live child hands the previous account
+            # its job back.
             previous_workspace_subject = self._workspace_subject
             previous_job = self._job
             previous_events = list(self._events)

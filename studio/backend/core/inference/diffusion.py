@@ -889,10 +889,8 @@ class _LoadingState:
     # surfaced (``base_repo`` stays the id status() reports), but the cache scan and the delete
     # guard must look here.
     fetch_repo: Optional[str] = None
-    # The account that started this load. A load is as much "somebody else is
-    # using the card" as a generation is, and the teardown guards only looked at
-    # the generation: with _gen still None the authenticated unload route ended
-    # another account's multi-gigabyte pull.
+    # The account that started this load. The teardown guards looked only at the
+    # generation, so with _gen None any account could end another's pull.
     subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
@@ -2101,10 +2099,8 @@ class DiffusionBackend:
             )
 
         # Pinned, not a bare Thread: a new thread does not inherit this request's
-        # context, so the worker would resolve loras_dir() and every other per-account
-        # path in the default owner's workspace. A same-named owner adapter is baked
-        # instead of the caller's, and an id unique to the caller fails as missing.
-        # The subject is captured here, while we are still on the request thread.
+        # context, so loras_dir() would resolve in the owner's workspace and bake a
+        # same-named owner adapter. Captured here, still on the request thread.
         workspace_thread(
             target = self._run_load,
             kwargs = dict(
@@ -2311,9 +2307,8 @@ class DiffusionBackend:
     def load_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based).
 
-        ``subject`` hides a load another account started: the payload names the
-        repo it is pulling, which for a private local path is that account's own
-        directory. None keeps the unfiltered view the engine's own probes need.
+        ``subject`` hides another account's load, whose payload names the repo or
+        private path it is pulling. None is the engine's own unfiltered view.
         """
         loading = self._loading
         if loading is not None and subject is not None and loading.subject != subject:
@@ -5423,10 +5418,9 @@ class DiffusionBackend:
     def _controlnet_cache_key(resolved_cn: Any) -> tuple[str, str]:
         """Cache identity of a resolved ControlNet: its id plus what it resolved to.
 
-        A local ControlNet lives under the caller's own controlnets_dir(), so the
-        canonical path is what distinguishes two accounts' same-named models. The
-        path is canonicalised so a symlink or a relative spelling of one directory
-        does not load the same weights twice."""
+        controlnets_dir() is per account, so the canonical path is what tells two
+        same-named models apart; canonicalised so one directory spelled two ways
+        does not load twice."""
         path = str(getattr(resolved_cn, "path", "") or "")
         if getattr(resolved_cn, "is_local", False):
             try:
@@ -5448,11 +5442,10 @@ class DiffusionBackend:
             raise ValueError(f"ControlNet is not supported for the '{fam.name}' model family.")
         import diffusers
 
-        # Keyed by what was loaded, not by what it was called. controlnets_dir() is
-        # per account, so two accounts can hold different weights under the same
-        # catalog id, and an id-only key handed the second caller the first one's
-        # resident private ControlNet. The resolved path carries the workspace for a
-        # local model and is the repo id for a hub one, so remote models still share.
+        # Keyed by what was loaded, not what it was called: an id-only key handed
+        # the second caller the first's resident private ControlNet. The resolved
+        # path carries the workspace locally and is the repo id remotely, so hub
+        # models still share.
         cn_key = self._controlnet_cache_key(resolved_cn)
         cn_model = self._cn_models.get(cn_key)
         if cn_model is None:
@@ -6483,10 +6476,8 @@ class DiffusionBackend:
                 raise ForeignWorkspaceActiveError(
                     "Another account is generating an image right now."
                 )
-        # Read without _lock on purpose: unload() takes _lock and then
-        # _generation_cancel_lock, so acquiring them the other way round here
-        # would invert that order. One reference read is enough, since a load
-        # that finishes in the meantime only makes this guard more permissive.
+        # Read without _lock: unload() takes _lock then _generation_cancel_lock,
+        # so taking them the other way round here would invert that order.
         loading = self._loading
         if loading is not None and loading.error is None and loading.subject != subject:
             raise ForeignWorkspaceActiveError(
@@ -6497,11 +6488,9 @@ class DiffusionBackend:
         """Free the pipeline, cancelling whatever is running.
 
         ``subject`` refuses a teardown that would end another account's live
-        generation. None is the engine's own path (the GPU arbiter, a superseding
-        load, process exit), which must be able to tear down whatever is running.
-        Scoping cancel_generate alone was not enough: unload signals the same
-        cancellation event, so the authenticated unload route was still a way for
-        any account to end somebody else's run.
+        generation; None is the engine's own path (arbiter, superseding load,
+        exit). Scoping cancel_generate alone was not enough, since unload signals
+        the same event.
         """
         self._refuse_foreign_teardown(subject)
         with self._lock:

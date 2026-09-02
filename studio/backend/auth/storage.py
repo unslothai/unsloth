@@ -576,14 +576,12 @@ _PREVIEW_INCARNATION_KEY_PREFIX = "preview_incarnation:"
 def preview_link_incarnation(subject: str, *, create: bool = True) -> str:
     """A value identifying this account, which a recreated namesake does not share.
 
-    The signed payload named only the reusable username, so every link a deleted
-    account had shared stayed valid, and the moment a namesake produced a run at
-    the same ref those links resolved against the replacement's checkpoint. This
-    is minted per account and dropped when the account is retired, so the
-    replacement mints a different one and the old links stop verifying.
+    The signed payload named only the reusable username, so a deleted account's
+    links resolved against its replacement's checkpoints. Dropped on retirement,
+    so the replacement mints a different one.
 
-    ``create = False`` for verification of an account that no longer exists:
-    minting there would hand the caller a fresh identity to verify against.
+    ``create = False`` when verifying an account that no longer exists: minting
+    there hands the caller a fresh identity to verify against.
     """
     key = f"{_PREVIEW_INCARNATION_KEY_PREFIX}{subject}"
     conn = get_connection()
@@ -714,12 +712,9 @@ def create_initial_user(
     Raises sqlite3.IntegrityError if username already exists.
 
     ``reject_if_retired`` reads the tombstone inside this insert's own write
-    transaction and raises ValueError when the name is still reserved. A caller
-    that checks first and inserts second can have its read answered from the
-    pre-delete snapshot while a delete is mid-commit, and then insert the
-    replacement while that delete is still renaming the workspace out from under
-    it, so the replacement briefly shares a directory with the account it
-    replaces. BEGIN IMMEDIATE puts this behind the delete instead.
+    transaction. Checking first and inserting second can have the read answered
+    from the pre-delete snapshot, so the replacement briefly shares a directory
+    with the account it replaces; BEGIN IMMEDIATE puts this behind the delete.
     """
     from .hashing import hash_password
 
@@ -784,12 +779,9 @@ def delete_user(username: str) -> None:
 def is_installation_owner(subject: str | None = None) -> bool:
     """Whether this account administers the install, for capability decisions.
 
-    The seeded owner short-circuits without touching auth.db: the single-user
-    path then costs nothing, cannot fail on a database error, and cannot be
-    demoted by a half-applied is_admin migration that left its row at 0.
-
-    Fails CLOSED for anything it cannot answer, so an unreachable auth.db
-    withholds a capability rather than granting one.
+    The seeded owner short-circuits without touching auth.db, so the single-user
+    path cannot be demoted by a half-applied is_admin migration. Fails CLOSED,
+    so an unreachable auth.db withholds a capability rather than granting one.
     """
     from utils.workspace_context import (
         LEGACY_WORKSPACE_SUBJECT,
@@ -809,13 +801,10 @@ def is_installation_owner(subject: str | None = None) -> bool:
 def subject_may_reach_private_hosts(subject: str | None = None) -> bool:
     """Whether this account may point the backend at a loopback or LAN address.
 
-    The owner may: a local Ollama, llama.cpp or vLLM endpoint is the ordinary
-    reason to run Unsloth at all, and the owner administers the host anyway. A
-    managed account may not. It cannot reach those services from its browser,
-    and letting it name one as a provider or MCP target turns the backend into a
-    probe for whatever else is on that network.
-
-    Single-user installs are unaffected: the only account there is the owner.
+    The owner may, since a local Ollama or vLLM endpoint is the ordinary reason
+    to run Unsloth. A managed account may not: it cannot reach those services
+    from its browser, so naming one turns the backend into a probe of that
+    network. Single-user installs have only the owner.
     """
     return is_installation_owner(subject)
 
@@ -966,11 +955,9 @@ def _resolve_subject_owned_roots(username: str) -> tuple[list, bool]:
     workspace_key(username), so retiring only the first still hands a recycled
     name the rest.
 
-    ``complete`` is False when a root could not even be resolved -- a reduced
-    install where ``core.inference.tools`` will not import, say. That is not the
-    same as "there was nothing to move": the directory may exist and simply not be
-    in the list, so the caller must treat it as a failed retirement rather than
-    renaming what it found and releasing the name.
+    ``complete`` is False when a root could not be resolved at all, which is not
+    "there was nothing to move": the caller must treat it as a failed retirement
+    rather than renaming what it found and releasing the name.
     """
     from pathlib import Path
 
@@ -979,9 +966,8 @@ def _resolve_subject_owned_roots(username: str) -> tuple[list, bool]:
 
     def _scoped() -> list:
         from core.inference.tools import sandbox_root
-        # tmp_root is keyed on workspace_key like the rest, so it is inherited
-        # by a recycled name exactly as the persistent roots are. Unstructured
-        # seed processing leaves plaintext parquet chunks under it.
+        # tmp_root keys on workspace_key like the rest, and unstructured seed
+        # processing leaves plaintext parquet chunks under it.
         return [project_workspaces_root(), Path(sandbox_root()), tmp_root()]
 
     roots = [studio_root() / "workspaces" / workspace_key(username)]
@@ -1029,11 +1015,9 @@ def username_is_retired(username: str) -> bool:
     return True
 
 
-# The media engines and their accessors, probed only where a process has already
-# imported one. A module that was never imported cannot be holding a render, and
-# importing it here would pull the whole diffusion stack into an account deletion,
-# where an optional dependency that failed to import would make the fail-closed
-# probe below hold the name reserved for good.
+# Probed only where the process already imported one: a module never imported
+# cannot hold a render, and importing here would pull the diffusion stack into a
+# deletion, where a failed optional import holds the name reserved for good.
 _MEDIA_ENGINES = (
     ("core.inference.diffusion", "get_diffusion_backend"),
     ("core.inference.sd_cpp_backend", "get_sd_cpp_backend"),
@@ -1057,9 +1041,8 @@ def _loaded_media_backends() -> list:
     return backends
 
 
-# A load_progress phase outside these is an in-flight load. The engines report an
-# idle one as "ready" or None, and a failed one as "error"; everything else names
-# a stage of a load that is still running.
+# The engines report idle as "ready" or None and failed as "error"; any other
+# phase names a stage of a load still running.
 _MEDIA_LOAD_IDLE_PHASES = (None, "ready", "error")
 
 
@@ -1104,16 +1087,12 @@ def _status_names_a_path_under(status: dict, root: str) -> bool:
 def _workspace_jobs_active(username: str) -> bool:
     """Whether anything is still running under this account's workspace.
 
-    Quiescing signals; it does not wait. A worker still unwinding stays bound to
-    the same subject, so its next studio_db_path() recreates the original
-    pathname. If the name were released meanwhile, the owner could recreate it
-    and the dead account's worker would write into the replacement's workspace.
-    So the tombstone is held until nothing is running, and the retry that already
-    exists on the create path releases it once the workers are gone.
+    Quiescing signals, it does not wait, and a worker still unwinding recreates
+    the pathname on its next lookup. So the tombstone is held until nothing is
+    running, and the create path's existing retry releases it.
 
-    Fails CLOSED: a subsystem that cannot be asked counts as busy, because the
-    cost of guessing wrong is one account name staying reserved a while longer,
-    against a live worker writing into somebody else's files.
+    Fails CLOSED: guessing wrong costs one reserved name, against a live worker
+    writing into somebody else's files.
     """
 
     def _training_active() -> bool:
@@ -1152,16 +1131,13 @@ def _workspace_jobs_active(username: str) -> bool:
         return bool(workspace_has_cached_sessions(username))
 
     def _research_runs_active() -> bool:
-        # A supervisor between model calls holds no lease this process can see,
-        # but the run row is still non-terminal, and the run reopens this
-        # account's databases and tools under its own pathnames.
+        # A supervisor between model calls holds no visible lease, but its row is
+        # non-terminal and the run reopens this account's databases.
         from storage import research_runs_db
         return bool(research_runs_db.unfinished_run_ids())
 
     def _rag_workers_active() -> bool:
-        # Ingestion and linked-folder sync run in workspace-bound threads whose
-        # next rag_db_path() recreates the username-derived directory that the
-        # retirement just renamed.
+        # Workspace-bound threads whose next rag_db_path() recreates the directory.
         from core.rag import folder_sync
         from storage import rag_db
 
@@ -1198,19 +1174,13 @@ def _workspace_jobs_active(username: str) -> bool:
 
 
 def _retire_workspace_directory(username: str) -> bool:
-    """Move a deleted account's directories aside so a recreated name cannot inherit them.
-
-    The keys are a pure function of the username, so without this a recycled name
-    reopens the previous holder's chats, credentials, projects and sandbox files.
-    Renaming keeps them recoverable by hand, which is the point of retaining them,
-    without handing them to whoever registers the name next.
-    """
+    """Move a deleted account's directories aside so a recreated name cannot
+    inherit them: the keys are a pure function of the username. Renamed rather
+    than deleted, so they stay recoverable by hand."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     directories, retired_all = _resolve_subject_owned_roots(username)
-    # Before the rename, not after: the WAL keeper holds this account's studio.db
-    # open for the life of the process, and Windows refuses to rename a directory
-    # containing an open file, so the retirement would fail every time and leave
-    # the username tombstoned until the server restarted.
+    # Before the rename: Windows refuses to rename a directory holding an open
+    # file, and the WAL keeper holds studio.db open for the life of the process.
     try:
         from storage.studio_db import close_wal_keeper_for
         from utils.paths.storage_roots import studio_db_path
@@ -1234,45 +1204,39 @@ def _retire_workspace_directory(username: str) -> bool:
             # caller tombstones the name instead so nobody inherits the files.
             logger.warning("Could not retire %s for %s", directory, username)
             retired_all = False
-    # The ready-path caches key on the pathname, which a recreated namesake
-    # reuses, so a fresh empty database would be served without its schema.
+    # The ready-path caches key on the pathname a namesake reuses, so its fresh
+    # database would be served without a schema.
     from storage import schema_cache
 
     schema_cache.forget_all()
-    # Shared links outlive the account too: the token names the username, so a
-    # namesake producing a run at the same ref would serve its checkpoint to
-    # whoever still held the old link.
+    # The preview token names the username, so a namesake's run at the same ref
+    # would answer the old links.
     try:
         clear_preview_link_incarnation(username)
     except Exception:  # noqa: BLE001 - a link we cannot revoke must not block a deletion
         logger.warning("Could not revoke preview links for %s", username, exc_info = True)
-    # Same reasoning one level up: process-lifetime memos keyed by the username
-    # outlive the files, so a namesake would resolve its embedding model to the
-    # previous holder's weights and index documents in the wrong space.
+    # Process-lifetime memos keyed by the username outlive the files, so a
+    # namesake would index into the previous holder's embedding space.
     try:
         from utils.embedding_model_settings import forget_workspace as forget_embedding_memos
         forget_embedding_memos(username)
     except Exception:  # noqa: BLE001 - a cache we cannot reach must not block a deletion
         logger.warning("Could not clear embedding memos for %s", username, exc_info = True)
-    # And the grants saying this account may read a private dataset out of the
-    # installation-wide cache: keyed by the same reusable username, so the
-    # namesake would list and preview the previous holder's cached data.
+    # Private-dataset grants key on the same reusable username.
     try:
         from hub.services.datasets.cache_access import forget_workspace as forget_dataset_grants
         forget_dataset_grants(username)
     except Exception:  # noqa: BLE001 - same
         logger.warning("Could not clear dataset grants for %s", username, exc_info = True)
-    # And the record of which repositories this account's consent scan pulled in,
-    # which is what authorizes discarding them: a namesake would otherwise be
-    # able to delete a code dependency another account's model still needs.
+    # The scan records authorize discarding remote code, so a namesake could
+    # delete a dependency another account's model still needs.
     try:
         from routes.models import forget_scan_created_remote_code
         forget_scan_created_remote_code(username)
     except Exception:  # noqa: BLE001 - same
         logger.warning("Could not clear remote-code grants for %s", username, exc_info = True)
-    # A download is not a workspace job, so the quiescing above never saw it, and
-    # its initiator set names the account. Same for the dictation models this
-    # account fetched into the shared cache.
+    # Downloads are not workspace jobs, so the sweep never saw them, and their
+    # initiator sets name the account.
     try:
         from hub.services.download_lifecycle import forget_workspace_initiators
         forget_workspace_initiators(username)
@@ -1283,35 +1247,28 @@ def _retire_workspace_directory(username: str) -> bool:
         forget_stt_model_downloader(username)
     except Exception:  # noqa: BLE001 - same
         logger.warning("Could not clear dictation grants for %s", username, exc_info = True)
-    # The video route keeps its own job map beside the backend's state, and the
-    # quiescing above only reached the backend.
+    # The video route's own job map, which the sweep did not reach.
     try:
         from routes.video import forget_workspace_jobs
         forget_workspace_jobs(username)
     except Exception:  # noqa: BLE001 - same
         logger.warning("Could not clear video jobs for %s", username, exc_info = True)
-    # Moving the files is not enough on its own: a worker still bound to this
-    # subject recreates the pathname on its next lookup, and a namesake created
-    # in between would then be sharing a workspace with a deleted account's job.
+    # Moving the files is not enough: a worker still bound to this subject
+    # recreates the pathname on its next lookup.
     return retired_all and not _workspace_jobs_active(username)
 
 
 def _quiesce_workspace_jobs(username: str) -> None:
     """Stop the jobs this account owns, before its files are moved aside.
 
-    A training run, an export or a chat generation outlives the row that
-    authorised it: the worker is already spawned, and the ownership guards this
-    feature adds then hide it from the owner while the deleted account can no
-    longer sign in to stop it. A multi-hour GPU job would sit there burning the
-    card until the server restarts, writing into a directory retirement is about
-    to rename underneath it.
+    A spawned worker outlives the row that authorised it, and the ownership
+    guards then hide it from the owner while the deleted account can no longer
+    sign in to stop it: a multi-hour GPU job would burn the card until restart.
 
-    Best effort throughout, and never fatal. Revoking an account must not be
-    blocked by a subsystem that will not import or a worker that will not stop;
-    the alternative is an account the owner cannot remove at all. Each stop is
-    guarded by the subsystem's own ownership predicate AND by its "is something
-    running" check, so an unclaimed singleton is never mistaken for this
-    account's.
+    Best effort and never fatal, since the alternative is an account the owner
+    cannot remove at all. Each stop is guarded by the subsystem's ownership
+    predicate AND its "is something running" check, so an unclaimed singleton is
+    never mistaken for this account's.
     """
 
     def _stop_training() -> None:
@@ -1338,15 +1295,9 @@ def _quiesce_workspace_jobs(username: str) -> None:
             active_generations.cancel_thread(thread_id, subject = username)
 
     def _stop_media_renders() -> None:
-        # An image or video render outlives the row the same way a training run
-        # does, and image_gallery.save() / video_gallery.save() resolve the
-        # workspace root when the render finishes, not when it started: left
-        # running, it writes the deleted account's output into whoever takes the
-        # name next.
-        # A load counts too, and cancel_generate does not reach it: the loading
-        # state carries the subject, so a load left running is one a namesake can
-        # observe and unload. Tear it down through the engine's own path, which
-        # cancels the load token as well as the render.
+        # The galleries resolve the workspace root when the render FINISHES, so a
+        # running one writes into whoever takes the name next. A load counts too
+        # and cancel_generate does not reach it, hence the engine's own path.
         for backend in _loaded_media_backends():
             if backend.generate_progress(subject = username).get("active"):
                 backend.cancel_generate(subject = username)
@@ -1354,17 +1305,14 @@ def _quiesce_workspace_jobs(username: str) -> None:
                 backend.unload(subject = username)
 
     def _close_mcp_sessions() -> None:
-        # The session key holds the username, which is reusable. An idle session
-        # left behind is one a namesake created inside the idle TTL could check
-        # out by presenting the same URL, headers and client-chosen ids, and
-        # inherit whatever browser, REPL or database state it holds.
+        # The session key holds the reusable username, so a namesake created
+        # inside the idle TTL could check the session out and inherit its state.
         from core.inference.mcp_client import close_mcp_sessions
         close_mcp_sessions()
 
     def _stop_research_runs() -> None:
-        # Cancel through the run row rather than the supervisor's in-memory event:
-        # the run may be claimed by a worker that is between model calls, and the
-        # row is what both the supervisor and a restart consult.
+        # Through the run row, not the in-memory event: the row is what both the
+        # supervisor and a restart consult.
         from storage import research_runs_db
         for run_id in research_runs_db.unfinished_run_ids():
             try:
@@ -1373,19 +1321,14 @@ def _quiesce_workspace_jobs(username: str) -> None:
                 continue
 
     def _stop_rag_workers() -> None:
-        # Only this account's sync worker. stop_auto_sync() stops every
-        # workspace's, which is a process shutdown, not an account delete. An
-        # ingestion already running is left to finish; the probe holds the
-        # tombstone until it does, which is what the retry on the create path is
-        # there for.
+        # Only this account's: stop_auto_sync() is a process shutdown. A running
+        # ingestion finishes, and the probe holds the tombstone until it does.
         from core.rag import folder_sync
         folder_sync.stop_workspace_auto_sync(username)
 
     def _shutdown_idle_export_worker() -> None:
-        # is_export_active() is false once a checkpoint has finished loading, so
-        # the cancel above left the subprocess and the account's private
-        # checkpoint resident. A recreated namesake passes the username-based
-        # owns_workspace() and can export from it.
+        # is_export_active() is false once a checkpoint has loaded, so the cancel
+        # left it resident for a namesake that passes owns_workspace().
         from core.export import get_export_backend
 
         orchestrator = get_export_backend()
@@ -1402,39 +1345,33 @@ def _quiesce_workspace_jobs(username: str) -> None:
             orchestrator._workspace_subject = None
 
     def _reset_training() -> None:
-        # Same shape as the diffusion service below: a terminal run is not active,
-        # so nothing above stopped it, and the singleton kept the subject beside
-        # the job identity, metrics and status a namesake then read back.
+        # A terminal run is not active, so nothing above stopped it, and the
+        # singleton kept the subject beside what a namesake then read back.
         from core.training.training import get_training_backend
         backend = get_training_backend()
         if backend.owns_workspace(username):
             backend.reset_retained_state(username)
 
     def _reset_recipe_state() -> None:
-        # cancel() on a terminal job succeeds without clearing _job or the
-        # ownership subject, so /jobs/current handed a namesake the old job id and
-        # its rows and analysis came back with it.
+        # cancel() on a terminal job clears neither _job nor the subject, so
+        # /jobs/current handed a namesake the old job and its rows.
         from core.data_recipe.jobs.manager import get_job_manager
         get_job_manager().reset_retained_state(username)
 
     def _forget_terminal_video() -> None:
-        # A completed record holds the whole recipe: prompt, negative prompt,
-        # model and settings. generate_progress reports it as inactive, so the
-        # cancel above left it for whoever takes the name next.
+        # A completed record holds the whole recipe, and reports inactive, so the
+        # cancel left it for whoever takes the name next.
         from core.inference.video import get_video_backend
         get_video_backend().forget_terminal_video(subject = username)
 
     def _clear_api_monitor() -> None:
-        # Up to fifty entries of prompts and replies, several thousand characters
-        # each, authorized only by the stored subject string.
+        # Fifty entries of prompts and replies, authorized only by the subject string.
         from core.inference.api_monitor import api_monitor
         api_monitor.clear(subject = username)
 
     def _unload_private_resident_media() -> None:
-        # An idle pipeline loaded from the account's own workspace stays resident,
-        # and a namesake derives the same workspace root, so the old local path
-        # reads as theirs and the model is usable from /images/generate or the
-        # video equivalent.
+        # A namesake derives the same workspace root, so an idle pipeline loaded
+        # from the old one reads as theirs.
         from utils.paths.storage_roots import workspace_root
         try:
             private_root = str(run_in_workspace(username, workspace_root).resolve())
@@ -1452,11 +1389,8 @@ def _quiesce_workspace_jobs(username: str) -> None:
             backend.unload()
 
     def _unload_private_resident_text() -> None:
-        # The text backends are process-wide and hold whatever this account last
-        # loaded. The ownership record is keyed by the username, which a namesake
-        # reuses, so leaving either behind hands the replacement a checkpoint the
-        # previous holder loaded. Dropping the record alone is not enough: the
-        # weights stay resident and the next account would be answered from them.
+        # Process-wide backends plus a username-keyed ownership record, so a
+        # namesake inherits both. Dropping the record alone leaves the weights.
         from routes.inference import (
             forget_text_model_owner,
             resident_text_model_workspace,
@@ -1465,10 +1399,8 @@ def _quiesce_workspace_jobs(username: str) -> None:
 
         if resident_text_model_workspace() != username:
             return
-        # Fenced first, dropped only once the weights are actually gone: both
-        # unloads below are best effort and their failure is swallowed, and a
-        # model left resident with no owner passes the containment fallback,
-        # which for a Hub repository is no containment at all.
+        # Fenced first, dropped only once the weights are gone: the unloads are
+        # best effort, and an unowned model passes the containment fallback.
         retire_text_model_owner(username)
         try:
             from routes.inference import get_llama_cpp_backend
@@ -1494,19 +1426,16 @@ def _quiesce_workspace_jobs(username: str) -> None:
             pass
 
     def _reset_diffusion_training() -> None:
-        # is_active() is false once a run reaches a terminal state, so the stop
-        # above skipped it and the singleton kept the subject alongside the whole
-        # finished run: job id, metrics, model identity and the private output and
-        # checkpoint paths. A recreated namesake matched the retained subject and
-        # read it back from /diffusion/status.
+        # is_active() is false for a terminal run, so the stop skipped it and the
+        # singleton kept the subject beside the paths /diffusion/status returns.
         from core.training.diffusion_training_service import get_diffusion_training_service
         service = get_diffusion_training_service()
         if service.owns_workspace(username):
             service.reset_retained_state(username)
 
     def _stop_recipe_job() -> None:
-        # The spawned worker keeps the artifact root it was given, so it can
-        # recreate the retired pathname and write its dataset into a namesake.
+        # The worker keeps the artifact root it was given, so it can recreate the
+        # retired pathname.
         from core.data_recipe.jobs.manager import get_job_manager
 
         manager = get_job_manager()
@@ -1528,9 +1457,8 @@ def _quiesce_workspace_jobs(username: str) -> None:
         ("research runs", _stop_research_runs),
         ("RAG folder sync worker", _stop_rag_workers),
         ("cached MCP sessions", _close_mcp_sessions),
-        # Everything below is state that OUTLIVES the work rather than state that
-        # is running: nothing above stops it, because by then there is nothing
-        # left to stop. It is what a recreated namesake would otherwise inherit.
+        # Below: state that OUTLIVES the work. Nothing above stops it, because by
+        # then there is nothing left to stop.
         ("retained diffusion training state", _reset_diffusion_training),
         ("retained training state", _reset_training),
         ("idle export worker", _shutdown_idle_export_worker),
@@ -1564,9 +1492,8 @@ def delete_managed_user(username: str) -> bool:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
         conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
-        # In the same transaction as the delete: the row and the tombstone must
-        # never both be absent, or a create racing this one sees a free name and
-        # binds to a workspace this call is about to rename out from under it.
+        # Same transaction as the delete: both must never be absent at once, or a
+        # racing create binds to a workspace this call is about to rename.
         conn.execute(
             "INSERT OR IGNORE INTO retired_usernames (username, created_at) VALUES (?, ?)",
             (username, datetime.now(timezone.utc).isoformat()),
@@ -1577,16 +1504,12 @@ def delete_managed_user(username: str) -> bool:
         raise
     finally:
         conn.close()
-    # Before the sweep below, which can only see work that has already started.
-    # A request that authenticated a moment ago and has not reached that point
-    # yet is invisible to it, so fence every binding taken before now instead of
-    # trying to enumerate them.
+    # Before the sweep, which only sees work that has already started: a request
+    # admitted a moment ago is invisible to it.
     from utils.workspace_context import note_workspace_retired
 
     note_workspace_retired(username)
-    # After the credentials are gone, so nothing this account starts can outlive
-    # the stop, and before the rename below, so no worker is still writing into a
-    # directory as it moves.
+    # After the credentials are gone and before the rename below.
     _quiesce_workspace_jobs(username)
     # Cleared only once every root is out of the way; a failure leaves the name
     # reserved and the next create retries the retirement.

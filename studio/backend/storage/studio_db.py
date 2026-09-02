@@ -1282,11 +1282,9 @@ def get_connection(
 # WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
 # durable chat stream's flush cadence that is several rewrites a second (#9934).
 #
-# One keeper per DATABASE, not one per process: studio_db_path() is per workspace, so a single
-# keeper attached to the owner's file left every managed account's chat stream checkpointing on
-# every close, which is exactly what this exists to prevent. Keyed by resolved path, engaged
-# lazily from get_connection once the lifespan has asked for keepers at all, so an account
-# created after startup gets one on its first write.
+# One keeper per DATABASE: studio_db_path() is per workspace, so a single keeper on the owner's
+# file left every managed account checkpointing on every close. Keyed by resolved path and
+# engaged lazily, so an account created after startup gets one on its first write.
 _wal_keepers: dict[str, sqlite3.Connection] = {}
 _wal_keeper_lock = threading.RLock()
 # Databases whose journal mode is not WAL. Recorded so the probe below is not repeated on
@@ -1361,13 +1359,9 @@ def _close_keeper_connection(conn: "sqlite3.Connection | None") -> None:
 
 
 def close_wal_keeper_for(db_path) -> None:
-    """Release the keeper for ONE database, by path.
-
-    Windows refuses to rename a directory holding an open file, so a keeper left
-    on a deleted account's studio.db blocks _retire_workspace_directory for the
-    life of the process and the username stays tombstoned. Also forgets the
-    declined marker, since the path is about to stop existing.
-    """
+    """Release the keeper for ONE database, by path. Windows refuses to rename a
+    directory holding an open file, so a keeper on a deleted account's studio.db
+    tombstones the username for the life of the process."""
     try:
         db_key = str(Path(db_path).resolve(strict = False))
     except (OSError, RuntimeError, ValueError):
@@ -1379,12 +1373,9 @@ def close_wal_keeper_for(db_path) -> None:
 
 
 def open_wal_keeper() -> bool:
-    """Hold this database's WAL open for the process. Returns whether a keeper is engaged.
-
-    Also turns keepers on for every OTHER workspace database this process opens from
-    here, which is what the lifespan wants: it runs outside a request, so the only
-    database it can name is the owner's.
-    """
+    """Hold this database's WAL open for the process; returns whether one is engaged.
+    Also turns keepers on for every other workspace database opened from here,
+    since the lifespan runs outside a request and can only name the owner's."""
     global _wal_keepers_enabled
     db_key = _current_db_key()
     with _wal_keeper_lock:
@@ -4568,11 +4559,9 @@ def get_app_setting(key: str, fallback = None):
 def get_install_setting(key: str, fallback = None):
     """An installation-wide setting, always read from the owner's database.
 
-    A few settings are documented and gated as install-wide (the Hugging Face
-    cache home, the llama.cpp executable), but app_settings lives in the caller's
-    studio.db. Read per account, a managed user finds nothing and silently falls
-    back to the default cache or binary, so an install that moved its cache off a
-    constrained disk would redownload models to the wrong place.
+    A few settings are gated as install-wide (the HF cache home, the llama.cpp
+    binary) but app_settings lives in the caller's studio.db, so read per account
+    a managed user silently falls back to the default and redownloads elsewhere.
     """
     from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
     return run_in_workspace(LEGACY_WORKSPACE_SUBJECT, get_app_setting, key, fallback)

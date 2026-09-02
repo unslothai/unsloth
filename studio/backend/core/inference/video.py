@@ -3399,9 +3399,8 @@ class VideoBackend:
     def load_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based).
 
-        ``subject`` hides a load another account started: the payload names the
-        repo it is pulling, which for a private local path is that account's own
-        directory. None keeps the unfiltered view the engine's own probes need.
+        ``subject`` hides another account's load, whose payload names the repo or
+        private path it is pulling. None is the engine's own unfiltered view.
         """
         loading = self._loading
         if loading is not None and subject is not None and loading.subject != subject:
@@ -6379,10 +6378,9 @@ class VideoBackend:
     def _refuse_foreign_teardown(self, subject: Optional[str]) -> None:
         """Raise if tearing down now would end another account's render or load.
 
-        Split out of unload so callers that are about to trigger the engine's own
-        subject-less teardown (the training start frees VRAM that way) can ask the
-        question first and refuse, instead of discovering it by cancelling
-        somebody's clip. Mirrors the diffusion backend's helper of the same name.
+        Split out of unload so a caller about to trigger the engine's own
+        subject-less teardown can ask first, rather than discovering it by
+        cancelling somebody's clip. Mirrors the diffusion helper of this name.
         """
         if subject is None:
             return
@@ -6401,11 +6399,9 @@ class VideoBackend:
         """Free the pipeline, cancelling whatever is running.
 
         ``subject`` refuses a teardown that would end another account's live
-        generation. None is the engine's own path (the GPU arbiter, a superseding
-        load, process exit), which must be able to tear down whatever is running.
-        Scoping cancel_generate alone was not enough: unload signals the same
-        cancellation event, so the authenticated unload route was still a way for
-        any account to end somebody else's run.
+        generation; None is the engine's own path (arbiter, superseding load,
+        exit). Scoping cancel_generate alone was not enough, since unload signals
+        the same event.
         """
         self._refuse_foreign_teardown(subject)
         with self._lock:

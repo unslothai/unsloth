@@ -5,18 +5,13 @@
  * Browser-local state that belongs to one account, and what to do when another
  * one signs in on the same browser.
  *
- * Everything under localStorage and IndexedDB is origin-wide: it survives a
- * logout, and until accounts existed that was correct, because there was only
- * ever one user. With managed accounts the same browser is shared, so a value
- * left behind is either read by the next account (drafts, dictation history,
- * provider metadata, the last-model shadow) or, worse, treated as migration
- * input and copied into that account's own workspace (the legacy chat, chat
- * settings and Hugging Face token imports).
+ * localStorage and IndexedDB are origin-wide and survive a logout, which was
+ * correct while there was one user. Now a value left behind is read by the next
+ * account, or worse treated as migration input and copied into its workspace.
  *
- * Two rules, applied at the one point where a username is admitted:
- *  - content keys are cleared when the account changes;
- *  - legacy migration input is bound to the account that owns this browser's
- *    pre-accounts data, which is whoever first signed in here.
+ * Two rules, at the one point a username is admitted: content keys are cleared
+ * when the account changes, and legacy migration input is bound to whoever owns
+ * this browser's pre-accounts data.
  */
 
 const LAST_ACCOUNT_KEY = "unsloth.browser-account.v1";
@@ -26,10 +21,9 @@ const LEGACY_QUARANTINE_KEY = "unsloth.legacy-quarantine.v1";
 /**
  * Dispatched on window when a different account signs in on this browser.
  *
- * Clearing a persisted key does not change an already-hydrated store: a
- * same-window removeItem fires no storage event, and the SPA does not reload
- * between accounts. Stores holding account content listen for this and reset
- * themselves, the way they already reset on a cleared session.
+ * Clearing a key does not change an already-hydrated store: a same-window
+ * removeItem fires no storage event and the SPA does not reload. Stores holding
+ * account content listen for this and reset themselves.
  */
 export const ACCOUNT_CHANGED_EVENT = "unsloth:account-changed";
 
@@ -42,13 +36,12 @@ export const ACCOUNT_SCOPED_STORAGE_KEYS: readonly string[] = [
   "unsloth_training_config_v1",
   // Dictation transcripts, kept in full inside the voice settings store.
   "unsloth_voice_settings",
-  // Display name, nickname and avatar, which the personalization sync treats as
-  // migration input when the new account has no record yet.
+  // Display name and avatar, which the personalization sync treats as migration
+  // input when the new account has no record yet.
   "unsloth_user_profile",
   // Absolute path of the last model loaded, which the startup auto-load reads.
   "unsloth.last-local-model-load.v1",
-  // Delete confirmations and "always delete chat files", which decide what the
-  // next account's first deletion does before it has expressed any preference.
+  // Delete confirmations, which decide what the next account's first delete does.
   "unsloth_chat_preferences",
   // Hub search terms, which are repository and model names somebody typed.
   "unsloth.hub.recentSearches",
@@ -125,20 +118,17 @@ export function purgeAccountScopedBrowserState(): void {
 /**
  * Whether this account may read the browser's pre-accounts data as its own.
  *
- * The legacy chat store, the legacy chat settings and the legacy Hugging Face
- * token were written by the single user of an install that had no accounts, so
- * they belong to whoever first signs in here after the upgrade. For anyone else
- * they are another person's content, and the import markers do not help: they
- * are origin-wide too, and the merge paths fall back to legacy rows whenever the
- * signing-in account's own list is empty.
+ * The legacy chat store, chat settings and Hugging Face token were written by
+ * the single user of an install that had no accounts. The import markers do not
+ * help: they are origin-wide too, and the merge paths fall back to legacy rows
+ * whenever the signing-in account's own list is empty.
  */
 export function legacyBrowserDataBelongsToCurrentAccount(): boolean {
   const owner = readItem(LEGACY_DATA_OWNER_KEY);
   if (owner === null) {
-    // Unclaimed. That is the ordinary upgrade: an install that had one user has
-    // a live session already, and nobody signs in through the form again, so the
-    // data is that user's and the migrations should run exactly as before. Once
-    // any account has signed in here without claiming it, it is not theirs.
+    // Unclaimed is the ordinary upgrade: the single user has a live session and
+    // never signs in again, so the migrations run as before. Once any account has
+    // signed in here without claiming it, it is not theirs.
     return readItem(LAST_ACCOUNT_KEY) === null;
   }
   return owner === readItem(LAST_ACCOUNT_KEY);
@@ -153,11 +143,9 @@ export function legacyBrowserDataBelongsToCurrentAccount(): boolean {
 /**
  * Move the pre-accounts values aside, for a managed account signing in first.
  *
- * Not a purge: the values are the original single user's, and the owner marker
- * alone only gates the three legacy migration helpers, while the training,
- * voice and profile stores hydrate straight from the keys. Deleting them would
- * lose the owner's data to whoever happened to reach the login page first, so
- * they are held until the owner signs in and restored to them then.
+ * Not a purge: the owner marker gates only the three legacy migration helpers,
+ * while the training, voice and profile stores hydrate straight from the keys.
+ * Held until the owner signs in, rather than lost to whoever logged in first.
  */
 function quarantineLegacyState(): void {
   const held: Record<string, string> = {};
@@ -205,11 +193,9 @@ export function notifyAccountAuthenticated(
   if (!account) return false;
   const previous = readItem(LAST_ACCOUNT_KEY);
   writeItem(LAST_ACCOUNT_KEY, account);
-  // Whoever signed in first is not the owner of the pre-accounts data: on an
-  // upgraded install a managed account can reach this page first, and claiming
-  // ownership there hands it the original user's conversations, prompts and Hub
-  // credential to migrate into its own workspace. The server says who the owner
-  // is, so use that and leave the data unattributed until they sign in.
+  // Whoever signs in first is not the owner: on an upgraded install a managed
+  // account can reach this page first, and claiming there hands it the original
+  // user's conversations and Hub credential. The server says who the owner is.
   const owner = (installationOwner ?? "").trim().toLowerCase();
   const isOwner = Boolean(owner) && account === owner;
   if (isOwner) writeItem(LEGACY_DATA_OWNER_KEY, account);
@@ -238,11 +224,10 @@ function announceAccountChange(): void {
   }
 }
 
-// A sign-in in one tab writes origin-wide storage that every other tab's
-// authFetch then reads, so a tab still mounted for the previous account would
-// keep its hydrated state and send that account's actions on the new account's
-// token. The storage event is the only cross-document signal there is, and a
-// reload is the one reset that covers every store rather than the listed few.
+// A sign-in in one tab writes origin-wide storage every other tab's authFetch
+// reads, so a tab mounted for the previous account sends its actions on the new
+// token. The storage event is the only cross-document signal, and a reload is
+// the one reset that covers every store rather than the listed few.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener("storage", (event) => {
     const changed = (event as StorageEvent).key;

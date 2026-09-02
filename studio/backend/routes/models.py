@@ -1714,15 +1714,10 @@ def _looks_like_model_dir(directory: Path) -> bool:
 def _hub_cache_entry_is_hidden_from_this_account(resolved_child: str) -> bool:
     """Whether a Hub cache directory must not be listed to this caller.
 
-    The cache roots stay in the browse allowlist, because a shared model that a
-    managed account may load has to remain readable through it. What that does
-    not license is READING OFF THE NAMES: ``models--owner--private-repo`` names
-    the repository, and the revision directories under it hand over the exact
-    snapshot path.
-
-    Asked with the same guard the load path uses, so browsing and loading cannot
-    disagree about which cached repositories this account may see. Anything that
-    is not a Hub cache directory is untouched, which is every ordinary folder.
+    The cache roots stay in the allowlist, since a shared model has to remain
+    loadable through it. What that does not license is reading off the NAMES:
+    ``models--owner--private-repo`` names the repo and the snapshot path. Asked
+    with the load path's own guard, so the two cannot disagree.
     """
     from routes.inference import (
         _hub_repo_id_for_cache_path,
@@ -2206,9 +2201,8 @@ def browse_folders(
         # 403s on click. Drive roots stay: only their system subdirectories are denied.
         if is_denied_system_path(resolved):
             return
-        # Same reason, for the account boundary: home and the drive roots below are
-        # added unconditionally, so a managed account was shown the host layout as
-        # chips that 403 on click. The owner's allowlist still contains them.
+        # Home and the drive roots are added unconditionally, so a managed account
+        # saw the host layout as chips that 403 on click.
         if not _is_path_inside_allowlist(Path(resolved), allowed_roots):
             return
         if _safe_is_dir(resolved):
@@ -2465,9 +2459,8 @@ async def get_model_config(
     """Get configuration for a specific model (wraps load_model_defaults)."""
     from routes.inference import _reject_uncontained_local_path
 
-    # Both identifiers reach the filesystem: the config read reports the adapter
-    # base model, modality, context length and the rest of another workspace's
-    # checkpoint metadata, and a miss is itself a probe.
+    # Both reach the filesystem: the read reports another workspace's checkpoint
+    # metadata, and a miss is itself a probe.
     for candidate in (model_name, local_path):
         _reject_uncontained_local_path(candidate, "inspect")
     hf_token = hf_token_arg(
@@ -2632,9 +2625,8 @@ async def scan_model_remote_code(
     """
     from routes.inference import _reject_uncontained_local_path
 
-    # Every identifier here can name a directory the scanner then reads, and the
-    # findings carry source snippets, so without containment a managed account
-    # could read another workspace's model code through them.
+    # Each can name a directory the scanner reads, and the findings carry source
+    # snippets.
     for candidate in (model_name, model_local_path, model_snapshot_path):
         _reject_uncontained_local_path(candidate, "scan")
     # Without this an absent body token reads as None, i.e. ambient-authorized, and the
@@ -2831,18 +2823,16 @@ async def scan_model_remote_code(
 
 
 # Repository -> the workspace whose consent scan pulled it into the shared cache.
-# The scan reports what it created to its own client and keeps nothing, so the
-# discard route had no way to tell a caller cleaning up after itself from one
-# deleting a code dependency another account's model still needs offline.
+# Without it the discard route could not tell a caller cleaning up after itself
+# from one deleting a dependency another account's model needs offline.
 _SCAN_CREATED_REMOTE_CODE: dict[str, str] = {}
 _SCAN_CREATED_REMOTE_CODE_LOCK = threading.Lock()
 _SCAN_CREATED_REMOTE_CODE_MAX = 256
 
 
 def _note_scan_created_remote_code(repo: str, subject: str) -> None:
-    # First claim wins. Two accounts scanning the same uncached repository both
-    # find it absent, and taking the later claim let the second account's decline
-    # cleanup delete the cached code while the first was approving or loading it.
+    # First claim wins: both accounts find an uncached repo absent, and the later
+    # claim let the second's decline delete code the first was still approving.
     with _SCAN_CREATED_REMOTE_CODE_LOCK:
         if repo in _SCAN_CREATED_REMOTE_CODE:
             return
@@ -2852,12 +2842,9 @@ def _note_scan_created_remote_code(repo: str, subject: str) -> None:
 
 
 def forget_scan_created_remote_code(subject: str) -> None:
-    """Drop an account's scan records, for retirement.
-
-    The grant is keyed by the reusable username, so a namesake would inherit the
-    right to discard a cached code dependency the previous account pulled in, and
-    that dependency may be what another account's approved model loads from.
-    """
+    """Drop an account's scan records, for retirement: the grant is keyed by the
+    reusable username, so a namesake inherits the right to discard a dependency
+    another account's approved model loads from."""
     with _SCAN_CREATED_REMOTE_CODE_LOCK:
         for repo in [
             repo for repo, creator in _SCAN_CREATED_REMOTE_CODE.items() if creator == subject
@@ -2868,11 +2855,9 @@ def forget_scan_created_remote_code(subject: str) -> None:
 def _reject_discarding_another_accounts_remote_code(repo: str) -> None:
     """Only clean up what this account's own scan downloaded.
 
-    The cache is installation-wide, so a repository held only as a metadata or
-    auto_map code dependency of somebody else's model was deletable by anyone
-    who could name it, and its next offline or gated load then failed. The
-    loaded-model checks below do not cover this: they compare the supplied id
-    with the resident model, and a code dependency is a different repository.
+    The cache is installation-wide, so a repo held as somebody else's auto_map
+    dependency was deletable by anyone who could name it. The loaded-model checks
+    below compare against the resident model, which is a different repository.
     """
     from auth.storage import is_installation_owner
     from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
@@ -3627,9 +3612,8 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
     """
     from routes.inference import _reject_uncontained_local_path
 
-    # The adapter directory is read straight from this path, so without the same
-    # containment the load path applies, a managed caller naming a sibling
-    # workspace got back that adapter's private base model identifier.
+    # Read straight from this path, so without the load path's containment a
+    # sibling workspace's adapter returned its private base model id.
     _reject_uncontained_local_path(lora_path, "inspect")
     try:
         base_model = get_base_model_from_lora(lora_path)

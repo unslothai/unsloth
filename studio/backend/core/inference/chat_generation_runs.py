@@ -473,11 +473,9 @@ def _renew_interval_seconds() -> float:
 class ChatGenerationSupervisor:
     def __init__(self, app: Any) -> None:
         self.app = app
-        # Every map here is keyed by (workspace, run id). Run ids are supplied by
-        # the client, so two accounts can present the same one: keyed by the id
-        # alone, the second account's start() found the first's entry and returned
-        # without producing anything, leaving its own database run queued forever,
-        # and a later cancel signalled the first account's producer instead.
+        # Keyed by (workspace, run id): ids are client-supplied, so keyed on the id
+        # alone the second account's start() found the first's entry and returned,
+        # and a later cancel signalled the first account's producer.
         self._tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._cancel_events: dict[tuple[str, str], threading.Event] = {}
         self._active_registrations: dict[tuple[str, str], active_generations.ActiveGeneration] = {}
