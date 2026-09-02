@@ -31,13 +31,21 @@ export function diffusionPipelineLoadTarget(
   return { repoId: model, displayRepoId: model, source: meta.source };
 }
 
-/** Pick the post-staging load identity without discarding a pinned manifest revision. */
-export function stagedDiffusionLoadTarget(
+/** Keep selected-model staging from replacing an inspected immutable snapshot.
+ *
+ * Planning uses the logical Hub id so it can discover external pre-quantized components and
+ * companion repos. When the pick is pinned, however, selected-model entries describe a mutable
+ * Hub revision rather than the snapshot whose manifest was validated. Drop those entries and
+ * stage only external companions; the eventual load remains pinned to `pinnedRepoId`.
+ */
+export function diffusionPipelineStagingEntries<
+  T extends { checkpoint?: boolean },
+>(
   pinnedRepoId: string,
   planRepoId: string,
-  entries: readonly { checkpoint?: boolean }[],
-): string {
-  return entries.some((entry) => entry.checkpoint === true)
-    ? planRepoId
-    : pinnedRepoId;
+  entries: readonly T[],
+): T[] {
+  return pinnedRepoId === planRepoId
+    ? [...entries]
+    : entries.filter((entry) => entry.checkpoint !== true);
 }

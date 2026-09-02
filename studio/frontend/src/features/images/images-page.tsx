@@ -131,8 +131,8 @@ import {
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
+  diffusionPipelineStagingEntries,
   diffusionPipelineLoadTarget,
-  stagedDiffusionLoadTarget,
 } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -2775,22 +2775,24 @@ export function ImagesPage({
                 ? e.files.includes(opts.filename)
                 : e.repo_id === planRepoId),
           }));
-          // If the picked pipeline itself had to be staged, the complete copy now lives under
-          // the logical Hub id in the active cache. Otherwise keep the exact pinned snapshot;
-          // only separate companion repos changed and its manifest identity remains authoritative.
-          const stagedRepoId = stagedDiffusionLoadTarget(
+          const entriesToStage = diffusionPipelineStagingEntries(
             repoId,
             planRepoId,
             stagedEntries,
           );
+          // Never replace the inspected snapshot with a mutable Hub revision. For a pinned pick,
+          // only external companions remain; selected-model files belong to another revision.
+          if (entriesToStage.length === 0) {
+            return handleLoadRef.current(repoId, opts, advanced);
+          }
           pendingStagedLoad.current = {
-            repoId: stagedRepoId,
+            repoId,
             opts,
             advanced,
             token: token ?? pickGuard.claim(),
           };
           stagedQuantRevert.current = ownRevert;
-          stage(stagedEntries);
+          stage(entriesToStage);
           return true;
         }
       } catch {

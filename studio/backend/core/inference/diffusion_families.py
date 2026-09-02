@@ -1181,26 +1181,26 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
 
 
-def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
-    """Whether a local Diffusers manifest is safe to advertise or accept before eviction.
-
-    Diffusers needs a JSON object with a pipeline class. Merely finding a file is not enough: a
-    truncated download or an empty placeholder otherwise survives inventory and request preflight,
-    then fails only after the currently resident model has been unloaded.
-    """
+def _read_local_pipeline_manifest(root: Path | str, filename: str) -> Optional[dict]:
     if filename not in {"model_index.json", "modular_model_index.json"}:
-        return False
+        return None
     try:
         path = Path(root).expanduser() / filename
         if not path.is_file() or path.stat().st_size > _MAX_PIPELINE_MANIFEST_BYTES:
-            return False
+            return None
         # Match pipeline_class_from_index: PowerShell commonly writes hand-authored JSON with a
         # UTF-8 BOM, which Diffusers can otherwise load and must not disappear at inventory or
         # preflight.
         payload = json.loads(path.read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError, RecursionError):
-        return False
-    if not isinstance(payload, dict):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
+    """Whether a local Diffusers manifest has a valid root-level load contract."""
+    payload = _read_local_pipeline_manifest(root, filename)
+    if payload is None:
         return False
     class_name = payload.get("_class_name")
     if not isinstance(class_name, str) or not class_name.strip():
@@ -1217,6 +1217,150 @@ def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
         and spec[1] is not None
         for name, spec in payload.items()
     )
+
+
+_LOCAL_PIPELINE_BASE_WEIGHT_INDEXES = (
+    "diffusion_pytorch_model.safetensors.index.json",
+    "model.safetensors.index.json",
+    "diffusion_pytorch_model.bin.index.json",
+    "pytorch_model.bin.index.json",
+)
+_LOCAL_PIPELINE_WEIGHT_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|model|pytorch_model)(?:\.[A-Za-z0-9_-]+)?\.(?:safetensors|bin)$"
+)
+_LOCAL_PIPELINE_WEIGHT_INDEX_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|model|pytorch_model)\.(?:safetensors|bin)\.index"
+    r"(?:\.[A-Za-z0-9_-]+)?\.json$"
+)
+_LOCAL_PIPELINE_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
+_MAX_PIPELINE_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
+_NON_WEIGHT_COMPONENT_CLASS_TOKENS = (
+    "featureextractor",
+    "imageprocessor",
+    "processor",
+    "scheduler",
+    "tokenizer",
+)
+
+
+def _local_json_object_is_valid(path: Path, *, max_bytes: int) -> bool:
+    try:
+        return (
+            path.is_file()
+            and 0 < path.stat().st_size <= max_bytes
+            and isinstance(json.loads(path.read_text(encoding = "utf-8-sig")), dict)
+        )
+    except (OSError, ValueError, RecursionError):
+        return False
+
+
+def _local_weight_index_is_complete(component: Path, index: Path) -> bool:
+    """Whether a selected sharded checkpoint index names files present under its component."""
+    if not index.is_file():
+        return False
+    try:
+        if not 0 < index.stat().st_size <= _MAX_PIPELINE_WEIGHT_INDEX_BYTES:
+            return False
+        payload = json.loads(index.read_text(encoding = "utf-8-sig"))
+        weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+        shards = (
+            {str(value) for value in weight_map.values() if value}
+            if isinstance(weight_map, dict)
+            else set()
+        )
+        if not shards:
+            return False
+        for shard in shards:
+            relative = PurePosixPath(shard)
+            if relative.is_absolute() or ".." in relative.parts:
+                return False
+            shard_path = component / Path(*relative.parts)
+            if not shard_path.is_file() or shard_path.stat().st_size <= 0:
+                return False
+        return True
+    except (OSError, ValueError, AttributeError, RecursionError):
+        return False
+
+
+def _local_model_component_is_complete(component: Path) -> bool:
+    # Diffusers treats a matching index as authoritative. A corrupt/partial index must not fall
+    # through to an unrelated unsharded file that the loader will never choose.
+    indexes = [
+        child
+        for child in component.iterdir()
+        if _LOCAL_PIPELINE_WEIGHT_INDEX_RE.fullmatch(child.name)
+    ]
+    for index_name in _LOCAL_PIPELINE_BASE_WEIGHT_INDEXES:
+        index = component / index_name
+        if index.exists():
+            return _local_weight_index_is_complete(component, index)
+    if indexes:
+        return any(_local_weight_index_is_complete(component, index) for index in indexes)
+    return any(
+        _LOCAL_PIPELINE_WEIGHT_RE.fullmatch(child.name)
+        and not _LOCAL_PIPELINE_SHARD_RE.search(child.name)
+        and child.is_file()
+        and child.stat().st_size > 0
+        for child in component.iterdir()
+    )
+
+
+def local_pipeline_components_are_complete(root: Path | str, filename: str) -> bool:
+    """Whether every component declared by a local pipeline can be opened from that root.
+
+    A valid manifest alone is not a loadable pipeline: interrupted copies commonly leave the
+    index but omit one component directory, model config, weight, or shard. Inventory and both
+    media preflights use this same conservative, import-free check so no row can be advertised and
+    then evict the resident model before failing in ``from_pretrained``.
+
+    Saved modular pipelines also declare their components alongside ``_blocks_class_name``. A
+    block-only file is not enough evidence that the local snapshot is hydrated, so it is rejected
+    just like a conventional manifest with no components.
+    """
+    payload = _read_local_pipeline_manifest(root, filename)
+    if payload is None or not local_pipeline_manifest_is_valid(root, filename):
+        return False
+    base = Path(root).expanduser()
+    declared: list[tuple[str, str, str]] = []
+    for name, spec in payload.items():
+        if (
+            not isinstance(name, str)
+            or name.startswith("_")
+            or not isinstance(spec, (list, tuple))
+            or len(spec) < 2
+            or spec[0] is None
+            or spec[1] is None
+        ):
+            continue
+        # Component keys are pipeline constructor arguments and therefore one local directory,
+        # never a path. Refusing separators also prevents a hand-authored manifest escaping root.
+        if name in {"", ".", ".."} or Path(name).name != name or "/" in name or "\\" in name:
+            return False
+        declared.append((name, str(spec[0]), str(spec[1])))
+
+    if not declared:
+        return False
+
+    try:
+        for name, library, class_name in declared:
+            component = base / name
+            if not component.is_dir():
+                return False
+            class_key = class_name.lower()
+            non_weight = any(token in class_key for token in _NON_WEIGHT_COMPONENT_CLASS_TOKENS)
+            model_component = library.lower() in {"diffusers", "transformers"} and not non_weight
+            if model_component:
+                if not _local_json_object_is_valid(
+                    component / "config.json", max_bytes = _MAX_PIPELINE_MANIFEST_BYTES
+                ):
+                    return False
+                if not _local_model_component_is_complete(component):
+                    return False
+            elif not any(child.is_file() for child in component.iterdir()):
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:

@@ -6,8 +6,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  diffusionPipelineStagingEntries,
   diffusionPipelineLoadTarget,
-  stagedDiffusionLoadTarget,
 } from "../src/lib/diffusion-pipeline-load-target.ts";
 
 function source(path: string): string {
@@ -95,21 +95,24 @@ test("a pinned Hub pipeline keeps Hub planning separate from its physical load t
       source: "hub",
     },
   );
-  assert.equal(
-    stagedDiffusionLoadTarget(
+  assert.deepEqual(
+    diffusionPipelineStagingEntries(
       "/cache/snapshots/deadbeef",
       "MiniMaxAI/MiniMax-H3",
-      [{ checkpoint: false }],
+      [
+        { checkpoint: true, repoId: "MiniMaxAI/MiniMax-H3" },
+        { checkpoint: false, repoId: "external/quant" },
+      ],
     ),
-    "/cache/snapshots/deadbeef",
+    [{ checkpoint: false, repoId: "external/quant" }],
   );
-  assert.equal(
-    stagedDiffusionLoadTarget(
-      "/cache/snapshots/deadbeef",
+  assert.deepEqual(
+    diffusionPipelineStagingEntries(
       "MiniMaxAI/MiniMax-H3",
-      [{ checkpoint: true }],
+      "MiniMaxAI/MiniMax-H3",
+      [{ checkpoint: true, repoId: "MiniMaxAI/MiniMax-H3" }],
     ),
-    "MiniMaxAI/MiniMax-H3",
+    [{ checkpoint: true, repoId: "MiniMaxAI/MiniMax-H3" }],
   );
 
   for (const file of [
@@ -123,7 +126,8 @@ test("a pinned Hub pipeline keeps Hub planning separate from its physical load t
     );
     assert.ok(text.includes("familyOverrideRequired = false"), file);
     assert.ok(text.includes('setFamilyOverride("auto")'), file);
-    assert.ok(text.includes("repoId: stagedRepoId"), file);
-    assert.ok(text.includes("stagedDiffusionLoadTarget("), file);
+    assert.ok(text.includes("repoId,"), file);
+    assert.ok(text.includes("diffusionPipelineStagingEntries("), file);
+    assert.ok(text.includes("stage(entriesToStage)"), file);
   }
 });

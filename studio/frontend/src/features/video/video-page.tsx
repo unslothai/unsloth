@@ -132,8 +132,8 @@ import {
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
+  diffusionPipelineStagingEntries,
   diffusionPipelineLoadTarget,
-  stagedDiffusionLoadTarget,
 } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -2655,22 +2655,24 @@ function VideoGenerator({
                 ? e.files.includes(opts.filename)
                 : e.repo_id === planRepoId),
           }));
-          // Staging selected-model files creates a complete active-cache snapshot under the Hub
-          // id. If only companion repos changed, retain the exact physical snapshot that supplied
-          // the manifest instead of silently moving to another revision.
-          const stagedRepoId = stagedDiffusionLoadTarget(
+          const entriesToStage = diffusionPipelineStagingEntries(
             repoId,
             planRepoId,
             stagedEntries,
           );
+          // A logical plan may point at a newer Hub revision. Never substitute it for the exact
+          // snapshot we inspected; stage external companions only and keep the physical target.
+          if (entriesToStage.length === 0) {
+            return handleLoadRef.current(repoId, opts, advanced);
+          }
           pendingStagedLoad.current = {
-            repoId: stagedRepoId,
+            repoId,
             opts,
             advanced,
             token: token ?? pickGuard.claim(),
           };
           stagedQuantRevert.current = ownRevert;
-          stage(stagedEntries);
+          stage(entriesToStage);
           return true;
         }
       } catch {

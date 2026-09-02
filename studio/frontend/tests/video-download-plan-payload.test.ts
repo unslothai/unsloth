@@ -52,11 +52,11 @@ test("the staged plan pins its controls through the eventual load", () => {
   assert.ok(advancedAt < planAt, "the snapshot must precede the plan request");
   assert.match(
     flow,
-    /pendingStagedLoad\.current = \{\s*repoId: stagedRepoId,\s*opts,\s*advanced,/,
+    /pendingStagedLoad\.current = \{\s*repoId,\s*opts,\s*advanced,/,
   );
   assert.ok(
-    flow.includes("stagedDiffusionLoadTarget("),
-    "a restaged pipeline must load the complete active-cache snapshot",
+    flow.includes("diffusionPipelineStagingEntries("),
+    "a pinned pipeline must stage only external companions",
   );
   assert.ok(source.includes("pending.opts, pending.advanced"));
 

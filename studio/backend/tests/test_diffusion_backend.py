@@ -1180,7 +1180,7 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
-        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
+        lambda target, requested, speed_active = False: "_native_cudnn" if speed_active else None,
     )
     monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
 
@@ -2172,6 +2172,9 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             }
         )
     )
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "config.json").write_text("{}")
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     fam = backend.validate_load_request(
         "unsloth/Qwen-Image-2512-GGUF",
         gguf_filename = "x.gguf",
@@ -2197,6 +2200,9 @@ def test_validate_rejects_a_malformed_local_pipeline_manifest(fake_runtime, tmp_
         ),
         encoding = "utf-8",
     )
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "config.json").write_text("{}")
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     assert backend.validate_load_request(str(tmp_path), family_override = "z-image") is not None
 
 
@@ -2541,6 +2547,9 @@ def _load_ideogram(backend, tmp_path):
             }
         )
     )
+    (tmp_path / "transformer").mkdir(exist_ok = True)
+    (tmp_path / "transformer" / "config.json").write_text("{}")
+    (tmp_path / "transformer" / "pytorch_model.bin").write_bytes(b"x")
     backend.load_pipeline(str(tmp_path), family_override = "ideogram-4")
 
 
@@ -2592,6 +2601,9 @@ def _load_lumina(backend, tmp_path):
             }
         )
     )
+    (tmp_path / "transformer").mkdir(exist_ok = True)
+    (tmp_path / "transformer" / "config.json").write_text("{}")
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
 
 
@@ -5571,8 +5583,9 @@ def test_dense_transformer_cached_follows_the_mirror_the_widened_fetch_picks(
     monkeypatch.setattr(
         dmod,
         "cache_holds_files",
-        lambda repo_id, files: set(files)
-        <= (mirror_cache if repo_id == "unsloth/FLUX.2-dev" else upstream_cache),
+        lambda repo_id, files: (
+            set(files) <= (mirror_cache if repo_id == "unsloth/FLUX.2-dev" else upstream_cache)
+        ),
     )
 
     assert (
@@ -6770,9 +6783,9 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: repo_id
-            == "unsloth/FLUX.1-dev-GGUF"
-            and filename == "flux1-dev-Q4_K_M.gguf"
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: (
+                repo_id == "unsloth/FLUX.1-dev-GGUF" and filename == "flux1-dev-Q4_K_M.gguf"
+            )
         ),
     )
 
@@ -9388,10 +9401,9 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None, declared_sizes = None: seen.append(
-                (repo_id, revision)
+            lambda repo_id, files, revision = None, declared_sizes = None: (
+                seen.append((repo_id, revision)) or set()
             )
-            or set()
         ),
     )
 

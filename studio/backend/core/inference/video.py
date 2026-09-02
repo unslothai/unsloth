@@ -1045,6 +1045,20 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
     return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 
 
+@functools.lru_cache(maxsize = None)
+def _video_family_capabilities(device: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Process-static family snapshot for one device backend.
+
+    Strict availability can import Diffusers/Torch lazily. Cache it so polling remains a status
+    read; the route moves the one cold probe off the event-loop thread.
+    """
+    available = pipeline_available_video_families(device = device)
+    return (
+        tuple(fam.name for fam in available),
+        tuple(fam.name for fam in available if fam.modular_workflow),
+    )
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -1211,7 +1225,7 @@ class VideoBackend:
         # classes. A malformed local pick is a request error even on hosts where Diffusers is
         # absent or too old, and it must fail before the resident pipeline is evicted.
         if kind == "pipeline":
-            from .diffusion_families import local_pipeline_manifest_is_valid
+            from .diffusion_families import local_pipeline_components_are_complete
 
             root = Path(repo_id).expanduser()
             # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
@@ -1220,7 +1234,7 @@ class VideoBackend:
             )
             if root.exists() and not (
                 root.is_dir()
-                and any(local_pipeline_manifest_is_valid(root, name) for name in indexes)
+                and any(local_pipeline_components_are_complete(root, name) for name in indexes)
             ):
                 raise ValueError(
                     f"Local pipeline path is not a diffusers directory "
@@ -6305,11 +6319,11 @@ class VideoBackend:
 
     def status(self) -> dict[str, Any]:
         state = self._state
-        available_families = pipeline_available_video_families(
-            device = resolve_diffusion_device_target().device
+        supported_names, modular_names = _video_family_capabilities(
+            resolve_diffusion_device_target().device
         )
-        supported_families = [fam.name for fam in available_families]
-        modular_families = [fam.name for fam in available_families if fam.modular_workflow]
+        supported_families = list(supported_names)
+        modular_families = list(modular_names)
         if state is None:
             return {
                 "loaded": False,

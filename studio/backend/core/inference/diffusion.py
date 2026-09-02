@@ -47,7 +47,7 @@ from .diffusion_families import (
     DiffusionModelReplacedError,  # re-exported: callers import it from either module
     LoadIdentity,
     load_identity,
-    local_pipeline_manifest_is_valid,
+    local_pipeline_components_are_complete,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -650,7 +650,7 @@ def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = Fals
     if allow_modular:
         indexes.append("modular_model_index.json")
     if not root.is_dir() or not any(
-        local_pipeline_manifest_is_valid(root, name) for name in indexes
+        local_pipeline_components_are_complete(root, name) for name in indexes
     ):
         raise ValueError(
             f"Local base_repo is not a diffusers pipeline directory "
@@ -1921,9 +1921,9 @@ class DiffusionBackend:
                     "a 'pipeline' load takes a full diffusers repo, not a single-file name."
                 )
             if local_root.exists():
-                if not local_pipeline_manifest_is_valid(local_root, "model_index.json"):
+                if not local_pipeline_components_are_complete(local_root, "model_index.json"):
                     raise FileNotFoundError(
-                        f"Local pipeline directory has no valid model_index.json: {repo_id}"
+                        f"Local pipeline directory has no complete valid model_index.json: {repo_id}"
                     )
             elif path_shaped:
                 raise FileNotFoundError(f"Local model path does not exist: {repo_id}")

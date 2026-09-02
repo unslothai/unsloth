@@ -32698,7 +32698,7 @@ async def load_diffusion_model_gated(
             extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
             user_action = user_initiated,
         )
-        return DiffusionStatusResponse(**annotate_status(status_dict))
+        return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
@@ -33173,13 +33173,13 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
         DIFFUSION,
         lambda: not engine.loading_repo_ids() and not engine.is_loaded,
     )
-    return DiffusionStatusResponse(**annotate_status(status_dict))
+    return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
 
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import active_status
-    return DiffusionStatusResponse(**active_status())
+    return DiffusionStatusResponse(**(await asyncio.to_thread(active_status)))
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)

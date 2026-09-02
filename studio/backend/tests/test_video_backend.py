@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+import core.inference.video as video_module
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
     VideoBackend,
@@ -35,7 +36,11 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     tests are about the load/plan decisions; the capability is covered in
     test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
+
     monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    video_module._video_family_capabilities.cache_clear()
+    yield
+    video_module._video_family_capabilities.cache_clear()
 
 
 class _FakeDtype:
@@ -734,6 +739,7 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
             }
         )
     )
+    (d / "transformer" / "config.json").write_text("{}")
     fam = backend.validate_load_request(str(d), family_override = "ltx-2")
     assert fam.name == "ltx-2"
 
@@ -775,9 +781,13 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtim
             {
                 "_class_name": "ModularPipeline",
                 "_blocks_class_name": "HunyuanVideo15PipelineBlocks",
+                "transformer": ["diffusers", "MiniMaxH3Transformer3DModel"],
             }
         )
     )
+    (root / "transformer").mkdir()
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     assert (
         backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
     )
@@ -813,6 +823,9 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             }
         )
     )
+    (bad_base / "transformer").mkdir()
+    (bad_base / "transformer" / "config.json").write_text("{}")
+    (bad_base / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     fam = backend.validate_load_request(
         "unsloth/LTX-2.3-GGUF",
         gguf_filename = "x.gguf",
@@ -1538,6 +1551,9 @@ def test_pipeline_load_uses_logical_identity_for_a_commit_named_snapshot(fake_ru
             }
         )
     )
+    (snapshot / "transformer").mkdir()
+    (snapshot / "transformer" / "config.json").write_text("{}")
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
 
     backend = VideoBackend()
     status = backend.load_pipeline(
@@ -1757,6 +1773,29 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
         is None
     )
     backend.unload()
+
+
+def test_video_status_family_capabilities_are_probed_once(monkeypatch):
+    calls = []
+    available = (
+        types.SimpleNamespace(name = "ltx-2", modular_workflow = False),
+        types.SimpleNamespace(name = "minimax-h3", modular_workflow = True),
+    )
+    monkeypatch.setattr(
+        video_module,
+        "pipeline_available_video_families",
+        lambda *, device: calls.append(device) or available,
+    )
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cpu"),
+    )
+    backend = VideoBackend()
+
+    assert backend.status()["supported_families"] == ["ltx-2", "minimax-h3"]
+    assert backend.status()["modular_families"] == ["minimax-h3"]
+    assert calls == ["cpu"]
 
 
 def test_video_status_response_carries_gguf_variant():

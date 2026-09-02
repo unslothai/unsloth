@@ -509,7 +509,7 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
 @router.get("/video/status", response_model = VideoStatusResponse)
 async def video_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoStatusResponse(**get_video_backend().status())
+    return VideoStatusResponse(**(await asyncio.to_thread(get_video_backend().status)))
 
 
 @router.post("/video/unload", response_model = VideoStatusResponse)
