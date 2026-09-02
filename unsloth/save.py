@@ -37,17 +37,24 @@ except ImportError:
 # isinstance checks, so placeholders nothing can match are exact stand-ins.
 try:
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 except Exception:
 
-    class Bnb_Linear4bit:
-        pass
-
-    class Peft_Linear4bit:
+    class Bnb_Linear4bit:  # noqa: N801 - matches the imported name
         pass
 
 
 from peft.tuners.lora import Linear as Peft_Linear
+# peft may not re-export Linear4bit when bnb is absent; sentinel keeps the
+# import working while preserving the isinstance checks below.
+
+try:
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+
+    class Peft_Linear4bit:  # noqa: N801 - matches the imported name
+        pass
+
+
 from typing import Optional, Callable, Union, List
 import sys
 import math
@@ -60,7 +67,7 @@ import pickle
 import gc
 import functools
 from transformers.models.llama.modeling_llama import logger
-from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
+from .kernels import _dequantize_for_lora, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import traceback
 import psutil
@@ -641,7 +648,7 @@ def _merge_lora(layer, name):
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
         if quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
-            W = fast_dequantize(W, quant_state)
+            W = _dequantize_for_lora(W, quant_state)
         else:
             dtype = W.dtype
         W = W.to(torch.float32).t()

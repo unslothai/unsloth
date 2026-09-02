@@ -15,7 +15,7 @@
 import torch
 from .utils import (
     _maybe_fake_quantize_activations,
-    fast_dequantize,
+    _dequantize_for_lora,
     QUANT_STATE,
     get_lora_parameters,
     get_lora_parameters_bias,
@@ -190,13 +190,13 @@ class LoRA_MLP(torch.autograd.Function):
 
         # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
-        upW = fast_dequantize(upW.t(), upW_quant)
+        upW = _dequantize_for_lora(upW, upW_quant, transpose = True)
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
         dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
-        gateW = fast_dequantize(gateW.t(), gateW_quant)
+        gateW = _dequantize_for_lora(gateW, gateW_quant, transpose = True)
         # dX += de @ gateW.t()
         dX.addmm_(de, gateW.t())
         del gateW
@@ -494,14 +494,14 @@ class LoRA_QKV(torch.autograd.Function):
 
         # Combine derivatives to find dX
         # dQ
-        QW = fast_dequantize(QW.t(), QW_quant)
+        QW = _dequantize_for_lora(QW, QW_quant, transpose = True)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
         dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
 
         # dK
-        KW = fast_dequantize(KW.t(), KW_quant)
+        KW = _dequantize_for_lora(KW, KW_quant, transpose = True)
         # dX += dK @ KW.t()
         dX.addmm_(dK, KW.t())
         del KW
@@ -509,7 +509,7 @@ class LoRA_QKV(torch.autograd.Function):
         dX.addmm_(dK @ KB.t(), KA.t(), alpha = KS)
 
         # dV
-        VW = fast_dequantize(VW.t(), VW_quant)
+        VW = _dequantize_for_lora(VW, VW_quant, transpose = True)
         # dX += dV @ VW.t()
         dX.addmm_(dV, VW.t())
         del VW
@@ -640,7 +640,7 @@ class LoRA_W(torch.autograd.Function):
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
         # Get derivative for dX
-        W = fast_dequantize(W.t(), W_quant)
+        W = _dequantize_for_lora(W, W_quant, transpose = True)
         dX = dY @ W.t()
         del W
         # dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
