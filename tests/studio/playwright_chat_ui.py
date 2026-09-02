@@ -326,10 +326,26 @@ def exercise_permission_mode_controls(page, shoot):
     expect(page.get_by_role("alertdialog")).to_have_count(0)
 
     # Pointer and compact-layout coverage.
-    page.set_viewport_size({"width": 390, "height": 844})
+    compact_width = 390
+    page.set_viewport_size({"width": compact_width, "height": 844})
     expect(pill).to_be_visible()
+
+    # Let the reflow land before measuring. set_viewport_size returns once the
+    # viewport is set, not once the layout has responded to it, and
+    # to_be_visible does not cover the gap: the pill is already visible, at its
+    # old width. Reading the box straight away can catch the pre-reflow
+    # geometry, which is off the right edge of the narrow viewport and fails on
+    # a box no user ever sees. The floating monitor's own viewport checks below
+    # settle the same way rather than measuring immediately.
+    def fits_compact(box) -> bool:
+        return box is not None and box["x"] >= 0 and box["x"] + box["width"] <= compact_width
+
+    deadline = time.time() + 5
     box = pill.bounding_box()
-    if box is None or box["x"] < 0 or box["x"] + box["width"] > 390:
+    while not fits_compact(box) and time.time() < deadline:
+        page.wait_for_timeout(50)
+        box = pill.bounding_box()
+    if not fits_compact(box):
         fail(f"permission pill is clipped in compact layout: {box!r}")
     page.set_viewport_size({"width": 1280, "height": 900})
 

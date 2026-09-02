@@ -690,8 +690,15 @@ def _walk_from(by_id: dict, parent_of: dict, leaf) -> list[dict]:
     return chain
 
 
-def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> Optional[str]:
-    """Which stored leaf the REQUEST is on, by matching its text. None when nothing does.
+def _branch_seed(
+    messages: list[dict],
+    by_id: dict,
+    parent_of: dict,
+    branch,
+    *,
+    require_unique: bool = False,
+) -> Optional[str]:
+    """Which stored endpoint the REQUEST proves by matching text. None when no row matches.
 
     The newest stored row is not the branch the request is on. Switching to a sibling,
     continuing there and switching back leaves the abandoned branch holding the greatest
@@ -707,19 +714,28 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     """
     if not branch:
         return None
+
     # A LIST, in order, not a set: sets lose repetition and ordering, so an abandoned
     # sibling with the same distinct texts tied with the request's own branch and, being
     # newer, won. A multiset fixes the repeat case but not the reordered one, so this
     # scores an in-order run. System and developer messages are excluded: Unsloth's
     # prepended chat and project instructions are not part of the stored chain.
+    def _key(message):
+        """What a message matches ON. Role-blind let a rewound, unstored "Continue." match
+        an ABANDONED assistant reply of the same text and adopt its boundary."""
+        text = _normalise_cased(_probe_text(message))
+        if not text:
+            return None
+        return (str(message.get("role") or ""), text) if require_unique else text
+
     wanted = [
-        text
-        for text in (
-            _normalise_cased(_probe_text(message))
+        key
+        for key in (
+            _key(message)
             for message in _as_wire(branch)
             if str(message.get("role") or "") not in ("system", "developer")
         )
-        if text
+        if key
     ]
     if not wanted:
         return None
@@ -736,8 +752,13 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
         key = lambda identifier: order.get(identifier, -1),
         reverse = True,
     )
+    if require_unique and len(leaves) > _BRANCH_SEED_MAX_LEAVES:
+        # A capped search cannot prove that an unvisited sibling does not tie the winner.
+        return None
     best = None
+    best_matched = None
     best_score = 0
+    best_tied = False
     # Rendered once per STORED ROW, not per leaf: `_as_wire` expands a row the same way
     # whichever chain it is walked in.
     rendered: dict = {}
@@ -745,9 +766,9 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     def _texts_of(record: dict) -> list:
         identifier = record.get("id")
         if identifier is None:
-            return [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
+            return [_key(m) for m in _as_wire([record])]
         if identifier not in rendered:
-            rendered[identifier] = [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
+            rendered[identifier] = [_key(m) for m in _as_wire([record])]
         return rendered[identifier]
 
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
@@ -756,24 +777,39 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
         # neither side is a subsequence of the other.
         cursor = 0
         score = 0
+        last_matched = None
         for record in _walk_from(by_id, parent_of, leaf):
-            for text in _texts_of(record):
-                spots = where.get(text) if text else None
+            for key in _texts_of(record):
+                spots = where.get(key) if key else None
                 if not spots:
                     continue
                 index = bisect.bisect_left(spots, cursor)
                 if index < len(spots):
                     cursor = spots[index] + 1
                     score += 1
+                    last_matched = record.get("id")
         if score > best_score:
             best, best_score = leaf, score
-        if best_score >= len(wanted):
+            best_matched = last_matched
+            best_tied = False
+        elif require_unique and score == best_score and score > 0:
+            # Tied on the SAME endpoint is not ambiguity: two retries fork past the proof.
+            best_tied = best_tied or last_matched != best_matched
+        if best_score >= len(wanted) and not require_unique:
             # Every message the request carries is on this chain; nothing can beat it.
             break
+    if require_unique:
+        return None if best_tied else best_matched
     return best
 
 
-def _active_chain(messages: list[dict], branch = None) -> list[dict]:
+def _active_chain(
+    messages: list[dict],
+    branch = None,
+    *,
+    fallback: bool = True,
+    require_unique: bool = False,
+) -> list[dict]:
     """The rows on ONE branch, oldest first, rather than the whole stored DAG.
 
     `list_chat_messages` is an unfiltered SELECT ordered by time, but a thread is a tree:
@@ -789,26 +825,63 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
     Walked newest leaf back to root, the same shape the frontend's `orderBySelectedBranch`
     uses to decide what the model is actually shown. `parent_id` is missing on rows written
     before that column, so the previous row stands in for it, which is exactly a flat list
-    when nothing branches.
+    when nothing branches. Unlike the frontend, this default path never roots a null after
+    a recorded parent. ``fallback=False`` lets callers decline when the request cannot seed
+    a chain instead of silently reading the newest stored sibling. ``require_unique``
+    likewise declines when indistinguishable leaves tie for the best branch match and trims
+    the winner after the last stored row the request actually matched.
     """
     if not messages:
         return []
     by_id: dict = {}
     parent_of: dict = {}
+    # Rows whose parent is storage order rather than a real link. The root's absent parent
+    # is not synthesized: nothing stood in for it.
+    synthesized: set = set()
     previous = None
     for message in messages:
         identifier = message.get("id")
         if identifier is None:
             continue
         by_id[identifier] = message
-        parent_of[identifier] = message.get("parentId") or message.get("parent_id") or previous
+        parent = message.get("parentId") or message.get("parent_id")
+        # A row that CARRIES the column and holds null is a root the client meant, as
+        # editing the first prompt makes. Only a row written before the column exists has
+        # nothing to say, and there storage order stands in. Under the legacy path the
+        # stand-in is unconditional, as it always was: `_transcript_positions` numbers
+        # turns off this chain, and rooting a null there renumbers the whole archive.
+        stated = require_unique and ("parentId" in message or "parent_id" in message)
+        if parent is None and previous is not None and not stated:
+            synthesized.add(identifier)
+            parent = previous
+        parent_of[identifier] = parent
         previous = identifier
     if not by_id:
-        return list(messages)
+        return list(messages) if fallback else []
+    if require_unique and synthesized:
+        # Storage order is not ancestry. Where it strung INDISTINGUISHABLE rows into one
+        # chain it made the abandoned twin an ancestor of the live one, and the greedy trim
+        # stopped on the twin, replaying ITS deeper boundary instead of the safe vote
+        # across them. The twins need not be adjacent: the abandoned branch's own
+        # continuation sits between them. Threads the text can still tell apart are left
+        # alone, since declining on every invented link would refuse legacy ancestry that
+        # storage order does recover.
+        seen: set = set()
+        for message in messages:
+            if message.get("id") is None:
+                continue
+            key = (message.get("role"), _normalise_cased(_probe_text(message)))
+            if key[1] and key in seen:
+                return []
+            seen.add(key)
     # The request's own branch when it can be found, the newest row when it cannot: empty
     # positions empty every seat and send every turn to MAX + 1, which is worse than
     # reading the wrong branch.
-    seed = _branch_seed(messages, by_id, parent_of, branch) or messages[-1].get("id")
+    seed = _branch_seed(messages, by_id, parent_of, branch, require_unique = require_unique)
+    if seed is None:
+        if not fallback:
+            return []
+        seed = messages[-1].get("id")
     return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
@@ -825,6 +898,17 @@ _EMPTY_TOOL_RESULT = '{"result":""}'
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
 # `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
 _SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
+
+# `search-images.ts`. `re.ASCII` on the scheme because Python's IGNORECASE folds Unicode,
+# so `httpſ://` (U+017F) would match where JavaScript's `/i` does not.
+_SEARCH_IMAGE_ID = re.compile(r"[0-9a-f]{12}")
+_SEARCH_IMAGE_SOURCE = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+_SEARCH_IMAGE_TOKEN = re.compile(
+    r"\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?\Z)|\[\[img:[0-9a-f]{12}\]\]"
+)
+# `sanitizeAssistantReplayText`. An audio model answers with an `<audio-player src=...>`
+# tag holding the whole wav inline, and the serializer sends `[audio]` in its place.
+_REPLAY_AUDIO_DATA_URI = re.compile(r"data:audio/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
 
 
 def _server_builtin(part: dict) -> tuple[bool, bool]:
@@ -845,43 +929,128 @@ def _server_builtin(part: dict) -> tuple[bool, bool]:
     return bool(args.get("_server_tool") is True or native), native
 
 
-def _unwrapped(result, tool_name: str):
-    """A sandbox or MCP-image wrapper reduced to the text the model actually saw.
-
-    `python` and `terminal` results are wrapped in `{text, images, sessionId, files}` on
-    EVERY call, and the replay adapter sends `result.text` alone rather than feeding the
-    model a session id and file metadata. Serialising the whole wrapper reconstructed a
-    tool message that can never equal the archived one.
-
-    Both gates are the frontend's: the name, because a third-party tool answering with
-    `{text, sessionId, images}` is someone else's and unwrapping it would drop every other
-    field, and the shape.
-    """
+# One predicate per frontend predicate of the same name. `sessionId` and `subject` are
+# tested for ABSENCE, not null, because the frontend tests them against `undefined`.
+def _mcp_image_result(result) -> bool:
     if not isinstance(result, dict) or not isinstance(result.get("text"), str):
-        return None
+        return False
     images = result.get("images")
-    if not isinstance(images, list):
-        return None
-    if tool_name in _SANDBOX_TOOL_NAMES and isinstance(result.get("sessionId"), str):
-        files = result.get("files")
-        if files is None or (
-            isinstance(files, list)
-            and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files)
-        ):
-            return result["text"]
-    # The MCP image shape carries no session and always has at least one image.
-    if (
-        result.get("sessionId") is None
-        and images
+    return (
+        "sessionId" not in result
+        and isinstance(images, list)
+        and bool(images)
         and all(
             isinstance(image, dict)
             and isinstance(image.get("data"), str)
             and isinstance(image.get("mimeType"), str)
             for image in images
         )
+    )
+
+
+def _search_image_entry(entry) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return (
+        isinstance(entry.get("id"), str)
+        and _SEARCH_IMAGE_ID.fullmatch(entry["id"]) is not None
+        and isinstance(entry.get("title"), str)
+        and isinstance(entry.get("domain"), str)
+        and isinstance(entry.get("source"), str)
+        and _SEARCH_IMAGE_SOURCE.match(entry["source"]) is not None
+        and ("subject" not in entry or isinstance(entry["subject"], str))
+    )
+
+
+def _search_images_result(result) -> bool:
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        return False
+    entries = result.get("webImages")
+    return (
+        isinstance(entries, list)
+        and bool(entries)
+        and all(_search_image_entry(entry) for entry in entries)
+    )
+
+
+def _sandbox_wrapper(result, tool_name: str) -> bool:
+    # The name gates it as well as the shape: another tool answering with
+    # `{text, sessionId, images}` is someone else's, and unwrapping it drops its rest.
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        return False
+    if tool_name not in _SANDBOX_TOOL_NAMES or not isinstance(result.get("sessionId"), str):
+        return False
+    if not isinstance(result.get("images"), list):
+        return False
+    files = result.get("files")
+    return files is None or (
+        isinstance(files, list)
+        and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files)
+    )
+
+
+def _strip_search_image_tokens(text: str) -> str:
+    """`stripSearchImageTokens`. A token resolves only against the message that produced
+    it, so the frontend drops them rather than replay an unresolvable id.
+
+    Its code-block carve-out is NOT mirrored: deciding it takes the frontend's whole
+    markdown scanner, and nothing that reaches this writes a token into code. The tool
+    cannot open a region (`_web_search` collapses every title and snippet behind a label,
+    and the url branch returns before an envelope is appended); a reply that fences one
+    reconstructs exactly as it did before anything here stripped.
+    """
+    if "[[img:" not in text:
+        return text
+    return _SEARCH_IMAGE_TOKEN.sub("", text)
+
+
+def _sanitised_assistant_text(text: str) -> str:
+    """`sanitizeAssistantReplayText`: an assistant reply as the serializer replays it.
+
+    The same two substitutions the tool result gets, for the same reason. A reply that
+    shows a picture carries the token that placed it, and an audio turn carries its whole
+    wav, so a stored reply reconstructed verbatim described a message the request never
+    sent and the turn matched no transcript seat.
+    """
+    return _REPLAY_AUDIO_DATA_URI.sub("[audio]", _strip_search_image_tokens(text))
+
+
+def _sanitised_assistant_content(content):
+    """`content` with every part `_probe_text` reads as text sanitised, others untouched.
+
+    Keyed on the `text` field rather than on the type, as `_probe_text` is, so a part
+    shape it renders cannot slip past this one.
+    """
+    if isinstance(content, str):
+        return _sanitised_assistant_text(content)
+    if not isinstance(content, list):
+        return content
+    return [
+        {**part, "text": _sanitised_assistant_text(part["text"])}
+        if isinstance(part, dict)
+        and part.get("type") not in ("reasoning", "tool-call")
+        and isinstance(part.get("text"), str)
+        else part
+        for part in content
+    ]
+
+
+def _unwrapped(result, tool_name: str):
+    """A wrapper this app put around a result, reduced to the text the model actually saw.
+
+    The adapter replays that text alone, so serialising the wrapper reconstructed a tool
+    message that can never equal the archived one. Being a wrapper and losing the tokens
+    are two questions, as they are in the serializer: a result carrying both `images` and
+    `webImages` is unwrapped by the first and stripped by the second.
+    """
+    if not (
+        _mcp_image_result(result)
+        or _search_images_result(result)
+        or _sandbox_wrapper(result, tool_name)
     ):
-        return result["text"]
-    return None
+        return None
+    text = result["text"]
+    return _strip_search_image_tokens(text) if _search_images_result(result) else text
 
 
 def _tool_result_content(result, tool_name: str = "") -> str:
@@ -950,7 +1119,7 @@ def _flushes_local_pair(part: dict) -> bool:
     return part.get("result") is not None
 
 
-def _as_wire(messages: list[dict]) -> list[dict]:
+def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
     The store keeps a tool call as a ``tool-call`` CONTENT PART carrying its own result,
@@ -970,6 +1139,11 @@ def _as_wire(messages: list[dict]) -> list[dict]:
     it. Only the id goes into `tool_calls`: the arguments stay on the content part, where
     `_probe_text` already offers both JSON spellings, and `_is_injected` still sees the id
     it filters our own injections by.
+
+    `sanitise_assistant` is the STORED side of that comparison. A caller projecting the
+    request's own messages against something written WITHOUT this projection must pass
+    False: `_branch_boundary_anchor` records an anchor straight off the request, so
+    `_archive_as_wire` has to hand the same bytes back or the rebase stops matching.
     """
     wire: list[dict] = []
     for message in messages:
@@ -988,6 +1162,9 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 if not (isinstance(part, dict) and part.get("type") == "reasoning")
             ]
             content = parts
+        if sanitise_assistant and str(message.get("role") or "") == "assistant":
+            content = _sanitised_assistant_content(content)
+            parts = content if isinstance(content, list) else None
         # A provider-side builtin with no native part is not replayed, so it is not a call
         # here either: counting it invented an exchange the request never carried. Any
         # other tool-call part takes the replay loop even when the serializer drops it,

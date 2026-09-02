@@ -54,6 +54,13 @@ export const ptBR = {
     shutdown: "Desligar",
   },
   shell: {
+    find: {
+      label: "Localizar na página",
+      previous: "Ocorrência anterior",
+      next: "Próxima ocorrência",
+      close: "Fechar busca",
+      truncated: "Esta página é longa demais para ser pesquisada por completo.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ptBR = {
       browserReserved:
         "Seu navegador pode reservar essa combinação. No app para desktop ela funciona.",
       actions: {
+        findInPage: {
+          label: "Localizar na página",
+          description: "Pesquisar o texto desta página",
+        },
         openSettings: {
           label: "Abrir configurações",
           description: "Abrir a janela de configurações",
@@ -842,6 +853,16 @@ export const ptBR = {
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
       },
+      repairInstall: {
+        label: "Reparar a instalação",
+        description:
+          "Executa o instalador novamente sobre o ambiente gerenciado. Útil se a GPU não for detectada ou se o aplicativo não iniciar.",
+        action: "Reparar instalação",
+        confirmTitle: "Reparar esta instalação?",
+        confirmDescription:
+          "Para o servidor e executa o instalador novamente, que reinstala o PyTorch para a GPU desta máquina. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
+        confirmAction: "Reparar agora",
+      },
       resetPreferences: {
         sectionTitle: "Zona de perigo",
         label: "Redefinir todas as preferências locais",
@@ -1096,6 +1117,8 @@ export const ptBR = {
         currentLoad: "Carga atual",
         free: "{value} livres",
         noGpu: "Nenhuma GPU visível",
+        gpuUnusable: "GPU inutilizável",
+        gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
       },
       gpu: {
         title: "Dispositivos de GPU",
@@ -1104,6 +1127,12 @@ export const ptBR = {
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
         noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
+        noUsableGpu: "Nenhuma GPU desta máquina pode ser usada pelo PyTorch.",
+        mismatchCpuBuild:
+          "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",
+        mismatchUnavailable:
+          "O PyTorch ({version}) não consegue inicializar as GPUs abaixo, então elas não podem ser usadas. Verifique o driver da GPU ou repare a instalação.",
+        unusableDevice: "inutilizável",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1225,7 +1254,7 @@ export const ptBR = {
       description:
         "Conecte agentes de código como Claude Code e Codex a um modelo local com unsloth start.",
       intro:
-        "conecta Claude Code, Codex, Hermes, OpenClaw, OpenCode e outros agentes a um modelo servido localmente pelo Unsloth, totalmente offline. Ele executa um servidor compatível com a API da OpenAI e nunca altera os arquivos de configuração do seu agente.",
+        "conecta Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode e outros agentes a um modelo servido localmente pelo Unsloth, totalmente offline. Ele executa um servidor compatível com a API da OpenAI e nunca altera os arquivos de configuração do seu agente.",
       readDocs: "Ler a documentação",
       copy: "Copiar",
       copied: "Copiado",
@@ -1504,6 +1533,8 @@ export const ptBR = {
       archivedImagesDescription: "Veja e gerencie as imagens que você arquivou.",
       archivedVideos: "Vídeos arquivados",
       archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
+      archivedAudio: "Áudios arquivados",
+      archivedAudioDescription: "Veja e gerencie os clipes de áudio que você arquivou.",
       manageAction: "Gerenciar",
       manageChats: "Gerenciar chats",
       manageChatsDescription:

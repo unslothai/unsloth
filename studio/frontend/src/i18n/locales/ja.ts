@@ -54,6 +54,13 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
+    find: {
+      label: "ページ内検索",
+      previous: "前の一致",
+      next: "次の一致",
+      close: "検索を閉じる",
+      truncated: "このページは長すぎるため、全体を検索できません。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ja = {
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       actions: {
+        findInPage: {
+          label: "ページ内検索",
+          description: "このページ内のテキストを検索します",
+        },
         openSettings: {
           label: "設定を開く",
           description: "設定ダイアログを開きます",
@@ -818,6 +829,16 @@ export const ja = {
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
       },
+      repairInstall: {
+        label: "インストールを修復",
+        description:
+          "管理環境に対してインストーラーを再実行します。GPU が検出されない場合やアプリが起動しない場合に使用します。",
+        action: "インストールを修復",
+        confirmTitle: "このインストールを修復しますか？",
+        confirmDescription:
+          "サーバーを停止してインストーラーを再実行し、このマシンの GPU に合わせて PyTorch を再インストールします。チャットと設定は保持されます。数分かかる場合があります。",
+        confirmAction: "今すぐ修復",
+      },
       resetPreferences: {
         sectionTitle: "危険ゾーン",
         label: "すべてのローカル設定をリセット",
@@ -1067,6 +1088,8 @@ export const ja = {
         currentLoad: "現在の負荷",
         free: "{value} 空き",
         noGpu: "認識できる GPU がありません",
+        gpuUnusable: "GPU を利用できません",
+        gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
       },
       gpu: {
         title: "GPU デバイス",
@@ -1076,6 +1099,12 @@ export const ja = {
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
+        noUsableGpu: "このマシンの GPU はいずれも PyTorch から利用できません。",
+        mismatchCpuBuild:
+          "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
+        mismatchUnavailable:
+          "PyTorch ({version}) は下の GPU を初期化できないため、利用できません。GPU ドライバーを確認するか、インストールを修復してください。",
+        unusableDevice: "利用不可",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1196,7 +1225,7 @@ export const ja = {
       description:
         "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
       intro:
-        "は Claude Code、Codex、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+        "は Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
       readDocs: "ドキュメントを読む",
       copy: "コピー",
       copied: "コピーしました",
@@ -1461,6 +1490,8 @@ export const ja = {
       archivedImagesDescription: "アーカイブした画像を表示・管理します。",
       archivedVideos: "アーカイブ済み動画",
       archivedVideosDescription: "アーカイブした動画を表示・管理します。",
+      archivedAudio: "アーカイブした音声",
+      archivedAudioDescription: "アーカイブした音声クリップを表示・管理します。",
       manageAction: "管理",
       manageChats: "チャットを管理",
       manageChatsDescription:

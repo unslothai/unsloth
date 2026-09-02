@@ -84,11 +84,9 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 
 
 def _gguf_architecture(path: str) -> Optional[str]:
-    # Every read inventory classification makes goes through here, so this is where "never open
-    # a cloud placeholder" holds: opening one recalls its whole payload. The task probes below
-    # ask the same question again because an unhydrated file needs a different ROUTE, not just a
-    # skipped read; the audio-type probe has no route to pick and relies on this alone. Load-time
-    # inspection calls read_gguf_architecture directly and still hydrates, on purpose.
+    # Every read inventory classification makes goes through here, so this is where "never open a
+    # cloud placeholder" holds: opening one recalls its whole payload. Load-time inspection calls
+    # read_gguf_architecture directly and still hydrates, on purpose.
     if not file_contents_available_locally(path):
         return None
     from utils.models.gguf_metadata import read_gguf_architecture
@@ -165,11 +163,8 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
     """
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
-    # Leaves only. A filesystem row hands over its whole path, and family detection matches a
-    # keyword in ANY segment of it, so a chat GGUF under .../FLUX.1-dev-GGUF/extra/ read as
-    # text-to-image. With an architecture that mismatch only picks the wrong family; here the
-    # name is the entire case, so an ancestor directory -- the user's shelf, not this model --
-    # must not decide it.
+    # Leaves only: family detection matches a keyword in ANY path segment, so a chat GGUF under
+    # .../FLUX.1-dev-GGUF/extra/ read as text-to-image.
     return _name_hint_media_task(tuple(_hint_leaf(hint) for hint in name_hints if hint), None)
 
 
@@ -274,8 +269,8 @@ def _gguf_folder_task(
     fallback: Optional[str] = None
     try:
         scored: list[tuple[tuple[str, str], Path]] = []
-        # Recorded as the tail is dropped, never inferred from `scored` afterwards: trimming cuts
-        # back to the cap, so an overflowing folder is indistinguishable from one that fit.
+        # Recorded as the tail is dropped, never inferred from scored afterwards: trimming cuts back to the
+        # cap, so an overflowing folder would be indistinguishable from one that fit.
         overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
@@ -288,8 +283,7 @@ def _gguf_folder_task(
                 overflowed = True
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
-        # Whether every candidate made it into `paths`: the walk gives up at its own deadline and
-        # the cap drops the tail, so either can leave a sibling unseen.
+        # The walk gives up at its own deadline and the cap drops the tail, so either can leave a sibling unseen.
         complete = (
             not overflowed
             and len(scored) <= _MAX_TASK_CLASSIFY_GGUFS
@@ -309,8 +303,8 @@ def _gguf_folder_task(
             if file_contents_available_locally(path):
                 task = _arch_to_task(_gguf_architecture(str(path)), name_hints = hints)
             else:
-                # Its header stays unread, so a name that says nothing leaves the candidate
-                # unclassified rather than voting text-generation for the whole folder.
+                # Its header stays unread, so a name that says nothing leaves the candidate unclassified rather than
+                # voting text-generation for the whole folder.
                 task = _unhydrated_gguf_task(hints)
         except Exception:
             # Unread, so unranked: this file might have been the runnable sibling.
@@ -322,8 +316,8 @@ def _gguf_folder_task(
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        # Speech is last resort: nothing here runs a llama-csm GGUF, so answering speech while a
-        # sibling is loadable hides that sibling. A speech-only folder still tags speech.
+        # Speech is last resort: nothing here runs a llama-csm GGUF, so answering speech while a sibling is
+        # loadable hides that sibling.
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
@@ -541,10 +535,9 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
             return True
     except Exception:
         pass
-    # Video too, as _local_is_diffusers already asks. _cached_repo_task returns None for an
-    # unbuildable video repo, so a single-file video checkpoint with no pipeline index carried
-    # no task and no diffusers flag, and an inconclusive config leaves can_chat set: every gate
-    # the chat picker has passes and the video weights reach the text loader.
+    # _cached_repo_task returns None for an unbuildable video repo, so a single-file video checkpoint
+    # with no pipeline index carried no task and no diffusers flag, and an inconclusive config leaves
+    # can_chat set: the video weights reach the text loader.
     try:
         from core.inference.video_families import detect_video_family
         return detect_video_family(repo_id) is not None

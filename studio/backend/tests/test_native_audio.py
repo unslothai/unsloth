@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-import torchaudio
 
 from core.inference.native_audio import (
     HIGGS_TTS2_CODEC_REPO,
@@ -506,13 +505,20 @@ def test_moss_local_generation_contract():
     assert seen["mode"] == "generation" and seen["generate"]["audio_top_k"] == 50
 
 
-def test_moss_nano_generation_contract():
+def test_moss_nano_generation_contract(monkeypatch):
     seen = {}
+
+    original_torchaudio = SimpleNamespace(
+        save = lambda *_args, **_kwargs: pytest.fail("the save proxy was not installed")
+    )
+    monkeypatch.setattr(sys.modules[__name__], "torchaudio", original_torchaudio, raising = False)
 
     class Model:
         def inference(self, **kwargs):
             seen.update(kwargs)
-            torchaudio.save(kwargs["output_audio_path"], torch.zeros((2, 480)), 48000)
+            sys.modules[__name__].torchaudio.save(
+                kwargs["output_audio_path"], torch.zeros((2, 480)), 48000
+            )
             return {"sample_rate": 48000}
 
     codec, tokenizer = object(), object()
@@ -523,7 +529,6 @@ def test_moss_nano_generation_contract():
         audio_codec = codec,
         sample_rate = 48000,
     )
-    original_torchaudio = sys.modules[__name__].torchaudio
     wav, rate = backend.generate_audio_response("Portable <|im_start|>speech", max_new_tokens = 375)
     assert wav[:4] == b"RIFF" and rate == 48000
     assert sys.modules[__name__].torchaudio is original_torchaudio
