@@ -267,9 +267,9 @@ def test_the_dense_fallback_does_move_whole_layers_and_the_cache_with_them():
     # halves of the branch stated in one vocabulary, and makes this test fail if
     # the cache is ever demoted back to a plain host group, which is precisely the
     # regression it exists to catch.
-    assert placement.kv_host_bytes > 0, (
-        "a dense fit drags the moved layers' cache to host with them"
-    )
+    assert (
+        placement.kv_host_bytes > 0
+    ), "a dense fit drags the moved layers' cache to host with them"
 
 
 def test_a_moved_layer_takes_its_share_of_the_recurrent_state_with_it():

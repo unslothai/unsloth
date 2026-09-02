@@ -2331,6 +2331,8 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
     assert llama_mod._spilled_decode_threads() == 12
+
+
 def test_the_seam_scores_at_the_micro_batch_that_launches():
     """rank() amortises the spilled-weight stream over ONE ubatch.
 
