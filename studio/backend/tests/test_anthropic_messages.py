@@ -1458,6 +1458,13 @@ class TestAnthropicStreamEmitter:
 # =====================================================================
 
 
+def _connected_request(disconnected = False):
+    async def _is_disconnected():
+        return disconnected
+
+    return SimpleNamespace(is_disconnected = _is_disconnected)
+
+
 class TestAnthropicToolNonStreaming:
     @pytest.mark.parametrize(
         ("helper", "event"),
@@ -1480,7 +1487,7 @@ class TestAnthropicToolNonStreaming:
             yield event
 
         async def _run():
-            task = asyncio.create_task(helper(_run_gen, "msg_1", "m"))
+            task = asyncio.create_task(helper(_connected_request(), _run_gen, "msg_1", "m"))
             await asyncio.sleep(0)
             heartbeat_ticks = 0
             while not task.done():
@@ -1512,7 +1519,9 @@ class TestAnthropicToolNonStreaming:
             yield {"type": "content", "text": "ok"}
 
         async def _run():
-            task = asyncio.create_task(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+            task = asyncio.create_task(
+                _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+            )
             await asyncio.sleep(0)
             heartbeat_ticks = 0
             while not task.done():
@@ -1551,7 +1560,9 @@ class TestAnthropicToolNonStreaming:
             yield event
 
         async def _cancel_generation():
-            task = asyncio.create_task(helper(_run_gen, "msg_1", "m", cancel_event = cancel_event))
+            task = asyncio.create_task(
+                helper(_connected_request(), _run_gen, "msg_1", "m", cancel_event = cancel_event)
+            )
             assert await asyncio.to_thread(generator_started.wait, 1.0)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1560,6 +1571,43 @@ class TestAnthropicToolNonStreaming:
             assert generator_stopped.is_set()
 
         asyncio.run(_cancel_generation())
+
+    @pytest.mark.parametrize(
+        ("helper", "event"),
+        [
+            pytest.param(
+                _anthropic_tool_non_streaming,
+                {"type": "content", "text": "ok"},
+                id = "tools",
+            ),
+            pytest.param(_anthropic_plain_non_streaming, "ok", id = "plain"),
+        ],
+    )
+    def test_client_disconnect_cancels_generation(self, helper, event):
+        generator_started = threading.Event()
+        cancel_event = threading.Event()
+        emitted = 0
+
+        def _run_gen():
+            nonlocal emitted
+            generator_started.set()
+            for _ in range(400):
+                if cancel_event.wait(0.005):
+                    return
+                emitted += 1
+                yield event
+
+        async def _drive():
+            request = _connected_request(disconnected = True)
+            response = await helper(request, _run_gen, "msg_1", "m", cancel_event = cancel_event)
+            assert await asyncio.to_thread(generator_started.wait, 1.0)
+            return response
+
+        response = asyncio.run(_drive())
+
+        assert cancel_event.is_set()
+        assert emitted < 400
+        assert response.status_code == 200
 
     def test_duplicate_tool_start_replaces_provisional_tool_block(self):
         def _run_gen():
@@ -1582,7 +1630,9 @@ class TestAnthropicToolNonStreaming:
                 "result": "Rendered HTML canvas.",
             }
 
-        response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
         body = json.loads(response.body)
         tool_blocks = [block for block in body["content"] if block["type"] == "tool_use"]
 
@@ -1603,7 +1653,9 @@ class TestAnthropicToolNonStreaming:
 
         tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
         response = asyncio.run(
-            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
+            _anthropic_tool_non_streaming(
+                _connected_request(), _run_gen, "msg_1", "m", openai_tools = tools
+            )
         )
         body = json.loads(response.body)
         text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
@@ -2574,6 +2626,68 @@ class TestAnthropicMessagesToolRouting:
         assert entry["prompt_preview"] == "user: hi"
         assert entry["reply_preview"] == "ok"
         assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize("with_tools", [False, True])
+    def test_non_streaming_disconnect_stops_generation_and_records_it_cancelled(
+        self, monkeypatch, with_tools
+    ):
+        # The route already 499s a client that is gone before admission, so the gap is a
+        # client that leaves once a slot was granted and tokens are already flowing.
+        import routes.inference as inf_mod
+
+        total = 200
+        emitted = []
+        started = threading.Event()
+
+        class _LeavingRequest:
+            state = SimpleNamespace()
+            url = SimpleNamespace(path = "/v1/messages")
+            method = "POST"
+
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _emit(kwargs, event):
+            cancel_event = kwargs["cancel_event"]
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield event
+
+        def _gen_plain(**kwargs):
+            text = ""
+            for _ in _emit(kwargs, None):
+                text += "x"
+                yield text
+
+        def _gen_tools(**kwargs):
+            yield from _emit(kwargs, {"type": "content", "text": "x"})
+
+        _mock_backend(
+            monkeypatch,
+            supports_tool_passthrough = False,
+            generate_chat_completion = _gen_plain,
+            generate_chat_completion_with_tools = _gen_tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        fields = {"tools": [{"name": "x", "input_schema": {"type": "object"}}]} if with_tools else {}
+
+        response = _drive(
+            anthropic_messages(
+                _basic_payload(**fields), request = _LeavingRequest(), current_subject = "t"
+            )
+        )
+
+        assert response.status_code == 200
+        assert len(emitted) < total, "generation ran to completion after the client left"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        # A cancelled run has no natural stop reason; end_turn would read as a full answer.
+        assert entry["stop_reason"] is None
         assert monitor.active_count() == 0
 
     @pytest.mark.parametrize("stream", [False, True])
