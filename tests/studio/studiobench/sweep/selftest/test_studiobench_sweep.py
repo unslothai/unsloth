@@ -88,7 +88,7 @@ def test_a_large_consistent_effect_over_a_tight_floor_passes(tmp_path):
 
 
 def test_an_effect_under_the_floor_is_void(tmp_path):
-    # 3% claimed, against a null control whose own two identical builds land 20% apart.
+    # 3% claimed, against a null control whose two identical builds land 20% apart.
     assert (
         verdict(
             tmp_path,
@@ -100,9 +100,8 @@ def test_an_effect_under_the_floor_is_void(tmp_path):
 
 
 def test_the_floor_clears_the_null_controls_bias_not_only_its_spread(tmp_path):
-    # A null control that is TIGHT but systematically offset: identical builds, yet the treatment
-    # label reads 10% faster on every repetition. Spread is nearly zero, so a floor built from
-    # spread alone would admit any effect at all. The bar is max(|bias|, spread).
+    # A null control that is tight but systematically offset: spread alone would admit any
+    # effect, so the bar is max(|bias|, spread).
     floor_pairs = [(1000.0, 900.0)] * 4
     assert verdict(tmp_path, [(1000.0, 950.0)] * 4, floor_pairs) == "VOID (under floor)"
     assert verdict(tmp_path, [(1000.0, 700.0)] * 4, floor_pairs) == "faster"
@@ -112,7 +111,7 @@ def test_the_floor_clears_the_null_controls_bias_not_only_its_spread(tmp_path):
 
 
 def test_pairs_that_disagree_on_sign_are_void_however_large_the_mean(tmp_path):
-    # Mean lands well past the floor; two repetitions say faster and two say slower.
+    # Mean past the floor; two repetitions say faster and two say slower.
     assert (
         verdict(
             tmp_path,
@@ -127,8 +126,7 @@ def test_pairs_that_disagree_on_sign_are_void_however_large_the_mean(tmp_path):
 
 
 def test_an_effect_smaller_than_its_own_scatter_is_void(tmp_path):
-    # Every repetition agrees on the direction and the mean clears the floor, but the readings
-    # range from 2% to 60% faster. Twelve rows in a 40-comparison audit looked exactly like this.
+    # Every repetition agrees and the mean clears the floor, but readings range from 2% to 60% faster.
     assert (
         verdict(
             tmp_path,
@@ -151,8 +149,7 @@ def test_gate_three_does_not_fire_on_a_tight_large_effect(tmp_path):
 
 
 def test_gate_three_cannot_fire_on_a_single_pair(tmp_path):
-    # With n=1 the spread is 0 by construction, so the gate has nothing to say. It must not
-    # silently pass a single reading off as having survived a scatter check.
+    # With n=1 the spread is 0 by construction, so the gate must not pass a single reading off as scatter-checked.
     result = F.summarise([payload(tmp_path, "result", [(1000.0, 500.0)])])
     assert result["message_menu.open_close_ms"]["n"] == 1
     _f, v = F.verdict_for(
@@ -203,14 +200,13 @@ def test_a_count_is_harvested_under_a_name_that_marks_it_as_an_invariant(tmp_pat
 
 
 def test_a_count_that_fell_reads_as_a_loss_and_never_as_faster(tmp_path):
-    # The regression this exists to catch: virtualization truncates select-all from 400k characters
-    # to 3k. Every timing improves, `expect_ok` stays true because chars > 0, and the only thing
-    # that can say so is this row. Scored as a timing it would read "faster".
+    # The regression this catches: virtualization truncates select-all from 400k chars to 3k.
+    # Every timing improves, expect_ok stays true, and only this row can say so.
     stats = F.summarise([count_payload(tmp_path, "r", [(400000.0, 3000.0)] * 4)])
     floor = {"delta_pct": 0.0, "spread_pct": 1.0}
     _f, v = F.verdict_for(stats[COUNT_METRIC], floor, F.is_count_metric(COUNT_METRIC))
     assert v == "LOST (invariant fell)"
-    # Same numbers, scored as a timing, would have been reported as an improvement.
+    # Same numbers scored as a timing would read as an improvement.
     assert F.verdict_for(stats[COUNT_METRIC], floor, False)[1] == "faster"
 
 
@@ -232,7 +228,7 @@ def test_a_lost_invariant_is_printed_and_counted_by_the_table(tmp_path, capsys):
     survivors = F.render([result], "t", floors = floors)
     out = capsys.readouterr().out
     assert "LOST (invariant fell)" in out
-    # It has to be counted as a finding, not dropped for not being one of the two timing verdicts.
+    # Counted as a finding, not dropped for not being one of the two timing verdicts.
     assert survivors >= 1
 
 
@@ -303,9 +299,8 @@ def test_scoring_against_a_floor_from_another_tier_is_refused(tmp_path):
 
 
 def test_pooling_across_corpora_is_refused(tmp_path):
-    # The tier fixes how long the film runs; the corpus hash fixes what is IN it. Corpus v2 added
-    # math, so a v1 payload and a v2 payload measure two different documents under one name, and
-    # pooling them would read the corpus change as a performance change.
+    # The tier fixes how long the film runs, the corpus hash fixes what is IN it: pooling v1 and
+    # v2 payloads reads a corpus change as a performance change.
     one = payload(tmp_path, "one", [(1000.0, 900.0)], corpus = "aaaa1111")
     two = payload(tmp_path, "two", [(1000.0, 900.0)], corpus = "bbbb2222")
     with pytest.raises(SystemExit) as exc:
@@ -328,8 +323,7 @@ def test_the_same_corpus_on_both_sides_pools_normally(tmp_path):
 
 
 def test_a_payload_with_no_corpus_hash_is_not_silently_pooled_with_one_that_has_it(tmp_path):
-    # An older payload predating the field reads "?", which is a different value, not a wildcard.
-    # Treating it as compatible is how a v1 run would end up scored against a v2 floor.
+    # An older payload predating the field reads '?', a different value, not a wildcard.
     old = payload(tmp_path, "old", [(1000.0, 900.0)], corpus = None)
     new = payload(tmp_path, "new", [(1000.0, 900.0)], corpus = "bbbb2222")
     with pytest.raises(SystemExit) as exc:
@@ -338,11 +332,8 @@ def test_a_payload_with_no_corpus_hash_is_not_silently_pooled_with_one_that_has_
 
 
 def test_a_resumed_payload_carrying_two_corpora_is_refused(tmp_path):
-    # The recorder appends, so `--resume` into the same --out leaves the first run's completed
-    # cells next to a SECOND run_meta. If the corpus changed in between, that one file holds a
-    # base recorded on the old film and a treatment recorded on the new one, and `paired` matches
-    # them on (shard, rung, rep) without noticing. Reading only the first header would pass this
-    # payload and print the corpus change as a performance change.
+    # `--resume` into the same --out leaves a second run_meta; one file can then hold a base on
+    # the old film and a treatment on the new, and `paired` matches them regardless.
     out = tmp_path / "resumed"
     out.mkdir(parents = True, exist_ok = True)
     rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}]
@@ -356,14 +347,14 @@ def test_a_resumed_payload_carrying_two_corpora_is_refused(tmp_path):
     with pytest.raises(SystemExit) as exc:
         F.load([path])
     assert "more than one corpus" in str(exc.value)
-    # And the floor-vs-result path refuses it too, rather than scoring it under the first hash.
+    # And the floor-vs-result path refuses it too, rather than scoring under the first hash.
     with pytest.raises(SystemExit) as exc:
         F.render([path], "t", floors = {}, floor_corpus = "aaaa1111")
     assert "more than one corpus" in str(exc.value)
 
 
 def test_a_payload_with_repeated_headers_on_one_corpus_still_loads(tmp_path):
-    # A plain resume, nothing changed in between: two headers, one hash, no refusal.
+    # A plain resume, nothing changed: two headers, one hash, no refusal.
     out = tmp_path / "plain"
     out.mkdir(parents = True, exist_ok = True)
     meta = {"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}
@@ -421,8 +412,7 @@ def test_an_incomplete_cell_is_not_measured(tmp_path):
 
 
 def test_a_shard_pairs_within_itself_and_never_across(tmp_path):
-    # Two shards both number their repetitions from rep0. Pairing on the repetition alone would
-    # cross them over and silently compare one session's base with another's treatment.
+    # Both shards number repetitions from rep0; pairing on the repetition alone would cross them over.
     a = payload(tmp_path / "a", "s0", [(1000.0, 500.0)])
     b = payload(tmp_path / "b", "s0", [(2000.0, 1000.0)])
     pooled, _ = F.load([a, b])
@@ -431,9 +421,8 @@ def test_a_shard_pairs_within_itself_and_never_across(tmp_path):
 
 
 def test_an_action_whose_own_assertion_failed_contributes_no_timing(tmp_path):
-    # `ran = True, expect_ok = False` is the action that happened and did not do its job. Its p95
-    # is lower BECAUSE it failed, so pairing it prints the failure as an improvement. The payload
-    # notes layer already says these timings must not be quoted.
+    # `ran=True, expect_ok=False` is the action that happened and failed; its p95 is lower BECAUSE
+    # it failed, so pairing prints the failure as an improvement.
     rows = [
         {"row_type": "run_meta", "tier": "standard"},
         {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
@@ -456,8 +445,8 @@ def test_an_action_whose_own_assertion_failed_contributes_no_timing(tmp_path):
 
 
 def test_an_action_with_no_expectation_recorded_is_still_harvested(tmp_path):
-    # `expect_ok` is None on an action that asserts nothing, and on every payload recorded before
-    # the field existed. Only an explicit False is a failed assertion.
+    # `expect_ok` is None on an action that asserts nothing and on pre-field payloads; only
+    # explicit False is a failed assertion.
     rows = [
         {"row_type": "run_meta", "tier": "standard"},
         {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
@@ -570,7 +559,7 @@ def test_a_clean_zero_base_arm_still_pairs_so_a_jank_regression_is_not_lost(tmp_
     stats, floors = F.summarise([result]), F.summarise([null])
     s = stats["stream_time_in_jank_pct"]
     assert s["n"] == 4
-    # Compared by DIFFERENCE, in the metric's own unit: 0.0% to 12.0% is +12.0 points.
+    # Compared by DIFFERENCE in the metric's own unit: 0.0% to 12.0% is +12.0 points.
     assert s["difference"] is True
     assert s["delta_pct"] == pytest.approx(12.0)
     assert "stream_time_in_jank_pct" in floors
@@ -594,7 +583,7 @@ def test_an_unchanged_repetition_does_not_read_as_a_pair_disagreeing_on_sign(tmp
     something that did not happen is reporting a wrong answer in the right vocabulary, which is
     worth three lines on its own; it is not worth relaxing gate 3 to chase.
     """
-    # Two repetitions clean on both arms, two that regress. Nothing regresses the other way.
+    # Two repetitions clean on both arms, two that regress, nothing the other way.
     result = stream_payload(tmp_path, "result", [(SMOOTH, SMOOTH), (SMOOTH, JANKY)] * 2)
     null = stream_payload(tmp_path, "null", [(SMOOTH, SMOOTH)] * 4)
 
@@ -607,7 +596,7 @@ def test_an_unchanged_repetition_does_not_read_as_a_pair_disagreeing_on_sign(tmp
     ]
     assert s["consistent"] is True, "an unchanged repetition is a tie, not a disagreement"
     _f, v = F.verdict_for(s, F.summarise([null])["stream_time_in_jank_pct"])
-    # Still refused, and that is right, but no longer refused for a reason that did not occur.
+    # Still refused, and rightly, but no longer for a reason that did not occur.
     assert v == "VOID (effect under its own scatter)"
     assert v != "VOID (pairs disagree on sign)"
 
@@ -632,9 +621,7 @@ def test_a_ratio_metric_still_drops_a_zero_base_rather_than_dividing_by_it(tmp_p
 
 
 def test_the_enforced_idle_window_is_not_pooled_into_the_frame_metrics(tmp_path):
-    # Every cell records a 1.5 s `idle:calibrate` window with the frame recorder running. Pooling
-    # its quiet into the film halves the jank share, so the column would not be the quantity the
-    # rest of the tool prints under that name.
+    # Pooling each cell's 1.5s `idle:calibrate` quiet into the film halves the jank share.
     cid = "r100K.base.rep0"
     rows = [
         {"row_type": "run_meta", "tier": "standard"},
@@ -648,9 +635,8 @@ def test_the_enforced_idle_window_is_not_pooled_into_the_frame_metrics(tmp_path)
 
 
 def test_a_resumed_cell_is_measured_from_its_own_attempt_only(tmp_path):
-    # `--resume` re-runs a cell that died, and the payload is append-only, so the dead attempt's
-    # windows sit in the file under the SAME cell id. Pooling them into the retry reports a number
-    # that no single run of the film ever produced.
+    # `--resume` re-runs a dead cell into an append-only payload under the SAME cell id; pooling
+    # both attempts reports a number no single run produced.
     cid = "r100K.base.rep0"
     rows = [
         {"row_type": "run_meta", "tier": "standard", "session_id": "s1"},
@@ -666,8 +652,8 @@ def test_a_resumed_cell_is_measured_from_its_own_attempt_only(tmp_path):
 
 
 def test_one_file_holding_two_tiers_is_refused_like_two_files(tmp_path):
-    # The recorder appends, so a second run into the same --out leaves both films in one payload.
-    # Reading only the first run_meta let that file through the refusal it was written for.
+    # A second run into the same --out leaves both films in one payload, and reading only the
+    # first run_meta let that through.
     rows = [
         {"row_type": "run_meta", "tier": "fast"},
         *cell("100K", "base", "rep0", {"open_close_ms": 1000.0}),
@@ -736,10 +722,9 @@ def resumed_payload(tmp_path: Path, name: str, retry_session: str) -> Path:
 
 
 def test_an_arm_resumed_into_a_new_session_is_not_paired_with_the_old_one(tmp_path):
-    # `--resume` skips the arm that completed and re-runs the one that died, under a NEW session id
-    # in the SAME shard directory. Keyed on the repetition alone the two pair, and the whole 8%
-    # session drift is charged to whichever arm was re-run. `scoring/ab.py` refuses exactly this
-    # comparison; the sweep's own pairing has to refuse it too.
+    # `--resume` re-runs the dead arm under a NEW session id in the same shard; keyed on the
+    # repetition alone the two pair and the 8% drift is charged to the re-run arm.
+    # `scoring/ab.py` refuses exactly this.
     path = resumed_payload(tmp_path, "resumed", "s2")
     assert F.cell_metrics(F.read_rows(path))["r100K.treatment.rep0"] == {
         "message_menu.open_close_ms": 108.0
@@ -748,8 +733,8 @@ def test_an_arm_resumed_into_a_new_session_is_not_paired_with_the_old_one(tmp_pa
 
 
 def test_an_arm_resumed_inside_the_same_session_still_pairs(tmp_path):
-    # The other direction, so the refusal above cannot pass by rejecting every resumed run. Two
-    # attempts in ONE session are still one session, and the retry's own numbers pair normally.
+    # The other direction, so the refusal cannot pass by rejecting every resumed run: two attempts
+    # in ONE session still pair normally.
     path = resumed_payload(tmp_path, "same", "s1")
     assert F.paired(F.read_rows(path), shard = "same") == {
         "message_menu.open_close_ms": [(100.0, 108.0)]
@@ -757,8 +742,8 @@ def test_an_arm_resumed_inside_the_same_session_still_pairs(tmp_path):
 
 
 def test_a_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
-    # Payloads recorded before session ids existed carry none, so both arms resolve to "" and the
-    # new key term is inert. A refusal that also rejected these would delete every old reading.
+    # Pre-session-id payloads resolve both arms to '', so the new key term is inert; refusing them
+    # would delete every old reading.
     path = payload(tmp_path, "legacy", [(1000.0, 900.0)])
     assert F.paired(F.read_rows(path), shard = "legacy") == {
         "message_menu.open_close_ms": [(1000.0, 900.0)]
@@ -789,8 +774,8 @@ def parity_action(cid: str, action: str, digest: str) -> dict:
 
 
 def test_a_mismatch_at_a_smaller_rung_survives_the_later_rungs(tmp_path):
-    # A standard-tier repetition walks 1K, 10K and 100K. Keyed on the repetition alone, the 100K
-    # rows overwrite the 1K ones and a real difference at 1K is reported as a pass.
+    # A standard-tier repetition walks 1K, 10K and 100K; keyed on the repetition alone the 100K
+    # rows overwrite the 1K ones.
     rows = [{"row_type": "run_meta", "tier": "standard"}]
     for rung, base_digest, treat_digest in (("r1K", "AAA", "BBB"), ("r100K", "CCC", "CCC")):
         rows.append(parity_action(f"{rung}.A0.rep0", "settings", base_digest))
@@ -825,12 +810,9 @@ def parity_run(tmp_path: Path, name: str, cells: list[tuple[str, str, str, str]]
 
 
 def test_instability_measured_at_one_rung_does_not_silence_a_stable_rung(tmp_path):
-    # A standard-tier null control at the default --reps 1 walks 1K, 10K and 100K. `settings`
-    # races only at 100K, where the mounted thread is largest. Derived over the pooled action
-    # name, that single differing observation borrows the other two rungs' observation COUNT,
-    # clears min_observations, and marks `settings` unstable everywhere -- so a real DOM
-    # regression at 1K, a rung the null control measured clean, prints as expected variation and
-    # the command exits 0.
+    # `settings` races only at 100K, but derived over the pooled action name that one observation
+    # borrows the other rungs' COUNT, clears min_observations, and marks it unstable everywhere,
+    # so a real 1K regression prints as expected variation and exits 0.
     null = parity_run(
         tmp_path,
         "null",
@@ -853,10 +835,8 @@ def test_instability_measured_at_one_rung_does_not_silence_a_stable_rung(tmp_pat
 
 
 def test_instability_measured_at_a_rung_still_silences_that_rung(tmp_path):
-    # The other direction, so the scoping above cannot pass by never silencing anything. With two
-    # repetitions the null control has the observations to MEAN it at 100K, and a mismatch there
-    # is expected variation -- while the same action at 1K, measured clean, still carries a
-    # verdict.
+    # The other direction, so the scoping cannot pass by never silencing anything: with two
+    # repetitions the null control can mean it at 100K while 1K still carries a verdict.
     null = parity_run(
         tmp_path,
         "null2",
@@ -878,13 +858,11 @@ def test_instability_measured_at_a_rung_still_silences_that_rung(tmp_path):
 
 
 def test_a_declared_unstable_action_still_holds_at_every_rung(tmp_path):
-    # A declared entry carries a MECHANISM that is a property of the action, so it is not scoped
-    # to a rung and a null control is not needed to honour it.
-    #
-    # NOT 1 is what this test is about: the difference is filed as expected variation rather than
-    # as a stable difference. It is 2 and not 0 because the only pair in this payload landed in
-    # that bucket, so nothing was compared at all -- see `report`'s `matched == 0` guard, which
-    # refuses to exit 0 over a run where the digest never produced a verdict.
+    # A declared entry carries a MECHANISM that is a property of the action, so it is not
+    # rung-scoped and needs no null control.
+    # NOT 1: the difference is filed as expected variation rather than a stable difference. It is
+    # 2 because the only pair landed in that bucket, so `report`'s `matched == 0` guard refuses to
+    # exit 0 over a run that produced no verdict.
     rows = [{"row_type": "run_meta", "tier": "standard"}]
     rows.append(parity_action("r1K.base.rep0", "stop_generation", "A"))
     rows.append(parity_action("r1K.treatment.rep0", "stop_generation", "B"))
@@ -927,11 +905,9 @@ def resumed_parity(tmp_path: Path, name: str, retry_session: str) -> Path:
 
 
 def test_a_resumed_arm_is_not_paired_with_its_partner_from_the_old_session(tmp_path):
-    # `--resume` re-runs the arm that died under a NEW session id in the SAME shard, so the
-    # completed partner is left under the old one. Keyed on the repetition alone the two pair, and
-    # every session-scoped volatile the normaliser missed reads as a difference between the arms.
-    # Two of them at one rung are enough for `derive_unstable` to call `settings` unstable AT THAT
-    # RUNG, and a real DOM regression at 100K then prints as expected variation and exits 0.
+    # `--resume` re-runs the dead arm under a NEW session id, so session-scoped volatiles read as
+    # arm differences; two at one rung make `derive_unstable` call `settings` unstable there and a
+    # real 100K regression exits 0.
     null = resumed_parity(tmp_path, "null_resumed", "s2")
     unstable, _derived, _checks = U.unstable_set([null])
     assert ("r100K", "settings") not in unstable
@@ -942,31 +918,27 @@ def test_a_resumed_arm_is_not_paired_with_its_partner_from_the_old_session(tmp_p
 
 
 def test_a_cross_session_pair_carries_no_verdict_in_either_direction(tmp_path):
-    # And it is not silently dropped either. Both arms ran, so the reader is told the surface went
-    # unmeasured rather than being shown a pass -- which is the distinction the NOT COMPARABLE
-    # outcome exists to make.
+    # And not silently dropped: both arms ran, so the reader is told the surface went unmeasured,
+    # which is what NOT COMPARABLE exists to say.
     null = resumed_parity(tmp_path, "blind_resumed", "s2")
     verdicts = {r["verdict"] for _a, _s, _c, r in U.compare_all([null])[0]}
     assert verdicts == {U.P.NOT_COMPARABLE}
-    # NOT 1, because a cross-session pair is not a stable difference, and NOT 0 either: every pair
-    # here is NOT COMPARABLE, so the payload carries no verdict in either direction and `report`
-    # says so with 2 rather than letting CI go green on a run that compared nothing.
+    # NOT 1 (a cross-session pair is not a stable difference) and NOT 0 either: every pair is NOT
+    # COMPARABLE, so 2 rather than letting CI go green on a run that compared nothing.
     assert U.report([null], "t", U.UNSTABLE_ACTIONS) == 2
 
 
 def test_a_parity_arm_resumed_inside_the_same_session_still_pairs(tmp_path):
-    # The other direction, so the refusal above cannot pass by rejecting every resumed payload.
-    # Two attempts in ONE session are still one session, the pairs are real, and the instability
-    # they show is derived exactly as before.
+    # The other direction: two attempts in ONE session are one session, the pairs are real, and
+    # instability derives as before.
     null = resumed_parity(tmp_path, "same_session", "s1")
     unstable, _derived, _checks = U.unstable_set([null])
     assert ("r100K", "settings") in unstable
 
 
 def test_a_parity_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
-    # Payloads recorded before session ids existed carry none, so both arms resolve to "" and the
-    # new key term is inert. A refusal that also rejected these would blind the tool to every
-    # older run.
+    # Pre-session-id payloads resolve both arms to '', so the term is inert; refusing them would
+    # blind the tool to every older run.
     path = parity_run(tmp_path, "legacy_parity", [("r1K", "rep0", "A", "B")])
     assert U.report([path], "t", U.UNSTABLE_ACTIONS) == 1
 
@@ -1019,10 +991,8 @@ def resumed_both_arms(tmp_path: Path, name: str) -> Path:
 
 
 def test_a_superseded_attempt_is_not_a_second_parity_observation(tmp_path):
-    # One repetition ran twice, so the payload holds two comparable pairs for it. Counted as two,
-    # the differing dead attempt and the matching retry are exactly `min_observations` and
-    # `derive_unstable` marks `settings` unstable at 100K on the strength of a reading the run
-    # itself threw away.
+    # One repetition ran twice, so counting the dead attempt gives exactly `min_observations` and
+    # marks `settings` unstable on a reading the run threw away.
     null = resumed_both_arms(tmp_path, "null_both_arms")
     assert len(U.collect([null])["pairs"]) == 1
 
@@ -1034,18 +1004,15 @@ def test_a_superseded_attempt_is_not_a_second_parity_observation(tmp_path):
 
 
 def test_a_superseded_attempt_does_not_silence_a_real_parity_regression(tmp_path):
-    # The consequence, end to end. Scored against that unstable set, a genuine DOM difference on
-    # `settings` at 100K prints under "expected to vary" and the gate exits 0 on a regression.
+    # The consequence end to end: a genuine 100K difference then prints under 'expected to vary' and the gate exits 0.
     unstable, _derived, _checks = U.unstable_set([resumed_both_arms(tmp_path, "null_silencer")])
     regressed = parity_run(tmp_path, "mine_both_arms", [("r100K", "rep0", "X", "REGRESSED")])
     assert U.report([regressed], "t", unstable) == 1
 
 
 def test_two_repetitions_of_one_pair_are_still_two_parity_observations(tmp_path):
-    # The control: superseding is keyed on the ATTEMPT, not on the cell id, so two repetitions of
-    # one rung inside one session remain two independent observations and still derive as
-    # unstable. A filter that kept only one reading per cell would pass the two tests above by
-    # deleting the evidence they are meant to preserve.
+    # The control: superseding keys on the ATTEMPT, not the cell id, so two repetitions in one
+    # session stay two observations.
     rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
     for rep, treat in (("rep0", "Y"), ("rep1", "Z")):
         drained_arm(rows, "base", rep, "s1", "X", True)
@@ -1059,9 +1026,7 @@ def test_two_repetitions_of_one_pair_are_still_two_parity_observations(tmp_path)
 
 
 def test_an_attempt_that_was_never_re_run_still_carries_its_parity_verdict(tmp_path):
-    # The other control: a cell that died and was never resumed is the LATEST attempt at itself,
-    # so its rows stay. Dropping every incomplete cell instead would blind the tool to the runs
-    # that have the most to say, and would silence the difference below rather than report it.
+    # The other control: a cell that died and was never resumed is the latest attempt at itself, so its rows stay.
     rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
     drained_arm(rows, "base", "rep0", "s1", "STABLE", True)
     drained_arm(rows, "treatment", "rep0", "s1", "DIFFERENT", False)
@@ -1090,33 +1055,24 @@ def two_tier_parity(tmp_path: Path, name: str, fast: tuple[str, str], standard: 
 
 
 def test_a_null_control_holding_two_tiers_is_refused_before_the_set_is_derived(tmp_path):
-    # THE POOLING THIS USED TO DEMONSTRATE IS GONE, and it was fixed underneath rather than here.
-    # The setup assertion used to be `("r100K", "settings") in unstable`: one differing 100K pair
-    # from the fast film and one matching 100K pair from the standard film pooled into exactly
-    # `min_observations`, marking the action unstable on the strength of two different films.
-    #
-    # `latest_attempt_rows` now keys an attempt on any attempt-stamped row rather than on the
-    # terminal cell row alone, and the two films write the SAME cell ids, so they are read as two
-    # attempts of one cell and the superseded one is dropped before pairing. Only the standard
-    # film's matching pair survives, so there is one observation and nothing is derived. Asserting
-    # the old pooling here would be asserting a bug that no longer exists.
+    # THE POOLING THIS DEMONSTRATED IS GONE, fixed underneath rather than here.
+    # `latest_attempt_rows` now keys on any attempt-stamped row, and the two films write the SAME
+    # cell ids, so the superseded one is dropped before pairing and nothing is derived.
     null = two_tier_parity(tmp_path, "null_mixed", ("X", "Y"), ("Q", "Q"))
     unstable, _derived, _checks = U.unstable_set([null])
     assert ("r100K", "settings") not in unstable
 
-    # The refusal is kept regardless, as the layer that does not depend on the two films colliding
-    # on a cell id. Two tiers that walk different ladders need not collide at all, and a set
-    # derived across films is wrong whether or not de-duplication happened to absorb it.
+    # The refusal is kept as the layer that does not depend on the two films colliding on a cell
+    # id: a set derived across films is wrong either way.
     with pytest.raises(SystemExit) as exc:
         U.main([str(tmp_path / "mine_any"), "--null", str(null.parent)])
     assert "more than one tier" in str(exc.value)
 
 
 def test_two_mixed_tier_sets_do_not_pass_by_matching_each_other(tmp_path):
-    # The case the tier-mismatch WARNING cannot see: both sides were re-run at the other tier, so
-    # both sets are {fast, standard}, they compare EQUAL, and no warning fires. The pooled null
-    # control then silences `settings` at 100K and the real 100K regression in the payload prints
-    # as expected variation with the command exiting 0.
+    # The case the tier-mismatch WARNING cannot see: both sides re-run at the other tier, so both
+    # sets are {fast, standard}, compare EQUAL, and the pooled null control silences a real 100K
+    # regression.
     null = two_tier_parity(tmp_path, "null_both", ("X", "Y"), ("Q", "Q"))
     mine = two_tier_parity(tmp_path, "mine_both", ("Q", "Q"), ("Q", "REGRESSED"))
     assert U.tier_of([null]) == U.tier_of([mine]) == {"fast", "standard"}
@@ -1127,9 +1083,7 @@ def test_two_mixed_tier_sets_do_not_pass_by_matching_each_other(tmp_path):
 
 
 def test_a_payload_holding_two_tiers_is_refused_even_with_no_null_control(tmp_path):
-    # The declared unstable set is not derived from anything, so nothing is pooled -- but the
-    # payload's own 100K pairs still come from two films, and reporting them as repetitions of one
-    # measurement is the same misreading.
+    # A declared set is derived from nothing, but the payload's own 100K pairs still come from two films.
     mine = two_tier_parity(tmp_path, "mine_alone", ("Q", "Q"), ("Q", "REGRESSED"))
     with pytest.raises(SystemExit) as exc:
         U.main([str(mine.parent)])
@@ -1137,8 +1091,7 @@ def test_a_payload_holding_two_tiers_is_refused_even_with_no_null_control(tmp_pa
 
 
 def test_one_tier_on_each_side_still_scores_in_both_directions(tmp_path):
-    # The control, so the refusal cannot pass by rejecting every run. A single-tier null control
-    # and a single-tier payload score exactly as before, and a real regression still exits 1.
+    # The control: single-tier null control and payload score as before, and a real regression still exits 1.
     null = parity_run(tmp_path, "null_one", [("r100K", "rep0", "Q", "Q")])
     clean = parity_run(tmp_path, "mine_clean", [("r100K", "rep0", "Q", "Q")])
     regressed = parity_run(tmp_path, "mine_bad", [("r100K", "rep0", "Q", "REGRESSED")])
@@ -1147,14 +1100,10 @@ def test_one_tier_on_each_side_still_scores_in_both_directions(tmp_path):
 
 
 def test_a_tier_mismatch_between_two_single_tier_sets_is_refused(tmp_path, capsys):
-    # This used to warn and then score anyway, which is the worst of the two options: the warning
-    # said the derived set does not transfer, and then the run was scored against it regardless.
-    # A set that does not transfer is not a weaker excuse than a real one, it is an arbitrary one.
-    #
-    # Exit 2, not 1. The payload below does carry a regression, so the old assertion of exit 1 was
-    # passing for a reason unrelated to the tier check. Refusing to answer and reporting a parity
-    # failure have to be distinguishable, or a refusal sends somebody hunting for a UI change that
-    # was never measured.
+    # This used to warn and score anyway, the worst option: a set that does not transfer is
+    # arbitrary, not merely weaker.
+    # Exit 2, not 1: the payload does carry a regression, so the old exit-1 assertion passed for
+    # an unrelated reason, and refusing to answer must be distinguishable from a parity failure.
     null = write(
         tmp_path,
         "null_fast",
@@ -1170,10 +1119,8 @@ def test_a_tier_mismatch_between_two_single_tier_sets_is_refused(tmp_path, capsy
 
 
 def test_a_corpus_mismatch_between_two_valid_sides_is_refused(tmp_path, capsys):
-    # The likelier of the two in practice, and the one that had no check at all: each side is a
-    # perfectly valid single corpus, so `one_corpus` passes on both, and the null's set was still
-    # applied to a payload that rendered a different thread. Which actions race is a property of
-    # the thread the film drove, so that set describes something the payload never displayed.
+    # The likelier case with no check at all: each side is a valid single corpus, so `one_corpus`
+    # passes on both while the null's set describes a thread the payload never displayed.
     def at(name, corpus, cells):
         rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": corpus}]
         for rung, rep, base_digest, treat_digest in cells:
@@ -1191,8 +1138,7 @@ def test_a_corpus_mismatch_between_two_valid_sides_is_refused(tmp_path, capsys):
 
 
 def test_a_side_recorded_before_corpus_hashes_existed_is_still_scored(tmp_path, capsys):
-    # An absent hash is not a disagreement. Refusing it would reject every payload recorded before
-    # the field existed, which is the whole archive.
+    # An absent hash is not a disagreement; refusing it would reject the whole archive.
     rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "v1"}]
     rows.append(parity_action("r100K.base.rep0", "settings", "Q"))
     rows.append(parity_action("r100K.treatment.rep0", "settings", "Q"))
@@ -1203,8 +1149,8 @@ def test_a_side_recorded_before_corpus_hashes_existed_is_still_scored(tmp_path, 
 
 
 def test_main_prints_a_mixed_unstable_set_without_dying(tmp_path, capsys):
-    # The set now holds bare action names and (rung, action) pairs together, and `sorted()` over
-    # the two raises TypeError. The one place that formats it is the run header.
+    # The set holds bare action names and (rung, action) pairs together, so `sorted()` raises
+    # TypeError; the run header is the one place that formats it.
     null = parity_run(tmp_path, "nullm", [("r1K", "rep0", "X", "Y"), ("r1K", "rep1", "X", "Z")])
     mine = parity_run(tmp_path, "minem", [("r1K", "rep0", "Q", "Q")])
     assert U.main([str(mine.parent), "--null", str(null.parent)]) == 0
@@ -1274,8 +1220,7 @@ def test_a_probe_named_in_a_later_run_meta_is_still_caught(tmp_path):
 
 
 def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
-    # Two independent records of one fact, so a payload from a version that emits only the gate
-    # is still refused.
+    # Two independent records of one fact, so a payload emitting only the gate is still refused.
     path = probe_payload(tmp_path, "gated", None)
     with path.open("a", encoding = "utf-8") as fh:
         fh.write(
@@ -1323,8 +1268,7 @@ def test_the_report_path_refuses_a_probed_payload_too(tmp_path):
 
 
 def test_a_null_probe_field_is_the_ordinary_scorable_case(tmp_path):
-    # Explicit null and absent must both score, or every payload written before the field
-    # existed becomes unreadable.
+    # Explicit null and absent must both score, or every pre-field payload becomes unreadable.
     pooled, _ = F.load([probe_payload(tmp_path / "explicit", "clean", None)])
     assert pooled["message_menu.open_close_ms"]
     pooled, _ = F.load([payload(tmp_path / "absent", "clean", [(1000.0, 900.0)] * 4)])
@@ -1375,7 +1319,6 @@ def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
 
 
 # ── the documented loop runs liveness before it reads a timing ───────
-
 
 LOOP_DOC = Path(__file__).resolve().parents[2] / "CONTRIBUTING-perf.md"
 
@@ -1459,11 +1402,10 @@ def test_the_documented_loop_asserts_liveness_before_it_reads_any_timing():
 
 
 def test_floor_table_prints_a_clean_verdict_from_a_run_that_liveness_voids(tmp_path, capsys):
-    # WHY THAT ORDER IS LOAD-BEARING, and the reason the line above is a gate rather than a note.
-    # The treatment build is 10% faster on the three repetitions it managed, and on the fourth it
-    # was so slow that `message_menu` never reached its slot. `paired` matches on the metrics BOTH
-    # arms recorded, so that repetition leaves the table with no trace except a smaller `n`, and
-    # the survivors print as a clean win over a tight floor.
+    # WHY THAT ORDER IS LOAD-BEARING. The treatment is 10% faster on the three repetitions it
+    # managed; on the fourth `message_menu` never reached its slot, and `paired` matches only
+    # metrics BOTH arms recorded, so that repetition leaves no trace but a smaller `n` and the
+    # survivors print as a clean win.
     mine = liveness_payload(
         tmp_path, "mine", [(1000.0, 900.0), (1000.0, 900.0), (1000.0, 900.0), (1000.0, None)]
     )
@@ -1481,9 +1423,8 @@ def test_floor_table_prints_a_clean_verdict_from_a_run_that_liveness_voids(tmp_p
 
 
 def test_the_repetition_that_missed_its_slot_is_what_the_verdict_turns_on(tmp_path, capsys):
-    # The control for the test above. With the fourth repetition's timing present, the same run is
-    # VOID on the same floor: the clean win is an artefact of the reading that went missing, not a
-    # property of the change. Every other number in the payload is identical.
+    # The control: with the fourth timing present the same run is VOID on the same floor, so the
+    # clean win is an artefact of the missing reading. Every other number is identical.
     mine = liveness_payload(
         tmp_path, "mine", [(1000.0, 900.0), (1000.0, 900.0), (1000.0, 900.0), (1000.0, 2500.0)]
     )
@@ -1499,11 +1440,10 @@ def test_the_repetition_that_missed_its_slot_is_what_the_verdict_turns_on(tmp_pa
     assert cli_main(["--assert-liveness", str(mine)]) == 0
 
 
+# A null control is base against base, so its four paired ratios are this machine's noise. The
+# fourth repetition hiccupped.
 # ── the null control needs the same liveness gate the treatment run gets ───────
 
-
-# A null control is base against base, so its four paired ratios are the noise this machine puts
-# between two identical builds. The fourth repetition is the one that hiccupped.
 NULL_WITH_A_NOISY_REPETITION = [
     (1000.0, 1000.0),
     (1010.0, 1012.0),
@@ -1511,12 +1451,12 @@ NULL_WITH_A_NOISY_REPETITION = [
     (1000.0, 1300.0),
 ]
 
-# The same null control on a run where that fourth repetition was slow enough to miss the slot, so
-# the reading that carried the noise is the reading that never happened.
+# The same null control where that fourth repetition missed its slot, so the reading that
+# carried the noise never happened.
 NULL_THAT_MISSED_THE_SLOT = NULL_WITH_A_NOISY_REPETITION[:3] + [(1000.0, None)]
 
-# A treatment payload that is 10% faster, consistently, with a spread well inside its own effect:
-# it clears gates 2 and 3 outright, so the only thing standing between it and `faster` is gate 1.
+# A consistent 10% with a spread well inside its own effect: it clears gates 2 and 3, so only
+# gate 1 stands between it and `faster`.
 MINE_TEN_PERCENT_FASTER = [
     (1000.0, 900.0),
     (1000.0, 905.0),
@@ -1552,9 +1492,8 @@ def test_the_documented_loop_asserts_liveness_on_the_null_control_too():
 
 
 def test_the_doc_says_which_commands_in_the_loop_need_a_studio():
-    # The loop is now four offline commands and three that drive a browser, so "every command
-    # above except the last" bills `--assert-liveness`, `floor_table` and `ui_parity` for
-    # credentials none of them read. All three run against a payload file on disk.
+    # Four offline commands and three that drive a browser, so 'every command above except the
+    # last' bills three payload-file readers for credentials they never use.
     prose = credentials_prose()
     for offline in ("--assert-liveness", "floor_table", "ui_parity", "--report"):
         assert offline in prose, (
@@ -1564,27 +1503,24 @@ def test_the_doc_says_which_commands_in_the_loop_need_a_studio():
 
 
 def test_a_missed_slot_in_the_null_control_prints_noise_as_a_result(tmp_path, capsys):
-    # WHY THE NULL CONTROL IS GATED TOO. The floor is `max(|null delta|, null spread)` over the
-    # repetitions that survived pairing, and `paired` keys on the metrics BOTH arms recorded, so a
-    # null repetition that missed its slot leaves no trace either. The repetition a run drops is
-    # the one that was slow enough to miss a budget, which is the noisiest one it had, so the loss
-    # is not symmetric: it can only tighten the floor.
+    # WHY THE NULL CONTROL IS GATED TOO. The floor is max(|null delta|, null spread) over paired
+    # repetitions, and a null repetition that missed its slot leaves no trace either: the dropped
+    # one is the noisiest it had, so the loss can only tighten the floor.
     mine = liveness_payload(tmp_path, "mine", MINE_TEN_PERCENT_FASTER)
     null = liveness_payload(tmp_path, "null", NULL_THAT_MISSED_THE_SLOT)
     assert F.main(["--floor", str(null.parent), str(mine.parent)]) == 0
     table = capsys.readouterr().out
     assert "0.3  faster" in table
     assert "1 metric(s) cleared all three gates." in table
-    # And the gate the loop used to run only on `outputs/mine` has nothing to say about it: the
-    # contributor's own payload is whole. The hole is in the run that set the bar.
+    # And a gate run only on `outputs/mine` has nothing to say: the contributor's payload is
+    # whole, the hole is in the run that set the bar.
     assert cli_main(["--assert-liveness", str(mine)]) == 0
     assert cli_main(["--assert-liveness", str(null)]) == 1
 
 
 def test_the_null_repetition_that_kept_its_reading_voids_the_same_result(tmp_path, capsys):
-    # The control for the test above, and the reading the missed slot removed. The treatment
-    # payload is byte-identical; only the null control differs, by the one repetition it managed to
-    # finish. Its floor is 30.1% rather than 0.3%, and the same 10% is noise.
+    # The control: the treatment payload is byte-identical, only the null differs by its one
+    # finished repetition, and its floor of 30.1% rather than 0.3% makes the same 10% noise.
     mine = liveness_payload(tmp_path, "mine", MINE_TEN_PERCENT_FASTER)
     null = liveness_payload(tmp_path, "null", NULL_WITH_A_NOISY_REPETITION)
     assert F.main(["--floor", str(null.parent), str(mine.parent)]) == 0
@@ -1613,7 +1549,7 @@ def test_a_gate_from_an_attempt_that_never_closed_still_refuses_its_cell(tmp_pat
     # The first attempt completed cleanly and closed itself.
     rows.append(in_session(parity_action(cid, "settings", "STABLE"), "s1"))
     rows.append(parity_cell(cid, "treatment", "s1", "rep0", True))
-    # The resume re-ran the same cell, lost messages, and was killed before its `cell` row.
+    # The resume re-ran the cell, lost messages, and died before its `cell` row.
     rows.append({"row_type": "run_meta", "tier": "standard", "session_id": "s2"})
     rows.append(in_session(parity_action(cid, "settings", "LOST"), "s2"))
     rows.append(
@@ -1647,8 +1583,7 @@ def gated_then_resumed(tmp_path: Path, name: str) -> Path:
         {"row_type": "run_meta", "tier": "standard", "session_id": "s1"},
         {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
         timed_action("r100K.base.rep0", "s1", 100.0),
-        # The treatment arm lost its thread's middle. It renders fewer rows, so its timing is
-        # CHEAPER than a correct cell's, in the direction that flatters the arm.
+        # The treatment arm lost its thread's middle, so it renders fewer rows and times CHEAPER, flattering the arm.
         {
             "row_type": "cell",
             "cell_id": "r100K.treatment.rep0",
@@ -1678,8 +1613,7 @@ def gated_then_resumed(tmp_path: Path, name: str) -> Path:
             "completed": False,
         },
     ]
-    # The refusal has to hold on the payload BEFORE the resume, or the test below passes on a
-    # payload that was never quotable for some other reason.
+    # The refusal must hold on the payload BEFORE the resume, or the test below passes for another reason.
     assert F.paired(F.read_rows(before), shard = "b") == {}
     return write(tmp_path, name, rows)
 

@@ -820,7 +820,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await listStoredChatMessages\(remoteId\)[\s\S]*?return completeLoad/,
+    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
   );
   assert.match(
     runtimeProviderSource,
@@ -915,7 +915,8 @@ test("media pages retire the shell only after gallery and preview hydration", ()
   );
   assert.match(
     audioPageSource,
-    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(\)/,
+    // audio-page-policy.test.ts pins the argument list: reactivation asks for the loaded window.
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(/,
   );
   assert.match(
     audioPageSource,

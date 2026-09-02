@@ -4,19 +4,19 @@
 """A quantized V cache is priced with flash attention on, because llama.cpp will
 not run it any other way.
 
-The estimator used to pass ``flash_attn = False`` to ``_estimate_kv_cache_bytes``
-unconditionally, as the conservative arm. It is conservative for a *choice*; for a
-quantized V cache it is not a choice. llama.cpp turns flash attention on itself --
+``flash_attn = False`` used to be passed unconditionally as the conservative arm. It is
+conservative for a *choice*; for a quantized V cache it is not one. llama.cpp turns
+flash attention on itself --
 
     enabling flash_attn since it is required for quantized V cache
 
--- and aborts the load without it, which ``_tensor_quant_kv_unsupported_binary``
-already documents as "V cache quantization requires flash_attn". The False arm sets
-``bpe_v = max(bpe_k, f16)``, so the entire quantized saving on the V axis was charged
-straight back and the panel reported a launch that cannot happen.
+-- and aborts without it, which ``_tensor_quant_kv_unsupported_binary`` documents as
+"V cache quantization requires flash_attn". The False arm sets
+``bpe_v = max(bpe_k, f16)``, charging the entire quantized saving on the V axis back
+and reporting a launch that cannot happen.
 
-Measured against llama-server b10632 (``version: 0.3.0-dev (build 10632, commit
-11cd98842)``), Qwen3-0.6B-Q4_K_M, identical on the CPU and Vulkan builds:
+Measured against llama-server b10632 (commit ``11cd98842``), Qwen3-0.6B-Q4_K_M,
+identical on the CPU and Vulkan builds:
 
     ctx    -ctk/-ctv   reserved before   allocated     after
     4096   q8_0            343 MiB        238 MiB     238 MiB

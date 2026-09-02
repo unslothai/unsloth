@@ -557,9 +557,7 @@ IGPU_DGPU_ADAPTERS = [
 
 
 def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
-    """Both visible: two different cards, two counters, and identity says which
-    is which. Capacity ranking cannot: the dGPU's 1.2 GiB would also fit the
-    2 GiB iGPU, so the two are swappable and it reports both unknown."""
+    """The dGPU keeps its LUID usage while the shared iGPU declines."""
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
     )
@@ -576,11 +574,8 @@ def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [
-        pytest.approx(0.5, abs = 0.01),
-        pytest.approx(1.2, abs = 0.01),
-    ]
-    assert aggregate == pytest.approx(1.7, abs = 0.01)
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
+    assert aggregate is None
 
 
 def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatch):
@@ -602,10 +597,7 @@ def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatc
     )
 
     devices, _ = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [
-        pytest.approx(0.5, abs = 0.01),
-        pytest.approx(1.2, abs = 0.01),
-    ]
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
 
 
 def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
@@ -627,11 +619,8 @@ def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [
-        pytest.approx(0.5, abs = 0.01),
-        pytest.approx(1.2, abs = 0.01),
-    ]
-    assert aggregate == pytest.approx(1.7, abs = 0.01)
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
+    assert aggregate is None
 
 
 def test_a_partial_name_pass_still_lets_the_arch_finish_the_job(win_rocm, monkeypatch):
@@ -822,6 +811,29 @@ def test_registry_reads_the_amd_adapters_and_skips_the_rest(on_windows, monkeypa
     )
     assert hw._windows_amd_adapter_records_by_luid() == {
         0x14CF5: {"name": "AMD Radeon RX 9060 XT", "gfx": "gfx1200"}
+    }
+
+
+def test_registry_reads_optional_dedicated_memory(on_windows, monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        _fake_winreg(
+            {
+                "{bbbbbbbb-0000-0000-0000-000000000000}": {
+                    **AMD_RECORD,
+                    "DedicatedVideoMemory": 32 * GB,
+                    "DedicatedSystemMemory": 2 * GB,
+                }
+            }
+        ),
+    )
+    assert hw._windows_amd_adapter_records_by_luid() == {
+        0x14CF5: {
+            "name": "AMD Radeon RX 9060 XT",
+            "gfx": "gfx1200",
+            "dedicated_memory_bytes": 34 * GB,
+        }
     }
 
 
@@ -1287,9 +1299,9 @@ def _mixed_host(monkeypatch):
     monkeypatch.setattr(
         torch.cuda,
         "mem_get_info",
-        lambda i: (96 * GB, 128 * GB)
-        if i == 0
-        else pytest.fail("a discrete card must not be asked"),
+        lambda i: (
+            (96 * GB, 128 * GB) if i == 0 else pytest.fail("a discrete card must not be asked")
+        ),
     )
     return torch
 
@@ -1769,12 +1781,12 @@ def test_the_windows_path_is_inert_off_windows(win_rocm, monkeypatch, system):
 
 
 # ----------------------------------------------------------------------------- #
-# An APU the shared classifier cannot name
+# an apu the shared classifier cannot name without the exact-arch extension
 #
 # _rocm_classify_unified_memory names an APU from hipDeviceProp_t::integrated or
 # from the shared-pool arch set that drives the memory-fraction cap. A gfx1103
-# Phoenix iGPU on a runtime that leaves the flag at 0 is in neither, so
-# _rocm_props_are_positively_unified said no -- while on Windows PAL had already
+# phoenix igpu on a runtime that leaves the flag at 0 is in neither, while on
+# windows pal has already
 # added the WDDM shared heap to globalMemSize_ for it, because that inflation
 # keys off Pal::GpuType::Integrated and not off what the props struct reports.
 #
@@ -1824,7 +1836,7 @@ def _phoenix_host(
     return torch
 
 
-def test_a_phoenix_apu_the_classifier_misses_reads_as_an_unnamed_apu(win_rocm):
+def test_a_phoenix_apu_is_positively_unified_by_exact_arch(win_rocm):
     """gfx1103 is an integrated part and never shipped as a discrete board, so
     naming it cannot upgrade anything whose total is really carve-out scoped."""
 
@@ -1834,15 +1846,14 @@ def test_a_phoenix_apu_the_classifier_misses_reads_as_an_unnamed_apu(win_rocm):
         total_memory = int(PHOENIX_POOL)
         is_integrated = 0  # pre-6.2 HIP leaves it 0 on Windows
 
-    assert hw._rocm_props_are_positively_unified(_P()) is False  # unchanged
-    assert hw._rocm_props_are_an_unnamed_apu(_P()) is True
+    assert hw._rocm_props_are_positively_unified(_P()) is True
     _P.gcnArchName = "gfx1103:xnack-"  # suffixes and case must not hide it
-    assert hw._rocm_props_are_an_unnamed_apu(_P()) is True
+    assert hw._rocm_props_are_positively_unified(_P()) is True
     _P.gcnArchName = "GFX1103"
-    assert hw._rocm_props_are_an_unnamed_apu(_P()) is True
+    assert hw._rocm_props_are_positively_unified(_P()) is True
 
 
-def test_a_discrete_card_is_neither_positively_unified_nor_an_unnamed_apu(win_rocm):
+def test_a_discrete_card_is_not_positively_unified(win_rocm):
     """The guarantee the numerator rests on: shared bytes are host memory a
     discrete card's props.total_memory never counted."""
 
@@ -1853,10 +1864,8 @@ def test_a_discrete_card_is_neither_positively_unified_nor_an_unnamed_apu(win_ro
         is_integrated = 0
 
     assert hw._rocm_props_are_positively_unified(_P()) is False
-    assert hw._rocm_props_are_an_unnamed_apu(_P()) is False
     _P.gcnArchName, _P.name = "gfx1201", "AMD Radeon RX 9070 XT"
     assert hw._rocm_props_are_positively_unified(_P()) is False
-    assert hw._rocm_props_are_an_unnamed_apu(_P()) is False
 
 
 def test_a_phoenix_pool_total_takes_the_shared_sum_not_the_plateau(win_rocm, monkeypatch):

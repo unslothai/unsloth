@@ -3,103 +3,342 @@
 
 import { Button } from "@/components/ui/button";
 import { useChatRuntimeStore } from "@/features/chat";
+import { formatBytes, listCachedGguf, listCachedModels } from "@/features/hub";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
+import {
+  DOWNLOAD_KIND,
+  downloadManager,
+  jobKeyOf,
+  scopedVariant,
+  useDownloadManagerStore,
+} from "@/features/hub/download-manager";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import {
   EmbeddingModelBlockedError,
+  type EmbeddingModelResolution,
   EmbeddingModelVerificationError,
-  resetEmbeddingModelSettings,
+  resolveEmbeddingModel,
+  unloadEmbeddingModel,
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
-import { EmbeddingModelCombobox } from "./embedding-model-combobox";
+import { EmbeddingModelPicker } from "./embedding-model-picker";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+/** One slot per repo for the embedder's GGUF, so re-picking adopts the running transfer and a full-repo Hub download keeps its own. */
+const EMBEDDING_DOWNLOAD_SCOPE = "rag-embedding";
+
 /**
- * Which model indexes uploaded documents. Rendered in both General and Data,
- * off one shared store, so a save on one is what the other reads.
+ * Which model indexes uploaded documents, rendered in both General and Data off one shared store.
+ * A model not on disk is marked pending and offered as a download, and its loader stays cache-only,
+ * so closing or cancelling cannot turn into a first-index transfer.
  */
+const RESIDENCY_POLL_MS = 5000;
+
 export function DocumentsRagSection(): ReactElement {
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const embeddingModel = useEmbeddingModelStore((s) => s.settings);
   const loadError = useEmbeddingModelStore((s) => s.loadError);
+  const beginSave = useEmbeddingModelStore((s) => s.beginSave);
+  const isSaveCurrent = useEmbeddingModelStore((s) => s.isSaveCurrent);
   const save = useEmbeddingModelStore((s) => s.save);
-  // Null until the user edits, so the field follows a save made on the other
-  // surface instead of pinning whatever this mount first read.
-  const [draftOverride, setDraftOverride] = useState<string | null>(null);
-  const draftEmbeddingModel =
-    draftOverride ?? embeddingModel?.embeddingModel ?? "";
+  // Unloading leaves the selection alone, so it must not take a place in save order and retire an in-flight selection's reservation.
+  const applyResidency = useEmbeddingModelStore((s) => s.applyResidency);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // The store carries the backend's reason; an unreadable failure has none.
   const loadFailure =
     loadError === null
       ? null
       : loadError || t("settings.general.rag.loadError");
   const embeddingModelError = saveError ?? loadFailure;
-  // Set after a 409 (unverifiable model); offers "Save anyway".
-  const [embeddingModelNeedsForce, setEmbeddingModelNeedsForce] =
-    useState(false);
+  const [forceCandidate, setForceCandidate] = useState<string | null>(null);
+  /** Bumped when a save leaves the model string unchanged, which the effect below keys on. */
+  const [resolveNonce, setResolveNonce] = useState(0);
   const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
+  const [resolution, setResolution] = useState<EmbeddingModelResolution | null>(
+    null,
+  );
+  const [cachedRepos, setCachedRepos] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   useEffect(() => {
     void useEmbeddingModelStore.getState().load();
   }, []);
 
-  const saveEmbeddingModel = async (force: boolean) => {
-    const trimmed = draftEmbeddingModel.trim();
-    if (!trimmed) {
-      setSaveError(t("settings.general.rag.emptyError"));
-      return;
-    }
-    setIsSavingEmbeddingModel(true);
-    setSaveError(null);
+  // Residency changes with no settings mutation and there is no lifecycle event to subscribe to, so re-read while visible; a hidden tab catches up when it returns.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.hidden) return;
+      void useEmbeddingModelStore.getState().load();
+    };
+    const timer = window.setInterval(refresh, RESIDENCY_POLL_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
+
+  const refreshCachedRepos = useCallback(async () => {
     try {
-      const stood = await save(() =>
-        updateEmbeddingModelSettings(trimmed, {
-          hfToken: hfToken || undefined,
-          force,
-        }),
+      const [models, gguf] = await Promise.all([
+        listCachedModels(hfToken || undefined),
+        listCachedGguf(hfToken || undefined),
+      ]);
+      setCachedRepos(
+        new Set(
+          [...models, ...gguf]
+            .filter((repo) => !repo.partial)
+            .map((repo) => repo.repo_id),
+        ),
       );
-      // A later save owns the field now, so this answer says nothing current.
-      if (!stood) return;
-      setDraftOverride(null);
-      setEmbeddingModelNeedsForce(false);
+    } catch {
+    }
+  }, [hfToken]);
+
+  useEffect(() => {
+    void refreshCachedRepos();
+  }, [refreshCachedRepos]);
+
+  const savedModel = embeddingModel?.embeddingModel;
+  useEffect(() => {
+    setResolution(null);
+    setForceCandidate(null);
+    setSaveError(null);
+    if (!savedModel) return;
+    let live = true;
+    void resolveEmbeddingModel(savedModel, { hfToken: hfToken || undefined })
+      .then((next) => {
+        if (live && next.embeddingModel === savedModel) setResolution(next);
+      })
+      .catch(() => {
+      });
+    return () => {
+      live = false;
+    };
+  }, [savedModel, hfToken, resolveNonce]);
+
+  /** Persist the pick, recording the GGUF repo /resolve named so the loader opens what was downloaded rather than re-deriving a name. */
+  const persist = async (
+    model: string,
+    plan: EmbeddingModelResolution | null,
+    force: boolean,
+    reservation: number,
+  ): Promise<boolean> => {
+    try {
+      const stood = await save(
+        () =>
+          updateEmbeddingModelSettings(model, {
+            hfToken: hfToken || undefined,
+            ggufRepo:
+              plan?.backend === "llama" ? (plan.downloadRepo ?? null) : null,
+            backend: plan?.backend ?? null,
+            force,
+          }),
+        reservation,
+      );
+      if (!stood) return false;
+      setForceCandidate(null);
       toast.success(t("settings.general.rag.saved"), {
         description: t("settings.general.rag.reindexWarning"),
       });
+      return true;
     } catch (error) {
-      // A hard security block cannot be forced; keep the "save anyway" action hidden.
+      // A hard security block cannot be forced; keep "Save anyway" hidden.
       if (error instanceof EmbeddingModelBlockedError) {
-        setEmbeddingModelNeedsForce(false);
+        setForceCandidate(null);
       } else if (error instanceof EmbeddingModelVerificationError) {
-        setEmbeddingModelNeedsForce(true);
+        setForceCandidate(model);
       }
       setSaveError(
         error instanceof Error
           ? error.message
           : t("settings.general.rag.saveError"),
       );
+      return false;
+    }
+  };
+
+  /** Resolve first, so a model that needs fetching is offered as a download rather than saved and quietly fetched at the first index. */
+  const applyEmbeddingModel = async (model: string, force: boolean) => {
+    setForceCandidate(null);
+    const trimmed = model.trim();
+    if (!trimmed) {
+      setSaveError(t("settings.general.rag.emptyError"));
+      return;
+    }
+    // Claim cross-surface ordering before the resolver await, else a slower older selection saves last and overwrites a newer pick.
+    const reservation = beginSave();
+    setIsSavingEmbeddingModel(true);
+    setSaveError(null);
+    setResolution(null);
+    try {
+      if (force) {
+        // A force save can leave the model string unchanged, so the savedModel effect does not re-run and nothing restores the plan this call cleared.
+        if (await persist(trimmed, null, true, reservation)) {
+          setResolveNonce((n) => n + 1);
+        }
+        return;
+      }
+      let resolution: EmbeddingModelResolution;
+      try {
+        resolution = await resolveEmbeddingModel(trimmed, {
+          hfToken: hfToken || undefined,
+        });
+      } catch {
+        if (!isSaveCurrent(reservation)) return;
+        await persist(trimmed, null, false, reservation);
+        return;
+      }
+      if (!isSaveCurrent(reservation)) return;
+      if (resolution.error) {
+        setResolution(resolution);
+        setForceCandidate(trimmed);
+        setSaveError(resolution.error);
+        return;
+      }
+      // Retain the plan only after the server accepted the matching setting: a rejected save must not expose Download for an unsaved repo.
+      if (await persist(trimmed, resolution, false, reservation)) {
+        setResolution(resolution);
+      }
     } finally {
       setIsSavingEmbeddingModel(false);
     }
   };
 
-  const resetEmbeddingModel = async () => {
-    setIsSavingEmbeddingModel(true);
-    setSaveError(null);
-    setEmbeddingModelNeedsForce(false);
+  const startDownload = async (resolution: EmbeddingModelResolution) => {
+    const repoId = resolution.downloadRepo;
+    if (!repoId) return;
+    // Scoped when the backend named a file: the companion repo carries every quant, and the embedder opens one.
+    const scoped = resolution.files !== null && resolution.files.length > 0;
     try {
-      if (!(await save(resetEmbeddingModelSettings))) return;
-      setDraftOverride(null);
+      const outcome = await downloadManager.requestStart({
+        kind: DOWNLOAD_KIND.MODEL,
+        repoId,
+        variant: scoped ? scopedVariant(EMBEDDING_DOWNLOAD_SCOPE) : null,
+        scopeId: scoped ? EMBEDDING_DOWNLOAD_SCOPE : null,
+        files: scoped ? (resolution.files ?? undefined) : undefined,
+        inventoryKind: scoped ? "gguf" : undefined,
+        expectedBytes: resolution.sizeBytes ?? 0,
+      });
+      if (outcome === "started") {
+        toast.success(
+          t("settings.general.rag.downloading", {
+            model: resolution.embeddingModel,
+          }),
+          { description: t("settings.general.rag.downloadingDescription") },
+        );
+      } else if (outcome === "conflict") {
+        // Not a failure: an earlier partial used a different transport and the Hub's own card is where it resumes.
+        toast.info(t("settings.general.rag.downloadConflict"));
+      } else if (outcome === "busy") {
+        toast.info(t("settings.general.rag.downloadBusy"));
+      } else {
+        // requestStart turns refused starts into outcomes rather than throws, so every remaining non-start needs feedback here.
+        toast.error(t("settings.general.rag.downloadFailed"));
+      }
     } catch (error) {
-      setSaveError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.rag.saveError"),
-      );
+      toast.error(t("settings.general.rag.downloadFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
+
+  const downloadJobKey =
+    resolution?.downloadRepo && !resolution.cached
+      ? jobKeyOf(
+          DOWNLOAD_KIND.MODEL,
+          resolution.downloadRepo,
+          resolution.files?.length
+            ? scopedVariant(EMBEDDING_DOWNLOAD_SCOPE)
+            : null,
+        )
+      : null;
+  const fullSnapshotJobKey =
+    resolution?.downloadRepo && !resolution.cached
+      ? jobKeyOf(DOWNLOAD_KIND.MODEL, resolution.downloadRepo, null)
+      : null;
+  const downloadState = useDownloadManagerStore((state) =>
+    downloadJobKey ? (state.jobs[downloadJobKey]?.state ?? null) : null,
+  );
+  const fullSnapshotDownloadState = useDownloadManagerStore((state) =>
+    fullSnapshotJobKey ? (state.jobs[fullSnapshotJobKey]?.state ?? null) : null,
+  );
+  const downloading =
+    downloadState === "running" ||
+    downloadState === "cancelling" ||
+    fullSnapshotDownloadState === "running" ||
+    fullSnapshotDownloadState === "cancelling";
+
+  useEffect(() => {
+    if (
+      (downloadState !== "complete" &&
+        fullSnapshotDownloadState !== "complete") ||
+      !savedModel
+    )
+      return;
+    let live = true;
+    void Promise.all([
+      resolveEmbeddingModel(savedModel, { hfToken: hfToken || undefined }),
+      refreshCachedRepos(),
+    ])
+      .then(([next]) => {
+        if (live && next.embeddingModel === savedModel) setResolution(next);
+      })
+      .catch(() => {
+      });
+    return () => {
+      live = false;
+    };
+  }, [
+    downloadState,
+    fullSnapshotDownloadState,
+    savedModel,
+    hfToken,
+    refreshCachedRepos,
+  ]);
+  const canDownload = Boolean(
+    resolution && !resolution.cached && resolution.downloadRepo,
+  );
+  const onDevice = Boolean(resolution?.cached);
+  const statusTone: "pending" | "ready" | "error" | null = !embeddingModel
+    ? "pending"
+    : embeddingModelError
+      ? "error"
+      : downloading || isSavingEmbeddingModel
+        ? "pending"
+        : onDevice
+          ? "ready"
+          : null;
+  const statusText = !embeddingModel
+    ? t("settings.general.rag.checking")
+    : downloading
+      ? t("settings.general.rag.downloadingStatus")
+      : canDownload
+        ? resolution?.sizeBytes
+          ? t("settings.general.rag.notDownloadedSized", {
+              size: formatBytes(resolution.sizeBytes),
+            })
+          : t("settings.general.rag.notDownloaded")
+        : onDevice
+          ? embeddingModel.loaded
+            ? t("settings.general.rag.loaded")
+            : t("settings.general.rag.onDevice")
+          : "";
+
+  const unload = async () => {
+    setIsSavingEmbeddingModel(true);
+    try {
+      await applyResidency(unloadEmbeddingModel);
+    } catch (error) {
+      toast.error(t("settings.general.rag.unloadFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setIsSavingEmbeddingModel(false);
     }
@@ -115,57 +354,69 @@ export function DocumentsRagSection(): ReactElement {
         className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
       >
         <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
-          <div className="flex items-center gap-2 max-[360px]:w-full">
-            <EmbeddingModelCombobox
-              value={draftEmbeddingModel}
-              onChange={(next) => {
-                setDraftOverride(next);
-                setEmbeddingModelNeedsForce(false);
-                setSaveError(null);
-              }}
-              accessToken={hfToken || undefined}
-              disabled={!embeddingModel}
-              placeholder={t("settings.general.rag.searchPlaceholder")}
-              ariaLabel={t("settings.general.rag.embeddingModel")}
-              className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={
-                !embeddingModel ||
-                isSavingEmbeddingModel ||
-                draftEmbeddingModel.trim() === embeddingModel.embeddingModel
-              }
-              onClick={() => void saveEmbeddingModel(false)}
-            >
-              {isSavingEmbeddingModel ? t("common.saving") : t("common.save")}
-            </Button>
-          </div>
+          <EmbeddingModelPicker
+            value={embeddingModel?.embeddingModel ?? ""}
+            onSelect={(model) => void applyEmbeddingModel(model, false)}
+            defaultModel={embeddingModel?.defaultEmbeddingModel}
+            cachedModels={cachedRepos}
+            accessToken={hfToken || undefined}
+            disabled={!embeddingModel}
+            busy={isSavingEmbeddingModel}
+            className="w-[260px] max-[360px]:w-full"
+          />
           {embeddingModelError ? (
             <span className="max-w-[300px] text-right text-xs text-destructive">
               {embeddingModelError}
             </span>
           ) : null}
-          <div className="flex items-center gap-2">
-            {embeddingModelNeedsForce ? (
+          <div className="flex min-h-7 w-full items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              {statusTone ? (
+                <span
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full",
+                    statusTone === "pending"
+                      ? "animate-pulse bg-current"
+                      : statusTone === "ready"
+                        ? "bg-emerald-500"
+                        : "bg-destructive",
+                  )}
+                />
+              ) : null}
+              <span className="truncate">{statusText}</span>
+            </span>
+            {forceCandidate ? (
               <Button
                 variant="outline"
                 size="sm"
+                className="h-7 shrink-0 px-2.5 text-xs"
                 disabled={isSavingEmbeddingModel}
-                onClick={() => void saveEmbeddingModel(true)}
+                onClick={() => void applyEmbeddingModel(forceCandidate, true)}
               >
                 {t("settings.general.rag.saveAnyway")}
               </Button>
-            ) : null}
-            {embeddingModel?.isCustom ? (
+            ) : canDownload ? (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
-                disabled={isSavingEmbeddingModel}
-                onClick={() => void resetEmbeddingModel()}
+                className="h-7 shrink-0 px-2.5 text-xs"
+                disabled={downloading || isSavingEmbeddingModel}
+                onClick={() => resolution && void startDownload(resolution)}
               >
-                {t("settings.general.rag.resetAction")}
+                {downloading ? <Spinner className="mr-1.5" /> : null}
+                {t("settings.general.rag.download")}
+              </Button>
+            ) : null}
+            {/* Outside the chain above: saving a new model does not release the old one, so while Download shows the previous model can still be resident. */}
+            {embeddingModel?.backendLoaded ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 px-2.5 text-xs"
+                disabled={isSavingEmbeddingModel}
+                onClick={() => void unload()}
+              >
+                {t("settings.general.rag.unload")}
               </Button>
             ) : null}
           </div>

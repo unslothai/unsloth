@@ -16,7 +16,10 @@ import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
-import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
+import {
+  type ModelRuntime,
+  withModelLoadNotice,
+} from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
   ModelType,
@@ -45,6 +48,7 @@ import {
   runBoundedVariantsRequest,
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
+import { maxTokensIsTheLimit } from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
@@ -108,10 +112,31 @@ export class StreamInterruptedError extends Error {
  * content, so the chat UI can explain a completed stream holding only a thinking panel.
  */
 export class GenerationLengthError extends Error {
-  constructor() {
+  /**
+   * @param maxTokensWasSet whether the user actually configured a Max Tokens value.
+   *
+   * With Max Tokens left on "Max" the backend already requests the WHOLE context length
+   * (`payload["max_tokens"] = self._effective_context_length`), so generation stops at the
+   * context wall rather than at any setting, and "Increase Max Tokens" is advice that
+   * cannot be followed: it is at its maximum and raising it changes nothing. Observed on a
+   * 4096-token window where the prompt left roughly a thousand tokens to answer in, which
+   * medium thinking spent before writing anything.
+   *
+   * The false branch is NOT only that case. A finite cap the prompt left no room for
+   * lands here too (cap 2048, prompt 3000, window 4096), and the context-length remedy
+   * is right there as well -- which is why the wording says raising the cap cannot
+   * create room, rather than describing the cap itself as having no limit. That
+   * description would contradict the finite value the user can see in Settings.
+   */
+  constructor(maxTokensWasSet = true) {
     super(
-      "The model reached the Max Tokens limit before producing a final answer. " +
-        "Increase Max Tokens or disable thinking, then retry.",
+      maxTokensWasSet
+        ? "The model reached the Max Tokens limit before producing a final answer. " +
+            "Increase Max Tokens or disable thinking, then retry."
+        : "The model ran out of room to answer: thinking used what the context window " +
+            "had left after the prompt, before any answer was written. Raising Max " +
+            "Tokens cannot create room the window does not have -- increase the " +
+            "Context Length in Model settings, or disable thinking, then retry.",
     );
     this.name = "GenerationLengthError";
   }
@@ -261,6 +286,9 @@ export async function loadModel(
   options?: {
     signal?: AbortSignal;
     onRequestStart?: () => void;
+    /** What is taking the slot. Chat ignores its own loads when reconciling, so an
+     *  Audio load announced as "chat" left chat naming a model it had evicted. */
+    runtime?: ModelRuntime;
   },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
@@ -275,20 +303,24 @@ export async function loadModel(
   // Announced after the token prompt, so a cancelled load never shows a row.
   // The indicator otherwise had nothing to show until its next 5s poll, while
   // the toast reported the load immediately.
-  return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
-    const response = await authFetch("/api/inference/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...payload,
-        hf_token: preparedToken.token,
-        native_path_lease: payload.nativePathLease ?? null,
-        nativePathLease: undefined,
-      }),
-      signal: options?.signal,
-    });
-    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
-  });
+  return withModelLoadNotice(
+    options?.runtime ?? "chat",
+    payload.model_path ?? null,
+    async () => {
+      const response = await authFetch("/api/inference/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          hf_token: preparedToken.token,
+          native_path_lease: payload.nativePathLease ?? null,
+          nativePathLease: undefined,
+        }),
+        signal: options?.signal,
+      });
+      return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+    },
+  );
 }
 
 export async function countChatInputTokens(payload: {
@@ -302,6 +334,7 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  studio_tool_history?: boolean;
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
@@ -459,18 +492,21 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded quant; optional for older backends. */
   last_modified?: number;
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
   /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for diffusion), so the Images picker can show only diffusion GGUFs. Optional for older backends. */
   task?: string | null;
+  audio_type?: string | null;
   /** True when some quant has a download manifest or cancel marker. Optional
    * for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte. False on a GGUF repo row by design:
+   *  transport is per quant, so the repo cannot answer for all of them. */
+  partial_resumable?: boolean;
   capabilities?: CachedRepoCapabilities | null;
 }
 
@@ -483,6 +519,7 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
+  hfToken?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -495,6 +532,7 @@ export async function getGgufDownloadProgress(
   });
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
@@ -519,18 +557,23 @@ export interface DownloadProgressResponse {
 
 export async function getDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/download-progress?${params}`);
+  const response = await authFetch(`/api/models/download-progress?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow(response);
 }
 
 export async function getDatasetDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
   const response = await authFetch(
     `/api/hub/datasets/download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
@@ -569,6 +612,8 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
+  audio_type?: string | null;
 }
 
 interface LocalModelListResponse {
@@ -600,13 +645,16 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
+  audio_type?: string | null;
   /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte, rather than restarting its file. */
+  partial_resumable?: boolean;
   /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
   single_file?: boolean;
   /** True for an sd.cpp companion mirror (VAE / text encoders, no denoiser): listed so it can be seen and deleted, never offered as a load. */
@@ -1092,18 +1140,59 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
+/** The server owns this message and will reject every save of it.
+ *
+ * Distinct from a transient failure: retrying can never succeed, so callers must stop
+ * rather than back off. Without this the per-chunk autosave treated the rejection as an
+ * anonymous error and re-sent on the next chunk for the whole generation.
+ */
+/** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
+const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
+const CONFLICT_KIND_PROTECTED = "protected";
+
+export class ChatMessageProtectedError extends Error {
+  readonly messageId: string;
+  readonly threadId: string;
+
+  constructor(threadId: string, messageId: string, detail?: string) {
+    // Keep the server's wording: a manual edit surfaces this text to the user.
+    super(detail || `Message ${messageId} is server-managed and cannot be edited`);
+    this.name = "ChatMessageProtectedError";
+    this.threadId = threadId;
+    this.messageId = messageId;
+  }
+}
+
 export async function saveChatMessage(
   message: MessageRecord,
-  options: { coalesce?: boolean } = {},
+  options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
 ): Promise<MessageRecord> {
+  const editQuery = options.allowGenerationEdit
+    ? "?allowGenerationEdit=true"
+    : "";
   const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message),
     },
   );
+  // Two failures share this status: a protected message, where the autosave must stop, and
+  // a thread-id collision, which the caller must see or the message is lost. Only the header
+  // separates them, so anything else (an older backend included) takes the normal error path.
+  if (
+    response.status === 409 &&
+    response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
+  ) {
+    // Read here, not in parseJsonOrThrow: a body is single-use.
+    const body = await response.json().catch(() => null);
+    throw new ChatMessageProtectedError(
+      message.threadId,
+      message.id,
+      formatApiErrorBody(body) ?? undefined,
+    );
+  }
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
   // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
   // edit is one deliberate change and publishes at once.
@@ -1114,7 +1203,7 @@ export async function saveChatMessage(
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<MessageRecord[]> {
   const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
@@ -1124,6 +1213,7 @@ export async function syncChatMessages(
       body: JSON.stringify({
         messages,
         pruneMissing: options.pruneMissing ?? false,
+        deletedMessageIds: options.deletedMessageIds ?? [],
       }),
     },
   );
@@ -1293,23 +1383,109 @@ export interface KvCacheEstimate {
   kv_bytes: number | null;
   weights_bytes: number | null;
   native_context: number | null;
+  /** Extra MTP draft reserve; null for ngram or a model with no MTP head. */
+  spec_bytes: number | null;
+  /** Context the estimate was computed at, which is the native length when the
+   *  request omitted one. */
+  n_ctx: number | null;
+  /** Vision projector footprint, at its worst-case VRAM multiple. Null when the
+   *  model ships none or vision is disabled. */
+  projector_bytes: number | null;
+  /** True when the configured speculative mode attaches a drafter the route did
+   *  not price (dspark/dflash, and Auto where it promotes to one). The total is
+   *  then a floor, not an answer. */
+  spec_unpriced: boolean;
+  /** The share of kv_bytes llama.cpp keeps in HOST heap rather than on the card:
+   *  the SWA checkpoint snapshots. Included in kv_bytes, so a VRAM figure has to
+   *  subtract it; the planner's own GPU total does exactly that. */
+  kv_checkpoint_bytes: number | null;
+  /** The share of spec_bytes no shorter context can reduce, being the separate
+   *  drafter's resident weights. Auto-fit softening must not cover it. */
+  spec_fixed_bytes: number | null;
+  /** The load planner's compute buffers, which every launch reserves on top of
+   *  weights and cache. Scales with slots and micro-batch. */
+  compute_bytes: number | null;
+  /** The planner's complete GPU-resident figure, and its everything-total. */
+  gpu_bytes: number | null;
+  total_bytes: number | null;
+  /** What still lands on the card at the shortest context: the share no context
+   *  reduction can recover. */
+  gpu_floor_bytes: number | null;
+  /** False only when the loader is free to shrink the context to fit. An
+   *  inherited LLAMA_ARG_CTX_SIZE is kept, not fitted. */
+  context_is_pinned: boolean | null;
+  /** An inherited LLAMA_ARG_DEVICE confines the launch to the cards it names, so
+   *  an aggregate VRAM budget describes a pool it will not open. */
+  inherited_device_pin: boolean | null;
 }
 
-/** Estimate KV cache + weight bytes for a downloaded quant at a context length,
- * for the load dialog's memory warning. */
+export interface KvCacheEstimateOptions {
+  cacheTypeKv?: string | null;
+  /** --parallel slots; scales per-slot KV stream padding. */
+  nParallel?: number | null;
+  /** Speculative mode, so an MTP draft reserve is priced into the estimate. */
+  speculativeType?: string | null;
+  /** --spec-draft-n-max; a Hybrid Mamba target keeps one rollback state per
+   *  drafted token, which dominates its reserve. */
+  specDraftNMax?: number | null;
+  /** Draft KV dtype, quantized independently of the main cache. */
+  specDraftCacheType?: string | null;
+  /** --ctx-checkpoints; each adds an SWA snapshot per slot. */
+  ctxCheckpoints?: number | null;
+  /** Batch and micro-batch size the compute buffers scale with. */
+  nBatch?: number | null;
+  nUbatch?: number | null;
+  /** Tensor mode replicates buffers on every device in the pool. */
+  tensorParallel?: boolean | null;
+  /** Vision off frees the projector, so it is not charged. */
+  disableVision?: boolean;
+  signal?: AbortSignal;
+}
+
+/** Estimate KV cache + weight + speculative bytes for a downloaded quant, for
+ * the load dialog's memory warning and the picker's memory bar. Omit `nCtx` to
+ * size against the model's own context length; the response says which was
+ * used. */
 export async function estimateKvCache(
   repoId: string,
   quant: string,
-  nCtx: number,
-  cacheTypeKv?: string | null,
-  signal?: AbortSignal,
+  nCtx?: number,
+  options: KvCacheEstimateOptions = {},
 ): Promise<KvCacheEstimate> {
-  const params = new URLSearchParams({
-    repo_id: repoId,
-    quant,
-    n_ctx: String(nCtx),
-  });
+  const {
+    cacheTypeKv,
+    nParallel,
+    speculativeType,
+    specDraftNMax,
+    specDraftCacheType,
+    ctxCheckpoints,
+    nBatch,
+    nUbatch,
+    tensorParallel,
+    disableVision,
+    signal,
+  } = options;
+  const params = new URLSearchParams({ repo_id: repoId, quant });
+  if (nCtx && nCtx > 0) params.set("n_ctx", String(nCtx));
   if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
+  // Any positive override goes, including 1: omitting it means "use the
+  // server's slot count", which now defaults to more than one.
+  if (nParallel && nParallel > 0) params.set("n_parallel", String(nParallel));
+  if (speculativeType) params.set("speculative_type", speculativeType);
+  // Zero is a real choice for both of these (no rollback states, no
+  // checkpoints), so they are sent whenever set rather than when truthy.
+  if (specDraftNMax != null && specDraftNMax >= 0)
+    params.set("spec_draft_n_max", String(specDraftNMax));
+  if (specDraftCacheType)
+    params.set("spec_draft_cache_type", specDraftCacheType);
+  if (ctxCheckpoints != null && ctxCheckpoints >= 0)
+    params.set("ctx_checkpoints", String(ctxCheckpoints));
+  // The compute buffers scale with these, and the planner defaults them when
+  // they are absent, which underprices a config that raised either.
+  if (nBatch && nBatch > 0) params.set("n_batch", String(nBatch));
+  if (nUbatch && nUbatch > 0) params.set("n_ubatch", String(nUbatch));
+  if (tensorParallel) params.set("tensor_parallel", "true");
+  if (disableVision) params.set("disable_vision", "true");
   const response = await authFetch(
     `/api/models/kv-cache-estimate?${params}`,
     signal ? { signal } : undefined,
@@ -1385,6 +1561,12 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  /**
+   * The window this request is served by, when the caller knows it. Used only to tell a
+   * user-chosen Max Tokens apart from the backend's stand-in for "Max", which is the whole
+   * context length -- the two need opposite advice when generation stops on length.
+   */
+  loadedContextLength?: number | null,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -1411,6 +1593,10 @@ export async function* streamChatCompletions(
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
   let sawReasoningContent = false;
+  // Reported by the server on the final chunk. Needed to tell the two walls apart: a
+  // finite Max Tokens below the context length does not mean Max Tokens is what stopped
+  // the generation.
+  let promptTokens: number | null = null;
 
   const throwIfReasoningOnlyLength = () => {
     if (
@@ -1418,7 +1604,16 @@ export async function* streamChatCompletions(
       sawReasoningContent &&
       !sawAssistantContent
     ) {
-      throw new GenerationLengthError();
+      // The backend substitutes the full context length when the user left Max Tokens on
+      // "Max", so a payload value equal to it is indistinguishable from unset here -- and
+      // both mean the same thing to the user: the setting is not the lever.
+      throw new GenerationLengthError(
+        maxTokensIsTheLimit({
+          cap: payload.max_tokens ?? null,
+          contextLength: loadedContextLength ?? null,
+          promptTokens,
+        }),
+      );
     }
   };
 
@@ -1505,6 +1700,10 @@ export async function* streamChatCompletions(
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
+        }
+        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        if (typeof parsedUsage?.prompt_tokens === "number") {
+          promptTokens = parsedUsage.prompt_tokens;
         }
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (

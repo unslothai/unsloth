@@ -52,7 +52,6 @@ import {
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
-import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -80,6 +79,7 @@ import { resolveEstimateContext } from "../model-config/estimate-context";
 import {
   type MemoryFitVerdict,
   formatMemoryGb,
+  glueNoteItems,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -133,7 +133,9 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  contextPinPatch,
   isServedByMlx,
+  savedContextPin,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   perModelConfigStorageChanged,
@@ -152,6 +154,9 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -383,20 +388,32 @@ function MaxSeqLengthSetting({
   inputMax,
   onChange,
   inputRef,
+  isMlx,
+  pinned,
+  windowUnknown,
 }: {
   value: number;
   max: number;
   inputMax: number;
   onChange: (value: number) => void;
   inputRef?: Ref<NumericValueInputHandle>;
+  isMlx?: boolean;
+  pinned?: boolean;
+  windowUnknown?: boolean;
 }) {
+  // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
+  // shows the length that will be served, not "Auto". A dash only while it is unknown.
+  const label = isMlx ? "Context Length" : "Max Seq Length";
   return (
     <div className="space-y-3">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Max Seq Length</span>
+          <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
-            Maximum context window size in tokens. Applies when the model loads.
+            {isMlx
+              ? "Tokens of context the model is sized for. Whether it also caps the " +
+                "cache depends on the architecture."
+              : "Maximum context window size in tokens. Applies when the model loads."}
           </InfoHint>
         </div>
         <NumericValueInput
@@ -406,7 +423,9 @@ function MaxSeqLengthSetting({
           max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
-          ariaLabel="Max Seq Length"
+          displayValue={isMlx && windowUnknown ? "—" : undefined}
+          derived={isMlx && !pinned}
+          ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
           size={8}
         />
@@ -415,10 +434,12 @@ function MaxSeqLengthSetting({
         min={MAX_SEQ_LENGTH_MIN}
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
-        value={[value]}
+        // Outside the control's range it sits at the nearer edge, or the first nudge
+        // would step from the shown number onto the bound.
+        value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}
         onValueChange={([next]) => onChange(next)}
         className="panel-slider"
-        aria-label="Max Seq Length"
+        aria-label={label}
       />
     </div>
   );
@@ -955,7 +976,7 @@ function MemoryBreakdownLine({
       <span className="min-w-0 text-ui-11 leading-relaxed text-muted-foreground">
         {label}
         {note ? (
-          <span className="ml-1 text-muted-foreground/70">{note}</span>
+          <span className="ml-1 text-muted-foreground/70">{glueNoteItems(note)}</span>
         ) : null}
       </span>
       <span
@@ -1035,7 +1056,13 @@ function MemoryEstimateRow({
   );
   return (
     <div className="space-y-2">
-      <div className={ROW_CLASS}>
+      {/* Wraps, unlike the other rows, because this one is the only header carrying a
+          title AND two figures. The panel is w-[min(468px,...)], so under a ~460px
+          window it shrinks with the viewport, and the figures do not shrink: the
+          title absorbed the whole shortfall and truncated to "E..." at 320px. Letting
+          the figures drop to their own line costs a line only where they would not
+          have fitted anyway, and is identical above that width. */}
+      <div className={`${ROW_CLASS} flex-wrap gap-y-1`}>
         <button
           type="button"
           onClick={() => onExpandedChange(!expanded)}
@@ -1053,8 +1080,10 @@ function MemoryEstimateRow({
             strokeWidth={1.75}
           />
         </button>
+        {/* ml-auto so that on the wrapped line, where justify-between has nothing to
+            push against, the figures still sit under the right edge they had. */}
         <div
-          className={`flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
+          className={`ml-auto flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
         >
           {/* One pool: offloading a layer moves it within the same memory rather
               than out of it, so the honest single figure is the total. Reporting
@@ -1997,8 +2026,12 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Apple Silicon specifically, and used ONLY for wording: "Unified" is what
+  // Apple calls its pool, where an AMD APU's is a "Shared" one. It is NOT the
+  // right signal for the capacity question below -- see hasUnifiedMemory.
+  //
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
-  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
+  const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
   const chatTemplateOverrideReason = useChatRuntimeStore(
@@ -2020,7 +2053,7 @@ export function ModelConfigPage({
     (s) => s.defaultChatTemplate,
   );
   const loadedMaxContextLength = useChatRuntimeStore(
-    (s) => s.ggufMaxContextLength,
+    (s) => s.maxContextLength,
   );
   // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
@@ -2680,10 +2713,19 @@ export function ModelConfigPage({
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
+  const platform = usePlatformStore();
+  const targetIsMlx = isServedByMlx(
+    target.isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+  );
   const atBaseline = perModelConfigsEqual(config, baseline);
   // The fitted value is an outcome, not an override. Auto stays at the default even
-  // when a loaded model reports less than its native context.
-  const contextAtDefault = !target.isGguf || config.customContextLength == null;
+  // when a loaded model reports less than its native context. A non-GGUF pin is an
+  // override too, read from whichever field it was saved in.
+  const contextAtDefault = !target.isGguf
+    ? savedContextPin(config) == null
+    : config.customContextLength == null;
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
@@ -2693,15 +2735,40 @@ export function ModelConfigPage({
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
-  // A non-GGUF active model seeds maxSeqLength from its loaded value. Once cleared, fall back to
-  // the app default, not the loaded runtime value, else the override can never be cleared.
+  // The pin, else the length a self-sizing backend would serve, so the control states a
+  // context rather than declining to. Only an unread window falls back to the app default,
+  // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
+  // Reported as it stands, not snapped to the request step: 2,056 would read 2,048.
+  const servedWindow = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.floor(value)
+      : null;
+  const mlxNativeWindow = targetIsMlx
+    ? servedWindow(modelMaxPosition.maxPositionEmbeddings)
+    : null;
+  // What a load would serve. The backend clamps an auto-sized window to the request
+  // ceiling, so a wider native one (Scout declares 10,485,760) would name a length no
+  // load can serve. Native above stays raw: metadata, not a promise.
+  const mlxProspectiveWindow =
+    mlxNativeWindow == null
+      ? null
+      : Math.min(mlxNativeWindow, MAX_SEQ_LENGTH_MAX);
+  const mlxServedWindow =
+    (targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??
+    mlxProspectiveWindow;
   const maxSeqLengthValue =
-    normalizeMaxSeqLength(config.maxSeqLength) ??
+    servedWindow(savedContextPin(config)) ??
+    mlxServedWindow ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-  const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
-  // An auto-fit-below-native GGUF shows activeLoadedContext while customContextLength stays null.
-  // If the user fixes GPU Layers (Manual) and remembers, pin that shown context so a later fresh
-  // load keeps the fitted placement instead of sending native/0 and recreating the OOM.
+  // The slider picks a request, so it stops at the widest a load may make.
+  const maxSeqLengthMax = Math.min(
+    MAX_SEQ_LENGTH_MAX,
+    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
+  );
+  // An auto-fit-below-native GGUF shows activeLoadedContext while
+  // customContextLength stays null. If the user fixes GPU Layers (Manual) and
+  // remembers, pin that shown context so a later fresh load keeps the fitted
+  // placement instead of sending native/0 for fixed layers and recreating the OOM.
   const loadableConfig = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
@@ -2722,8 +2789,8 @@ export function ModelConfigPage({
     loadableConfig.gpuLayers >= 0 &&
     loadableConfig.customContextLength == null &&
     activeLoadedContext != null;
-  // Persisted record: keep config as-is (non-GGUF keeps maxSeqLength null) so isDefaultConfig
-  // recognises it and clears a remembered override instead of pinning the app default.
+  // Kept as-is so isDefaultConfig clears a remembered override rather than pinning the
+  // app default; the write rule already settled which field holds the pin.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
@@ -2795,6 +2862,46 @@ export function ModelConfigPage({
   // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
   // on 16 GB of VRAM it could not reach.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
+  // Whether the devices THIS LOAD will use draw on one pool with the rest of the
+  // system, from the backend's per-device unified_memory flag rather than from
+  // the platform. Apple Silicon is the obvious case and a ROCm APU is the one
+  // that was being missed: both share the pool, so adding VRAM to system RAM to
+  // reach a machine-wide ceiling counts the same bytes twice.
+  //
+  // Scoped to the devices this load will actually use, and true only when EVERY
+  // one of them is unified.
+  //
+  // Two separate mistakes were made here, so both are written down. Reading the
+  // host-wide flag was the first: an APU beside a discrete card makes it true,
+  // and a pin on the discrete card then collapsed totalCapacityGb from 143.5 GiB
+  // to 15.5 GiB. Narrowing to the pin but keeping `.some()` was the second: an
+  // unpinned load, or a pin naming BOTH, still marked the whole set unified and
+  // reported 62.1 GiB instead of 143.5 GiB. Both produce false "more than this
+  // machine holds" warnings for loads that fit comfortably.
+  //
+  // `.every()` is the right question for CAPACITY: one independent-memory device
+  // in the set means there is real VRAM beside system RAM, so the two are not
+  // one pool. Note use-gpu-info.ts deliberately uses `.some()` for its own flag,
+  // and that is not an inconsistency -- it answers a different question, whether
+  // the aggregate is still a VRAM ceiling a verdict can be measured against, and
+  // one unified part is enough to spoil that.
+  //
+  // The empty set is excluded explicitly, because `[].every()` is true and a
+  // host with no devices at all is not a unified-memory machine.
+  //
+  // The Apple fallback stays host-wide and unconditional: there every device is
+  // the one pool whatever is pinned, and it also covers the window before the
+  // per-device probe lands, so this is never a weaker answer than the platform
+  // check it replaced.
+  const hasUnifiedMemory = useMemo(() => {
+    if (isAppleUnifiedMemory) return true;
+    const governing =
+      pinnedGpuIds && pinnedGpuIds.length > 0
+        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+        : gpuDevices;
+    if (governing.length === 0) return false;
+    return governing.every((device) => device.unifiedMemory === true);
+  }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
   // The VRAM Budget slider sits in this same panel and caps what the next load may
   // claim per GPU, so the verdict has to be measured against the capped figure or the
   // row contradicts the control directly above it. Subscribed as well as read once:
@@ -2821,27 +2928,42 @@ export function ModelConfigPage({
       unsubscribe();
     };
   }, []);
-  // What is free RIGHT NOW on the cards this load may use. _select_gpus admits on
-  // free-minus-reserve, not on the cards' totals, so a training run or another process
-  // holding VRAM changes what will actually happen to this load.
+  // What is free RIGHT NOW on the cards this load may use: _select_gpus admits on
+  // free-minus-reserve, not on totals, so another process holding VRAM changes what
+  // happens to this load.
   //
-  // Used to WARN, never to refuse. The bytes a pending load reclaims -- the resident
-  // chat model's own, which Studio unloads first -- cannot be attributed per device
-  // from here, so raw free memory would call a reload of the loaded model impossible.
-  // Capping the free-based verdict at "tight" is honest under both readings: either
-  // something else really is holding the card, or it is about to be given back.
-  // A fixed Manual placement is launched verbatim: load_model empties its probed GPU
-  // set (gpus = []) and emits --gpu-layers N --fit off, so the server-wide VRAM Budget
-  // never reaches the planner and cannot shrink this load. Discounting capacity by it
-  // there labelled placements that will load fine as exceeding -- a 16 GiB fixed
-  // placement on a 24 GiB card reads as over budget at 50%. Auto is still budgeted,
-  // because Auto is exactly the mode that hands the decision to the planner.
+  // WARNS, never refuses. The bytes a pending load reclaims are mostly the resident
+  // model's own, which Studio unloads first, and cannot be attributed per device from
+  // here, so raw free memory would call reloading the loaded model impossible. Capping
+  // the verdict at "tight" is honest either way.
+  //
+  // A fixed Manual placement is launched verbatim -- load_model empties its probed GPU
+  // set and emits --gpu-layers N --fit off -- so the server-wide VRAM Budget never
+  // reaches the planner. Discounting capacity by it called a 16 GiB fixed placement on
+  // a 24 GiB card over budget at 50%. Auto is still budgeted: Auto is the mode that
+  // hands the decision to the planner.
   const memoryBudgetGovernsLaunch =
     runtimeGpuMemoryMode !== "manual" ||
     (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
   const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
     ? memoryVramBudgetFraction
     : 1;
+  // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of the system
+  // before admitting an offloaded load.
+  //
+  // The HOST reading, not the sum-shaped one beside it, which is zeroed whenever
+  // ANY device shares system RAM -- every dGPU + iGPU box -- so that was
+  // permanently 0 there and the host-pressure advisory could not fire even under
+  // a pin on the discrete card, the one case where host RAM really is a separate
+  // pool.
+  //
+  // Hoisted because the free-capacity memo below needs the same figure: a ROCm
+  // APU's free pool IS this, and two copies of the subtraction is how they would
+  // drift apart.
+  const memoryUsableSystemRamGb = Math.max(
+    0,
+    (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
+  );
   const memoryFreeGpuCapacityGb = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
@@ -2857,8 +2979,31 @@ export function ModelConfigPage({
     // is measured against.
     // The reserve keeps its budget-derived floor even for a fixed Manual placement:
     // what is free right now still constrains the launch, whatever set the number.
-    return aggregateUsableFreeVramGb(pinned, memoryEffectiveBudgetFraction);
-  }, [gpuDevices, pinnedGpuIds, memoryEffectiveBudgetFraction]);
+    const freeVram = aggregateUsableFreeVramGb(
+      pinned,
+      memoryEffectiveBudgetFraction,
+    );
+    // On a ROCm APU this figure is the free space inside a BIOS-carved window,
+    // and resolveMemoryFit asks it the WHOLE-LOAD question as soon as the pool is
+    // single. Those two together warned that a 60 GiB load does not fit a 96 GiB
+    // machine with 60+ GiB free, purely because it exceeds a 48 GiB window.
+    //
+    // The pool's real free memory is the host's, exactly as its real CAPACITY is
+    // the host's RAM rather than the window. Same discriminator as the capacity
+    // side, so the two cannot answer differently: Apple's GPU figure already IS
+    // the pool and is left alone.
+    if (hasUnifiedMemory && !isAppleUnifiedMemory) {
+      return Math.max(freeVram, memoryUsableSystemRamGb);
+    }
+    return freeVram;
+  }, [
+    gpuDevices,
+    pinnedGpuIds,
+    memoryEffectiveBudgetFraction,
+    hasUnifiedMemory,
+    isAppleUnifiedMemory,
+    memoryUsableSystemRamGb,
+  ]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
     totalCapacityGb: memoryTotalCapacityGb,
@@ -2869,11 +3014,25 @@ export function ModelConfigPage({
         pinnedGpuIds && pinnedGpuIds.length > 0
           ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
           : [],
+      hostDevices: gpuDevices,
       hostGpuTotalGb: inferenceGpu.memoryTotalGb,
       hostDedicatedGpuTotalGb: inferenceGpu.dedicatedMemoryTotalGb,
       hostSharesSystemRam: inferenceGpu.sharedMemory,
       systemRamTotalGb: inferenceGpu.systemRamTotalGb,
-      unifiedMemory: isUnifiedMemory,
+      // The GENERAL signal, not the Apple-only one. A ROCm APU reports
+      // unified_memory per device and shares one pool exactly as Apple does, but
+      // reading appleSilicon here charged it as discrete VRAM PLUS host RAM --
+      // the same bytes counted twice, so the panel could report a fit that
+      // cannot happen. The Hub bar gets this right and abstains on this very
+      // flag; this is the panel catching up.
+      unifiedMemory: hasUnifiedMemory,
+      // ...but "one pool" and "how big is the pool" are different questions, and
+      // the two platforms answer the second differently. Apple's memory_total_gb
+      // IS the machine's unified memory; a ROCm APU's is a BIOS-carved window
+      // onto system RAM, so taking it as the ceiling reported 46.56 GiB on a
+      // 96 GiB machine and warned that a 60 GiB load exceeds the host. Only the
+      // Apple half may be read as the whole pool.
+      unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
 
   const rememberChanged = remember !== savedRemember;
@@ -2911,10 +3070,7 @@ export function ModelConfigPage({
       pendingPatch.customContextLength = committedContext;
     }
     if (committedMaxSeqLength != null) {
-      pendingPatch.maxSeqLength = clampMaxSeqLength(
-        committedMaxSeqLength,
-        MAX_SEQ_LENGTH_MAX,
-      );
+      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));
     }
     if (committedGpuLayers != null) {
       pendingPatch.gpuLayers = committedGpuLayers;
@@ -3017,9 +3173,12 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
+    // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
     const effectiveLoadConfig = target.isGguf
       ? effectiveRuntimeConfig
-      : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
+      : targetIsMlx
+        ? effectiveRuntimeConfig
+        : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     // Same reason as the numeric commits above: the budget row flushes on unmount,
     // which for this click lands after onRun has staged the load, so that load (the
     // very one the control promises) would use the old fraction. A failed save must
@@ -3072,8 +3231,7 @@ export function ModelConfigPage({
               className="nav-icon-btn shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
-              <HugeiconsIcon
-                icon={ArrowLeft01Icon}
+              <ChevronLeftIcon
                 className="size-4"
                 strokeWidth={1.75}
               />
@@ -3103,20 +3261,8 @@ export function ModelConfigPage({
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               freeGpuCapacityGb={memoryFreeGpuCapacityGb}
-              usableSystemRamGb={Math.max(
-                0,
-                // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of
-                // the system before it will admit an offloaded load.
-                //
-                // The HOST reading, not the sum-shaped one beside it. That one is
-                // zeroed whenever ANY device on the machine shares system RAM, which
-                // is every dGPU + iGPU box, so this figure was permanently 0 there
-                // and the host-pressure advisory could not fire even under a pin on
-                // the discrete card -- exactly the case where host RAM really is a
-                // separate pool.
-                (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
-              )}
-              isUnifiedMemory={isUnifiedMemory}
+              usableSystemRamGb={memoryUsableSystemRamGb}
+              isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
@@ -3185,7 +3331,7 @@ export function ModelConfigPage({
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
-                    {isUnifiedMemory ? (
+                    {isAppleUnifiedMemory ? (
                       <>
                         Exceeds what fits in unified memory (
                         {loadedMaxContextLength.toLocaleString()} tokens). The
@@ -3234,11 +3380,12 @@ export function ModelConfigPage({
               max={maxSeqLengthMax}
               inputMax={MAX_SEQ_LENGTH_MAX}
               inputRef={maxSeqLengthInputRef}
-              onChange={(value) =>
-                update({
-                  maxSeqLength: clampMaxSeqLength(value, MAX_SEQ_LENGTH_MAX),
-                })
+              isMlx={targetIsMlx}
+              pinned={savedContextPin(config) != null}
+              windowUnknown={
+                savedContextPin(config) == null && mlxServedWindow == null
               }
+              onChange={(value) => update(contextPinPatch(value, targetIsMlx))}
             />
             {showAdvanced && (
               <MlxAdvancedSettings

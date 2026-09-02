@@ -3,28 +3,26 @@
 
 """Tests for the Load-Model memory estimate (POST /api/inference/estimate-memory).
 
-Guards the pieces the estimate is assembled from, and the properties that make it
-safe to put a number in front of a user:
+Guards the pieces the estimate is assembled from and the properties that make it safe
+to put a number in front of a user:
 
-* ``_gguf_runtime_bytes`` -- KV + compute buffers, itemized. The load-bearing case
-  is a header without the attention dims: it must report ``kv_estimable = False``
-  with ``kv_bytes == 0``, since a UI reading that zero as "no cache" is worse than
-  showing nothing.
-* ``_estimate_gguf_kv_gb`` -- now a thin wrapper over the above. The training guard
-  still calls it, so its value must stay the old sum exactly.
+* ``_gguf_runtime_bytes`` -- KV + compute, itemized. The load-bearing case is a header
+  without the attention dims: ``kv_estimable = False`` with ``kv_bytes == 0``, since a
+  UI reading that zero as "no cache" is worse than showing nothing.
+* ``_estimate_gguf_kv_gb`` -- a thin wrapper over it now, and still the training
+  guard's input, so its value must stay the old sum exactly.
 * ``_gguf_offloaded_layer_fraction`` -- Auto is deliberately 1.0, not a guess.
-* ``_gguf_resident_file_gb`` / ``_gguf_memory_breakdown`` -- weights are derived by
-  subtracting the context term out of ``_estimate_gguf_required_gb``. The observable
-  proving the arms are paired is that weights do not move with the context slider.
+* ``_gguf_resident_file_gb`` / ``_gguf_memory_breakdown`` -- weights come from
+  subtracting the context term out of ``_estimate_gguf_required_gb``; the observable
+  that the arms are paired is that weights do not move with the context slider.
 * ``_localized_estimate_config`` -- without it a cached repo priced itself through a
-  ``paths-info`` call. Pins both halves: the copy takes the local arm, and the cached
-  original is never mutated.
+  ``paths-info`` call. Both halves pinned: the copy takes the local arm, the cached
+  original is not mutated.
 * ``_estimate_token_fingerprint`` -- both TTL caches are keyed per token.
-* the route -- the "cannot size this" answers, and that an Ollama manifest ref is
-  refused before anything is materialized.
+* the route -- the "cannot size this" answers, and an Ollama manifest ref refused
+  before anything is materialized.
 
-No GPU, no network, no model load: every GGUF here is a synthetic header on
-tmp_path. Cross-platform.
+No GPU, no network, no model load: every GGUF here is a synthetic header on tmp_path.
 """
 
 import inspect
@@ -288,12 +286,11 @@ class TestGgufRuntimeBytes:
     def test_a_recurrent_model_keeps_its_layer_count(self, tmp_path):
         """The unsizable-KV path is reached by whole model families, not just stubs.
 
-        llama.cpp reads the attention head counts with ``required = false``
-        (llama-model.cpp:1177) while block_count and embedding_length are required
-        (:1111, :1116), so every pure SSM model -- Mamba, Mamba2, RWKV -- loads with a
-        layer count and no attention dimensions, which is exactly what
-        ``_can_estimate_kv`` rejects. Dropping the count there would report a manual
-        --gpu-layers 0 as a fully GPU-resident load on all of them.
+        llama.cpp reads the attention head counts with ``required = false`` while
+        block_count and embedding_length are required, so every pure SSM model --
+        Mamba, Mamba2, RWKV -- loads with a layer count and no attention dims, which is
+        what ``_can_estimate_kv`` rejects. Dropping the count there reported a manual
+        --gpu-layers 0 as fully GPU-resident on all of them.
         """
         mamba = _write_gguf(
             tmp_path,
@@ -913,14 +910,11 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "not_downloaded"
 
     def test_a_repo_not_on_this_disk_is_refused_before_it_is_resolved(self, monkeypatch):
-        # The route's docstring promises "nothing is downloaded", and every other test
-        # in this class asserts that while monkeypatching _cached_estimate_config --
-        # the one function that can break it. Driven for real, an uncached remote id
-        # walked to the Hub and cached what it fetched: on one safetensors repo, four
-        # model_info attempts, an hf_hub_download of config.json, and 12 new paths /
-        # 1828 bytes of blob, ref, snapshot and lock. For a request whose answer is
-        # "not on this disk" and which needed none of it, on an endpoint the panel
-        # fires on every change.
+        # The route promises "nothing is downloaded", and every other test in this class
+        # asserts that while monkeypatching _cached_estimate_config -- the one function
+        # that can break it. Driven for real, an uncached remote id walked to the Hub:
+        # four model_info attempts, an hf_hub_download of config.json, and 12 new paths /
+        # 1828 bytes of cache, for a request whose answer is "not on this disk".
         def boom(*a, **kw):
             raise AssertionError("must not resolve a model that is not on this disk")
 
@@ -983,18 +977,15 @@ class TestEstimateMemoryRoute:
     def test_the_route_never_reaps_processes_or_leaks_an_atexit_handler(
         self, monkeypatch, gqa_gguf
     ):
-        # The sizing helpers build a LlamaCppBackend just to read a header, and
-        # LlamaCppBackend.__init__ reaps orphaned llama-servers -- it walks every entry
-        # in /proc, resolves each candidate's exe and SIGNALS the ones it recognises --
-        # then registers an atexit handler holding the instance for the life of the
-        # process. Both are right for the backend that owns a child. Neither is right
-        # here, and before this became a panel endpoint they ran once per load rather
-        # than once per settings change.
+        # The sizing helpers build a LlamaCppBackend just to read a header, and its
+        # __init__ reaps orphaned llama-servers -- walking /proc, resolving each
+        # candidate's exe and SIGNALLING the ones it recognises -- then registers an
+        # atexit handler holding the instance for the life of the process. Both are
+        # right for a backend that owns a child, neither for a settings panel.
         #
-        # Measured on this route before the probes were made inert: five constructions
-        # per request, so 50 estimates were 250 /proc scans and 250 permanently
-        # retained atexit handlers, at 120 ms each. A panel that prices a load must not
-        # be able to kill a server, and dragging a slider must not leak.
+        # Measured before the probes were made inert: five constructions per request,
+        # so 50 estimates were 250 /proc scans and 250 retained atexit handlers at
+        # 120 ms each. Pricing a load must not be able to kill a server.
         import atexit
         import inspect
 
@@ -2224,15 +2215,12 @@ class TestManualNormalizationAndRemoteDrafters:
 class TestSpeculationOffChargesNoDrafter:
     """Modes whose launch never emits ``--model-draft`` must not be billed for one.
 
-    ``_build_speculative_flags`` returns out of three of them before it reaches the
-    flag: "off" immediately, "ngram-simple" and "ngram" after their ``--spec-type``
-    alone. The resident-file resolution appended ``gguf_mtp_file`` for every mode that
-    was not DSpark or DFlash, so a model shipping an MTP sidecar was charged for it
-    even with speculation turned OFF -- selecting OFF could ADD gigabytes to the
-    figure, which is the opposite of what the control does.
-
-    Exercised against the real resolution rather than through the breakdown, because
-    the breakdown's own tests stub the files term wholesale and would pass either way.
+    ``_build_speculative_flags`` returns out of three before reaching the flag: "off"
+    immediately, "ngram-simple" and "ngram" after their ``--spec-type``. The resident-
+    file resolution appended ``gguf_mtp_file`` for every mode that was not DSpark or
+    DFlash, so selecting OFF could ADD gigabytes -- the opposite of what the control
+    does. Driven through the real resolution: the breakdown's own tests stub the files
+    term wholesale and would pass either way.
     """
 
     @pytest.fixture
@@ -2384,15 +2372,12 @@ class TestAnEmbeddedMtpHeadIsPriced:
         """--spec-draft-ngl 0 does not switch the head off, and does not move it either.
 
         Both flags carry ``params.speculative.n_gpu_layers`` / ``.devices``, which
-        llama.cpp copies into the model params only on the ``has_draft`` path. An
-        embedded head has no draft model to load: ``llama_init_from_model(model_tgt)``
-        builds its context against the target and it keeps the target's placement.
-        ``_extra_args_draft_offloaded_to_cpu`` documents that, and the launch budget
-        enforces it through ``_draft_cpu_no_embedded``.
-
-        So the allocation is still made AND still on the card. Gating the sizing on the
-        pin dropped it from both figures; placing it in host RAM dropped it from the
-        GPU one. Both are the direction that turns a multi-gigabyte load into a fit.
+        llama.cpp copies in only on the ``has_draft`` path; an embedded head has no
+        draft model to load and takes ``llama_init_from_model(model_tgt)``, keeping the
+        target's placement, as ``_extra_args_draft_offloaded_to_cpu`` documents and
+        ``_draft_cpu_no_embedded`` enforces. So it is still allocated AND still on the
+        card: gating the sizing on the pin dropped it from both figures, placing it in
+        host RAM dropped it from the GPU one, and both turn an overflow into a fit.
         """
         gguf, config = nextn_model
         unpinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072)

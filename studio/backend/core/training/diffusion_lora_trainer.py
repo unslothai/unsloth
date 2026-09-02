@@ -42,7 +42,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
-# Shared, family-agnostic building blocks. Re-exported so callers/tests that import them from this module keep working.
+# Shared, family-agnostic building blocks. Re-exported so callers/tests that import them from this module keep
+# working.
 from core.training.diffusion_train_common import (  # noqa: F401
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
@@ -121,6 +122,7 @@ def _load_image_tensor(
     if random_flip and rng.random() < 0.5:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
         # A flip mirrors the crop's left origin, so report the mirrored offset (as diffusers does).
+        # Mirror the crop's left origin (same as _load_image_tensor's random flip).
         crop_left = max(0, resized_w - resolution - left)
     arr = np.asarray(img, dtype = np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
@@ -156,7 +158,6 @@ def _load_image_tensor_planned(
     crop_left = left
     if flip:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        # Mirror the crop's left origin (same as _load_image_tensor's random flip).
         crop_left = max(0, resized_w - resolution - left)
     arr = np.asarray(img, dtype = np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
@@ -235,7 +236,8 @@ def _build_sdxl_latent_cache(
             a = _hold(dist.mean * vae_scale)
             b = _hold(dist.std * vae_scale)
             if not forced and not gated:
-                # Size-gate the auto cache off the first real variant, before building the rest (it can exhaust pinned RAM). Over budget: bail with the VAE resident.
+                # Size-gate the auto cache off the first real variant: it can exhaust pinned RAM. Over budget, bail
+                # with the VAE resident.
                 per_variant = a.numel() * a.element_size() + b.numel() * b.element_size()
                 if _latent_cache_over_budget(per_variant, total_variants):
                     _emit(
@@ -311,9 +313,8 @@ def run_diffusion_lora_training(
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    # Only now is diffusers in sys.modules, and it hard-codes _tqdm_active = True and
-    # honours no env var, so this is the earliest point its "Loading pipeline
-    # components..." bar can be turned off -- and it comes before the pipeline load below.
+    # diffusers hard-codes _tqdm_active = True and honours no env var, so this is the earliest point its
+    # loading bar can be turned off, and it precedes the pipeline load below.
     try:
         from loggers.config import quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
@@ -341,11 +342,12 @@ def run_diffusion_lora_training(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     precision = cfg.mixed_precision if device == "cuda" else "no"
     if precision == "bf16" and device == "cuda" and not native_bf16_supported():
-        # Pre-Ampere GPUs have no native bf16 and is_bf16_supported() counts emulation, so use the compute-capability probe and fall back to fp16.
+        # Pre-Ampere GPUs have no native bf16 and is_bf16_supported() counts emulation, so use the compute-
+        # capability probe and fall back to fp16.
         precision = "fp16"
     weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[precision]
 
-    # TF32 / cudnn.benchmark for the run, restored on the way out. Wraps the whole body so every return restores the backend flags.
+    # Wraps the whole body so every return restores the TF32 / cudnn.benchmark flags.
     snap = _apply_perf_flags(cfg, device)
     try:
         # Preflight the base model against the same trust gate as inference, before any fetch.
@@ -354,10 +356,11 @@ def run_diffusion_lora_training(
         pairs = discover_image_caption_pairs(
             cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
         )
-        # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream read agrees.
+        # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every
+        # downstream read agrees.
         cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
-        # Validate a resume request against this run's identity BEFORE the multi-GB base model
-        # load, so a mismatched checkpoint fails in seconds instead of after the download.
+        # Validate a resume request against this run's identity BEFORE the multi-GB base model load, so a
+        # mismatch fails in seconds instead of after the download.
         identity = identity_for_config(cfg, dataset_pairs = pairs)
         if cfg.resume_from_checkpoint:
             preflight_resume(
@@ -377,9 +380,8 @@ def run_diffusion_lora_training(
                 lora_path = None,
                 stopped = True,
                 steps_run = 0,
-                # Same disposition the full path reports. A stop with save=false is a DISCARD
-                # however early it lands, and without it the resume fallback offers the source
-                # bundle back as though the attempt were still live.
+                # A stop with save=false is a DISCARD however early it lands; without it the resume fallback offers
+                # the source bundle back as though the attempt were still live.
                 discarded = not save_on_stop,
             )
             return str(out_dir)
@@ -414,7 +416,8 @@ def run_diffusion_lora_training(
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
 
-        # Regionally torch.compile the U-Net repeated blocks via the DiT trainer's never-fatal wrapper (failure falls back to eager).
+        # Regionally torch.compile the U-Net repeated blocks via the DiT trainer's never-fatal wrapper (failure
+        # falls back to eager).
         from core.training.diffusion_dit_trainer import _maybe_compile_transformer
 
         compiled = _maybe_compile_transformer(
@@ -423,7 +426,8 @@ def run_diffusion_lora_training(
 
         lora_params = [p for p in unet.parameters() if p.requires_grad]
         optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
-        # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the accumulation factor would stretch warmup.
+        # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
+        # accumulation factor would stretch warmup.
         lr_sched = get_scheduler(
             cfg.lr_scheduler,
             optimizer = optimizer,
@@ -434,7 +438,8 @@ def run_diffusion_lora_training(
         vae_scale = vae.config.scaling_factor
         prediction_type = noise_scheduler.config.prediction_type
 
-        # Precompute text embeddings once per unique caption, then free the ~1.5 GB CLIP encoders. Deterministic, so the math is bit-identical to in-loop encoding.
+        # Deterministic, so the precomputed embeddings are bit-identical to in-loop encoding; the ~1.5 GB
+        # CLIP encoders are freed afterwards.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
         if precompute:
@@ -448,10 +453,11 @@ def run_diffusion_lora_training(
             if device == "cuda":
                 torch.cuda.empty_cache()
 
-        # Precompute the VAE latent cache, then free the VAE: it holds the posterior affine pair so per-step sampling noise is preserved.
+        # The cache holds the posterior affine pair, so per-step sampling noise is preserved once the VAE is freed.
         use_cache = cfg.cache_latents and os.environ.get(
             "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
         ) not in ("1", "true")
+        # Over the host-memory budget; keep the VAE resident and encode in-loop.
         latent_cache = None
         if use_cache:
             latent_cache = _build_sdxl_latent_cache(
@@ -465,9 +471,8 @@ def run_diffusion_lora_training(
                 _check_stop,
             )
             if latent_cache is LATENT_CACHE_OVER_BUDGET:
-                # Over the host-memory budget; keep the VAE resident and encode in-loop.
                 latent_cache = None
-            elif latent_cache is None:  # stopped during the cache build; nothing trained yet
+            elif latent_cache is None:
                 out_dir = Path(cfg.output_dir).expanduser()
                 _emit(
                     on_event,
@@ -476,7 +481,7 @@ def run_diffusion_lora_training(
                     lora_path = None,
                     stopped = True,
                     steps_run = 0,
-                    # As above: a discard is a discard however early the stop lands.
+                    # A discard is a discard however early the stop lands.
                     discarded = not save_on_stop,
                 )
                 return str(out_dir)
@@ -490,31 +495,31 @@ def run_diffusion_lora_training(
                 gc.collect()
                 if device == "cuda":
                     torch.cuda.empty_cache()
-        # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether or not the cache is enabled.
+        # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether
+        # or not the cache is enabled.
         variant_rng = random.Random(cfg.seed + 1)
 
         _emit(on_event, "model_load_completed", compiled = compiled)
-        # The base is on disk now, so its commit can finally be read: the identity above was
-        # built before the load and records "unresolved" on the first run of an uncached repo,
-        # which no later resume could then enforce. Only ever adds the constraint.
+        # The base is on disk now, so its commit can finally be read: the identity above was built before
+        # the load and records "unresolved" on the first run of an uncached repo.
         identity = with_resolved_revision(identity, cfg.base_model)
-        # And the cache path the loop actually took, which the request does not settle: the
-        # env override and the over-budget fallback both turn it off, and the two paths draw
-        # crops and flips from different RNG streams.
+        # The cache path the loop actually took, which the request does not settle: the env override and
+        # the over-budget fallback both turn it off, and the two paths draw crops from different RNGs.
         identity = with_cache_mode(identity, latent_cache is not None)
 
-        # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a short run does not leave a small dataset partly unseen.
+        # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
+        # short run does not leave a small dataset partly unseen.
         index_sampler = PermutationBatchSampler(len(pairs), rng)
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a small dataset still yields that many indices.
+            # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a small
+            # dataset still yields that many indices.
             idx = index_sampler.next_batch(cfg.train_batch_size)
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 
-        # Restore a previous run's state (adapter, optimizer moments, LR position, sampler cycle,
-        # RNG streams) BEFORE the loop, so `resumed` is the last completed step and the loop
-        # picks up at resumed + 1. Zero for a fresh run; a mismatch raises out to the adapter.
+        # Restore a previous run's state BEFORE the loop, so resumed is the last completed step and the loop
+        # picks up at resumed + 1; a mismatch raises out to the adapter.
         rng_streams = {"loop": rng, "variant": variant_rng}
         restored = restore_resume_state(
             cfg,
@@ -527,17 +532,13 @@ def run_diffusion_lora_training(
             rng_streams = rng_streams,
         )
         resumed = restored.step if restored is not None else 0
-        # Bound HERE, not at the export below: the checkpoint scan and the periodic saves both
-        # need it, and the two earlier assignments live inside early-return branches -- so on
-        # every normal run this read came before any binding at all.
+        # Bound HERE: the checkpoint scan and the periodic saves both need it, and the two earlier
+        # assignments live inside early-return branches.
         out_dir = Path(cfg.output_dir).expanduser()
-        # Whether this run's source bundle lives in THIS directory. Resuming from
-        # directory A into a reused output_dir B leaves B's existing bundles as foreign
-        # as they would be for a fresh run -- so the first save has to clear them, or a
-        # higher-numbered one survives and a later resume by B picks it over this run.
+        # Resuming from directory A into a reused output_dir B leaves B's existing bundles as foreign as
+        # for a fresh run, so the first save must clear them or a higher-numbered one outranks this run.
         resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
-        # The bundles that were already here when this run started, so a discard below
-        # removes only what this run wrote. A resumed run shares its source's directory.
+        # The bundles already here when this run started, so a discard removes only what this run wrote.
         preexisting_checkpoints = snapshot_checkpoints(out_dir)
 
         unet.train()
@@ -552,9 +553,9 @@ def run_diffusion_lora_training(
         done = resumed
 
         def _save_checkpoint(step: int) -> None:
-            # Outcome is reported by write_resume_checkpoint's own checkpoint_saved /
-            # checkpoint_failed events, so a run that crashes after a save is still known to be
-            # resumable (and one whose save failed is still known to be blocked).
+            # write_resume_checkpoint reports its own checkpoint_saved / checkpoint_failed events, so a run
+            # that crashes after a save is still known to be resumable and one whose save failed is still
+            # known to be blocked.
             _written, _error = write_resume_checkpoint(
                 cfg,
                 step = step,
@@ -566,15 +567,10 @@ def run_diffusion_lora_training(
                 sampler = index_sampler,
                 rng_streams = rng_streams,
                 progress = {"running_loss": running_loss},
-                # NOT discard_existing. A fresh run does own its output dir, but deleting the
-                # previous run's bundles at the FIRST periodic save spends them before this run
-                # has produced anything: "stop without saving" then removes only what this run
-                # wrote, leaves the previous adapter in place, and the run it belonged to is
-                # unresumable -- cancelling a retrain destroyed the thing being retrained. The
-                # clear happens on the completion path instead, once the new adapter is saved.
+                # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them
+                # before this run produced anything, so cancelling a retrain destroyed the thing being retrained.
                 discard_existing = False,
-                # And the bundles that were here before this run: a branched resume must not
-                # prune the higher-numbered checkpoints it did not write.
+                # A branched resume must not prune the higher-numbered checkpoints it did not write.
                 preexisting = preexisting_checkpoints,
             )
 
@@ -648,7 +644,8 @@ def run_diffusion_lora_training(
                 step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
                 micro += 1
 
-            # max_grad_norm at or below 0 disables clipping (Unsloth sends 0.0); passing 0.0 to clip_grad_norm_ would zero every gradient.
+            # max_grad_norm at or below 0 disables clipping (Unsloth sends 0.0); passing 0.0 to clip_grad_norm_
+            # would zero every gradient.
             grad_norm = None
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
                 # Returned value is the total PRE-clip norm, reported to the UI chart.
@@ -659,8 +656,8 @@ def run_diffusion_lora_training(
             running_loss += step_loss
             done = opt_step + 1
             now = time.time()
-            # Rates count only the steps THIS process ran, so a run resumed at step 11 does not
-            # divide by 12 steps it never executed.
+            # Rates count only the steps THIS process ran, so a run resumed at step 11 does not divide by 12
+            # steps it never executed.
             ran_here = done - resumed
             if ran_here == 1:
                 # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the rate starts after it.
@@ -690,8 +687,7 @@ def run_diffusion_lora_training(
                 )
 
             stop_now = _check_stop()
-            # Periodic resume point. Skipped on the final step (a finished run has nothing left
-            # to resume) and when stopping, since the stop path writes one at the exact step.
+            # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
             if (
                 not stop_now
                 and cfg.save_steps
@@ -708,9 +704,7 @@ def run_diffusion_lora_training(
         catalog_path: Optional[str] = None
         if not (stopped and not save_on_stop):
             out_dir.mkdir(parents = True, exist_ok = True)
-            # Stopping early is exactly when the run should be resumable, so write the bundle
-            # BEFORE the adapter export: if that export then fails, the run still comes back.
-            # A completed run has nothing left to resume.
+            # Write the bundle BEFORE the adapter export: if that export then fails, the run still comes back.
             if stopped and done > 0:
                 _save_checkpoint(done)
             unet_lora = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
@@ -725,27 +719,18 @@ def run_diffusion_lora_training(
             # ``done`` (the step reached), not cfg.train_steps: a stop at 11/500 must not advertise 500.
             catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
             if not stopped:
-                # A COMPLETED run has nothing to resume, and the last iteration deliberately
-                # writes no bundle -- so with save_steps on, the newest thing left in the
-                # directory is checkpoint-400 of a run that finished at 500. The preflight
-                # cannot see the run status, so a later resume with a raised target rolled the
-                # model, optimizer, scheduler, sampler and RNG back and retrained 401-500.
-                # Only this run's own bundles go; an earlier run's stay resumable.
+                # A completed run has nothing to resume and the last iteration writes no bundle, so with
+                # save_steps on the newest thing left is an earlier checkpoint, and a later resume with a raised
+                # target rolled everything back and retrained. Only this run's own bundles go.
                 retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
             elif not resumed_here:
-                # Stopped WITH save on a fresh retrain: the stop bundle is a LOWER step than
-                # the leftovers of the earlier run in this directory, and resume-by-directory
-                # picks the newest by step -- so those would outrank the partial just saved
-                # and continue the wrong training. A resumed run keeps what it found.
+                # A stop-with-save on a fresh retrain is a LOWER step than the earlier run's leftovers, and resume-
+                # by-directory picks the newest by step, so those would outrank the partial just saved.
                 discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
         else:
-            # Discarded: the user asked to throw this run away. Before periodic checkpoints
-            # existed a discard left nothing behind, because the output directory was only
-            # ever created inside this save gate. save_steps now writes bundles as the run
-            # goes, so without this a discard leaves up to save_total_limit copies of the
-            # optimizer state in a directory the user never got an artifact from -- invisible
-            # to every scanner, unresumable (the record is marked discarded), and with no
-            # delete path in the UI.
+            # save_steps writes bundles as the run goes, so without this a discard leaves up to
+            # save_total_limit copies of the optimizer state in a directory the user got no artifact from:
+            # invisible to every scanner, unresumable, with no delete path in the UI.
             clear_own_checkpoints(out_dir, preexisting_checkpoints)
             try:
                 out_dir.rmdir()
@@ -763,8 +748,7 @@ def run_diffusion_lora_training(
             stopped = stopped,
             steps_run = done if cfg.train_steps else 0,
             resumed_from_step = resumed or None,
-            # "Stop without saving" discards the run, so its own periodic checkpoints must not
-            # keep offering to continue it.
+            # A discarded run's own periodic checkpoints must not keep offering to continue it.
             discarded = bool(stopped and not save_on_stop),
         )
         return str(out_dir)
@@ -817,7 +801,8 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         return got if saw else False
 
     try:
-        # normalized() resolves + validates the family; dispatch through the registry so a DiT family runs its own trainer.
+        # normalized() resolves + validates the family; dispatch through the registry so a DiT family runs
+        # its own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
         trainer(cfg, on_event = on_event, should_stop = should_stop)

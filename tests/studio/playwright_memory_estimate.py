@@ -22,7 +22,7 @@ to be displaying. What that buys, gate by gate:
     n_parallel, gpu_memory_mode). A row that re-renders without re-pricing, or one wired
     to a stale request object, fails here (HARD).
   - Response reaches the screen: the figures shown are the ones the stub returned, to
-    the byte -- `formatMemoryGb` of the stubbed totals, and, once the row is expanded,
+    the byte -- `formatBytesGiB` of the stubbed totals, and, once the row is expanded,
     the breakdown lines plus the KV note built from the echoed context and cache dtype
     (HARD).
   - The row hides rather than errors: `available: false` hides it, restoring the
@@ -79,25 +79,22 @@ GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
 # Substring of the picker row for the model whose run settings this drives.
 #
-# Defaulted from GGUF_REPO rather than to a bare family name, and that is not cosmetic:
-# the row lookup takes `.first`, so a hint that also matches a NON-GGUF sibling opens
-# whichever the picker happens to order first. On a cache holding both
-# `gemma-3-270m-it-GGUF` and `gemma-3-270m-it-unsloth-bnb-4bit`, "gemma-3-270m" opened the
-# bnb-4bit safetensors panel -- which has no Context Length control and no memory row at
-# all, because the row is GGUF-only -- and the whole suite then reported the feature
-# missing. The repo's own name cannot collide that way.
+# From GGUF_REPO rather than a bare family name, and not cosmetically: the row lookup
+# takes `.first`, so a hint matching a NON-GGUF sibling opens whichever the picker orders
+# first. On a cache holding both `gemma-3-270m-it-GGUF` and
+# `gemma-3-270m-it-unsloth-bnb-4bit`, "gemma-3-270m" opened the bnb-4bit safetensors
+# panel -- no Context Length control, no memory row, the row being GGUF-only -- and the
+# suite reported the feature missing. The repo's own name cannot collide that way.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT") or GGUF_REPO.rsplit("/", 1)[-1]
-# Context Lengths to drive the four re-prices with. Each has to be valid (>=128, a
-# multiple of 128, under the model's ceiling) and, crucially, DIFFERENT from whatever the
-# control is showing at the time.
+# Context Lengths for the four re-prices. Each must be valid (>=128, a multiple of 128,
+# under the model's ceiling) and DIFFERENT from what the control is showing at the time.
 #
-# That last part is a real property of the control, not a precaution. The box reads "Auto"
-# until it has focus and then reveals the context the load would fit to -- 8192 on
-# gemma-3-270m here -- and typing the number already displayed commits no onChange, so the
-# request key never moves and no re-price happens at all. Measured: typing 8192 into a box
-# showing 8192 produced zero requests and the box fell back to "Auto"; every other value
-# produced one. So the value is chosen at the moment of typing, against what the box says,
-# from this pool rather than fixed per step.
+# That last part is a property of the control, not a precaution: the box reads "Auto"
+# until focused and then reveals the context the load would fit to (8192 here), and
+# typing the number already displayed commits no onChange, so the request key never moves
+# and no re-price happens. Measured: typing 8192 into a box showing 8192 produced zero
+# requests; every other value produced one. Hence chosen at the moment of typing, against
+# what the box says, rather than fixed per step.
 CTX_CANDIDATES = [
     int(part)
     for part in os.environ.get("STUDIO_CTX_CANDIDATES", "6144,5120,4096,3072,2048,1536").split(",")
@@ -121,7 +118,7 @@ ESTIMATE_WAIT_MS = int(os.environ.get("STUDIO_UI_ESTIMATE_WAIT_MS", "20000"))
 TRANSCRIPT_NAME = "memory-estimate-exchanges.json"
 
 GIB = 1024**3
-# Exact quarter-GiB figures on purpose: `formatMemoryGb` is `(bytes / 1024**3).toFixed(2)`,
+# Exact quarter-GiB figures on purpose: `formatBytesGiB` is `(bytes / 1024**3).toFixed(2)`,
 # and a quarter of a GiB is exactly representable, so the string the app renders is
 # predictable to the last digit on every engine rather than a rounding argument.
 STUB_WEIGHTS_BYTES = int(3.25 * GIB)
@@ -133,9 +130,19 @@ STUB_LAYER_COUNT = 27
 STUB_GPU_LAYERS = 12
 
 
-def _gb(num_bytes: int) -> str:
-    """Python-side mirror of formatMemoryGb in api/memory-estimate.ts."""
-    return f"{num_bytes / GIB:.2f} GB"
+def _gib(num_bytes: int) -> str:
+    """Python-side mirror of `formatBytesGiB` in `lib/memory/format.ts`.
+
+    The label is GiB, not GB, and that is the assertion rather than a detail.
+    This mirror used to print "GB" because the panel did, so the test agreed
+    with the app about a divide by 1024**3 that both of them called a decimal
+    gigabyte. Consolidating the formatters corrected the app; correcting the
+    mirror to match is what keeps this test measuring the app rather than
+    re-stating whatever the app currently happens to do.
+
+    Only the unit moved. Every figure here is byte-for-byte what it was.
+    """
+    return f"{num_bytes / GIB:.2f} GiB"
 
 
 _n = [0]
@@ -679,12 +686,23 @@ with sync_playwright() as p:
             page.wait_for_timeout(200)
         return estimate_visible() == present
 
+    def _readable(raw: str | None) -> str:
+        """`inner_text` with the row's layout glue normalised back to plain spaces.
+
+        The breakdown captions join their items with U+00A0 so a narrow panel breaks
+        between "262,144 tokens" and "4 slots" rather than inside either. That is a
+        line-breaking detail and not something a reader distinguishes, but it does
+        defeat a plain `"6,144 tokens" in text` check, so every assertion below reads
+        the caption the way it looks rather than the way it is encoded.
+        """
+        return (raw or "").replace(" ", " ").strip()
+
     def header_text() -> str:
         button = estimate_button()
         if button is None:
             return ""
         try:
-            return (button.locator("xpath=..").inner_text() or "").strip()
+            return _readable(button.locator("xpath=..").inner_text())
         except Exception:
             return ""
 
@@ -704,7 +722,7 @@ with sync_playwright() as p:
         if _count(panel) == 0:
             return ""
         try:
-            return (panel.inner_text() or "").strip()
+            return _readable(panel.inner_text())
         except Exception:
             return ""
 
@@ -896,27 +914,27 @@ with sync_playwright() as p:
         # an exact-case check fails on a pill that is right there on screen.
         if not re.search(r"\bbeta\b", head, re.I):
             soft_fail(f"the row lost its Beta pill (header text={head!r})")
-        total_gb = _gb(STUB_TOTAL_BYTES)
-        gpu_gb = _gb(STUB_GPU_BYTES)
+        total_gib = _gib(STUB_TOTAL_BYTES)
+        gpu_gib = _gib(STUB_GPU_BYTES)
         # The total is shown in BOTH memory topologies: as the sole figure where the GPU
         # and the host share one pool, and beside the GPU share where they do not. The GPU
         # figure only exists in the second, so it is asserted only when its label is there
         # -- a CPU-only runner and an Apple machine legitimately show neither.
-        if total_gb not in head:
+        if total_gib not in head:
             fail(
-                f"the row does not show the returned total {total_gb!r} "
+                f"the row does not show the returned total {total_gib!r} "
                 f"(total_bytes={STUB_TOTAL_BYTES}); header text={head!r}"
             )
         else:
-            info(f"OK figures: total {total_gb} is on screen")
+            info(f"OK figures: total {total_gib} is on screen")
         if re.search(r"\bGPU\b", head):
-            if gpu_gb not in head:
+            if gpu_gib not in head:
                 fail(
-                    f"the row shows a GPU figure but not the returned gpu_bytes {gpu_gb!r}; "
+                    f"the row shows a GPU figure but not the returned gpu_bytes {gpu_gib!r}; "
                     f"header text={head!r}"
                 )
             else:
-                info(f"OK figures: GPU {gpu_gb} is on screen")
+                info(f"OK figures: GPU {gpu_gib} is on screen")
         else:
             info("single-pool layout: no separate GPU figure to check")
         shoot("04-row-collapsed")
@@ -939,9 +957,9 @@ with sync_playwright() as p:
             )
         else:
             for label, value in (
-                ("Weights", _gb(STUB_WEIGHTS_BYTES)),
-                ("KV cache", _gb(STUB_KV_BYTES)),
-                ("Compute buffers", _gb(STUB_COMPUTE_BYTES)),
+                ("Weights", _gib(STUB_WEIGHTS_BYTES)),
+                ("KV cache", _gib(STUB_KV_BYTES)),
+                ("Compute buffers", _gib(STUB_COMPUTE_BYTES)),
             ):
                 if label not in detail:
                     fail(f"the breakdown has no {label!r} line; text={detail!r}")
@@ -1009,7 +1027,7 @@ with sync_playwright() as p:
         )
     if wait_for_row(True):
         head = header_text()
-        if _gb(STUB_TOTAL_BYTES) in head:
+        if _gib(STUB_TOTAL_BYTES) in head:
             info("OK restore: the row came back with the returned total")
         else:
             fail(f"the row came back without the returned total; header={head!r}")
@@ -1030,18 +1048,17 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 6. A 404 from a backend predating the route also HIDES it (HARD).
     #
-    # LAST, and it has to be last. A non-OK answer stops the panel re-pricing for the rest
-    # of its life: measured here, after one 404 the Context Length control keeps taking new
-    # values and committing them -- 3072, 2048, 1536, each held by the box -- and NO further
-    # POST /api/inference/estimate-memory is ever made, on any of them. `available: false`
-    # does not do that; the panel re-prices normally after one, which is why the restore
-    # gate above sits with the unavailable case and not with this one.
+    # LAST, and it has to be. A non-OK answer stops the panel re-pricing for the rest of
+    # its life: measured here, after one 404 the Context Length control keeps taking and
+    # committing values -- 3072, 2048, 1536 -- and no further POST is ever made.
+    # `available: false` does not do that, which is why the restore gate above sits with
+    # the unavailable case rather than this one.
     #
-    # It costs nothing in the situation this gate is about, a backend predating the route,
-    # since every answer there would be a 404 anyway and the row is meant to stay hidden.
-    # It is only reachable by an endpoint that fails and then recovers. Ordering around it
-    # rather than asserting it: this suite is about the row, and pinning the freeze here
-    # would be pinning behaviour nobody has decided on.
+    # Harmless in the situation this gate is about, since a backend predating the route
+    # answers 404 to everything and the row is meant to stay hidden; it is only reachable
+    # by an endpoint that fails and then recovers. Ordered around rather than asserted:
+    # this suite is about the row, and pinning the freeze would pin behaviour nobody has
+    # decided on.
     # ─────────────────────────────────────────────────────
     step("HTTP 404 hides the row")
     _mode[0] = "http404"

@@ -380,6 +380,17 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "duration: Infinity" in explicit_load
 
 
+def test_a_recipe_restores_the_previous_model_at_the_context_it_asked_for():
+    """A recipe pins nothing, so restoring the model it displaced replays what it asked for."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    assert src.count("requestedContextLength: status.requested_context_length ?? null,") == 2, src
+    assert (
+        "      max_seq_length:\n"
+        "        requestedContextLength ??\n"
+        "        unpinnedLoadContext(" in src
+    ), src
+
+
 def test_recipe_model_load_toast_is_persistent_and_dismissible():
     """Recipe model loading uses the same dismissible persistent lifecycle as
     chat loading because both call the non-abortable loadModel API."""
@@ -669,10 +680,20 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # the same meta and so has to carry the pin. Counted rather than matched
     # loosely, so a new row that forgets it is a failure here rather than a load
     # that silently follows the default ref. #7736 added the third: the collapsed
-    # single-quant GGUF row, which is a load site like the other two.
-    assert picker.count("loadId: c.load_id") == 3, (
+    # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
+    # has to price the pinned snapshot rather than the default ref. #10128 put three of
+    # them behind a torn-snapshot guard, so the guard is matched rather than one spelling.
+    pins = re.findall(r"loadId:\s*(?:(\w+)\s*\?\s*undefined\s*:\s*)?c\.load_id", picker)
+    assert len(pins) == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
+    )
+    # #10128: the three that can START a load withhold the pin for a part-downloaded
+    # snapshot, since audio-page.tsx reads a forwarded loadId as proof the weights are
+    # on disk. The VRAM bar only prices what is there, so it pins unconditionally.
+    assert sorted(pins) == ["", "isPartial", "isPartial", "isPartial"], (
+        "a row that can start a load lost its partial-snapshot guard, or the VRAM bar "
+        f"gained one: {sorted(pins)}"
     )
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
@@ -980,6 +1001,9 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
+    # MLX pins via customContextLength, so substituting the shown default would turn
+    # "Auto" into a request for that number.
+    assert "      : targetIsMlx\n        ? effectiveRuntimeConfig" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
@@ -1000,8 +1024,7 @@ def test_initial_load_uses_staged_config_payload():
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
     assert "export type NumericValueInputHandle" in numeric
     assert "commit:" in numeric
-    # P1: commit returns null unless the user actually edited the field,
-    # so Load/Save with untouched Auto does not pin native context.
+    # Commit returns null unless the field was edited, so an untouched control pins nothing.
     assert "dirtyRef.current" in numeric
     assert "return null;" in numeric
     # P2: blur clears dirtyRef after commit so Reset/slider cannot be
@@ -1010,7 +1033,7 @@ def test_initial_load_uses_staged_config_payload():
     assert "draftRef.current = String(final);" in numeric
     # Same-click Load after blur still sees the committed draft.
     assert "lastBlurCommittedRef" in numeric
-    # Invalid drafts must not turn Auto into an explicit pin.
+    # Invalid drafts must not become an explicit pin.
     assert "const commitDraft = (raw: string): number | null" in numeric
     assert re.search(r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;", numeric)
     assert re.search(
@@ -1047,6 +1070,10 @@ def test_same_click_commit_covers_all_numeric_inputs():
     # The non-GGUF load path substitutes the committed Max Seq Length draft.
     assert "const effectiveMaxSeqLengthValue =" in page
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
+    # The committed draft lands in this target's pin field.
+    assert (
+        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));" in page
+    )
 
 
 def test_context_commit_rechecks_persistence_only_shortcut():
@@ -1062,7 +1089,12 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     """An explicit customContextLength that equals the native ceiling is still a user
     override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "const contextAtDefault = !target.isGguf || config.customContextLength == null;" in src
+    # An MLX pin is an override too, so Reset stays enabled, whichever field held it.
+    assert (
+        "const contextAtDefault = !target.isGguf "
+        "? savedContextPin(config) == null "
+        ": config.customContextLength == null;" in src
+    )
     # The old form that ignored an explicit pin equal to native must not return.
     assert (
         "(nativeContextLength == null ? config.customContextLength == null : "
@@ -1083,14 +1115,98 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     assert "DEFAULT_MAX_SEQ_LENGTH," in barrel
     src = " ".join(_read("features/chat/shared-composer.tsx").split())
     assert "DEFAULT_MAX_SEQ_LENGTH," in src
+    # Same helper as the single-view load, so a pane cannot load at a different size.
     assert (
-        "const effectiveMaxSeqLength = ownConfig.customContextLength ?? "
-        "normalizeMaxSeqLength(ownConfig.maxSeqLength) ?? "
-        "(targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);" in src
+        "const effectiveMaxSeqLength = savedContextPin(ownConfig) ?? "
+        "unpinnedLoadContext( targetIsGguf, "
+        "isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason), "
+        "DEFAULT_MAX_SEQ_LENGTH, );" in src
     )
     # The buggy fallback to the active model's shared runtime value must not return.
     assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
     assert "const maxSeqLength = store.params.maxSeqLength;" not in src
+
+
+def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
+    """Which backend serves and what window it reported decide the request and the Max
+    Tokens ceiling. A literal for the first makes an interactive MLX load ask for the app
+    default again; a raw context field for the second raises Max Tokens to meet a length
+    nobody measured."""
+    load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
+    derived_backend = r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\)"
+    # A name bound to that same call counts, so hoisting one is not a literal creeping
+    # in; the binding itself is checked below.
+    hoisted = r"isMlx: (\w+),"
+    hoist_source = r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\);"
+    for name in load_paths:
+        src = _read(f"features/{name}")
+        calls = src.count("resolveLoadMaxSeqLength({") + src.count("retainedContextPin({")
+        derived = len(re.findall(derived_backend, src))
+        for bound in set(re.findall(hoisted, src)):
+            if re.search(hoist_source.format(name = re.escape(bound)), src):
+                derived += src.count(f"isMlx: {bound},")
+        assert derived >= calls, (name, derived, calls)
+    for name in (*load_paths, "chat/lib/apply-inference-status-to-store.ts"):
+        src = _read(f"features/{name}")
+        # maxTokensCap is exempt: it only lowers a budget, and a transformers load
+        # reports there the max_seq_length it was configured with.
+        windows = re.sub(r"maxTokensCap:[^,]*,", "", src)
+        assert not re.search(r"\w+\.context_length\b", windows), name
+    # Including the fallback: on a model change the session length is the outgoing one's.
+    policy = _read("features/chat/presets/preset-policy.ts")
+    assert (
+        "localMaxTokensCeiling(\n    loadedContextLength,\n"
+        "    unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens)," in policy
+    )
+    # No window reported falls back to what this load asked for, not the app default,
+    # which halved Max Tokens for a transformers model carrying more.
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert re.search(r"MaxTokensCeiling\(\s+loadedContextFields[^;]+loadedWindow,", adapter)
+    assert re.search(r"ContextForParams\(\s+loadedContext[^,]+,\s+effectiveMaxSeqLength,", adapter)
+
+
+def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
+    """MLX sizes its own window, so the control is GGUF's Context Length and states what a
+    load would serve. Max Seq Length at 4096 would describe a pin never sent."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
+    # A number, not a word: the placeholder is only for a window nobody has read.
+    assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
+    assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
+    # The resident model's window, else this model's; request bounds would shorten it.
+    assert "(targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??" in page
+    assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
+    assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
+    numeric = _read("features/model-picker/components/numeric-value-input.tsx")
+    # Typing the shown number is a choice even where it equals the value beneath it.
+    assert "derived={isMlx && !pinned}" in page
+    assert "pinned={savedContextPin(config) != null}" in page
+    # Committing pins that exact number; one outside the control's range is no commit,
+    # which is why the slider stays inside it too.
+    assert "const shown = parsed === value;" in numeric
+    assert re.search(r"shown && \(\(max[^{]+parsed < min\)+ \{\n\s+return null;", numeric)
+    assert "const final = commitDraft(draftRef.current);\n          dirtyRef" in numeric
+    assert "value={maxSeqLengthValue}\n              max={maxSeqLengthMax}" in page
+    assert "value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}" in page
+    assert "const final = shown ? parsed : snapToStep(parsed, step, min, max);" in numeric
+    assert re.search(
+        r"MAX_SEQ_LENGTH_MAX,\s+Math\.max\(native\w+, maxSeqLengthValue\),\s+\);", page
+    )
+    # A record written before the pin moved fields carries it in maxSeqLength, and wins.
+    assert "servedWindow(savedContextPin(config)) ??\n    mlxServedWindow ??" in page
+    # A hidden value and a value nobody chose both still count, through one predicate.
+    assert "final !== value || displayValue != null || derived;" in numeric
+    assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
+    assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
+    assert "update(contextPinPatch(value, targetIsMlx))" in page
+    # The platform answers which backend serves: "anything not GGUF" relabels CUDA.
+    assert (
+        "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
+        in page
+    )
+    # Both props are optional, so dropping either typechecks and mislabels the control.
+    assert "isMlx={targetIsMlx}" in page
+    assert "windowUnknown={" in page
 
 
 def test_default_gpu_mode_clears_manual_knobs():
@@ -1180,8 +1296,13 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     prepare = runtime.index("prepareHfTokenForUse(")
     metadata = runtime.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
-    # The raw store token must not be handed to the preflight.
-    assert "hf_token: preparedToken.token" in runtime
+    # The raw store token must not be handed to the preflight. The prepared value now
+    # reaches it through the hoisted `hfToken` binding rather than inline, so pin both
+    # halves: the assignment, and that the preflight reads that binding.
+    assert "hfToken = preparedToken.token" in runtime
+    preflight = runtime.index("fetchGgufStagedMetadata({", prepare)
+    assert "hf_token: hfToken" in runtime[preflight : preflight + 400]
+    assert runtime.index("hfToken = preparedToken.token") < preflight
     assert (
         "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime
     ), "GGUF metadata preflight must not send the unprepared stored token"
@@ -2127,9 +2248,13 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     assert "loadedNParallel: status.requested_parallel_slots," in status
     # The batch pair is told the same thing, from the same local, so the two cannot drift.
     assert "modelChanged: slotsModelChanged," in status
-    # And the reseed re-reads this model's remembered config rather than blanking.
+    # The reseed re-reads this model's remembered config rather than blanking. Slot
+    # conditions are GGUF's alone; without slot fields it goes by whether the poll is
+    # hydrating a model already on screen.
     assert (
-        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged) "
+        "const remembered = (status.is_gguf "
+        "? slotsUnseeded || batchesUnseeded || slotsModelChanged "
+        ": hydratingExistingModel) "
         "? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
     ), "the model-change reseed must feed the remembered lookup, or it discards the saved config"
 
@@ -2181,8 +2306,12 @@ def test_hydration_restores_a_remembered_slot_override():
         "prevState.nParallel === null;" in status
     )
     assert (
-        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)" in status
+        "(status.is_gguf ? slotsUnseeded || batchesUnseeded || slotsModelChanged "
+        ": hydratingExistingModel)" in status
     ), "storage is read on a fresh store or a model change, never on a steady poll"
+    assert (
+        "const rememberedNParallel = status.is_gguf && remembered?.remembered" in status
+    ), "slots are a llama.cpp knob; reading MLX's record must not seed one"
     assert (
         "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
     ), "the seed fires in both cases the clear leaves the control blank"
@@ -2867,9 +2996,15 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
         in hub
     )
     assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
-    assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
-    # The loadable identifier, as every other status reader records it.
-    assert "checkpointId: resolveInferenceCheckpointId(status)," in hub
+    assert "settingsTargetIsResident ? activeLoadedContextLength : null" in hub
+    # The loadable identifier, as every other status reader records it -- except for a
+    # speech model, which chat cannot adopt at all. speechOnly rides beside the null so
+    # the helper can tell it from the empty slot the idle-unload rule is about.
+    assert (
+        "checkpointId: isSpeechOnlyStatus(status) ? null "
+        ": resolveInferenceCheckpointId(status), "
+        "speechOnly: isSpeechOnlyStatus(status)," in hub
+    )
     assert "setCheckpoint(status.active_model" not in hub
     chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert "return status.model_identifier ?? status.active_model;" in chat, "the rule this mirrors"
@@ -3096,7 +3231,9 @@ def test_an_empty_status_is_read_against_the_idle_unload_setting():
     # A failed read keeps the last answer. The default is disarmed, which is the side
     # that clears the checkpoint, so falling back to it would drop a live selection.
     assert ".catch(() => idleUnloadArmed.current)" in hub
-    assert "if (state.idleUnloadArmed) { return false; }" in adopt
+    # An Audio load taking the single slot is not an idle eviction: nothing stashes the
+    # chat model, so the exemption must not swallow that case.
+    assert "if (state.idleUnloadArmed && !status.speechOnly) { return false; }" in adopt
     assert "actions.clearCheckpoint?.();" in adopt
 
 
@@ -3441,16 +3578,22 @@ def test_indexed_local_loads_are_remembered_without_bypassing_leases():
     assert "token" not in store.lower().replace("isPathLikeId", "")
 
 
-def test_autoload_skips_image_and_video_rows():
-    """The backend tags a row with a task only for image/video models, and the
-    picker routes those away on click. A background load has no routing step."""
+def test_autoload_skips_rows_chat_cannot_answer():
+    """The backend tags a row with a task only for the models that own another page,
+    and the picker routes those away on click. A background load has no routing step.
+    The audio tasks are here because the chat route answers a turn on a speech model by
+    synthesizing the prompt rather than refusing it, so nothing downstream catches it."""
     src = _read("features/chat/api/chat-adapter.ts")
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-to-image"' in tasks
     assert '"text-to-video"' in tasks
     assert '"image-diffusion-unsupported"' in tasks
+    assert '"text-to-speech"' in tasks
+    assert '"text-to-audio"' in tasks
+    assert '"audio-to-audio"' in tasks
+    assert '"automatic-speech-recognition"' in tasks
     policy = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in policy
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in policy
 
 
 def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
@@ -3559,6 +3702,16 @@ def test_cached_rows_classify_chat_capability_too():
     assert "_local_transformers_can_chat(classify_snapshot)" in fields
 
 
+def test_cached_codec_evidence_enriches_an_existing_hub_result():
+    """Search results outrank cached metadata, but they must not erase a decoder
+    discovered from the local tokenizer files for the same repo."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    evidence = src.split("const hubEvidenceById = useMemo", 1)[1]
+    evidence = evidence.split("const capsById = useMemo", 1)[0]
+    assert evidence.count("const existing = map.get(c.repo_id);") == 2
+    assert evidence.count("audioType: existing.audioType ?? c.audio_type") == 2
+
+
 def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
     load targets, so they must agree on POSIX case."""
@@ -3582,16 +3735,16 @@ def test_the_default_variant_lookup_takes_the_run_signal():
     assert helper.index("} catch {") < helper.index("abortSignal?.throwIfAborted();")
 
 
-def test_cached_rows_get_the_same_image_and_video_gate_as_local_rows():
-    """Cached diffusion repos carry their task on the row and report can_chat
-    true on file format alone."""
+def test_cached_rows_get_the_same_non_chat_gate_as_local_rows():
+    """Cached diffusion and speech repos carry their task on the row and report can_chat
+    true on file format alone. Both inventories, or one of them still offers the row."""
     src = _read("features/chat/api/chat-adapter.ts")
     cached = src.split("function isChattableCachedRepo", 1)[1].split("\n}\n", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")' in cached
+    assert 'NON_CHAT_TASKS.has(repo.task ?? "")' in cached
     local = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in local
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in local
     # A chat GGUF is tagged text-generation, so the gate is a list, not "has a task".
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-generation"' not in tasks
 
 

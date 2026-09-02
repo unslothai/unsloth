@@ -187,7 +187,7 @@ class _BearerOrKeyless(HTTPBearer):
 
 
 # scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
-security = _BearerOrKeyless(scheme_name = "HTTPBearer")  # Reads Authorization: Bearer <token>
+security = _BearerOrKeyless(scheme_name = "HTTPBearer")
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -365,9 +365,7 @@ async def credentials_for_token(
     """
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
-    # A real token is authoritative and never needs keyless classification. The
-    # remaining settings/listener reads use SQLite and DNS, so keep them off the
-    # event loop just like the normal credential lookup path.
+    # Settings/listener reads hit SQLite and DNS, so keep them off the event loop.
     if token and token not in APPROVED_DUMMY_BEARERS:
         return HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
     eligible = await run_in_threadpool(keyless_request_allowed, request)
@@ -450,20 +448,15 @@ def _invalid_api_key_detail(token: str) -> str:
     return "Invalid or expired API key"
 
 
-def _admin_credential(*, allow_password_change: bool) -> Tuple[str, Optional[str]]:
-    """Resolve the local admin for a caller admitted by the keyless API access setting."""
+def _admin_credential() -> Tuple[str, Optional[str]]:
+    """Resolve the local admin for a keyless caller, without the UI password gate."""
     record = get_user_and_secret(DEFAULT_ADMIN_USERNAME)
     if record is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired token",
         )
-    _salt, _pwd_hash, jwt_secret, must_change_password = record
-    if must_change_password and not allow_password_change:
-        raise HTTPException(
-            status_code = status.HTTP_403_FORBIDDEN,
-            detail = "Password change required",
-        )
+    _salt, _pwd_hash, jwt_secret, _must_change_password = record
     return DEFAULT_ADMIN_USERNAME, credential_generation(jwt_secret)
 
 
@@ -479,9 +472,7 @@ async def _get_current_credential(
     Credential reads run in the threadpool so stalled SQLite cannot block the event loop.
     """
     if credentials.scheme == KEYLESS_SCHEME:
-        return await run_in_threadpool(
-            _admin_credential, allow_password_change = allow_password_change
-        )
+        return await run_in_threadpool(_admin_credential)
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
         from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
@@ -490,13 +481,10 @@ async def _get_current_credential(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid authentication credentials",
             )
-        return await run_in_threadpool(
-            _admin_credential, allow_password_change = allow_password_change
-        )
+        return await run_in_threadpool(_admin_credential)
 
     token = credentials.credentials
 
-    # --- API key path (sk-unsloth-...) ---
     if token.startswith(API_KEY_PREFIX):
         verified = await run_in_threadpool(validate_api_key_with_credential, token)
         if verified is None:
@@ -507,7 +495,6 @@ async def _get_current_credential(
         username, secret = verified
         return username, credential_generation(secret)
 
-    # --- JWT path ---
     subject = _decode_subject_without_verification(token)
     if subject is None:
         raise HTTPException(

@@ -6,6 +6,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_FRAMES,
+  MINIMAX_MUSIC_MAX_SECONDS,
+  audioGenerationPresentation,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -13,6 +18,8 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
+  minimaxMusicFramesForSeconds,
+  nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
   resolveSttLoadedModel,
@@ -33,10 +40,51 @@ const chatApiSource = readFileSync(
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
-  assert.equal(canTransitionAudioMode("generating"), true);
+  assert.equal(canTransitionAudioMode("generating", "generating"), true);
+  assert.equal(canTransitionAudioMode("generating", "preparing"), false);
+  assert.equal(canTransitionAudioMode("generating", "stopping"), false);
+  assert.equal(canTransitionAudioMode("generating", "finishing"), false);
   assert.equal(canTransitionAudioMode("loading"), false);
   assert.equal(canTransitionAudioMode("unloading"), false);
   assert.equal(canTransitionAudioMode("transcribing"), false);
+});
+
+test("audio generation phases expose truthful indeterminate presentation", () => {
+  assert.equal(audioGenerationPresentation(null), null);
+  assert.deepEqual(audioGenerationPresentation("preparing"), {
+    status: "Preparing audio…",
+    actionLabel: "Preparing…",
+    canStop: false,
+  });
+  assert.deepEqual(audioGenerationPresentation("generating"), {
+    status: "Generating audio…",
+    actionLabel: "Stop",
+    canStop: true,
+  });
+  assert.deepEqual(audioGenerationPresentation("stopping"), {
+    status: "Stopping audio…",
+    actionLabel: "Stopping…",
+    canStop: false,
+  });
+  assert.deepEqual(audioGenerationPresentation("finishing"), {
+    status: "Finishing audio…",
+    actionLabel: "Finishing…",
+    canStop: false,
+  });
+
+  for (const phase of [
+    "preparing",
+    "generating",
+    "stopping",
+    "finishing",
+  ] as const) {
+    const presentation = audioGenerationPresentation(phase);
+    assert.ok(presentation);
+    assert.doesNotMatch(
+      `${presentation.status} ${presentation.actionLabel}`,
+      /%|percent|eta|remaining/i,
+    );
+  }
 });
 
 test("staged TTS completion requires the same Speak ownership generation", () => {
@@ -61,6 +109,50 @@ test("TTS load context matches the advertised generation ceiling", () => {
   assert.match(audioPageSource, /const TTS_MAX_TOKENS = 8192/);
   assert.match(audioPageSource, /max_seq_length: TTS_MAX_TOKENS/);
   assert.match(audioPageSource, /label="Max tokens"[\s\S]*max=\{TTS_MAX_TOKENS\}/);
+});
+
+test("MiniMax duration converts seconds to the official frame budget", () => {
+  assert.equal(MINIMAX_MUSIC_FRAMES_PER_SECOND, 25);
+  assert.equal(MINIMAX_MUSIC_DEFAULT_SECONDS, 30);
+  assert.equal(MINIMAX_MUSIC_MAX_FRAMES, 9000);
+  assert.equal(MINIMAX_MUSIC_MAX_SECONDS, 360);
+  assert.equal(
+    minimaxMusicFramesForSeconds(MINIMAX_MUSIC_DEFAULT_SECONDS),
+    750,
+  );
+  assert.equal(minimaxMusicFramesForSeconds(1.99), 49);
+  assert.equal(minimaxMusicFramesForSeconds(1.16), 29);
+  assert.equal(minimaxMusicFramesForSeconds(360), 9000);
+  assert.equal(minimaxMusicFramesForSeconds(999), 9000);
+  assert.equal(minimaxMusicFramesForSeconds(0), 1);
+  for (let frames = 1; frames <= MINIMAX_MUSIC_MAX_FRAMES; frames += 1) {
+    assert.equal(
+      minimaxMusicFramesForSeconds(frames / MINIMAX_MUSIC_FRAMES_PER_SECOND),
+      frames,
+    );
+  }
+});
+
+test("native audio instruction fields match the runtime payload contract", () => {
+  assert.equal(nativeAudioInstructionsKind("higgs_tts2"), "scene");
+  assert.equal(nativeAudioInstructionsKind("moss_tts_local"), "style");
+  assert.equal(nativeAudioInstructionsKind("minimax_music3"), "music");
+  assert.equal(nativeAudioInstructionsKind("higgs_tts3"), null);
+  assert.equal(nativeAudioInstructionsKind("moss_tts_nano"), null);
+  assert.equal(nativeAudioInstructionsKind(null), null);
+});
+
+test("Audio sends model-specific duration and instruction payloads", () => {
+  assert.match(
+    audioPageSource,
+    /musicGeneration\s*\? minimaxMusicFramesForSeconds\(minimaxMaxSeconds\)/,
+  );
+  assert.match(audioPageSource, /max=\{MINIMAX_MUSIC_MAX_SECONDS\}/);
+  assert.match(
+    audioPageSource,
+    /instructionsKind !== null && instructions[\s\S]*audio_instructions: instructions/,
+  );
+  assert.match(audioPageSource, /\? "Scene description"/);
 });
 
 test("Mac rejects safetensors-only TTS and redirects sibling families", () => {
@@ -280,7 +372,7 @@ test("file transcription cannot overlap a pending microphone permission", () => 
 test("gallery refresh preserves fallback selection and pagination identity", () => {
   assert.match(
     audioPageSource,
-    /const generation = \+\+galleryRefreshGeneration\.current;[\s\S]*listAudioGallery\(0, PAGE_SIZE\);[\s\S]*if \(generation !== galleryRefreshGeneration\.current\) return/,
+    /const generation = \+\+galleryRefreshGeneration\.current;[\s\S]*listAudioGallery\(\s*0,[\s\S]*if \(generation !== galleryRefreshGeneration\.current\) return/,
   );
   assert.match(
     audioPageSource,
@@ -370,7 +462,7 @@ test("a clip this client deleted leaves the merged gallery", () => {
 test("the selection only moves when its clip left the merged gallery", () => {
   assert.match(
     audioPageSource,
-    /const \{ clips: merged, stitched \} = mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
+    /const \{ clips: merged, stitched \} =[\s\S]*mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
   );
   // Play an older clip, delete another, and the player must not jump to the newest.
   assert.doesNotMatch(
@@ -408,6 +500,15 @@ test("a cache with nothing in common with the page is dropped, not stitched", ()
     [{ id: "c" }, { id: "b" }],
   );
   assert.deepEqual(merged, { clips: [{ id: "z" }, { id: "y" }], stitched: false });
+});
+
+test("a refresh resets when an external archive moves the page boundary", () => {
+  const cached = Array.from({ length: 50 }, (_, i) => ({ id: `c${i}` }));
+  const page = [...cached.slice(0, 5), ...cached.slice(6), { id: "c50" }];
+  assert.deepEqual(mergeGalleryPage(page, cached, undefined, true), {
+    clips: page,
+    stitched: false,
+  });
 });
 
 test("the recorder is gated on the same capability check the composer uses", () => {
@@ -454,13 +555,10 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
   assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
 });
 
-test("macOS hides trained TTS checkpoints that are not GGUF", () => {
-  // MLX has no TTS decoder, so a LoRA or merged safetensors row deterministically fails
-  // with "not supported on the MLX backend yet". The catalog rows are already filtered to
-  // families with a GGUF sibling; these have none.
+test("the trained-model list applies the native-aware macOS policy", () => {
   assert.match(
     audioPageSource,
-    /\.filter\(\(lora\) => !isMac \|\| lora\.export_type === "gguf"\)/,
+    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(\s*lora\.audio_type,\s*lora\.export_type,?\s*\)/,
   );
 });
 
@@ -509,7 +607,7 @@ test("generating waits for the transcribe release the mode switch started", () =
   // dictation model, which OOMs a device that fits either one alone.
   assert.match(
     audioPageSource,
-    /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,900}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,200}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,80}?setMode\("transcribe"\);/,
+    /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,1100}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,240}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,160}?setMode\("transcribe"\);/,
   );
 });
 
@@ -554,11 +652,86 @@ test("generation is claimed before the transcribe release is awaited", () => {
   // each resumed into its own generateAudio while generateAbort tracked only the last.
   assert.match(
     audioPageSource,
-    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
+    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*updateGenerationPhase\("preparing"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
   );
   // And a release that failed hands the slot back rather than wedging the button.
   assert.match(
     audioPageSource,
-    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+  );
+});
+
+test("a restore refreshes the loaded window, not just the first page", () => {
+  // A restored clip re-enters History at its own age, so past the first page it lands below it.
+  // Refreshing only that page left it out of the strip AND unreachable, since the kept cursor
+  // starts below the loaded window.
+  const shelf = Array.from({ length: 120 }, (_, i) => ({ id: `c${i}` }));
+  const loaded = shelf.slice(0, 100);
+  const restored = { id: "restored" };
+  const afterRestore = [...shelf.slice(0, 70), restored, ...shelf.slice(70)];
+
+  const firstPageOnly = mergeGalleryPage(afterRestore.slice(0, 50), loaded, undefined, true);
+  assert.equal(
+    firstPageOnly.clips.some((clip) => clip.id === "restored"),
+    false,
+  );
+
+  const wholeWindow = mergeGalleryPage(
+    afterRestore.slice(0, loaded.length),
+    loaded,
+    undefined,
+    true,
+  );
+  assert.equal(
+    wholeWindow.clips.some((clip) => clip.id === "restored"),
+    true,
+  );
+  // Still contiguous: the row the longer page pushed out is stitched back on, not dropped.
+  assert.deepEqual(wholeWindow.clips, [...afterRestore.slice(0, 100), shelf[99]]);
+});
+
+test("the gallery-changed subscription asks for the window that is loaded", () => {
+  assert.match(
+    audioPageSource,
+    /subscribeGalleryChanged\("audio", \(\) => \{\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);/,
+  );
+  assert.match(
+    audioPageSource,
+    /const wanted = Math\.max\(PAGE_SIZE, windowSize\);\s*const asked = Math\.min\(wanted, MAX_PAGE_SIZE\);/,
+  );
+});
+
+test("reactivating audio asks for the window that is loaded", () => {
+  assert.match(
+    audioPageSource,
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);\s*return;\s*\}/,
+  );
+});
+
+test("returning to a visible audio tab refreshes the loaded window", () => {
+  assert.match(
+    audioPageSource,
+    /const refreshWhenVisible = \(\) => \{\s*if \(document\.hidden\) return;\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);\s*\};\s*window\.addEventListener\("focus", refreshWhenVisible\);\s*document\.addEventListener\("visibilitychange", refreshWhenVisible\);/,
+  );
+  assert.match(
+    audioPageSource,
+    /window\.removeEventListener\("focus", refreshWhenVisible\);\s*document\.removeEventListener\("visibilitychange", refreshWhenVisible\);/,
+  );
+});
+
+test("a window past the route cap resets the strip instead of stranding the restore", () => {
+  // Asking for more than the route returns leaves the middle of the window unfetched, and keeping
+  // the old scrollback keeps a cursor starting BELOW that middle, so a clip restored into it is
+  // in neither the merged list nor any page still reachable.
+  assert.match(
+    audioPageSource,
+    /wanted > asked\s*\?\s*\{ clips: \[\.\.\.page\.audio\], stitched: false \}\s*:\s*mergeGalleryPage\(/,
+  );
+});
+
+test("a capped restore refresh invalidates a page fetched from the older cursor", () => {
+  assert.match(
+    audioPageSource,
+    /const cursor = galleryCache\.nextCursor;\s*try\s*{\s*const page = await listAudioGallery\(\s*0,\s*PAGE_SIZE,\s*cursor,?\s*\);\s*if \(\s*refreshGeneration !== galleryRefreshGeneration\.current \|\|\s*cursor !== galleryCache\.nextCursor\s*\)\s*return;/,
   );
 });

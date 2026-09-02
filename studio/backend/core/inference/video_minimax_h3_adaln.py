@@ -42,9 +42,10 @@ from __future__ import annotations
 import types
 from typing import Any, Optional
 
-# Video, text and audio rows each get their own modulation row, so one projection emits three
-# blocks of six chunks. Mirrors diffusers' MINIMAX_H3_MODALITY_NUM; hardcoded rather than imported
-# so this module stays importable (and unit-testable) without diffusers.
+# video, text and audio rows each get a modulation row
+# Video, text and audio rows each get their own modulation row, so one projection emits three blocks of six chunks.
+# Mirrors diffusers' MINIMAX_H3_MODALITY_NUM; hardcoded rather than imported so this module stays importable (and
+# unit-testable) without diffusers.
 MINIMAX_H3_MODALITY_NUM = 3
 
 # Metadata keys the offline prequant builder bakes into a curve-form checkpoint.
@@ -52,8 +53,9 @@ ADALN_FORM_KEY = "adaln_form"
 ADALN_CURVE_FORM = "curve"
 CURVE_DIM_KEY = "curve_dim"
 CURVE_GRID_KEY = "curve_grid"
-# The dtype of the block stack the modulation feeds, recorded by the builder. See
-# `_curve_modulation_forward` for why the chunks have to be cast to it.
+# dtype of the block stack the modulation feeds
+# The dtype of the block stack the modulation feeds, recorded by the builder. See `_curve_modulation_forward` for why
+# the chunks have to be cast to it.
 ADALN_OUT_DTYPE_KEY = "adaln_out_dtype"
 
 
@@ -135,14 +137,14 @@ def _build_curve_time_embedder(curve_grid: int, curve_dim: int) -> Any:
     class _MiniMaxH3CurveTimeEmbedder(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            # Persistent: this IS the checkpoint's `time_embedder.table` entry, assigned by
-            # load_state_dict. float32 like the reference; the curve is a smooth low-amplitude
-            # signal whose differences drive every block's modulation.
+            # Persistent: this IS the checkpoint's `time_embedder.table` entry, assigned by load_state_dict. float32
+            # like the reference; the curve is a smooth low-amplitude signal whose differences drive every block's
+            # modulation.
             self.register_buffer("table", torch.empty(curve_grid, curve_dim, dtype = torch.float32))
-            # The model's forward reads `self.time_embedder.linear_1.weight.dtype` to decide what to
-            # cast the timestep to. The dense module has that Linear; this one does not, so expose a
-            # NON-PERSISTENT stand-in carrying only the dtype. Non-persistent keeps it out of the
-            # state dict, so `strict = True` still matches the checkpoint exactly.
+            # The model's forward reads `self.time_embedder.linear_1.weight.dtype` to decide what to cast the timestep
+            # to. The dense module has that Linear; this one does not, so expose a NON-PERSISTENT stand-in carrying only
+            # the dtype. Non-persistent keeps it out of the state dict, so `strict = True` still matches the checkpoint
+            # exactly.
             self.linear_1 = nn.Module()
             self.linear_1.register_buffer(
                 "weight", torch.zeros(1, dtype = torch.float32), persistent = False
@@ -206,10 +208,12 @@ def apply_h3_adaln_curve(
         )
 
     def _reshape(linear: Any, where: str) -> Any:
-        # Rebuild rather than resize: the replacement is a plain float32 Linear (the hosted
-        # checkpoints store the pruned adaLN in float32) whose weights load_state_dict then
-        # overwrites via assign=True. Built on the real device, never meta, so the module is
-        # well-formed even if the checkpoint were to omit it and strict=True caught that instead.
+        # rebuild rather than resize: a plain float32 Linear (as the hosted checkpoints store it) that load_state_dict
+        # overwrites via assign=True
+        # Rebuild rather than resize: the replacement is a plain float32 Linear (the hosted checkpoints store the pruned
+        # adaLN in float32) whose weights load_state_dict then overwrites via assign=True. Built on the real device,
+        # never meta, so the module is well-formed even if the checkpoint were to omit it and strict=True caught that
+        # instead.
         if not isinstance(linear, nn.Linear):
             raise ValueError(f"MiniMax-H3 curve conversion expected a Linear at {where}.")
         import torch
@@ -225,11 +229,13 @@ def apply_h3_adaln_curve(
         if proj is None:
             raise ValueError(f"MiniMax-H3 curve conversion: block {index} has no `adaln_proj`.")
         proj.linear = _reshape(proj.linear, f"transformer_blocks.{index}.adaln_proj.linear")
-        # Plain attribute, not a buffer: it must not reach the state dict, and `.to(device)` on the
-        # module must not try to move it.
+        # plain attribute, not a buffer: it must stay out of the state dict and out of `.to(device)`
+        # Plain attribute, not a buffer: it must not reach the state dict, and `.to(device)` on the module must not try
+        # to move it.
         proj._unsloth_adaln_out_dtype = out_dtype
-        # Bind the SiLU-free forward per instance: the dense class is shared with dense loads in the
-        # same process, so patching the CLASS would corrupt them.
+        # bind per instance: the dense class is shared with dense loads in the same process
+        # Bind the SiLU-free forward per instance: the dense class is shared with dense loads in the same process, so
+        # patching the CLASS would corrupt them.
         proj.forward = types.MethodType(_curve_modulation_forward, proj)
         converted += 1
 

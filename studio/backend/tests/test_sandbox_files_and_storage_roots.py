@@ -468,7 +468,7 @@ def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
     import routes.chat_history as chat_history
 
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "__LOCALID_bulk111"}])
-    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: ([], []))
+    monkeypatch.setattr(chat_history, "clear_chat_history", lambda **_kwargs: ([], [], []))
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
 
     import asyncio
@@ -2564,7 +2564,7 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     assert "return removed, active_runs, False" in source
 
     route = inspect.getsource(chat_history.clear_history)
-    assert "cleared, cleared_runs = clear_chat_history()" in route
+    assert "cleared, cleared_runs, cleared_chat_runs = clear_chat_history(" in route
     assert "cleared" in route.split("_remove_sandboxes(", 1)[1].split(")", 1)[0]
 
 
@@ -2695,9 +2695,6 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
     import routes.chat_history as chat_history
 
     cancelled = []
-    monkeypatch.setattr(chat_history, "delete_chat_threads", lambda ids: None)
-    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
-
     from state import active_generations
 
     monkeypatch.setattr(active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1)
@@ -3282,9 +3279,9 @@ def test_a_chat_started_during_the_clear_is_cancelled_too():
 
     source = inspect.getsource(chat_history.clear_history)
     assert "late" in source
-    assert source.index("cleared, cleared_runs = clear_chat_history()") < source.index(
-        "_cancel_active_generations(late)"
-    )
+    assert source.index(
+        "cleared, cleared_runs, cleared_chat_runs = clear_chat_history("
+    ) < source.index("_cancel_active_generations(late)")
     assert source.index("_cancel_active_generations(late)") < source.index("_remove_sandboxes(")
 
 

@@ -13,6 +13,7 @@ USAGE_EXAMPLES_TSX = SETTINGS / "components/usage-examples.tsx"
 OPENAI_MODELS_TS = SETTINGS / "api/openai-models.ts"
 API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
 KEYLESS_SECTION_TSX = SETTINGS / "components/keyless-api-access-section.tsx"
+KEYLESS_ELIGIBILITY_TS = SETTINGS / "components/keyless-example-eligibility.ts"
 
 
 def test_examples_name_a_model_the_server_can_serve():
@@ -223,9 +224,11 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert "keylessBase && keylessTools" in src
     assert "apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER)" in src
     assert 'const KEYLESS_KEY_PLACEHOLDER = "not-needed"' in src
-    assert 'exposure === "colab" || exposure === "public_url"' in src
-    assert "if (isLoopbackHost(host)) return true;" in src
-    assert 'exposure === "private_lan"' in src
+    assert "keylessBaseEligible(base, keylessScope, keylessExposure)" in src
+    eligibility = KEYLESS_ELIGIBILITY_TS.read_text(encoding = "utf-8")
+    assert 'exposure === "colab" || exposure === "public_url"' in eligibility
+    assert "if (isLoopbackHost(host)) return true;" in eligibility
+    assert 'return scope === "inference";' in eligibility
     assert "!(useTunnel && cloudflareUrl)" in src
     assert "useExampleModelName(keylessBase && !apiKey)" in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")

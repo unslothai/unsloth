@@ -3,16 +3,16 @@
 
 // Version skew in both directions across /api/inference/estimate-memory.
 //
-// OLD BACKEND + NEW BUNDLE: the route is not there. Every failure shape has to reach
-// the panel as an unavailable estimate -- the row hides itself, and the Load button
-// beside it is not a party to any of this -- and the one shape that says the ROUTE is
-// missing, rather than that this request failed, is worth remembering so a slider drag
-// does not POST into the void once per settings change forever.
+// OLD BACKEND + NEW BUNDLE: the route is not there. Every failure shape must reach the
+// panel as an unavailable estimate -- the row hides, and the Load button is not a party
+// to any of it -- and the shape that says the ROUTE is missing, rather than that this
+// request failed, is worth remembering so a slider drag does not POST into the void
+// once per settings change forever.
 //
 // NEW BACKEND + OLD BUNDLE is not a thing (the bundle ships with the backend), but the
-// reverse of the field-level question is: a backend PREDATING the drafter split, or
-// one that never learned to report kv_estimable, must degrade to the documented
-// fallbacks rather than to a confident zero.
+// field-level reverse is: a backend predating the drafter split, or one that never
+// reported kv_estimable, must degrade to the documented fallbacks, not to a confident
+// zero.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

@@ -16,11 +16,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 import { toolArgText } from "./tool-arg-text";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
 
 /**
  * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
@@ -133,6 +135,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   const parsedArgs = (args as CodeExecutionArgs) ?? {};
   const kind = parsedArgs.kind ?? "bash";
@@ -175,17 +178,17 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={isRunning ? runningLabel : completedLabel}
         status={status}
