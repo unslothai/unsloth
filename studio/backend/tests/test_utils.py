@@ -235,7 +235,13 @@ class TestGetGpuMemoryInfo:
         assert 0 <= result["utilization_pct"] <= 100
         assert "device_name" in result
 
-    def _mlx_memory_info(self, *, available_gb, recommended_gb, used_gb = 1.2):
+    def _mlx_memory_info(
+        self,
+        *,
+        available_gb,
+        recommended_gb,
+        used_gb = 1.2,
+    ):
         fake_core = types.ModuleType("mlx.core")
         fake_core.device_info = lambda: {
             "device_name": "Apple M2",
