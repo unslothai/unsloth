@@ -53,8 +53,13 @@ def managed_node_dir() -> Path:
     try:
         # Lazy import (mirrors _find_llama_server_binary) so this module stays
         # importable even if utils.paths cannot be loaded.
-        from utils.paths.storage_roots import studio_root
+        from utils.paths.storage_roots import studio_root, unsloth_home
 
+        # setup.sh installs Node at <master root>/node, beside studio/.
+        # Non-portable installs get None here and keep the derivation below.
+        master = unsloth_home()
+        if master is not None:
+            return master / "node"
         resolved = studio_root()
         legacy_studio = Path.home() / ".unsloth" / "studio"
         try:
