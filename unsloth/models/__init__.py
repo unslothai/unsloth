@@ -20,6 +20,7 @@ from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
 from .granite import FastGraniteModel
 from .sentence_transformer import FastSentenceTransformer
+from .phi import FastPhiModel
 
 try:
     from .falcon_h1 import FastFalconH1Model
