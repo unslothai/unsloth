@@ -1276,3 +1276,54 @@ class TestAFinishedGenerationGivesItsChargeBack:
         assert controller.snapshot().committed == 5000
         controller.unregister("a")
         assert controller.snapshot().committed == 0
+
+
+class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
+    """Freeing a finished chat's charge while llama-server still holds its cells.
+
+    The ledger then reports room the cache does not have, and admission overcommits
+    against space that does not exist. That is the crash, not a stall, which makes it
+    strictly worse than the leak it replaced: an over-counted ledger is only pessimistic.
+
+    Measured 2026-09-02 across two consecutive builds on the same scenario. Before the
+    disarm: 3 of 4 chats completed, 0 context-exhaustion errors, 1 KV retry. After the
+    disarm alone: 0 of 4, 3 context-exhaustion errors, 42 KV retries, and idle reclaims
+    fell from 5 to 2 because the emptier-looking ledger left nobody waiting to trigger
+    them.
+    """
+
+    def _disarm_source(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        return source.split("def _openai_llama_preemption_disarm", 1)[1].split("\ndef ", 1)[0]
+
+    def test_the_disarm_releases_cells_as_well_as_the_charge(self):
+        body = self._disarm_source()
+        assert "unregister(" in body, "the charge is not released"
+        assert "reclaim_idle_slots(" in body, (
+            "only the charge is released, so the ledger reports room the cache lacks"
+        )
+
+    def test_the_cells_go_after_the_charge_not_before(self):
+        """Order matters: the slot is only idle once the response is finished."""
+        body = self._disarm_source()
+        assert body.index("unregister(") < body.index("reclaim_idle_slots(")
+
+    def test_neither_half_can_fail_the_response(self):
+        body = self._disarm_source()
+        assert body.count("except Exception:") >= 2, (
+            "bookkeeping must never fail a response that already succeeded"
+        )
+
+    def test_the_release_is_logged(self):
+        body = self._disarm_source()
+        assert "released-cells" in body
+
+    def test_the_residency_figure_is_corrected(self):
+        body = self._disarm_source()
+        assert "note_resident(" in body, (
+            "the controller would keep planning against the pre-erase figure"
+        )

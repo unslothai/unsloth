@@ -2189,12 +2189,46 @@ def _openai_llama_preemption_arm(
 
 
 def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
-    """Drop a finished generation, freeing its epoch if it held one."""
+    """Drop a finished generation: its epoch, its charge, and its cells.
+
+    The cells matter as much as the charge, and dropping only the charge is worse than
+    dropping neither. llama-server keeps a finished slot's prompt cache for prefix reuse,
+    so unregistering hands the next request a ledger that says there is room while the
+    cache is still holding the tokens. Admission then overcommits against space that does
+    not exist, which is the crash rather than a stall.
+
+    Measured on the build that first called this: 0 of 4 chats completed, 3
+    context-exhaustion errors and 42 KV retries, against 3 of 4 with zero and one on the
+    build immediately before it. The leak this replaced had been accidentally protective,
+    because an over-counted ledger is merely pessimistic.
+    """
     try:
         key = str(getattr(llama_backend, "base_url", "llama-server"))
         get_preemption_controller(key).unregister(gen_id)
     except Exception:
         # Never let bookkeeping fail a response that already succeeded.
+        pass
+    # Then the cells, so the two stay in step. Best effort and last: a failure here
+    # leaves the cache holding a finished chat's prefix, which the watermark sweep will
+    # reclaim on its next pass, whereas raising would fail a completed response.
+    try:
+        base = str(getattr(llama_backend, "base_url", "") or "")
+        if not base:
+            return
+        occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base))
+        if not occupancy or not occupancy.get("idle"):
+            return
+        freed = reclaim_idle_slots(
+            occupancy,
+            lambda slot_id: erase_llama_slot(base, slot_id),
+            needed = int(occupancy.get("resident") or 0),
+        )
+        if freed:
+            _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
+            get_preemption_controller(
+                str(getattr(llama_backend, "base_url", "llama-server"))
+            ).note_resident(max(0, int(occupancy.get("resident") or 0) - freed))
+    except Exception:
         pass
 def _openai_llama_admission_enforced_max_tokens(
     payload,
