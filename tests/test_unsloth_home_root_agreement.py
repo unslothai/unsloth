@@ -32,12 +32,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _PROBE = """
 import json, sys
 sys.path.insert(0, {backend!r})
-from unsloth_cli.commands.studio import STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM
-from utils.paths.storage_roots import studio_root
+import os
+from unsloth_cli.commands import studio as cli
+from utils.paths.storage_roots import studio_root, unsloth_home
+cli._ensure_studio_env_exported()
+master = unsloth_home()
 print(json.dumps({{
-    "cli": str(STUDIO_HOME),
-    "cli_is_custom": bool(_STUDIO_HOME_IS_CUSTOM),
+    "cli": str(cli.STUDIO_HOME),
+    "cli_is_custom": bool(cli._STUDIO_HOME_IS_CUSTOM),
     "backend": str(studio_root()),
+    "cli_llama": os.environ.get("UNSLOTH_LLAMA_CPP_PATH"),
+    "backend_llama": str((master or studio_root()) / "llama.cpp"),
 }}))
 """
 
@@ -87,3 +92,32 @@ def test_no_unsloth_home_keeps_the_legacy_default(tmp_path):
     assert result["cli"] == legacy
     assert result["backend"] == legacy
     assert result["cli_is_custom"] is False
+
+
+def test_the_cli_exports_the_llama_cpp_path_the_backend_will_use(tmp_path):
+    # run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so a CLI that exports
+    # <root>/studio/llama.cpp pins that wrong path for the server and every
+    # worker, and llama_cpp.py then cannot find the managed llama-server.
+    master = tmp_path / "portable"
+    result = _probe({"UNSLOTH_HOME": str(master)})
+
+    assert result["cli_llama"] == str(master / "llama.cpp")
+    assert result["cli_llama"] == result["backend_llama"]
+
+
+def test_a_plain_custom_root_still_keeps_llama_cpp_inside_it(tmp_path):
+    explicit = tmp_path / "explicit"
+    result = _probe({"UNSLOTH_STUDIO_HOME": str(explicit)})
+
+    assert result["cli_llama"] == str(explicit / "llama.cpp")
+    assert result["cli_llama"] == result["backend_llama"]
+
+
+def test_a_legacy_install_still_keeps_llama_cpp_at_the_legacy_path(tmp_path):
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    result = _probe({"HOME": str(home), "USERPROFILE": str(home)})
+
+    # Not custom, so nothing is exported at all and the backend default stands.
+    assert result["cli_llama"] is None
+    assert result["backend_llama"] == str(home / ".unsloth" / "studio" / "llama.cpp")
