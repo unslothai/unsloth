@@ -1069,6 +1069,208 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
         return True
 
 
+def _row_replayed(message: dict) -> bool:
+    """Whether the client re-sends this reply, by `isAbandonedAssistantTurn`.
+
+    Status is not the test: a Stop that reached text is kept, and only a reply carrying
+    nothing is dropped -- along with the tool results its wire projection would expand to.
+    A turn that FINISHED on reasoning alone is a reply too, replayed as `reasoning_content`,
+    even though `_as_wire` strips reasoning and leaves it nothing to be matched on.
+    """
+    if message.get("role") != "assistant":
+        return True
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    reasoning = False
+    for part in content or ():
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text" and str(part.get("text") or "").strip():
+            return True
+        if part.get("type") in ("image", "image-url", "file"):
+            return True
+        reasoning = reasoning or part.get("type") == "reasoning"
+    if reasoning and not _row_ended_early(message):
+        return True
+    return bool(message.get("attachments"))
+
+
+def _row_ended_early(message: dict) -> bool:
+    """`assistantTurnEndedEarly`: the persisted marker, since status is session state."""
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    return bool(metadata.get("incomplete") or custom.get("incomplete"))
+
+
+def _archive_branch_chain(
+    messages: list[dict], branch_messages: Optional[list[dict]]
+) -> Optional[list[dict]]:
+    """The stored parent chain selected by this wire branch, when ancestry can prove one."""
+    if not branch_messages:
+        return None
+    try:
+        from core.rag import conversation_archive
+
+        def _chain(probe):
+            return conversation_archive._active_chain(
+                messages,
+                probe,
+                fallback = False,
+                require_unique = True,
+            )
+
+        chain = _chain(branch_messages)
+        if not chain:
+            return None
+        # The unstored newest turn only matches on a SIBLING, so settled turns pick the branch.
+        settled = list(branch_messages)
+        while settled and settled[-1].get("role") == "user":
+            settled.pop()
+        if settled:
+            proof = _chain(settled)
+            if not proof:
+                return None
+            tip = proof[-1].get("id")
+            if not any(row.get("id") == tip for row in chain):
+                return None
+
+            # Rows past that tip ride on the unstored turns alone, so they may only carry
+            # THOSE turns' text: matching the whole request instead let an abandoned row
+            # in on a text repeated earlier in it. Keyed by ROLE too, as the branch match
+            # is, so a stored reply cannot be justified by a user turn of the same words.
+            def _keys(rows):
+                return [
+                    (wire.get("role"), _archive_message_text(wire.get("content")))
+                    for wire in conversation_archive._as_wire(list(rows))
+                ]
+
+            carried = set(_keys(branch_messages[len(settled) :]))
+            past_tip = False
+            for row in chain:
+                if past_tip:
+                    checked = False
+                    for key in _keys([row]):
+                        if not key[1]:
+                            continue
+                        if key not in carried:
+                            return None
+                        checked = True
+                    # Nothing comparable came back. Only a reply the client drops whole may
+                    # ride on the unstored turns unchecked; one it re-sends -- an image or
+                    # an attachment, or a tool call still awaiting its result -- is not
+                    # proof of anything, so refuse rather than take it on trust.
+                    if not checked and _row_replayed(row):
+                        return None
+                past_tip = past_tip or row.get("id") == tip
+        return chain
+    except Exception:
+        return None
+
+
+def _archive_as_wire(messages: Optional[list[dict]]) -> list[dict]:
+    """Project persisted rows and wire messages into boundary-counting wire units."""
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive._as_wire(list(messages or ()))
+    except Exception:
+        return list(messages or ())
+
+
+class _CompactionBranchState(NamedTuple):
+    message: dict
+    truncation: Optional[dict]
+    recorded: int
+
+
+def _compaction_branch_states(
+    stored: list[dict], branch_messages: Optional[list[dict]] = None
+) -> list[_CompactionBranchState]:
+    """Newest authoritative compaction state(s) on one request branch.
+
+    Multiple rows are returned only when Retry siblings are textually indistinguishable;
+    consumers must then choose the conservative result across all of them.
+    """
+    # Assistant rows only: an abandoned "Done" rides in on a live "not done yet".
+    branch = _archive_branch_transcript(branch_messages, ("assistant",))
+    if branch_messages and not branch:
+        return []
+
+    chain = _archive_branch_chain(stored, branch_messages)
+    candidates = [
+        message
+        for message in reversed(chain if chain is not None else stored)
+        if message.get("role") == "assistant"
+        and (chain is not None or _archive_content_on_branch(message.get("content"), branch))
+    ]
+    if not candidates:
+        return []
+
+    # Exact first: the branch check is a substring test, so "Done" matches "Not done yet".
+    if chain is None:
+        live = set(branch or ())
+        exact = [
+            message
+            for message in candidates
+            if _archive_message_text(message.get("content")) in live
+        ]
+        if exact:
+            candidates = exact
+
+    # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
+    states = []
+    for message in candidates:
+        metadata = message.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        custom = metadata.get("custom")
+        custom = custom if isinstance(custom, dict) else {}
+        truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+
+        recorded = None
+        if isinstance(truncation, dict):
+            raw_recorded = truncation.get("boundary_messages")
+            if raw_recorded is None:
+                raw_recorded = truncation.get("dropped_messages")
+            if raw_recorded is not None:
+                try:
+                    recorded = max(0, int(raw_recorded or 0))
+                except (TypeError, ValueError):
+                    pass
+        if recorded is None and chain is not None:
+            # Skipping defers to the previous epoch, so it needs a proved branch: on the text
+            # path the rows are twins. A research row reports its run, not whether this fit.
+            research_row = (
+                (metadata.get("serverManaged") or custom.get("serverManaged"))
+                and (metadata.get("researchRunId") or custom.get("researchRunId"))
+                and (metadata.get("researchStatus") or custom.get("researchStatus"))
+            )
+            if research_row:
+                continue
+            status = metadata.get("generationStatus") or custom.get("generationStatus")
+            incomplete = metadata.get("incomplete") or custom.get("incomplete")
+            reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+            active = status in {"queued", "running", "cancelling"}
+            aborted = status in {"cancelled", "failed"} or reason in {"cancelled", "interrupted"}
+            if active or (status != "completed" and aborted):
+                continue
+        if recorded is None:
+            states.append(_CompactionBranchState(message, None, 0))
+            continue
+        states.append(_CompactionBranchState(message, truncation, recorded))
+
+    if not states:
+        return []
+    if chain is not None:
+        # Parent ancestry orders repeated text on one linear history unambiguously.
+        return states[:1]
+    newest = _archive_message_text(states[0].message.get("content"))
+    return [
+        state for state in states if _archive_message_text(state.message.get("content")) == newest
+    ]
+
+
 def _sticky_compaction_state(
     thread_id: Optional[str],
     branch_messages: Optional[list[dict]] = None,
@@ -1100,57 +1302,20 @@ def _sticky_compaction_state(
     try:
         from storage import studio_db
 
-        # The stored rows are the whole DAG, so the newest assistant turn can belong to a
-        # sibling branch left by Retry, whose boundary is sized for history this branch
-        # does not have. Skip rows the request's own messages do not contain.
-        # Assistant messages only: the rows being checked are assistant replies, and
-        # against every role a short abandoned one ("Done") rides in on a live user
-        # message that merely contains it ("not done yet"), taking its boundary with it.
-        _branch = _archive_branch_transcript(branch_messages, ("assistant",))
-        if branch_messages and not _branch:
-            # A branch with no reply of its own has no boundary to restore.
-            return 0, False
-        candidates = [
-            message
-            for message in reversed(studio_db.list_chat_messages(thread_id) or [])
-            if message.get("role") == "assistant"
-            and _archive_content_on_branch(message.get("content"), _branch)
-        ]
-        if not candidates:
+        stored = list(studio_db.list_chat_messages(thread_id) or [])
+        states = _compaction_branch_states(stored, branch_messages)
+        if not states:
             return 0, False
 
-        # The newest on-branch assistant turn decides, except that the branch check is
-        # textual, so two Retry siblings that both read "Done" are indistinguishable here
-        # and the first match could apply a much deeper branch's boundary. Where the text
-        # cannot separate them, take the SMALLEST boundary: too small costs one extra
-        # compaction, too large evicts live history.
-        # That check is also a substring test (an archived turn is matched against
-        # fragments of itself), so an abandoned "Done" can ride in on a live "Not done
-        # yet" and then decide the boundary alone. Prefer exact matches where any exist.
-        _live = set(_branch or ())
-        _exact = [
-            message
-            for message in candidates
-            if _archive_message_text(message.get("content")) in _live
-        ]
-        if _exact:
-            candidates = _exact
-
-        newest = _archive_message_text(candidates[0].get("content"))
         boundaries = []
         origins = []
-        for message in candidates:
-            if _archive_message_text(message.get("content")) != newest:
-                continue
-            metadata = message.get("metadata") or {}
-            if not isinstance(metadata, dict):
+        branch_wire = _archive_as_wire(branch_messages)
+        for state in states:
+            truncation = state.truncation
+            recorded = state.recorded
+            if truncation is None:
                 return 0, False
-            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
-                "contextTruncation"
-            )
-            if not isinstance(truncation, dict):
-                return 0, False
-            # Only a fit that SUCCEEDED describes a boundary worth restoring.
+            # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
                 return 0, False
             # A boundary is valid only under the fit that will consume it, and the two
@@ -1186,18 +1351,14 @@ def _sticky_compaction_state(
             # rows saved before the ratio was recorded, which keep replaying as they did.
             if not recorded_checkpoint:
                 recorded_ratio = truncation.get("boundary_headroom_ratio")
-                if (
-                    recorded_ratio is not None
-                    and abs(float(recorded_ratio) - requested_ratio) > 1e-9
-                ):
+                try:
+                    if (
+                        recorded_ratio is not None
+                        and abs(float(recorded_ratio) - requested_ratio) > 1e-9
+                    ):
+                        return 0, False
+                except (TypeError, ValueError):
                     return 0, False
-            # Counted against the request's own transcript, which is what it is applied
-            # to. `dropped_messages` is the fallback for turns saved before that was
-            # recorded: equal for a single fit, too large for a turn that refit often.
-            recorded = truncation.get("boundary_messages")
-            if recorded is None:
-                recorded = truncation.get("dropped_messages")
-            recorded = max(0, int(recorded or 0))
             # A count is only valid against the transcript it was counted on. Deleting an
             # already-evicted turn shortens the front, and replaying the count then evicts
             # that many LIVE messages instead. Re-derive it from the anchor's position on
@@ -1205,8 +1366,8 @@ def _sticky_compaction_state(
             # (a repeated text, an edited turn) must not deepen the cut.
             anchor = truncation.get("boundary_anchor")
             if isinstance(anchor, str) and anchor:
-                for index, message in enumerate(_branch_non_system(branch_messages)):
-                    if _anchor_text(message) == anchor[:_ANCHOR_TEXT_CHARS]:
+                for index, branch_message in enumerate(_branch_non_system(branch_wire)):
+                    if _anchor_text(branch_message) == anchor[:_ANCHOR_TEXT_CHARS]:
                         recorded = min(recorded, index)
                         break
             boundaries.append(recorded)
@@ -5241,6 +5402,8 @@ def _build_ngram_mod_flags(
     n_match: int = 24,
     n_min: int = 48,
     n_max: int = 64,
+    *,
+    chain_with_mtp: bool = False,
 ) -> list[str]:
     """Emit the right ngram-mod knob flags for the running llama-server.
 
@@ -5250,6 +5413,9 @@ def _build_ngram_mod_flags(
     ``probe_server_capabilities``; ``ngram_mod_flavor`` says which set is
     real (vs a removal-stub). Returns ``[]`` when neither is available so
     the caller can drop ngram-mod entirely.
+
+    ``chain_with_mtp`` omits the legacy ``--draft-min``/``--draft-max`` pair,
+    which a chained MTP invocation owns and would otherwise invert.
     """
     flavor = caps.get("ngram_mod_flavor") if caps else None
     if flavor == "new":
@@ -5264,14 +5430,10 @@ def _build_ngram_mod_flags(
     if flavor == "legacy":
         # Pre-rename llama.cpp: same knobs lived under --spec-ngram-size-n
         # (lookup length) and generic --draft-min / --draft-max (N range).
-        return [
-            "--spec-ngram-size-n",
-            str(n_match),
-            "--draft-min",
-            str(n_min),
-            "--draft-max",
-            str(n_max),
-        ]
+        flags = ["--spec-ngram-size-n", str(n_match)]
+        if not chain_with_mtp:
+            flags.extend(["--draft-min", str(n_min), "--draft-max", str(n_max)])
+        return flags
     return []
 
 
@@ -5295,6 +5457,9 @@ _LEGACY_SPEC_MODE_MAP = {
     "draft-dspark": "dspark",
     "draft-dflash": "dflash",
     "ngram-mod": "ngram",
+    "none": "off",
+    "disable": "off",
+    "disabled": "off",
 }
 
 
@@ -6693,10 +6858,9 @@ class LlamaCppBackend:
         ):
             return False
         # Same rule for the tuning group: requested against requested, so a server
-        # launched with a different value is a reload. Compared even when the
-        # intent is blank, unlike spec_draft_n_max above: blank is the llama.cpp
-        # default and both sides hold what was requested, so two loads that asked
-        # for nothing still match, while clearing a knob relaunches.
+        # launched with a different value is a reload. A blank value is the llama.cpp
+        # default, so two loads that asked for nothing still match, while clearing a
+        # knob relaunches.
         if not self._is_diffusion and (
             _normalized_load_mode(self._requested_load_mode)
             != _normalized_load_mode(intent.load_mode)
@@ -6832,7 +6996,7 @@ class LlamaCppBackend:
         # The stand-down the UI asks the user to fix by updating llama.cpp. That leaves
         # the request identical, so without this the repaired load never happens.
         if (
-            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
+            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash", "ngram")
             and self.spec_binary_fallback_can_retry()
         ):
             return False
@@ -6860,18 +7024,19 @@ class LlamaCppBackend:
             # The MTP-free recovery clears the runtime value but retains the
             # user's prior value in its intent. Only a changed value should retry MTP.
             compared_draft_n_max = self._last_load_intent.spec_draft_n_max
-        if (
-            (
-                self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
-                # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
-                # types above cannot see it -- yet the depth is what priced the rollback
-                # copies that made the placement partial, so a change can re-enable MTP.
-                or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
-            )
-            and intent.spec_draft_n_max is not None
-            and intent.spec_draft_n_max != (compared_draft_n_max or 0)
-        ):
-            return False
+        draft_depth_matters = (
+            self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
+            # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
+            # types above cannot see it. The depth priced the rollback copies that
+            # made the placement partial, so a change can re-enable MTP.
+            or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
+        )
+        if draft_depth_matters:
+            requested_draft_n_max = intent.spec_draft_n_max
+            if (requested_draft_n_max is None) != (compared_draft_n_max is None):
+                return False
+            if requested_draft_n_max is not None and requested_draft_n_max != compared_draft_n_max:
+                return False
         if (self._chat_template_override or None) != (intent.chat_template_override or None):
             return False
 
@@ -24582,7 +24747,7 @@ class LlamaCppBackend:
             spec_value = mtp_token
             ngram_knobs: list[str] = []
             if chain_ngram:
-                ngram_knobs = _build_ngram_mod_flags(caps)
+                ngram_knobs = _build_ngram_mod_flags(caps, chain_with_mtp = True)
                 if ngram_knobs:
                     spec_value = f"ngram-mod,{mtp_token}"
                 else:
@@ -24599,6 +24764,19 @@ class LlamaCppBackend:
 
         def _emit_ngram_mod() -> bool:
             """Append --spec-type ngram-mod + flag-set knobs."""
+            if not caps.get("supports_ngram_mod"):
+                logger.warning(
+                    "Requested ngram-mod speculative decoding but llama-server "
+                    "does not advertise ngram-mod support; run `unsloth studio "
+                    "update`. Loading without speculative decoding."
+                )
+                # The stand-down the warning tells the user to fix, recorded so the
+                # update actually takes: an unrecorded one leaves the picker adopting
+                # this process forever. "binary_outdated" rather than "binary_no_mtp"
+                # because the retry rule for that one asks _SPEC_KIND_CAPABILITY about
+                # _spec_drafter_kind, which ngram-mod never sets, having no drafter.
+                self._spec_fallback_reason = "binary_outdated"
+                return False
             ngram_knobs = _build_ngram_mod_flags(caps)
             flags.extend(["--spec-type", "ngram-mod"])
             if not ngram_knobs:
