@@ -2922,14 +2922,13 @@ def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> in
     first. STREAMING holds this tail as it holds a split ``NAME[ARGS]`` rehearsal. Prose
     releases it, and so does a closed call, whose boundary the signal scan already owns.
     """
-    # ``search(text, pos)`` over a bounded window, not a slice, so ``(?<!\w)`` still sees the
-    # character before it. This runs per streamed chunk on the whole cumulative text, so an
-    # unanchored scan of the response would make an ordinary long reply quadratic.
+    # ``pos`` rather than a slice, so ``(?<!\w)`` still sees the character before the window.
+    # This runs per chunk on the whole cumulative text, so an unanchored scan is quadratic.
     partial = _GEMMA_BARE_TC_PREFIX_RE.search(text, max(0, len(text) - _MAX_GEMMA_PREFIX_TAIL))
     if partial is not None:
         return len(text) - partial.start()
-    # Only an unclosed brace can still be an open call body, and that is a pair of rfinds
-    # instead of a scan back to the opener on every chunk of ordinary prose.
+    # Only an unclosed brace can still be an open body, and that test is two rfinds instead
+    # of a scan back to the opener on every chunk of prose.
     if text.rfind("{") > text.rfind("}"):
         idx = _last_bare_call_word(text)
         if idx >= 0:

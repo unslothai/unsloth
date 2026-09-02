@@ -1039,10 +1039,10 @@ def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
 
 
 def test_the_gemma_tail_hold_does_not_rescan_the_whole_response():
-    """Both loops call ``held_bare_gemma_tail_len`` for every cumulative snapshot, so an
-    unanchored scan makes an ordinary marker-free reply quadratic. The candidate can only sit
-    at the very end, so the regex takes a bounded window and the open-body branch is gated on
-    an actually unclosed brace. Timed, with a budget ~500x the observed cost."""
+    """Both loops call this for every cumulative snapshot, so an unanchored scan makes an
+    ordinary marker-free reply quadratic. The candidate can only sit at the very end, so the
+    regex takes a bounded window and the open-body branch waits for an unclosed brace. Timed,
+    with a budget ~500x the observed cost."""
     import time
 
     from core.inference.tool_call_parser import held_bare_gemma_tail_len
