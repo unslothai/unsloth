@@ -38,6 +38,7 @@ from utils.models.gguf_metadata import (
     mmproj_accepts_image,
     pairing_score,
     read_gguf_general_metadata,
+    read_gguf_nextn_predict_layers,
 )
 import structlog
 from loggers import get_logger
@@ -1923,6 +1924,10 @@ def detect_mtp_file(
     rules (a native lease) keeps scanning instead of treating the first
     rejection as no drafter at all.
     """
+
+    if Path(path).is_file() and (read_gguf_nextn_predict_layers(path) or 0) > 0:
+        # A root mtp-*.gguf may mirror an embedded head; -md would replace it.
+        return None
 
     def _matches_weight(candidate: Path) -> bool:
         return _drafter_matches_weight(candidate.name, weight_name, kind = "mtp")

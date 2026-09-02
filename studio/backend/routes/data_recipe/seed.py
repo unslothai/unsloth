@@ -70,8 +70,8 @@ UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-# Frontend-generated upload namespace (UUID4 hex). Legacy node ids (n1, ...)
-# never match: those directories can be shared by several recipes.
+# Frontend-generated upload namespace (UUID4 hex); legacy node ids (n1, ...) never match,
+# since those directories can be shared by several recipes.
 _UPLOAD_UID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -456,8 +456,7 @@ def _get_block_total_size(block_dir: Path) -> int:
             continue
         if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
             continue
-        # remove_unstructured_file keys on the name up to the first dot, which is empty for a
-        # "._" name, so a counted companion could never be removed and the quota never freed.
+        # remove_unstructured_file keys on the name up to the first dot.
         if is_appledouble_metadata(f):
             continue
         total += f.stat().st_size
@@ -543,16 +542,15 @@ async def upload_unstructured_file(
     # an upload that is about to be refused.
     budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
 
-    # Desktop drops arrive as a signed path, not multipart bytes: Tauri hands
-    # the webview a path, never a File (#9036). isinstance, not a truth test:
-    # called outside FastAPI, an unfilled param is still a truthy Form marker.
+    # Desktop drops arrive as a signed path.
+    # Tauri hands the webview a path, never a File (#9036); isinstance, not a truth test, since an unfilled Form param
+    # is still truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
         original_filename, content = _read_native_drop(lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
-        # Before the read, as it was: a rejected 500 MB upload must not be
-        # pulled into memory first.
+        # Before the read: a rejected 500 MB upload must not be pulled into memory first.
         _require_unstructured_ext(original_filename)
         content = await file.read()
     else:

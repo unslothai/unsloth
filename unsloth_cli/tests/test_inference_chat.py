@@ -117,8 +117,8 @@ def test_visible_text_holds_unclosed_think():
 
 
 def test_visible_text_holds_partial_think_prefix():
-    # Streams are cumulative, so the opening tag can arrive as "<", "<thi",
-    # then "<think>". Hold possible tag prefixes until they are disambiguated.
+    # Streams are cumulative, so the opening tag can arrive as "<", "<thi", then "<think>". Hold
+    # possible tag prefixes until they are disambiguated.
     assert visible_text("<", show_thinking = False) == ""
     assert visible_text("<thi", show_thinking = False) == ""
     assert visible_text("done.<thi", show_thinking = False) == "done."
@@ -290,8 +290,7 @@ def test_you_prompt_matches_readline_backend(monkeypatch):
     assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
     assert chatmod._you_prompt(colors = False) == "\nYou: "
 
-    # Windows: no readline module at all; the console's own line editing
-    # handles backspace, so plain ANSI color (no markers) is safe.
+    # Windows: no readline module at all; the console's own line editing handles backspace, so plain ANSI color is safe.
     monkeypatch.setitem(sys.modules, "readline", None)
     assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
     assert chatmod._you_prompt(colors = False) == "\nYou: "
@@ -445,13 +444,13 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         },
         # An embedding/CLIP repo carries task None like any chat repo; can_chat separates them.
         {"repo_id": "org/Embedder", "task": None, "capabilities": {"can_chat": False}},
-        # An untrusted diffusion repo carries no task either, and its pipeline root has no
-        # config for can_chat to read, so only its own flag keeps it out of chat.
+        # An untrusted diffusion repo carries no task either, and its pipeline root has no config for
+        # can_chat to read, so only its own flag keeps it out of chat.
         {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
-    # The real variant lister, not a stub: it decides these labels and picks the load target,
-    # so a stub tests the plumbing and none of the answer. Pulls neither torch nor fastapi, and
-    # syspath_prepend is undone after the test, so the suite keeps its no-server-import property.
+    # The real variant lister, not a stub: it decides these labels and picks the load target, so a stub
+    # tests the plumbing and none of the answer. Pulls neither torch nor fastapi, and syspath_prepend
+    # is undone after the test.
     monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
     monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (gguf_rows, model_rows))
 
@@ -860,8 +859,8 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
-    # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1:
-    # discovery tries each loopback address and returns the one that answers.
+    # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1: discovery tries each
+    # loopback address and returns the one that answers.
     import socket
     import urllib.request
 
@@ -2319,8 +2318,8 @@ def test_catalog_drops_an_export_with_no_loadable_payload(monkeypatch, tmp_path)
     (whole / "adapter_model.safetensors").write_bytes(b"\0" * 2048)
 
     monkeypatch.setattr(cat, "_path_can_chat", lambda *a, **k: None)
-    # Warm the real hub.* chain BEFORE shadowing utils.models: _local_dir_holds_a_payload
-    # imports through it, and a stub package would break that import rather than the test.
+    # Warm the real hub.* chain BEFORE shadowing utils.models: _local_dir_holds_a_payload imports
+    # through it, and a stub package would break that import rather than the test.
     assert cat._local_dir_holds_a_payload(whole) is True
     assert cat._local_dir_holds_a_payload(broken) is False
 
@@ -2446,8 +2445,8 @@ QUANT_LAYOUTS = [
     ([("Q4_K_M/Tiny-Q4_K_M.gguf", 16), ("Q8_0/Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
     # A split quant is ONE thing to pick. The glob listed every shard as its own label.
     ([(f"Tiny-Q4_K_M-0000{n}-of-00003.gguf", 16) for n in (1, 2, 3)], "Q4_K_M"),
-    # The case the host decides: fnmatch normcases on Windows and not on Linux or macOS, so
-    # "*.gguf" found this file on one platform only and the cache read differently per machine.
+    # The case the host decides: fnmatch normcases on Windows and not on Linux or macOS, so "*.gguf"
+    # found this file on one platform only and the cache read differently per machine.
     ([("Tiny-Q8_0.GGUF", 16)], "Q8_0"),
     ([("Tiny-Q4_K_M.gguf", 16), ("mmproj-F16.gguf", 16)], "Q4_K_M"),
 ]
