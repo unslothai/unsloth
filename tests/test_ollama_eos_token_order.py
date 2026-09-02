@@ -1,17 +1,13 @@
-"""Regression test for get_ollama_eos_tokens depending on set iteration order.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-`get_ollama_eos_tokens` collapses a family of added tokens into the prefix they
-share, so `<unused0>`, `<unused1>`, ... become one `<unused` stop token in the
-Ollama Modelfile. It does that by rewriting `joined_text` as it walks the token
-list, which makes the result order-dependent: a family member has to be seen
-before any shorter token that merely shares its prefix. The list came from
-`set(...) - set(...)`, and set iteration order over strings varies with
-PYTHONHASHSEED, so a Gemma-shaped vocabulary exported `["<eos>", "<unk>",
-"<unused"]` on some runs and `["<eos>", "<un"]` on others, losing `<unk>` and
-handing Ollama a two-character stop token in its place.
+"""get_ollama_eos_tokens must not depend on set iteration order.
 
-chat_templates.py cannot be imported without a GPU, so the function is
-ast-extracted the way tests/test_bad_mappings_redirect.py extracts its own.
+Its prefix collapse rewrites `joined_text` as it walks the token list, so a family member
+has to be seen before any shorter token sharing its prefix; a Gemma-shaped vocabulary gave
+`["<eos>", "<unk>", "<unused"]` or `["<eos>", "<un"]` depending on PYTHONHASHSEED.
+chat_templates.py needs a GPU to import, so the function is ast-extracted (the way
+tests/test_bad_mappings_redirect.py extracts its own).
 """
 
 import ast
@@ -22,8 +18,8 @@ import sys
 
 _CHAT_TEMPLATES = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "chat_templates.py")
 
-# A Gemma-shaped vocabulary: `<unk>` sits next to a `<unused*>` family whose members
-# share its first three characters, which is what makes the order matter.
+# `<unk>` shares its first three characters with the `<unused*>` family: that is what
+# makes the order matter.
 _TOKENS = ["<pad>", "<eos>", "<unk>", "<unused0>", "<unused1>", "<unused2>"]
 _BOS = "<pad>"
 
@@ -57,7 +53,6 @@ def _extract_source():
 
 
 def _run(seed):
-    """Run the function in a fresh interpreter under a fixed PYTHONHASHSEED."""
     environment = dict(os.environ, PYTHONHASHSEED = str(seed))
     completed = subprocess.run(
         [
@@ -85,6 +80,5 @@ def test_ollama_eos_tokens_do_not_depend_on_hash_seed():
 
 
 def test_ollama_eos_tokens_keep_unk_beside_an_unused_family():
-    """The shorter `<unk>` must survive; only the family collapses to its prefix."""
     for seed in range(8):
         assert _run(seed) == ["<eos>", "<unk>", "<unused"]

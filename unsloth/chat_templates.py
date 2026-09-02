@@ -2371,14 +2371,9 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
 
-    # Remove added_tokens_decoder duplicates, longest first and never through a set.
-    # The loop below collapses a family of tokens into the prefix they share and rewrites
-    # joined_text as it goes, so the answer depends on the order: a family member has to
-    # be seen before any shorter token that merely shares its prefix, or that shorter one
-    # collapses to the prefix instead and deletes the family along with it. `<unk>` next
-    # to `<unused0>`, `<unused1>`, ... is the case in the wild. set() iteration order over
-    # strings varies with PYTHONHASHSEED, so the same tokenizer could hand Ollama
-    # different stop tokens from one run to the next.
+    # Longest first, never through a set: the collapse below rewrites joined_text as it goes,
+    # so a family member must be seen before any shorter token sharing its prefix (`<unused0>`
+    # before `<unk>`), and set() order over strings varies with PYTHONHASHSEED.
     skip_eos_tokens = set(extra_eos_tokens)
     added_tokens_decoder = sorted(
         (x for x in dict.fromkeys(added_tokens_decoder) if x not in skip_eos_tokens),
