@@ -135,17 +135,38 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
         assert field in self._stamp_block(), f"{field} is never recorded on the resident"
 
     def test_the_non_gguf_status_branch_publishes_them(self):
+        import ast
         import inspect
+        import textwrap
         import routes.inference as ri
 
-        src = inspect.getsource(ri.get_status)
-        # The GGUF branch returns first, so the last occurrence is the non-GGUF return.
-        non_gguf = src[src.rindex("Non-GGUF: classify from the loaded template") :]
+        tree = ast.parse(textwrap.dedent(inspect.getsource(ri.get_status)))
+        responses = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "InferenceStatusResponse"
+            and any(
+                keyword.arg == "is_gguf"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is False
+                for keyword in node.keywords
+            )
+        ]
+        assert len(responses) == 1, "non-GGUF status response is ambiguous or missing"
+        published = {keyword.arg: keyword.value for keyword in responses[0].keywords}
         for wire, stamped in (
             ("requested_context_length", "max_seq_length_requested"),
             ("load_in_4bit", "load_in_4bit_requested"),
             ("requested_gpu_ids", "gpu_ids_requested"),
         ):
-            assert (
-                f'{wire} = model_info.get("{stamped}")' in non_gguf
-            ), f"non-GGUF status does not publish {wire}"
+            assert wire in published, f"non-GGUF status does not publish {wire}"
+            referenced_keys = {
+                node.value
+                for node in ast.walk(published[wire])
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            }
+            assert stamped in referenced_keys, (
+                f"non-GGUF status does not source {wire} from {stamped}"
+            )
