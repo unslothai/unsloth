@@ -411,18 +411,17 @@ test("a delayed first send keeps the creation inputs it was sent under", () => {
 });
 
 test("compare lists its threads once before it waits on any run", () => {
-  // Two constraints one boolean cannot carry. The wait has to be GLOBAL, because a first
-  // compare run starts before either thread exists and files its handles under "__default";
-  // and it has to exist at all, because these ids feed ComparePane's `initialThreadId`, so
-  // learning them mid-run points ThreadAutoSwitch at a generating thread. But the shared
-  // provider keeps a base chat's run alive across the switch into compare, so a global wait
-  // on the FIRST list left an existing compare on blank runtimes with no later edge to
-  // recover on. That list has nothing to clobber, so only re-lists wait.
-  const waits =
+  // general compare can run external panes, while lora compare only uses the local runtime.
+  const globalWaits =
     page.match(
       /const anyRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.runningByThreadId\)\.length > 0,\s*\);/g,
     ) ?? [];
-  assert.equal(waits.length, 2, "both compare variants share the global wait");
+  assert.equal(globalWaits.length, 1, "General Compare waits on every pane run");
+  const localWaits =
+    page.match(
+      /const anyRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.localRunByThreadId\)\.length > 0,\s*\);/g,
+    ) ?? [];
+  assert.equal(localWaits.length, 1, "LoRA Compare waits only on local runs");
   const gates =
     page.match(
       /if \(anyRunning && listedPairRef\.current === pairId\) return;\s*listedPairRef\.current = pairId;/g,

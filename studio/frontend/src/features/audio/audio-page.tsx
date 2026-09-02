@@ -8,6 +8,7 @@
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
+  Archive02Icon,
   AudioWave01Icon,
   Copy01Icon,
   Delete02Icon,
@@ -29,7 +30,6 @@ import {
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,6 +37,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { usePlatformStore } from "@/config/env";
@@ -78,6 +80,7 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { useSettingsDialogStore } from "@/features/settings";
 import {
   isTrackingSttDownload,
   trackSttDownload,
@@ -87,6 +90,7 @@ import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -97,13 +101,22 @@ import {
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
-  getAudioDownloadPlan,
   generateAudio,
+  getAudioDownloadPlan,
   listAudioGallery,
+  setAudioClipFlags,
 } from "./api";
 import {
   type AudioBusy,
+  type AudioGenerationPhase,
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_SECONDS,
+  MOSS_TTS_DEFAULT_SECONDS,
+  MOSS_TTS_FRAMES_PER_SECOND,
+  MOSS_TTS_MAX_FRAMES,
   type SttDownloadedArtifact,
+  audioGenerationPresentation,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -111,15 +124,9 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
-  MOSS_TTS_DEFAULT_SECONDS,
-  MOSS_TTS_FRAMES_PER_SECOND,
-  MOSS_TTS_MAX_FRAMES,
-  MINIMAX_MUSIC_DEFAULT_SECONDS,
-  MINIMAX_MUSIC_FRAMES_PER_SECOND,
-  MINIMAX_MUSIC_MAX_SECONDS,
   minimaxMusicFramesForSeconds,
-  mossTtsMaxFrames,
   mossTtsFramesForSeconds,
+  mossTtsMaxFrames,
   nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
@@ -127,10 +134,10 @@ import {
   resolveSttResidency,
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
-  trainedTtsCheckpointIsLoadable,
-  trainedTtsCheckpointIsRunnableOnMac,
   sttDownloadedArtifacts,
   sttSelectionReady,
+  trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
 } from "./audio-page-policy";
 import {
   audioCapabilityLine,
@@ -172,6 +179,8 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 const PAGE_SIZE = 50;
+// The list route clamps a page to 200, so asking for more silently gets 200 back.
+const MAX_PAGE_SIZE = 200;
 // Mirrors the STT sidecar's own limits (_MAX_AUDIO_SECONDS, STT_AUDIO_B64_MAX_CHARS), so a
 // recording is stopped at the boundary rather than uploaded and refused.
 const RECORDING_MAX_SECONDS = 30 * 60;
@@ -245,12 +254,14 @@ function ClipRowMenu({
   onDownload,
   onCopyPrompt,
   onUseAsText,
+  onArchive,
   onDelete,
 }: {
   clip: AudioGalleryClip;
   onDownload: () => void;
   onCopyPrompt: () => void;
   onUseAsText: () => void;
+  onArchive: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -284,6 +295,10 @@ function ClipRowMenu({
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
           Download WAV
         </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onArchive}>
+          <HugeiconsIcon icon={Archive02Icon} className="size-4" />
+          Archive
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={onDelete}>
           <HugeiconsIcon icon={Delete02Icon} className="size-4" />
@@ -315,6 +330,17 @@ export function AudioPage({
   const [busy, setBusy] = useState<AudioBusy>(null);
   const busyRef = useRef<AudioBusy>(busy);
   busyRef.current = busy;
+  const [generationPhase, setGenerationPhase] =
+    useState<AudioGenerationPhase>(null);
+  const generationPhaseRef = useRef<AudioGenerationPhase>(generationPhase);
+  const updateGenerationPhase = useCallback(
+    (nextPhase: AudioGenerationPhase) => {
+      generationPhaseRef.current = nextPhase;
+      setGenerationPhase(nextPhase);
+    },
+    [],
+  );
+  const generationPresentation = audioGenerationPresentation(generationPhase);
 
   // --- TTS (main inference slot) -----------------------------------------
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
@@ -339,6 +365,12 @@ export function AudioPage({
     MINIMAX_MUSIC_DEFAULT_SECONDS,
   );
   const generateAbort = useRef<AbortController | null>(null);
+  const handleStopGeneration = useCallback(() => {
+    const controller = generateAbort.current;
+    if (!controller || controller.signal.aborted) return;
+    updateGenerationPhase("stopping");
+    controller.abort();
+  }, [updateGenerationPhase]);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
   const pendingRoutedTtsPick = useRef<{
@@ -662,18 +694,29 @@ export function AudioPage({
   }, []);
 
   const refreshGallery = useCallback(
-    async (removedId?: string): Promise<AudioGalleryClip[]> => {
+    async (
+      removedId?: string,
+      windowSize = PAGE_SIZE,
+    ): Promise<AudioGalleryClip[]> => {
       const generation = ++galleryRefreshGeneration.current;
+      const wanted = Math.max(PAGE_SIZE, windowSize);
+      const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
-        const page = await listAudioGallery(0, PAGE_SIZE);
+        const page = await listAudioGallery(0, asked);
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
-        const { clips: merged, stitched } = mergeGalleryPage(
-          page.audio,
-          galleryCache.clips,
-          removedId,
-          page.has_more,
-        );
+        // A window past the route's cap cannot be covered in one page, and stitching the old
+        // scrollback back on keeps a cursor that starts BELOW it, stranding whatever was restored
+        // into the gap. Reset to what was fetched: shorter scrollback, nothing unreachable.
+        const { clips: merged, stitched } =
+          wanted > asked
+            ? { clips: [...page.audio], stitched: false }
+            : mergeGalleryPage(
+                page.audio,
+                galleryCache.clips,
+                removedId,
+                page.has_more,
+              );
         galleryCache.clips = merged;
         // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
         if (!stitched) {
@@ -729,13 +772,14 @@ export function AudioPage({
     if (loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     const refreshGeneration = galleryRefreshGeneration.current;
+    const cursor = galleryCache.nextCursor;
     try {
-      const page = await listAudioGallery(
-        0,
-        PAGE_SIZE,
-        galleryCache.nextCursor,
-      );
-      if (refreshGeneration !== galleryRefreshGeneration.current) return;
+      const page = await listAudioGallery(0, PAGE_SIZE, cursor);
+      if (
+        refreshGeneration !== galleryRefreshGeneration.current ||
+        cursor !== galleryCache.nextCursor
+      )
+        return;
       galleryCache.nextCursor =
         page.next_before_mtime !== null && page.next_before_id !== null
           ? { mtime: page.next_before_mtime, id: page.next_before_id }
@@ -761,7 +805,7 @@ export function AudioPage({
     if (initialReadySent.current) {
       void refreshStatus();
       void refreshSttStatus();
-      void refreshGallery();
+      void refreshGallery(undefined, galleryCache.clips.length);
       return;
     }
     let cancelled = false;
@@ -802,6 +846,20 @@ export function AudioPage({
       if (runtime === "stt") void refreshSttStatus();
     });
   }, [active, refreshStatus, refreshSttStatus]);
+
+  useEffect(() => {
+    if (!active) return;
+    const refreshWhenVisible = () => {
+      if (document.hidden) return;
+      void refreshGallery(undefined, galleryCache.clips.length);
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [active, refreshGallery]);
 
   // The selected clip needs its bytes before the player can play it.
   useEffect(() => {
@@ -1035,7 +1093,9 @@ export function AudioPage({
         if (nextMode === "transcribe") invalidatePendingTtsSelection();
         return true;
       }
-      if (!canTransitionAudioMode(busyRef.current)) {
+      if (
+        !canTransitionAudioMode(busyRef.current, generationPhaseRef.current)
+      ) {
         toast.info(
           "Wait for the active audio task to finish before switching modes.",
         );
@@ -1043,7 +1103,7 @@ export function AudioPage({
       }
 
       if (nextMode === "transcribe") invalidatePendingTtsSelection();
-      if (busyRef.current === "generating") generateAbort.current?.abort();
+      if (busyRef.current === "generating") handleStopGeneration();
       stopAndDiscardRecording();
       setMode(nextMode);
       // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
@@ -1078,6 +1138,7 @@ export function AudioPage({
     },
     [
       invalidatePendingTtsSelection,
+      handleStopGeneration,
       mode,
       releaseTranscribeSelection,
       stopAndDiscardRecording,
@@ -1811,8 +1872,10 @@ export function AudioPage({
     if (busyRef.current) return;
     busyRef.current = "generating";
     setBusy("generating");
+    updateGenerationPhase("preparing");
     const releaseInFlight = pendingTranscribeRelease.current;
     if (releaseInFlight && !(await releaseInFlight)) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       setMode("transcribe");
@@ -1820,6 +1883,7 @@ export function AudioPage({
     }
     const instructions = audioInstructions.trim();
     if (musicGeneration && !instructions) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       toast.error("Add a music description for MiniMax Music 3.");
@@ -1828,6 +1892,7 @@ export function AudioPage({
     const language = audioLanguage.trim();
     const controller = new AbortController();
     generateAbort.current = controller;
+    updateGenerationPhase("generating");
     try {
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
@@ -1844,6 +1909,7 @@ export function AudioPage({
           : {}),
         signal: controller.signal,
       });
+      updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(
         generated.clip_id,
@@ -1880,6 +1946,7 @@ export function AudioPage({
       }
     } catch (error) {
       if (!controller.signal.aborted) {
+        updateGenerationPhase("finishing");
         toast.error(
           error instanceof Error ? error.message : "Audio generation failed.",
         );
@@ -1887,6 +1954,7 @@ export function AudioPage({
       }
     } finally {
       generateAbort.current = null;
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       if (activeRef.current && modeRef.current === "speak")
@@ -1904,16 +1972,13 @@ export function AudioPage({
     instructionsKind,
     temperature,
     temperatureEdited,
+    updateGenerationPhase,
     maxTokens,
     refreshGallery,
     refreshStatus,
     replayQueuedTtsPick,
     selectClip,
   ]);
-
-  const handleStopGeneration = useCallback(() => {
-    generateAbort.current?.abort();
-  }, []);
 
   // Only unmount aborts. RootLayout keeps this page mounted precisely so leaving
   // the tab does not cancel synthesis, and the clip is persisted server-side, so
@@ -2126,23 +2191,24 @@ export function AudioPage({
 
   // --- Gallery actions ----------------------------------------------------
 
+  const dropClip = useCallback((id: string) => {
+    galleryCache.srcById.delete(id);
+    setSrcById(galleryCache.srcById.toRecord());
+    // Drop the row now, as the clear-all path does: refreshGallery swallows a failed GET and
+    // returns the cache without setClips, leaving the row up against an already-revoked URL.
+    galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
+    setClips(galleryCache.clips);
+    if (galleryCache.selectedId === id) {
+      galleryCache.selectedId = null;
+      setSelectedId(null);
+    }
+  }, []);
+
   const handleDeleteClip = useCallback(
     async (id: string) => {
       try {
         await deleteAudioClip(id);
-        galleryCache.srcById.delete(id);
-        setSrcById(galleryCache.srcById.toRecord());
-        // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
-        // GET and returns the cache without calling setClips, which left the deleted clip
-        // on screen against an object URL that has already been revoked.
-        galleryCache.clips = galleryCache.clips.filter(
-          (clip) => clip.id !== id,
-        );
-        setClips(galleryCache.clips);
-        if (galleryCache.selectedId === id) {
-          galleryCache.selectedId = null;
-          setSelectedId(null);
-        }
+        dropClip(id);
         await refreshGallery(id);
       } catch (error) {
         toast.error(
@@ -2150,6 +2216,46 @@ export function AudioPage({
         );
       }
     },
+    [dropClip, refreshGallery],
+  );
+
+  const handleArchiveClip = useCallback(
+    async (id: string) => {
+      try {
+        await setAudioClipFlags(id, { archived: true });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not archive the clip.",
+        );
+        return;
+      }
+      dropClip(id);
+      await refreshGallery(id);
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("audio");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived audio in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropClip, refreshGallery],
+  );
+
+  // This page stays mounted across route changes, so a restore from the Settings archive would not
+  // reach History until a reload. Refresh the loaded window, not just the first page: a clip
+  // re-enters at its own age, and the kept cursor already starts past anything below that page.
+  useEffect(
+    () =>
+      subscribeGalleryChanged("audio", () => {
+        void refreshGallery(undefined, galleryCache.clips.length);
+      }),
     [refreshGallery],
   );
 
@@ -2642,30 +2748,52 @@ export function AudioPage({
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
             <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={
-                  busy === "generating" ? handleStopGeneration : handleGenerate
-                }
-                disabled={
-                  busy === "generating"
-                    ? false
-                    : busy !== null ||
-                      !ttsLoaded ||
-                      !prompt.trim() ||
-                      (musicGeneration && !audioInstructions.trim())
-                }
-                variant={busy === "generating" ? "destructive" : "default"}
-              >
-                {busy === "generating" ? (
+              <div className="flex w-full max-w-sm flex-col gap-2">
+                {busy === "generating" && generationPresentation ? (
                   <>
-                    <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
-                    Stop
+                    <output
+                      aria-live="polite"
+                      aria-atomic="true"
+                      className="text-center text-ui-12 text-muted-foreground"
+                    >
+                      {generationPresentation.status}
+                    </output>
+                    <Progress
+                      indeterminate
+                      aria-label="Audio task in progress"
+                      className="h-1.5"
+                    />
                   </>
-                ) : (
-                  "Generate"
-                )}
-              </Button>
+                ) : null}
+                <Button
+                  className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={
+                    generationPresentation?.canStop
+                      ? handleStopGeneration
+                      : handleGenerate
+                  }
+                  disabled={
+                    generationPresentation
+                      ? !generationPresentation.canStop
+                      : busy !== null ||
+                        !ttsLoaded ||
+                        !prompt.trim() ||
+                        (musicGeneration && !audioInstructions.trim())
+                  }
+                  variant={
+                    generationPresentation?.canStop ? "destructive" : "default"
+                  }
+                >
+                  {generationPresentation?.canStop ? (
+                    <>
+                      <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+                      Stop
+                    </>
+                  ) : (
+                    (generationPresentation?.actionLabel ?? "Generate")
+                  )}
+                </Button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -2883,6 +3011,7 @@ export function AudioPage({
                           onUseAsText={() => {
                             if (transitionMode("speak")) setPrompt(clip.prompt);
                           }}
+                          onArchive={() => void handleArchiveClip(clip.id)}
                           onDelete={() => void handleDeleteClip(clip.id)}
                         />
                       </div>

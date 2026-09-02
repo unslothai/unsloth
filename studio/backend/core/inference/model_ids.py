@@ -32,7 +32,7 @@ def _looks_like_path(identifier: str) -> bool:
         return True
     if identifier.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
         return True
-    if len(identifier) >= 2 and identifier[1] == ":":  # Windows drive, e.g. C:\
+    if len(identifier) >= 2 and identifier[1] == ":":
         return True
     if identifier.count("/") >= 2 or "\\" in identifier:
         return True

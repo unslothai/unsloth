@@ -355,13 +355,12 @@ class TestSdistOnlyBuildArgs:
         # The unconditional ones are always present.
         assert set(ips.SDIST_ONLY_PACKAGES) <= set(names)
 
-    def test_the_diffusers_pin_is_exempted_on_the_archive_path(self):
-        """The pin is a source ARCHIVE, and uv's no-build refuses to build one, so the
-        install still died here after extras.txt was fixed.
+    def test_the_diffusers_release_is_not_forced_through_a_source_build(self):
+        """The pinned release ships wheels, so forcing a source build defeats the pin."""
+        pin_lines = (ips.REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8").splitlines()
+        pin_options = [line.split("#", 1)[0].strip() for line in pin_lines]
+        assert not any(option.startswith("--no-binary") for option in pin_options)
 
-        Guarded on python >= 3.10 because diffusers-pin.txt resolves a released wheel
-        below that, which must not be forced through a source build.
-        """
         tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
@@ -369,14 +368,12 @@ class TestSdistOnlyBuildArgs:
             req = next((k for k in node.keywords if k.arg == "req"), None)
             if req is None or "diffusers-pin.txt" not in ast.unparse(req.value):
                 continue
-            splat = " ".join(ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred))
-            assert (
-                "_sdist_only_build_args('diffusers')" in splat
-            ), f"the diffusers pin at line {node.lineno} must exempt the source archive"
-            assert "version_info >= (3, 10)" in splat, (
-                "the exemption must be guarded so the pre-3.10 wheel is not forced "
-                f"through a source build (line {node.lineno})"
-            )
+            try:
+                literal_arguments = [ast.literal_eval(argument) for argument in node.args]
+            except (ValueError, TypeError):
+                pytest.fail("the diffusers pin options must remain literal and auditable")
+            assert all(isinstance(argument, str) for argument in literal_arguments)
+            assert not any(argument.startswith("--no-binary") for argument in literal_arguments)
             return
         pytest.fail("no pip_install(req=.../diffusers-pin.txt) call found")
 
@@ -419,6 +416,9 @@ class TestSdistOnlyBuildArgs:
         for name in ips.SDIST_ONLY_PACKAGES:
             assert name in allow, f"{name} missing from clean-machine-assert.sh nobuild allowlist"
             assert f"'{name}'" in ps1, f"{name} missing from assert-nobuild.ps1 allowlist"
+        # overlay:false releases still need the temporary Diffusers sdist exemption.
+        assert "diffusers" in allow
+        assert "'diffusers'" in ps1
 
 
 class TestHardenedPipConfigRelaxation:
@@ -500,6 +500,8 @@ class TestHardenedPipConfigRelaxation:
         def _fake_run(label, cmd, *a, **kw):
             seen["env"] = ips._install_env_for_cmd(cmd)
             seen["cmd"] = cmd
+            # pip_install reads the result to decide whether to attempt recovery.
+            return mock.Mock(returncode = 0, stdout = b"")
 
         with (
             mock.patch.object(ips, "USE_UV", True),
@@ -595,6 +597,8 @@ class TestProgressLineNotes:
             mock.patch.object(ips, "subprocess") as sp,
             mock.patch.object(ips, "run") as fallback,
         ):
+            # pip_install reads the result to decide whether to attempt recovery.
+            fallback.return_value = mock.Mock(returncode = 0, stdout = b"")
             sp.run.return_value = fake
             sp.PIPE, sp.STDOUT = -1, -2
             out = self._render(
@@ -770,6 +774,177 @@ class TestBuildPipCmdUpgradeIntent:
     def test_commands_without_the_flag_are_untouched(self):
         cmd = ips._build_pip_cmd(("--no-cache-dir", "somepackage"))
         assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
+
+
+class TestDamagedCorePayloadRepair:
+    """An upgrade of a distribution already at the wanted version installs
+    nothing: uv audits it, pip calls it satisfied, and both read metadata a
+    quarantine of the payload leaves intact."""
+
+    def test_the_uv_command_targets_only_the_named_package(self):
+        cmd = ips._build_uv_cmd(
+            ("--no-cache-dir", "--no-deps", "--reinstall-package", "x", "--force-reinstall", "x")
+        )
+        assert "--reinstall-package" in cmd
+        # Not --reinstall: that is the whole environment, torch included.
+        assert "--reinstall" not in cmd
+        assert "--no-deps" in cmd
+
+    def test_a_plain_force_reinstall_still_becomes_uv_reinstall(self):
+        assert "--reinstall" in ips._build_uv_cmd(("--force-reinstall", "x"))
+
+    def test_the_pip_fallback_drops_the_uv_only_flag(self):
+        cmd = ips._build_pip_cmd(
+            ("--no-cache-dir", "--no-deps", "--reinstall-package", "x", "--force-reinstall", "x")
+        )
+        assert "--reinstall-package" not in cmd
+        assert "--force-reinstall" in cmd and "--no-deps" in cmd
+        assert cmd.count("x") == 1
+        # It is not an upgrade request, so it must not acquire pip's upgrade flags.
+        assert "--upgrade" not in cmd
+
+    def test_a_damaged_package_is_reinstalled(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "damaged_payload_files",
+            lambda name, **kwargs: ["gone"] if name == "unsloth-zoo" else [],
+        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: calls.append(args))
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        ips._repair_damaged_core_payload(("unsloth", "unsloth-zoo"))
+        assert len(calls) == 1
+        assert "--reinstall-package" in calls[0] and calls[0][-1] == "unsloth-zoo"
+
+    def test_a_healthy_tree_runs_nothing(self, monkeypatch):
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda *a, **k: pytest.fail("nothing to repair")
+        )
+        ips._repair_damaged_core_payload(("unsloth", "unsloth-zoo"))
+
+    def test_a_local_checkout_is_left_alone(self, monkeypatch):
+        """Its core packages are an editable overlay, not an index install."""
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "damaged_payload_files",
+            lambda *a, **k: pytest.fail("a local checkout must not even be scanned"),
+        )
+        ips._repair_damaged_core_payload(("unsloth",), local_repo = "/src/unsloth")
+
+    def test_a_scan_that_raises_does_not_stop_the_install(self, monkeypatch):
+        def boom(*args, **kwargs):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", boom)
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda *a, **k: pytest.fail("nothing was proven damaged")
+        )
+        ips._repair_damaged_core_payload(("unsloth",))
+
+    def test_a_repair_that_leaves_the_files_missing_fails(self, monkeypatch, capsys):
+        """Otherwise the pass that follows audits the intact metadata as
+        satisfied and write_manifest records a success nothing rechecks."""
+        monkeypatch.setattr(
+            ips.install_manifest, "damaged_payload_files", lambda name, **kwargs: ["gone"]
+        )
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is False
+
+    def test_a_reinstall_that_restored_the_files_is_a_success(self, monkeypatch):
+        """Judged on the tree, not pip's exit code: uv and pip both exit non-zero
+        for reasons that have nothing to do with the payload."""
+        seen = {"n": 0}
+
+        def scan(name, **kwargs):
+            seen["n"] += 1
+            return ["gone"] if seen["n"] == 1 else []
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        # Stubbed, or the presence check added beside the scan answers for the
+        # host: a source checkout with no unsloth distribution installed would
+        # fail this on the environment rather than on the code.
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is True
+
+    def test_an_absent_distribution_is_refused_after_the_core_phase(self, monkeypatch):
+        """It has no RECORD to walk, so the scan alone reads it as undamaged.
+
+        The install.sh handoff sets SKIP_STUDIO_BASE=1 and the core phase never
+        runs, so this is the only place that would see unsloth-zoo gone before
+        write_manifest records the environment as a finished install.
+        """
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
+        monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is False
+        # Off before the core phase: a fresh run has nothing installed yet.
+        assert ips._repair_damaged_core_payload(("unsloth",)) is True
+
+    def test_a_present_distribution_passes_the_presence_check(self, monkeypatch):
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
+        assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is True
+
+    def test_the_companion_is_only_for_the_default_install(self):
+        assert ips._core_package_names("unsloth") == ("unsloth", "unsloth-zoo")
+        assert ips._core_package_names("unsloth-nightly") == ("unsloth-nightly",)
+
+    def test_the_default_is_recognised_however_it_is_spelled(self):
+        """verify_install canonicalizes, and the two disagreeing meant the deep
+        check scanned zoo, forced a pass, and no repair gate would touch it."""
+        for spelling in ("Unsloth", "UNSLOTH", "UnSloth"):
+            assert ips._core_package_names(spelling)[1:] == ("unsloth-zoo",), spelling
+        # PEP 503 folds runs of -_. to -, it does not delete them, so this is a
+        # different project and keeps its neighbours to itself.
+        assert ips._core_package_names("uns_loth") == ("uns_loth",)
+
+    def test_both_repair_sites_use_that_list(self):
+        source = inspect.getsource(ips)
+        assert (
+            source.count("_repair_damaged_core_payload(\n        _core_package_names")
+            + source.count("_repair_damaged_core_payload(_core_package_names")
+            == 2
+        )
+        assert "_repair_damaged_core_payload((package_name" not in source
+
+    def test_the_second_site_runs_before_the_manifest_is_written(self):
+        source = inspect.getsource(ips)
+        gate = source.rindex("_repair_damaged_core_payload(")
+        assert gate < source.index("install_manifest.write_manifest(")
+
+    def test_a_reinstall_that_removed_the_distribution_fails(self, monkeypatch):
+        """--force-reinstall uninstalls before it installs, and a failure in
+        between leaves nothing: an absent distribution has no RECORD, so the
+        payload scan alone would call the repair a success."""
+        scans = {"n": 0}
+
+        def scan(name, **kwargs):
+            scans["n"] += 1
+            # Damaged on the way in, and afterwards nothing left to call damaged.
+            return ["gone"] if scans["n"] == 1 else []
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: True)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is False
+
+    def test_the_caller_aborts_the_install(self):
+        source = inspect.getsource(ips)
+        assert "if not _repair_damaged_core_payload(" in source
+
+    def test_the_repair_runs_before_the_core_phase(self):
+        """After it, the upgrade would already have audited the damage as fine."""
+        source = inspect.getsource(ips)
+        repair = source.index("_repair_damaged_core_payload(_core_package_names")
+        core = source.index("# 3. Core packages")
+        assert repair < core
 
 
 class TestDuplicateCoreMetadataRepair:
@@ -2243,3 +2418,264 @@ class TestDesktopBackendVersionConstraint:
                 else package_name
             )
             assert unsloth_spec == "unsloth"
+
+
+class TestRecordlessDistributionRecovery:
+    """pip cannot replace a .dist-info with no RECORD, and the venv is reused.
+
+    Observed on the Windows startup job: uv wrote pydantic-core, the pip fallback
+    tried to uninstall it, found no RECORD, and the dependency step died. Nothing
+    clears that state, so the same venv failed the same way on every later run.
+    """
+
+    _PIP_OUTPUT = (
+        b"Attempting uninstall: pydantic-core\n"
+        b"  Found existing installation: pydantic-core None\n"
+        b"error: uninstall-no-record-file\n"
+        b"x Cannot uninstall pydantic-core None\n"
+        b"|-> The package's contents are unknown: no RECORD file was found for pydantic-core.\n"
+    )
+
+    def _site_packages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ips.sysconfig, "get_path", lambda name: str(tmp_path))
+        return tmp_path
+
+    def _write_dist_info(self, root, name, *, record: bool):
+        dist_info = root / name
+        dist_info.mkdir()
+        (dist_info / "METADATA").write_text("Name: x\n", encoding = "utf-8")
+        if record:
+            (dist_info / "RECORD").write_text("", encoding = "utf-8")
+        return dist_info
+
+    def test_the_named_stub_is_cleared(self, tmp_path, monkeypatch):
+        root = self._site_packages(tmp_path, monkeypatch)
+        stub = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
+
+        cleared = ips._purge_recordless_distributions(self._PIP_OUTPUT)
+
+        assert cleared == ["pydantic_core-2.46.5.dist-info"]
+        assert not stub.exists()
+
+    def test_a_complete_install_of_the_same_name_is_left_alone(self, tmp_path, monkeypatch):
+        # A RECORD means pip knows what it owns; whatever failed, it was not this.
+        root = self._site_packages(tmp_path, monkeypatch)
+        intact = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = True)
+
+        assert ips._purge_recordless_distributions(self._PIP_OUTPUT) == []
+        assert intact.exists()
+
+    def test_other_packages_are_never_touched(self, tmp_path, monkeypatch):
+        # The blast radius is the names pip named, not every stub in site-packages.
+        root = self._site_packages(tmp_path, monkeypatch)
+        bystander = self._write_dist_info(root, "fastapi-0.121.0.dist-info", record = False)
+
+        assert ips._purge_recordless_distributions(self._PIP_OUTPUT) == []
+        assert bystander.exists()
+
+    def test_an_unrelated_failure_clears_nothing(self, tmp_path, monkeypatch):
+        # No RECORD marker: a different problem, which deleting metadata cannot fix.
+        root = self._site_packages(tmp_path, monkeypatch)
+        stub = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
+
+        assert ips._purge_recordless_distributions(b"ERROR: could not resolve pydantic-core") == []
+        assert stub.exists()
+
+    @pytest.mark.parametrize("output", [None, b"", ""])
+    def test_no_output_is_not_a_reason_to_delete(self, output, tmp_path, monkeypatch):
+        self._site_packages(tmp_path, monkeypatch)
+        assert ips._purge_recordless_distributions(output) == []
+
+    def test_the_name_matches_across_dash_and_underscore_spellings(self, tmp_path, monkeypatch):
+        # pip reports "pydantic-core"; the directory is written "pydantic_core".
+        root = self._site_packages(tmp_path, monkeypatch)
+        stub = self._write_dist_info(root, "pydantic.core-2.46.5.dist-info", record = False)
+
+        assert ips._purge_recordless_distributions(self._PIP_OUTPUT) == [stub.name]
+        assert not stub.exists()
+
+    def test_the_fallback_retries_once_after_clearing(self, tmp_path, monkeypatch):
+        """The recovery is only worth anything if pip_install actually re-runs."""
+        root = self._site_packages(tmp_path, monkeypatch)
+        self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
+        monkeypatch.setattr(ips, "USE_UV", False)
+        monkeypatch.setattr(ips, "CONSTRAINTS", tmp_path / "absent.txt")
+
+        attempts = []
+
+        def fake_run(
+            label,
+            cmd,
+            *,
+            quiet = True,
+            check = True,
+        ):
+            attempts.append(cmd)
+            failed = len(attempts) == 1
+            return types.SimpleNamespace(
+                returncode = 1 if failed else 0,
+                stdout = self._PIP_OUTPUT if failed else b"",
+            )
+
+        monkeypatch.setattr(ips, "run", fake_run)
+        ips.pip_install("studio deps", "pydantic-core")
+
+        assert len(attempts) == 2 and attempts[0] == attempts[1]
+
+    def test_a_failure_it_cannot_recover_from_still_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ips.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(ips, "USE_UV", False)
+        monkeypatch.setattr(ips, "CONSTRAINTS", tmp_path / "absent.txt")
+
+        attempts = []
+
+        def fake_run(
+            label,
+            cmd,
+            *,
+            quiet = True,
+            check = True,
+        ):
+            attempts.append(cmd)
+            return types.SimpleNamespace(returncode = 1, stdout = b"ERROR: no matching distribution")
+
+        monkeypatch.setattr(ips, "run", fake_run)
+        with pytest.raises(SystemExit) as excinfo:
+            ips.pip_install("studio deps", "pydantic-core")
+
+        assert excinfo.value.code == 1
+        assert len(attempts) == 1, "a failure with nothing to clear must not be retried"
+
+
+class TestExpectedTorchFlavorResolution:
+    """_expected_torch_flavor_tag / _expected_torch_index_url: the two pure inputs to the
+    Windows flavor invariant. The invariant itself is covered in
+    tests/studio/install/test_cuda_repair.py; these pin the resolution ORDER, which is what
+    decides whether a repair fires against the right index or not at all."""
+
+    _KEYS = (
+        "UNSLOTH_EXPECTED_TORCH_TAG",
+        "UNSLOTH_TORCH_INSTALL_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_FAMILY",
+    )
+
+    @contextlib.contextmanager
+    def _env(self, **values):
+        """Set the named vars and REMOVE every other one this resolution reads, so an
+        ambient pin on the developer's box cannot change the answer."""
+        with mock.patch.dict(os.environ, {k: v for k, v in values.items() if v is not None}):
+            for key in self._KEYS:
+                if values.get(key) is None:
+                    os.environ.pop(key, None)
+            yield
+
+    def test_the_handover_tag_wins(self):
+        with self._env(UNSLOTH_EXPECTED_TORCH_TAG = "cu124"):
+            with mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cu128"):
+                assert ips._expected_torch_flavor_tag() == "cu124"
+
+    def test_the_handover_tag_is_normalised(self):
+        with self._env(UNSLOTH_EXPECTED_TORCH_TAG = " CU128 "):
+            assert ips._expected_torch_flavor_tag() == "cu128"
+
+    def test_the_manifest_answers_next(self):
+        with self._env():
+            with mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cu128"):
+                assert ips._expected_torch_flavor_tag() == "cu128"
+
+    def test_a_resolved_cuda_backend_outranks_a_stale_cpu_record(self):
+        """A CPU pin that was REMOVED must not outlive the install that replaced it.
+
+        install.sh resolves the backend to cuda and installs a CUDA wheel; reading the old
+        manifest here recorded the healthy venv as deliberately CPU-only, and
+        _expected_cpu_flavor_was_chosen() would then read a later CPU wheel as the install
+        working as asked and suppress the mismatch and its repair. The wheel's own tag is
+        what says which cu index this venv came from.
+        """
+        with self._env():
+            with (
+                mock.patch.object(ips, "_TORCH_BACKEND", "cuda"),
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cpu"),
+                mock.patch.object(
+                    ips, "_installed_torch_version_label", return_value = "2.9.1+cu128"
+                ),
+            ):
+                assert ips._expected_torch_flavor_tag() == "cu128"
+                # And the stale provenance goes with it: pinned answers per family, so the
+                # cpu record cannot speak for a cuda tag. install.sh marks the backend it
+                # derived, which is why the derived cuda does not count as pinned either.
+                with (
+                    mock.patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND_SOURCE": "resolved"}),
+                    mock.patch.object(ips, "_RECORDED_TORCH_TAG_PINNED", True),
+                ):
+                    assert ips._expected_torch_flavor_was_pinned("cu128") is False
+
+    def test_a_resolved_cuda_backend_over_a_cpu_wheel_still_reads_the_manifest(self):
+        # Only when the family agrees with the wheel actually installed, the same rule the
+        # cpu/rocm/xpu arm applies: a resolved cuda beside a CPU wheel is the mismatch this
+        # whole path exists to repair, not a reason to call the venv CUDA.
+        with self._env():
+            with (
+                mock.patch.object(ips, "_TORCH_BACKEND", "cuda"),
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cu124"),
+                mock.patch.object(ips, "_installed_torch_version_label", return_value = "2.11.0+cpu"),
+            ):
+                assert ips._expected_torch_flavor_tag() == "cu124"
+
+    def test_a_gpuless_host_with_nothing_recorded_says_nothing(self):
+        # Inventing a CUDA expectation from an absent GPU would reinstall CUDA torch
+        # onto a CPU box on every update.
+        with self._env():
+            with (
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", None),
+                mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
+            ):
+                assert ips._expected_torch_flavor_tag() == ""
+
+    def test_a_pin_answers_without_probing_the_gpu(self):
+        with self._env(UNSLOTH_TORCH_INDEX_FAMILY = "cu126"):
+            with (
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", None),
+                mock.patch.object(ips, "_has_usable_nvidia_gpu") as probe,
+            ):
+                assert ips._expected_torch_flavor_tag() == "cu126"
+            probe.assert_not_called()
+
+    def test_a_cpu_pin_resolves_to_cpu_not_to_the_host_gpu(self):
+        with self._env(UNSLOTH_TORCH_INDEX_FAMILY = "cpu"):
+            with mock.patch.object(ips, "_RECORDED_TORCH_TAG", None):
+                assert ips._expected_torch_flavor_tag() == "cpu"
+
+    def test_the_index_url_is_reused_only_for_its_own_family(self):
+        # setup.ps1 hands over the /cpu index alongside a "rocm" tag on AMD Windows, so
+        # repairing from it would install the very CPU wheel the repair exists to remove.
+        with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://mirror.local/whl/cu124/"):
+            assert ips._expected_torch_index_url("cu124") == "https://mirror.local/whl/cu124"
+        with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://download.pytorch.org/whl/cpu"):
+            assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
+
+    def test_a_credentialed_index_survives_intact(self):
+        # Why the URL is forwarded rather than rebuilt: userinfo and a token query are
+        # not reconstructible from a family leaf.
+        url = "https://user:tok@mirror.local/whl/cu128?token=abc"
+        with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = url):
+            assert ips._expected_torch_index_url("cu128") == url
+
+    def test_the_pin_supplies_the_index_when_the_setup_script_did_not(self):
+        with self._env(UNSLOTH_TORCH_INDEX_URL = "https://mirror.local/whl/cu126"):
+            assert ips._expected_torch_index_url("cu126") == "https://mirror.local/whl/cu126"
+
+    def test_the_default_index_is_the_pytorch_mirror(self):
+        with self._env():
+            assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
+
+    def test_no_index_url_is_ever_persisted_by_the_manifest_write(self):
+        # The manifest lives in the venv, so a token in a pinned URL must not reach it.
+        source = inspect.getsource(ips.install_python_stack)
+        assert "expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag)," in source
+        assert "torch_index_url" not in source
+        # And the helper that answers it records a FLAVOR, never a URL, for the same
+        # reason: it is reached with the pin still in the environment.
+        helper = inspect.getsource(ips._recordable_torch_flavor_tag)
+        assert "return" in helper and "_explicit_torch_index_url()" not in helper

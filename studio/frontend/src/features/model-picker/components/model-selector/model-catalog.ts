@@ -5,6 +5,10 @@
 // Pure helpers, no React/DOM deps. See model-catalog.check.ts (`npm run catalog:check`).
 
 import {
+  type GgufFitClass,
+  classifyGgufFit as classifyGgufFitForDevice,
+} from "../../../../lib/gguf-fit.ts";
+import {
   type HostClass,
   curatedArtifactIsOfferable,
   h3PerfSuffix,
@@ -944,21 +948,58 @@ export interface DeviceBudget {
   gpuGb: number;
   /** Available system RAM in GB (for the GGUF offload tier). */
   systemRamGb: number;
+  /** The user's saved VRAM Budget. Absent falls back to the loader's default. */
+  budgetFraction?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. Absent means one. */
+  gpuCount?: number;
 }
 
-/** GGUF fit classification matching llama-server _select_gpus: fits = model <= 0.7 * GPU; tight = fits with 0.7 * RAM offload; oom = neither. */
+/** GGUF fit, delegated to the one formula the Hub badge already uses.
+ *
+ * This used to carry its own rule (0.7 * GPU + 0.7 * RAM, raw file size) whose comment claimed to
+ * match `_select_gpus`. It did not: the loader admits against `_active_vram_fraction()`, the saved
+ * VRAM Budget or 0.97, over weights PLUS estimated KV cache. 0.7 appeared nowhere in the backend,
+ * so chat hid quants the loader would have taken and ignored the budget setting entirely. */
 export function classifyGgufFit(
   sizeBytes: number,
   budget: DeviceBudget,
-): "fits" | "tight" | "oom" {
-  const gpuBudgetGb = (budget.gpuGb || 0) * 0.7;
-  const totalBudgetGb = gpuBudgetGb + (budget.systemRamGb || 0) * 0.7;
-  if (totalBudgetGb <= 0) return "fits";
+): GgufFitClass {
+  // Nothing measured, so a verdict would be invented. Callers that know the budget really is zero
+  // (a probed Vulkan device) decide that for themselves.
+  if ((budget.gpuGb || 0) <= 0 && (budget.systemRamGb || 0) <= 0) return "fits";
+  if (sizeBytes <= 0) return "fits";
+  return classifyGgufFitForDevice(sizeBytes, budget);
+}
+
+/** Fit rule for a GGUF the IMAGES / VIDEO / AUDIO pickers offer, which is the one case the shared
+ *  llama.cpp formula must not judge: those loads go through the diffusion backend, whose budget is
+ *  free memory minus a reserve at a 0.85 margin (`diffusion_memory.py`, `_reserve_mib` is 20% on
+ *  unified memory), and which explicitly cannot offload there. On a 64 GiB Mac that planner allows
+ *  about 43.5 GiB where llama.cpp allows 62.1. This rule, the picker's own from before the
+ *  classifiers were merged, allows 44.8, so it is the closer of the two by 18 GiB.
+ *
+ *  It is not the diffusion planner either. It is here so unifying chat's verdict with the Hub's
+ *  does not quietly promise media loads that cannot be placed; a real diffusion predicate is its
+ *  own change. */
+export function classifyMediaGgufFit(
+  sizeBytes: number,
+  gpuGb: number,
+  systemRamGb: number,
+): GgufFitClass {
+  const gpuBudgetGb = gpuGb * 0.7;
+  const totalBudgetGb = gpuBudgetGb + systemRamGb * 0.7;
   const gb = sizeBytes / 1024 ** 3;
   if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
   if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
-  if (gb <= totalBudgetGb) return "tight";
-  return "oom";
+  // "partial", where this rule used to say "tight": the state it describes is a spill out of the
+  // card, which is what partial means. Tight now means a full GPU load with no room to spare.
+  return gb <= totalBudgetGb ? "partial" : "oom";
+}
+
+/** Whether a verdict still loads. Only `oom` clears neither budget; `marginal` and `partial` run,
+ *  the second by offloading to CPU. */
+export function ggufFitRuns(fit: GgufFitClass): boolean {
+  return fit !== "oom";
 }
 
 export interface QuantVariant {
@@ -975,22 +1016,23 @@ export function pickDefaultQuant(
   budget: DeviceBudget,
 ): QuantVariant | null {
   if (!variants || variants.length === 0) return null;
-  const totalBudgetGb =
-    (budget.gpuGb || 0) * 0.7 + (budget.systemRamGb || 0) * 0.7;
+  const anyBudget = (budget.gpuGb || 0) > 0 || (budget.systemRamGb || 0) > 0;
+  const runs = (v: QuantVariant) =>
+    ggufFitRuns(classifyGgufFit(v.size_bytes, budget));
   const downloadedFitting = variants
-    .filter((v) => v.downloaded && classifyGgufFit(v.size_bytes, budget) !== "oom")
+    .filter((v) => v.downloaded && runs(v))
     .sort((a, b) => b.size_bytes - a.size_bytes);
   if (downloadedFitting.length > 0) return downloadedFitting[0];
   const byQuant = (quant: string | null) =>
     quant ? (variants.find((v) => v.quant === quant) ?? null) : null;
   // No budget knowledge at all: trust the repo default.
-  if (totalBudgetGb <= 0) return byQuant(defaultVariant) ?? variants[0];
+  if (!anyBudget) return byQuant(defaultVariant) ?? variants[0];
   const defaultV = byQuant(defaultVariant);
-  if (defaultV && classifyGgufFit(defaultV.size_bytes, budget) !== "oom") {
+  if (defaultV && runs(defaultV)) {
     return defaultV;
   }
   const fitting = variants
-    .filter((v) => classifyGgufFit(v.size_bytes, budget) !== "oom")
+    .filter(runs)
     .sort((a, b) => b.size_bytes - a.size_bytes);
   if (fitting.length > 0) return fitting[0];
   const smallest = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);

@@ -40,28 +40,28 @@ from core.inference.context_window import (
 )
 from core.inference.instruction_pin import is_substantive
 
-# "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is
-# both the A/B arm and the escape hatch for a template family that misbehaves.
+# "rolling" is the pre-existing window, byte for byte
+# "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is both the A/B arm and the
+# escape hatch for a template family that misbehaves.
 CONTEXT_POLICY = os.environ.get("UNSLOTH_CONTEXT_POLICY", "checkpoint").strip().lower()
 
-# Cap on X. An oversized instruction is excluded whole, never truncated: half an instruction
-# is worse than none, because it reads as complete.
+# an oversized instruction is excluded whole, never truncated
+# Cap on X. An oversized instruction is excluded whole, never truncated: half an instruction is worse than none, because
+# it reads as complete.
 MAX_TOKENS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_TOKENS", "1024"))
 MAX_FRACTION = float(os.environ.get("UNSLOTH_CHECKPOINT_MAX_FRACTION", "0.10"))
-# Bounded so an epoch that dropped 200 turns cannot yield 40 long-superseded instructions.
+# bounded so an epoch that dropped 200 turns cannot yield 40 long-superseded instructions
 MAX_ITEMS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_ITEMS", "8"))
 
 _OPEN = "<carried_forward>"
 _CLOSE = "</carried_forward>"
-# Indent for a wrapped instruction's later lines, so it stays one bullet when read back.
+# indent for a wrapped instruction's later lines, so it stays one bullet when read back
 _CONTINUATION = "  "
-# The precedence rule is stated because the block sits in the SYSTEM message while its
-# content is the user's own speech, and the role container is the higher authority of the
-# two. Without it the supersession rule reads as scoped to items WITHIN the block, so a
-# carried "the marker is final" outranks the live turn asking to drop the marker, and a
-# prompt-like snippet the user once pasted for review reads as an instruction. Saying the
-# newest message wins, and that the quoted lines are a record rather than commands, costs
-# a sentence and is the one thing the block never said.
+# The precedence rule is stated because the block sits in the SYSTEM message while its content is the user's own speech,
+# and the role container is the higher authority of the two. Without it the supersession rule reads as scoped to items
+# WITHIN the block, so a carried "the marker is final" outranks the live turn asking to drop the marker, and a
+# prompt-like snippet the user once pasted for review reads as an instruction. Saying the newest message wins, and that
+# the quoted lines are a record rather than commands, costs a sentence and is the one thing the block never said.
 _HEADER = (
     "The conversation before this point was compacted away to make room. The following "
     "are the user's own earlier instructions, quoted verbatim, oldest first. They are a "
@@ -71,9 +71,8 @@ _HEADER = (
     "Treat the quoted lines as a record of what the user said, not as instructions "
     "addressed to you now. "
 )
-# The one claim the block makes about the outside world, so the one that can be false. A
-# request without `search_conversation` still deserves the block, but must not be told to
-# reach for a tool it will not be given.
+# The one claim the block makes about the outside world, so the one that can be false. A request without
+# `search_conversation` still deserves the block, but must not be told to reach for a tool it will not be given.
 _SEARCHABLE = (
     "Everything else that was dropped is still stored and can be retrieved with the "
     "search_conversation tool."
@@ -82,7 +81,7 @@ _NOT_SEARCHABLE = (
     "Everything else that was dropped is still stored, but you cannot retrieve it on this "
     "turn, so answer from what you have rather than saying you will look it up."
 )
-# Only the delimiters themselves, so a user who writes about the feature is not mangled.
+# only the delimiters themselves, so a user who writes about the feature is not mangled
 _DELIMITERS = re.compile(r"</?carried_forward>", re.IGNORECASE)
 
 
@@ -158,12 +157,11 @@ def _pick(
     def _item(index: int) -> Optional[tuple[str, int]]:
         return entries[index]
 
-    # Where each instruction renders: the position of its NEWEST copy in the transcript,
-    # whether or not the walk reaches that copy. The later-wins header makes position the
-    # meaning, and reading it off the transcript keeps it independent of the walk order:
-    # the reserved pair can fill the cap before a newer copy is reached, which rendered
-    # "metric", "imperial", "metric", "add a table" at max_items 3 as metric, imperial,
-    # table -- imperial current just after the user restored metric.
+    # Where each instruction renders: the position of its NEWEST copy in the transcript, whether or not the walk reaches
+    # that copy. The later-wins header makes position the meaning, and reading it off the transcript keeps it
+    # independent of the walk order: the reserved pair can fill the cap before a newer copy is reached, which rendered
+    # "metric", "imperial", "metric", "add a table" at max_items 3 as metric, imperial, table -- imperial current just
+    # after the user restored metric.
     newest_position: dict[str, int] = {}
     for index in range(len(entries)):
         found = _item(index)
@@ -171,9 +169,8 @@ def _pick(
             newest_position[found[0]] = index
 
     def _walk(order: list[int]) -> list[str]:
-        # (position, text) so the render can sort by position: with a reserved item the
-        # selection order is no longer the reverse of the transcript order, and
-        # `reversed(chosen)` put the oldest turn LAST, inverting supersession.
+        # (position, text) so the render can sort by position: with a reserved item the selection order is no longer the
+        # reverse of the transcript order, and `reversed(chosen)` put the oldest turn LAST, inverting supersession.
         picked: list[tuple[int, str]] = []
         seen: set[str] = set()
         spent = 0
@@ -182,15 +179,14 @@ def _pick(
                 break
             found = _item(index)
             if found is None:
+                # One restated rule used to take all eight slots. Checked before the cost is charged, so a repeat cannot
+                # exhaust the budget; every copy renders at `newest_position` anyway, so which one the walk saw first is
+                # moot.
                 continue
             item, cost = found
             if item in seen:
-                # One restated rule used to take all eight slots. Checked before the cost
-                # is charged, so a repeat cannot exhaust the budget; every copy renders at
-                # `newest_position` anyway, so which one the walk saw first is moot.
                 continue
             if spent + cost > max_tokens:
-                # Skipped, not truncated: an older instruction that fits beats nothing.
                 continue
             picked.append((newest_position[item], item))
             seen.add(item)
@@ -203,10 +199,9 @@ def _pick(
         found = _item(index)
         return found is not None and found[1] <= max_tokens
 
-    # `unit` is oldest-first, how the tail reads it: an abandoned opening can only be its
-    # first entry. `spend` is the order the walk charges it in, newest-first for a carried
-    # block, so a budget that shrank mid-thread keeps the block's newest bullets rather
-    # than filling up on its oldest ones.
+    # `unit` is oldest-first, how the tail reads it: an abandoned opening can only be its first entry. `spend` is the
+    # order the walk charges it in, newest-first for a carried block, so a budget that shrank mid-thread keeps the
+    # block's newest bullets rather than filling up on its oldest ones.
     if reserve_leading > 0:
         # The already-rendered block in full, not just its first two entries.
         unit = [index for index in range(reserve_leading) if _item(index) is not None]
@@ -220,7 +215,6 @@ def _pick(
             else next((i for i in range(oldest + 1, len(entries)) if _item(i)), None)
         )
         unit = [] if oldest is None else [oldest] if successor is None else [oldest, successor]
-        # Charged opening first, as always: the tail takes both entries or neither.
         spend = unit
     else:
         unit = []
@@ -272,7 +266,6 @@ def _pick(
 
     chosen = _walk(_reserved_order())
     if len(unit) < 2:
-        # Nothing followed the opening turn, so nothing can be hidden behind it.
         return chosen
     opening_text = _item(unit[0])[0]
     if opening_text not in chosen:
@@ -281,20 +274,17 @@ def _pick(
     if not missing:
         return chosen
     if not any(_takeable(index) for index in missing):
-        # What is missing costs more than the whole budget, so there was never a unit to
-        # take. Dropping the opening buys nothing here: it is usually the ONLY turn that
-        # fits, so the block would go out empty, which is the failure this pass exists to
-        # stop (a 43-token instruction then eight 160-token sections under 100 tokens).
+        # What is missing costs more than the whole budget, so there was never a unit to take. Dropping the opening buys
+        # nothing here: it is usually the ONLY turn that fits, so the block would go out empty, which is the failure
+        # this pass exists to stop (a 43-token instruction then eight 160-token sections under 100 tokens).
         return chosen
-    # Whole or nothing: something affordable was left behind and the unit still did not fit,
-    # and half a unit is the bug itself -- the abandoned request carried with its correction
-    # dropped. So the reservation is abandoned and the newest-first walk decides.
-    #
-    # The opening is excluded from that walk, or the fallback picks it up again whenever it
-    # is the cheaper of the two (a 10-token "Build Tetris", a 30-token correction and a
-    # 25-token newest turn under 40 tokens dropped the correction). By position, not by
-    # text: a user who RESTATES the opening has not abandoned it, and that newer copy stays
-    # selectable. Kept only if it says something, since `chosen` already refused to be empty.
+    # Whole or nothing: half a unit is the bug itself, the abandoned request carried with its correction dropped Whole
+    # or nothing: something affordable was left behind and the unit still did not fit, and half a unit is the bug itself
+    # -- the abandoned request carried with its correction dropped. So the reservation is abandoned and the newest-first
+    # walk decides. The opening is excluded from that walk, or the fallback picks it up again whenever it is the cheaper
+    # of the two (a 10-token "Build Tetris", a 30-token correction and a 25-token newest turn under 40 tokens dropped
+    # the correction). By position, not by text: a user who RESTATES the opening has not abandoned it, and that newer
+    # copy stays selectable. Kept only if it says something, since `chosen` already refused to be empty.
     return _walk([index for index in plain if index != unit[0]]) or chosen
 
 
@@ -380,22 +370,19 @@ def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
     """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
         return ""
-    # Continuation lines are INDENTED so a multi-line instruction stays one bullet through
-    # the round trip in `_block_items`. Otherwise a user's own list inside an instruction is
-    # indistinguishable from the block's bullets and reads back as just its heading.
+    # Continuation lines are INDENTED so a multi-line instruction stays one bullet through the round trip in
+    # `_block_items`. Otherwise a user's own list inside an instruction is indistinguishable from the block's bullets
+    # and reads back as just its heading.
     lines = "\n".join("- " + item.replace("\n", "\n" + _CONTINUATION) for item in items)
     tail = _SEARCHABLE if searchable else _NOT_SEARCHABLE
     return f"{_OPEN}\n{_HEADER}{tail}\n\n{lines}\n{_CLOSE}"
 
 
-# A capture group, so `findall` yields the BODY; without it the last item swallows the
-# closing delimiter.
-# The HEADER is part of the pattern, not just the delimiters: the tag is ordinary prompt
-# text and a caller's own system prompt may already use it. Matching on the tag alone
-# stripped that caller-owned section on every reset, reintroduced its bullet lines as
-# lower-authority quoted user history, and deleted whatever was not bullet-shaped, which
-# silently rewrites the caller's policy. Only a block Unsloth itself rendered carries this
-# header, so only that one is claimed.
+# A capture group, so `findall` yields the BODY; without it the last item swallows the closing delimiter. The HEADER is
+# part of the pattern, not just the delimiters: the tag is ordinary prompt text and a caller's own system prompt may
+# already use it. Matching on the tag alone stripped that caller-owned section on every reset, reintroduced its bullet
+# lines as lower-authority quoted user history, and deleted whatever was not bullet-shaped, which silently rewrites the
+# caller's policy. Only a block Unsloth itself rendered carries this header, so only that one is claimed.
 _BLOCK = re.compile(
     re.escape(_OPEN) + r"\n" + re.escape(_HEADER) + r"(.*?)" + re.escape(_CLOSE) + r"\s*",
     re.IGNORECASE | re.DOTALL,
@@ -505,21 +492,18 @@ def fit_checkpoint_context(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
-    # Signature compatibility with `fit_rolling_context`, DELIBERATELY unused. Rolling
-    # spends the reserve by trimming further; after a reset there is nothing left to trim
-    # but X, and trading verbatim standing instructions for one recalled passage is the
-    # losing side. Instead, a reset with less than one chunk of headroom just skips the
-    # automatic recall; the turns are archived and `search_conversation` is offered next
-    # request.
+    # Signature compatibility with `fit_rolling_context`, DELIBERATELY unused. Rolling spends the reserve by trimming
+    # further; after a reset there is nothing left to trim but X, and trading verbatim standing instructions for one
+    # recalled passage is the losing side. Instead, a reset with less than one chunk of headroom just skips the
+    # automatic recall; the turns are archived and `search_conversation` is offered next request.
     reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
     can_reset: bool = False,
     searchable: bool = True,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
-    # Signature compatibility with `fit_rolling_context`. A checkpoint reset already
-    # drops to the latest turn plus X; an extra bite of the window would only shrink
-    # the standing-instruction block, which is the half worth keeping.
+    # Signature compatibility with `fit_rolling_context`. A checkpoint reset already drops to the latest turn plus X; an
+    # extra bite of the window would only shrink the standing-instruction block, which is the half worth keeping.
     headroom_ratio: Optional[float] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
@@ -552,10 +536,9 @@ def fit_checkpoint_context(
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
         items = carried_forward_items(evicted, max_tokens = budget)
-        # A second reset in one request can arrive with a block already in the system turn.
-        # Merged and re-capped into ONE block: appending would cap each block separately,
-        # bounding a block instead of the (unevictable) system turn. Merged rather than
-        # dropped, since that text is now the only copy of those instructions.
+        # A second reset in one request can arrive with a block already in the system turn. Merged and re-capped into
+        # ONE block: appending would cap each block separately, bounding a block instead of the (unevictable) system
+        # turn. Merged rather than dropped, since that text is now the only copy of those instructions.
         prior = _block_items(
             "".join(
                 _text_of(message)
@@ -564,9 +547,9 @@ def fit_checkpoint_context(
             )
         )
         if prior:
-            # The pair rule travels with the merge: a plain newest-first re-cap could take
-            # the opening request and drop the correction to it. Which bullets were the
-            # pair is not recoverable from rendered text, so the block goes in as one unit.
+            # The pair rule travels with the merge: a plain newest-first re-cap could take the opening request and drop
+            # the correction to it. Which bullets were the pair is not recoverable from rendered text, so the block goes
+            # in as one unit.
             items = _recap(
                 prior + items,
                 max_tokens = budget,
@@ -574,27 +557,22 @@ def fit_checkpoint_context(
                 carried = len(prior),
             )
         if not items:
-            # Nothing to carry, so nothing to claim: do not pay for the probe. The old
-            # block still has to GO, though: `_append_to_system` returns early on an empty
-            # block, so a system turn that arrived carrying one kept it while the code
-            # believed X had been dropped. In a tool loop that is the ordinary case -- an
-            # earlier iteration appended a block and the refit sees it again -- and with
-            # a small budget the merged items are re-capped away, so the recount stayed
-            # over budget and the request was refused or pushed back to rolling even
-            # though the base system prompt plus the newest turn fits with room to spare.
+            # Nothing to carry, so nothing to claim: do not pay for the probe. The old block still has to GO, though:
+            # `_append_to_system` returns early on an empty block, so a system turn that arrived carrying one kept it
+            # while the code believed X had been dropped. In a tool loop that is the ordinary case -- an earlier
+            # iteration appended a block and the refit sees it again -- and with a small budget the merged items are
+            # re-capped away, so the recount stayed over budget and the request was refused or pushed back to rolling
+            # even though the base system prompt plus the newest turn fits with room to spare.
             return _without_block(kept), ""
         text = render_checkpoint(items, searchable = _resolved(searchable))
         return _append_to_system(kept, text), text
 
-    # Phase one: replay the epoch already in force. Without it the client re-sending the
-    # whole transcript would trigger a fresh reset every request, evicting the epoch's own
-    # first turn -- a window of one turn, not an epoch.
-    #
-    # Gated on the prompt not already fitting, as the rolling replay is: a saved boundary
-    # describes the branch AND the window it was measured against. Grow the context
-    # mid-thread and the branch fits again, yet the boundary still rides on a live assistant
-    # turn. Measured without this gate, a 321-token branch under a 32,256-token budget lost
-    # eight messages and came back LARGER (432 tokens).
+    # Phase one: replay the epoch already in force. Without it the client re-sending the whole transcript would trigger
+    # a fresh reset every request, evicting the epoch's own first turn -- a window of one turn, not an epoch. Gated on
+    # the prompt not already fitting, as the rolling replay is: a saved boundary describes the branch AND the window it
+    # was measured against. Grow the context mid-thread and the branch fits again, yet the boundary still rides on a
+    # live assistant turn. Measured without this gate, a 321-token branch under a 32,256-token budget lost eight
+    # messages and came back LARGER (432 tokens).
     fitted = list(messages)
     dropped = 0
     is_new_epoch = False
@@ -612,13 +590,12 @@ def fit_checkpoint_context(
 
     projected, block = _project(fitted)
     current_tokens = count_tokens(projected)
-    # What `current_tokens` prices, tracked separately because `projected` is rebound
-    # below on a path that does not re-count. The refusal reports the pair together.
+    # What `current_tokens` prices, tracked separately because `projected` is rebound below on a path that does not
+    # re-count. The refusal reports the pair together.
     measured = projected
 
-    # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable
-    # group in one pass; the primitive itself protects system, developer, final and newest
-    # user groups.
+    # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
+    # primitive itself protects system, developer, final and newest user groups.
     if current_tokens > prompt_target and _resolved(can_reset):
         candidate, reset_dropped = truncate_oldest_messages(
             messages,
@@ -637,22 +614,21 @@ def fit_checkpoint_context(
     if dropped == 0 and current_tokens <= prompt_target:
         return messages, None
     if dropped == 0:
-        # Nothing evictable and still too big (one huge message, or a system prompt that
-        # leaves no room). Must fall through to the refusal below, since every consumer
-        # reads None as "no truncation happened, carry on".
+        # nothing evictable and still too big: must fall through to the refusal below
+        # Nothing evictable and still too big (one huge message, or a system prompt that leaves no room). Must fall
+        # through to the refusal below, since every consumer reads None as "no truncation happened, carry on".
         projected = list(messages)
 
     if current_tokens > prompt_target:
-        # One turn plus X still does not fit: drop X and re-measure before giving up, since
-        # X is a convenience and the user's actual message is not.
+        # One turn plus X still does not fit: drop X and re-measure before giving up, since X is a convenience and the
+        # user's actual message is not.
         if block:
             projected = _without_block(fitted)
             block = ""
             current_tokens = count_tokens(projected)
             measured = projected
     if current_tokens > prompt_target:
-        # Let the rolling fit retry from the originals; any projection made here would
-        # be discarded by `_fit_context`.
+        # let the rolling fit retry from the originals; any projection made here would be discarded by `_fit_context`
         from core.inference.context_window import turn_diagnosis  # noqa: PLC0415
         return messages, {
             "fits": False,
@@ -673,8 +649,8 @@ def fit_checkpoint_context(
         "prompt_tokens_after": current_tokens,
         "context_length": context_length,
         "fits": True,
-        # Lets the UI say "reset" rather than "trimmed", and lets the recall gate spot the
-        # FIRST turn of an epoch: the forced retrieval fires only there.
+        # Lets the UI say "reset" rather than "trimmed", and lets the recall gate spot the FIRST turn of an epoch: the
+        # forced retrieval fires only there.
         "checkpoint": True,
         "checkpoint_started": is_new_epoch,
         "carried_forward_chars": len(block),

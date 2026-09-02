@@ -54,6 +54,13 @@ export const es = {
     shutdown: "Apagar",
   },
   shell: {
+    find: {
+      label: "Buscar en la página",
+      previous: "Coincidencia anterior",
+      next: "Coincidencia siguiente",
+      close: "Cerrar búsqueda",
+      truncated: "Esta página es demasiado larga para buscarla por completo.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -225,6 +232,10 @@ export const es = {
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
       actions: {
+        findInPage: {
+          label: "Buscar en la página",
+          description: "Buscar el texto de esta página",
+        },
         openSettings: {
           label: "Abrir ajustes",
           description: "Abrir el diálogo de ajustes",
@@ -850,6 +861,16 @@ export const es = {
         openError: "No se pudo abrir la carpeta",
         copyError: "No se pudo copiar la ruta",
       },
+      repairInstall: {
+        label: "Reparar la instalación",
+        description:
+          "Vuelve a ejecutar el instalador sobre el entorno gestionado. Útil si no se detecta la GPU o si la aplicación no arranca.",
+        action: "Reparar instalación",
+        confirmTitle: "¿Reparar esta instalación?",
+        confirmDescription:
+          "Detiene el servidor y vuelve a ejecutar el instalador, que reinstala PyTorch para la GPU de este equipo. Se conservan las conversaciones y los ajustes. Puede tardar varios minutos.",
+        confirmAction: "Reparar ahora",
+      },
       resetPreferences: {
         sectionTitle: "Zona de peligro",
         label: "Restablecer todas las preferencias locales",
@@ -1107,6 +1128,8 @@ export const es = {
         currentLoad: "Carga actual",
         free: "Libre: {value}",
         noGpu: "No hay GPU visible",
+        gpuUnusable: "GPU no utilizable",
+        gpuUnusableDetail: "Detectada, pero PyTorch no puede usarla",
       },
       gpu: {
         title: "Dispositivos GPU",
@@ -1116,6 +1139,12 @@ export const es = {
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
           "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+        noUsableGpu: "Ninguna GPU de esta máquina se puede usar con PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch es una compilación solo para CPU ({version}), por lo que las GPU de abajo no se pueden usar. Repare la instalación para restaurar la compatibilidad con GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) no puede inicializar las GPU de abajo, por lo que no se pueden usar. Revise el controlador de la GPU o repare la instalación.",
+        unusableDevice: "no utilizable",
         unknownDevice: "GPU desconocida",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1237,7 +1266,7 @@ export const es = {
       description:
         "Conecta agentes de programación como Claude Code y Codex a un modelo local con unsloth start.",
       intro:
-        "conecta Claude Code, Codex, Hermes, OpenClaw, OpenCode y otros agentes a un modelo servido localmente por Unsloth, totalmente sin conexión. Ejecuta un servidor compatible con OpenAI y nunca modifica los archivos de configuración de tu agente.",
+        "conecta Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode y otros agentes a un modelo servido localmente por Unsloth, totalmente sin conexión. Ejecuta un servidor compatible con OpenAI y nunca modifica los archivos de configuración de tu agente.",
       readDocs: "Leer la documentación",
       copy: "Copiar",
       copied: "Copiado",
@@ -1519,6 +1548,8 @@ export const es = {
       archivedImagesDescription: "Consulta y gestiona las imágenes que has archivado.",
       archivedVideos: "Vídeos archivados",
       archivedVideosDescription: "Consulta y gestiona los vídeos que has archivado.",
+      archivedAudio: "Audio archivado",
+      archivedAudioDescription: "Consulta y gestiona los clips de audio que has archivado.",
       manageAction: "Gestionar",
       manageChats: "Gestionar chats",
       manageChatsDescription:
@@ -1707,7 +1738,7 @@ export const es = {
         desktopAvailable:
           "La versión {version} de la app de escritorio está disponible",
         desktopAvailableDescription:
-          "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
+          "Actualiza ahora para prepararla en segundo plano. Puedes seguir trabajando y reiniciar cuando esté lista.",
         desktopExternalServer:
           "Ejecuta `unsloth studio update` desde el terminal que inició el servidor.",
         desktopManualInstall:
@@ -1718,11 +1749,20 @@ export const es = {
         desktopCurrent: "La app de escritorio está actualizada",
         desktopCurrentDescription:
           "Unsloth seguirá buscando actualizaciones automáticamente.",
+        desktopPreparingDescription:
+          "La actualización se está preparando en segundo plano. Puedes seguir trabajando.",
+        desktopReadyToRestartDescription:
+          "Todo está listo. Reinicia para terminar de instalar la actualización.",
+        desktopReadyToInstallDescription:
+          "La actualización de la aplicación se descargó. Completa la actualización del backend para instalarla.",
         checkForUpdates: "Buscar actualizaciones",
         checkAgain: "Buscar de nuevo",
         retryCheck: "Intentarlo de nuevo",
         checking: "Buscando...",
+        preparing: "Preparando...",
         updateNow: "Actualizar ahora",
+        restartToUpdate: "Reiniciar para actualizar",
+        finishUpdate: "Finalizar actualización",
         openReleasePage: "Abrir la página de versiones",
         unknownInstall:
           "No se pudo detectar cómo se instaló Unsloth. Para instalaciones con el instalador o desde PyPI, usa los comandos anteriores.",

@@ -156,6 +156,12 @@ jobs:
           python -m compileall -q -j 0 \
             unsloth unsloth_cli studio unforgettable tests cli.py unsloth-cli.py
 
+      - name: Dynamic-execution gate self-test
+        run: python scripts/lint_exec_literals.py --self-test
+
+      - name: No exec, eval or compile of a value that is not written out
+        run: python scripts/lint_exec_literals.py
+
       - name: Python ruff check (whole repo)
         # The narrow rule set in pyproject.toml [tool.ruff.lint]
         # selects E9 / F63 / F7 / F82 -- syntax errors, broken

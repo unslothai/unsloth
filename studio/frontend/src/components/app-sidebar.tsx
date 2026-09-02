@@ -74,9 +74,6 @@ import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
-  ArrowDown01Icon,
-  ArrowRight02Icon,
-  ArrowUp01Icon,
   BadgeInfoIcon,
   BookOpen01Icon,
   BubbleChatIcon,
@@ -123,7 +120,13 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, Moon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  ChevronDown,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  Moon,
+} from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -589,6 +592,29 @@ const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
+// The backend reclassifies a host without a restart on a 60s TTL: attach an eGPU to a
+// CPU-torch machine and no_gpu becomes torch_cpu_build. Nothing else re-reads the verdict.
+// Matched to that TTL, since polling faster than the answer can change is pure traffic.
+const INVENTORY_POLL_MS = 60000;
+// The health path reads those snapshots non-blocking: the first read past expiry SCHEDULES
+// the refresh and returns the stale entry, so the new answer lands a moment later. On the
+// TTL alone the read that triggers the refresh is a whole interval from the read that
+// consumes it, leaving an attached eGPU invisible for close to two minutes. One short
+// follow-up read collects it instead.
+const INVENTORY_FOLLOW_UP_MS = 4000;
+// The verdicts the inventory can still move. Everything else describes something a probe
+// cannot change (an Intel Mac stays an Intel Mac).
+const INVENTORY_SENSITIVE_REASONS = new Set([
+  "no_gpu",
+  "torch_cpu_build",
+  "torch_cuda_unavailable",
+  // A torch that will not import is classified from its wheel on disk, so the backend can
+  // replace this with torch_cpu_build or torch_cuda_unavailable once the OS probe recovers.
+  // Leaving it out treated that first answer as settled and stopped the only forced health
+  // re-read, so the sidebar and navigation stayed on the failure for the rest of the session
+  // while /api/system already reported the mismatch.
+  "detection_failed",
+]);
 
 /** One workflow in the list under the Images row. */
 function WorkflowChoice({
@@ -811,9 +837,16 @@ export function AppSidebar() {
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
-        : chatOnlyReason === "no_gpu"
-          ? "Training needs an NVIDIA or AMD GPU."
-          : undefined;
+        : chatOnlyReason === "torch_cpu_build" ||
+            chatOnlyReason === "torch_cuda_unavailable"
+          ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
+            // and unactionable here, so name the installed build and point at the repair.
+            chatOnlyDetail
+            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+          : chatOnlyReason === "no_gpu"
+            ? "Training needs an NVIDIA or AMD GPU."
+            : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
   const videoDisabled = videoDisabledHint !== undefined;
@@ -833,13 +866,20 @@ export function AppSidebar() {
     // recovery poll in the app, and the sidebar is mounted on every route that gates on the
     // verdict (studio-page reads the same store, so it recovers with it; video-page reads the
     // backend's video verdict instead and needs nothing from here).
-    if (selfHealSettled && !capabilitiesUnknown) return;
+    const inventorySensitive =
+      chatOnly && INVENTORY_SENSITIVE_REASONS.has(chatOnlyReason ?? "");
+    if (selfHealSettled && !capabilitiesUnknown && !inventorySensitive) return;
     let pollingSince = 0;
     // Which read currently owns the guard. A read that outlived the stall window is replaced,
     // and the replacement takes the guard with it; without an owner the abandoned read's
     // `finally` would clear a guard it no longer holds and let the next tick stack another
     // forced read onto the slow backend, every interval, which is the pile-up this prevents.
     let pollOwner = 0;
+    // Cleared on unmount with the interval: a follow-up outliving the effect would read
+    // against a verdict this effect no longer describes. Through `window`, like the
+    // interval beside it, and 0 for "none" because that is what window.setTimeout never
+    // returns.
+    let followUp = 0;
     const id = window.setInterval(() => {
       // A backend still importing torch answers slowly, so skip while a re-read is outstanding
       // rather than stacking them against it. Bounded, or a request that never settles would
@@ -850,10 +890,27 @@ export function AppSidebar() {
       void fetchDeviceType({ force: true })
         .catch(() => undefined)
         .finally(() => {
-          if (owned === pollOwner) pollingSince = 0;
+          if (owned !== pollOwner) return;
+          pollingSince = 0;
+          // Only where a background refresh is what we are waiting on. The unknown poll is
+          // already fast enough, and the self-heal poll is not waiting on a TTL at all.
+          if (!selfHealSettled || capabilitiesUnknown) return;
+          if (followUp) window.clearTimeout(followUp);
+          followUp = window.setTimeout(() => {
+            followUp = 0;
+            void fetchDeviceType({ force: true }).catch(() => undefined);
+          }, INVENTORY_FOLLOW_UP_MS);
         });
-    }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
-    return () => window.clearInterval(id);
+    }, capabilitiesUnknown
+      ? VERDICT_UNKNOWN_POLL_MS
+      : selfHealSettled
+        ? INVENTORY_POLL_MS
+        : SELF_HEAL_POLL_MS);
+    const stopPolling = () => {
+      window.clearInterval(id);
+      if (followUp) window.clearTimeout(followUp);
+    };
+    return () => stopPolling();
   }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
@@ -1761,14 +1818,14 @@ export function AppSidebar() {
     return (
       <>
         <DropdownMenuItem disabled={at <= 0} onSelect={() => move(-1)}>
-          <HugeiconsIcon icon={ArrowUp01Icon} strokeWidth={1.75} className="size-icon" />
+          <ChevronUpIcon strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.organize.moveUp")}</span>
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={at === -1 || at >= orderedIds.length - 1}
           onSelect={() => move(1)}
         >
-          <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={1.75} className="size-icon" />
+          <ChevronDownIcon strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.organize.moveDown")}</span>
         </DropdownMenuItem>
       </>
@@ -4345,8 +4402,7 @@ export function AppSidebar() {
                   aria-hidden="true"
                   className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
                 >
-                  <HugeiconsIcon
-                    icon={ArrowRight02Icon}
+                  <ArrowRightIcon
                     className="size-[17px]"
                     strokeWidth={1.75}
                   />
@@ -4511,7 +4567,7 @@ export function AppSidebar() {
               type="button"
               aria-label={t("shell.navigation.settings")}
               onClick={() => useSettingsDialogStore.getState().openDialog()}
-              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
                 icon={Settings02Icon}

@@ -484,7 +484,9 @@ def test_fork_linux_intel_prefers_published_vulkan_bundle():
     )
     assert [attempt.install_kind for attempt in attempts] == ["linux-vulkan", "linux-cpu"]
     assert attempts[0].source_label == "published"
-    assert ["llama-diffusion-gemma-visual-server"] in ilp.runtime_payload_health_groups(attempts[0])
+    assert ["llama-diffusion-gemma-visual-server"] in ilp.runtime_payload_health_groups(
+        attempts[0].install_kind, source_label = attempts[0].source_label
+    )
 
 
 def test_fork_linux_arm64_does_not_select_x64_vulkan_bundle():
@@ -532,7 +534,7 @@ def test_fork_windows_intel_prefers_published_vulkan_bundle():
     assert [attempt.install_kind for attempt in attempts] == ["windows-vulkan", "windows-cpu"]
     assert attempts[0].source_label == "published"
     assert ["llama-diffusion-gemma-visual-server.exe"] in ilp.runtime_payload_health_groups(
-        attempts[0]
+        attempts[0].install_kind, source_label = attempts[0].source_label
     )
 
 
@@ -547,7 +549,7 @@ def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
         source_label = "upstream",
         install_kind = "linux-vulkan",
     )
-    groups = ilp.runtime_payload_health_groups(choice)
+    groups = ilp.runtime_payload_health_groups(choice.install_kind)
     assert ["libggml-cpu*.so*"] in groups
     assert ["libggml-cpu-*.so*"] not in groups
 

@@ -185,6 +185,13 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
   },
+  {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
+    color: "#4D6BFE",
+    mark: "ds",
+  },
 ];
 
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
@@ -1277,8 +1284,8 @@ export function AgentsTab() {
     selectedModel,
   ]);
 
-  // No GGUF warning for `codex` (unsloth_cli's _require_gguf_for_codex): the
-  // picker only ever offers GGUF models.
+  // No GGUF warning for `codex` or `claude` (unsloth_cli's
+  // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-8">
