@@ -1974,14 +1974,16 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
     """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes).
 
-    ``luid`` narrows the sum to one adapter's engines, filtered here rather than in
-    the counter path so tests can reach it, as in ``..._vram_by_adapter``.
+    ``luid`` narrows the sum to one adapter's engines, matched here rather than in
+    the counter path so tests can reach it, as in ``..._vram_by_adapter``. The
+    engine type stays in the path: it is not what this narrows, and it is what
+    keeps the sample set to one type per process rather than all of them.
     """
     if platform.system() != "Windows":
         return None
     try:
         ps = (
-            "$s=(Get-Counter '\\GPU Engine(*)\\Utilization Percentage'"
+            "$s=(Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
             "else{'__NONE__'}"

@@ -2291,12 +2291,14 @@ def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, m
     assert device["gpu_utilization_pct"] == 78.0  # the join declined, so the host's sum
 
 
-def test_the_selection_is_ours_and_not_the_counter_paths(win_rocm, monkeypatch):
-    """A LUID in the path hands selection to PDH, which no test here can run."""
+def test_the_adapter_is_matched_here_and_the_engine_type_in_the_path(win_rocm, monkeypatch):
+    """A LUID in the path hands the adapter selection to PDH, which no test here
+    can run. The engine type is not what this narrows and stays in the path,
+    where it keeps the sample set to one type per process."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     _, query = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)
-    assert "\\GPU Engine(*)\\Utilization Percentage" in query
+    assert "\\GPU Engine(*engtype_3D*)\\Utilization Percentage" in query
     assert "luid_" not in query
     assert "InstanceName" in query
 
