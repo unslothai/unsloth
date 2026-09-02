@@ -2107,12 +2107,11 @@ test("only what the runtime actually hands back is treated as the run", () => {
     );
   }
 
-  let settledCount = 0;
-  const resolved = issuedRunFrom(Promise.resolve("done"));
-  assert.notEqual(resolved, undefined, "a promise is a run");
-  resolved?.whenSettled(() => {
-    settledCount += 1;
-  });
+  assert.notEqual(
+    issuedRunFrom(Promise.resolve("done")),
+    undefined,
+    "a promise is a run",
+  );
 
   // A thenable rather than a native promise, which is all the contract asks for. The handler
   // is parked on an object rather than in a local so it survives narrowing to `never`.
