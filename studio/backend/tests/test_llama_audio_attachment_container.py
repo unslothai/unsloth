@@ -1316,9 +1316,7 @@ def test_a_forged_container_duration_cannot_ask_for_a_huge_buffer(monkeypatch):
         duration = 0
 
     # Nothing declared starts at a minute and grows from there.
-    assert (
-        inference_route._av_expected_samples(_Undeclared(), 48_000, ceiling) == 60 * 48_000 + 1
-    )
+    assert inference_route._av_expected_samples(_Undeclared(), 48_000, ceiling) == 60 * 48_000 + 1
 
 
 def test_no_allocation_outgrows_the_limit_the_decode_enforces(monkeypatch):
