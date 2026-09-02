@@ -108,6 +108,45 @@ check_block "the summary reports the nested chat history as removed" \
 check_block "the summary does not claim no studio.db was found" \
     no "$only_log" "No studio.db was found"
 
+assert_present() {
+    if [ -e "$2" ]; then
+        echo "  PASS: $1"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $1 (removed: $2)"; FAIL=$((FAIL + 1))
+    fi
+}
+
+# Third fixture, a portable install that failed before create_studio_shortcuts wrote
+# <root>/share/studio.conf. The uninstaller is exactly what a user reaches for then, and
+# the venv marker it looks for sits one level down in a nested portable root. A directory
+# carrying the portable marker and nothing else is still somebody else's and must survive.
+PARTIAL_HOME="$_TMP_ROOT/home-partial"
+PARTIAL_ROOT="$_TMP_ROOT/portable-partial"
+BARE_ROOT="$_TMP_ROOT/portable-bare"
+mkdir -p "$PARTIAL_HOME/.local/share" "$PARTIAL_HOME/.local/bin" \
+    "$PARTIAL_ROOT/studio/unsloth_studio" "$PARTIAL_ROOT/bin" "$BARE_ROOT"
+: > "$PARTIAL_ROOT/studio/unsloth_studio/.unsloth-studio-owned"
+printf '%s\n' "$PARTIAL_ROOT" > "$PARTIAL_ROOT/.unsloth-portable-root"
+printf '%s\n' "$BARE_ROOT" > "$BARE_ROOT/.unsloth-portable-root"
+echo "not ours" > "$BARE_ROOT/notes.txt"
+
+uninstall_root() { # root logname
+    env -i PATH="$PATH" HOME="$PARTIAL_HOME" TMPDIR="$_TMP_ROOT" \
+        XDG_RUNTIME_DIR="$_TMP_ROOT/run-$2" XDG_DATA_HOME="$PARTIAL_HOME/.local/share" \
+        XDG_CACHE_HOME="$PARTIAL_HOME/.cache" XDG_CONFIG_HOME="$PARTIAL_HOME/.config" \
+        XDG_STATE_HOME="$PARTIAL_HOME/.local/state" UNSLOTH_HOME="$1" \
+        sh "$UNINSTALL_SH" > "$_TMP_ROOT/uninstall-$2.log" 2>&1
+}
+
+uninstall_root "$PARTIAL_ROOT" partial
+assert_gone "a partial portable install is removed without studio.conf" "$PARTIAL_ROOT"
+
+uninstall_root "$BARE_ROOT" bare
+assert_present "a directory with the marker alone is refused" "$BARE_ROOT"
+assert_present "and its contents are kept" "$BARE_ROOT/notes.txt"
+check_block "the refusal is reported" yes "$(cat "$_TMP_ROOT/uninstall-bare.log")" \
+    "refusing to remove non-Unsloth path"
+
 # So the portable closing message must not print that command as the removal.
 done_block="$(sed -n '/portable install; everything lives in:/,/were left untouched/p' "$INSTALL_SH")"
 if [ -z "$done_block" ]; then

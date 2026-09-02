@@ -128,6 +128,22 @@ out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
     UNSLOTH_PORTABLE=1 STUDIO_HOME="$H/unsloth" bash -c "$SNIP" _)"
 check "portable + STUDIO_HOME alias"                   "$H/unsloth"       "$(field "$out" 2)"
 
+# storage_roots.portable_mode() strips and case-folds UNSLOTH_PORTABLE and install.ps1's
+# guard is case-insensitive, so an installer that read these as off would write the normal
+# roots while the runtime contained itself. The off values must stay off.
+for _v in True " true " YES " ON "; do
+    H="$(new_home)"
+    out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+        UNSLOTH_PORTABLE="$_v" bash -c "$SNIP" _)"
+    check "UNSLOTH_PORTABLE='$_v' is portable" "$H/.unsloth/cache/uv" "$(field "$out" 5)"
+done
+for _v in 0 false FALSE Off " no "; do
+    H="$(new_home)"
+    out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+        UNSLOTH_PORTABLE="$_v" bash -c "$SNIP" _)"
+    check "UNSLOTH_PORTABLE='$_v' is not portable" "" "$(field "$out" 5)"
+done
+
 # `unsloth studio update` re-runs install.sh from the shim with UNSLOTH_HOME set,
 # which made the refresh re-derive <root>/studio and exit "binary missing".
 H="$(new_home)"
@@ -295,6 +311,14 @@ rm "$ER/cache"
 rmdir "$ER/studio"
 ln -s "$BIG" "$ER/studio"
 check "a studio symlinked off the root is named" "studio -> $BIG" "$(escapes "$ER")"
+rm "$ER/studio"
+# setup.sh installs node and whisper.cpp beside studio/ at the master root, so a
+# pre-symlinked one escapes the printed rm -rf exactly like llama.cpp does.
+for _rt in llama.cpp node whisper.cpp; do
+    ln -s "$BIG" "$ER/$_rt"
+    check "a $_rt symlinked off the root is named" "$_rt -> $BIG" "$(escapes "$ER")"
+    rm "$ER/$_rt"
+done
 
 # setup.sh clears the desktop app's WebView caches under $HOME. Portable mode
 # prints "the desktop app and shell PATH were left untouched", so it must not.
@@ -314,12 +338,16 @@ guard="$(awk '
     grab {print}
     grab && /^fi$/ {exit}
 ' "$SETUP")"
+# _setup_portable_mode normalizes through this helper, so the snippet needs it too.
+blockT="$(grep '^_setup_trim_ws() ' "$SETUP")"
 case "$blockW" in *"WebKitCache"*) : ;; *) echo "FAIL: blockW extraction broke"; exit 1 ;; esac
 case "$blockP" in *"UNSLOTH_PORTABLE"*) : ;; *) echo "FAIL: blockP extraction broke"; exit 1 ;; esac
+case "$blockT" in *"[[:space:]]"*) : ;; *) echo "FAIL: blockT extraction broke"; exit 1 ;; esac
 case "$guard" in *"_clear_webview_caches"*) : ;; *) echo "FAIL: guard extraction broke"; exit 1 ;; esac
 
 WVSNIP='substep() { :; }
 '"$blockW"'
+'"$blockT"'
 '"$blockP"'
 STAGE_ROOT=""
 STUDIO_HOME="$HOME/.unsloth/studio"
@@ -339,6 +367,9 @@ webview_case() { # label expected mode
     case "$_mode" in
         env)    _got="$(env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" \
                     UNSLOTH_PORTABLE=1 bash -c "$WVSNIP" _)" ;;
+        env_mixedcase)
+                _got="$(env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" \
+                    UNSLOTH_PORTABLE=" True " bash -c "$WVSNIP" _)" ;;
         marker) _got="$(env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" \
                     UNSLOTH_HOME="$_h/portable" bash -c "$WVSNIP" _)" ;;
         *)      _got="$(env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" \
@@ -349,6 +380,9 @@ webview_case() { # label expected mode
 webview_case "normal install still clears the WebView cache"  cleared none
 webview_case "portable install leaves the WebView cache"      kept    env
 webview_case "portable marker alone leaves the WebView cache" kept    marker
+# storage_roots.portable_mode() strips and case-folds, so this value IS portable to the
+# runtime; reading it as off here would clear a cache the portable run promised to keep.
+webview_case "UNSLOTH_PORTABLE=' True ' leaves the WebView cache" kept env_mixedcase
 
 # Env-mode writes no rc PATH entry, so a deferred `unsloth studio` either misses or
 # starts a DIFFERENT install; every hint outside an activated venv names the shim.
