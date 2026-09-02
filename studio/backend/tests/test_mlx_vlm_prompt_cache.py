@@ -125,13 +125,26 @@ def make_cache():
     return [FakeKV(), FakeState(), FakeKV()]
 
 
-def run_generation(language_model, token_ids, cache, start, **kwargs):
-    """mlx-vlm's prefill loop: grid chunks over all but the last token, then it."""
+def run_generation(
+    language_model,
+    token_ids,
+    cache,
+    start,
+    between = None,
+    **kwargs,
+):
+    """mlx-vlm's prefill loop: grid chunks over all but the last token, then it.
+
+    ``between`` runs on the cache after each chunk, where generate_step
+    quantizes it.
+    """
     n = len(token_ids)
     pos = start
     while n - pos > 1:
         take = min(STEP, n - pos - 1)
         language_model(token_ids[pos : pos + take], cache = cache, **kwargs)
+        if between is not None:
+            between(cache)
         pos += take
     language_model(token_ids[n - 1 :], cache = cache, **kwargs)
 
@@ -237,9 +250,11 @@ def test_recording_forward_copies_the_cache_after_the_chosen_forward(fake_mx):
 
 def test_recording_forward_keeps_the_answer_when_the_cache_cannot_be_copied(fake_mx, caplog):
     language_model = FakeLanguageModel()
+    opaque = [types.SimpleNamespace(advance = lambda _t: None)]
     with caplog.at_level("INFO"), RecordingForward(language_model) as recording:
         recording.record.capture_at = 1
-        output = language_model([1], cache = [types.SimpleNamespace(advance = lambda _t: None)])
+        language_model([1], cache = opaque)
+        output = language_model([2], cache = opaque)
     assert output is language_model.outputs[-1]
     assert recording.record.snapshot is None
     assert "SimpleNamespace cannot be copied" in caplog.text
@@ -270,6 +285,29 @@ def test_session_stores_nothing_when_the_capture_failed(fake_mx):
         run_generation(session._forward._language_model, ids, session.cache, 0)
         assert not session.finish()
     assert len(store) == 0
+
+
+def test_recording_forward_copies_what_generation_converted_after_the_boundary_forward(fake_mx):
+    """mlx-vlm quantizes the live cache after a chunk; the snapshot must hold that."""
+
+    class FakeQuantizedKV(FakeKV):
+        pass
+
+    def quantize(cache):
+        if cache[0].offset >= 512:
+            converted = FakeQuantizedKV()
+            converted.keys, converted.offset = cache[0].keys, cache[0].offset
+            cache[0] = converted
+
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    ids = list(range(700))
+    with VLMPromptCacheSession(store, "m", FakeLanguageModel(), make_cache) as session:
+        session.find_prefix_length(ids)
+        run_generation(session._forward._language_model, ids, session.cache, 0, between = quantize)
+        assert session.finish()
+    entries, prefix = store.lookup("m", ids, limit = 512)
+    assert prefix == 512 and type(entries[0]) is FakeQuantizedKV
+    assert entries[0].keys.rows == ids[:512]
 
 
 def test_recording_forward_captures_nothing_when_no_forward_is_chosen(fake_mx):
@@ -445,6 +483,7 @@ def test_session_drops_a_snapshot_that_is_not_on_the_grid(fake_mx):
         # Prefilled on another grid: the capture forward ends at 300 rows, not 512.
         language_model(ids[:150], cache = session.cache)
         language_model(ids[150:300], cache = session.cache)
+        language_model(ids[300:], cache = session.cache)
         assert session._forward.record.snapshot is not None
         assert not session.finish()
     assert len(store) == 0

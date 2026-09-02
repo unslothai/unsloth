@@ -4301,19 +4301,26 @@ def test_mlx_vlm_snapshot_store_is_keyed_by_adapter_state(monkeypatch):
     assert calls[-1]["prompt_cache_state"].reused_tokens == 512
 
 
-def test_mlx_vlm_media_and_quantized_kv_requests_prefill_without_the_store(monkeypatch):
+def test_mlx_vlm_quantized_kv_requests_reuse_the_prompt_snapshot(monkeypatch):
+    calls, prompt_ids = [], {"ids": list(range(700))}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    backend._kv_quant = {"kv_bits": 4}
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert calls[-1]["kv_bits"] == 4 and calls[-1]["prefill_step_size"] == 256
+    assert len(backend._vlm_snapshot_store) == 1
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert calls[-1]["kv_bits"] == 4
+    assert backend.last_generation_stats["usage"]["prompt_tokens_details"]["cached_tokens"] == 512
+
+
+def test_mlx_vlm_image_requests_prefill_without_the_store(monkeypatch):
     calls, prompt_ids = [], {"ids": list(range(700))}
     _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
     backend = _snapshot_backend(monkeypatch)
     list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
     store = backend._vlm_snapshot_store
     assert len(store) == 1
-
-    backend._kv_quant = {"kv_bits": 4}
-    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
-    assert "prompt_cache_state" not in calls[-1] and "prefill_step_size" not in calls[-1]
-    assert len(store) == 1
-    backend._kv_quant = {"kv_bits": None}
 
     monkeypatch.setattr(
         "core.inference.mlx_inference._render_registered_vlm_prompt", lambda *_a, **_k: "p"

@@ -52,9 +52,10 @@ logger = get_logger(__name__)
 #
 # The snapshot is captured by counting the language model's forward passes:
 # Studio knows the resume offset, the boundary and the step, so it knows which
-# forward ends on the boundary, and copies every cache entry once that forward
-# returns. Nothing depends on how an entry is written, so attention caches,
-# rotating windows and recurrent state all work the same way.
+# forward ends on the boundary, and copies every cache entry as the next one
+# begins, after whatever generation does to the cache between two forwards.
+# Nothing depends on how an entry is written, so attention caches, rotating
+# windows and recurrent state all work the same way.
 #
 # Everything talks to mlx-vlm through public generation kwargs:
 # ``prompt_cache`` (the entries a cold request fills), ``prompt_cache_state``
@@ -212,17 +213,26 @@ def _recording_class(base):
             kwargs.pop("per_layer_inputs", None)
         if record is not None and _prompt_wide_position_ids(args, kwargs):
             kwargs.pop("position_ids")
+        cache = kwargs.get("cache")
+        # Copied as the next forward begins, not as the boundary forward
+        # returns: generate_step still converts the cache between the two
+        # (KV quantization once past its start), and the snapshot has to hold
+        # what a cold prefill holds at the same offset.
+        if (
+            record is not None
+            and record.capture_at
+            and record.forwards == record.capture_at
+            and cache is not None
+        ):
+            # A layout that cannot be copied costs this request its snapshot,
+            # never its answer.
+            try:
+                record.snapshot = copy_cache_entries(cache)
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
         output = base.__call__(self, *args, **kwargs)
         if record is not None:
             record.forwards += 1
-            cache = kwargs.get("cache")
-            if record.forwards == record.capture_at and cache is not None:
-                # A layout that cannot be copied costs this request its
-                # snapshot, never its answer.
-                try:
-                    record.snapshot = copy_cache_entries(cache)
-                except Exception as exc:
-                    logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
         return output
 
     cls = type(f"Recording{base.__name__}", (base,), {"__call__": __call__, "_studio_base": base})
@@ -3053,10 +3063,9 @@ class MLXInferenceBackend:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         # The store keys text-only prompts; an image request gets its headroom
-        # instead. A served snapshot is unquantized where a cold kv_bits cache
-        # would already be quantized, so those requests prefill in full.
+        # instead.
         session = None
-        if not images and not vlm_kwargs.get("kv_bits"):
+        if not images:
             session = self._vlm_prompt_cache_session(_adapter_state)
         if session is not None:
             vlm_kwargs["prompt_cache"] = session.cache
