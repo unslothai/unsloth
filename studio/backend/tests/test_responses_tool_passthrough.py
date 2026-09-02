@@ -3063,9 +3063,7 @@ def test_a_truncated_responses_stream_ends_on_response_incomplete(monkeypatch):
     messages = [ChatMessage(role = "user", content = "hi")]
 
     async def run():
-        response = await _responses_stream(
-            payload, messages, TestResponsesStreamAdapter._Request()
-        )
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
         return await TestResponsesStreamAdapter._collect(response)
 
     lines = asyncio.run(run())
@@ -3085,9 +3083,7 @@ def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatc
     messages = [ChatMessage(role = "user", content = "hi")]
 
     async def run():
-        response = await _responses_stream(
-            payload, messages, TestResponsesStreamAdapter._Request()
-        )
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
         return await TestResponsesStreamAdapter._collect(response)
 
     lines = asyncio.run(run())

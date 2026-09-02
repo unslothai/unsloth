@@ -25881,9 +25881,7 @@ async def _responses_non_streaming(
             id = resp_id,
             created_at = int(time.time()),
             status = "incomplete" if truncated else "completed",
-            incomplete_details = (
-                {"reason": "max_output_tokens"} if truncated else None
-            ),
+            incomplete_details = ({"reason": "max_output_tokens"} if truncated else None),
             model = body.get("model", payload.model),
             output = output_items,
             usage = ResponsesUsage(
@@ -26931,9 +26929,7 @@ async def _responses_stream(
                 "object": "response",
                 "created_at": created_at,
                 "status": "incomplete" if truncated else "completed",
-                "incomplete_details": (
-                    {"reason": "max_output_tokens"} if truncated else None
-                ),
+                "incomplete_details": ({"reason": "max_output_tokens"} if truncated else None),
                 "model": _clean_model,
                 "output": _snapshot_output(),
                 "usage": {
