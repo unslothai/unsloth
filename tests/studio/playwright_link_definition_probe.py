@@ -46,22 +46,45 @@ def info(message: str) -> None:
     print(message, flush = True)
 
 
+def warm_up(page) -> None:
+    """Load the positive control first and wait for its controls to actually mount.
+
+    Shiki and the code action bar arrive as their own lazily loaded chunk. Until it has landed
+    once, every case reads zero buttons, and a quiet-interval wait cannot tell "not loaded yet"
+    apart from "settled at zero" -- three quiet samples can all land inside the load. The
+    `plain` case must end with controls on every branch, so waiting for them here is an
+    unambiguous readiness signal, and it leaves the chunk cached for the cases that follow.
+    """
+    page.goto(f"{BASE}/{PAGE}?case=plain", wait_until = "domcontentloaded")
+    page.wait_for_function("() => window.__probe && window.__probe.ready()", timeout = 60_000)
+    page.wait_for_function(
+        "() => window.__probe.counts().copyButtons >= 1",
+        timeout = 120_000,
+        polling = 250,
+    )
+
+
 def run_case(page, case: str) -> dict:
     page.goto(f"{BASE}/{PAGE}?case={case}", wait_until = "domcontentloaded")
     page.wait_for_function("() => window.__probe && window.__probe.ready()", timeout = 60_000)
 
-    # Shiki loads as its own chunk and the action bar mounts with the highlighted fence, so the
-    # counts are not final when the assistant container first appears. A fixed sleep is the
-    # wrong instrument twice over: too short on a loaded runner and the `code` row reads zero
-    # for a reason that is not the defect, too long and every case pays for the worst case.
-    # The `code` row is legitimately zero before the fix, so waiting for a specific count would
-    # never return there. Wait for the counts to stop moving instead, which is true either way.
+    # The fences themselves mount independently of the action bar, and their count is known per
+    # case, so this is a real completion signal rather than an interval. The button count is
+    # deliberately NOT waited on: `code` is legitimately zero before the fix, and waiting for a
+    # number that never arrives would fail the branch that is supposed to reproduce the defect.
+    expected = EXPECTED_FENCES[case]
+    page.wait_for_function(
+        f"() => window.__probe.counts().codeBlocks === {expected}",
+        timeout = 60_000,
+        polling = 250,
+    )
+    # Then let the action bar settle, which is quick now the chunk is warm.
     page.wait_for_function(
         """() => {
             const now = JSON.stringify(window.__probe.counts());
-            const settled = window.__settled;
-            window.__settled = now === settled?.value
-                ? {value: now, hits: settled.hits + 1}
+            const seen = window.__settled;
+            window.__settled = now === seen?.value
+                ? {value: now, hits: seen.hits + 1}
                 : {value: now, hits: 0};
             return window.__settled.hits >= 3;
         }""",
@@ -84,6 +107,7 @@ def main() -> int:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(args = chromium_launch_args())
             page = browser.new_page(viewport = {"width": 1280, "height": 900})
+            warm_up(page)
             for case in CASES:
                 results[case] = run_case(page, case)
                 info(f"{case}: {json.dumps(results[case])}")

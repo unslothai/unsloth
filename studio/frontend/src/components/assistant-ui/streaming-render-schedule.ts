@@ -1381,7 +1381,6 @@ export class IncrementalMarkdownCache {
     // `"para\r"`, nothing is ever committed, and the whole reply re-repairs and
     // re-lexes on every frame. Normalise first so both sides speak LF.
     const markdown = normalizeLineEndings(rawMarkdown);
-    const globalLinkReference = markdownRenderScope(markdown) === "document";
 
     // Tokens arrive faster than frames, so the coalescer hands the same text to
     // several renders. Nothing about the result can differ, and repeating the
@@ -1405,10 +1404,15 @@ export class IncrementalMarkdownCache {
 
     // globally scoped definitions must stay in the same rendered document as
     // their uses, so neither construct can retain an independently parsed prefix.
+    // Computed here rather than at the top of the method on purpose: both early returns above
+    // -- the coalescer handing the same text to several renders, and a reply already in
+    // full-document mode -- answer without it, and the precise scope costs a lex of everything
+    // received so far. Reaching this point means the reply is still a retention candidate,
+    // which is the only case where the answer is used.
     if (
-      globalLinkReference ||
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
-      FOOTNOTE_DEFINITION_RE.test(repaired)
+      FOOTNOTE_DEFINITION_RE.test(repaired) ||
+      markdownRenderScope(markdown) === "document"
     ) {
       return this.renderFullDocument(markdown);
     }
