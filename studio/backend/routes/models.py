@@ -2707,6 +2707,7 @@ async def scan_model_remote_code(
                 )
                 if not already:
                     scan_created_repos.append(repo)
+                    _note_scan_created_remote_code(repo, current_subject)
             except Exception:
                 pass
 
@@ -2781,6 +2782,48 @@ async def scan_model_remote_code(
         )
 
 
+# Repository -> the workspace whose consent scan pulled it into the shared cache.
+# The scan reports what it created to its own client and keeps nothing, so the
+# discard route had no way to tell a caller cleaning up after itself from one
+# deleting a code dependency another account's model still needs offline.
+_SCAN_CREATED_REMOTE_CODE: dict[str, str] = {}
+_SCAN_CREATED_REMOTE_CODE_LOCK = threading.Lock()
+_SCAN_CREATED_REMOTE_CODE_MAX = 256
+
+
+def _note_scan_created_remote_code(repo: str, subject: str) -> None:
+    with _SCAN_CREATED_REMOTE_CODE_LOCK:
+        _SCAN_CREATED_REMOTE_CODE.pop(repo, None)
+        _SCAN_CREATED_REMOTE_CODE[repo] = subject
+        while len(_SCAN_CREATED_REMOTE_CODE) > _SCAN_CREATED_REMOTE_CODE_MAX:
+            _SCAN_CREATED_REMOTE_CODE.pop(next(iter(_SCAN_CREATED_REMOTE_CODE)))
+
+
+def _reject_discarding_another_accounts_remote_code(repo: str) -> None:
+    """Only clean up what this account's own scan downloaded.
+
+    The cache is installation-wide, so a repository held only as a metadata or
+    auto_map code dependency of somebody else's model was deletable by anyone
+    who could name it, and its next offline or gated load then failed. The
+    loaded-model checks below do not cover this: they compare the supplied id
+    with the resident model, and a code dependency is a different repository.
+    """
+    from auth.storage import is_installation_owner
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT or is_installation_owner():
+        return
+    with _SCAN_CREATED_REMOTE_CODE_LOCK:
+        creator = _SCAN_CREATED_REMOTE_CODE.get(repo)
+    if creator == subject:
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = "Only the account whose scan downloaded this repository can discard it.",
+    )
+
+
 @router.post("/discard-remote-code")
 async def discard_remote_code_download(
     model_name: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
@@ -2798,6 +2841,7 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "local"}
     if not _is_valid_repo_id(model_name):
         return {"deleted": False, "reason": "invalid"}
+    _reject_discarding_another_accounts_remote_code(model_name)
 
     # Never delete a model that is loaded for inference.
     try:

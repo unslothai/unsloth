@@ -315,6 +315,13 @@ def _load_any_cached_hf_preview_slice(
     # sentinel. Refuse the whole disk route here; the handler then answers 404.
     if is_anonymous(hf_token):
         return None
+    # Any nonempty token got past the sentinel check, whoever it belongs to, so a
+    # private dataset another account fetched answered with its real rows. Ask
+    # whether this account could have obtained the dataset at all.
+    from hub.services.datasets import cache_access
+
+    if not cache_access.caller_may_read_cached_dataset(getattr(request, "dataset_name", None)):
+        return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
     if cached_preview is not None:
         return cached_preview

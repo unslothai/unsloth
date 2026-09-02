@@ -7017,7 +7017,110 @@ def _reject_remote_code_from_a_managed_account(trust_remote_code: Any) -> None:
     )
 
 
+# Model identifier -> the workspace that last asked for it to be loaded. The text
+# backends are process-wide and hold one model between them, so without this the
+# account that follows a private load inherits the weights: it cannot browse or
+# load that path itself, but generation served whatever was already resident.
+_TEXT_MODEL_LOADERS: dict[str, str] = {}
+_TEXT_MODEL_LOADERS_LOCK = threading.Lock()
+# Bounded: one entry per identifier ever loaded here, and a long-lived install
+# with an automation loop would otherwise grow it without end.
+_TEXT_MODEL_LOADERS_MAX = 256
+
+
 def _resolve_model_identifier_for_request(
+    request: LoadRequest | ValidateModelRequest,
+    *,
+    operation: str,
+    resolved_ollama_path: Optional[str] = None,
+) -> tuple[str, str, bool]:
+    """Resolve the identifier, and record who asked, for the residency check."""
+    resolved = _resolve_model_identifier_for_request_impl(
+        request,
+        operation = operation,
+        resolved_ollama_path = resolved_ollama_path,
+    )
+    identifier = resolved[0]
+    if isinstance(identifier, str) and identifier.strip():
+        subject = current_workspace_subject()
+        with _TEXT_MODEL_LOADERS_LOCK:
+            _TEXT_MODEL_LOADERS.pop(identifier, None)
+            _TEXT_MODEL_LOADERS[identifier] = subject
+            while len(_TEXT_MODEL_LOADERS) > _TEXT_MODEL_LOADERS_MAX:
+                _TEXT_MODEL_LOADERS.pop(next(iter(_TEXT_MODEL_LOADERS)))
+    return resolved
+
+
+def _resident_text_model_identifiers() -> list[str]:
+    """What the two shared text backends currently hold, however it was named."""
+    identifiers: list[str] = []
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_active", False):
+        for attribute in ("gguf_path", "hf_repo", "model_identifier"):
+            value = getattr(llama_backend, attribute, None)
+            if isinstance(value, str) and value.strip():
+                identifiers.append(value.strip())
+    # Peek, not the constructing getter: no orchestrator means nothing is resident.
+    backend = _peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
+    if isinstance(active, str) and active.strip():
+        identifiers.append(active.strip())
+    return identifiers
+
+
+def _caller_could_have_loaded(identifier: str) -> bool:
+    """Whether this account could have named that identifier itself.
+
+    The same question the load path asks, so the two cannot drift: a path inside
+    this workspace or a shared root, or a repository that is not private.
+    """
+    try:
+        _reject_uncontained_local_path(identifier, "use")
+    except HTTPException:
+        return False
+    return True
+
+
+def _reject_generation_from_a_foreign_private_model() -> None:
+    """Refuse to serve a model this account could not have loaded itself.
+
+    Both text backends are process-wide and neither records who filled them, so
+    an account that could not browse or load another's checkpoint could still
+    run inference on it by asking the shared endpoint for a completion. Refused
+    rather than silently switched: the resident model is somebody's live session,
+    and taking it away to answer a request is its own cross-account effect.
+    """
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return
+    identifiers = _resident_text_model_identifiers()
+    if not identifiers:
+        return
+    with _TEXT_MODEL_LOADERS_LOCK:
+        loaders = {name: _TEXT_MODEL_LOADERS.get(name) for name in identifiers}
+    for identifier in identifiers:
+        loader = loaders.get(identifier)
+        if loader is not None and loader == subject:
+            return
+    for identifier in identifiers:
+        loader = loaders.get(identifier)
+        foreign = loader is not None and loader != subject
+        if not foreign and _caller_could_have_loaded(identifier):
+            continue
+        from auth.storage import is_installation_owner
+
+        if is_installation_owner():
+            return
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "The loaded model belongs to another account. Load your own model "
+                "and try again."
+            ),
+        )
+
+
+def _resolve_model_identifier_for_request_impl(
     request: LoadRequest | ValidateModelRequest,
     *,
     operation: str,
@@ -16216,6 +16319,7 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
+    _reject_generation_from_a_foreign_private_model()
     # Enforce the preview-swap reject FIRST, before reading any backend state. If a public
     # preview loaded a different checkpoint while this native Unsloth request waited on the
     # keep-warm gate, the middleware flagged the scope; the loaded-model and image-capability
@@ -20194,6 +20298,9 @@ async def produce_openai_chat_completions(
                 detail = "Video input is only supported on a local GGUF model with video support.",
             )
         return await _proxy_to_external_provider(payload, request, current_subject)
+
+    # Past the provider branch this request runs on whatever is resident here.
+    _reject_generation_from_a_foreign_private_model()
 
     # Reject a malformed function tool here: it would otherwise reach
     # llama-server and surface as an opaque 500 "Failed to parse tools".
@@ -25222,6 +25329,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     Proxies to the running llama-server's ``/v1/completions``. Only available
     when a GGUF model is loaded.
     """
+    # This endpoint has no provider branch: it always answers from the resident model.
+    _reject_generation_from_a_foreign_private_model()
     llama_backend = get_llama_cpp_backend()
 
     # Reject a request with no prompt before any automatic load so an invalid request never

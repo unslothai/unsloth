@@ -213,6 +213,11 @@ async def download_dataset_response(
     # the job as running, and a cancel arriving before this saw no initiator and
     # was authorized to stop it.
     download_lifecycle.note_download_initiator(key, _registry)
+    # And durably, by repository: the job record is recycled with the key, but who
+    # is entitled to read this dataset out of the shared cache outlives the job.
+    from hub.services.datasets import cache_access
+
+    cache_access.note_dataset_downloader(repo_id)
     download_manifest.clear_cancel_marker(
         "dataset",
         repo_id,

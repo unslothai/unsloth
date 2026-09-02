@@ -1086,7 +1086,9 @@ def _get_session(
                     closed_while_connecting = _mcp_close_generation(url, headers) != generation
                     if not closed_while_connecting:
                         session.in_flight = 1
-                        evicted = _evict_lru_locked()  # bound the cache (LRU idle)
+                        # Named so the cap is not a way to reach into another
+                        # workspace: this insert's own account pays first.
+                        evicted = _evict_lru_locked(key[3] if len(key) > 3 else None)
                         _mcp_sessions[key] = session
                         if not _mcp_reaper_started:
                             _mcp_reaper_started = True
@@ -1130,7 +1132,7 @@ def _release_session(session: _McpSession, defer_close: bool = False) -> None:
             ]
             if not idle:
                 break
-            _, oldest = min(idle, key = lambda item: item[0])
+            _, oldest = min(_eviction_candidates_locked(idle), key = lambda item: item[0])
             victims.append(_mcp_sessions.pop(oldest))
             _discard_key_lock(oldest)
     if close_now and defer_close:
@@ -1169,7 +1171,31 @@ def _drop_session(key: tuple, session: _McpSession) -> None:
     _retire_session(session)
 
 
-def _evict_lru_locked() -> list:
+def _eviction_candidates_locked(idle: list, subject: Optional[str] = None) -> list:
+    """Which idle sessions may be taken, out of ``idle``, preferring greedy ones.
+
+    The cap is installation-wide, so plain LRU let one account open enough
+    distinct scopes to close another's idle browser, REPL or database session
+    and destroy the server-side state behind it. A workspace holding more than
+    an equal share of the cache pays for its own growth first; only when nobody
+    is over their share does this fall back to the global least-recently-used
+    session, which is a full cache rather than one account crowding out another.
+
+    ``subject`` is the workspace about to insert, counted as if it already had.
+    """
+    counts: dict = {}
+    for cached_key in _mcp_sessions:
+        holder = cached_key[3] if len(cached_key) > 3 else ""
+        counts[holder] = counts.get(holder, 0) + 1
+    if subject is not None:
+        counts[subject] = counts.get(subject, 0) + 1
+    share = max(1, _MAX_SESSIONS // max(1, len(counts)))
+    over = {holder for holder, held in counts.items() if held > share}
+    preferred = [item for item in idle if (item[1][3] if len(item[1]) > 3 else "") in over]
+    return preferred or idle
+
+
+def _evict_lru_locked(subject: Optional[str] = None) -> list:
     """Caller holds _mcp_sessions_lock. Evict least-recently-used *idle*
     sessions until the cache is under the cap. Returns the evicted sessions so
     the caller can close them OUTSIDE the lock. If every session is busy the
@@ -1179,7 +1205,7 @@ def _evict_lru_locked() -> list:
         idle = [(s.last_used, k) for k, s in _mcp_sessions.items() if s.in_flight == 0]
         if not idle:
             break
-        _, oldest = min(idle, key = lambda item: item[0])
+        _, oldest = min(_eviction_candidates_locked(idle, subject), key = lambda item: item[0])
         victims.append(_mcp_sessions.pop(oldest))
         _discard_key_lock(oldest)
     return victims

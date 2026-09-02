@@ -4507,3 +4507,145 @@ def test_the_lan_port_is_owner_only_like_the_rest_of_lan_access():
         signature = inspect.signature(getattr(settings_routes, route))
         dependency = signature.parameters["current_subject"].default
         assert dependency.dependency is settings_routes._require_install_admin, route
+
+
+def test_a_private_resident_text_model_is_not_served_to_another_account(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+    from routes import models as models_routes
+
+    private = tmp_path / "alice-workspace" / "model.gguf"
+    private.parent.mkdir(parents = True)
+    private.write_bytes(b"")
+    monkeypatch.setattr(models_routes, "advertised_shared_model_roots", lambda: [])
+    monkeypatch.setattr(inference_routes, "_TEXT_MODEL_LOADERS", {}, raising = False)
+    monkeypatch.setattr(
+        inference_routes,
+        "_resident_text_model_identifiers",
+        lambda: [str(private)],
+    )
+
+    token = _bind("alice")
+    try:
+        inference_routes._TEXT_MODEL_LOADERS[str(private)] = "alice"
+        inference_routes._reject_generation_from_a_foreign_private_model()
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # Both text backends are process-wide and neither recorded who filled
+        # them, so a path Bob cannot browse or load still answered his
+        # completions request with its weights.
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._reject_generation_from_a_foreign_private_model()
+        assert exc.value.status_code == 409
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        inference_routes._reject_generation_from_a_foreign_private_model()
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_one_workspace_cannot_evict_anothers_mcp_sessions(monkeypatch):
+    from core.inference import mcp_client
+
+    class _Session:
+        def __init__(self, last_used: float) -> None:
+            self.last_used = last_used
+            self.in_flight = 0
+
+    sessions = {
+        ("http://a", (), "", "alice"): _Session(1.0),
+        ("http://b", (), "one", "bob"): _Session(2.0),
+        ("http://b", (), "two", "bob"): _Session(3.0),
+        ("http://b", (), "three", "bob"): _Session(4.0),
+    }
+    monkeypatch.setattr(mcp_client, "_mcp_sessions", sessions, raising = False)
+    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 4, raising = False)
+
+    idle = [(s.last_used, k) for k, s in sessions.items()]
+    # Alice's session is the least recently used, so plain LRU handed Bob a way
+    # to close her idle browser or REPL and destroy its server-side state by
+    # opening enough scopes of his own.
+    candidates = mcp_client._eviction_candidates_locked(idle, "bob")
+    assert all(key[3] == "bob" for _, key in candidates)
+
+    # With nobody over their share the global order stands: a full cache is a
+    # capacity question, not one account crowding out another.
+    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 16, raising = False)
+    assert mcp_client._eviction_candidates_locked(idle, "alice") == idle
+
+
+def test_only_the_scanning_account_discards_the_code_it_downloaded():
+    from fastapi import HTTPException
+
+    from routes import models as models_routes
+
+    models_routes._SCAN_CREATED_REMOTE_CODE.clear()
+
+    token = _bind("alice")
+    try:
+        models_routes._note_scan_created_remote_code("org/code-dep", "alice")
+        models_routes._reject_discarding_another_accounts_remote_code("org/code-dep")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The loaded-model checks compare the supplied id with the resident
+        # model, so they never protected a separate auto_map code dependency
+        # another account's model still needs to load offline.
+        with pytest.raises(HTTPException) as exc:
+            models_routes._reject_discarding_another_accounts_remote_code("org/code-dep")
+        assert exc.value.status_code == 403
+        with pytest.raises(HTTPException):
+            models_routes._reject_discarding_another_accounts_remote_code("org/never-scanned")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        models_routes._reject_discarding_another_accounts_remote_code("org/code-dep")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_private_cached_dataset_is_not_readable_by_another_account(monkeypatch):
+    from hub.services.datasets import cache_access
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(cache_access, "_dataset_downloaders", {}, raising = False)
+    monkeypatch.setattr(
+        inference_routes,
+        "_hub_repo_is_anonymously_readable",
+        lambda repo_id, repo_type: repo_id != "alice/private-set",
+    )
+
+    token = _bind("alice")
+    try:
+        cache_access.note_dataset_downloader("alice/private-set")
+        assert cache_access.caller_may_read_cached_dataset("alice/private-set") is True
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The cache is installation-wide and check-format only rejected the
+        # anonymous sentinel, so any nonempty token read Alice's rows.
+        assert cache_access.caller_may_read_cached_dataset("alice/private-set") is False
+        # Public datasets, which is nearly all of them, are unaffected, and so is
+        # an installation whose Hub cannot be reached.
+        assert cache_access.caller_may_read_cached_dataset("org/public-set") is True
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        assert cache_access.caller_may_read_cached_dataset("alice/private-set") is True
+    finally:
+        reset_workspace_subject(token)
