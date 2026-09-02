@@ -289,17 +289,21 @@ def test_a_zero_gpu_standard_load_drops_the_stale_chat_claim():
     Images/Video acquire run the CHAT evictor and unload a CPU audio model that
     was never on the GPU. The GGUF branch already releases; both do now.
 
-    Three sites: the GGUF branch, and the standard branch both before its load
-    (the claim is useless across a load that can run for minutes, and holding it
-    there lets the evictor cancel this very load) and after it (the load cannot
-    cover a claim re-taken while it ran)."""
+    Two awaited sites: the GGUF branch, and the standard branch after its load
+    (which cannot cover a claim re-taken while it ran). The standard branch's
+    during-load release is the third, handed to load_model as a callback so it
+    fires once the previous worker is gone rather than before it."""
     src = _inference_source()
-    assert src.count("await asyncio.to_thread(release, CHAT)") == 3
+    assert src.count("await asyncio.to_thread(release, CHAT)") == 2
+    assert src.count("(lambda: release(CHAT)) if not chat_load_needs_gpu else None") == 1
 
 
 def test_the_release_is_gated_on_the_same_flag_as_the_409():
+    """Two `if not` sites plus the callback's own inline gate, which spells the
+    flag the same way."""
     src = _inference_source()
-    assert src.count("if not chat_load_needs_gpu:") == 3
+    assert src.count("if not chat_load_needs_gpu:") == 2
+    assert src.count("if not chat_load_needs_gpu else None") == 1
 
 
 def test_every_http_device_field_pins_the_three_canonical_values():
@@ -398,3 +402,79 @@ def test_the_gguf_audio_codec_follows_the_servers_own_placement():
     src = inspect.getsource(LlamaCppBackend.init_audio_codec)
     device_line = next(l for l in src.splitlines() if l.strip().startswith("device ="))
     assert "holds_no_vram" in device_line, device_line
+
+
+def test_decoding_happens_where_the_codec_actually_is():
+    """Loading the codec on CPU is only half of it.
+
+    The decoders build their input tensors on the device they are handed. Handed
+    CUDA for a CPU-resident codec, SNAC and DAC fail outright on a device mismatch
+    and BiCodec moves the codec onto the card, taking the VRAM a CPU RAM load
+    promised not to take. The recorded placement wins over the caller's request.
+    """
+    import torch
+
+    from core.inference.audio_codecs import AudioCodecManager
+
+    mgr = AudioCodecManager()
+    seen = {}
+
+    class _FakeSnac:
+        def decode(self, codes):
+            seen["device"] = codes[0].device.type
+            return torch.zeros(1, 8)
+
+    mgr._snac_model = _FakeSnac()
+    mgr._codec_devices["snac"] = "cpu"
+
+    # 128257 opens the speech section; the seven codes after it make one frame.
+    token_ids = [128257] + [128266 + i for i in range(7)]
+    mgr.decode("snac", "cuda", token_ids = token_ids)
+
+    assert seen["device"] == "cpu"
+
+
+def test_a_codec_with_no_recorded_placement_still_honours_the_caller():
+    """Nothing is recorded until a codec is actually loaded, and every pre-existing
+    caller passes the device it wants. An unknown codec must keep deferring to it."""
+    from core.inference.audio_codecs import AudioCodecManager
+
+    mgr = AudioCodecManager()
+    assert mgr._codec_devices == {}
+
+
+def test_a_cpu_load_leaves_a_running_export_alone():
+    """The export teardown exists to free VRAM for the incoming model. A load that
+    masks the accelerators wants none of it, so killing the user's export buys
+    nothing and costs them the job."""
+    import inspect
+
+    src = inspect.getsource(ri._load_model_impl)
+    guard = next(
+        l for l in src.splitlines() if "exp_backend.current_checkpoint" in l and "if " in l
+    )
+    assert "chat_load_needs_gpu" in guard, guard
+
+
+def test_the_chat_claim_outlives_the_worker_that_earned_it():
+    """Released before the load, the claim leaves a still-resident GPU model
+    unowned, and acquire_for evicts nobody when the arbiter has no owner: an
+    Images or Video load then allocates straight over it. The release is handed to
+    load_model, which runs it once the previous worker is gone and its memory is
+    back, still ahead of the download."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    src = inspect.getsource(ri._load_model_impl)
+    assert "on_prior_worker_released = _release_chat_after_teardown" in src
+
+    sig = inspect.signature(InferenceOrchestrator.load_model)
+    assert "on_prior_worker_released" in sig.parameters
+
+    # It has to sit after both bail-outs: a worker that would not exit and memory
+    # that never came back both mean the card is still busy and the claim still true.
+    load_src = inspect.getsource(InferenceOrchestrator.load_model)
+    hook = load_src.index("on_prior_worker_released()")
+    assert load_src.index("did not exit and still holds GPU") < hook
+    assert load_src.index("was not released; ") < hook

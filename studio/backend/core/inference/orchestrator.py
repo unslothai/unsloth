@@ -26,7 +26,7 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Generator, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Generator, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
@@ -1498,6 +1498,7 @@ class InferenceOrchestrator:
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
+        on_prior_worker_released: Optional[Callable[[], None]] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1622,6 +1623,16 @@ class InferenceOrchestrator:
                         "GPU memory from the previous inference worker was not released; "
                         "not starting the replacement model. Retry shortly."
                     )
+
+            # The previous worker is gone and its VRAM is back. A caller holding a GPU
+            # claim on that worker's behalf can drop it here: this is the last moment
+            # before the download, which runs for minutes and is the whole reason the
+            # claim cannot simply be held until the load returns. Both raises above
+            # skip this deliberately -- a worker that would not exit, or memory that
+            # never came back, means the card is still occupied and the claim is still
+            # telling the truth.
+            if on_prior_worker_released is not None:
+                on_prior_worker_released()
 
             disable_xet = sub_config.get("disable_xet", False) or (
                 os.environ.get("HF_HUB_DISABLE_XET") == "1"

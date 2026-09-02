@@ -14045,11 +14045,15 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             raise
 
-        # Shut down any export subprocess to free VRAM
+        # Shut down any export subprocess to free VRAM. Only when this load wants VRAM:
+        # a CPU-placed load masks the accelerators outright, so the export's memory is
+        # not in its way, and killing a running export to make room for something that
+        # needs no room loses the user's job for nothing. Same predicate that already
+        # keeps this load off the arbiter and out of the VRAM preflight.
         try:
             from core.export import get_export_backend
             exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
+            if chat_load_needs_gpu and exp_backend.current_checkpoint:
                 logger.info("Shutting down export subprocess to free GPU memory for inference")
                 exp_backend._shutdown_subprocess()
                 exp_backend.current_checkpoint = None
@@ -14069,16 +14073,21 @@ async def _load_model_impl(
         _prior_alias = getattr(backend, "_openai_advertised_id", None)
         _prior_active = getattr(backend, "active_model_name", None)
         backend._openai_advertised_id = None
-        if not chat_load_needs_gpu:
-            # Before the load, not only after it. A download and load can run for
-            # minutes, and the claim being dropped here is one this load never
-            # needed. Held across that window, an Images or Video acquire_for
-            # finds CHAT still owning the GPU and runs the chat evictor, which
-            # sees this model in loading_models and cancels it. acquire_for only
-            # evicts when the arbiter has an owner, so clearing the claim first
-            # lets the two coexist instead. The post-load release below stays:
-            # this branch cannot cover a claim re-taken during the load.
-            await asyncio.to_thread(release, CHAT)
+        # Dropped during the load rather than after it. A download and load run for
+        # minutes, and this load never needed the claim. Held across that window, an
+        # Images or Video acquire_for finds CHAT still owning the GPU and runs the
+        # chat evictor, which sees this model in loading_models and cancels it.
+        #
+        # Not before the load either: until the previous worker has exited, the claim
+        # is the only thing standing between a still-resident GPU model and a second
+        # pipeline allocating over it, since acquire_for evicts nobody when the
+        # arbiter has no owner. load_model calls this once that worker is gone and
+        # its memory is back, which is both after the danger and before the download.
+        # The post-load release below stays: this cannot cover a claim re-taken
+        # during the load.
+        _release_chat_after_teardown = (
+            (lambda: release(CHAT)) if not chat_load_needs_gpu else None
+        )
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
@@ -14097,6 +14106,7 @@ async def _load_model_impl(
                 mlx_kv_bits = request.mlx_kv_bits,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
+                on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
             )
