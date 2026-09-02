@@ -3593,6 +3593,60 @@ class DebugLogResponse(BaseModel):
     size_bytes: int = 0
 
 
+BROWSER_LOG_EXPORT_MAX_SOURCE_BYTES = 256 * 1024 * 1024
+
+
+@router.get("/debug/logs/export")
+def export_debug_logs(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+    browser: bool = False,
+):
+    """Download every log currently offered by the viewer as a masked ZIP."""
+    from datetime import datetime, timezone
+
+    from fastapi.responses import StreamingResponse
+
+    from utils import debug_log_export, debug_log_sources
+
+    # The picker is intentionally capped per family because it is rescanned
+    # while the tab is open. Export is an explicit one-shot action and means
+    # all matching logs, including older runner attempts outside that window.
+    sources = debug_log_sources.list_sources(max_sources_per_family = None)
+    if (
+        browser
+        and sum(source.size_bytes for source in sources) > BROWSER_LOG_EXPORT_MAX_SOURCE_BYTES
+    ):
+        raise HTTPException(
+            status_code = 413,
+            detail = (
+                "Browser log exports are limited to 256 MB. "
+                "Use the desktop app to export this larger log history."
+            ),
+        )
+    filename = f"unsloth-logs-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.zip"
+
+    def _stream_archive():
+        # StreamingResponse sends its headers before consuming this iterator.
+        # Build lazily so a large retained history cannot trip the desktop
+        # downloader's pre-header read timeout.
+        archive = debug_log_export.build_debug_log_archive(sources)
+        try:
+            while chunk := archive.read(64 * 1024):
+                yield chunk
+        finally:
+            archive.close()
+
+    return StreamingResponse(
+        _stream_archive(),
+        media_type = "application/zip",
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 @router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
     current_subject: str = Depends(get_current_subject),

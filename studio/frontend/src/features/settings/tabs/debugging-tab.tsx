@@ -2,18 +2,35 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useCopyFeedback } from "@/features/hub/hooks/use-copy-feedback";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { stripAnsi } from "@/lib/strip-ansi";
-import { Tick02Icon } from "@hugeicons/core-free-icons";
+import { toast } from "@/lib/toast";
+import {
+  Copy01Icon,
+  Download01Icon,
+  FolderOpenIcon,
+  RefreshIcon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type DebugLogSource,
+  exportDebugLogs,
   loadDebugLog,
   loadDebugLogSources,
+  openDebugLogsFolder,
 } from "../api/debug-logs";
-import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
   DEFAULT_REFRESH_MODE,
@@ -55,7 +72,6 @@ export function DebuggingTab() {
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
-  const [realpath, setRealpath] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
   // A burst larger than one response continues on the next poll, which in
@@ -65,7 +81,13 @@ export function DebuggingTab() {
   // pane shows real content that will never grow. Unsaid, a stale log is
   // indistinguishable from a live one.
   const [staleSession, setStaleSession] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [openingFolder, setOpeningFolder] = useState(false);
   const { copied, copy } = useCopyFeedback();
+  const selectedRealpath = useMemo(
+    () => sources.find((source) => source.id === sourceId)?.realpath ?? null,
+    [sourceId, sources],
+  );
 
   // In a ref as well as state: the poll loop must not restart per line arrived.
   const cursorRef = useRef<string | null>(null);
@@ -183,7 +205,6 @@ export function DebuggingTab() {
         )
           return;
         cursorRef.current = page.cursor;
-        if (page.realpath) setRealpath(page.realpath);
         setDropped((previous) => nextDroppedState(previous, page));
         setMorePending(page.morePending);
         setStaleSession(page.fileLoggingDisabled);
@@ -215,7 +236,6 @@ export function DebuggingTab() {
     selectionRef.current += 1;
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
-    setRealpath(null);
     // Every notice below describes the file being left, so all of them go with
     // it. Clearing only `dropped` let a failed first read on the new source keep
     // claiming the OLD one's state, and in manual mode nothing retries: the pane
@@ -274,62 +294,179 @@ export function DebuggingTab() {
       pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   }, []);
 
+  const onExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      await exportDebugLogs();
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.debugging.exportError"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } finally {
+      setExporting(false);
+    }
+  }, [t]);
+
+  const onOpenFolder = useCallback(async () => {
+    setOpeningFolder(true);
+    try {
+      await openDebugLogsFolder(selectedRealpath);
+    } catch (error) {
+      toast.error(t("settings.debugging.openFolderError"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setOpeningFolder(false);
+    }
+  }, [selectedRealpath, t]);
+
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <SettingsSection
         title={t("settings.debugging.logSection")}
         description={t("settings.debugging.sourceHint")}
       >
-        <SettingsRow label={t("settings.debugging.source")}>
-          <select
-            data-testid="debug-log-source"
-            className="max-w-[22rem] rounded-md border border-border/60 bg-background px-2 py-1 text-xs"
-            value={sourceId ?? ""}
-            onChange={(event) => setSourceId(event.target.value || null)}
+        <div
+          data-testid="debug-log-config"
+          data-layout="flat"
+          className="mt-4 grid gap-4"
+        >
+          <div className="grid gap-1.5">
+            <span
+              id="debug-log-source-label"
+              className="text-xs font-medium text-foreground"
+            >
+              {t("settings.debugging.source")}
+            </span>
+            <Select
+              value={sourceId ?? ""}
+              onValueChange={(value) => setSourceId(value || null)}
+              disabled={sources.length === 0}
+            >
+              <SelectTrigger
+                id="debug-log-source"
+                data-testid="debug-log-source"
+                aria-labelledby="debug-log-source-label"
+                className="w-full rounded-lg"
+              >
+                <SelectValue placeholder="-" />
+              </SelectTrigger>
+              <SelectContent align="start" className="max-h-72">
+                {sources.map((source) => (
+                  <SelectItem key={source.id} value={source.id}>
+                    {source.family} / {source.label}
+                    {source.isCurrent ? " *" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div
+            data-testid="debug-log-location"
+            className="flex min-w-0 items-center gap-3 py-1"
           >
-            {sources.map((source) => (
-              <option key={source.id} value={source.id}>
-                {source.family} / {source.label}
-                {source.isCurrent ? " *" : ""}
-              </option>
-            ))}
-          </select>
-        </SettingsRow>
-        <SettingsRow label={t("settings.debugging.path")} alignTop={true}>
-          <div className="flex items-center gap-2">
-            <code className="max-w-[22rem] truncate text-ui-11 text-muted-foreground">
-              {realpath ?? "-"}
-            </code>
+            <div className="flex min-w-0 flex-1 items-baseline gap-3">
+              <p className="shrink-0 text-ui-11 font-medium text-muted-foreground">
+                {t("settings.debugging.path")}
+              </p>
+              <code
+                className="min-w-0 flex-1 truncate text-xs text-foreground/80"
+                title={selectedRealpath ?? undefined}
+              >
+                {selectedRealpath ?? "-"}
+              </code>
+            </div>
             <Button
               size="sm"
               variant="ghost"
-              disabled={!realpath}
-              onClick={() => realpath && copy(realpath)}
+              className="shrink-0"
+              disabled={!selectedRealpath}
+              aria-label={t("settings.debugging.pathCopy")}
+              onClick={() => selectedRealpath && copy(selectedRealpath)}
             >
-              {copied ? (
-                <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
-              ) : (
-                t("settings.debugging.pathCopy")
-              )}
+              <HugeiconsIcon
+                icon={copied ? Tick02Icon : Copy01Icon}
+                className="size-3.5"
+              />
+              {t("settings.debugging.pathCopy")}
             </Button>
           </div>
-        </SettingsRow>
+
+          <div
+            data-settings-label={t("settings.debugging.actions")}
+            data-testid="debug-log-actions"
+            className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 pt-4 dark:border-white/[0.08]"
+          >
+            <div className="grid gap-0.5">
+              <p className="text-xs font-medium text-foreground">
+                {t("settings.debugging.actions")}
+              </p>
+              <p className="max-w-md text-ui-11 leading-relaxed text-muted-foreground">
+                {t("settings.debugging.exportPrivacyNote")}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={sources.length === 0 || exporting}
+                onClick={() => void onExport()}
+              >
+                <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+                {exporting
+                  ? t("settings.debugging.exportingLogs")
+                  : t("settings.debugging.exportLogs")}
+              </Button>
+              {isTauri ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    sources.length === 0 || !selectedRealpath || openingFolder
+                  }
+                  onClick={() => void onOpenFolder()}
+                >
+                  <HugeiconsIcon icon={FolderOpenIcon} className="size-3.5" />
+                  {openingFolder
+                    ? t("settings.debugging.openingFolder")
+                    : t("settings.debugging.openFolder")}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </div>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.debugging.refreshSection")}>
-        <SettingsRow label={t("settings.debugging.mode")}>
-          <div className="flex items-center gap-2">
-            <div className="flex overflow-hidden rounded-md border border-border/60">
+      <section
+        data-settings-label={t("settings.debugging.refreshSection")}
+        className="flex flex-col gap-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-heading text-base font-semibold text-foreground">
+            {t("settings.debugging.refreshSection")}
+          </h2>
+          <div
+            data-testid="debug-log-refresh-controls"
+            className="flex flex-wrap items-center gap-2"
+          >
+            <span className="text-ui-11 font-medium text-muted-foreground">
+              {t("settings.debugging.mode")}
+            </span>
+            <div className="flex overflow-hidden rounded-full border border-border/60 bg-muted/20 p-0.5 dark:border-transparent dark:bg-white/[0.05]">
               {MODES.map((candidate) => (
                 <button
                   key={candidate}
                   type="button"
                   data-testid={`debug-log-mode-${candidate}`}
+                  aria-pressed={candidate === mode}
                   onClick={() => setMode(candidate)}
                   className={
                     candidate === mode
-                      ? "bg-primary px-2 py-1 text-ui-11 text-primary-foreground"
-                      : "px-2 py-1 text-ui-11 text-muted-foreground"
+                      ? "rounded-full bg-primary px-3 py-1 text-ui-11 font-medium text-primary-foreground shadow-sm"
+                      : "rounded-full px-3 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground"
                   }
                 >
                   {t(
@@ -342,22 +479,22 @@ export function DebuggingTab() {
                 </button>
               ))}
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={mode !== "manual"}
-              onClick={() => {
-                void refreshSources();
-                void poll();
-              }}
-            >
-              {t("settings.debugging.refreshNow")}
-            </Button>
+            {mode === "manual" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  void refreshSources();
+                  void poll();
+                }}
+              >
+                <HugeiconsIcon icon={RefreshIcon} className="size-3.5" />
+                {t("settings.debugging.refreshNow")}
+              </Button>
+            ) : null}
           </div>
-        </SettingsRow>
-      </SettingsSection>
+        </div>
 
-      <div className="flex flex-col gap-2">
         {notice ? (
           <p className="text-xs text-amber-500" data-testid="debug-log-notice">
             {notice}
@@ -384,7 +521,7 @@ export function DebuggingTab() {
           ref={paneRef}
           onScroll={onScroll}
           data-testid="debug-log-pane"
-          className="h-72 w-full overflow-auto [overflow-anchor:none] whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
+          className="h-80 w-full overflow-auto [overflow-anchor:none] whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-black/90 p-4 font-mono text-ui-11 leading-[1.5] text-emerald-200/90"
         >
           {text || t("settings.debugging.empty")}
         </pre>
@@ -398,10 +535,11 @@ export function DebuggingTab() {
             onClick={() => copy(text)}
             disabled={!text}
           >
+            <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
             {t("settings.debugging.copyVisible")}
           </Button>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

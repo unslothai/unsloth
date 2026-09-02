@@ -80,6 +80,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 
 from loggers import get_logger
+from utils.secret_env import is_secret_env_name as _is_secret_env_name
 
 logger = get_logger(__name__)
 
@@ -6910,67 +6911,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     return env
 
 
-# Credential env vars dropped even in bypass mode so tool code cannot read the
-# operator's keys. Over-strips on purpose (a benign var is harmless to lose).
-_BYPASS_ENV_SECRET_NAMES = frozenset(
-    {
-        "HF_TOKEN",
-        "HF_HUB_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_TOKEN",
-        "HUGGINGFACEHUB_API_TOKEN",
-        "WANDB_API_KEY",
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "GROQ_API_KEY",
-        "OPENROUTER_API_KEY",
-        "REPLICATE_API_TOKEN",
-        "COHERE_API_KEY",
-        "MISTRAL_API_KEY",
-        "NGC_API_KEY",
-        "KAGGLE_KEY",
-        "MYSQL_PWD",  # exact name: markers use PASSWD, not PWD (PWD is the cwd var)
-        "LD_PRELOAD",
-        # Auth brokers / capability handles: hand the child the operator's live
-        # agent (ssh/gpg), kube config, or docker daemon. Listed by name (no
-        # value signal). URL config vars are NOT name-listed: a credentialed
-        # value is dropped by _is_secret_env_value() regardless of name.
-        "SSH_AUTH_SOCK",
-        "SSH_AGENT_PID",
-        "GPG_AGENT_INFO",
-        "GNUPGHOME",
-        "KUBECONFIG",
-        "DOCKER_HOST",
-    }
-)
-_BYPASS_ENV_SECRET_PREFIXES = ("AWS_", "AZURE_", "GOOGLE_", "GCP_", "GCLOUD_", "DYLD_")
-_BYPASS_ENV_SECRET_MARKERS = (
-    "TOKEN",
-    "API_KEY",
-    "APIKEY",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "CREDENTIAL",
-    "PRIVATE_KEY",
-    "AUTH",  # e.g. NPM_CONFIG__AUTH (npm _auth), REDISCLI_AUTH
-    # Azure App Service connection strings carry DB/storage credentials.
-    "CONNSTR",
-    "CONNECTIONSTRING",
-)
-# Non-secret hardening flags that match a secret prefix/marker but must be KEPT
-# so bypass mode does not undo an operator's opt-out (e.g.
-# AWS_EC2_METADATA_DISABLED blocks the AWS SDK from pulling IMDS creds).
-_BYPASS_ENV_KEEP_NAMES = frozenset(
-    {
-        "AWS_EC2_METADATA_DISABLED",
-        "AWS_EC2_METADATA_V1_DISABLED",
-    }
-)
+# Credential env vars are dropped even in bypass mode so tool code cannot read
+# the operator's keys. The shared classifier is also used by log export, which
+# keeps the sandbox and exported-ZIP inventories from drifting apart.
 # Matches a URL embedding userinfo before the host ("scheme://user:pass@host"
 # and token-only forms). The userinfo must precede the first '/', so an '@' in
 # a path/query does not false-positive.
@@ -7029,18 +6972,6 @@ _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
 # Windows profile dirs SDKs read creds under; repointed (not dropped) since
 # callers expect them present.
 _BYPASS_ENV_WINDOWS_PROFILE_VARS = ("USERPROFILE", "APPDATA", "LOCALAPPDATA")
-
-
-def _is_secret_env_name(name: str) -> bool:
-    """True if an env var name looks like it carries a credential."""
-    upper = name.upper()
-    if upper in _BYPASS_ENV_KEEP_NAMES:
-        return False  # non-secret hardening flag; keep it
-    if upper in _BYPASS_ENV_SECRET_NAMES:
-        return True
-    if any(upper.startswith(p) for p in _BYPASS_ENV_SECRET_PREFIXES):
-        return True
-    return any(marker in upper for marker in _BYPASS_ENV_SECRET_MARKERS)
 
 
 def _is_cred_location_env_name(name: str) -> bool:

@@ -53,6 +53,8 @@ class LogSource:
     size_bytes: int
     modified_at: float
     is_current: bool
+    device_id: int | None = None
+    inode: int | None = None
 
 
 def candidate_roots() -> list[Path]:
@@ -137,7 +139,7 @@ def _digest(realpath: str) -> str:
     return hashlib.sha256(realpath.encode("utf-8", "surrogateescape")).hexdigest()[:_DIGEST_CHARS]
 
 
-def _family_files(family: str) -> list[Path]:
+def _family_files(family: str, max_sources: Optional[int] = MAX_SOURCES_PER_FAMILY) -> list[Path]:
     """Real, contained, regular files for one family, newest first."""
     subdir, pattern = FAMILIES[family]
     found: dict[str, tuple[Path, float]] = {}
@@ -146,8 +148,14 @@ def _family_files(family: str) -> list[Path]:
         try:
             if not directory.is_dir():
                 continue
+            real_root = Path(os.path.realpath(root))
             real_dir = Path(os.path.realpath(directory))
-        except OSError:
+            # A family directory can itself be a symlink. Trusting its resolved
+            # target as the containment root would turn the export into a glob
+            # over an unrelated directory outside every Studio home.
+            if not _is_inside(real_dir, real_root):
+                continue
+        except (OSError, ValueError):
             continue
         try:
             entries = list(directory.glob(pattern))
@@ -162,7 +170,8 @@ def _family_files(family: str) -> list[Path]:
         # are still ordered by real mtime below, and the slice is wide enough to
         # keep a file whose mtime moved after it was written.
         entries.sort(key = lambda entry: entry.name, reverse = True)
-        entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
+        if max_sources is not None:
+            entries = entries[: max_sources * 3]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))
@@ -182,7 +191,9 @@ def _family_files(family: str) -> list[Path]:
             # digest stays over the real path.
             found.setdefault(_identity(real), (real, stat.st_mtime))
     ordered = sorted(found.values(), key = lambda item: item[1], reverse = True)
-    return [path for path, _ in ordered[:MAX_SOURCES_PER_FAMILY]]
+    if max_sources is None:
+        return [path for path, _ in ordered]
+    return [path for path, _ in ordered[:max_sources]]
 
 
 def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
@@ -195,10 +206,10 @@ def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
     return newest is not None and path == newest
 
 
-def list_sources() -> list[LogSource]:
+def list_sources(max_sources_per_family: Optional[int] = MAX_SOURCES_PER_FAMILY) -> list[LogSource]:
     sources: list[LogSource] = []
     for family in FAMILIES:
-        files = _family_files(family)
+        files = _family_files(family, max_sources_per_family)
         newest = files[0] if files else None
         for path in files:
             try:
@@ -215,6 +226,8 @@ def list_sources() -> list[LogSource]:
                     size_bytes = stat.st_size,
                     modified_at = stat.st_mtime,
                     is_current = _is_current(family, path, newest),
+                    device_id = stat.st_dev,
+                    inode = stat.st_ino,
                 )
             )
     return sources
