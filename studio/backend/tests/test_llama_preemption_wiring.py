@@ -1155,3 +1155,46 @@ class TestAFailureInTheResumeCannotKillTheChat:
         # The accumulators reset each round, so replacing would lose the first pause.
         assert convo[-1]["reasoning_content"] == "first half second half"
         assert len(convo) == 2
+
+
+class TestAPauseActuallyFreesCells:
+    """Aborting the upstream request stops the decode; it does not free the cache.
+
+    llama-server keeps a finished slot's prompt cache for prefix reuse, so a paused chat
+    still occupies its cells. Three chats paused together therefore hold the whole cache
+    between them and every one of them waits for room only the others could return.
+
+    Measured 2026-09-02 on the build that carried thoughts across a pause and charged
+    them correctly: `want` climbed 4049 -> 4625 -> 9532 as each replayed thought became
+    prompt, only two reclaims fired totalling 5620 tokens against a 16384 cache, and all
+    three chats hit "no room within 90.0s". Correct accounting was not enough; the cells
+    have to actually go, which is what vLLM's RECOMPUTE does.
+    """
+
+    def _refresh_source(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        return (
+            Path(inference.__file__).read_text()
+            .split("def _gguf_refresh_residency", 1)[1].split("\n            def ", 1)[0]
+        )
+
+    def test_waiting_alone_triggers_a_reclaim(self):
+        source = self._refresh_source()
+        assert "snapshot, \"paused\"" in source or "getattr(snapshot, \"paused\"" in source, (
+            "reclaim still fires only when over the watermark, so a pause frees nothing"
+        )
+
+    def test_the_reclaim_is_not_gated_on_being_over_the_ceiling(self):
+        source = self._refresh_source()
+        assert "if needed > 0 and occupancy.get(\"idle\")" in source
+        assert "if over > 0 and occupancy.get(\"idle\")" not in source, (
+            "the old gate is back; a paused chat's cells would be held until overflow"
+        )
+
+    def test_the_waiter_count_is_logged(self):
+        """So a run can be read afterwards without guessing why a reclaim fired."""
+        source = self._refresh_source()
+        assert "waiting = waiting" in source

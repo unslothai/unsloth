@@ -20914,17 +20914,35 @@ async def produce_openai_chat_completions(
                 snapshot = controller.snapshot()
                 ceiling = max(0, snapshot.budget - snapshot.buffer)
                 over = int(occupancy.get("resident") or 0) - ceiling
-                if over > 0 and occupancy.get("idle"):
+                # A pause that frees nothing is not a preemption, it is just a stall.
+                # vLLM's RECOMPUTE releases the victim's blocks WHILE it waits; aborting
+                # the upstream request only stops the decode, and llama-server keeps the
+                # slot's prompt cache for prefix reuse. So three paused chats can hold
+                # the whole cache between them while all three wait for room that only
+                # they could return. Measured 2026-09-02: `want` climbed 4049 -> 4625 ->
+                # 9532 across resumes and all three gave up at the 90s timeout, with two
+                # reclaims totalling 5620 tokens against a 16384 cache.
+                #
+                # So once anyone is waiting, every idle slot goes, regardless of the
+                # watermark. A paused chat's slot is idle by definition and its cells are
+                # exactly what the waiter needs; the cost is a prefill on resume, which
+                # is what RECOMPUTE pays too.
+                waiting = int(getattr(snapshot, "paused", 0) or 0)
+                needed = over if over > 0 else (
+                    int(occupancy.get("resident") or 0) if waiting else 0
+                )
+                if needed > 0 and occupancy.get("idle"):
                     freed = reclaim_idle_slots(
                         occupancy,
                         lambda slot_id: erase_llama_slot(base, slot_id),
-                        needed = over,
+                        needed = needed,
                     )
                     if freed:
                         _llama_preemption_log(
                             "reclaimed-idle-early",
                             freed = freed,
                             over = over,
+                            waiting = waiting,
                             resident = occupancy.get("resident"),
                         )
                         controller.note_resident(
