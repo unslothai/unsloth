@@ -80,6 +80,34 @@ assert_gone "UNSLOTH_HOME also removes the default chat history" \
 assert_gone "UNSLOTH_HOME also removes the default launcher data" \
     "$FAKE_HOME/.local/share/unsloth"
 
+# Second fixture, portable root only: with no default install to supply one, the
+# nested database at <root>/studio/studio.db is the only one there is. The removal
+# always worked; the summary read it at <root>/studio.db, found nothing, and told the
+# user no chat history had been removed right after removing it.
+ONLY_HOME="$_TMP_ROOT/home-only"
+ONLY_ROOT="$_TMP_ROOT/portable-only"
+mkdir -p "$ONLY_HOME/.local/share" "$ONLY_HOME/.local/bin" \
+    "$ONLY_ROOT/studio/unsloth_studio" "$ONLY_ROOT/share" "$ONLY_ROOT/bin"
+echo "portable" > "$ONLY_ROOT/studio/studio.db"
+: > "$ONLY_ROOT/studio/unsloth_studio/.unsloth-studio-owned"
+printf '%s\n' "$ONLY_ROOT" > "$ONLY_ROOT/.unsloth-portable-root"
+printf "UNSLOTH_EXE='%s'\nexport UNSLOTH_HOME='%s'\n" \
+    "$ONLY_ROOT/studio/unsloth_studio/bin/unsloth" "$ONLY_ROOT" \
+    > "$ONLY_ROOT/share/studio.conf"
+
+env -i PATH="$PATH" HOME="$ONLY_HOME" TMPDIR="$_TMP_ROOT" \
+    XDG_RUNTIME_DIR="$_TMP_ROOT/run-only" XDG_DATA_HOME="$ONLY_HOME/.local/share" \
+    XDG_CACHE_HOME="$ONLY_HOME/.cache" XDG_CONFIG_HOME="$ONLY_HOME/.config" \
+    XDG_STATE_HOME="$ONLY_HOME/.local/state" UNSLOTH_HOME="$ONLY_ROOT" \
+    sh "$UNINSTALL_SH" > "$_TMP_ROOT/uninstall-only.log" 2>&1
+
+assert_gone "a portable-only run removes the nested root" "$ONLY_ROOT"
+only_log="$(cat "$_TMP_ROOT/uninstall-only.log")"
+check_block "the summary reports the nested chat history as removed" \
+    yes "$only_log" "the chat history in the install(s) removed"
+check_block "the summary does not claim no studio.db was found" \
+    no "$only_log" "No studio.db was found"
+
 # So the portable closing message must not print that command as the removal.
 done_block="$(sed -n '/portable install; everything lives in:/,/were left untouched/p' "$INSTALL_SH")"
 if [ -z "$done_block" ]; then

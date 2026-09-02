@@ -350,5 +350,100 @@ webview_case "normal install still clears the WebView cache"  cleared none
 webview_case "portable install leaves the WebView cache"      kept    env
 webview_case "portable marker alone leaves the WebView cache" kept    marker
 
+# Env-mode writes no rc PATH entry, so a deferred `unsloth studio` either misses or
+# starts a DIFFERENT install; every hint outside an activated venv names the shim.
+hint_block="$(awk '
+    /^# Single-quote-escape so paths with spaces/ {grab = 1}
+    grab {print}
+    grab && /^_li_launch_q=/ {seen = 1}
+    seen && /^fi$/ {exit}
+' "$INSTALL")"
+declined="$(awk '
+    /step "launch" "to start later, run:"/ {grab = 1}
+    grab {print; n++}
+    n >= 2 {exit}
+' "$INSTALL")"
+case "$hint_block" in *'_li_shim_q'*) : ;; *) echo "FAIL: hint_block extraction broke"; exit 1 ;; esac
+case "$declined" in *'substep'*) : ;; *) echo "FAIL: declined extraction broke"; exit 1 ;; esac
+
+HINTSNIP='step() { :; }
+substep() { printf "%s\n" "$1"; }
+_LOCAL_BIN="$1"
+VENV_DIR="$2"
+_STUDIO_HOME_REDIRECT="$3"
+'"$hint_block"'
+'"$declined"
+hint() { env -i PATH="$PATH" sh -c "$HINTSNIP" _ "$1" "$2" "$3"; }
+check "deferred hint names the portable shim" \
+    "'$R/bin/unsloth' studio -p 8888" "$(hint "$R/bin" "$R/studio/unsloth_studio" env)"
+check "deferred hint stays bare on a default install" \
+    "unsloth studio -p 8888" "$(hint "$H/.local/bin" "$H/.unsloth/studio/unsloth_studio" default)"
+check "deferred hint quotes an apostrophe in the root" \
+    "'/o'\\''brien/bin/unsloth' studio -p 8888" "$(hint "/o'brien/bin" /x env)"
+# The one survivor is the line after `source .../activate`, where PATH really does resolve it.
+check "only the post-activate hint is bare" \
+    "1" "$(grep -c 'substep "unsloth studio -p 8888"' "$INSTALL")"
+
+# Converting a default install in place leaves its launcher, desktop entry and .app
+# under $HOME; they run this venv uncontained and write logs, PID and .command back
+# there. Portable mode removes nothing outside the root, so it has to name them.
+conv_block="${shim_block%elif ! ln -sfn*}fi"
+CONVSNIP='substep() { printf "%s\n" "$1"; }
+C_WARN=""
+UNSLOTH_ROOT="$1"
+STUDIO_HOME="$UNSLOTH_ROOT/studio"
+DATA_DIR="$UNSLOTH_ROOT/share"
+_LOCAL_BIN="$UNSLOTH_ROOT/bin"
+_shim_path="$_LOCAL_BIN/unsloth"
+VENV_DIR="$2"
+_PORTABLE_MODE=true
+'"$conv_block"
+
+convert_case() { # fakehome owner_exe
+    _cvh="$1"
+    _cvr="$_cvh/root"
+    _cvv="$_cvh/.unsloth/studio/unsloth_studio"
+    mkdir -p "$_cvv/bin" "$_cvh/.local/share/unsloth" "$_cvh/.local/share/applications" \
+        "$_cvh/Desktop" "$_cvh/Applications/Unsloth Studio.app/Contents/MacOS" \
+        "$_cvr/studio" "$_cvr/share" "$_cvr/bin"
+    printf '#!/bin/sh\n' > "$_cvv/bin/unsloth"
+    chmod +x "$_cvv/bin/unsloth"
+    printf "UNSLOTH_EXE='%s'\n" "$2" > "$_cvh/.local/share/unsloth/studio.conf"
+    printf 'Exec="%s/.local/share/unsloth/launch-studio.sh"\n' "$_cvh" \
+        > "$_cvh/.local/share/applications/unsloth-studio.desktop"
+    cp "$_cvh/.local/share/applications/unsloth-studio.desktop" \
+        "$_cvh/Desktop/unsloth-studio.desktop"
+    printf "exec '%s/.local/share/unsloth/launch-studio.sh' \"\$@\"\n" "$_cvh" \
+        > "$_cvh/Applications/Unsloth Studio.app/Contents/MacOS/launch-studio"
+    env -i HOME="$_cvh" PATH="$PATH" sh -c "$CONVSNIP" _ "$_cvr" "$_cvv"
+}
+named() { case "$1" in *"$2"*) echo yes ;; *) echo no ;; esac; }
+
+H="$(new_home)"
+out="$(convert_case "$H" "$H/.unsloth/studio/unsloth_studio/bin/unsloth")"
+check "conversion names the stale launcher data dir" \
+    "yes" "$(named "$out" "  $H/.local/share/unsloth")"
+check "conversion names the stale desktop entry" \
+    "yes" "$(named "$out" "$H/.local/share/applications/unsloth-studio.desktop")"
+check "conversion names the stale Desktop copy" \
+    "yes" "$(named "$out" "$H/Desktop/unsloth-studio.desktop")"
+check "conversion names the stale macOS app" \
+    "yes" "$(named "$out" "$H/Applications/Unsloth Studio.app")"
+# The symlink warning uses -ef for the same reason: never name somebody else's install.
+H="$(new_home)"
+out="$(convert_case "$H" "$T/somebody-elses-venv/bin/unsloth")"
+check "conversion says nothing about an unrelated install" \
+    "no" "$(named "$out" "older launcher")"
+
+# The flag is the answer to unslothai/unsloth#8865; undiscoverable, it is not delivered.
+README="$HERE/../../README.md"
+for needle in '--portable' '--root' 'UNSLOTH_PORTABLE=1' 'UNSLOTH_HOME=/abs/path'; do
+    if grep -qF -e "$needle" "$README"; then
+        printf '  PASS  %s\n' "README documents $needle"
+    else
+        printf '  FAIL  %s\n' "README documents $needle"; fails=$((fails+1))
+    fi
+done
+
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "All checks passed"

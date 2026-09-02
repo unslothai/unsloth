@@ -302,6 +302,14 @@ _remove_root_recording_db() {
     [ -n "$_rrd_real" ] || _rrd_real="$_rrd_root"
     _rrd_had_db=0
     _rrd_db="$_rrd_real/studio.db"
+    # A nested portable root is the MASTER root, and its database sits one level in at
+    # <root>/studio/studio.db. The caller passes the master root because that is the tree
+    # to delete, so probe the Studio root here rather than reporting no history was found
+    # after removing it. Flat test first, matching storage_roots.studio_root().
+    if [ ! -f "$_rrd_db" ] && [ ! -d "$_rrd_real/unsloth_studio" ] \
+        && [ -f "$_rrd_real/studio/studio.db" ]; then
+        _rrd_db="$_rrd_real/studio/studio.db"
+    fi
     if [ -f "$_rrd_db" ]; then
         _rrd_had_db=1
         # The db itself can be a symlink out of the tree: -f follows it but the rm below
