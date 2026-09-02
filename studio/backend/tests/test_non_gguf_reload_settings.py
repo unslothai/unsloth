@@ -141,11 +141,14 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
         src = inspect.getsource(ri.get_status)
         # The GGUF branch returns first, so the last occurrence is the non-GGUF return.
         non_gguf = src[src.rindex("Non-GGUF: classify from the loaded template") :]
-        for wire, stamped in (
-            ("requested_context_length", "max_seq_length_requested"),
-            ("load_in_4bit", "load_in_4bit_requested"),
-            ("requested_gpu_ids", "gpu_ids_requested"),
-        ):
-            assert (
-                f'{wire} = model_info.get("{stamped}")' in non_gguf
-            ), f"non-GGUF status does not publish {wire}"
+        expected_publishers = {
+            "requested_context_length": (
+                "requested_context_length = _nonnegative_int_or_none(",
+                'else model_info.get("max_seq_length_requested")',
+            ),
+            "load_in_4bit": ('load_in_4bit = model_info.get("load_in_4bit_requested")',),
+            "requested_gpu_ids": ('requested_gpu_ids = model_info.get("gpu_ids_requested")',),
+        }
+        for wire, snippets in expected_publishers.items():
+            for snippet in snippets:
+                assert snippet in non_gguf, f"non-GGUF status does not publish {wire}"
