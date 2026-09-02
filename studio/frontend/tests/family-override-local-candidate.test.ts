@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  artifactKindSupportsFamilyOverride,
   familyOverrideArtifactKind,
+  resolvedFamilyOverrideSelection,
 } from "../src/features/model-picker/components/model-selector/family-override-local-candidate.ts";
 import { familyOverrideOptions } from "../src/features/model-picker/components/model-selector/family-override-options.ts";
 
@@ -23,6 +25,49 @@ test("an explicit family selects exactly one structurally loadable artifact kind
   assert.equal(
     familyOverrideArtifactKind(" MINIMAX-H3 ", "video", ["minimax-h3"]),
     "diffusers_modular_pipeline",
+  );
+});
+
+test("a dual-manifest root satisfies either family loader contract", () => {
+  assert.equal(
+    artifactKindSupportsFamilyOverride(
+      "diffusers_dual_pipeline",
+      "diffusers_pipeline",
+    ),
+    true,
+  );
+  assert.equal(
+    artifactKindSupportsFamilyOverride(
+      "diffusers_dual_pipeline",
+      "diffusers_modular_pipeline",
+    ),
+    true,
+  );
+  assert.equal(
+    artifactKindSupportsFamilyOverride(
+      "diffusers_pipeline",
+      "diffusers_modular_pipeline",
+    ),
+    false,
+  );
+});
+
+test("selector restoration prefers the canonical engaged family over an alias", () => {
+  assert.equal(
+    resolvedFamilyOverrideSelection({
+      source: "explicit",
+      requested: "h3",
+      value: "minimax-h3",
+    }),
+    "minimax-h3",
+  );
+  assert.equal(
+    resolvedFamilyOverrideSelection({
+      source: "auto",
+      requested: null,
+      value: "minimax-h3",
+    }),
+    "auto",
   );
 });
 

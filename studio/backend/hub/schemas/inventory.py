@@ -15,6 +15,7 @@ ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
 LocalArtifactKind = Literal[
     "diffusers_pipeline",
     "diffusers_modular_pipeline",
+    "diffusers_dual_pipeline",
     "transformers_model",
     "single_file_checkpoint",
     "gguf",

@@ -1880,7 +1880,7 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
         lambda repo_path, _snapshot = None: {"_hidden_stt": "custom-whisper" in str(repo_path)},
     )
 
-    rows = cache_inventory._scan_cached_models()
+    rows = cache_inventory._scan_cached_models(active_hub_cache = repo_path.parent)
 
     rows_by_repo = {row["repo_id"]: row for row in rows}
     assert set(rows_by_repo) == {"unsloth/whisper-tiny", "Org/custom-whisper"}
@@ -2022,6 +2022,9 @@ def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch,
     assert row["audio_type"] == "minimax_music3"
     assert row["capabilities"]["can_chat"] is False
     assert row["artifact_kind"] == "diffusers_modular_pipeline"
+    assert row["load_id"] == str(
+        tmp_path / "hub/models--MiniMaxAI--MiniMax-Music3/snapshots" / _SNAPSHOT_SHA
+    )
     assert row["partial"] is False
     assert row["single_file"] is False
 

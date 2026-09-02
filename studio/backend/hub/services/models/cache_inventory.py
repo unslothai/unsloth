@@ -1161,6 +1161,7 @@ def _scan_cached_models(
                     if not any(tag.lower() == "whisper" for tag in tags):
                         tags.append("whisper")
                     local_metadata["tags"] = tags
+                pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(load_snapshot)
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
@@ -1169,7 +1170,7 @@ def _scan_cached_models(
                     # artifact even when its repo name/card cannot identify a family. Keep this
                     # structural fact separate from task inference: an explicit family choice may
                     # use it, while components and loose checkpoints remain ineligible.
-                    "artifact_kind": _diffusers_pipeline_artifact_kind(load_snapshot) or "unknown",
+                    "artifact_kind": pipeline_artifact_kind or "unknown",
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,
@@ -1224,6 +1225,12 @@ def _scan_cached_models(
                         tts_only = is_output_audio,
                     )
                 )
+                # An explicit family is the authority for an otherwise opaque community
+                # pipeline. Hand that trust exception an immutable snapshot, never the bare Hub
+                # id: refs/main can move after this structural scan and invalidate the manifest
+                # contract that admitted the row.
+                if pipeline_artifact_kind is not None and load_snapshot is not None:
+                    row["load_id"] = str(load_snapshot)
                 # Native backend selection reads the load identity itself, so a custom native fork addressed only by
                 # repo id is indistinguishable from an ordinary LLM.
                 if native_audio_type and load_snapshot is not None:

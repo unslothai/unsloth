@@ -468,6 +468,23 @@ def test_hub_inventory_distinguishes_modular_pipeline_roots(tmp_path):
     assert _diffusers_pipeline_artifact_kind(None) is None
 
 
+def test_hub_inventory_preserves_both_pipeline_manifest_contracts(tmp_path):
+    from hub.services.models.common import (
+        _classify_local_path,
+        _diffusers_pipeline_artifact_kind,
+    )
+
+    pipeline = tmp_path / "dual-manifest-model"
+    _touch(pipeline / "model_index.json")
+    _touch(pipeline / "modular_model_index.json")
+    _touch(pipeline / "transformer" / "diffusion_pytorch_model.safetensors")
+
+    [row] = _classify_local_path(pipeline, "custom")
+
+    assert row.artifact_kind == "diffusers_dual_pipeline"
+    assert _diffusers_pipeline_artifact_kind(pipeline) == "diffusers_dual_pipeline"
+
+
 def test_hub_inventory_does_not_confuse_transformers_or_adapter_with_pipeline(tmp_path):
     from hub.services.models.common import _classify_local_path
 

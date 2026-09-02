@@ -56,6 +56,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import {
   familyOverrideArtifactKind,
+  resolvedFamilyOverrideSelection,
 } from "@/features/model-picker/components/model-selector/family-override-local-candidate";
 import { familyOverrideOptions } from "@/features/model-picker/components/model-selector/family-override-options";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -2415,12 +2416,10 @@ export function ImagesPage({
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;
-    const family = record.family_override;
-    if (family?.source === "auto") {
-      setFamilyOverride("auto");
-    } else if (typeof family?.requested === "string" && family.requested) {
-      setFamilyOverride(family.requested);
-    }
+    const restoredFamily = resolvedFamilyOverrideSelection(
+      record.family_override,
+    );
+    if (restoredFamily) setFamilyOverride(restoredFamily);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
       // The engaged value spells "no quant" as "off"; the select's option for it is "none".
       (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(

@@ -6679,6 +6679,7 @@ def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeyp
     assert row.get("task") is None
     assert row["diffusers"] is True
     assert row["artifact_kind"] == "diffusers_modular_pipeline"
+    assert row["load_id"] == str(snapshot)
     # FastAPI filters the raw dict through this schema; the contract must survive that boundary.
     response = models_route.CachedModelsResponse(cached = [row])
     assert response.cached[0].artifact_kind == "diffusers_modular_pipeline"

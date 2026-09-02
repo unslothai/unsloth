@@ -6,6 +6,38 @@ export type FamilyOverrideArtifactKind =
   | "diffusers_pipeline"
   | "diffusers_modular_pipeline";
 
+/** Whether one scanned root satisfies the exact manifest contract a family loader requires. */
+export function artifactKindSupportsFamilyOverride(
+  artifactKind: string | null | undefined,
+  requiredKind: FamilyOverrideArtifactKind | null | undefined,
+): boolean {
+  if (!requiredKind) return false;
+  return (
+    artifactKind === requiredKind || artifactKind === "diffusers_dual_pipeline"
+  );
+}
+
+/** Restore the selector from the canonical family that actually engaged, not a request alias. */
+export function resolvedFamilyOverrideSelection(
+  control:
+    | {
+        source?: "auto" | "explicit";
+        value?: unknown;
+        requested?: unknown;
+      }
+    | null
+    | undefined,
+): string | undefined {
+  if (control?.source === "auto") return "auto";
+  if (typeof control?.value === "string" && control.value.trim()) {
+    return control.value;
+  }
+  // Compatibility with a response that predates the engaged-value field.
+  return typeof control?.requested === "string" && control.requested.trim()
+    ? control.requested
+    : undefined;
+}
+
 export function familyOverrideArtifactKind(
   familyOverride: string | null | undefined,
   mediaKind: FamilyOverrideMediaKind | null | undefined,

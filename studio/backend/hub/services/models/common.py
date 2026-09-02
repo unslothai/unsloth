@@ -107,16 +107,22 @@ def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArt
     """Return the root-manifest contract for a Diffusers pipeline directory.
 
     Conventional and Modular Diffusers manifests are not interchangeable: the image loader
-    requires ``model_index.json``, while the video loader also accepts
-    ``modular_model_index.json``. Keep the distinction in inventory instead of making each
-    consumer re-probe the filesystem (which cached rows cannot do in the frontend).
+    requires ``model_index.json``, while some video loaders require
+    ``modular_model_index.json``. A directory may deliberately publish both compatibility
+    contracts, so preserve that third structural state instead of discarding one capability.
+    Keep the distinction in inventory rather than making each consumer re-probe the filesystem
+    (which cached rows cannot do in the frontend).
     """
     if path is None:
         return None
     try:
-        if (path / "model_index.json").is_file():
+        conventional = (path / "model_index.json").is_file()
+        modular = (path / "modular_model_index.json").is_file()
+        if conventional and modular:
+            return "diffusers_dual_pipeline"
+        if conventional:
             return "diffusers_pipeline"
-        if (path / "modular_model_index.json").is_file():
+        if modular:
             return "diffusers_modular_pipeline"
     except OSError:
         pass

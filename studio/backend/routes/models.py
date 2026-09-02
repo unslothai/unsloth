@@ -5352,8 +5352,13 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
                     if pipeline_artifact_kind is not None:
                         row["artifact_kind"] = pipeline_artifact_kind
-                    # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
-                    if model_load_id:
+                    # A structural family override is a narrow trust exception. Pin the exact
+                    # snapshot whose manifest earned it even in the active cache; refs/main may
+                    # otherwise move between inventory and load. Ordinary rows retain the bare id
+                    # whenever it resolves to the selected copy.
+                    if pipeline_artifact_kind is not None and selected is not None:
+                        row["load_id"] = str(selected)
+                    elif model_load_id:
                         row["load_id"] = model_load_id
                     model_format = _repo_model_format(repo_info, selected)
                     if model_format:
