@@ -260,6 +260,47 @@ test("a marker carrying an info string does not close a fence", () => {
   );
 });
 
+test("a definition inside a block quote or a list is still document-wide", () => {
+  for (const container of [
+    "> [g]: /guide",
+    "- [g]: /guide",
+    "1. [g]: /guide",
+    "> > [g]: /guide",
+  ]) {
+    assert.equal(
+      markdownRenderScope(`See [guide][g].\n\n${container}\n`),
+      "document",
+      container,
+    );
+  }
+});
+
+test("only spaces and tabs may follow a closing fence marker", () => {
+  // U+00A0 after the marker is code content to marked, so the fence is still open and
+  // the marker on the next line is the one that closes it.
+  const reply =
+    "See [guide][g].\n\n```ts\nconst x = 1;\n```\u00a0\n```\n\n[g]: /guide\n";
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a CRLF reply closes its fences", () => {
+  const reply =
+    "See [guide][g].\r\n\r\n```ts\r\nconst x = 1;\r\n```\r\n\r\n[g]: /guide\r\n";
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a fence marker inside a raw HTML block is literal content", () => {
+  for (const html of ["<pre>\n```\n</pre>", "<div>\n```\n</div>"]) {
+    assert.equal(
+      markdownRenderScope(`See [guide][g].\n\n${html}\n\n[g]: /guide\n`),
+      "document",
+      html,
+    );
+  }
+});
+
 test("link references and definitions stay in one rendered document", () => {
   const usage = `Before [reference][math-ref].\n\n${paragraphs(20)}`;
   const cache = new IncrementalMarkdownCache();

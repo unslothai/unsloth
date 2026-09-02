@@ -69,10 +69,18 @@ const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
-const LINK_DEFINITION_LINE_RE = /^ {0,3}\[(?:\\.|[^\]\n\\]){1,200}\]:/m;
+// A definition still counts inside a block quote or a list item -- marked registers it
+// document-wide either way -- so the container prefix is skipped before the label. The
+// four-space indent that means `code block` is deliberately not one of these prefixes.
+const CONTAINER_PREFIX = "(?: {0,3}>[ \\t]?)*(?: {0,3}(?:[-*+]|\\d{1,9}[.)]) +)?";
+const LINK_DEFINITION_LINE_RE = new RegExp(
+  `^ {0,3}${CONTAINER_PREFIX}\\[(?:\\\\.|[^\\]\\n\\\\]){1,200}\\]:`,
+  "m",
+);
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_CLOSE_SUFFIX_RE = /^[ \t]*\r?$/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -92,24 +100,57 @@ const closesFence = (
 ): boolean =>
   marker[1][0] === fence[0] &&
   marker[1].length >= fence.length &&
-  line.slice(marker[0].length).trim() === "";
+  // CommonMark allows only spaces and tabs after a closing marker. `trim()` also eats
+  // U+00A0, which would close a fence marked is still treating as code content.
+  FENCE_CLOSE_SUFFIX_RE.test(line.slice(marker[0].length));
+
+// A raw HTML block holds its content literally, so a fence marker inside one is text and
+// must not move the fence state. The two CommonMark shapes that reach a chat reply are the
+// verbatim tags, which run to their own closing tag, and the block-level tags, which run to
+// a blank line.
+const HTML_VERBATIM_OPEN_RE = /^ {0,3}<(pre|script|style|textarea)[\s>/]/i;
+const HTML_BLOCK_OPEN_RE =
+  /^ {0,3}<\/?(?:address|article|aside|blockquote|details|div|dl|fieldset|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|section|table|tbody|td|tfoot|th|thead|tr|ul)[\s>/]/i;
 
 function textOutsideFencedCode(markdown: string): string {
   const lines: string[] = [];
   let fence: string | null = null;
+  let htmlClose: RegExp | null = null;
   for (const line of markdown.split("\n")) {
-    const marker = FENCED_CODE_BLOCK_RE.exec(line);
-    if (fence === null) {
-      if (marker !== null && opensFence(line, marker)) {
-        fence = marker[1];
-      } else {
-        lines.push(line);
+    if (htmlClose !== null) {
+      lines.push(line);
+      if (htmlClose.test(line)) {
+        htmlClose = null;
       }
       continue;
     }
-    if (marker !== null && closesFence(line, marker, fence)) {
-      fence = null;
+    const marker = fence === null ? null : FENCED_CODE_BLOCK_RE.exec(line);
+    if (fence !== null) {
+      if (marker !== null && closesFence(line, marker, fence)) {
+        fence = null;
+      }
+      continue;
     }
+    const verbatim = HTML_VERBATIM_OPEN_RE.exec(line);
+    if (verbatim !== null) {
+      htmlClose = new RegExp(`</${verbatim[1]}>`, "i");
+      lines.push(line);
+      if (htmlClose.test(line)) {
+        htmlClose = null;
+      }
+      continue;
+    }
+    if (HTML_BLOCK_OPEN_RE.test(line)) {
+      htmlClose = /^\s*$/;
+      lines.push(line);
+      continue;
+    }
+    const open = FENCED_CODE_BLOCK_RE.exec(line);
+    if (open !== null && opensFence(line, open)) {
+      fence = open[1];
+      continue;
+    }
+    lines.push(line);
   }
   return lines.join("\n");
 }
