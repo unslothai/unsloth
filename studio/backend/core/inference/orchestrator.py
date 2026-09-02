@@ -303,6 +303,10 @@ class InferenceOrchestrator:
         # orphaning the extra thread (self._dispatcher_thread tracks only the last). The
         # orphan later steals the "unloaded" reply off resp_queue and hangs unload_model.
         self._dispatcher_lifecycle_lock = threading.Lock()
+        # Set under _dispatcher_lifecycle_lock while share_distributed_object reads resp_queue
+        # under _gen_lock with no mailbox registered: a dispatcher spawned meanwhile would take
+        # its reply and drop it as unaddressed. Blocks _start_dispatcher/_generate_dispatched.
+        self._exclusive_op_pending = False
 
         # Local state mirrors (updated from subprocess responses)
         self.active_model_name: Optional[str] = None
@@ -1157,6 +1161,7 @@ class InferenceOrchestrator:
             if (
                 self._unload_pending
                 or self._exclusive_tts_pending
+                or self._exclusive_op_pending
                 or getattr(self, "_exclusive_vram_probe_pending", False)
             ):
                 return False
@@ -1293,6 +1298,11 @@ class InferenceOrchestrator:
             yield GenStreamError("Error: audio generation is in progress", public = True)
             return
 
+        # A share owns resp_queue; the under-lock recheck below covers a flag set after here.
+        if self._exclusive_op_pending:
+            yield GenStreamError("Error: a distributed object share is in progress", public = True)
+            return
+
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
         # _dispatcher_lifecycle_lock and returns True only for the caller that actually spawned
         # the thread, so at most one dispatcher ever exists even when two compare requests race
@@ -1353,9 +1363,13 @@ class InferenceOrchestrator:
                 or self.active_model_name != expected_model
                 or not dispatcher_alive
             )
+            # Under _mailbox_lock so the gate is atomic with registration: the share's
+            # _wait_dispatcher_idle stops the dispatcher, orphaning a mailbox registered in the
+            # window the unlocked pre-check leaves. Separate from `unloading` so the refusal names it.
+            share_reserved = self._exclusive_op_pending
             tts_reserved = self._exclusive_tts_pending
             probe_reserved = getattr(self, "_exclusive_vram_probe_pending", False)
-            blocked = unloading or tts_reserved or probe_reserved
+            blocked = unloading or share_reserved or tts_reserved or probe_reserved
             if not blocked:
                 self._mailboxes[request_id] = mailbox
                 if cancel_event is not None:
@@ -1373,7 +1387,9 @@ class InferenceOrchestrator:
             if orphaned_dispatcher:
                 self._stop_dispatcher()
             detail = (
-                "Error: audio generation is in progress"
+                "Error: a distributed object share is in progress"
+                if share_reserved
+                else "Error: audio generation is in progress"
                 if tts_reserved
                 else "Error: model switch is checking GPU memory"
                 if probe_reserved
@@ -1492,49 +1508,61 @@ class InferenceOrchestrator:
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
 
-        self._wait_dispatcher_idle()
-        with self._mailbox_lock:
-            if self._mailboxes:
+        # Set BEFORE the drain: the window between it and the read loop below is spawnable.
+        with self._dispatcher_lifecycle_lock:
+            self._exclusive_op_pending = True
+        try:
+            # False means it left the dispatcher alive, and only this return says so: a compare
+            # stream unregistering just past the deadline empties the mailbox snapshot below.
+            if not self._wait_dispatcher_idle():
                 raise RuntimeError(
                     "Cannot share distributed objects while compare requests are active"
                 )
-        request_id = str(uuid.uuid4())
-        cmd = {
-            "type": "share_object",
-            "request_id": request_id,
-            "object": obj,
-        }
-
-        with self._gen_lock:
-            self._send_cmd(cmd)
-            deadline = None if timeout is None else time.monotonic() + timeout
-            while deadline is None or time.monotonic() < deadline:
-                remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
-                resp = self._read_resp(timeout = min(remaining, 1.0))
-                if resp is None:
-                    if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
-                    continue
-
-                rtype = resp.get("type", "")
-                rid = resp.get("request_id")
-                if rid and rid != request_id:
-                    logger.debug(
-                        "Skipping response for request_id=%s while sharing request_id=%s",
-                        rid,
-                        request_id,
+            with self._mailbox_lock:
+                if self._mailboxes:
+                    raise RuntimeError(
+                        "Cannot share distributed objects while compare requests are active"
                     )
-                    continue
-                if rtype == "shared":
-                    return resp.get("object")
-                if rtype == "share_error":
-                    raise RuntimeError(resp.get("error", "Failed to share object"))
-                if rtype == "error":
-                    raise RuntimeError(resp.get("error", "Subprocess error"))
-                if rtype == "status":
-                    continue
+            request_id = str(uuid.uuid4())
+            cmd = {
+                "type": "share_object",
+                "request_id": request_id,
+                "object": obj,
+            }
 
-            raise RuntimeError("Timeout waiting for distributed object share")
+            with self._gen_lock:
+                self._send_cmd(cmd)
+                deadline = None if timeout is None else time.monotonic() + timeout
+                while deadline is None or time.monotonic() < deadline:
+                    remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
+                    resp = self._read_resp(timeout = min(remaining, 1.0))
+                    if resp is None:
+                        if not self._ensure_subprocess_alive():
+                            raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
+                        continue
+
+                    rtype = resp.get("type", "")
+                    rid = resp.get("request_id")
+                    if rid and rid != request_id:
+                        logger.debug(
+                            "Skipping response for request_id=%s while sharing request_id=%s",
+                            rid,
+                            request_id,
+                        )
+                        continue
+                    if rtype == "shared":
+                        return resp.get("object")
+                    if rtype == "share_error":
+                        raise RuntimeError(resp.get("error", "Failed to share object"))
+                    if rtype == "error":
+                        raise RuntimeError(resp.get("error", "Subprocess error"))
+                    if rtype == "status":
+                        continue
+
+                raise RuntimeError("Timeout waiting for distributed object share")
+        finally:
+            with self._dispatcher_lifecycle_lock:
+                self._exclusive_op_pending = False
 
     # ------------------------------------------------------------------
     # Public API — same interface as InferenceBackend

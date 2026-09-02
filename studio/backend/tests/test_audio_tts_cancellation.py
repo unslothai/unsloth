@@ -92,6 +92,7 @@ def _bare_orchestrator():
     orchestrator._request_cancel_events = {}
     orchestrator._unload_pending = False
     orchestrator._exclusive_tts_pending = False
+    orchestrator._exclusive_op_pending = False
     orchestrator.active_model_name = "model"
     orchestrator.models = {"model": {}}
     orchestrator.loading_models = set()

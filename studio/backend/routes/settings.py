@@ -2748,12 +2748,23 @@ def update_embedding_model(
                     )
                 )
             )
-        if evaluate_file_security(
-            verify_target,
-            hf_token = scan_token,
-            load_subdirs = load_subdirs,
-            local_only_load = local_only_load,
-        ).blocked:
+        try:
+            _security_blocked = evaluate_file_security(
+                verify_target,
+                hf_token = scan_token,
+                load_subdirs = load_subdirs,
+                local_only_load = local_only_load,
+            ).blocked
+        except Exception:
+            # A scan error is a gate failure, not a verdict: fail open rather than 500 the
+            # route, as _guard_model_security in core/rag/embeddings.py does.
+            logger.warning(
+                "Embedding-model security scan errored for %r; allowing (fail-open)",
+                model,
+                exc_info = True,
+            )
+            _security_blocked = False
+        if _security_blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
             if local_only_load:

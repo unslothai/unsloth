@@ -115,6 +115,31 @@ def test_flagged_repo_is_blocked_without_force(client, monkeypatch):
     assert "model" not in saved
 
 
+def _security_raises():
+    mod = _types.ModuleType("utils.security")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("scan endpoint unreachable")
+
+    mod.evaluate_file_security = _boom
+    mod.security_load_subdirs = lambda *a, **k: ()
+    return mod
+
+
+def test_scan_error_fails_open_instead_of_500(client, monkeypatch):
+    # A scan error is a gate failure, not a verdict; same policy as _guard_model_security.
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_raises())
+    import utils.models as models
+
+    monkeypatch.setattr(models, "is_embedding_model", lambda *a, **k: True)
+
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
+
+    assert r.status_code == 200
+    assert saved["model"] == "acme/embedder"
+
+
 def test_uncached_selection_is_marked_pending_so_loaders_stay_offline(client, monkeypatch):
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))

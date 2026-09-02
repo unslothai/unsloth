@@ -34,6 +34,7 @@ def _bare_orchestrator():
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
     o._exclusive_tts_pending = False
+    o._exclusive_op_pending = False
     o.active_model_name = "m"
     o.models = {"m": {}}
     o.loading_models = set()
@@ -2646,3 +2647,64 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
         with inf._scoped_load_attempts_lock:
             inf._scoped_load_attempts.clear()
             inf._scoped_load_cancel_tombstones.clear()
+
+
+def test_share_aborts_when_dispatcher_drain_fails(monkeypatch):
+    # Reading _mailboxes instead: a stream unregistering just past the deadline empties the
+    # map, so the share runs on while that dispatcher eats its reply. timeout=None hangs.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: False)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not share past a failed drain")
+    )
+
+    with pytest.raises(RuntimeError, match = "compare requests are active"):
+        o.share_distributed_object({"role": "user"}, timeout = 1.0)
+
+    assert o._exclusive_op_pending is False, "the exclusive flag must not leak on the abort"
+
+
+def test_dispatched_share_refusal_is_public(monkeypatch):
+    # Without public=True _friendly_gen_stream_error swaps this for "An internal error occurred."
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_start_dispatcher", lambda: pytest.fail("must not start a dispatcher during a share")
+    )
+    o._exclusive_op_pending = True
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert len(out) == 1
+    assert "distributed object share" in str(out[0])
+    assert out[0].public is True
+
+
+def test_dispatched_share_recheck_refusal_names_the_share(monkeypatch):
+    # Folding this into `unloading` said "model is being unloaded" with no unload in sight.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._request_cancel_events = {}
+    o._dispatcher_thread = _AliveDispatcher()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: False)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate during a share")
+    )
+
+    def flip(*a, **k):
+        o._exclusive_op_pending = True
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", flip)
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert len(out) == 1
+    assert "distributed object share" in str(out[0])
+    assert "unloaded" not in str(out[0])
+    assert o._mailboxes == {}, "must not leave an orphaned mailbox"
