@@ -55,6 +55,11 @@ print("__JSON__" + json.dumps({
     "master": str(master) if master else None,
     "llama": os.environ.get("UNSLOTH_LLAMA_CPP_PATH"),
     "exported_home": os.environ.get("UNSLOTH_HOME"),
+    "caches": {k: os.environ.get(k) for k in (
+        "UNSLOTH_PORTABLE", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_TOOL_DIR",
+        "UV_TOOL_BIN_DIR", "UV_PYTHON_BIN_DIR", "UV_INSTALL_DIR", "UV_NO_MODIFY_PATH",
+        "NPM_CONFIG_CACHE", "CUDA_CACHE_PATH",
+    )},
     # The env prefix _fail_if_install_damaged puts on its reinstall command.
     "reinstall_env": (
         "UNSLOTH_HOME=" + shlex.quote(str(master)) if master
@@ -162,6 +167,56 @@ def main() -> int:
         )
         check("cli: exports llama.cpp beside studio/", str(nested / "llama.cpp"), r["llama"])
         check("cli: exports the master root", str(nested), r["exported_home"])
+        # Without these, `unsloth studio update` from an activated venv hands setup.sh a
+        # bare environment: uv and npm repopulate ~/.cache and uv installs to ~/.local/bin.
+        expected_caches = {
+            "UNSLOTH_PORTABLE": "1",
+            "UV_CACHE_DIR": str(nested / "cache" / "uv"),
+            "UV_PYTHON_INSTALL_DIR": str(nested / "cache" / "uv-python"),
+            "UV_TOOL_DIR": str(nested / "cache" / "uv-tools"),
+            "UV_TOOL_BIN_DIR": str(nested / "bin"),
+            "UV_PYTHON_BIN_DIR": str(nested / "bin"),
+            "UV_INSTALL_DIR": str(nested / "bin"),
+            "UV_NO_MODIFY_PATH": "1",
+            "NPM_CONFIG_CACHE": str(nested / "cache" / "npm"),
+            "CUDA_CACHE_PATH": str(nested / "cache" / "cuda"),
+        }
+        for key, want in expected_caches.items():
+            check(f"cli: exports {key}", want, r["caches"].get(key))
+
+        # share/studio.conf is what the installer actually wrote, so it wins over
+        # the derived layout.
+        conf_root = tmp / "opt" / "confroot"
+        conf_prefix = _make_install(conf_root, flat = False)
+        (conf_root / "share" / "studio.conf").write_text(
+            f"UNSLOTH_EXE='{conf_root}/bin/unsloth'\n"
+            f"export UNSLOTH_HOME='{conf_root}'\n"
+            f"export UV_CACHE_DIR='{conf_root}/elsewhere/uv'\n"
+            f"export NPM_CONFIG_CACHE='{conf_root}/elsewhere/npm'\n"
+        )
+        r = _run(CLI_PROBE, {"_PREFIX": str(conf_prefix)}, home)
+        check(
+            "cli: studio.conf wins over the derived uv cache",
+            str(conf_root / "elsewhere" / "uv"),
+            r["caches"].get("UV_CACHE_DIR"),
+        )
+        check(
+            "cli: names studio.conf omits are still derived",
+            str(conf_root / "cache" / "uv-tools"),
+            r["caches"].get("UV_TOOL_DIR"),
+        )
+
+        # A user who exported one of these keeps it.
+        r = _run(
+            CLI_PROBE,
+            {"_PREFIX": str(prefix), "UV_CACHE_DIR": str(tmp / "mine")},
+            home,
+        )
+        check(
+            "cli: an already-set UV_CACHE_DIR is left alone",
+            str(tmp / "mine"),
+            r["caches"].get("UV_CACHE_DIR"),
+        )
 
         dev = tmp / "dev"
         (dev / "unsloth_studio" / "bin").mkdir(parents = True)

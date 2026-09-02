@@ -906,15 +906,16 @@ fi
 # UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
 # (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
 _studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+# Whitespace stripped before the fallback so " " is treated as unset (matches
+# Python .strip()) instead of masking a real STUDIO_HOME.
+_setup_trim_ws() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+_studio_override=$(_setup_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
 else
-    _studio_override="${STUDIO_HOME:-}"
+    _studio_override=$(_setup_trim_ws "${STUDIO_HOME:-}")
     [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
 fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
@@ -949,7 +950,16 @@ VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
 # a writable-but-empty override still aborts at the venv check below, and clearing first
 # would cost the cache for a run that then does nothing; a fresh install has neither venv
 # nor cache. Still before any install work, while the old frontend is the one on disk.
-if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ]; then
+
+# A portable install promised the desktop app was left untouched, and these caches
+# live under $HOME, outside the root. The marker covers a shim-less activated venv.
+_setup_portable_mode() {
+    case "${UNSLOTH_PORTABLE:-}" in 1|true|TRUE|yes|YES|on|ON) return 0 ;; esac
+    if [ -n "${UNSLOTH_HOME:-}" ] && [ -f "${UNSLOTH_HOME}/.unsloth-portable-root" ]; then return 0; fi
+    if [ -f "$STUDIO_HOME/.unsloth-portable-root" ] || [ -f "$STUDIO_HOME/../.unsloth-portable-root" ]; then return 0; fi
+    return 1
+}
+if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ] && ! _setup_portable_mode; then
     _clear_webview_caches
 fi
 

@@ -70,7 +70,10 @@ _next_is_root=false
 # Portable mode: one master root holding Studio, the runtimes and every cache,
 # so nothing is written outside it. Env-seeded for `curl ... | sh`.
 _PORTABLE_MODE=false
-_UNSLOTH_ROOT="${UNSLOTH_HOME:-}"
+_trim_ws() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+# Trimmed here, not at the first use: a whitespace-only value passes -n, enables
+# portable mode, then resolves to "" and builds roots like /bin and /cache/uv.
+_UNSLOTH_ROOT=$(_trim_ws "${UNSLOTH_HOME:-}")
 # Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
 # (the documented piped-install style) is honored; the --with-llama-cpp-dir
 # flag below overrides it when given.
@@ -94,10 +97,10 @@ for arg in "$@"; do
     if [ "$_next_is_root" = true ]; then
         # Untreated, `--root --local` took --local as the path.
         case "$arg" in
-            "" ) echo "ERROR: --root requires a path argument." >&2; exit 1 ;;
             -* ) echo "ERROR: --root requires a path argument, got the flag '$arg'." >&2; exit 1 ;;
         esac
-        _UNSLOTH_ROOT="$arg"
+        _UNSLOTH_ROOT=$(_trim_ws "$arg")
+        [ -n "$_UNSLOTH_ROOT" ] || { echo "ERROR: --root requires a path argument." >&2; exit 1; }
         _PORTABLE_MODE=true
         _next_is_root=false
         continue
@@ -114,7 +117,7 @@ for arg in "$@"; do
         --portable) _PORTABLE_MODE=true ;;
         --root) _next_is_root=true ;;
         --root=*)
-            _UNSLOTH_ROOT="${arg#--root=}"
+            _UNSLOTH_ROOT=$(_trim_ws "${arg#--root=}")
             [ -n "$_UNSLOTH_ROOT" ] || { echo "ERROR: --root requires a path argument." >&2; exit 1; }
             _PORTABLE_MODE=true
             ;;
@@ -132,8 +135,9 @@ case "${UNSLOTH_PORTABLE:-}" in 1|true|TRUE|yes|YES|on|ON) _PORTABLE_MODE=true ;
 # Studio must not gain a studio/ level, which would relocate an existing install.
 _PORTABLE_FLAT=false
 if [ "$_PORTABLE_MODE" = true ] && [ -z "$_UNSLOTH_ROOT" ]; then
-    _existing_studio="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
-    _existing_studio=$(printf '%s' "$_existing_studio" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    # Trim before the fallback, or a whitespace-only UNSLOTH_STUDIO_HOME masks a real STUDIO_HOME.
+    _existing_studio=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    [ -n "$_existing_studio" ] || _existing_studio=$(_trim_ws "${STUDIO_HOME:-}")
     if [ -n "$_existing_studio" ]; then
         _UNSLOTH_ROOT="$_existing_studio"
         _PORTABLE_FLAT=true
@@ -645,17 +649,16 @@ _resolve_studio_destinations() {
         _override="$_UNSLOTH_ROOT"
         _override_var="--root"
     else
-        _override="${UNSLOTH_STUDIO_HOME:-}"
+        # Trimmed before the fallback so " " is treated as unset (matches the Python
+        # resolvers' .strip()) instead of masking a real STUDIO_HOME.
+        _override=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
         if [ -n "$_override" ]; then
             _override_var="UNSLOTH_STUDIO_HOME"
         else
-            _override="${STUDIO_HOME:-}"
+            _override=$(_trim_ws "${STUDIO_HOME:-}")
             [ -n "$_override" ] && _override_var="STUDIO_HOME"
         fi
     fi
-    # Strip surrounding whitespace so " " is treated as unset (matches the
-    # Python resolvers' .strip()), preventing install/runtime layout drift.
-    _override=$(printf '%s' "$_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     # Tilde expansion: env vars are not subject to it when quoted on assignment.
     case "$_override" in
         "~") _override="$HOME" ;;

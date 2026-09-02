@@ -688,6 +688,13 @@ function Install-UnslothStudio {
                 }
                 $WithLlamaCppDir = $argList[$i]
             }
+            default {
+                # `--root=DIR` is one argument, and switch matches exactly, so the
+                # arm above misses it and the install would silently be a normal one.
+                if ($argList[$i] -like "--root=*") {
+                    return (Exit-InstallFailure (Deny-PortableMode "--root"))
+                }
+            }
         }
     }
 
