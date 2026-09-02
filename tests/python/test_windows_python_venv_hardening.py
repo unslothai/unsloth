@@ -484,6 +484,7 @@ if ($env:TEST_INITIAL_PRESENT -eq "1") {{
 }}
 $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
 $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+$providerPresentBefore = Test-Path -LiteralPath Env:UV_CACHE_DIR
 $active = $null
 try {{
     Set-StudioUvCacheEnvironment -StudioRoot $env:TEST_STUDIO_HOME
@@ -495,6 +496,9 @@ try {{
 }}
 [pscustomobject]@{{
     Active = $active
+    PresentBefore = $hadPreviousUvCacheDir
+    ProviderPresentBefore = $providerPresentBefore
+    StoredBefore = [string]$previousUvCacheDir
     PresentAfter = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
     ProviderPresentAfter = Test-Path -LiteralPath Env:UV_CACHE_DIR
     Restored = [string][Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
@@ -514,9 +518,17 @@ try {{
         assert os.path.normcase(os.path.normpath(result["Active"])) == os.path.normcase(
             os.path.normpath(str(tmp_path / "cache" / "uv"))
         )
-    assert result["PresentAfter"] is initial_present
-    assert result["ProviderPresentAfter"] is initial_present
-    assert result["Restored"] == initial_value
+    # Windows normalizes a requested present-but-empty process variable to absent.
+    # Compare against the state the platform actually stored before installer code ran.
+    if not initial_present:
+        assert result["PresentBefore"] is False
+        assert result["ProviderPresentBefore"] is False
+    elif initial_value:
+        assert result["PresentBefore"] is True
+        assert result["ProviderPresentBefore"] is True
+    assert result["PresentAfter"] is result["PresentBefore"]
+    assert result["ProviderPresentAfter"] is result["ProviderPresentBefore"]
+    assert result["Restored"] == result["StoredBefore"]
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
