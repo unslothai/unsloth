@@ -21400,6 +21400,18 @@ async def produce_openai_chat_completions(
                 finally:
                     # A disconnect mid-approval must not leave a slot parked.
                     await _park_admission(False, wait = False)
+                    # Nor a finished generation leave its charge in the ledger. This was
+                    # written and never called, so every chat that ended -- normally, by
+                    # giving up on room, or on a stream error -- stayed registered with
+                    # its tokens committed. The ledger only ever grew, and once it
+                    # believed the cache was full the next chat waited for room that
+                    # could not arrive. Unlike the resume wait there is no timeout on
+                    # that path, so it waited until the client gave up: observed as one
+                    # chat of four hanging 2400s while llama-server sat idle with every
+                    # slot released.
+                    _openai_llama_preemption_disarm(
+                        llama_backend = llama_backend, gen_id = completion_id,
+                    )
                     try:
                         if not stream_completed:
                             cancel_event.set()

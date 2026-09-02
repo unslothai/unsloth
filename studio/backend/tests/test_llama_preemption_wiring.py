@@ -1191,3 +1191,88 @@ class TestAPauseActuallyFreesCells:
         """So a run can be read afterwards without guessing why a reclaim fired."""
         source = self._refresh_source()
         assert "waiting = waiting" in source
+
+
+class TestAFinishedGenerationGivesItsChargeBack:
+    """The ledger only ever grew, so eventually nobody could be admitted.
+
+    `_openai_llama_preemption_disarm` was written and never called. Every chat that
+    ended stayed registered with its tokens committed: the ones that finished normally,
+    the ones that gave up waiting for room, and the ones killed by a stream error. Once
+    the accumulated total passed the ceiling the next chat waited for room that could
+    never arrive, and unlike the resume wait that path has no timeout, so it waited until
+    the client disconnected. Observed 2026-09-02: one chat of four open for the full
+    2400s deadline while llama-server sat idle with every slot released and
+    `requests_processing` at 0.
+    """
+
+    def test_the_disarm_is_called(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        calls = source.count("_openai_llama_preemption_disarm(")
+        assert calls >= 2, (
+            "disarm is defined but never called, so charges accumulate forever"
+        )
+
+    def test_it_runs_in_a_finally_so_an_error_path_still_releases(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        call_at = source.index("                    _openai_llama_preemption_disarm(")
+        # The nearest preceding block opener must be a `finally:`, or the paths that
+        # matter most here (gave-up, stream error, disconnect) would skip it.
+        preceding = source[:call_at]
+        # The nearest block opener before the call, ignoring comments and blank lines.
+        openers = [
+            line.strip() for line in preceding.splitlines()
+            if line.strip().endswith(":") and not line.strip().startswith("#")
+        ]
+        assert openers and openers[-1] == "finally:", (
+            f"disarm sits under {openers[-1] if openers else 'nothing'}, not a finally, "
+            f"so gave-up, stream-error and disconnect paths would skip it"
+        )
+
+    def _controller(self, budget = 16384):
+        from core.inference.llama_preemption import PreemptionController
+
+        controller = PreemptionController("disarm-test")
+        controller.configure(budget = budget, kv_unified = True)
+        return controller
+
+    def test_unregister_actually_drops_the_charge(self):
+        from core.inference.llama_preemption import ParticipantState
+
+        controller = self._controller()
+        controller.register("a", tokens = 8000)
+        controller.register("b", tokens = 4000)
+        assert controller.snapshot().committed == 12000
+
+        controller.unregister("a")
+        assert controller.snapshot().committed == 4000, (
+            "a finished chat still counts against the cache"
+        )
+        assert controller.participant("a") is None
+        # And the survivor is untouched.
+        assert controller.participant("b").state == ParticipantState.DECODING
+
+    def test_unregistering_twice_is_harmless(self):
+        controller = self._controller()
+        controller.register("a", tokens = 100)
+        controller.unregister("a")
+        controller.unregister("a")
+        assert controller.snapshot().committed == 0
+
+    def test_a_replayed_charge_is_released_too(self):
+        """note_replayed raises base_tokens, so a leak here is larger than the prompt."""
+        controller = self._controller()
+        controller.register("a", tokens = 1000)
+        controller.note_replayed("a", 4000)
+        controller.observe("a", 0)
+        assert controller.snapshot().committed == 5000
+        controller.unregister("a")
+        assert controller.snapshot().committed == 0
