@@ -736,7 +736,9 @@ def test_install_sh_shim_uses_atomic_replace():
     """install.sh shim install must use ln -sfn for atomic replace (rm+ln left a missing-shim window)."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     shim_idx = src.index('_shim_path="$_LOCAL_BIN/unsloth"')
-    block = src[shim_idx : shim_idx + 1500]
+    # To the end of the shim construct, not a byte count: the portable branch sits
+    # between the two, and a fixed window stopped short of the ln -sfn it asserts.
+    block = src[shim_idx : src.index("# Is $2 one of the colon-separated entries", shim_idx)]
     assert (
         'ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"' in block
     ), "install.sh must use ln -sfn for atomic shim replacement"

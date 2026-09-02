@@ -117,9 +117,16 @@ def _resolve_studio_home() -> tuple[Path, bool]:
     master = (os.environ.get("UNSLOTH_HOME") or "").strip()
     if master:
         try:
-            candidate = Path(master).expanduser().resolve() / "studio"
+            root = Path(master).expanduser().resolve()
         except (OSError, ValueError):
-            candidate = Path(master).expanduser() / "studio"
+            root = Path(master).expanduser()
+        # Flat layout: a root holding the venv directly IS the Studio root, the same
+        # rule storage_roots.studio_root() applies to UNSLOTH_HOME.
+        try:
+            flat = (root / "unsloth_studio").is_dir()
+        except OSError:
+            flat = False
+        candidate = root if flat else root / "studio"
         try:
             is_custom = candidate != (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
@@ -182,6 +189,8 @@ def _portable_root_env(master: Path) -> dict[str, str]:
         "UV_NO_MODIFY_PATH": "1",
         "NPM_CONFIG_CACHE": str(master / "cache" / "npm"),
         "CUDA_CACHE_PATH": str(master / "cache" / "cuda"),
+        # pip is install_python_stack's fallback when uv fails, and it caches by default.
+        "PIP_CACHE_DIR": str(master / "cache" / "pip"),
     }
     try:
         conf = (master / "share" / "studio.conf").read_text(encoding = "utf-8", errors = "replace")

@@ -744,6 +744,9 @@ _export_portable_roots() {
 
     export NPM_CONFIG_CACHE="$UNSLOTH_ROOT/cache/npm"
     export CUDA_CACHE_PATH="$UNSLOTH_ROOT/cache/cuda"
+    # install_python_stack falls back to plain pip when uv fails, and not every
+    # call site passes --no-cache-dir, so ~/.cache/pip fills without this.
+    export PIP_CACHE_DIR="$UNSLOTH_ROOT/cache/pip"
 
     # Same filesystem, or uv's hardlink into the venv degrades to a full copy.
     mkdir -p -- "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" 2>/dev/null || true
@@ -1718,6 +1721,8 @@ LAUNCHER_EOF
                 printf '%s\n' "export UV_NO_MODIFY_PATH=1"
                 printf '%s\n' "export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
                 printf '%s\n' "export CUDA_CACHE_PATH='$_css_quoted_root/cache/cuda'"
+                # uv is not the only installer setup.sh reaches for; pip's own cache needs pinning.
+                printf '%s\n' "export PIP_CACHE_DIR='$_css_quoted_root/cache/pip'"
             fi
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
@@ -6198,6 +6203,7 @@ if [ "$_PORTABLE_MODE" = true ]; then
             "export UV_NO_MODIFY_PATH=1" \
             "export NPM_CONFIG_CACHE='$_shim_root/cache/npm'" \
             "export CUDA_CACHE_PATH='$_shim_root/cache/cuda'" \
+            "export PIP_CACHE_DIR='$_shim_root/cache/pip'" \
             "exec '$_shim_venv/bin/unsloth' \"\$@\"" > "$_shim_tmp" 2>/dev/null \
         && chmod +x "$_shim_tmp" 2>/dev/null \
         && mv -f "$_shim_tmp" "$_shim_path" 2>/dev/null
@@ -6455,11 +6461,14 @@ if [ "$_PORTABLE_MODE" = true ]; then
     substep "portable install; everything lives in:"
     substep "  $UNSLOTH_ROOT"
     substep "launch it with $_LOCAL_BIN/unsloth studio"
-    # studio.conf goes to <root>/share, never ~/.local/share/unsloth, so a bare
-    # `scripts/uninstall.sh` cannot discover the root and removes nothing.
+    # Nothing was written outside the root, so removing the tree removes the install.
     _uninstall_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
-    substep "remove it with rm -rf, or:"
-    substep "  UNSLOTH_HOME='$_uninstall_root' scripts/uninstall.sh"
+    substep "remove it with:"
+    substep "  rm -rf '$_uninstall_root'"
+    # scripts/uninstall.sh treats UNSLOTH_HOME as an ADDITION to the default install it
+    # always removes, so offering it here would delete a coexisting ~/.unsloth/studio.
+    substep "scripts/uninstall.sh is not scoped to this root: it also clears"
+    substep "an install in ~/.unsloth and its chat history."
     substep "the desktop app and shell PATH were left untouched."
 fi
 echo ""
