@@ -11,7 +11,7 @@ type ContentPart = { type: "text" | "reasoning" | "tool"; text: string; slot?: n
 // A raw string is prose that extractTaggedText emits as-is, without a marker. It has to
 // count as editable here too, or the restoration list gains a slot the editor never
 // numbered and every marker after it restores the wrong part.
-export function isEditablePart(part: any): boolean {
+function isEditablePart(part: any): boolean {
   return typeof part === 'string' || part?.type === 'text' || part?.type === 'reasoning';
 }
 
