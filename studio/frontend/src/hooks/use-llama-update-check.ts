@@ -42,6 +42,7 @@ export interface LlamaUpdateJob {
 export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
+  source_build: boolean;
   component: "llama.cpp" | "whisper.cpp";
   installed_tag: string | null;
   latest_tag: string | null;
@@ -94,6 +95,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
   return {
     supported: s.supported === true,
     update_available: s.update_available === true,
+    source_build: s.source_build === true,
     component,
     installed_tag:
       typeof details.installed_tag === "string" ? details.installed_tag : null,

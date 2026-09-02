@@ -45,6 +45,7 @@ def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = T
             check = False,
             capture_output = True,
             text = True,
+            encoding = "utf-8",
             timeout = 5,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -54,10 +55,8 @@ def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = T
 
 
 def _is_on_path(agent: str) -> bool:
-    # shutil.which is documented to return None on a miss, but PATH lookups can
-    # still raise (e.g. a permission error while probing a directory entry);
-    # this is an advisory check, so a lookup failure should read as "not
-    # installed" instead of breaking the settings endpoint.
+    # shutil.which returns None on a miss but PATH lookups can still raise, and this is advisory, so a lookup failure
+    # reads as "not installed" rather than breaking the endpoint.
     try:
         executable = shutil.which(agent)
         if executable is None:

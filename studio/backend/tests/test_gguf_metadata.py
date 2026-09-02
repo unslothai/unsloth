@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from unittest.mock import patch
 
+
+import pytest
+
 from utils.models.gguf_metadata import (
     is_gguf_embedding_architecture,
     is_gguf_embedding_model,
@@ -20,6 +23,7 @@ from utils.models.gguf_metadata import (
     read_gguf_architecture,
     read_gguf_context_length,
     read_gguf_general_metadata,
+    read_gguf_nextn_predict_layers,
     read_gguf_staged_dims,
     read_mmproj_audio_capability,
 )
@@ -166,6 +170,52 @@ def test_context_length_ignores_foreign_arch_key(tmp_path: Path):
         extra_uint32 = {"qwen2.context_length": 8192},
     )
     assert read_gguf_context_length(str(p)) is None
+
+
+def test_nextn_predict_layers_uses_the_active_architecture_namespace(tmp_path: Path, monkeypatch):
+    embedded = _write_synthetic_gguf(
+        tmp_path / "embedded.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint32 = {
+            "qwen35.nextn_predict_layers": 1,
+            "qwen3.nextn_predict_layers": 9,
+        },
+    )
+    headless = _write_synthetic_gguf(
+        tmp_path / "headless.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint64 = {"qwen35.nextn_predict_layers": 0},
+    )
+    absent = _write_synthetic_gguf(
+        tmp_path / "absent.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint32 = {"qwen3.nextn_predict_layers": 7},
+    )
+    malformed = tmp_path / "malformed.gguf"
+    malformed.write_bytes(b"not a GGUF")
+
+    reversed_order = tmp_path / "reversed.gguf"
+    reversed_body = _enc_kv_uint32("qwen35.nextn_predict_layers", 2) + _enc_kv_string(
+        "general.architecture", "qwen35"
+    )
+    reversed_order.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + reversed_body)
+
+    assert read_gguf_nextn_predict_layers(str(embedded)) == 1
+    assert read_gguf_nextn_predict_layers(str(headless)) == 0
+    assert read_gguf_nextn_predict_layers(str(absent)) is None
+    assert read_gguf_nextn_predict_layers(str(malformed)) is None
+
+    assert read_gguf_nextn_predict_layers(str(reversed_order)) == 2
+
+    # Verify the file-identity cache.
+    import utils.models.gguf_metadata as metadata
+
+    monkeypatch.setattr(
+        metadata,
+        "_parse_gguf_arch_uints",
+        lambda *_args, **_kwargs: pytest.fail("cached NextN metadata was reparsed"),
+    )
+    assert read_gguf_nextn_predict_layers(str(embedded)) == 1
 
 
 # --- read_gguf_staged_dims (one pass: context + layer + moe counts) ----

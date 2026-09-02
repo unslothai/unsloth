@@ -25,10 +25,11 @@ const { mergeBackendRecommendedInference } = await import(
 
 const A = "unsloth/model-a";
 const B = "unsloth/model-b";
+const STATUS_CONTEXT_LENGTH = 131072;
 const STATUS = {
   inference: { temperature: 0.9 },
   is_gguf: true,
-  context_length: 131072,
+  context_length: STATUS_CONTEXT_LENGTH,
 } as never;
 
 /** Every field this file varies is set explicitly: the store is a module
@@ -66,6 +67,7 @@ test("with the memory off, the saved shared settings still reach a new model", a
       response: STATUS,
       modelId: B,
       presetSource: s.activePresetSource,
+      loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
     { fromModelDefaults: true },
   );
@@ -127,6 +129,7 @@ test("a pre-hydration edit survives on an install that has no model map", async 
       response: STATUS,
       modelId: A,
       presetSource: s2.activePresetSource,
+      loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
     { fromModelDefaults: true },
   );

@@ -58,7 +58,7 @@ IGNORED_TOKENIZER_CHECKING = frozenset(
 
 
 IGNORED_TOKENIZER_NAMES = [
-    # Qwen Coder did not train on tool calling. Math did!
+    # Qwen Coder did not train on tool calling; Math did.
     "unsloth/Qwen2.5-Coder-1.5B-Instruct",
     "unsloth/Qwen2.5-Coder-7B-Instruct",
 ]
@@ -68,10 +68,8 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# Check environments
-# A KAGGLE_* variable is not a Kaggle kernel - the Kaggle CLI reads
-# KAGGLE_USERNAME / KAGGLE_KEY from the environment on ordinary machines, and
-# redirecting their tokenizer cache to /tmp because of it was wrong.
+# A KAGGLE_* variable is not a Kaggle kernel: the Kaggle CLI reads KAGGLE_USERNAME / KAGGLE_KEY on
+# ordinary machines, and redirecting their tokenizer cache to /tmp because of it was wrong.
 from .disk_utils import (
     KAGGLE_TMP,
     is_colab_environment,
@@ -90,13 +88,12 @@ def try_fix_tokenizer(tokenizer, prepend = True):
 
     tokenizer_string = converted_tokenizer.to_str()
 
-    # Llama does _apple. Sometimes this is wrong!!
+    # Llama does _apple; sometimes this is wrong.
     prepend_text = '{"type":"Prepend","prepend":"▁"},'
     if not prepend and prepend_text in tokenizer_string:
         tokenizer_string = tokenizer_string.replace(prepend_text, "", 1)
 
     dir_names = dir(tokenizer)
-    # Get eos_token, bos_token etc
     token_names = [x for x in dir_names if x.endswith("_token") and x.count("_") == 1]
 
     for token_name in token_names:
@@ -107,7 +104,7 @@ def try_fix_tokenizer(tokenizer, prepend = True):
         if token_id is None:
             continue
 
-        # Locate the token's id mapping in the string
+        # Locate the token's id mapping in the string.
         find_text = f'"id":{token_id},"content":"'
         find_pos = tokenizer_string.find(find_text)
         if find_pos == -1:
@@ -118,13 +115,12 @@ def try_fix_tokenizer(tokenizer, prepend = True):
             continue
 
         bad_token = tokenizer_string[start:end]
-        # Check if token is the actual same one - if not, edit it
+        # Check whether the token is actually the same one; if not, edit it and replace the vocab section.
         if bad_token != token:
             bad_text = f'{find_text}{bad_token}",'
             good_text = f'{find_text}{token}",'
             tokenizer_string = tokenizer_string.replace(bad_text, good_text, 1)
 
-            # And replace vocab section
             bad_text = f'"{bad_token}":{token_id},'
             good_text = f'"{token}":{token_id},'
             tokenizer_string = tokenizer_string.replace(bad_text, good_text, 1)
@@ -162,13 +158,11 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     except:
         FastTokenizer = PreTrainedTokenizerFast
 
-    # Get all arguments (bos_token, etc)
     docs = FastTokenizer.__doc__
     docs = docs[docs.find("Args:") :]
     args = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
     args = [x for x in args if not x.endswith("_file")]
 
-    # Also some missing maybe!
     docs = PreTrainedTokenizerFast.__doc__
     docs = docs[docs.find("Args:") :]
     args2 = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
@@ -181,27 +175,24 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = True)
     fast_tokenizer = FastTokenizer(**kwargs)
 
-    # Check if they're similar!
     sorted_slow_tokenizer = get_sorted_dict(slow_tokenizer.get_vocab())
     sorted_fast_tokenizer = get_sorted_dict(fast_tokenizer.get_vocab())
 
     check_vocab = sorted_slow_tokenizer == sorted_fast_tokenizer
     check_special = slow_tokenizer.all_special_tokens == fast_tokenizer.all_special_tokens
 
-    # Failure so return slow_tokenizer
+    # Failure, so return the slow_tokenizer.
     if not check_vocab or not check_special:
         return slow_tokenizer
 
-    # Now confirm if they match
     if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-        # Maybe remove prepending of __apple?
+        # Maybe remove the prepending of __apple.
         kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = False)
         fast_tokenizer = FastTokenizer(**kwargs)
         if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-            # Failure :(
             return slow_tokenizer
 
-    # Also tokenizer.model is missing!
+    # tokenizer.model is missing too.
     name = slow_tokenizer.name_or_path.replace("/", "_")
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
@@ -209,7 +200,6 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     slow_tokenizer.save_pretrained(new_location)
     fast_tokenizer.save_pretrained(new_location)
 
-    # Now load it!
     fast_tokenizer = AutoTokenizer.from_pretrained(new_location)
     if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         return fast_tokenizer
@@ -266,7 +256,6 @@ llama_template = (
 
 
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-    # Get eos_token, bos_token etc
     if not hasattr(slow_tokenizer, "all_special_tokens"):
         return True
     dir_names = dir(slow_tokenizer)
@@ -286,7 +275,6 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     replacement_char = b"\xc3\xaf\xc2\xbf\xc2\xbd".decode("utf-8")
     all_special_tokens = [x for x in all_special_tokens if x != replacement_char]
 
-    # Check if chat template is enabled!
     check_chat_template1 = True
     check_chat_template2 = True
     check_chat_template3 = True
@@ -330,7 +318,6 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     """
     check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
 
-    # Try special tokens
     try:
         string = (
             "\n".join(all_special_tokens)
@@ -341,9 +328,8 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
 
         return check_chat_template and check_special_tokens
     except:
-        # For eg see https://github.com/unslothai/unsloth/issues/292
-        # Sometimes tokenizer has weird tokens, causing a combined tokenization to fail.
-        # [TODO] We temporarily disable this for CodeLlama tokenizers
+        # Sometimes a tokenizer has weird tokens, causing a combined tokenization to fail; temporarily
+        # disabled for CodeLlama tokenizers (#292).
         if slow_tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
             return check_chat_template
         else:
@@ -356,8 +342,8 @@ def fix_sentencepiece_tokenizer(
     token_mapping,
     temporary_location = "_unsloth_sentencepiece_temp",
 ):
-    # From https://github.com/google/sentencepiece/issues/121
-    # We need to manually edit the sentencepiece tokenizer!
+    # The sentencepiece tokenizer must be edited manually; see google/sentencepiece#121. Only works for
+    # SentencePiece <= 3.20.3.
     try:
         from transformers.convert_slow_tokenizer import import_protobuf
         sentencepiece_model_pb2 = import_protobuf()
@@ -379,11 +365,10 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Fresh per-call subdir so concurrent/repeated calls can't clobber each other's
-    # tokenizer.model or leak stale files, without deleting anything the caller owns.
+    # Fresh per-call subdir so concurrent or repeated calls cannot clobber each other's tokenizer.model
+    # or leak stale files, without deleting anything the caller owns.
     temporary_location = tempfile.mkdtemp(prefix = "tokenizer_", dir = temporary_location)
 
-    # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
 
     # Only sentencepiece tokenizers write tokenizer.model, so check after the save.
@@ -395,10 +380,9 @@ def fix_sentencepiece_tokenizer(
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
 
-    # Now save the new tokenizer
     new_tokenizer.save_pretrained(temporary_location)
 
-    # Now correct the old tokenizer's .model file
+    # Correct the old tokenizer's .model file.
     for old_token, new_token in token_mapping.items():
         ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
         ids = ids[0]
@@ -409,7 +393,7 @@ def fix_sentencepiece_tokenizer(
             )
             continue
         ids = ids[0]
-        # [TODO] Hack for Starling - try except
+        # Hack for Starling: try/except.
         try:
             tokenizer_piece = tokenizer_file.pieces[ids]
         except:
@@ -417,11 +401,9 @@ def fix_sentencepiece_tokenizer(
         assert tokenizer_piece.piece == old_token
         tokenizer_piece.piece = new_token
 
-    # And now write it
     with open(f"{temporary_location}/tokenizer.model", "wb") as file:
         file.write(tokenizer_file.SerializeToString())
 
-    # And load it!
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -429,8 +411,8 @@ def fix_sentencepiece_tokenizer(
         eos_token = new_tokenizer.eos_token,
         pad_token = new_tokenizer.pad_token,
     )
-    # vocab_file points here, so the dir must outlive the tokenizer (a later
-    # save_pretrained copies the patched tokenizer.model from it); reclaim it on GC.
+    # vocab_file points here, so the dir must outlive the tokenizer (a later save_pretrained copies the
+    # patched tokenizer.model from it); reclaim it on GC.
     weakref.finalize(tokenizer, shutil.rmtree, temporary_location, ignore_errors = True)
     return tokenizer
 
@@ -468,16 +450,14 @@ def fix_sentencepiece_gguf(saved_location):
         UNUSED = 5
         BYTE = 6
 
-    # Load tokenizer.model
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     if not os.path.isfile(f"{saved_location}/tokenizer.model"):
         return
     tokenizer_file.ParseFromString(open(f"{saved_location}/tokenizer.model", "rb").read())
     sentence_piece_size = len(tokenizer_file.pieces)
 
-    # Build a set of token IDs that are marked as special in tokenizer.json.
-    # These tokens should use CONTROL type in the sentencepiece model so that
-    # llama.cpp writes them as CONTROL (type=3) in the GGUF token_type array.
+    # Build a set of token IDs marked special in tokenizer.json: these must use CONTROL type in the
+    # sentencepiece model so llama.cpp writes them as CONTROL (type=3) in the GGUF token_type array.
     special_token_ids = set()
     if os.path.isfile(f"{saved_location}/tokenizer.json"):
         with open(f"{saved_location}/tokenizer.json", "r", encoding = "utf-8") as f:
@@ -487,8 +467,8 @@ def fix_sentencepiece_gguf(saved_location):
             if entry.get("special", False) and isinstance(token_id, int):
                 special_token_ids.add(token_id)
 
-    # Fix existing sentencepiece tokens that are marked as special in tokenizer.json
-    # but have the wrong type (NORMAL instead of CONTROL) in the sentencepiece model.
+    # Fix existing sentencepiece tokens marked special in tokenizer.json but typed NORMAL instead of
+    # CONTROL in the sentencepiece model.
     patched = 0
     for token_id in special_token_ids:
         if 0 <= token_id < sentence_piece_size:
@@ -502,7 +482,6 @@ def fix_sentencepiece_gguf(saved_location):
             f"from NORMAL to CONTROL type so llama.cpp / GGUF chat inference works correctly."
         )
 
-    # Load added_tokens_json
     if not os.path.isfile(f"{saved_location}/added_tokens.json"):
         if patched > 0:
             with open(f"{saved_location}/tokenizer.model", "wb") as file:
@@ -519,7 +498,7 @@ def fix_sentencepiece_gguf(saved_location):
     added_tokens_json = dict(sorted(added_tokens_json.items(), key = lambda item: item[1]))
     new_size = sentence_piece_size + len(added_tokens_json)
 
-    # Confirm added_tokens_json is correct
+    # Confirm added_tokens_json is correct.
     added_tokens_ids = np.array(list(added_tokens_json.values()))
     _real_added_tokens_ids = added_tokens_ids
     if len(added_tokens_ids) < 2:
@@ -537,7 +516,7 @@ def fix_sentencepiece_gguf(saved_location):
                 file.write(tokenizer_file.SerializeToString())
         return
 
-    # Edit sentence piece tokens with added_tokens_json
+    # Edit sentencepiece tokens with added_tokens_json.
     logger.warning(
         f"Unsloth: Extending {saved_location}/tokenizer.model with added_tokens.json.\n"
         f"Originally tokenizer.model is of size ({sentence_piece_size}).\n"
@@ -548,8 +527,7 @@ def fix_sentencepiece_gguf(saved_location):
         added_token_id = added_tokens_json[added_token_str]
         new_token.piece = added_token_str.encode("utf-8")
         new_token.score = -1000.0
-        # Use CONTROL type for tokens marked as special in tokenizer.json,
-        # otherwise fall back to USER_DEFINED.
+        # Use CONTROL type for tokens marked special in tokenizer.json, otherwise fall back to USER_DEFINED.
         if added_token_id in special_token_ids:
             new_token.type = SentencePieceTokenTypes.CONTROL
         else:
@@ -560,9 +538,6 @@ def fix_sentencepiece_gguf(saved_location):
     with open(f"{saved_location}/tokenizer.model", "wb") as file:
         file.write(tokenizer_file.SerializeToString())
 
-    # Add padding tokens
-    # actual_vocab_size = model.config.vocab_size
-    # padding = actual_vocab_size - len(tokenizer_file.pieces)
     return
 
 
@@ -579,17 +554,15 @@ def _load_correct_tokenizer(
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
     elif IS_KAGGLE_ENVIRONMENT:
-        # /tmp of Kaggle seems has a 80GB limit!
-        # Let's utilize them
+        # Kaggle's /tmp seems to have an 80GB limit, so use it.
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
     elif cache_dir == "huggingface_tokenizers_cache":
-        # This default name is Colab/Kaggle-only; elsewhere use the HF default cache.
+        # This default name is Colab/Kaggle-only; elsewhere use the HF default cache, and keep a
+        # caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir.
         cache_dir = None
-    # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead
-    # of risking an in-process Hub/Xet transfer.
 
-    # Try loading the slow tokenizer. If it fails, then try Fast only
-    # Mainly to solve Deepseek models with no tokenizer.model file
+    # Try the slow tokenizer first and fall back to fast only, mainly to solve Deepseek models with no
+    # tokenizer.model file.
     slow_tokenizer = None
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
@@ -598,7 +571,7 @@ def _load_correct_tokenizer(
             padding_side = padding_side,
             token = token,
             trust_remote_code = trust_remote_code,
-            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+            # use_fast = False alone is not enough; see twitter.com/danielhanchen/status/1789659394302718373
             use_fast = False,
             legacy = False,
             from_slow = True,
@@ -607,11 +580,7 @@ def _load_correct_tokenizer(
         )
     except:
         slow_tokenizer = None
-        # print(
-        #     f"Unsloth: {tokenizer_name} has no tokenizer.model file.\n"\
-        #     "Just informing you about this - this is not a critical error."
-        # )
-    # Unsure why this occurs!
+    # Reason unknown.
     if type(slow_tokenizer) is bool:
         slow_tokenizer = None
 
@@ -639,7 +608,7 @@ def _load_correct_tokenizer(
         if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
             fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
 
-        # Confirm if slow and fast are equivalent!
+        # Confirm whether slow and fast are equivalent.
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             return fast_tokenizer
         else:
@@ -694,10 +663,10 @@ def load_correct_tokenizer(
     if fix_tokenizer:
         _fix_pad_token(tokenizer)
 
-    ### 1. Fixup tokenizer's chat_template
+    # Fixup the tokenizer's chat_template.
     old_chat_template = getattr(tokenizer, "chat_template", None)
 
-    # Ignore mistral type models since they don't have an add_generation_prompt
+    # Ignore mistral type models, which have no add_generation_prompt, and check Llama-2 old style models too.
     if any(
         s in str(getattr(tokenizer, "name_or_path", "")).lower() for s in ["mistral", "qwen3guard"]
     ):
@@ -722,16 +691,15 @@ def load_correct_tokenizer(
         pass
 
     tokenizer.chat_template = chat_template
-    # Saving restores sentencepiece assets from the repo name alone, which carries no
-    # branch, so stamp it for the save path. Imported late to break a circular import.
+    # Saving restores sentencepiece assets from the repo name alone, which carries no branch, so stamp
+    # it for the save path. Imported late to break a circular import.
     from .models.loader_utils import _mark_loaded_revision
 
     _mark_loaded_revision(tokenizer, revision)
     return tokenizer
 
 
-# All four Jinja whitespace-control variants of endfor/endif:
-#   {% endfor %}    {%- endfor %}    {% endfor -%}    {%- endfor -%}
+# All four Jinja whitespace-control variants of endfor/endif.
 _RE_ENDFOR = re.compile(r"\{%(-?)\s*endfor\s*(-?)%\}")
 _RE_ENDIF = re.compile(r"\{%(-?)\s*endif\s*(-?)%\}")
 _RE_JINJA_COMMENT = re.compile(r"\{#.*?#\}", flags = re.DOTALL)
@@ -832,8 +800,8 @@ def _has_add_generation_prompt_block(chat_template):
         return "if add_generation_prompt" in chat_template and "%}" in chat_template
     for if_node in ast.find_all(jinja2.nodes.If):
         test = if_node.test
-        # Reject negated gates: `{% if not add_generation_prompt %}` fires
-        # when agp=False, so it's not a generation block even if it emits.
+        # Reject negated gates: `{% if not add_generation_prompt %}` fires when agp=False, so it is not a
+        # generation block even if it emits.
         if isinstance(test, jinja2.nodes.Not):
             continue
         # find_all skips the test root, so check bare Name tests explicitly.
@@ -850,9 +818,8 @@ def _has_add_generation_prompt_block(chat_template):
     return False
 
 
-# Sentinels for _derive_assistant_prefix_by_render. Diverge at char 0 so
-# commonprefix can't absorb them; long random tail makes collision with real
-# template literals negligible (see T18).
+# Sentinels for _derive_assistant_prefix_by_render: they diverge at char 0 so commonprefix cannot
+# absorb them, and the long random tail makes collision with real template literals negligible.
 _RENDER_DIFF_SENTINEL_A = "AAAA_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 _RENDER_DIFF_SENTINEL_B = "BBBB_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 _RENDER_DIFF_SENTINEL_C = "CCCC_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
@@ -889,9 +856,8 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         sent_b_msgs = base_msgs + [{"role": "assistant", "content": _RENDER_DIFF_SENTINEL_B}]
         sent_c_msgs = base_msgs + [{"role": "user", "content": _RENDER_DIFF_SENTINEL_C}]
 
-    # Strip trailing whitespace/comments after the last endfor/endif: they
-    # appear after the message loop and would break Guard A. The splice in
-    # `_fix_chat_template` drops them too.
+    # Strip trailing whitespace/comments after the last endfor/endif: they appear after the message loop
+    # and would break Guard A, and the splice in _fix_chat_template drops them too.
     probe_template = chat_template
     end = _find_end_position(chat_template)
     if end is not None:
@@ -899,8 +865,8 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         if _RE_JINJA_COMMENT.sub("", after).strip() == "":
             probe_template = chat_template[: end["end"]]
 
-    # Sandboxed: probe renders at load time, before user calls
-    # apply_chat_template. SandboxedEnvironment blocks attribute-chain exploits.
+    # Sandboxed: probe renders run at load time, before the user calls apply_chat_template, and
+    # SandboxedEnvironment blocks attribute-chain exploits.
     try:
         env = SandboxedEnvironment(
             autoescape = False,
@@ -913,9 +879,8 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     except Exception:
         return None
 
-    # Best-effort: alternation-enforcing templates (e.g. Gemma's
-    # raise_exception) fail on [user, user]; that's a positive signal
-    # for Guard C, not a probe failure.
+    # Best-effort: alternation-enforcing templates (Gemma's raise_exception) fail on [user, user], which
+    # is a positive signal for Guard C rather than a probe failure.
     out_user_c = None
     try:
         out_user_c = tmpl.render(messages = sent_c_msgs, add_generation_prompt = False)
@@ -940,8 +905,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     ):
         return None
 
-    # Guard C: reject if a [user, user] render also emits the same prefix
-    # (role-insensitive template, e.g. `{% set greeting='Hi' %}...`).
+    # Guard C: reject if a [user, user] render also emits the same prefix, i.e. a role-insensitive template.
     if out_user_c is not None and out_user_c.startswith(out_base):
         tail_c = out_user_c[len(out_base) :]
         if tail_c.startswith(prefix) and prefix != "":
@@ -954,10 +918,8 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
 
 
 def _fix_chat_template(chat_template, is_sharegpt = False):
-    # Fast path: already has an {% if add_generation_prompt %} block, nothing
-    # to do. This catches cases the old string-based check would miss (e.g.
-    # templates that use {%- if add_generation_prompt -%} with both-side dash,
-    # or that sneak the block into a nested If/For).
+    # Fast path: an {% if add_generation_prompt %} block already exists. This catches cases the old
+    # string-based check would miss, such as both-side dashes or a block nested inside an If/For.
     if _has_add_generation_prompt_block(chat_template):
         return chat_template
 
@@ -970,9 +932,8 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     dash_r = "-" if end["dash_right"] else ""
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
-    # Case 1 (pre-existing base case): template ends with a single trailing
-    # {{ expr }} that is the generation prefix. Wrap it in an
-    # {% if add_generation_prompt %} ... {% endif %}.
+    # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap
+    # it in an {% if add_generation_prompt %} block.
     if (
         "{%" + dash_l + " if" not in after_endfor
         and "{%" + dash_l + " set " not in after_endfor
@@ -984,18 +945,15 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
         wrapped = open_tag("if add_generation_prompt") + after_endfor + open_tag("endif")
         return chat_template[: end["end"]] + wrapped
 
-    # Case 2 (GH#4150): template ends at {% endfor %} with only whitespace
-    # or comments left. Inject an {% if add_generation_prompt %} block with
-    # the assistant prefix derived by render-diff. The top-level-For gate
-    # keeps us out of outer-If wrappers (e.g. Qwen3-Guard).
+    # Case 2 (#4150): the template ends at {% endfor %} with only whitespace or comments left, so inject
+    # an {% if add_generation_prompt %} block with the assistant prefix derived by render-diff.
     if _RE_JINJA_COMMENT.sub("", after_endfor).strip() == "" and _template_ends_with_toplevel_for(
         chat_template
     ):
-        # No redundant "agp not in scrubbed" check: the fast path already
-        # confirmed no *positive* block, and a mere reference (header
-        # guard) should still get repaired.
+        # No redundant "agp not in scrubbed" check: the fast path already confirmed no POSITIVE block, and a
+        # mere reference (header guard) should still get repaired.
         assistant_prefix = _derive_assistant_prefix_by_render(chat_template, is_sharegpt)
-        # Dual-probe: dict/list callers don't know the shape up front.
+        # Dual-probe: dict/list callers do not know the shape up front.
         if assistant_prefix is None and not is_sharegpt:
             assistant_prefix = _derive_assistant_prefix_by_render(chat_template, is_sharegpt = True)
         if assistant_prefix is None:
@@ -1104,7 +1062,7 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
         try:
             tokenizer.chat_template = patched_template
         except Exception:
-            return False  # read-only tokenizer, skip validation
+            return False
         try:
             yes = tokenizer.apply_chat_template(
                 msgs,
@@ -1123,9 +1081,8 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
             tokenizer.chat_template = original
         except Exception:
             pass  # best-effort restore
-    # Contract after a successful repair: the two renders differ, and the
-    # "yes" render is a strict extension of the "no" render (we only
-    # appended content inside the new add_generation_prompt block).
+    # Contract after a successful repair: the two renders differ, and the "yes" render is a strict
+    # extension of the "no" render, since content was only appended in the new block.
     return yes != no and yes.startswith(no)
 
 
@@ -1135,10 +1092,8 @@ def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     candidate = _fix_chat_template(chat_template, is_sharegpt = is_sharegpt)
     if not _has_add_generation_prompt_block(candidate):
         return None
-    # Validate with the caller's is_sharegpt first. If that fails, the
-    # dual-probe in _fix_chat_template may have fallen back to the other
-    # schema internally -- try validating with the opposite schema before
-    # giving up.
+    # Validate with the caller's is_sharegpt first; if that fails, the dual-probe in
+    # _fix_chat_template may have fallen back to the other schema, so try the opposite one.
     if _validate_patched_template(tokenizer, candidate, is_sharegpt):
         return candidate
     if _validate_patched_template(tokenizer, candidate, not is_sharegpt):
@@ -1199,13 +1154,14 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
         return chat_template
 
     if no != yes:
-        # Template already responds to the flag; leave as is.
+        # The template already responds to the flag; leave it as is.
         return chat_template
 
-    # no == yes: template ignores add_generation_prompt. Try to repair.
+    # no == yes: the template ignores add_generation_prompt, so try to repair. It may have the block
+    # while the output does not change, the "wasn't provided correctly" case.
     if _has_add_generation_prompt_block(chat_template):
-        # Template has the block but it does not change output. This is the
-        # "wasn't provided correctly" case from the pre-warn code path.
+        # Template has the block but it does not change output. This is the "wasn't provided correctly" case
+        # from the pre-warn code path.
         strict = _is_strict_chat_template_mode()
         msg = _format_chat_template_message(
             name,
@@ -1311,8 +1267,8 @@ def fix_chat_template(tokenizer):
     if chat_template is None:
         return None
 
-    # Multi-variant dict (e.g. Hermes-3 {default, tool_use}): route each
-    # variant through the full repair contract via _VariantTokenizerProxy.
+    # Multi-variant dict (Hermes-3 {default, tool_use}): route each variant through the full repair
+    # contract via _VariantTokenizerProxy.
     if isinstance(chat_template, dict):
         fixed = {}
         for key, tmpl in chat_template.items():
@@ -1323,7 +1279,7 @@ def fix_chat_template(tokenizer):
             fixed[key] = _fix_chat_template_for_tokenizer(proxy, tmpl)
         return fixed
 
-    # List-of-dicts form (older HF multi-template style).
+    # List-of-dicts form, the older HF multi-template style.
     if isinstance(chat_template, list):
         fixed = []
         for item in chat_template:
@@ -1356,13 +1312,10 @@ def check_tokenizer(
     _reload = True,
     cache_dir = None,
 ):
-    # Checks tokenizer for out of bounds ids.
-    # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
-    # where <sep> had token id=32002.
-    # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
-    # Seems like the Fast tokenizer in Rust breaks things!
+    # Check the tokenizer for out of bounds ids, mainly for berkeley-nest/Starling-LM-7B-alpha where
+    # <sep> had token id=32002 (its discussion 25); the Rust fast tokenizer seems to break things.
 
-    # We ignore some of them!
+    # Some of them are ignored.
     if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
         return tokenizer
 
@@ -1377,7 +1330,6 @@ def check_tokenizer(
             bad_indices = list(added_tokens_fast.keys())[j:]
             bad_tokens = list(added_tokens_fast.values())[j:]
             if not _reload:
-                # Try removing the token
                 added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
                 special_tokens = tokenizer.special_tokens_map
                 import itertools
@@ -1412,14 +1364,13 @@ def check_tokenizer(
                                 try_removal.append(token)
                                 try_mapper.append(name_token)
 
-                    # Recheck!
                     can_be_removed = len(try_removal) == len(bad_tokens)
                     if can_be_removed:
                         remove_generic = True
                     can_be_removed1 = bad_tokens
 
                 if can_be_removed:
-                    # Yes it can be fixed!
+                    # Yes, it can be fixed.
                     for j, bad_token in enumerate(can_be_removed1):
                         remove_id = tokenizer._added_tokens_encoder[bad_token]
                         del tokenizer._added_tokens_decoder[remove_id]
@@ -1429,7 +1380,7 @@ def check_tokenizer(
                             # Remove sep token for example
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)
-                    # Confirm 1 more time!
+                    # Confirm one more time.
                     if max(tokenizer.added_tokens_decoder.keys()) < max_embedding_size:
                         logger.warning_once(
                             f"Unsloth loaded a broken tokenizer `{model_name}`, but managed to repair it!\n"
@@ -1438,19 +1389,20 @@ def check_tokenizer(
                         )
                         return convert_to_fast_tokenizer(tokenizer)
 
-                # :( Failure
+                # Failure.
                 raise RuntimeError(
                     f"Unsloth tried to load `{model_name}`, but cannot succeed.\n"
                     f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
 
-            # Reuse a caller-supplied cache_dir (warmed cache) for the repair reload; else the
-            # Colab/Kaggle sentinel (HF default elsewhere), as load_correct_tokenizer does.
+            # Reuse a caller-supplied cache_dir (the warmed cache) for the repair reload; else the Colab/Kaggle
+            # sentinel, as load_correct_tokenizer does.
             reload_cache_dir = cache_dir
             if reload_cache_dir is None and (IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT):
                 reload_cache_dir = "huggingface_tokenizers_cache"
 
+            # Sometimes the slow tokenizer does not work, e.g. Deepseek, but it can also fix things.
             # Sometimes slow tokenizer does not work like Deepseek
             try:
                 # Try slow tokenizer which can fix things!
@@ -1459,7 +1411,7 @@ def check_tokenizer(
                     model_max_length = model_max_length,
                     padding_side = padding_side,
                     token = token,
-                    # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+                    # use_fast = False alone is not enough; see twitter.com/danielhanchen/status/1789659394302718373
                     use_fast = False,
                     legacy = False,
                     from_slow = True,
@@ -1477,8 +1429,7 @@ def check_tokenizer(
                 )
                 break
             except:
-                # Tokenizer has out of bounds issues and we can't
-                # load the slow tokenizer version :(
+                # The tokenizer has out of bounds issues and the slow version cannot be loaded.
                 logger.warning_once(
                     "Unsloth: Tokenizer is most likely buggy, and Unsloth failed to repair it.\n"
                     "It will still work, but beware of out of bounds memory accesses.\n"
@@ -1584,18 +1535,14 @@ def patch_sft_trainer_tokenizer():
     except:
         return
     all_imports = dir(trl.trainer.sft_trainer)
-    # Make typing names available to the exec'd source bodies. TRL >= 1.x
-    # type-hints _prepare_dataset / _prepare_non_packed_dataloader with
-    # `Union[...]` and friends; without these imports in the exec namespace
-    # those become NameErrors at exec time. Mirrors the pattern used in
-    # unsloth/models/_utils.py:patch_linear_scaling.
+    # Make typing names available to the exec'd source bodies: TRL >= 1.x type-hints _prepare_dataset
+    # with Union[...] and friends, which become NameErrors at exec time without these imports.
     from typing import Union, Optional, List, Any, Callable, Tuple, Dict, Iterator  # noqa: F401
 
     for (
         function_name,
         replacer,
     ) in (
-        # ("_prepare_non_packed_dataloader", "def tokenize(element):",),
         (
             "_prepare_non_packed_dataloader",
             None,
@@ -1604,7 +1551,6 @@ def patch_sft_trainer_tokenizer():
             "_prepare_dataset",
             None,
         ),
-        # ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
     ):
         if not hasattr(sft_trainer, function_name):
             continue
@@ -1645,7 +1591,7 @@ def patch_sft_trainer_tokenizer():
         check_text = check_text.rstrip() + "\n"
 
         if replacer is None:
-            # .*? matches first match. .+? matches final match.
+            # .*? matches the first match, .+? the final one.
             replacer = re.findall(
                 f"def {function_name}" + r"\(.*?\).*?\:\n",
                 function,
@@ -1673,7 +1619,6 @@ def patch_sft_trainer_tokenizer():
             globals(),
         )
 
-    # Patch train with fix_untrained_tokens
     for path_to_trainer in (
         "sft_trainer.SFTTrainer",
         "dpo_trainer.DPOTrainer",
@@ -1720,7 +1665,7 @@ def patch_sft_trainer_tokenizer():
             "fix_zero_training_loss(self.model, tokenizer, self.train_dataset)\n\n"
         )
 
-        # Warn on gradient accumulation steps if it's used
+        # Also DPO weirdly tokenizes non numeric columns? Delete them!
         check_text += (
             "\n"
             "try:\n"
@@ -1736,7 +1681,7 @@ def patch_sft_trainer_tokenizer():
             "\n\n"
         )
 
-        # Add NEFTune since it doesn't seem to work?? We need to manually inject it
+        # NEFTune does not seem to work, so inject it manually.
         check_text += (
             "\n"
             "if hasattr(self, 'neftune_hook_handle'):\n"
@@ -1750,7 +1695,7 @@ def patch_sft_trainer_tokenizer():
             "\n"
         )
 
-        # Also DPO weirdly tokenizes non numeric columns? Delete them!
+        # DPO weirdly tokenizes non numeric columns, so delete them.
         check_text += (
             "\n"
             "if hasattr(self.train_dataset, 'column_names'):\n"
@@ -1776,5 +1721,4 @@ def patch_sft_trainer_tokenizer():
         )
 
 
-# Finally patch TRL tokenizer things -> moved to RL
-# patch_sft_trainer_tokenizer()
+# Finally patch TRL tokenizer things, moved to RL.

@@ -630,9 +630,7 @@ def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
     if seed is None:
         return
     payload["seed"] = seed
-    # llama.cpp reads the seed as uint32 and LLAMA_DEFAULT_SEED is 0xFFFFFFFF, so -1 and
-    # 4294967295 are the same "pick one at random" and both keep cache reuse. Compared in
-    # that domain rather than against the -1 literal, which the schemas also accept above.
+    # Compared as uint32: the schemas also accept 4294967295, the same "pick at random".
     if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
 
@@ -843,6 +841,331 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 
 
 # Plan-without-action re-prompt state now lives in tool_call_parser (imported above).
+
+# An artifact is content the model could not have written as a plan; without
+# one, "First, let me set up pygame. ```python ... ```" satisfies the intent
+# gate and the synthetic STOP turn wipes the code.
+#
+# A numbered list is deliberately NOT one: over the 300 recorded answers in
+# tests/data/plan_vs_answer a list branch decided one turn while costing errors
+# in both directions.
+#
+# `\s*` in the closing tags is spec-legal HTML. Every `[\s\S]{...}?` run stays
+# length-bounded or the search backtracks on CRLF and `<html>` spam.
+_CLOSED_CODE_FENCE = re.compile(
+    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
+    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)",
+    re.IGNORECASE,
+)
+_CLOSED_MARKUP_ARTIFACT = re.compile(
+    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
+    re.IGNORECASE,
+)
+_HAS_ANSWER_ARTIFACT = re.compile(
+    # Backtick then tilde fence (models emit ~~~ when the body holds backticks).
+    # CommonMark takes 3+ to open and as many to close, on a cleanly ended line, so
+    # ``` ```not actually closed ``` does not count.
+    r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
+    r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,600}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
+    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
+    re.IGNORECASE,
+)
+
+_FENCE_RUN_RE = re.compile(r"(?<!`)(?P<backticks>`{3,})(?!`)|(?<!~)(?P<tildes>~{3,})(?!~)")
+# Structure, not content: stripped so a quoted fence is judged at its real column.
+# One list marker may precede the quote, since "- > ```py" is a quote in a list item.
+_BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])?[ \t]*(?:>[ \t]?)+")
+# A language token, the only trailing text that makes an inline run an opener
+# rather than prose: python3, c++, c#, objective-c, ts-node, bash-session. It may
+# contain a dot (asp.net) but never ends in one, which is how "here." stays a
+# sentence rather than an info string.
+_FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w+#-]*(?:\.[\w+#-]+)*")
+# A fence on a list-marker line is block level, so the prose rules below do not apply.
+_LIST_MARKER_ONLY = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+$")
+_ONE_QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
+
+
+def _has_unclosed_code_fence(text: str) -> bool:
+    """True if ``text`` contains a code fence whose closer is missing.
+
+    Models do open a fence mid-line (``First. \\`\\`\\`python``), so an inline
+    run counts, but only when it cannot be read as prose instead. A column-0
+    fence always counts, blockquoted or not.
+
+    This helper, not `_HAS_ANSWER_ARTIFACT`, is what pairs a quoted closer with
+    a quoted opener: the pattern accepts `>` on any closer so a quoted block is
+    found at all, and the depth check below rejects the ones that do not match.
+    """
+    active_char: Optional[str] = None
+    active_len = 0
+    active_quote = 0
+    active_base = 0
+    closed_any = False
+    for raw_line in text.splitlines():
+        # A quote marker four columns in is indented code, not a container. List
+        # markers are left alone: at that depth they may continue a list not visible
+        # from one line.
+        lead = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
+        quote = _BLOCKQUOTE_PREFIX.match(raw_line)
+        indented_quote = quote is not None and len(lead.expandtabs(4)) > 3
+        if indented_quote:
+            quote = None
+        quote_depth = quote.group(0).count(">") if quote else 0
+        line = raw_line[quote.end() :] if quote else raw_line
+        runs = list(_FENCE_RUN_RE.finditer(line))
+        for index, m in enumerate(runs):
+            fence = m.group("backticks") or m.group("tildes")
+            trailing = line[m.end() :].strip()
+            ch = fence[0]
+            prefix = line[: m.start()]
+            indent = len(prefix.expandtabs(4))
+            blank_prefix = not prefix.strip()
+            if active_char is not None:
+                # A closer starts and ends its own line, within 3 columns of the
+                # CONTAINER, not of whatever indentation the opener chose. Anything
+                # else, "Use three backticks: ```" included, is body.
+                if (
+                    blank_prefix
+                    and active_base <= indent <= active_base + 3
+                    and ch == active_char
+                    and len(fence) >= active_len
+                    and quote_depth == active_quote
+                    and not trailing
+                ):
+                    active_char, active_len, active_quote, active_base = None, 0, 0, 0
+                    closed_any = True
+                continue
+            # A later BACKTICK run closes an inline span ("```python``` is the
+            # syntax"), at column zero or not. A different delimiter is info-string
+            # text (```markdown title=~~~), and a tilde info string may itself hold
+            # tildes (~~~markdown title=~~~~), which CommonMark allows.
+            if ch == "`" and any(
+                (later.group("backticks") or later.group("tildes"))[0] == ch
+                for later in runs[index + 1 :]
+            ):
+                continue
+            if blank_prefix:
+                # Its own indentation, so the baseline is 0. Past three columns it
+                # is an indented code line and opens nothing.
+                if indent <= 3:
+                    active_char, active_len = ch, len(fence)
+                    active_quote, active_base = quote_depth, 0
+                continue
+            # A list marker is a container, so its fence is block level and skips the
+            # rest. CommonMark has no mid-PROSE fence, but models open one, and only a
+            # bare info string tells that opener from prose. Once something HAS
+            # closed, an inline run is a mention ("wrap it in ```", "the marker is
+            # ```python"); a real second block starts at column 0 and is unaffected.
+            in_list = _LIST_MARKER_ONLY.match(prefix) is not None
+            if not in_list:
+                if indented_quote:
+                    continue
+                if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
+                    continue
+                if closed_any:
+                    continue
+            active_char, active_len, active_quote = ch, len(fence), quote_depth
+            # A list marker IS the container, so its width is the baseline. Mid-sentence
+            # there is no container, only how far the sentence got, so 0.
+            active_base = indent if in_list else 0
+    return active_char is not None
+
+
+def _has_unclosed_markup_block(text: str) -> bool:
+    """True if ``text`` opens an <html>/<svg> block without closing it.
+
+    Counted rather than matched, so a closed block followed by a still-open one
+    also qualifies.
+    """
+    opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
+    closes_html = len(re.findall(r"</html\s*>", text, re.IGNORECASE))
+    if opens_html > closes_html:
+        return True
+    opens_svg = len(re.findall(r"<svg\b", text, re.IGNORECASE))
+    closes_svg = len(re.findall(r"</svg\s*>", text, re.IGNORECASE))
+    return opens_svg > closes_svg
+
+
+# "First, I'll create an <html></html> skeleton" is a plan, not a page.
+_EMPTY_MARKUP_SKELETON = re.compile(
+    r"<(html|svg)\b[^>]*>\s*</\1\s*>",
+    re.IGNORECASE,
+)
+_DOCTYPE_PREFIX = re.compile(
+    r"^<!doctype\b[\s\S]{0,200}?>",
+    re.IGNORECASE,
+)
+
+
+def _is_empty_markup_skeleton(matched: str) -> bool:
+    """True if ``matched`` is an empty <html></html> / <svg></svg>, doctype
+    prefix and surrounding whitespace allowed."""
+    candidate = _DOCTYPE_PREFIX.sub("", matched.strip(), count = 1).strip()
+    return _EMPTY_MARKUP_SKELETON.fullmatch(candidate) is not None
+
+
+def _is_blank_fence(matched: str, depth: int = 0) -> bool:
+    """True if ``matched`` is a fence whose body is only whitespace.
+
+    The delimiters are on the first and last lines, so what sits between them is
+    the answer, and a block holding a single space is no more one than an empty
+    `<html></html>` is a page."""
+    if matched[:1] not in ("`", "~"):
+        return False
+    lines = matched.splitlines()
+    # ``depth`` is the OPENER's quote depth, which the caller reads from the line the
+    # match starts on. A closer sits at that same depth, so a deeper last line means
+    # the pattern stopped on a nested delimiter that is really body text, and the
+    # block runs past it: content, not a blank fence.
+    closing = _BLOCKQUOTE_PREFIX.match(lines[-1]) if lines else None
+    if (closing.group(0).count(">") if closing else 0) != depth:
+        return False
+    for line in lines[1:-1]:
+        for _ in range(depth):
+            marker = _ONE_QUOTE_MARKER.match(line)
+            if marker is None:
+                break
+            line = line[marker.end() :]
+        if line.strip():
+            return False
+    return True
+
+
+def _first_real_artifact(text: str):
+    """First _HAS_ANSWER_ARTIFACT match with something in it.
+
+    Every match is inspected, so a skeleton followed by a real page counts."""
+    for m in _HAS_ANSWER_ARTIFACT.finditer(text):
+        if _is_empty_markup_skeleton(m.group(0)):
+            continue
+        # The container the fence sits in is whatever quotes the line it opens on.
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        quote = _BLOCKQUOTE_PREFIX.match(text[line_start : m.start()])
+        depth = quote.group(0).count(">") if quote else 0
+        if _is_blank_fence(m.group(0), depth):
+            continue
+        return m
+    return None
+
+
+def _strip_markup_outside_fences(text: str) -> str:
+    """Drop complete <html>/<svg> blocks, except ones that BEGIN inside a fence.
+
+    An opening tag inside a code example is that example's content, and pairing it
+    with a closing tag in the prose after the fence swallowed the fence's own closer:
+    ``` ```html\\n<html>\\n``` \\nClose it with </html>.``` then read as unfinished. A
+    block that merely encloses a fence is still a real block and goes whole, so a page
+    holding a Markdown example is not left in pieces.
+    """
+    fences = [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)]
+
+    def _keep_examples(m):
+        # Either endpoint inside a fence makes the match that example's content:
+        # prose may open a tag the fenced fragment goes on to close.
+        return m.group(0) if any(s <= m.start() < e or s < m.end() <= e for s, e in fences) else ""
+
+    return _CLOSED_MARKUP_ARTIFACT.sub(_keep_examples, text)
+
+
+# A reasoning opener ends at a tag boundary: "<think-card>" is an element of the
+# answer, not a thought.
+_THINK_OPEN_RE = re.compile(r"<think[\s>]")
+_THINKING_OPEN_RE = re.compile(r"<thinking[\s>]")
+_BRACKET_THINK_OPEN_RE = re.compile(r"\[THINK\]")
+
+
+def _artifact_spans(text: str) -> "list[tuple[int, int]]":
+    """Spans of the complete fences and complete markup in ``text``."""
+    return [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)] + [
+        m.span() for m in _CLOSED_MARKUP_ARTIFACT.finditer(text)
+    ]
+
+
+def _find_outside_artifacts(
+    text: str,
+    needle: str,
+    spans = None,
+) -> int:
+    """First index of ``needle`` that is not inside a complete artifact, or -1.
+
+    A reasoning marker shown in a code example is the example, not reasoning.
+
+    The scan comes first: most answers carry no reasoning marker at all, and
+    mapping the artifacts is two regex passes over the whole response.
+    """
+    at = text.find(needle)
+    if at < 0:
+        return -1
+    if spans is None:
+        spans = _artifact_spans(text)
+    while at >= 0:
+        if not any(start <= at < end for start, end in spans):
+            return at
+        at = text.find(needle, at + 1)
+    return -1
+
+
+def _text_outside_think(text: str) -> str:
+    """``text`` with a LEADING reasoning block dropped, leaving what the user was told.
+
+    Only a leading block is reasoning. The loop folds `reasoning_content` in as one
+    prefix per turn, so that is the only provenance genuine reasoning has, and a
+    `<think>` further in is the model quoting the tag in an example; the Anthropic
+    path reads it the same way (`routes/inference.py` `_split_think_segments`). A
+    prefilled template sends the opener itself, so the block may arrive carrying
+    only its closer.
+    """
+    stripped = text.lstrip()
+    pairs = (
+        (_THINKING_OPEN_RE, "<thinking", "</thinking>"),
+        (_THINK_OPEN_RE, "<think", "</think>"),
+        (_BRACKET_THINK_OPEN_RE, "[THINK]", "[/THINK]"),
+    )
+    # Whichever opener actually starts the turn owns it, so settle that before
+    # looking at bare closers: a leading block may name another marker in its body.
+    for lead, _opener, closer in pairs:
+        if lead.match(stripped):
+            # First closer, plainly. `routes/inference.py` `_split_think_segments`
+            # reads a leading block the same way and solves a closer quoted inside
+            # the trace with the generator's recorded length, not by guessing which
+            # markup is an example: every such guess here let a span run from the
+            # thought into the answer and swallow the real boundary.
+            close = text.find(closer)
+            # No closer: a thought the window cut off runs to the end, and none of
+            # it was shown.
+            return text[close + len(closer) :] if close >= 0 else ""
+    # No leading opener, so a closer with none before it is a prefilled template's:
+    # it emits the opening marker itself and only the closer is generated.
+    spans = None
+    for lead, _opener, closer in pairs:
+        if closer in text and spans is None:
+            spans = _artifact_spans(text)
+        close = _find_outside_artifacts(text, closer, spans)
+        # Boundary-aware, so "<think-card>" named in the trace is not read as an
+        # opener that would leave the prefilled block unstripped.
+        if close >= 0 and not lead.search(text[:close]):
+            return text[close + len(closer) :]
+    return text
+
+
+def _has_answer_artifact(text: str) -> bool:
+    """True if ``text`` looks like a completed answer artifact.
+
+    A closed code fence, a complete HTML page, or a complete SVG, and none of them
+    left unfinished. Empty skeletons do not count.
+    """
+    # Strip closed artifacts first: a `html = '<html>'` literal in a finished
+    # snippet, or backticks inside finished HTML, are content, not open state.
+    if _has_unclosed_code_fence(_strip_markup_outside_fences(text)):
+        return False
+    # A page the artifact is nested in is deliberately NOT inspected: separating an
+    # unfinished enclosing page from a tag named in prose needs an HTML parser, and two
+    # attempts here each went on to reject a finished answer. Missing the nudge leaves
+    # the block on screen, which is the cheaper mistake.
+    return _first_real_artifact(text) is not None
+
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
@@ -1071,6 +1394,208 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
         return True
 
 
+def _row_replayed(message: dict) -> bool:
+    """Whether the client re-sends this reply, by `isAbandonedAssistantTurn`.
+
+    Status is not the test: a Stop that reached text is kept, and only a reply carrying
+    nothing is dropped -- along with the tool results its wire projection would expand to.
+    A turn that FINISHED on reasoning alone is a reply too, replayed as `reasoning_content`,
+    even though `_as_wire` strips reasoning and leaves it nothing to be matched on.
+    """
+    if message.get("role") != "assistant":
+        return True
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    reasoning = False
+    for part in content or ():
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text" and str(part.get("text") or "").strip():
+            return True
+        if part.get("type") in ("image", "image-url", "file"):
+            return True
+        reasoning = reasoning or part.get("type") == "reasoning"
+    if reasoning and not _row_ended_early(message):
+        return True
+    return bool(message.get("attachments"))
+
+
+def _row_ended_early(message: dict) -> bool:
+    """`assistantTurnEndedEarly`: the persisted marker, since status is session state."""
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    return bool(metadata.get("incomplete") or custom.get("incomplete"))
+
+
+def _archive_branch_chain(
+    messages: list[dict], branch_messages: Optional[list[dict]]
+) -> Optional[list[dict]]:
+    """The stored parent chain selected by this wire branch, when ancestry can prove one."""
+    if not branch_messages:
+        return None
+    try:
+        from core.rag import conversation_archive
+
+        def _chain(probe):
+            return conversation_archive._active_chain(
+                messages,
+                probe,
+                fallback = False,
+                require_unique = True,
+            )
+
+        chain = _chain(branch_messages)
+        if not chain:
+            return None
+        # The unstored newest turn only matches on a SIBLING, so settled turns pick the branch.
+        settled = list(branch_messages)
+        while settled and settled[-1].get("role") == "user":
+            settled.pop()
+        if settled:
+            proof = _chain(settled)
+            if not proof:
+                return None
+            tip = proof[-1].get("id")
+            if not any(row.get("id") == tip for row in chain):
+                return None
+
+            # Rows past that tip ride on the unstored turns alone, so they may only carry
+            # THOSE turns' text: matching the whole request instead let an abandoned row
+            # in on a text repeated earlier in it. Keyed by ROLE too, as the branch match
+            # is, so a stored reply cannot be justified by a user turn of the same words.
+            def _keys(rows):
+                return [
+                    (wire.get("role"), _archive_message_text(wire.get("content")))
+                    for wire in conversation_archive._as_wire(list(rows))
+                ]
+
+            carried = set(_keys(branch_messages[len(settled) :]))
+            past_tip = False
+            for row in chain:
+                if past_tip:
+                    checked = False
+                    for key in _keys([row]):
+                        if not key[1]:
+                            continue
+                        if key not in carried:
+                            return None
+                        checked = True
+                    # Nothing comparable came back. Only a reply the client drops whole may
+                    # ride on the unstored turns unchecked; one it re-sends -- an image or
+                    # an attachment, or a tool call still awaiting its result -- is not
+                    # proof of anything, so refuse rather than take it on trust.
+                    if not checked and _row_replayed(row):
+                        return None
+                past_tip = past_tip or row.get("id") == tip
+        return chain
+    except Exception:
+        return None
+
+
+def _archive_as_wire(messages: Optional[list[dict]]) -> list[dict]:
+    """Project persisted rows and wire messages into boundary-counting wire units."""
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive._as_wire(list(messages or ()))
+    except Exception:
+        return list(messages or ())
+
+
+class _CompactionBranchState(NamedTuple):
+    message: dict
+    truncation: Optional[dict]
+    recorded: int
+
+
+def _compaction_branch_states(
+    stored: list[dict], branch_messages: Optional[list[dict]] = None
+) -> list[_CompactionBranchState]:
+    """Newest authoritative compaction state(s) on one request branch.
+
+    Multiple rows are returned only when Retry siblings are textually indistinguishable;
+    consumers must then choose the conservative result across all of them.
+    """
+    # Assistant rows only: an abandoned "Done" rides in on a live "not done yet".
+    branch = _archive_branch_transcript(branch_messages, ("assistant",))
+    if branch_messages and not branch:
+        return []
+
+    chain = _archive_branch_chain(stored, branch_messages)
+    candidates = [
+        message
+        for message in reversed(chain if chain is not None else stored)
+        if message.get("role") == "assistant"
+        and (chain is not None or _archive_content_on_branch(message.get("content"), branch))
+    ]
+    if not candidates:
+        return []
+
+    # Exact first: the branch check is a substring test, so "Done" matches "Not done yet".
+    if chain is None:
+        live = set(branch or ())
+        exact = [
+            message
+            for message in candidates
+            if _archive_message_text(message.get("content")) in live
+        ]
+        if exact:
+            candidates = exact
+
+    # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
+    states = []
+    for message in candidates:
+        metadata = message.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        custom = metadata.get("custom")
+        custom = custom if isinstance(custom, dict) else {}
+        truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+
+        recorded = None
+        if isinstance(truncation, dict):
+            raw_recorded = truncation.get("boundary_messages")
+            if raw_recorded is None:
+                raw_recorded = truncation.get("dropped_messages")
+            if raw_recorded is not None:
+                try:
+                    recorded = max(0, int(raw_recorded or 0))
+                except (TypeError, ValueError):
+                    pass
+        if recorded is None and chain is not None:
+            # Skipping defers to the previous epoch, so it needs a proved branch: on the text
+            # path the rows are twins. A research row reports its run, not whether this fit.
+            research_row = (
+                (metadata.get("serverManaged") or custom.get("serverManaged"))
+                and (metadata.get("researchRunId") or custom.get("researchRunId"))
+                and (metadata.get("researchStatus") or custom.get("researchStatus"))
+            )
+            if research_row:
+                continue
+            status = metadata.get("generationStatus") or custom.get("generationStatus")
+            incomplete = metadata.get("incomplete") or custom.get("incomplete")
+            reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+            active = status in {"queued", "running", "cancelling"}
+            aborted = status in {"cancelled", "failed"} or reason in {"cancelled", "interrupted"}
+            if active or (status != "completed" and aborted):
+                continue
+        if recorded is None:
+            states.append(_CompactionBranchState(message, None, 0))
+            continue
+        states.append(_CompactionBranchState(message, truncation, recorded))
+
+    if not states:
+        return []
+    if chain is not None:
+        # Parent ancestry orders repeated text on one linear history unambiguously.
+        return states[:1]
+    newest = _archive_message_text(states[0].message.get("content"))
+    return [
+        state for state in states if _archive_message_text(state.message.get("content")) == newest
+    ]
+
+
 def _sticky_compaction_state(
     thread_id: Optional[str],
     branch_messages: Optional[list[dict]] = None,
@@ -1102,57 +1627,20 @@ def _sticky_compaction_state(
     try:
         from storage import studio_db
 
-        # The stored rows are the whole DAG, so the newest assistant turn can belong to a
-        # sibling branch left by Retry, whose boundary is sized for history this branch
-        # does not have. Skip rows the request's own messages do not contain.
-        # Assistant messages only: the rows being checked are assistant replies, and
-        # against every role a short abandoned one ("Done") rides in on a live user
-        # message that merely contains it ("not done yet"), taking its boundary with it.
-        _branch = _archive_branch_transcript(branch_messages, ("assistant",))
-        if branch_messages and not _branch:
-            # A branch with no reply of its own has no boundary to restore.
-            return 0, False
-        candidates = [
-            message
-            for message in reversed(studio_db.list_chat_messages(thread_id) or [])
-            if message.get("role") == "assistant"
-            and _archive_content_on_branch(message.get("content"), _branch)
-        ]
-        if not candidates:
+        stored = list(studio_db.list_chat_messages(thread_id) or [])
+        states = _compaction_branch_states(stored, branch_messages)
+        if not states:
             return 0, False
 
-        # The newest on-branch assistant turn decides, except that the branch check is
-        # textual, so two Retry siblings that both read "Done" are indistinguishable here
-        # and the first match could apply a much deeper branch's boundary. Where the text
-        # cannot separate them, take the SMALLEST boundary: too small costs one extra
-        # compaction, too large evicts live history.
-        # That check is also a substring test (an archived turn is matched against
-        # fragments of itself), so an abandoned "Done" can ride in on a live "Not done
-        # yet" and then decide the boundary alone. Prefer exact matches where any exist.
-        _live = set(_branch or ())
-        _exact = [
-            message
-            for message in candidates
-            if _archive_message_text(message.get("content")) in _live
-        ]
-        if _exact:
-            candidates = _exact
-
-        newest = _archive_message_text(candidates[0].get("content"))
         boundaries = []
         origins = []
-        for message in candidates:
-            if _archive_message_text(message.get("content")) != newest:
-                continue
-            metadata = message.get("metadata") or {}
-            if not isinstance(metadata, dict):
+        branch_wire = _archive_as_wire(branch_messages)
+        for state in states:
+            truncation = state.truncation
+            recorded = state.recorded
+            if truncation is None:
                 return 0, False
-            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
-                "contextTruncation"
-            )
-            if not isinstance(truncation, dict):
-                return 0, False
-            # Only a fit that SUCCEEDED describes a boundary worth restoring.
+            # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
                 return 0, False
             # A boundary is valid only under the fit that will consume it, and the two
@@ -1188,18 +1676,14 @@ def _sticky_compaction_state(
             # rows saved before the ratio was recorded, which keep replaying as they did.
             if not recorded_checkpoint:
                 recorded_ratio = truncation.get("boundary_headroom_ratio")
-                if (
-                    recorded_ratio is not None
-                    and abs(float(recorded_ratio) - requested_ratio) > 1e-9
-                ):
+                try:
+                    if (
+                        recorded_ratio is not None
+                        and abs(float(recorded_ratio) - requested_ratio) > 1e-9
+                    ):
+                        return 0, False
+                except (TypeError, ValueError):
                     return 0, False
-            # Counted against the request's own transcript, which is what it is applied
-            # to. `dropped_messages` is the fallback for turns saved before that was
-            # recorded: equal for a single fit, too large for a turn that refit often.
-            recorded = truncation.get("boundary_messages")
-            if recorded is None:
-                recorded = truncation.get("dropped_messages")
-            recorded = max(0, int(recorded or 0))
             # A count is only valid against the transcript it was counted on. Deleting an
             # already-evicted turn shortens the front, and replaying the count then evicts
             # that many LIVE messages instead. Re-derive it from the anchor's position on
@@ -1207,8 +1691,8 @@ def _sticky_compaction_state(
             # (a repeated text, an edited turn) must not deepen the cut.
             anchor = truncation.get("boundary_anchor")
             if isinstance(anchor, str) and anchor:
-                for index, message in enumerate(_branch_non_system(branch_messages)):
-                    if _anchor_text(message) == anchor[:_ANCHOR_TEXT_CHARS]:
+                for index, branch_message in enumerate(_branch_non_system(branch_wire)):
+                    if _anchor_text(branch_message) == anchor[:_ANCHOR_TEXT_CHARS]:
                         recorded = min(recorded, index)
                         break
             boundaries.append(recorded)
@@ -2760,20 +3244,86 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     return files[0] if files else None
 
 
-def _pick_mtp(candidates: list[str]) -> Optional[str]:
+_MTP_SHARD_SUFFIX_RE = re.compile(r"-[0-9]{5}-of-[0-9]{5}$")
+
+
+def _is_published_mtp_drafter_name(path: str) -> bool:
+    """Does *path*'s BASENAME name a published MTP head?
+
+    ``_is_mtp_only_drafter_path`` accepts anything under ``MTP/``, which is right
+    for excluding companions from menus and too broad for choosing what to launch:
+    an mmproj, an imatrix or a stray weight copy would go to ``--model-draft``.
+    Same rule as ``detect_mtp_file`` -- ``mtp-<model>`` or the older
+    ``<model>-MTP`` -- shard suffix stripped first, since an old-scheme split copy
+    is ``<model>-Q8_0-MTP-00001-of-00002.gguf``, whose stem lacks ``-mtp``."""
+    lower = Path(path).name.lower()
+    if not lower.endswith(".gguf"):
+        return False
+    stem = _MTP_SHARD_SUFFIX_RE.sub("", Path(lower).stem)
+    return lower.startswith("mtp-") or stem.endswith("-mtp")
+
+
+def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[str]:
     """The MTP drafter a listing offers, or None. Module level for the same reason
     ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
-    and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
-    # Root-level only: MTP/ subdir copies now share the mtp- prefix but
-    # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-    # The mtp- prefix also excludes AppleDouble shadows ("._mtp-x.gguf"), which
-    # is why this picker needs no drop_shadowed_appledouble_names of its own.
+    and ``/kv-cache-estimate`` has to price the drafter the launch will open.
+
+    ``allow_nested=False`` restricts the answer to a root mirror, which is what
+    every architecture but qwen4exp gets -- see ``_pick_mtp_root_only``."""
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+    from utils.models.drafters import split_listing_is_complete
+    from utils.models.drafters.preference import mtp_preference_key
+
+    names = drop_shadowed_appledouble_names(list(candidates))
+
+    def _launchable(name: str) -> bool:
+        # Settled before ranking, as detect_mtp_file settles it at collection:
+        # llama.cpp resolves sibling shards from the first one's directory, so half
+        # a set is unusable and _download_companion_gguf answers None to it. Ranked
+        # first and rejected after, it would shadow a complete lower-ranked head.
+        return split_listing_is_complete(names, name)
+
+    # Root first, so a repo mirroring one head at the root (Gemma 4) still resolves to it
+    # rather than to a subdir copy, which would sort ahead. The mtp- prefix also excludes
+    # AppleDouble shadows ("._mtp-x.gguf"), so this bucket needs no filtering of its own.
     mtp_files = sorted(
         f
-        for f in candidates
-        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
+        for f in names
+        if f.lower().endswith(".gguf")
+        and "/" not in f
+        and Path(f).name.lower().startswith("mtp-")
+        and _launchable(f)
     )
-    return mtp_files[0] if mtp_files else None
+    if mtp_files:
+        return mtp_files[0]
+
+    # No root mirror, or none of them complete: fall back to the MTP/ folder, which
+    # is the only place Qwen3.8-Flash-Next publishes its heads. This is the policy
+    # _cached_repo_mtp_drafter already applies to the offline cache, so without it a
+    # user holding a cached copy gets speculation and a fresh install does not.
+    if not allow_nested:
+        return None
+    nested = sorted(
+        (
+            name
+            for name in names
+            if "/" in name and _is_published_mtp_drafter_name(name) and _launchable(name)
+        ),
+        key = mtp_preference_key,
+    )
+    return nested[0] if nested else None
+
+
+def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
+    """``_pick_mtp`` for everything but qwen4exp: the behaviour every model had
+    before the ``MTP/`` fallback existed.
+
+    llama.cpp loads the draft model whenever one is passed, so a sidecar displaces
+    an embedded head rather than adding to it. On Qwen3.8-27B UD-Q4_K_XL the two
+    draft identically (143 of 223, byte-identical output), so the 1.37 GB copy buys
+    nothing. A root mirror is still taken: publishing one beside the weights says
+    it is the one to use."""
+    return _pick_mtp(candidates, allow_nested = False)
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -3376,6 +3926,23 @@ def _auto_mode_drops_mtp(
     if has_separate_drafter:
         return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
+
+
+# MLA archs whose MTP context covers only the NextN block instead of duplicating the
+# trunk KV: glm5next holds 4+3 MiB over one layer where its trunk holds 48+36 over
+# twelve. That one fact is why Auto keeps MTP (gate below) and why the fit must not
+# reserve the copy (_estimate_mtp_overhead_bytes). Not "glm5-next": no NextN graph.
+_MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
+
+
+def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's embedded MTP head is worth promoting in Auto."""
+    return bool(architecture) and str(architecture).strip().lower() in _MLA_MTP_FAST_ARCHS
+
+
+def _arch_mtp_skips_target_kv_copy(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's MTP context skips the duplicated target KV."""
+    return _arch_has_fast_mla_mtp(architecture)
 
 
 def _mla_mtp_auto_enabled() -> bool:
@@ -4070,6 +4637,9 @@ _TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
         # MLA/DSA trunk with a dense MTP head, llama-model.cpp:2129
         "glm-dsa",
         "deepseek32",
+        # Hybrid KDA + DSA trunk; both GLM-5.3-Flash ports filter blk.45 out
+        "glm5next",
+        "glm5-next",
         # Plain attention trunk with an explicit nextn filter, llama-model.cpp:2356
         "step35",
         "hy_v3",
@@ -5157,6 +5727,8 @@ def _build_ngram_mod_flags(
     n_match: int = 24,
     n_min: int = 48,
     n_max: int = 64,
+    *,
+    chain_with_mtp: bool = False,
 ) -> list[str]:
     """Emit the right ngram-mod knob flags for the running llama-server.
 
@@ -5166,6 +5738,9 @@ def _build_ngram_mod_flags(
     ``probe_server_capabilities``; ``ngram_mod_flavor`` says which set is
     real (vs a removal-stub). Returns ``[]`` when neither is available so
     the caller can drop ngram-mod entirely.
+
+    ``chain_with_mtp`` omits the legacy ``--draft-min``/``--draft-max`` pair,
+    which a chained MTP invocation owns and would otherwise invert.
     """
     flavor = caps.get("ngram_mod_flavor") if caps else None
     if flavor == "new":
@@ -5180,14 +5755,10 @@ def _build_ngram_mod_flags(
     if flavor == "legacy":
         # Pre-rename llama.cpp: same knobs lived under --spec-ngram-size-n
         # (lookup length) and generic --draft-min / --draft-max (N range).
-        return [
-            "--spec-ngram-size-n",
-            str(n_match),
-            "--draft-min",
-            str(n_min),
-            "--draft-max",
-            str(n_max),
-        ]
+        flags = ["--spec-ngram-size-n", str(n_match)]
+        if not chain_with_mtp:
+            flags.extend(["--draft-min", str(n_min), "--draft-max", str(n_max)])
+        return flags
     return []
 
 
@@ -5211,6 +5782,9 @@ _LEGACY_SPEC_MODE_MAP = {
     "draft-dspark": "dspark",
     "draft-dflash": "dflash",
     "ngram-mod": "ngram",
+    "none": "off",
+    "disable": "off",
+    "disabled": "off",
 }
 
 
@@ -6609,10 +7183,9 @@ class LlamaCppBackend:
         ):
             return False
         # Same rule for the tuning group: requested against requested, so a server
-        # launched with a different value is a reload. Compared even when the
-        # intent is blank, unlike spec_draft_n_max above: blank is the llama.cpp
-        # default and both sides hold what was requested, so two loads that asked
-        # for nothing still match, while clearing a knob relaunches.
+        # launched with a different value is a reload. A blank value is the llama.cpp
+        # default, so two loads that asked for nothing still match, while clearing a
+        # knob relaunches.
         if not self._is_diffusion and (
             _normalized_load_mode(self._requested_load_mode)
             != _normalized_load_mode(intent.load_mode)
@@ -6748,7 +7321,7 @@ class LlamaCppBackend:
         # The stand-down the UI asks the user to fix by updating llama.cpp. That leaves
         # the request identical, so without this the repaired load never happens.
         if (
-            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
+            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash", "ngram")
             and self.spec_binary_fallback_can_retry()
         ):
             return False
@@ -6776,18 +7349,19 @@ class LlamaCppBackend:
             # The MTP-free recovery clears the runtime value but retains the
             # user's prior value in its intent. Only a changed value should retry MTP.
             compared_draft_n_max = self._last_load_intent.spec_draft_n_max
-        if (
-            (
-                self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
-                # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
-                # types above cannot see it -- yet the depth is what priced the rollback
-                # copies that made the placement partial, so a change can re-enable MTP.
-                or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
-            )
-            and intent.spec_draft_n_max is not None
-            and intent.spec_draft_n_max != (compared_draft_n_max or 0)
-        ):
-            return False
+        draft_depth_matters = (
+            self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
+            # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
+            # types above cannot see it. The depth priced the rollback copies that
+            # made the placement partial, so a change can re-enable MTP.
+            or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
+        )
+        if draft_depth_matters:
+            requested_draft_n_max = intent.spec_draft_n_max
+            if (requested_draft_n_max is None) != (compared_draft_n_max is None):
+                return False
+            if requested_draft_n_max is not None and requested_draft_n_max != compared_draft_n_max:
+                return False
         if (self._chat_template_override or None) != (intent.chat_template_override or None):
             return False
 
@@ -10755,6 +11329,10 @@ class LlamaCppBackend:
     # only when an axis is actually quantized.
     _tensor_quant_kv_unsupported_binaries: set[tuple[str, int]] = set()
 
+    # Binary dirs already reported by _warn_missing_windows_cuda_runtime. The env is rebuilt
+    # for every launch and every --list-devices probe, so one line per binary is enough.
+    _missing_cuda_runtime_warned: set[str] = set()
+
     @classmethod
     def _binary_key(cls, binary: Optional[str]) -> Optional[tuple[str, int]]:
         """(path, mtime_ns); ns mtime re-probes a same-second binary swap."""
@@ -10878,6 +11456,47 @@ class LlamaCppBackend:
         _add(site_packages / "torch" / "lib")
         return out
 
+    @classmethod
+    def _warn_missing_windows_cuda_runtime(cls, binary_dir: str, path_dirs: list[str]) -> None:
+        """Say so when a CUDA llama-server has no cudart to load. Diagnostic only.
+
+        The CUDA prebuilt links ``cudart64_*.dll`` / ``cublas64_*.dll`` and takes them
+        from the managed venv -- ``torch/lib`` or the ``nvidia/*`` wheels, per
+        _windows_pip_nvidia_dll_dirs. A 2.11.0+cpu torch ships neither, so ggml cannot
+        load its CUDA backend and ``llama-server.exe --list-devices`` prints
+        ``Available devices: (none)`` while UNSLOTH_PREBUILT_INFO.json still says
+        ``backend cuda`` (#8473, HF discussion 87). Today that is entirely silent.
+
+        Changes nothing about the launch: the process still starts, still falls back to
+        CPU, and a custom build with the DLLs somewhere else is not second-guessed.
+        Never raises -- a diagnostic must not be able to stop a load.
+        """
+        try:
+            if binary_dir in cls._missing_cuda_runtime_warned:
+                return
+            # Same identification _installed_ggml_backends uses: the official prebuilts are
+            # single-backend, so the ggml CUDA lib beside llama-server IS the build.
+            ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
+            if not os.path.isfile(ggml_cuda):
+                return
+            for directory in path_dirs:
+                try:
+                    names = os.listdir(directory)
+                except OSError:
+                    continue
+                if any(name.lower().startswith("cudart64_") for name in names):
+                    return
+            cls._missing_cuda_runtime_warned.add(binary_dir)
+            logger.warning(
+                "llama.cpp is the CUDA build (%s) but no cudart64_*.dll was found on its "
+                "DLL search path. The CUDA ggml backend will not load and llama-server "
+                "will report no devices. This is what a CPU-only PyTorch in the managed "
+                "environment looks like; repair the installation to restore GPU support.",
+                ggml_cuda,
+            )
+        except Exception as e:
+            logger.debug(f"CUDA runtime DLL diagnostic failed: {e}")
+
     @staticmethod
     def _build_windows_path_dirs(binary_dir: str, prefix: str, cuda_path: str) -> list[str]:
         """Ordered PATH entries prepended so llama-server.exe resolves cudart /
@@ -10916,6 +11535,13 @@ class LlamaCppBackend:
             )
             existing_path = env.get("PATH", "")
             env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+            # Warn against the FULL search path, inherited entries included: a hand-installed CUDA
+            # toolkit puts cudart64_*.dll on PATH without the venv or CUDA_PATH knowing, and warning
+            # on the prepended directories alone told working custom setups to repair a fine install.
+            LlamaCppBackend._warn_missing_windows_cuda_runtime(
+                binary_dir,
+                path_dirs + [d for d in existing_path.split(";") if d],
+            )
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
             # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
@@ -11336,6 +11962,17 @@ class LlamaCppBackend:
         n_embd_r = 3 * max(0, d_conv - 1) * n_head * head_dim
         n_embd_s = head_dim * head_dim * n_head
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
+
+    def _rollback_state_bytes(self, n_parallel: int = 1) -> int:
+        """One target-context rollback snapshot, whichever recurrent family this is.
+
+        Both callers price the same thing (llama.cpp's `1 seqs N rs_seq`) and both
+        used to reach for the Mamba helper alone, which answers 0 for a KDA hybrid
+        and silently dropped the reserve. Route every caller through here.
+        """
+        return self._mamba_recurrent_state_bytes(n_parallel) or self._recurrent_state_bytes(
+            n_parallel
+        )
 
     def _target_kv_excludes_nextn(self) -> bool:
         """Whether this model's TARGET KV cache skips the embedded MTP blocks.
@@ -11839,8 +12476,14 @@ class LlamaCppBackend:
         # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
         # distinct drafter with its own KV -- already counted in draft_kv/weights --
         # rather than duplicating the target, so they must not be charged for it.
+        # Third gate: a NextN-only MTP context allocates no copy, and charging one
+        # trips drafter_no_vram, losing the MTP being reserved for.
         target_ctx_copy = 0
-        if mtp_keeps_target_ctx and self._kv_lora_rank is not None:
+        if (
+            mtp_keeps_target_ctx
+            and self._kv_lora_rank is not None
+            and not _arch_mtp_skips_target_kv_copy(getattr(self, "_architecture", None))
+        ):
             target_ctx_copy = self._estimate_kv_cache_bytes(
                 n_ctx,
                 "f16",
@@ -11858,8 +12501,7 @@ class LlamaCppBackend:
         # dominant hidden cost on Qwen3.5/3.8 at multiple parallel slots.
         target_recurrent_copies = 0
         if target_rollback and spec_draft_n_max > 0:
-            base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
-            target_recurrent_copies = base_recurrent * spec_draft_n_max
+            target_recurrent_copies = self._rollback_state_bytes(n_parallel) * spec_draft_n_max
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
             # MLA target copy so a large config can't launch over budget (the small
@@ -12436,6 +13078,32 @@ class LlamaCppBackend:
         probe._read_gguf_metadata(gguf_path)
         return probe._is_diffusion
 
+    @classmethod
+    def _gguf_path_wants_nested_mtp(cls, gguf_path: str) -> bool:
+        """May this target take a drafter from the ``MTP/`` folder?
+
+        Only ``qwen4exp``, and only with no head of its own. Both come from one
+        header read, via the same probe-instance trick as
+        ``_gguf_path_is_diffusion``: this runs before the load reads metadata into
+        ``self`` and must not overwrite the live model's.
+
+        Architecture gates it rather than the head count alone, because a repo can
+        publish an ``MTP/`` folder for a subset of its quants: Qwen3.8-27B writes
+        ``qwen35.nextn_predict_layers`` on all 24, 0 on the four whose head was
+        dropped, and ships one sidecar for those four. Head count alone would hand
+        it to them, a wider change than intended.
+
+        Fails closed on an unreadable header, onto the path every model took before
+        this fallback existed."""
+        try:
+            probe = object.__new__(cls)
+            probe._model_identifier = "mtp-head-probe"
+            probe._read_gguf_metadata(gguf_path)
+            return probe._architecture == "qwen4exp" and not probe._nextn_predict_layers
+        except Exception as e:
+            logger.debug("Nested MTP eligibility probe failed for %s: %s", gguf_path, e)
+            return False
+
     def _reject_vulkan_diffusion_gpu_ids_before_teardown(
         self, gguf_path: str, model_identifier: str
     ) -> None:
@@ -12791,6 +13459,8 @@ class LlamaCppBackend:
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
             pooling_by_arch: dict[str, int] = {}
+
+            nextn_by_arch: dict[str, int] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -12838,7 +13508,12 @@ class LlamaCppBackend:
                         break
 
                     try:
-                        if key in WANTED or key in arch_keys or key.endswith(".pooling_type"):
+                        if (
+                            key in WANTED
+                            or key in arch_keys
+                            or key.endswith(".pooling_type")
+                            or key.endswith(".nextn_predict_layers")
+                        ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
@@ -12886,6 +13561,9 @@ class LlamaCppBackend:
                                     canvas_seen = True
                                 if key.endswith(".pooling_type"):
                                     pooling_by_arch[key] = val_i
+
+                                if key.endswith(".nextn_predict_layers"):
+                                    nextn_by_arch[key] = val_i
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -12928,10 +13606,13 @@ class LlamaCppBackend:
                 else:
                     kv_complete = True
 
-            # GGUF metadata has no key-order contract. Pooling can precede
-            # general.architecture, so bind the buffered value after the sweep.
+            # Bind buffered metadata after discovering the architecture namespace.
             if arch is not None:
                 self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
+                self._nextn_predict_layers = nextn_by_arch.get(
+                    f"{arch}.nextn_predict_layers",
+                    self._nextn_predict_layers,
+                )
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
@@ -13892,13 +14573,25 @@ class LlamaCppBackend:
         hf_repo: str,
         *,
         cache_dir: Optional[str] = None,
+        allow_nested: bool = True,
     ) -> Optional[str]:
         """A drafter already in this repo's local HF cache, reused offline when a
         fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
-        cached snapshots; else an existing ``MTP/`` copy (any precision -- the
-        target verifies every drafted token). None if none is cached."""
+        cached snapshots; else an existing ``MTP/`` copy. None if none is cached.
+
+        Ranked with ``_pick_mtp``'s keys, or offline and online disagree about one
+        cache: lexical order put ``mtp-Qwen3.8-Flash-Next-BF16.gguf`` first, so a
+        cached user got the 7.77 GB slowest head while a fresh install downloaded
+        the 2.79 GB shared Q8_0 one.
+
+        ``allow_nested=False`` drops the ``MTP/`` half, so a non-qwen4exp target
+        resolves the same way offline as online (``_pick_mtp_root_only``)."""
         try:
-            from utils.models.model_config import _iter_hf_cache_snapshots
+            from utils.models.drafters.preference import mtp_preference_key
+            from utils.models.model_config import (
+                _drafter_split_is_complete,
+                _iter_hf_cache_snapshots,
+            )
 
             roots: list[Path] = []
             subdirs: list[Path] = []
@@ -13908,15 +14601,27 @@ class LlamaCppBackend:
                 else _iter_hf_cache_snapshots(hf_repo, cache_dir)
             )
             for snap in snapshots:  # newest first
-                for f in sorted(_gguf_snapshot_files(snap)):
-                    # MTP only: a DSpark drafter needs --spec-type draft-dspark,
-                    # so it must never be launched as an MTP one.
-                    if _is_mtp_only_drafter_path(f):
-                        (roots if "/" not in f else subdirs).append(snap / f)
+                snap_roots: list[str] = []
+                snap_subdirs: list[str] = []
+                for f in _gguf_snapshot_files(snap):
+                    # MTP only: a DSpark drafter needs --spec-type draft-dspark.
+                    # The nested tier needs a published drafter NAME too, since
+                    # everything under MTP/ classifies as one and an mmproj or
+                    # imatrix there would otherwise go to --model-draft.
+                    if "/" not in f:
+                        if _is_mtp_only_drafter_path(f):
+                            snap_roots.append(f)
+                    elif _is_mtp_only_drafter_path(f) and _is_published_mtp_drafter_name(f):
+                        snap_subdirs.append(f)
+                # Root lexical, nested by preference: the tiers as _pick_mtp orders them.
+                roots.extend(snap / f for f in sorted(snap_roots))
+                subdirs.extend(snap / f for f in sorted(snap_subdirs, key = mtp_preference_key))
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
-            for cand in roots + subdirs:
-                if cand.is_file():
+            for cand in roots + subdirs if allow_nested else roots:
+                # Half a split set is not a drafter, and offline there is no fetch
+                # to complete it: the rule _download_companion_gguf applies too.
+                if cand.is_file() and _drafter_split_is_complete(cand):
                     return str(cand)
         except Exception as e:
             logger.debug("Cached MTP drafter lookup failed for %s: %s", hf_repo, e)
@@ -13929,15 +14634,20 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        allow_nested: bool = True,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
 
-        Targets the repo-root ``mtp-*.gguf`` companion -- the Q8_0 drafter
+        Prefers the repo-root ``mtp-*.gguf`` companion -- the Q8_0 drafter
         unsloth mirrors there for llama.cpp ``-hf`` auto-discovery (smallest,
-        recommended for speculation). Repos that bake the MTP head into the
-        main GGUF (e.g. Qwen) ship no such sibling and this returns None. The
-        higher-precision copies under ``MTP/`` are for explicit selection and
-        are intentionally skipped. Returns the local path, or None.
+        recommended for speculation) -- and falls back to the ``MTP/`` folder for
+        a repo that publishes no root mirror, as Qwen3.8-Flash-Next and
+        Qwen3.8-27B do. Repos that bake the MTP head into the main GGUF ship
+        neither and this returns None. Returns the local path, or None.
+
+        ``allow_nested=False`` skips the ``MTP/`` fallback, which is what every
+        architecture but qwen4exp gets: elsewhere the sidecar would only displace a
+        head the file already carries.
         """
 
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
@@ -13945,7 +14655,15 @@ class LlamaCppBackend:
             return None
 
         if near_path:
-            cached = _companion_snapshot_sibling(near_path, _pick_mtp)
+            from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+            if (read_gguf_nextn_predict_layers(near_path) or 0) > 0:
+                logger.info("Main GGUF contains an embedded MTP head; skipping separate drafter.")
+                return None
+
+        pick = _pick_mtp if allow_nested else _pick_mtp_root_only
+
+        if near_path:
+            cached = _companion_snapshot_sibling(near_path, pick)
             if cached:
                 logger.info("Reusing cached MTP drafter: %s", cached)
                 return cached
@@ -13958,6 +14676,7 @@ class LlamaCppBackend:
             cached = self._cached_repo_mtp_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+                allow_nested = allow_nested,
             )
             if cached:
                 logger.info(f"Reusing cached MTP drafter (offline): {cached}")
@@ -13966,7 +14685,7 @@ class LlamaCppBackend:
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mtp,
+            pick = pick,
             label = "MTP drafter",
             cancel_event = cancel_event,
             near_path = near_path,
@@ -17780,12 +18499,19 @@ class LlamaCppBackend:
                             near_path = model_path,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
-                    # the requested spec mode can use it. Repos with the head
-                    # baked into the main GGUF (Qwen) have no mtp- sibling and
-                    # this no-ops, so the size gate stays out of it: a separate
-                    # drafter speeds up even sub-3B (Gemma E2B), and the resolver
-                    # below decides the final emission. Skipped only when the
-                    # user disabled MTP or drives --spec-type manually.
+                    # the requested spec mode can use it. The size gate stays out
+                    # of it: a separate drafter speeds up even sub-3B (Gemma E2B),
+                    # and the resolver below decides the final emission. Skipped
+                    # only when the user disabled MTP or drives --spec-type
+                    # manually.
+                    #
+                    # The MTP/ fallback is qwen4exp only, whose published GGUFs
+                    # carry no head at all; every other arch keeps its root-mirror
+                    # behaviour. Qwen3.8-27B bakes the head into 20 of 24 quants,
+                    # and llama.cpp prefers a -md drafter over an embedded one, so
+                    # on UD-Q4_K_XL the two accept identically (143 of 223) for
+                    # byte-identical output: 1.37 GB to displace what is loaded.
+                    # Read from the file, not self, whose metadata is set below.
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
@@ -17796,6 +18522,7 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             cancel_event = download_cancel_event,
                             near_path = model_path,
+                            allow_nested = self._gguf_path_wants_nested_mtp(model_path),
                         )
                     # "auto" is included: DSpark is the default whenever the repo
                     # ships a sidecar. Repos without one no-op, exactly like the
@@ -17901,6 +18628,15 @@ class LlamaCppBackend:
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
+
+            if (
+                self._nextn_predict_layers
+                and mtp_draft_path
+                and _spec_canon not in ("dspark", "dflash")
+            ):
+                # A root mtp-*.gguf may mirror the embedded head; -md would replace it.
+                logger.info("Main GGUF contains an embedded MTP head; ignoring separate drafter.")
+                mtp_draft_path = None
 
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
@@ -19050,9 +19786,9 @@ class LlamaCppBackend:
                         # displaced does not run. The flat fraction below is gated on
                         # this; the byte-accurate callback was not, so the fit went on
                         # charging VRAM no drafter allocates.
-                        # One term survives: a Hybrid Mamba target's recurrent rollback
-                        # snapshots sit in the TARGET context, so pinning the drafter to
-                        # CPU does not move them. Charge those alone. Flat in ctx (the
+                        # One term survives: a recurrent target's rollback snapshots sit
+                        # in the TARGET context, so pinning the drafter to CPU does not
+                        # move them. Charge those alone. Flat in ctx (the
                         # state is per-slot), hence the same _np/_n_ubatch keywords the
                         # replaced callback takes, so _mtp_bytes can still re-price slots.
                         def _cpu_draft_target_state(
@@ -19064,7 +19800,7 @@ class LlamaCppBackend:
                         ) -> int:
                             if not _rollback or _n <= 0:
                                 return 0
-                            return self._mamba_recurrent_state_bytes(_np) * _n
+                            return self._rollback_state_bytes(_np) * _n
 
                         mtp_overhead_fn = (
                             _cpu_draft_target_state
@@ -24120,6 +24856,15 @@ class LlamaCppBackend:
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
         canonical_mode = _canonicalize_spec_mode(speculative_type)
+        user_owns_spec_type = _extra_args_set_spec_type(extra_args)
+        if (
+            not user_owns_spec_type
+            and canonical_mode in ("auto", "mtp", "mtp+ngram")
+            and self._nextn_predict_layers
+            and mtp_draft_path
+        ):
+            # Backstop for callers that bypass load_model's discovery normalization.
+            mtp_draft_path = None
         # MTP signals: head baked into the main GGUF (Qwen, via metadata or
         # name), or a separate drafter resolved from the repo (Gemma).
         is_mtp_model = (
@@ -24127,7 +24872,6 @@ class LlamaCppBackend:
             or _is_mtp_model_name(model_identifier, model_path)
             or bool(mtp_draft_path)
         )
-        user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
         # (Gemma) is a cheap standalone model that wins below 3B, so exempt it.
@@ -24151,6 +24895,7 @@ class LlamaCppBackend:
             and self._kv_lora_rank is not None
             and not bool(mtp_draft_path)
             and not _mla_mtp_auto_enabled()
+            and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
         )
 
         if user_owns_spec_type:
@@ -24363,7 +25108,7 @@ class LlamaCppBackend:
             spec_value = mtp_token
             ngram_knobs: list[str] = []
             if chain_ngram:
-                ngram_knobs = _build_ngram_mod_flags(caps)
+                ngram_knobs = _build_ngram_mod_flags(caps, chain_with_mtp = True)
                 if ngram_knobs:
                     spec_value = f"ngram-mod,{mtp_token}"
                 else:
@@ -24380,6 +25125,19 @@ class LlamaCppBackend:
 
         def _emit_ngram_mod() -> bool:
             """Append --spec-type ngram-mod + flag-set knobs."""
+            if not caps.get("supports_ngram_mod"):
+                logger.warning(
+                    "Requested ngram-mod speculative decoding but llama-server "
+                    "does not advertise ngram-mod support; run `unsloth studio "
+                    "update`. Loading without speculative decoding."
+                )
+                # The stand-down the warning tells the user to fix, recorded so the
+                # update actually takes: an unrecorded one leaves the picker adopting
+                # this process forever. "binary_outdated" rather than "binary_no_mtp"
+                # because the retry rule for that one asks _SPEC_KIND_CAPABILITY about
+                # _spec_drafter_kind, which ngram-mod never sets, having no drafter.
+                self._spec_fallback_reason = "binary_outdated"
+                return False
             ngram_knobs = _build_ngram_mod_flags(caps)
             flags.extend(["--spec-type", "ngram-mod"])
             if not ngram_knobs:
@@ -29202,9 +29960,39 @@ class LlamaCppBackend:
                         # to _MAX_REPROMPTS times, only on short responses with intent
                         # signals -- "4" or "Hello!" won't trigger it. Uses content,
                         # else reasoning text (reasoning-only stalls).
-                        _stripped = content_accum.strip()
-                        if not _stripped:
-                            _stripped = reasoning_accum.strip()
+                        # Classify only what the user sees: tool-call markup is
+                        # scrubbed, and reasoning shows only with no content tokens.
+                        _visible_raw = content_accum.strip()
+                        _visible = (
+                            _strip_tool_markup(content_accum, final = True).strip()
+                            if _visible_raw
+                            else ""
+                        )
+                        _reasoning = reasoning_accum.strip()
+                        # Bracketed reasoning IS the turn for a Magistral-style model
+                        # and the strip takes it whole, so fall back to the raw text.
+                        _stripped = _visible or _reasoning or _visible_raw
+                        # Thinking rendered as <think> in the CONTENT channel stays
+                        # in _visible, and a fence inside one was never shown.
+                        _visible_answer = _text_outside_think(_visible).strip()
+                        # Reasoning stands in for the answer only when the loop
+                        # promotes it to visible content; on the Anthropic path it
+                        # stays a thinking block and the user saw nothing.
+                        _reasoning_shown = (
+                            not has_content_tokens
+                            and promote_reasoning_only
+                            and _iter_finish_reason != "length"
+                        )
+                        _artifact_text = (
+                            _visible_answer
+                            if _visible_answer
+                            else (_reasoning if _reasoning_shown else "")
+                        )
+                        # Same for intent: a plan only thought is not one announced.
+                        # With nothing outside the block the turn showed nothing, which
+                        # IS the stall. _stripped stays whole; it is what gets replayed
+                        # as the assistant turn and compared for a repeat.
+                        _intent_text = _visible_answer if _visible_answer else _stripped
 
                         # ── Continue an answer the window cut in half ──
                         # The sibling case below is a turn that showed NOTHING. This one
@@ -29474,7 +30262,11 @@ class LlamaCppBackend:
                             and not _render_html_already_done_intent
                             and _reprompt_used < _reprompt_cap
                             and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
-                            and _is_short_intent_without_action(_stripped)
+                            # On _stripped as well: it is what gets replayed, and the
+                            # intent text can be a short tail of a very long turn.
+                            and len(_stripped) < _REPROMPT_MAX_CHARS
+                            and _is_short_intent_without_action(_intent_text)
+                            and not (_artifact_text and _has_answer_artifact(_artifact_text))
                         ):
                             _reprompt_count += 1
                             if _already_acted:

@@ -53,7 +53,7 @@ from utils.whisper_cpp_freshness import (
 logger = structlog.get_logger(__name__)
 
 DEFAULT_PUBLISHED_REPO = "unslothai/whisper.cpp"
-_INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + extract/validate
+_INSTALL_TIMEOUT_SECONDS = 1800
 
 # Always-idle job payload: whisper applies run inside the chained llama job, so
 # nothing flips this to running. Kept so status payload shapes stay stable.
@@ -171,8 +171,8 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     release_tag = res.get("release_tag")
     if not release_tag:
         return None
-    # No resolvable install root (e.g. a pinned WHISPER_SERVER_PATH we cannot
-    # manage) means an apply would not take effect, so do not offer it.
+    # No resolvable install root (e.g. a pinned WHISPER_SERVER_PATH we cannot manage) means an apply would not take
+    # effect, so do not offer it.
     if _whisper_install_root(binary) is None:
         return None
     installed_tag = _installed_whisper_version(binary)
@@ -232,8 +232,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     force_refresh bypasses the 24h release cache for an explicit "check now".
     """
     binary = _find_binary()
-    # A locally-linked whisper.cpp dir is the user's own tree; never offer to
-    # replace it. Bail before any network/freshness work.
+    # A locally-linked whisper.cpp dir is the user's own tree; never offer
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)
@@ -259,10 +258,6 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     latest = freshness.get("latest_tag")
     compatible_override = False
     if sys.platform == "darwin" and marker is not None:
-        # The newest published release may require a newer macOS. Ask the same
-        # host-aware resolver the installer uses so the banner compares against
-        # the newest release this host can actually install, avoiding a repeated
-        # offer of an incompatible release after walkback.
         resolved = _resolve_prebuilt_for_host(
             force_refresh = force_refresh,
             backend = marker.get("backend") if isinstance(marker.get("backend"), str) else None,
@@ -372,10 +367,7 @@ def _install_latest_while_blocked(
         "--published-repo",
         repo,
     ]
-    # Preserve the installed accelerator across updates. Left unpinned the
-    # installer re-detects the host, fine on unchanged hardware but able to
-    # reroute a deliberate choice (e.g. cpu on a GPU box); forwarding the marker's
-    # backend keeps the same slice.
+    # Preserve the installed accelerator across updates.
     if isinstance(backend, str) and backend:
         cmd.extend(["--backend", backend])
     if pin_release_tag:
@@ -383,9 +375,7 @@ def _install_latest_while_blocked(
     cmd.extend(_rocm_install_args(asset))
     logger.info("whisper update: installing", cmd = " ".join(cmd))
     env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
-    # Every nonzero exit is a failed phase. In particular, exit 2 means the
-    # requested release was incompatible and no install happened, so reporting
-    # success would hide the banner and toast an update that never landed.
+    # Every nonzero exit is a failed phase.
     _flow.stream_installer(
         cmd,
         env,
@@ -558,19 +548,15 @@ def chained_phase_plan(
     status = get_update_status(force_refresh = force_refresh)
     plan: dict = {"status": status, "update_available": False, "skip_reason": None, "phase": None}
     if not status.get("update_available"):
-        # Skew note: when llama just updated but whisper is already latest, a slim
-        # install keeps hardlinks to the OLD llama ggml inodes -- still the exact
-        # build whisper was installed against, so skipping is correct and needs no
-        # re-wiring. A whisper phase that does run re-wires via the installer
-        # (prepare_runtime_payload).
+        # Skew note: a slim install keeps hardlinks to the OLD llama ggml inodes, still the exact build whisper was
+        # installed against, so skipping is correct and needs no re-wiring.
+        # A whisper phase that does run re-wires via the installer (prepare_runtime_payload).
         plan["skip_reason"] = "up_to_date"
         return plan
     if marker.get("install_kind") == "slim" and not paired_llama_will_update:
-        # A slim install can only be refreshed from a completed managed llama
-        # prebuilt. Ask the installer through its read-only resolver so local
-        # links, markerless/current source builds, and incomplete managed trees
-        # never produce an Update button that can only fail. When the llama
-        # phase will run first, it supplies the repaired pairing instead.
+        # A slim install can only be refreshed from a COMPLETED managed llama prebuilt, so ask the
+        # installer's read-only resolver: local links, markerless source builds and incomplete managed
+        # trees must not produce an Update button that can only fail.
         resolved = _resolve_prebuilt_for_host(
             force_refresh = force_refresh,
             backend = marker.get("backend") if isinstance(marker.get("backend"), str) else None,
@@ -593,14 +579,10 @@ def chained_phase_plan(
         "asset": marker.get("asset"),
         "backend": marker.get("backend"),
         "script": script,
-        # Install exactly the release the check offered: the installer's unpinned
-        # "latest" prefers the download-host /releases/latest pointer, which sorts
-        # by commit date and can lag the published_at pick the freshness check
-        # used, reinstalling an older build in a loop (the #6219 class the llama
-        # phase pins against). Not on macOS: the llama phase is unpinned there
-        # (walk-back to an os-compatible release), so pinning whisper to the
-        # newest tag could be an impossible pairing (min_os / requires_llama_tag)
-        # on every retry.
+        # Install exactly the release the check offered: the unpinned "latest" sorts by commit date and can lag the
+        # published_at pick, reinstalling an older build in a loop (#6219).
+        # Not on macOS: the llama phase is unpinned there (walk-back to an os-compatible release), so pinning whisper to
+        # the newest tag could be an impossible pairing (min_os / requires_llama_tag) on every retry.
         "pin_release_tag": None if sys.platform == "darwin" else status.get("latest_tag"),
     }
     return plan
@@ -629,10 +611,9 @@ def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
     except Exception as exc:
         logger.debug("whisper pairing pre-flight failed", error = str(exc))
         resolved = None
-    # A POSITIVE incompatibility only: an unreachable API reports prebuilt_available
-    # false too, and a pre-flight that cannot answer must fail towards the install.
-    # Deliberately no test on the INSTALLED kind -- a fat marker carries no
-    # install_kind, so gating on it skips the host most likely to meet a pairing gap.
+    # A POSITIVE incompatibility only: an unreachable API also reports prebuilt_available false, and
+    # a pre-flight that cannot answer must fail towards the install. Deliberately no test on the
+    # INSTALLED kind: a fat marker carries no install_kind, so gating on it skips the likeliest host.
     if (resolved or {}).get("unavailable_reason") == "incompatible":
         return {"skipped": True, "skip_reason": "paired_llama_unavailable"}
     return run_chained_phase(phase, set_progress)
