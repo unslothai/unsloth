@@ -26,8 +26,8 @@ _HTTP_REMOTE_TYPES = ("http", "streamableHttp")
 @dataclass
 class ParsedMcpEntry:
     display_name: str
-    url: str  # joined command (stdio) or http(s) url (remote)
-    headers: Optional[dict[str, str]]  # env vars (stdio) or http headers (remote)
+    url: str
+    headers: Optional[dict[str, str]]
     is_stdio: bool
     is_enabled: bool = True
     use_oauth: bool = False

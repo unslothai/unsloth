@@ -23,6 +23,7 @@ import {
 import {
   ACTIVE_STATES,
   MAX_PROGRESS_FRACTION,
+  isPersistedJobState,
 } from "./download-manager-config";
 import {
   type DownloadManagerState,
@@ -91,7 +92,7 @@ function sanitizePersistedJob(
   const kind = isDownloadKind(value.kind) ? value.kind : null;
   const repoId = typeof value.repoId === "string" ? value.repoId : null;
   const state = value.state as DownloadJobState;
-  if (!kind || !repoId || !ACTIVE_STATES.has(state)) return null;
+  if (!kind || !repoId || !isPersistedJobState(state)) return null;
 
   const variant = typeof value.variant === "string" ? value.variant : null;
   const key = jobKeyOf(kind, repoId, variant);
@@ -299,7 +300,10 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
     partialize: (state) => ({
       jobs: Object.fromEntries(
         Object.entries(state.jobs)
-          .filter(([, job]) => !job.external && ACTIVE_STATES.has(job.state))
+          // External jobs have no hub job to resume into, so they are not saved.
+          // Failed and cancelled jobs stay: the Downloads list is the resume
+          // entry after a mid-transfer failure or a restart (#9780).
+          .filter(([, job]) => !job.external && isPersistedJobState(job.state))
           .map(([key, job]) => [key, toPersistedJob(job)] as const),
       ),
       conflicts: {},

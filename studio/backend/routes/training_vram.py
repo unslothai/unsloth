@@ -62,7 +62,7 @@ def summarize_resident_chat() -> Dict[str, Any]:
         # A confirmed CPU-only server (_gpu_offload_active is False) holds no VRAM.
         if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
             gguf_name = llama.model_identifier or "gguf"
-            if not getattr(llama, "is_loaded", False):  # still loading -> size unknown
+            if not getattr(llama, "is_loaded", False):
                 loading = True
     except Exception as e:
         logger.warning("Could not inspect GGUF backend: %s", e)
@@ -85,11 +85,10 @@ def summarize_resident_stt() -> Dict[str, Any]:
         model = sidecar.loaded_model
         device = sidecar.device
         loading = sidecar.is_loading()
-        # whisper.cpp holds GPU memory via its subprocess, and both engines can be
-        # live at once (engine switch or direct /audio/stt/load). Always fold the
-        # GGUF sidecar in: a resident Transformers model must not mask a GGUF
-        # server still binding its backend, or admission lets training launch into
-        # that startup and OOM.
+        # whisper.cpp holds GPU memory via its subprocess.
+        # Both engines can be live at once (engine switch or direct /audio/stt/load), so always fold the GGUF sidecar
+        # in: a resident Transformers model must not mask a GGUF server still binding its backend, or admission lets
+        # training launch into that startup and OOM.
         ggml = get_ggml_stt_sidecar()
         if not model:
             model = ggml.loaded_model
@@ -99,9 +98,6 @@ def summarize_resident_stt() -> Dict[str, Any]:
         logger.warning("Could not inspect STT sidecar: %s", e)
         return {"model": None, "device": None, "loading": False, "any": False}
 
-    # Same reasoning for mtmd: its llama-server holds VRAM too, so admission has
-    # to see it. Its own boundary, so an mtmd import failure cannot discard what
-    # the other two engines just reported.
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
 
@@ -170,7 +166,6 @@ def can_keep_chat_during_training(
         )
 
         if gpu_ids:
-            # Explicit GPUs: the selector does no VRAM math, so size it here.
             try:
                 resolved = resolve_requested_gpu_ids(gpu_ids)
             except ValueError:
@@ -191,8 +186,8 @@ def can_keep_chat_during_training(
             )
             aggregate_fits = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
 
-            # Activations don't shard: enforce a per-GPU floor so an uneven split
-            # (e.g. free [45, 10]) can't be kept into an OOM the aggregate misses.
+            # Activations don't shard: enforce a per-GPU floor so an uneven split (free [45, 10]) cannot be
+            # kept into an OOM the aggregate misses.
             per_gpu_fits = True
             min_free_gb = min(free_vals) if free_vals else 0.0
             if len(resolved) > 1:
@@ -271,14 +266,13 @@ def can_load_chat_during_training(
 
         est_kwargs = dict(
             hf_token = hf_token or None,
-            training_type = None,  # inference sizing of the chat model itself
+            training_type = None,
             load_in_4bit = load_in_4bit,
             max_seq_length = max_seq_length or 2048,
         )
 
-        # A native-audio switch may carry one atomic post-handoff capacity
-        # snapshot. It already combines live free memory with only the outgoing
-        # Studio backend, so do not re-read and add those values here.
+        # A native-audio switch's post-handoff snapshot already combines live free memory with the
+        # outgoing Studio backend, so do not re-read and add those values here.
         if not requested_gpu_ids and not is_gguf and post_handoff_free_gpu_vram_gb is not None:
             required_gb = required_override_gb
             if required_gb is None:
@@ -354,20 +348,18 @@ def can_load_chat_during_training(
         elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
-                # Empty token = a CPU-only single-device runner (e.g. a CPU
-                # diffusion GGUF): it uses no GPU VRAM, so it never threatens
-                # active training and can always load.
+                # Empty token = a CPU-only single-device runner
+                # For example a CPU diffusion GGUF: it uses no GPU VRAM, so it never threatens active training and can
+                # always load.
                 return True, {"mode": "single_device", "reason": "cpu_only"}
             try:
                 selected_gpu = int(token)
                 if selected_gpu < 0:
                     raise ValueError
             except (TypeError, ValueError):
-                # A non-numeric device token (e.g. a CUDA UUID / MIG handle)
-                # can't be mapped to a free-VRAM index, but the runner still
-                # drives ONE device. Size against the worst-case visible device
-                # (min free), never the aggregate pool, so a single-device load
-                # is never OK'd on capacity it can't use and OOMs training.
+                # A non-numeric device token (CUDA UUID / MIG handle) has no free-VRAM index, but the runner
+                # still drives ONE device: size against the worst-case visible device, never the aggregate
+                # pool, or a single-device load is OK'd on capacity it cannot use.
                 free_vals = [min(free_by_index.values())] if free_by_index else []
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]
@@ -490,8 +482,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload Transformers STT model: %s", e)
 
-    # Check the GGUF sidecar even after a cancelled/failed Transformers unload;
-    # both engines can hold memory at once (engine switch or direct load).
+    # Check the GGUF sidecar even after a cancelled or failed Transformers unload; both engines can hold memory at once.
     try:
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         ggml = get_ggml_stt_sidecar()
@@ -513,8 +504,6 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload GGUF STT model: %s", e)
 
-    # The mtmd sidecar serves Qwen3-ASR through llama-server at -ngl 99, so it
-    # holds VRAM exactly like the other two and has to be freed as well.
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
         mtmd = get_mtmd_stt_sidecar()
