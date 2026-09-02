@@ -1713,10 +1713,16 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     app.manage(TrayServerToggle(toggle));
 
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::include_image!("./icons/tray-icon-template.png");
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().unwrap().clone();
+
     TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Unsloth")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "toggle" => {
