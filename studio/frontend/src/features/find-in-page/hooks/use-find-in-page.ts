@@ -20,7 +20,7 @@ import {
   rangeTop,
   resolveFindScope,
   resolvePortalSurfaces,
-  scrollRangeIntoView,
+  revealRangeWhenPainted,
   scrollViewportTop,
   selectRangeFallback,
   supportsHighlightApi,
@@ -160,7 +160,7 @@ export function useFindInPage(query: string): FindResults {
       selectRangeFallback(activeRange);
     }
 
-    if (reveal && activeRange) scrollRangeIntoView(activeRange);
+    if (reveal && activeRange) revealRangeWhenPainted(activeRange);
 
     activeStartRef.current = active >= 0 ? matches[active].start : null;
 

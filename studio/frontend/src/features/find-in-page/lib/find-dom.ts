@@ -135,20 +135,27 @@ export function viewportOffset(index: FindTextIndex): number {
   return found === -1 ? index.text.length : segments[found].start;
 }
 
+/**
+ * What the walk turns back at, as a selector.
+ *
+ * The shell keeps every workspace mounted and parks the off-route ones under `hidden` and `inert`
+ * (`__root.tsx`) so a long generation is not cancelled by navigating away, and Radix marks the page
+ * `aria-hidden` behind a modal. Being in the document is not the same as being searchable.
+ *
+ * Attributes only. A region hidden by a CLASS is skipped by the index all the same, through
+ * resolved style, which no selector here can see.
+ */
+const SKIPPED_REGION_SELECTOR = `[aria-hidden="true"], [inert], [hidden], [${FIND_SKIP_ATTRIBUTE}]`;
+
 /** What the walk will actually read, asked of one element: inside the scope, and under nothing the
- *  walk turns back at. The shell keeps every workspace mounted and marks the off-route ones `inert`,
- *  so being in the document is not the same as being searchable. */
+ *  walk turns back at. */
 export function indexReaches(
   scope: Element | null,
   element: Element | null,
 ): boolean {
   if (scope === null || element === null) return false;
   if (!scope.contains(element)) return false;
-  return (
-    element.closest(
-      `[aria-hidden="true"], [inert], [${FIND_SKIP_ATTRIBUTE}]`,
-    ) === null
-  );
+  return element.closest(SKIPPED_REGION_SELECTOR) === null;
 }
 
 /**
@@ -170,17 +177,18 @@ export function mutatesSearchableText(record: {
       ? (target as unknown as Element)
       : (target.parentElement ?? null);
   if (!element) return true;
-  // When the skip attribute itself is what changed, ask from the PARENT. `closest` matches the
-  // element it starts at, so an element that has just been marked skippable answers with itself and
-  // its own record is filtered out - the one record that exists to say a region left the index.
-  // Removing the attribute reindexed fine, adding it never did, though the observer asks for both.
-  // A detached target has no parent to ask, so it counts as a change.
-  const from =
-    record.type === "attributes" && record.attributeName === FIND_SKIP_ATTRIBUTE
-      ? element.parentElement
-      : element;
+  // Whichever attribute changed, ask from the PARENT. `closest` matches the element it starts at,
+  // so an element that has just been parked answers with itself and its own record is filtered out
+  // - the one record that exists to say a region left the index. Removing the attribute reindexed
+  // fine, adding it never did, though the observer asks for both. Every attribute the observer
+  // watches is one that decides whether a region is searchable, so the rule is the same for all of
+  // them. A detached target has no parent to ask, so it counts as a change.
+  const from = record.type === "attributes" ? element.parentElement : element;
   if (!from) return true;
-  return from.closest(`[${FIND_SKIP_ATTRIBUTE}]`) === null;
+  // Not just the bar's own chrome: an off-route workspace goes on streaming a reply into the
+  // document, and each character of it used to buy a full flatten that then correctly threw that
+  // text away. Once per throttle for as long as the generation ran.
+  return from.closest(SKIPPED_REGION_SELECTOR) === null;
 }
 
 /**
@@ -462,16 +470,48 @@ export function scrollViewportTop(range: Range): number {
  * be re-read after each one. The window itself is never scrolled: the shell is a fixed-height
  * `100dvh` grid with `overflow-hidden`.
  */
-export function scrollRangeIntoView(range: Range): void {
+export function scrollRangeIntoView(range: Range): boolean {
   let element = elementFor(range);
+  let moved = false;
   // Bounded by DOM depth, and each step is one rect read plus at most one scroll write.
   while (element) {
     if (scrollsAxis(element, "y") || scrollsAxis(element, "x")) {
       // Re-read each time: scrolling the inner container decides what the outer one still owes.
       const rect = revealRect(range);
-      if (!rect) return;
-      revealWithin(element, rect);
+      if (!rect) return moved;
+      if (revealWithin(element, rect)) moved = true;
     }
     element = element.parentElement;
   }
+  return moved;
+}
+
+/**
+ * Bring `range` into view, and again for as long as the view keeps moving.
+ *
+ * A scroll reaches only as far as the scrollHeight the engine knows about, and a
+ * `content-visibility: auto` subtree contributes its `contain-intrinsic-size` placeholder until it
+ * renders. The Hub puts that containment on README prose and on each top-level child (hub.css), so
+ * a long block can stand at 140px for a 2904px reality. Reaching toward it is itself what makes it
+ * relevant, so the next frame has more document to scroll through and the match has moved.
+ *
+ * Measured on exactly that shape, without this: the reader was left 3415px below an 800px viewport
+ * on chromium, firefox and webkit, the match counted and highlighted somewhere off screen. Typing
+ * hides it, since every keystroke reveals again and those repeats do by accident what this does on
+ * purpose; a pasted query, an Enter, or a click on the walk button is one reveal and stays wrong.
+ *
+ * "Still moving" rather than asking whether the subtree was skipped: `checkVisibility` is the
+ * direct question but the engines that most need this are the ones that do not answer it, and a
+ * scroll that changed nothing is the same news from any of them. It ends when a pass moves nothing:
+ * measured, webkit took 2 frames and chromium and firefox 3. The bound is there so nothing can
+ * spin, and 8 frames of reading rects is the whole cost of reaching it.
+ */
+export function revealRangeWhenPainted(range: Range, tries = 8): void {
+  if (!scrollRangeIntoView(range) || tries <= 1) return;
+  if (typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(() => {
+    // A streaming reply rewrites the nodes under the index, so the range can be gone by now.
+    if (!range.startContainer.isConnected) return;
+    revealRangeWhenPainted(range, tries - 1);
+  });
 }

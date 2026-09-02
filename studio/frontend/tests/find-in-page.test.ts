@@ -200,21 +200,21 @@ test("an expanding fold does not change the letters around it", () => {
   // The length has to hold, or every offset after it maps to the wrong character.
   assert.equal(index.text.length, greek.length);
   assert.equal(index.segments[0].length, greek.length);
-  // Both sigmas are word-final here, so both fold to the final form the query folds to.
+  // Both sigmas are word-final here, and both fold to the one form a query folds to.
   assert.equal(findMatches(index, "\u039f\u03a3").length, 2);
   assert.equal(findMatches(index, "\u039f\u0394\u039f\u03a3").length, 1);
   // And the character that would have grown is one plain `i`, still one wide.
-  assert.equal(index.text, "\u03bf\u03b4\u03bf\u03c2 i \u03bf\u03c2");
+  assert.equal(index.text, "\u03bf\u03b4\u03bf\u03c3 i \u03bf\u03c3");
 });
 
 test("casing context carries across inline markup", () => {
-  // The fold of a run is not the folds of its pieces. Split by an `<em>`, a word-final sigma folded
-  // per node comes out medial while the query folds it final, and a word plainly on screen matches
-  // nothing. So the whole flattened document is folded at once.
+  // Split by an `<em>`, a word-final sigma folds medial per node and final over the run, so the two
+  // used to disagree about a word plainly on screen. Both sigmas now fold to one letter, which
+  // settles it whichever way the flatten arrives at the run.
   const index = buildTextIndex(
     el("DIV", [el("P", [text("\u039f"), el("EM", [text("\u03a3")])])]),
   );
-  assert.equal(index.text, "\u03bf\u03c2");
+  assert.equal(index.text, "\u03bf\u03c3");
   assert.equal(findMatches(index, "\u039f\u03a3").length, 1);
   // The offset map still lands on the right nodes, which is what folding in place buys.
   assert.equal(index.segments.length, 2);
@@ -231,13 +231,29 @@ test("several dotted I in a run fold without drift", () => {
   assert.equal(index.text, "iai\u03bf\u03c3ib");
 });
 
-test("a sigma that is not word-final keeps its own form", () => {
-  const dottedI = String.fromCharCode(0x0130);
-  const run = `\u03a3\u03a3\u03a3 ${dottedI}`; // "ΣΣΣ İ"
-  const index = buildTextIndex(el("DIV", [el("P", [text(run)])]));
-  assert.equal(index.text.length, run.length);
-  // Two medial sigmas then a final one, which is what the whole-run fold says.
-  assert.equal(index.text.startsWith("\u03c3\u03c3\u03c2"), true);
+test("either sigma finds the other, whichever one is on screen", () => {
+  // `toLowerCase` picks the final form by position, so uppercase Greek ending in sigma folded one
+  // way and a query typed with the medial sigma folded the other, and half the spellings a reader
+  // can produce found nothing. Measured: chromium, firefox and webkit all match `ΟΣ` from either.
+  const index = buildTextIndex(
+    el("DIV", [el("P", [text("\u039f\u0394\u039f\u03a3 \u039f\u03a3")])]),
+  );
+  for (const query of [
+    "\u03bf\u03c3", // medial, which is what a keyboard gives mid-word
+    "\u03bf\u03c2", // final, which is what it gives at the end of one
+    "\u039f\u03a3", // and the uppercase the document itself is written in
+  ]) {
+    assert.equal(
+      findMatches(index, query).length,
+      2,
+      `${escape(query)} found nothing`,
+    );
+  }
+  // One letter in the index, so the offsets still stand for what is written.
+  const run = "\u03a3\u03a3\u03a3";
+  const sigmas = buildTextIndex(el("DIV", [el("P", [text(run)])]));
+  assert.equal(sigmas.text, "\u03c3\u03c3\u03c3");
+  assert.equal(sigmas.text.length, run.length);
 });
 
 test("a non-breaking space answers to the space key", () => {
@@ -478,6 +494,8 @@ function withStyles(
 /** The two bits of `Element` the filter touches, so a record can be handed over without a DOM. */
 function skipNode(options: {
   skipped?: boolean;
+  /** Whatever takes this element out of the index, spelled as the selector spells it. */
+  mark?: string;
   parent?: ReturnType<typeof skipNode> | null;
 }): {
   nodeType: number;
@@ -486,15 +504,19 @@ function skipNode(options: {
 } {
   const node = {
     nodeType: 1,
-    skipped: options.skipped ?? false,
+    mark:
+      options.mark ??
+      (options.skipped === true ? `[${FIND_SKIP_ATTRIBUTE}]` : null),
     parent: options.parent ?? null,
     get parentElement() {
       return node.parent as unknown as Element | null;
     },
-    closest(): Element | null {
+    closest(selector: string): Element | null {
       let at: typeof node | null = node;
       while (at) {
-        if (at.skipped) return at as unknown as Element;
+        if (at.mark !== null && selector.includes(at.mark)) {
+          return at as unknown as Element;
+        }
         at = at.parent as typeof node | null;
       }
       return null;
@@ -541,6 +563,40 @@ test("the selection fallback hands the caret back to the field", async () => {
     body.indexOf("releaseCaret(") > body.indexOf("selection.addRange"),
     "the caret must be restored after the selection is moved",
   );
+});
+
+test("a workspace generating off-route does not rebuild the index", () => {
+  // `__root.tsx` keeps Chat, Images, Video and Audio mounted under `hidden` and `inert` precisely
+  // so a long generation is not cancelled by navigating away, and they sit INSIDE the scope. Every
+  // character such a reply streams is a mutation the bar used to answer with a full flatten, which
+  // then correctly excluded that text: the whole rebuild was for nothing, once per throttle for as
+  // long as the generation ran.
+  for (const mark of ["[inert]", "[hidden]", '[aria-hidden="true"]']) {
+    const parked = skipNode({ mark });
+    const streamed = skipNode({ parent: parked });
+    assert.equal(
+      mutatesSearchableText(record(streamed, "characterData")),
+      false,
+      `a reply streaming under ${mark} still asked for a rebuild`,
+    );
+  }
+  // And an ordinary reply in the workspace on screen still does.
+  const live = skipNode({ parent: skipNode({}) });
+  assert.equal(mutatesSearchableText(record(live, "characterData")), true);
+});
+
+test("parking a workspace is itself a change, whichever attribute says so", () => {
+  // The same trap as the skip attribute below: `closest` matches the element it starts at, so the
+  // record announcing that a workspace just went `inert` would answer "inside skipped content" and
+  // be dropped, leaving the workspace the reader just left in the count.
+  for (const mark of ["[inert]", "[hidden]", '[aria-hidden="true"]']) {
+    const parked = skipNode({ mark, parent: skipNode({}) });
+    assert.equal(
+      mutatesSearchableText(record(parked, "attributes", "inert")),
+      true,
+      `${mark} being added was filtered out`,
+    );
+  }
 });
 
 test("adding the skip attribute is what reindexes, not only removing it", () => {
@@ -1141,6 +1197,47 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   assert.equal(/\babsolute\b/.test(surface[1]), false);
   // And capped, so a narrow window cannot push it off the left edge.
   assert.match(surface[1], /max-w-\[calc\(100vw-2rem\)\]/);
+});
+
+test("the reveal looks again while the scroll is still moving", async () => {
+  // A `content-visibility: auto` subtree contributes its placeholder height to scrollHeight until
+  // it renders, so the first scroll is clamped short and reaching toward the block is what makes it
+  // render. Measured in a real viewport: 3415px short on all three engines without this. The node
+  // suite cannot see a scroll, so what is pinned here is the shape the browser harness relies on.
+  const dom = await readFile(
+    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
+    "utf8",
+  );
+  // The scroll reports whether it moved anything, which is the whole signal.
+  assert.match(
+    dom,
+    /export function scrollRangeIntoView\(range: Range\): boolean/,
+  );
+  const reveal = dom.slice(
+    dom.indexOf("export function revealRangeWhenPainted"),
+  );
+  const body = reveal.slice(0, reveal.indexOf("\n}\n"));
+  // Stops as soon as a pass moves nothing, and is bounded so nothing can spin.
+  assert.match(
+    body,
+    /if \(!scrollRangeIntoView\(range\) \|\| tries <= 1\) return;/,
+  );
+  assert.match(body, /tries - 1/);
+  assert.match(reveal.slice(0, reveal.indexOf("{")), /tries = \d/);
+  // Next frame, not a timer: what is being waited for is a paint.
+  assert.match(body, /requestAnimationFrame\(/);
+  // And a range whose nodes a streaming reply has replaced is dropped rather than scrolled to.
+  assert.match(body, /range\.startContainer\.isConnected/);
+  // The engine asks for the retrying one, or the second look never happens.
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(engine, /revealRangeWhenPainted\(activeRange\)/);
+  assert.equal(/scrollRangeIntoView\(activeRange\)/.test(engine), false);
 });
 
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {

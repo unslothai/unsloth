@@ -376,6 +376,74 @@ def check_hidden_text(page, engine: str, mode: str, mod: str) -> None:
     )
 
 
+def check_content_visibility_reveal(page, engine: str, mode: str, mod: str) -> None:
+    """A match under `content-visibility: auto` has to end up on screen.
+
+    A scroll reaches only as far as the scrollHeight the engine knows about, and a skipped subtree
+    contributes its `contain-intrinsic-size` placeholder until it renders. Reaching toward it is
+    what makes it relevant, so the document grows underneath the scroll that was aimed at it. The
+    Hub puts this containment on README prose and on each top-level child (hub.css), and only a real
+    viewport can measure it, which is why it is here and not in the node suite.
+    """
+    planted = page.evaluate(
+        """() => {
+      const conversation = document.querySelector('[data-find-scope] .mx-auto');
+      document.getElementById('cv-probe')?.remove();
+      const box = document.createElement('div');
+      box.id = 'cv-probe';
+      box.style.contentVisibility = 'auto';
+      box.style.containIntrinsicSize = 'auto 140px';
+      const lines = [];
+      for (let i = 0; i < 120; i++) lines.push('filler line ' + i);
+      lines.push('zqxjcvneedle at the very bottom');
+      box.innerHTML = lines.map((t) => '<p>' + t + '</p>').join('');
+      conversation.appendChild(box);
+      return Math.round(box.getBoundingClientRect().height);
+    }"""
+    )
+    check(
+        engine,
+        mode,
+        "the placeholder really is standing in for the block",
+        planted == 140,
+        f"placeholder height={planted}",
+    )
+    page.wait_for_timeout(600)
+    open_bar(page, mod)
+    # Inserted whole, the way a paste arrives, rather than typed. Typing hides this: every
+    # keystroke reveals again, and those repeats do by accident what the fix does on purpose.
+    # One change is what a paste, an Enter, or a click on the walk button each produce.
+    page.keyboard.insert_text("zqxjcvneedle")
+    page.wait_for_timeout(1200)
+    where = page.evaluate(
+        """() => {
+      const p = [...document.querySelectorAll('#cv-probe p')]
+        .find((n) => n.textContent.includes('zqxjcvneedle'));
+      const r = p.getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom),
+               height: window.innerHeight,
+               real: Math.round(document.getElementById('cv-probe').getBoundingClientRect().height),
+               inViewport: r.top >= 0 && r.bottom <= window.innerHeight };
+    }"""
+    )
+    check(
+        engine,
+        mode,
+        "the block behind the placeholder rendered",
+        where["real"] > 1000,
+        f"height={where['real']} (still the placeholder)",
+    )
+    check(
+        engine,
+        mode,
+        "typing the query leaves the match on screen",
+        where["inViewport"] is True,
+        f"{where} (aimed at the placeholder and never looked again)",
+    )
+    close_bar(page)
+    page.evaluate("() => document.getElementById('cv-probe')?.remove()")
+
+
 def check_spelling_variants(page, engine: str, mode: str, mod: str) -> None:
     """A word composed and a word decomposed have to find each other.
 
@@ -480,6 +548,7 @@ def run_page(page, engine: str, mode: str, mod: str) -> None:
         check_paint_and_teardown,
         check_modal_gate,
         check_hidden_text,
+        check_content_visibility_reveal,
         check_spelling_variants,
         check_skip_attribute,
     ):

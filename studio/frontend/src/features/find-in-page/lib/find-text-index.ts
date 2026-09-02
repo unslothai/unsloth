@@ -164,11 +164,26 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
 const DOTTED_I_PATTERN = /\u0130/g;
 
 /**
+ * Greek final sigma, folded to the medial one, which is what `CaseFolding.txt` maps it to.
+ *
+ * `toLowerCase` picks between the two by what follows, so `\u039f\u03a3` lowercases to a final
+ * sigma while the same word typed with a medial one does not, and only one of the two spellings a
+ * reader can produce finds text plainly on screen. Every engine's own find treats them as one
+ * letter. Both are single code points, so this cannot change a length.
+ */
+const FINAL_SIGMA_PATTERN = /\u03c2/g;
+
+/**
  * Case-fold the whole flattened document without changing its length.
  *
- * The whole string, not a node at a time, because the fold of a run is not the folds of its pieces.
- * Greek final sigma is decided by what follows it, so `\u039f<em>\u03a3</em>` folded per node gives
- * a medial sigma while the query gives a final one, and a word plainly on screen matches nothing.
+ * Two mappings the default fold does not make, both of them one code point for one: dotted I,
+ * whose own `toLowerCase` is the only one in Unicode that grows, and final sigma, which is a
+ * position rather than a letter. Without them a word on screen matches only some of the ways it
+ * can be typed.
+ *
+ * The whole string, not a node at a time. Sigma is the reason the two used to differ, and the
+ * mapping above settles it, but the flatten already joins before it folds and there is nothing to
+ * gain by unpicking that.
  *
  * With dotted I mapped first, `toLowerCase` cannot change a length, so this is one pass over the
  * string. On a document at the 4,000,000 character ceiling that is 11ms, of which the dotted I pass
@@ -179,7 +194,9 @@ export function foldText(raw: string): string {
     .replace(HARD_SPACE_PATTERN, " ")
     .replace(DOTTED_I_PATTERN, "i");
   const folded = spaced.toLowerCase();
-  if (folded.length === spaced.length) return folded;
+  if (folded.length === spaced.length) {
+    return folded.replace(FINAL_SIGMA_PATTERN, "\u03c3");
+  }
   // Nothing reaches this: dotted I was the only expansion and it is gone by here. But a wrong
   // length would misplace every offset after it, so fall back to the fold that cannot drift.
   let plain = "";
@@ -187,7 +204,7 @@ export function foldText(raw: string): string {
     const lower = point.toLowerCase();
     plain += lower.length === point.length ? lower : point;
   }
-  return plain;
+  return plain.replace(FINAL_SIGMA_PATTERN, "\u03c3");
 }
 
 /** True when the walk must not descend into this element. */
