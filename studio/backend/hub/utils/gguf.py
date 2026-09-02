@@ -159,6 +159,34 @@ def is_mtp_drafter_path(path: str) -> bool:
     )
 
 
+_EMBEDDED_MTP_TOKEN_RE = re.compile(r"(?:^|[._-])mtp(?:[._-]|$)", re.IGNORECASE)
+
+
+def has_embedded_mtp_name_hint(path: str) -> bool:
+    """Whether a selectable quant filename advertises a baked-in MTP head.
+
+    Hub listings expose names and sizes, not GGUF headers. This bounded hint is
+    therefore only for avoiding an unnecessary compatibility-sidecar download;
+    local metadata remains authoritative at launch. MTP must be adjacent to the
+    quant token, so an ordinary name such as ``prompt-mtp-test-Q4_K_M.gguf``
+    does not suppress a real drafter.
+    """
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if not is_gguf_filename(name) or is_mtp_drafter_path(path):
+        return False
+    stem = name.rsplit(".", 1)[0]
+    for quant in _GGUF_QUANT_RE.finditer(stem):
+        before = stem[: quant.start()].rstrip("._-")
+        after = stem[quant.end() :].lstrip("._-")
+        before_hint = _EMBEDDED_MTP_TOKEN_RE.search(before)
+        if (
+            (before_hint is not None and before_hint.end() == len(before))
+            or _EMBEDDED_MTP_TOKEN_RE.match(after)
+        ):
+            return True
+    return False
+
+
 def is_reclaimable_drafter_path(path: str) -> bool:
     """Drafters a repo's last-variant delete may reclaim: MTP, fetched with every
     variant, and DSpark, fetched on opt-in. Both are useless once no main GGUF is

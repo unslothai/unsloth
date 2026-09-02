@@ -24,6 +24,7 @@ if _BACKEND_DIR not in sys.path:
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
+    has_embedded_mtp_name_hint,
     is_mtp_drafter_path,
     list_local_gguf_variants as list_hub_local_gguf_variants,
 )
@@ -161,6 +162,37 @@ def test_baked_in_repo_plans_unchanged():
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
 
 
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("RVN-Q6_K-mtp.gguf", True),
+        ("Qwen3.6-27B-MTP-Q4_K_M.gguf", True),
+        ("prompt-mtp-test-Q4_K_M.gguf", False),
+        ("gemma-4-12b-it-Q4_K_M.gguf", False),
+        ("mtp-gemma-4-12b-it-Q8_0.gguf", False),
+    ],
+)
+def test_embedded_mtp_name_hint_is_bounded_to_the_quant(path, expected):
+    assert has_embedded_mtp_name_hint(path) is expected
+
+
+
+def test_embedded_mtp_variant_omits_root_compatibility_sidecar():
+    siblings = [
+        _sib("RVN-Q6_K-mtp.gguf", 4_000, "main"),
+        _sib("mtp-RVN.gguf", 100, "drafter"),
+        _sib("mmproj-F16.gguf", 500, "mmproj"),
+    ]
+
+    plan = build_gguf_variant_plans(siblings)["q6_k"]
+
+    assert plan.target_filenames == ("RVN-Q6_K-mtp.gguf", "mmproj-F16.gguf")
+    assert plan.companion_hashes == frozenset({"mmproj"})
+    assert plan.required_hashes == frozenset({"main", "mmproj"})
+    assert plan.download_size_bytes == 4_500
+
+
 def test_old_manifest_resume_reclassifies_drafter():
     # Pre-fix manifests could leak the drafter into a quant's expected
     # files; resume must classify it as a companion, not a main shard.
@@ -186,6 +218,19 @@ def test_detect_mtp_file_finds_root_sibling(tmp_path):
     found = detect_mtp_file(str(tmp_path / "model-Q4_K_M.gguf"))
     assert found is not None
     assert found.endswith("mtp-model.gguf")
+
+
+
+def test_detect_mtp_file_ignores_sidecar_for_embedded_head(tmp_path, monkeypatch):
+    weight = tmp_path / "RVN-Q6_K-mtp.gguf"
+    weight.write_bytes(b"main")
+    (tmp_path / "mtp-RVN.gguf").write_bytes(b"draft")
+    monkeypatch.setattr(
+        "utils.models.model_config.read_gguf_nextn_predict_layers",
+        lambda path: 1 if path == str(weight) else None,
+    )
+
+    assert detect_mtp_file(str(weight)) is None
 
 
 def test_detect_mtp_file_none_without_sibling(tmp_path):
@@ -821,6 +866,30 @@ def test_download_mtp_prefers_main_snapshot_offline(tmp_path, monkeypatch):
     )
 
     assert got == str(old_drafter)
+
+
+
+def test_download_mtp_skips_discovery_for_embedded_head(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    main = tmp_path / "RVN-Q6_K-mtp.gguf"
+    main.write_bytes(b"main")
+    reached = False
+
+    def _unexpected_download(**_kwargs):
+        nonlocal reached
+        reached = True
+        return str(tmp_path / "mtp-RVN.gguf")
+
+    monkeypatch.setattr(
+        "utils.models.gguf_metadata.read_gguf_nextn_predict_layers",
+        lambda path: 1 if path == str(main) else None,
+    )
+    backend = LlamaCppBackend()
+    backend._download_companion_gguf = _unexpected_download
+
+    assert backend._download_mtp(hf_repo = "org/repo", near_path = str(main)) is None
+    assert reached is False
 
 
 def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):

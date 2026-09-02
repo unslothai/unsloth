@@ -38,6 +38,7 @@ from utils.models.gguf_metadata import (
     mmproj_accepts_image,
     pairing_score,
     read_gguf_general_metadata,
+    read_gguf_nextn_predict_layers,
 )
 import structlog
 from loggers import get_logger
@@ -1924,6 +1925,10 @@ def detect_mtp_file(
     rejection as no drafter at all.
     """
 
+    if Path(path).is_file() and (read_gguf_nextn_predict_layers(path) or 0) > 0:
+        # A repo-root mtp-*.gguf can be a compatibility mirror for llama.cpp's
+        # -hf discovery. Passing it as -md would replace, not augment, this head.
+        return None
     def _matches_weight(candidate: Path) -> bool:
         return _drafter_matches_weight(candidate.name, weight_name, kind = "mtp")
 

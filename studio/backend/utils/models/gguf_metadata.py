@@ -65,6 +65,11 @@ _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
 
 
+# The embedded speculative-head count is read by discovery, launch and sizing.
+# Cache it separately so those callers agree without widening the staged-dims API.
+_NEXTN_CACHE: Dict[_CacheKey, Optional[int]] = {}
+
+
 def _cache_key(path: str) -> Optional[_CacheKey]:
     try:
         st = os.stat(path)
@@ -183,13 +188,15 @@ def read_gguf_context_length(path: str) -> Optional[int]:
 
 
 def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Optional[Dict[str, int]]:
-    """Walk a GGUF header once and return the requested architecture-namespaced
-    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``. Keys are
-    ``{arch}.<suffix>``; the arch is learned from ``general.architecture`` (GGUF
-    writes general.* before arch.* keys, matching the loader's own parser).
-    Returns ``None`` if not a GGUF / unreadable, else a dict (possibly empty or
-    partial when some keys are absent)."""
+    """Walk a GGUF header once and return requested architecture-namespaced
+    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``.
+
+    GGUF does not guarantee KV order, so matching uints are buffered until
+    ``general.architecture`` identifies the active namespace. Returns ``None``
+    if the file is unreadable/not GGUF, otherwise a possibly partial dict.
+    """
     arch: Optional[str] = None
+    buffered: Dict[str, int] = {}
     found: Dict[str, int] = {}
     try:
         with open(path, "rb") as f:
@@ -228,24 +235,36 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
                         if len(sbytes) < slen:
                             break
                         arch = sbytes.decode("utf-8", "replace")
-                    elif (
-                        arch is not None
-                        and vtype in (4, 10)
-                        and key.startswith(f"{arch}.")
-                        and key[len(arch) + 1 :] in wanted_suffixes
-                    ):
+                        for suffix in wanted_suffixes:
+                            full_key = f"{arch}.{suffix}"
+                            if full_key in buffered:
+                                found[suffix] = buffered[full_key]
+                    elif vtype in (4, 10):
+                        suffix = next(
+                            (
+                                candidate
+                                for candidate in wanted_suffixes
+                                if key.endswith(f".{candidate}")
+                            ),
+                            None,
+                        )
+                        if suffix is None:
+                            if not _skip_gguf_value(f, vtype):
+                                break
+                            continue
                         width = 4 if vtype == 4 else 8
                         n_bytes = f.read(width)
                         if len(n_bytes) < width:
                             break
-                        found[key[len(arch) + 1 :]] = struct.unpack(
-                            "<I" if vtype == 4 else "<Q", n_bytes
-                        )[0]
-                        if len(found) == len(wanted_suffixes):
-                            break
+                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
+                        buffered[key] = value
+                        if arch is not None and key == f"{arch}.{suffix}":
+                            found[suffix] = value
                     else:
                         if not _skip_gguf_value(f, vtype):
                             break
+                    if arch is not None and len(found) == len(wanted_suffixes):
+                        break
                 except (struct.error, UnicodeDecodeError):
                     break
     except OSError as e:
@@ -255,6 +274,32 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
         logger.debug(f"_parse_gguf_arch_uints: parse failure on {path}: {e}")
         return None
     return found
+
+
+
+def read_gguf_nextn_predict_layers(path: str) -> Optional[int]:
+    """Return the selected architecture's embedded NextN/MTP layer count.
+
+    ``0`` is a real headless verdict. ``None`` means the key is absent or the
+    header is unreadable, so callers that suppress a separate drafter can do so
+    only on a positive value.
+    """
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _NEXTN_CACHE:
+            return _NEXTN_CACHE[key]
+    values = _parse_gguf_arch_uints(path, frozenset({"nextn_predict_layers"}))
+    result = values.get("nextn_predict_layers") if values is not None else None
+    with _CACHE_LOCK:
+        while len(_NEXTN_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _NEXTN_CACHE.pop(next(iter(_NEXTN_CACHE)))
+            except StopIteration:
+                break
+        _NEXTN_CACHE[key] = result
+    return result
 
 
 def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
