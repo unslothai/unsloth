@@ -829,9 +829,7 @@ def test_linux_bwrap_skips_nproc_when_host_uid_count_is_unavailable(monkeypatch,
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
-def test_linux_bwrap_skips_nproc_when_only_a_writable_python_is_available(
-    monkeypatch, tmp_path
-):
+def test_linux_bwrap_skips_nproc_when_only_a_writable_python_is_available(monkeypatch, tmp_path):
     sandbox = _load_sandbox_module()
 
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
