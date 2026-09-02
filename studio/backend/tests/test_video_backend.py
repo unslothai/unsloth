@@ -893,14 +893,11 @@ def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, mon
     backend = VideoBackend()
     _load_gguf(backend, tmp_path)
 
-    # The epilogue hands the ENGAGED policy through on every successful generation, exactly once,
-    # and the helper itself decides whether that policy is worth a trim.
     for policy in ("none", "group", "streaming", "sequential", "model"):
         backend._state = dataclasses.replace(backend._state, offload_policy = policy)
         backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
     assert trace == ["none", "group", "streaming", "sequential", "model"]
 
-    # And the real helper trims only under whole-model offload, so the other four are no-ops.
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: (lambda: None))
@@ -912,8 +909,7 @@ def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, mon
         True,
     ]
 
-    # Progress is already idle by the time the trim runs: it can block for a few hundred ms on a
-    # large heap, and the page must not still be advertising an active generation.
+    # Progress must already be idle: the trim can block for a few hundred ms.
     assert backend.generate_progress()["active"] is False
 
 

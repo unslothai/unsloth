@@ -5713,10 +5713,7 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
-                # Whole-model offload leaves the freed component copies sitting in the host
-                # allocator's arenas; hand them back before the next request. Costs 34-300 ms on
-                # a large heap, so it runs after self._gen is cleared (a background job still
-                # reads active via _generate_job_active, only the synchronous path goes idle).
+                # Can block for a few hundred ms, so it must run after self._gen is cleared.
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,

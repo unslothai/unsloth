@@ -6514,22 +6514,18 @@ def test_generate_reclaims_model_offload_memory_once_after_success(
     monkeypatch.setattr(dmod.compile_cache, "register_shape", lambda *a, **k: None)
     monkeypatch.setattr(dmod.compile_cache, "save", lambda *a, **k: trace.append("save"))
 
-    # The OOM backoff performs three forwards, but the successful backend generation reclaims once,
-    # after all chunks and post-denoise compile-cache work have completed.
     object.__setattr__(backend._state, "offload_policy", "model")
     object.__setattr__(backend._state, "pipe", _CountingPipe(max_images = 2))
     out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
     assert len(out["images"]) == 4
     assert trace == ["save", "reclaim"]
 
-    # The other effective placement policies never pressure the host allocator.
     for policy in ("none", "group", "streaming", "sequential"):
         object.__setattr__(backend._state, "offload_policy", policy)
         object.__setattr__(backend._state, "pipe", _FakePipe())
         backend.generate(prompt = policy)
     assert trace.count("reclaim") == 1
 
-    # A failed or cancelled generation has no successful epilogue to reclaim from.
     object.__setattr__(backend._state, "offload_policy", "model")
     object.__setattr__(backend._state, "pipe", _BoomPipe())
     with pytest.raises(RuntimeError, match = "shape mismatch"):

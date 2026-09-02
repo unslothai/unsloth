@@ -58,14 +58,11 @@ DEFAULT_BASE_OVERHEAD_MIB = 2048
 _host_memory_reclaim_warning_logged = False
 _host_memory_reclaim_unsupported_logged = False
 
-# Imported at module scope but never REQUIRED: a Python built without libffi has no _ctypes, and
-# this module is on the import path of the whole inference stack (diffusion, video, llama_cpp,
-# sd_cpp_backend, routes.inference). A hard dependency here would turn "allocator pressure is
-# unavailable" into "Studio cannot start". Kept as a module attribute rather than a lazy local so
-# the reclaimer tests can still monkeypatch ``diffusion_memory.ctypes``.
+# Optional: a Python without _ctypes must not break the inference stack that imports this module.
+# Must stay a module attribute, not a lazy local: the reclaimer tests monkeypatch it.
 try:
     import ctypes
-except Exception:  # noqa: BLE001 - no ctypes just means no allocator pressure API
+except Exception:  # noqa: BLE001
     ctypes = None  # type: ignore[assignment]
 
 
@@ -128,10 +125,7 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
     try:
         reclaim = _resolve_host_memory_reclaimer()
         if reclaim is None:
-            # Say so exactly once. Without this an allocator we cannot trim (musl, a Python with
-            # no _ctypes, an unsupported platform) is indistinguishable from one we trim on every
-            # generation: the call site discards the result, so a permanent no-op would otherwise
-            # leave no trace anywhere while host RAM climbs.
+            # The call site discards the result, so a permanent no-op is otherwise invisible.
             if logger is not None and not _host_memory_reclaim_unsupported_logged:
                 _host_memory_reclaim_unsupported_logged = True
                 try:
@@ -140,17 +134,17 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
                         "(%s); offloaded host pages will not be returned early",
                         sys.platform,
                     )
-                except Exception:  # noqa: BLE001 - even a broken logger cannot fail generation
+                except Exception:  # noqa: BLE001
                     pass
             return False
         reclaim()
         return True
-    except Exception as exc:  # noqa: BLE001 — allocator pressure is an optional optimisation
+    except Exception as exc:  # noqa: BLE001
         if logger is not None and not _host_memory_reclaim_warning_logged:
             _host_memory_reclaim_warning_logged = True
             try:
                 logger.warning("diffusion.memory: host allocator reclamation failed: %s", exc)
-            except Exception:  # noqa: BLE001 — even a broken logger cannot fail generation
+            except Exception:  # noqa: BLE001
                 pass
         return False
 

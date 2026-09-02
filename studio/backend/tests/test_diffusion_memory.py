@@ -226,10 +226,9 @@ def test_host_memory_reclaimer_calls_the_real_glibc_symbol():
     try:
         assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is True
         pressure = captured["library"].malloc_trim
-        # int malloc_trim(size_t pad) -- assert the VALUES, not merely that they were set.
         assert pressure.argtypes == [ctypes.c_size_t]
         assert pressure.restype is ctypes.c_int
-        # glibc returns 1 when it released memory to the OS and 0 when it could not.
+        # glibc: 1 = released to the OS, 0 = could not.
         assert pressure(0) in (0, 1)
     finally:
         monkeypatch_target.CDLL = original
