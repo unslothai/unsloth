@@ -1073,7 +1073,12 @@ def _namespace_tree_is_importable(root: str) -> bool:
                 try:
                     if entry.is_file(follow_symlinks = True):
                         stem, extension = os.path.splitext(entry.name)
-                        if extension == ".py" and stem.isidentifier():
+                        native_module = any(
+                            entry.name.endswith(suffix)
+                            and entry.name[: -len(suffix)].isidentifier()
+                            for suffix in importlib.machinery.EXTENSION_SUFFIXES
+                        )
+                        if (extension == ".py" and stem.isidentifier()) or native_module:
                             return True
                         continue
                     if not entry.is_dir(follow_symlinks = True) or not entry.name.isidentifier():

@@ -205,6 +205,25 @@ def test_plain_pth_preserves_nested_namespace_packages(tmp_path, monkeypatch):
     assert os.path.realpath(namespace_root) in paths
 
 
+def test_plain_pth_preserves_namespace_with_only_a_native_extension(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    namespace_root = source / "native_namespace"
+    native_leaf = namespace_root / "nested" / "leaf"
+    site_dir.mkdir()
+    native_leaf.mkdir(parents = True)
+    extension = native_leaf / f"_native{importlib.machinery.EXTENSION_SUFFIXES[0]}"
+    extension.write_bytes(b"native-extension-placeholder")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(source) not in paths
+    assert os.path.realpath(namespace_root) in paths
+
+
 def test_plain_pth_pythonpath_root_does_not_become_a_read_mount(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     site_dir = tmp_path / "site-packages"
