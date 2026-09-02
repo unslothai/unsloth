@@ -1075,6 +1075,58 @@ def test_deleting_an_account_retires_its_projects_and_sandbox_too(
         assert not (root / "private.txt").exists()
 
 
+def test_retiring_an_account_does_not_rebuild_what_it_just_moved_aside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The retirement's own bookkeeping opens this account's databases, and both
+    research_runs.db and rag.db create their parent on connect. Asked afterwards,
+    the "is anything still running" probe rebuilt the tree that had just been
+    renamed away, then reported that nothing had rebuilt it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password"
+    )
+    auth_storage.create_initial_user(
+        "unsloth", "owner-password", secrets.token_urlsafe(64), is_admin = True
+    )
+    auth_storage.create_managed_user("casey")
+    workspace = auth_storage._subject_owned_roots("casey")[0]
+    workspace.mkdir(parents = True, exist_ok = True)
+    (workspace / "private.txt").write_text("casey", encoding = "utf-8")
+
+    assert auth_storage._retire_workspace_directory("casey") is True
+    assert not workspace.exists(), sorted(p.name for p in workspace.parent.iterdir())
+
+
+def test_creating_an_account_retires_a_directory_that_outlived_its_tombstone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A worker carries its subject as data and binds at its execution boundary, so
+    one dispatched before a deletion and run after it recreates the directory the
+    retirement had already moved aside and released the name for. Which workers can
+    do that is not an enumerable set, so the next holder of the name checks the disk
+    rather than trusting the tombstone."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password"
+    )
+    auth_storage.create_initial_user(
+        "unsloth", "owner-password", secrets.token_urlsafe(64), is_admin = True
+    )
+    auth_storage.create_managed_user("casey")
+    auth_storage.delete_managed_user("casey")
+    assert auth_storage.username_is_retired("casey") is False
+
+    workspace = auth_storage._subject_owned_roots("casey")[0]
+    workspace.mkdir(parents = True, exist_ok = True)
+    (workspace / "private.txt").write_text("the previous holder", encoding = "utf-8")
+
+    auth_storage.create_managed_user("casey")
+    assert not (auth_storage._subject_owned_roots("casey")[0] / "private.txt").exists()
+
+
 def test_sandbox_lifecycle_keys_are_private_to_a_workspace():
     from core.inference import tools
 

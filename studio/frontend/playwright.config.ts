@@ -13,6 +13,10 @@ export default defineConfig({
   use: {
     baseURL: process.env.STUDIO_E2E_URL ?? "http://127.0.0.1:8767",
     ...devices["Desktop Chrome"],
+    // Bundled Chromium by default. Set to "chrome" or "msedge" to run the same suite
+    // against a branded install, which is what users actually have: the branded builds
+    // differ from bundled Chromium in codecs, policies and storage partitioning.
+    channel: process.env.PLAYWRIGHT_CHANNEL || undefined,
     viewport: { width: 1440, height: 900 },
     colorScheme: "light",
     screenshot: "only-on-failure",

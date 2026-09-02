@@ -873,6 +873,14 @@ def create_managed_user(username: str) -> dict:
     # that has since been released, and clearing it here lets the create proceed.
     if username_is_retired(username):
         raise ValueError(_RETIRED_USERNAME_MESSAGE)
+    # The tombstone answers "did the retirement finish", not "is the directory gone
+    # now". A worker that binds its workspace at execution rather than at dispatch
+    # recreates the directory after a retirement that had already succeeded and
+    # cleared the tombstone, and the keys are a pure function of the username, so
+    # the next holder of the name would open it. Retiring what is actually on disk
+    # covers that without having to enumerate which workers can do it.
+    if _subject_workspace_exists(username) and not _retire_workspace_directory(username):
+        raise ValueError(_RETIRED_USERNAME_MESSAGE)
     setup_code = _new_setup_code()
     expires_at = _new_setup_code_expiry()
     create_initial_user(
@@ -983,6 +991,15 @@ def _resolve_subject_owned_roots(username: str) -> tuple[list, bool]:
 def _subject_owned_roots(username: str) -> list:
     """The roots alone, for callers that do not act on an incomplete list."""
     return _resolve_subject_owned_roots(username)[0]
+
+
+def _subject_workspace_exists(username: str) -> bool:
+    """Whether anything is on disk under this username's keys right now."""
+    directories, resolved_all = _resolve_subject_owned_roots(username)
+    if not resolved_all:
+        # An unresolvable root is one we cannot prove is absent.
+        return True
+    return any(directory.is_dir() for directory in directories)
 
 
 def _clear_username_tombstone(username: str) -> None:
@@ -1180,6 +1197,18 @@ def _retire_workspace_directory(username: str) -> bool:
     than deleted, so they stay recoverable by hand."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     directories, retired_all = _resolve_subject_owned_roots(username)
+    # Asked before the rename because the probes OPEN this account's own databases:
+    # research_runs.db and rag.db both create their parent on connect, so asking
+    # afterwards rebuilt the tree that had just been moved aside and then reported
+    # that nothing had recreated it. The question is whether workers are live, which
+    # is no less true a moment earlier.
+    jobs_active = _workspace_jobs_active(username)
+    # Before the rename, because clearing a durable grant WRITES to the account's own
+    # studio.db: done afterwards it recreated the directory this call had just moved
+    # aside, complete with a fresh database, and the next holder of the name opened
+    # it. Done here the write lands in the tree that is about to be renamed away, and
+    # still does its job if the rename fails, which is the case it exists for.
+    _forget_workspace_registries(username)
     # Before the rename: Windows refuses to rename a directory holding an open
     # file, and the WAL keeper holds studio.db open for the life of the process.
     try:
@@ -1210,10 +1239,10 @@ def _retire_workspace_directory(username: str) -> bool:
     from storage import schema_cache
 
     schema_cache.forget_all()
-    _forget_workspace_registries(username)
-    # Moving the files is not enough: a worker still bound to this subject
-    # recreates the pathname on its next lookup.
-    return retired_all and not _workspace_jobs_active(username)
+    # Moving the files is not enough: a worker still bound to this subject recreates
+    # the pathname on its next lookup. Path checks only here, no database opens, so a
+    # root that is back is one something else rebuilt rather than one this call did.
+    return retired_all and not jobs_active and not _subject_workspace_exists(username)
 
 
 # Every registry that keys on the username and outlives the account's files, as
