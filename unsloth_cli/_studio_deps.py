@@ -681,7 +681,16 @@ def studio_backend_imports(feature: str = "This command", *, studio_only: bool =
 
     Only ModuleNotFoundError is intercepted; any other ImportError from the
     backend is a real bug and keeps its traceback.
+
+    Every CLI backend import goes through here, so this is also where the cache
+    env is pinned: `export` and `list-checkpoints` reach studio.backend.core.export
+    without ever calling ensure_studio_backend_path() themselves, and would
+    otherwise import unsloth_zoo.compiler with UNSLOTH_COMPILE_LOCATION unset and
+    write unsloth_compiled_cache next to the shell's working directory (#8865).
     """
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
     try:
         yield
     except ModuleNotFoundError as exc:
