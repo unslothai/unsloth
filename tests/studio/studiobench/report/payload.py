@@ -217,9 +217,11 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app. It belongs beside the
-    # identity fields so a reader can see whether the order was balanced without digging.
-    "ab_plan": "header",
+    # Bookkeeping about HOW the A/B was run, not a measurement of the app. A section of its own
+    # BESIDE the identity fields rather than inside them: `header` is reported as a single record,
+    # so filing a second row type there had the mapping claim a destination and the reader throw
+    # the row away (#9580). See `COLLAPSED_SECTIONS`.
+    "ab_plan": "ab_plan",
     # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI,
     # not a timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
@@ -241,6 +243,30 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     # rows, and that is all it is kept for here.
     "cell_aborted": "aborted_cells",
 }
+
+
+#: The sections reported as ONE record rather than a list, and the row type each collapses to.
+#: A section named here may hold exactly one row type: a second type filed into it is routed by
+#: `ROW_TYPE_SECTIONS` and then discarded by the collapse, with no `unknown_rows` entry to show
+#: for it. `report/selftest/test_studiobench_payload_sections.py` enforces that.
+COLLAPSED_SECTIONS: Mapping[str, str] = {
+    "header": "run_meta",
+    "ab_plan": "ab_plan",
+}
+
+
+def _collapsed(sections: Mapping[str, list[dict[str, Any]]], name: str) -> dict[str, Any]:
+    """The single record a collapsed section reports, chosen by row type rather than position.
+
+    The FIRST match, not the last, because `Recorder` appends: a resumed payload holds several
+    sessions, and `header` and `ab_plan` have to describe the same one.
+    """
+
+    row_type = COLLAPSED_SECTIONS[name]
+    for row in sections.get(name, []):
+        if row.get("row_type") == row_type:
+            return row
+    return {}
 
 
 def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
@@ -272,13 +298,18 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
 
     cells = sections.get("cells", [])
     completed_cells = [c for c in cells if c.get("completed") is True]
+    # The `run_meta` row itself, not merely a non-empty `header` section: the section used to hold
+    # `ab_plan` too, so an emptiness test read a run that had recorded only its A/B order as one
+    # that had recorded its identity.
+    header = _collapsed(sections, "header")
     payload: dict[str, Any] = {
         "schema": "studiobench/payload/1",
         "source": "recorder_rows",
-        "complete": bool(sections.get("header")) and bool(completed_cells),
+        "complete": bool(header) and bool(completed_cells),
         "truncated_records": discarded,
         "record_counts": {name: len(rows) for name, rows in sections.items() if rows},
-        "header": sections.get("header", [{}])[0] if sections.get("header") else {},
+        "header": header,
+        "ab_plan": _collapsed(sections, "ab_plan"),
         "selfcheck": sections.get("selfcheck", []),
         "windows": sections.get("windows", []),
         "actions": sections.get("actions", []),
