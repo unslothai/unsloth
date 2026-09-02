@@ -354,6 +354,33 @@ def test_unknown_charset_still_reaches_the_bom_codec(monkeypatch):
     assert "MARKERWORD" in out
 
 
+@pytest.mark.parametrize("charset", ["base64", "hex", "zlib", "quopri", "rot13", "uu", "bz2"])
+def test_non_text_codec_charset_falls_back(monkeypatch, charset):
+    # These names pass codecs.lookup but bytes.decode refuses them, so guarding
+    # the lookup alone still lost the page to "is not a text encoding".
+    body = b"<html><body><p>MARKERWORD in a page a browser renders fine.</p></body></html>"
+    out = _fetch_with(monkeypatch, body, f"text/html; charset={charset}")
+    assert "MARKERWORD" in out
+    assert "not a text encoding" not in out
+
+
+def test_malformed_charset_falls_back(monkeypatch):
+    # A NUL in the label raises ValueError out of codecs.lookup, not LookupError.
+    body = b"<html><body><p>MARKERWORD in a page a browser renders fine.</p></body></html>"
+    out = _fetch_with(monkeypatch, body, 'text/html; charset="utf-8\x00"')
+    assert "MARKERWORD" in out
+    assert "Failed to fetch URL" not in out
+
+
+@pytest.mark.parametrize("charset", ["utf-16", "utf-16-le", "utf-32"])
+def test_declared_wide_codec_still_honoured(monkeypatch, charset):
+    # The probe byte the guard decodes is undecodable in these codecs; a real
+    # text codec must survive that, not be discarded with the unusable labels.
+    body = "MARKERWORD and more text".encode(charset)
+    out = _fetch_with(monkeypatch, body, f"text/plain; charset={charset}")
+    assert "MARKERWORD" in out
+
+
 def test_high_byte_binary_not_rescued_as_cp1252(monkeypatch):
     # cp1252 maps these bytes to printable characters, but they lack ASCII structure.
     body = bytes(range(0xA0, 0x100)) * 40

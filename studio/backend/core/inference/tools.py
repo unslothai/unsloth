@@ -12104,10 +12104,20 @@ def _fetch_url_raw(
             )
 
         declared = resp.headers.get_content_charset()
+        declared_codec = None
         try:
-            declared_codec = codecs.lookup(declared).name if declared else None
-        except LookupError:
-            # A label Python does not ship is no better than none.
+            if declared:
+                declared_codec = codecs.lookup(declared).name
+                # base64/hex/zlib and friends pass lookup but are not text codecs,
+                # so they raise only here, where the decode below would fail the fetch.
+                b"a".decode(declared)
+        except UnicodeError:
+            # A real text codec that simply cannot decode this probe (utf-16 and
+            # other wide codecs reject a lone byte). Keep it.
+            pass
+        except (LookupError, ValueError):
+            # A label we cannot decode with is no better than none: names Python
+            # does not ship, non-text codecs, and malformed values alike.
             declared = None
             declared_codec = None
         bom_codec = next(
