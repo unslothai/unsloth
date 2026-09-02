@@ -3686,7 +3686,11 @@ _SEARCH_TEXT_REPLAYED = (
 _ANSWER = "A ZQXVARA123 ragdoll weighs 6 kg."
 
 
-def _image_search_row(result, tool_name = "web_search", answer = _ANSWER):
+def _image_search_row(
+    result,
+    tool_name = "web_search",
+    answer = _ANSWER,
+):
     return [
         {
             "role": "assistant",
@@ -3808,16 +3812,10 @@ def _persist_image_search_turn(answer = _ANSWER):
     studio_db.upsert_chat_thread(
         {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
     )
+    row = _image_search_row({"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]}, answer = answer)
     rows = [
         ("u0", None, "user", [{"type": "text", "text": "how heavy is a ZQXVARA123 ragdoll"}]),
-        (
-            "a0",
-            "u0",
-            "assistant",
-            _image_search_row(
-                {"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]}, answer = answer
-            )[0]["content"],
-        ),
+        ("a0", "u0", "assistant", row[0]["content"]),
     ]
     for index, (identifier, parent, role, content) in enumerate(rows):
         studio_db.upsert_chat_message(
