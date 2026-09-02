@@ -50,7 +50,8 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_hf_token, get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
@@ -3326,6 +3327,8 @@ def _detect_safetensors_features(
     backend,
     chat_template: Optional[str],
     tools = None,
+    prefer_tool_use: bool = True,
+    reasoning_fallback: bool = True,
 ) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
@@ -3334,7 +3337,9 @@ def _detect_safetensors_features(
     feature_template = chat_template
     try:
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
-        selected_templates = _selected_template_strings_from_value(chat_template, tools)
+        selected_templates = _selected_template_strings_from_value(
+            chat_template, tools, prefer_tool_use = prefer_tool_use
+        )
         if selected_templates:
             feature_template = selected_templates[0]
     except Exception:
@@ -3344,7 +3349,8 @@ def _detect_safetensors_features(
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    if not flags.get("supports_reasoning"):
+    # The fallback widens to the tokenizer body, wrong when ONE body was asked about.
+    if not flags.get("supports_reasoning") and reasoning_fallback:
         try:
             from core.inference.chat_template_helpers import (
                 detect_reasoning_channel_markers_from_template,
@@ -4699,92 +4705,30 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     cannot happen, and costs the request the tool-path guards that reject `n > 1` and
     non-streaming ask/auto.
 
-    Read from the assistant turn's own `contextTruncation`, the same metadata the sticky
-    boundary uses, so no new state is stored and it survives a restart. The NEWEST turn
-    answers: while an epoch is in force every fit records it on the turn it produced, so
-    a thread mid-epoch still says yes, and a thread whose window grew until the whole
-    branch fits again says no rather than forcing the loop open for ever.
+    Read through the sticky boundary's branch-state resolver, so no new state is stored and
+    admission cannot disagree about Retry siblings or wire-shaped tool turns. The newest
+    authoritative turn answers: while an epoch is in force every fit records it on the turn
+    it produced, while a completed boundary-less turn ends it.
     """
     if not thread_id:
         return False
     try:
-        from core.rag import conversation_archive
+        from core.inference.llama_cpp import _compaction_branch_states
         from storage import studio_db
 
-        # Scoped to the branch the request is on. The stored rows are the whole DAG, so a
-        # Retry that forked BEFORE the epoch-recording turn leaves it on an abandoned
-        # sibling; a thread-wide scan would then report a checkpoint for a branch that
-        # never reset. Same filter the sticky boundary applies, for the same reason.
-        # As dicts: on the ordinary completions path these are `ChatMessage` models, and
-        # the archive helper reads them with `.get`, so it raised, the caller swallowed it
-        # and every thread reported no checkpoint. A tools-off thread that HAD reset then
-        # never reopened the loop, so the block's promise that the history is searchable
-        # was false for the whole of that epoch.
-        branch = conversation_archive.branch_message_texts(
-            _as_plain_messages(branch_messages), ("assistant",)
+        # As dicts: the completions path sends `ChatMessage`, the resolver uses `.get`.
+        states = _compaction_branch_states(
+            list(studio_db.list_chat_messages(str(thread_id)) or []),
+            _as_plain_messages(branch_messages),
         )
-        if branch_messages and not branch:
-            # A branch with no reply of its own never recorded an epoch. Without this the
-            # filter below is skipped rather than applied and the scan goes thread-wide
-            # again, which editing or regenerating the FIRST user turn hits by re-sending
-            # [system, user]. `_sticky_compaction_boundary` returns 0 there.
-            return False
-        live = set(branch or ())
-        rows = [
-            message
-            for message in reversed(studio_db.list_chat_messages(str(thread_id)) or [])
-            if message.get("role") == "assistant"
-        ]
-        if branch:
-            # Exact matches where any exist, substring only as the fallback: the branch
-            # check is textual, so an abandoned short reply rides in on a longer live one
-            # ("Done" against "Not done yet") and reopens the loop on the live branch. The
-            # sticky boundary prefers exact matches for the same collision.
-            exact = [
-                message
-                for message in rows
-                if conversation_archive.message_text(message.get("content")) in live
-            ]
-            rows = exact or [
-                message
-                for message in rows
-                if conversation_archive.content_on_branch(message.get("content"), branch)
-            ]
-        if not rows:
-            return False
-        # Rows the text cannot tell apart decide TOGETHER. Two Retry siblings can carry
-        # byte-identical replies with only the abandoned one having reset, and taking the
-        # first match reopened the loop on the branch that never did. Where the branch
-        # check cannot separate them, choose the reading that leaves the request as it was,
-        # as the sticky boundary's `min(boundaries)` does. The case this loses -- a real
-        # epoch on the live sibling -- is one the sticky boundary declines to replay
-        # anyway, so there is nothing for the tool to reach back to.
-        newest = conversation_archive.message_text(rows[0].get("content"))
-        twins = [
-            message
-            for message in rows
-            if conversation_archive.message_text(message.get("content")) == newest
-        ]
-
-        def _checkpointed(message: dict) -> bool:
-            metadata = message.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                return False
-            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
-                "contextTruncation"
-            )
-            return bool(isinstance(truncation, dict) and truncation.get("checkpoint"))
-
-        # The NEWEST distinguishable state answers, and nothing older. While an epoch is
-        # in force every fit records it on the turn it produced, so the newest row says
-        # so too; once the window grows and the whole branch fits again the fit records
-        # nothing, and scanning back to an older reset then forced the tool loop on for
-        # the rest of the thread's life -- overriding enable_tools = false, and the n > 1
-        # and non-streaming guards with it, to repair a compaction that no longer exists.
-        return all(_checkpointed(message) for message in twins)
+        return bool(states) and all(
+            state.truncation is not None
+            and state.truncation.get("fits")
+            and state.truncation.get("checkpoint")
+            for state in states
+        )
     except Exception:
         return False
-    return False
 
 
 async def _select_request_tools(
@@ -6890,6 +6834,23 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
         or public_model_id(fallback)
         or fallback
     )
+
+
+def _loading_public_id(model_path: Optional[str]) -> Optional[str]:
+    """The id ``/api/inference/status`` publishes for a load still in flight.
+
+    The request carries whatever the client sent, which for an on-device model is an
+    absolute path. What the same load reports once it lands is path-free (see
+    ``_llama_status_model_ids`` and ``core.inference.model_ids.public_model_id``), so
+    reporting it mid-load must be too: a registered native-lease label if the grant has
+    been redeemed, else the clean public id.
+    """
+    if not model_path:
+        return model_path
+    label = display_label_for_native_path(model_path)
+    if label != model_path:
+        return label
+    return public_model_id(model_path) or model_path
 
 
 def _orchestrator_public_model_id(backend) -> Optional[str]:
@@ -12919,6 +12880,7 @@ _scoped_load_attempts_lock = threading.Lock()
 _scoped_load_attempts: dict[tuple[str, str], _ScopedLoadAttempt] = {}
 _scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
 _running_load_attempt: Optional[_ScopedLoadAttempt] = None
+_pending_load_attempts: dict[str, _ScopedLoadAttempt] = {}
 _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
 # Bound on waiting for a cancel's teardown to report back. Only the /unload
 # handler sets cancel_complete for a running attempt, so a disconnect or a
@@ -13101,6 +13063,8 @@ async def load_model_gated(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     attempt = _begin_load_attempt(request, current_subject)
+    with _scoped_load_attempts_lock:
+        _pending_load_attempts[attempt.token] = attempt
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the lifecycle gate across the load so idle auto-unload can't unload the
@@ -13129,6 +13093,8 @@ async def load_model_gated(
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
         return response
     finally:
+        with _scoped_load_attempts_lock:
+            _pending_load_attempts.pop(attempt.token, None)
         _finish_load_attempt(attempt)
 
 
@@ -16130,6 +16096,18 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
 
+        with _scoped_load_attempts_lock:
+            _tracked_loading_id = (
+                _running_load_attempt.model_path if _running_load_attempt is not None else ""
+            )
+            if not _tracked_loading_id:
+                _queued = next(iter(_pending_load_attempts.values()), None)
+                _tracked_loading_id = _queued.model_path if _queued is not None else ""
+        # The attempt holds what the client sent, which for an on-device model is a path.
+        _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
+        _loading = [_tracked_loading_id] if _tracked_loading_id else []
+        backend = _peek_inference_backend()
+
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
@@ -16167,7 +16145,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
-                loading = [],
+                loading = _loading,
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
                 # still in VRAM and was invisible to every client reading this.
@@ -16196,9 +16174,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
 
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
         # nothing is loaded, and the chat UI polls this from first paint.
-        backend = _peek_inference_backend()
         if backend is None:
             return InferenceStatusResponse(
+                loading = _loading,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
@@ -16227,6 +16205,14 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
 
+        # The backend and the attempt registry name the same load, so compare public ids
+        # or a model loaded from a path is listed twice.
+        _loading_models = list(getattr(backend, "loading_models", set()))
+        if _tracked_loading_id and not any(
+            _loading_public_id(_name) == _tracked_loading_id for _name in _loading_models
+        ):
+            _loading_models.append(_tracked_loading_id)
+
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
             model_identifier = backend.active_model_name,
@@ -16246,7 +16232,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
-            loading = list(getattr(backend, "loading_models", set())),
+            loading = _loading_models,
             loaded = list(backend.models.keys()),
             inference = inference_config,
             requires_trust_remote_code = _resolve_loaded_trust_remote_code(
@@ -16339,6 +16325,7 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 
 
 # =====================================================================
+
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
 
@@ -16394,7 +16381,7 @@ async def _generate_tts_wav(
     _audio_cancel = threading.Event()
     prompt_for_budget = text
 
-    # Pick backend — both return (wav_bytes, sample_rate)
+    # Pick backend - both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
@@ -17047,6 +17034,7 @@ async def openai_audio_transcriptions(
 
 
 # =====================================================================
+
 # Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
 # =====================================================================
 
@@ -17258,7 +17246,7 @@ async def stt_status(
 async def stt_download(
     payload: SttLoadRequest,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Start a background download of a dictation model.
 
@@ -17375,7 +17363,7 @@ async def stt_load(
 async def stt_validate(
     payload: SttLoadRequest,
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Verify a Hub repository is a Whisper checkpoint before downloading it."""
     from core.inference.stt_sidecar import (
@@ -17598,6 +17586,7 @@ async def transcribe_audio_raw(
 
 
 # =====================================================================
+
 # OpenAI-Compatible Chat Completions  (/chat/completions)
 # =====================================================================
 
@@ -17884,7 +17873,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         # ── User / assistant messages ─────────────────────────
         combined_text: Optional[str] = None
         if isinstance(msg.content, str):
-            # Plain string content — pass through
+            # Plain string content - pass through
             combined_text = msg.content
         elif isinstance(msg.content, list):
             # Multimodal content parts
@@ -17935,6 +17924,30 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         chat_messages,
         latest_user_image_b64 or latest_image_b64,
     )
+
+
+def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
+    """Which user turn, counted among user turns, the selected image came from.
+
+    ``_extract_content_parts`` takes the newest user image from ANYWHERE in the thread
+    while the renderers attach it to the newest user turn (#10092). Ordinal rather than
+    index: the passthrough rebuild folds system/developer turns together.
+    """
+    ordinal = None
+    seen = 0
+    for msg in messages:
+        if msg.role != "user":
+            continue
+        if isinstance(msg.content, list):
+            for part in msg.content:
+                if part.type != "image_url":
+                    continue
+                url = getattr(getattr(part, "image_url", None), "url", "") or ""
+                if url.startswith("data:") and url.partition(",")[2]:
+                    ordinal = seen
+                    break
+        seen += 1
+    return ordinal
 
 
 def _images_in_last_user_message(messages: list) -> int:
@@ -22239,15 +22252,37 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
-    def _sf_response_protocol(tools = None):
-        features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
+    def _sf_response_protocol(
+        tools = None,
+        template = None,
+        prefer_tool_use = True,
+    ):
+        body = _sf_tpl if template is None else template
+        # Forward only the non-default: unconditional breaks stubs predating the parameter.
+        _pref = {} if prefer_tool_use else {"prefer_tool_use": False}
+        if template is not None:
+            # One specific body, so no reasoning rescue from an unselected branch.
+            _pref["reasoning_fallback"] = False
+        features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
+        # The prefill probe needs the ONE body that renders, not the collection (#10092).
+        try:
+            from core.inference.chat_template_helpers import (
+                _selected_template_strings_from_value,
+            )
+            _selected = _selected_template_strings_from_value(
+                body, tools, prefer_tool_use = prefer_tool_use
+            )
+            if _selected:
+                body = _selected[0]
+        except Exception:
+            logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
         parse_think = bool(
             features.get("supports_reasoning") or features.get("reasoning_always_on")
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
             payload.enable_thinking,
-            _sf_tpl,
+            body,
             reasoning_effort = payload.reasoning_effort,
             messages = _sf_probe_messages,
         )
@@ -22819,17 +22854,38 @@ async def produce_openai_chat_completions(
     # tools into the template, generate one turn, heal text-form calls (#6801).
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    _sf_image_tpl = (
+        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
+        if image is not None
+        else None
+    )
+    # Differs from processor_template: a template-less processor still places the image.
+    _sf_renders_image = image is not None and bool(
+        (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
+    )
+    if _sf_image_tpl is not None:
+        # The WHOLE protocol, not just tool support: a processor body can carry a reasoning
+        # channel the tokenizer never declares, whose <think> markup then leaked as visible
+        # content. prefer_tool_use is off: a processor never selects "tool_use" (#10092).
+        _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+            _sf_template_tools,
+            template = _sf_image_tpl,
+            prefer_tool_use = False,
+        )
+    _sf_supports_tools = _sf_features.get("supports_tools", False)
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
     _sf_client_tools = (
         # Read the resolved value, not a fresh _effective_enable_tools: the gate
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
-        not _sf_tools_on
+        # Once an image rules out the server loop the passthrough takes the request, or
+        # image-plus-tools is answered with prose and no schemas at all (#10092).
+        (not _sf_tools_on or (image is not None and not _sf_use_tools))
         and not _sf_use_tools
-        and image is None
         and not _sf_is_gptoss
-        and _sf_features.get("supports_tools", False)
+        and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
@@ -22858,6 +22914,8 @@ async def produce_openai_chat_completions(
     _sf_chat_targets = (
         (_sf_mlx_target,) if _sf_hf_target is _sf_mlx_target else (_sf_mlx_target, _sf_hf_target)
     )
+    # Qwen2.5-VL's processor body never mentions tools while its tokenizer body does, so
+    # healing from the tokenizer body promotes a call the render never carried (#7066).
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select: when the active one drops the
         # schema the render falls back to the native template, whose profile can drop a tool
@@ -22870,6 +22928,8 @@ async def produce_openai_chat_completions(
             _sf_chat_targets,
             _sf_model_info,
             active_model_name = backend.active_model_name,
+            template = _sf_image_tpl,
+            template_is_processor = _sf_image_tpl is not None,
         )
         if _sf_client_tools
         else None
@@ -22889,6 +22949,28 @@ async def produce_openai_chat_completions(
             ),
             system_prompt,
         )
+        # Mark the turn that owns the image so the newest-user-turn scan does not move an
+        # older picture onto a later question. Gated on _sf_renders_image, not on an image:
+        # a text-template render must not be handed part lists (#10092).
+        if _sf_renders_image:
+            _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
+            if _sf_image_ordinal is not None:
+                _sf_seen_users = 0
+                for _sf_idx, _sf_msg in enumerate(gen_kwargs["messages"]):
+                    if not isinstance(_sf_msg, dict) or _sf_msg.get("role") != "user":
+                        continue
+                    if _sf_seen_users == _sf_image_ordinal:
+                        _sf_body = _sf_msg.get("content")
+                        if isinstance(_sf_body, str):
+                            gen_kwargs["messages"][_sf_idx] = {
+                                **_sf_msg,
+                                "content": [
+                                    {"type": "image"},
+                                    {"type": "text", "text": _sf_body},
+                                ],
+                            }
+                        break
+                    _sf_seen_users += 1
         gen_kwargs["system_prompt"] = ""
         # tool_choice="none": keep history templating but advertise no tools
         # (heal_gate is off, markup would relay as prose). A forced function
@@ -22915,7 +22997,12 @@ async def produce_openai_chat_completions(
     # known. This standard path now has the exact schemas that will be rendered,
     # so resolve reasoning parsing again to keep empty registries, forced-tool
     # misses, and tool_choice="none" on the marker-free template branch.
-    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
+    # Re-resolving from the tokenizer body here would undo the reclassification above.
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        gen_kwargs.get("tools"),
+        template = _sf_image_tpl,
+        prefer_tool_use = _sf_image_tpl is None,
+    )
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
@@ -23271,8 +23358,16 @@ async def produce_openai_chat_completions(
                             # completion count.
                             _first_stats = stats_holder.pop("stats", None)
                             try:
+                                # Mark the owning turn before the correction is appended,
+                                # or the reverse scan attaches the picture to it (#10092).
+                                _nudge_base = gen_kwargs["messages"]
+                                if _sf_renders_image:
+                                    from core.inference.chat_template_helpers import (
+                                        messages_with_attached_image as _nudge_attach,
+                                    )
+                                    _nudge_base = _nudge_attach(_nudge_base)
                                 retry_messages = [
-                                    *gen_kwargs["messages"],
+                                    *_nudge_base,
                                     *nudge_messages(_data, _sf_heal),
                                 ]
                                 retry_text = await _run_blocking_generation(
@@ -23437,6 +23532,7 @@ async def produce_openai_chat_completions(
 
 
 # =====================================================================
+
 # Sandbox file serving  (/sandbox/{session_id}/{filename})
 # =====================================================================
 
@@ -23762,6 +23858,7 @@ async def serve_sandbox_file(
 
 
 # =====================================================================
+
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
 # =====================================================================
 
@@ -24504,6 +24601,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
 
 
 # =====================================================================
+
 # OpenAI-Compatible Completions Proxy  (/completions → /v1/completions)
 # =====================================================================
 
@@ -24827,6 +24925,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
 
 # =====================================================================
+
 # OpenAI-Compatible Embeddings Proxy  (/embeddings → /v1/embeddings)
 # =====================================================================
 
@@ -24983,6 +25082,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
 
 # =====================================================================
+
 # OpenAI Responses API  (/responses → /v1/responses)
 # =====================================================================
 
@@ -27051,6 +27151,7 @@ async def openai_responses(
 
 
 # =====================================================================
+
 # Anthropic-Compatible Messages API  (/messages → /v1/messages)
 # =====================================================================
 
@@ -29342,6 +29443,7 @@ async def _anthropic_plain_non_streaming(
 
 
 # =====================================================================
+
 # Client-side tool pass-through (Anthropic-native tools field)
 # =====================================================================
 
@@ -30193,6 +30295,7 @@ async def _anthropic_passthrough_non_streaming(
 
 
 # =====================================================================
+
 # Client-side tool pass-through (OpenAI-native /v1/chat/completions)
 # =====================================================================
 
@@ -32109,6 +32212,7 @@ async def _openai_passthrough_non_streaming_upstream(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+
 # Diffusion (local text-to-image). Unsloth-only routes (studio_router is not mounted under /v1); the backend is in-process and
 # synchronous, so blocking calls are offloaded with asyncio.to_thread. Single error boundary: the backend raises, we map to HTTP.
 # ──────────────────────────────────────────────────────────────────────────
@@ -33123,6 +33227,7 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
 
 
 # ──────────────────────────────────────────────────────────────────────────
+
 # OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
 # also answers /v1/images/generations for OpenAI clients. The Unsloth Image tab uses the richer /images/generate above; this is the spec shape.
 # ──────────────────────────────────────────────────────────────────────────

@@ -122,6 +122,7 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+import { createParentResolver } from "./utils/message-order";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -2013,17 +2014,13 @@ function useStudioRuntimeAdapters(
         // preserve the chain. Fall back to fromArray for fully legacy threads.
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
-          let previousId: string | null = null;
+          const resolveParent = createParentResolver();
           return completeLoad(
             {
-              messages: msgs.map((m) => {
-                const parentId = m.parentId != null ? m.parentId : previousId;
-                previousId = m.id;
-                return {
-                  parentId,
-                  message: toThreadMessage(m),
-                };
-              }),
+              messages: msgs.map((m) => ({
+                parentId: resolveParent(m),
+                message: toThreadMessage(m),
+              })),
             },
             remoteId,
           );

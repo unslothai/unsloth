@@ -35,10 +35,11 @@ REFRESH = source_path("studio/frontend/src/features/chat/utils/refresh-context-u
 PROVIDER = source_path("studio/frontend/src/features/chat/runtime-provider.tsx")
 STORE = source_path("studio/frontend/src/features/chat/stores/chat-runtime-store.ts")
 RUNTIME = source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runtime.ts")
+MESSAGE_ORDER = source_path("studio/frontend/src/features/chat/utils/message-order.ts")
 
 TEMP = WORKDIR / "temp" / "new_chat_context_recount"
 
-SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME)
+SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME, MESSAGE_ORDER)
 
 # Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {
@@ -58,10 +59,30 @@ BOUND_NAMES = {
 
 
 def _refresh_module_body() -> str:
-    """Everything in refresh-context-usage.ts after its import block, verbatim."""
+    """Everything in refresh-context-usage.ts after its import block, verbatim.
+
+    The marker is one import, not the last one: anything sorting after
+    "./chat-history-storage" follows it. Those lines are dropped rather than replayed,
+    because the harness supplies those modules itself and an `import` inside harness.ts
+    would resolve against the temp directory, where they do not exist.
+    """
     text = read(REFRESH)
     marker = 'from "./chat-history-storage";'
-    return text[text.index(marker) + len(marker) :]
+    rest = text[text.index(marker) + len(marker) :]
+    lines = rest.split("\n")
+    while lines and (not lines[0].strip() or lines[0].startswith("import ")):
+        lines.pop(0)
+    return "\n" + "\n".join(lines)
+
+
+def _message_order_body() -> str:
+    """message-order.ts verbatim: it takes no imports of its own.
+
+    refresh-context-usage.ts used to carry its own copy of `orderBySelectedBranch`, so
+    the replayed body defined it. Now that it imports the shared one, the harness has to
+    supply it or the recount prices the wrong branch.
+    """
+    return read(MESSAGE_ORDER)
 
 
 def _component_effects(start: str, end: str) -> list[tuple[list[str], str]]:
@@ -565,7 +586,7 @@ def _harness_source() -> str:
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
-    return prelude + _refresh_module_body() + render + resident + history
+    return prelude + _message_order_body() + _refresh_module_body() + render + resident + history
 
 
 def _run(script: str) -> dict:
