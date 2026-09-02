@@ -66,6 +66,8 @@ _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
 _EXIT_NO_SPACE = 4
 # A concrete backend selection could not be satisfied.
 _EXIT_BACKEND_UNAVAILABLE = 5
+# Prebuilt path failed; setup scripts source-build, but the in-app updater cannot.
+_EXIT_FALLBACK = 2
 
 
 class _LlamaPhaseError(RuntimeError):
@@ -767,6 +769,30 @@ def _run_llama_phase(
             raise _LlamaPhaseError(
                 f"Could not install the {backend_label} llama.cpp build on this machine. "
                 "The installed backend was kept.",
+                reload_required = model_was_active,
+            ) from exc
+        if exc.returncode == _EXIT_FALLBACK:
+            message = str(exc)
+            # Same predicate the formatter uses: exit 2 also carries failures
+            # like a rate-limited huggingface.co validation-model fetch, which
+            # GH_TOKEN cannot fix.
+            if _flow.is_github_rate_limit_text(message):
+                token_present = _flow.github_token_present(env)
+                logger.warning("llama update: GitHub rate limit", authenticated = token_present)
+                advice = (
+                    "Wait for the limit to reset and try again."
+                    if token_present
+                    else "Set GH_TOKEN or GITHUB_TOKEN in your environment and try again."
+                )
+                raise _LlamaPhaseError(
+                    "Could not update llama.cpp: GitHub is rate-limiting release downloads. "
+                    f"{advice}",
+                    reload_required = model_was_active,
+                ) from exc
+            logger.warning("llama update: prebuilt fallback", error = message)
+            detail = message.split(": ", 1)[-1] if ": " in message else message
+            raise _LlamaPhaseError(
+                f"Could not update llama.cpp from the prebuilt bundle. {detail}",
                 reload_required = model_was_active,
             ) from exc
         logger.warning("llama update: failed", error = str(exc))

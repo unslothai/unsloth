@@ -2133,7 +2133,13 @@ export function normalizeSpeculativeType(
   const s = String(v).trim().toLowerCase();
   if (!s) return null;
   if (s === "auto" || s === "default") return "auto";
-  if (s === "off") return "off";
+  // The same four spellings _LEGACY_SPEC_MODE_MAP reads as "off". A stored override
+  // reaches here raw (model-overrides.ts binds speculative_type unnormalized), so
+  // falling through to Auto would compare Auto against a status the backend already
+  // canonicalised to "off" and re-send /load on every pick.
+  if (s === "off" || s === "none" || s === "disable" || s === "disabled") {
+    return "off";
+  }
   if (s === "mtp" || s === "draft-mtp") return "mtp";
   if (s === "dspark" || s === "draft-dspark") return "dspark";
   if (s === "dflash" || s === "draft-dflash") return "dflash";
