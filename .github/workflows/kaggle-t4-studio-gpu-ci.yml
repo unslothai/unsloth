@@ -568,7 +568,7 @@ jobs:
       # nothing else, deliberately. The payload therefore encodes its
       # screenshots and logs into its own cell output; this puts them back.
       - name: Unpack the Playwright evidence
-        if: always() && hashFiles('kaggle_evidence/**') != ''
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_studio_ci/collect_evidence.py \
             --evidence kaggle_evidence \
@@ -594,7 +594,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Report
-        if: always() && hashFiles('kaggle_evidence/**') != ''
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_studio_ci/report.py \
             --evidence kaggle_evidence

@@ -3417,7 +3417,7 @@ def test_an_evidence_upload_outage_cannot_colour_the_check_red():
     # empty directory prints "0 of 5 payloads", which reads as a failure rather
     # than as a result that has not arrived yet.
     assert report["if"].startswith("always()")
-    assert "hashFiles('kaggle_evidence/**')" in report["if"]
+    assert "hashFiles('kaggle_evidence/**/*_output.ipynb')" in report["if"]
     assert "steps.evidence" not in report["if"]
 
 

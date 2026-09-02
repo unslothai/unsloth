@@ -1182,7 +1182,7 @@ jobs:
       # It is safe on a run that carried no Studio payload: the collector finds
       # no encoded evidence and writes nothing.
       - name: Unpack the Playwright evidence
-        if: always() && hashFiles('kaggle_evidence/**') != ''
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         continue-on-error: true
         run: |
           python .github/scripts/kaggle_studio_ci/collect_evidence.py \
@@ -1235,7 +1235,7 @@ jobs:
       # recheck has no evidence, and "0 of 4 payloads" would read as a failure
       # rather than the skip it is.
       - name: Report
-        if: always() && hashFiles('kaggle_evidence/**') != ''
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
@@ -1250,7 +1250,7 @@ jobs:
       # Its exit code is the same contract as the T4 reporter's: red only for a
       # payload that ran and failed its assertions.
       - name: Report Studio
-        if: always() && hashFiles('kaggle_evidence/**') != ''
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_studio_ci/report.py \
             --evidence kaggle_evidence

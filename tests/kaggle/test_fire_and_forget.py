@@ -573,17 +573,27 @@ def test_a_dispatch_posts_a_pending_status():
         ), f"{path.name} never posts a pending {context} status"
 
 
-def test_the_reporters_do_not_run_over_an_empty_evidence_directory():
-    """A reporter over a directory that does not exist yet prints "0 of 5
-    payloads", which reads as a failure rather than as a result that has not
-    arrived. This is the exact shape of the silent-red this change could
-    introduce."""
+def test_the_reporters_wait_for_an_EXECUTED_NOTEBOOK_not_just_a_directory():
+    """Measured on run 33628507954, which reported `Kaggle T4 smoke: PARTIAL`
+    for a dispatch where nothing had run at all.
+
+    The first version of this guard accepted `hashFiles('kaggle_evidence/**')`,
+    and that is true on a dispatching run: launch.py writes launch_result.json
+    into that directory before it exits. The reporters then read a directory
+    with no executed notebooks and print "half a comparison" for a kernel that
+    is still queued.
+
+    So the condition has to name the thing a report is MADE of. A dispatching
+    run cannot have an executed notebook, and a collected one always does.
+    """
     for path in (NOTEBOOK_WF, STUDIO_WF):
         for _job, name, step in _steps(_wf(path)):
             body = step.get("run") or ""
             if "report.py" not in body:
                 continue
-            assert "hashFiles('kaggle_evidence/**')" in (step.get("if") or ""), (
-                f"{path.name}: step {name!r} reports over evidence that a dispatching "
-                f"run never produces: if={step.get('if')!r}"
+            condition = step.get("if") or ""
+            assert "_output.ipynb" in condition, (
+                f"{path.name}: step {name!r} reports on the presence of the evidence "
+                f"DIRECTORY, which a dispatching run creates and does not fill: "
+                f"if={condition!r}"
             )
