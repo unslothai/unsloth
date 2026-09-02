@@ -9567,9 +9567,7 @@ def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(
     cache_root = tmp_path / "hub"
     snapshot = cache_root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [cache_root]
-    )
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [cache_root])
     fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
     measured = 40_000
 
@@ -9601,9 +9599,7 @@ def test_the_resident_size_table_rejects_an_unconfigured_cache_shaped_path(
     configured = tmp_path / "configured-hub"
     lookalike = tmp_path / "srv" / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("b" * 40)
     lookalike.mkdir(parents = True)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [configured]
-    )
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [configured])
     measured = 40_000
     sized = DiffusionBackend()._resident_sized_plan(
         _plan_with_weights(measured),

@@ -5083,7 +5083,6 @@ class DiffusionBackend:
             return None
         try:
             from utils.hf_cache_settings import known_hf_hub_caches
-
             candidate = Path(path).expanduser().resolve(strict = False)
             for root in known_hf_hub_caches():
                 try:
