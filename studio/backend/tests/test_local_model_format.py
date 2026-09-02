@@ -586,6 +586,71 @@ def test_local_pipeline_completeness_can_exclude_an_injected_denoiser(tmp_path):
     )
 
 
+def test_local_pipeline_completeness_validates_metadata_component_contracts(tmp_path):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "metadata-components"
+    pipeline.mkdir()
+
+    def manifest(name, library, class_name):
+        (pipeline / "model_index.json").write_text(
+            json.dumps(
+                {
+                    "_class_name": "DiffusionPipeline",
+                    name: [library, class_name],
+                }
+            )
+        )
+        (pipeline / name).mkdir(exist_ok = True)
+
+    manifest("scheduler", "diffusers", "FlowMatchEulerDiscreteScheduler")
+    (pipeline / "scheduler" / "README.md").write_text("not a scheduler")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+    (pipeline / "scheduler" / "scheduler_config.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+    manifest("tokenizer", "transformers", "Qwen2Tokenizer")
+    (pipeline / "tokenizer" / "tokenizer_config.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+    (pipeline / "tokenizer" / "tokenizer.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+    manifest("tokenizer_2", "transformers", "ByT5Tokenizer")
+    (pipeline / "tokenizer_2" / "tokenizer_config.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+    manifest("guider", "diffusers", "ClassifierFreeGuidance")
+    (pipeline / "guider" / "guider_config.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+    manifest("processor", "transformers", "Qwen3VLProcessor")
+    (pipeline / "processor" / "preprocessor_config.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+    (pipeline / "processor" / "tokenizer_config.json").write_text("{}")
+    (pipeline / "processor" / "tokenizer.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+
+def test_local_pipeline_completeness_treats_unknown_components_as_weight_bearing(tmp_path):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "extension-component"
+    component = pipeline / "connectors"
+    component.mkdir(parents = True)
+    (pipeline / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "connectors": ["ltx2", "LTX2TextConnectors"],
+            }
+        )
+    )
+    (component / "config.json").write_text("{}")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+    _touch(component / "diffusion_pytorch_model.safetensors")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+
 def test_hub_inventory_distinguishes_modular_pipeline_roots(tmp_path):
     from hub.services.models.common import (
         _classify_local_path,

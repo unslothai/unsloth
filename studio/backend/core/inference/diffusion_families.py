@@ -1234,12 +1234,19 @@ _LOCAL_PIPELINE_WEIGHT_INDEX_RE = re.compile(
 )
 _LOCAL_PIPELINE_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
 _MAX_PIPELINE_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
-_NON_WEIGHT_COMPONENT_CLASS_TOKENS = (
-    "featureextractor",
-    "imageprocessor",
-    "processor",
-    "scheduler",
-    "tokenizer",
+_LOCAL_PIPELINE_METADATA_CONFIGS = (
+    (("tokenizer",), ("tokenizer_config.json",)),
+    (("scheduler",), ("scheduler_config.json",)),
+    (("guider", "guidance"), ("guider_config.json",)),
+    (("featureextractor", "imageprocessor"), ("preprocessor_config.json",)),
+    (("processor",), ("processor_config.json", "preprocessor_config.json")),
+)
+_LOCAL_PIPELINE_SELF_CONTAINED_TOKENIZER_ASSETS = (
+    "tokenizer.json",
+    "vocab.txt",
+    "spiece.model",
+    "tokenizer.model",
+    "sentencepiece.bpe.model",
 )
 
 
@@ -1310,6 +1317,45 @@ def _local_model_component_is_complete(component: Path) -> bool:
     )
 
 
+def _local_metadata_component_is_complete(component: Path, class_name: str) -> Optional[bool]:
+    """Completeness for known config-only Diffusers/Transformers component classes.
+
+    ``None`` means the component is not known to be metadata-only and must take the model-weight
+    path. That conservative default covers extension libraries such as LTX2, whose connector and
+    vocoder components carry ordinary config plus safetensors weights.
+    """
+    identity = class_name.replace("_", "").lower()
+    for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
+        if not any(token in identity for token in tokens):
+            continue
+        if not any(
+            _local_json_object_is_valid(
+                component / config_name, max_bytes = _MAX_PIPELINE_MANIFEST_BYTES
+            )
+            for config_name in config_names
+        ):
+            return False
+        if tokens not in (("tokenizer",), ("processor",)):
+            return True
+        # ByT5 constructs its byte vocabulary in code and intentionally ships no vocab asset.
+        if "byt5tokenizer" in identity:
+            return True
+        try:
+            if any(
+                (component / asset).is_file() and (component / asset).stat().st_size > 0
+                for asset in _LOCAL_PIPELINE_SELF_CONTAINED_TOKENIZER_ASSETS
+            ):
+                return True
+            # A byte-level BPE's vocab and merges are a pair; neither file is useful alone.
+            return all(
+                (component / asset).is_file() and (component / asset).stat().st_size > 0
+                for asset in ("vocab.json", "merges.txt")
+            )
+        except OSError:
+            return False
+    return None
+
+
 def local_pipeline_components_are_complete(
     root: Path | str,
     filename: str,
@@ -1355,21 +1401,19 @@ def local_pipeline_components_are_complete(
         return False
 
     try:
-        for name, library, class_name in declared:
+        for name, _library, class_name in declared:
             component = base / name
             if not component.is_dir():
                 return False
-            class_key = class_name.lower()
-            non_weight = any(token in class_key for token in _NON_WEIGHT_COMPONENT_CLASS_TOKENS)
-            model_component = library.lower() in {"diffusers", "transformers"} and not non_weight
-            if model_component:
+            metadata_complete = _local_metadata_component_is_complete(component, class_name)
+            if metadata_complete is None:
                 if not _local_json_object_is_valid(
                     component / "config.json", max_bytes = _MAX_PIPELINE_MANIFEST_BYTES
                 ):
                     return False
                 if not _local_model_component_is_complete(component):
                     return False
-            elif not any(child.is_file() for child in component.iterdir()):
+            elif not metadata_complete:
                 return False
     except OSError:
         return False
