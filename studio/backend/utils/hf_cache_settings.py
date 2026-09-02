@@ -11,6 +11,7 @@ owns an explicit cache snapshot for each operation instead of trying to refresh
 from __future__ import annotations
 
 import os
+import sys
 import shutil
 import tempfile
 import threading
@@ -109,6 +110,21 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 
 
 def _stored_cache_home() -> Optional[Path]:
+    # Skip the read when nothing here uses a database: no file on disk AND
+    # nothing has imported the database module. get_app_setting opens a
+    # connection, which CREATES and migrates studio.db, and this resolver is now
+    # reached from the CLI (unsloth train / inference / export seed the cache
+    # environment), so asking unconditionally built a ~250 KB database on
+    # machines that had never opened Studio. Either condition holding means a
+    # database is in play and the stored setting is worth reading; neither
+    # holding means there is no setting to find, so the answer is the same.
+    try:
+        if "storage.studio_db" not in sys.modules:
+            from utils.paths.storage_roots import studio_db_path
+            if not studio_db_path().exists():
+                return None
+    except Exception:  # noqa: BLE001 - fall through to the read on any doubt
+        pass
     try:
         from storage.studio_db import get_app_setting
         value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
