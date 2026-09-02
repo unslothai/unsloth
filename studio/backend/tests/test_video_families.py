@@ -190,7 +190,7 @@ def test_supported_names():
 
 def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
     monkeypatch.setattr(
-        "core.inference.diffusion_families.family_pipeline_available",
+        "core.inference.diffusion_families.family_pipeline_strictly_available",
         lambda fam: fam.name not in {"minimax-h3", "ltx-2"},
     )
     assert set(supported_video_family_names()) - set(pipeline_available_video_family_names()) == {
@@ -201,7 +201,7 @@ def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
 
 def test_pipeline_available_names_hide_modular_workflows_on_mps(monkeypatch):
     monkeypatch.setattr(
-        "core.inference.diffusion_families.family_pipeline_available", lambda _fam: True
+        "core.inference.diffusion_families.family_pipeline_strictly_available", lambda _fam: True
     )
     available = set(pipeline_available_video_family_names(device = "mps"))
     assert "minimax-h3" not in available

@@ -116,8 +116,10 @@ def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArt
     if path is None:
         return None
     try:
-        conventional = (path / "model_index.json").is_file()
-        modular = (path / "modular_model_index.json").is_file()
+        from core.inference.diffusion_families import local_pipeline_manifest_is_valid
+
+        conventional = local_pipeline_manifest_is_valid(path, "model_index.json")
+        modular = local_pipeline_manifest_is_valid(path, "modular_model_index.json")
         if conventional and modular:
             return "diffusers_dual_pipeline"
         if conventional:

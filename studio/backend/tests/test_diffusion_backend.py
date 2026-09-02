@@ -11,6 +11,7 @@ GPU, weights, or network access is needed (sub-second, CI-friendly).
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 import sys
 import threading
@@ -2153,8 +2154,24 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
+    # A present but malformed index still fails before eviction.
+    (tmp_path / "model_index.json").write_text("{")
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(
+            "unsloth/Qwen-Image-2512-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = str(tmp_path),
+        )
     # A local base_repo that IS a real pipeline dir passes the gate.
-    (tmp_path / "model_index.json").write_text("{}")
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "QwenImagePipeline",
+                "transformer": ["diffusers", "QwenImageTransformer2DModel"],
+            }
+        )
+    )
     fam = backend.validate_load_request(
         "unsloth/Qwen-Image-2512-GGUF",
         gguf_filename = "x.gguf",
@@ -2162,6 +2179,25 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         base_repo = str(tmp_path),
     )
     assert fam is not None
+
+
+def test_validate_rejects_a_malformed_local_pipeline_manifest(fake_runtime, tmp_path):
+    backend = DiffusionBackend()
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+
+    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
+        backend.validate_load_request(str(tmp_path), family_override = "z-image")
+
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "ZImagePipeline",
+                "transformer": ["diffusers", "ZImageTransformer2DModel"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert backend.validate_load_request(str(tmp_path), family_override = "z-image") is not None
 
 
 def test_resolve_local_single_file(tmp_path):
@@ -2497,7 +2533,14 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
 
 def _load_ideogram(backend, tmp_path):
     # Ideogram 4 loads only as a full pipeline (the loader is stubbed), so a local dir is enough.
-    (tmp_path / "model_index.json").write_text("{}")
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "Ideogram4Pipeline",
+                "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
+            }
+        )
+    )
     backend.load_pipeline(str(tmp_path), family_override = "ideogram-4")
 
 
@@ -2541,7 +2584,14 @@ def test_generate_ideogram_custom_guidance_nulls_schedule(fake_runtime, tmp_path
 
 def _load_lumina(backend, tmp_path):
     # Lumina 2 loads through the GENERIC pipeline path, so a local pipeline dir is enough here.
-    (tmp_path / "model_index.json").write_text("{}")
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "Lumina2Pipeline",
+                "transformer": ["diffusers", "Lumina2Transformer2DModel"],
+            }
+        )
+    )
     backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
 
 

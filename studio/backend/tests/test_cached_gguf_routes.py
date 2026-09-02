@@ -2026,8 +2026,17 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
     )
     snapshot = diffusion.repo_path / "snapshots" / "revision"
     (snapshot / "transformer").mkdir(parents = True)
-    (snapshot / "model_index.json").write_text("{}")
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "ZImagePipeline",
+                "transformer": ["diffusers", "ZImageTransformer2DModel"],
+            }
+        )
+    )
     (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    (diffusion.repo_path / "refs").mkdir()
+    (diffusion.repo_path / "refs" / "main").write_text("revision")
     diffusion.revisions[0].snapshot_path = snapshot
 
     monkeypatch.setattr(
@@ -2035,6 +2044,7 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         "_all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [diffusion, checkpoint])],
     )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
 
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
     by_repo = {c["repo_id"]: c["task"] for c in result["cached"]}
@@ -2044,6 +2054,7 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
     }
     rows = {c["repo_id"]: c for c in result["cached"]}
     assert rows["Tongyi-MAI/Z-Image-Turbo"]["artifact_kind"] == "diffusers_pipeline"
+    assert "load_id" not in rows["Tongyi-MAI/Z-Image-Turbo"]
     assert rows["unsloth/Llama-3.2-1B-Instruct"].get("artifact_kind", "unknown") == "unknown"
 
 
@@ -5155,7 +5166,14 @@ def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, mon
 
 def _saved_pipeline(root: Path, class_name: str) -> Path:
     root.mkdir(parents = True, exist_ok = True)
-    (root / "model_index.json").write_text(json.dumps({"_class_name": class_name}))
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": class_name,
+                "transformer": ["diffusers", "Transformer2DModel"],
+            }
+        )
+    )
     for component in ("transformer", "vae", "text_encoder"):
         (root / component).mkdir(parents = True, exist_ok = True)
         (root / component / "config.json").write_text("{}")

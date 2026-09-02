@@ -742,7 +742,9 @@ def test_assert_trusted_base_model_rejects_local_non_pipeline(tmp_path):
     with pytest.raises(ValueError, match = "model_index.json"):
         common._assert_trusted_base_model(str(bad))
     # A real local pipeline dir (model_index.json) is accepted.
-    (bad / "model_index.json").write_text("{}")
+    (bad / "model_index.json").write_text(
+        '{"_class_name":"DiffusionPipeline","transformer":["diffusers","Transformer2DModel"]}'
+    )
     common._assert_trusted_base_model(str(bad))  # no raise
     # An untrusted remote base is still rejected by the trust gate.
     with pytest.raises(ValueError, match = "untrusted"):

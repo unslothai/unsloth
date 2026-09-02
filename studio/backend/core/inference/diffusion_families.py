@@ -1114,6 +1114,7 @@ def family_prequant_filename(
 # the release where diffusers' own requires-python went ">= 3.10.0", making 0.36.0 the newest a supported Python 3.9
 # host can resolve
 _DIFFUSERS_DROPPED_PY39 = "0.37.0"
+_MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
 # First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at the upstream tags and
 # cross-checked against each release's requires-python on PyPI. An unlisted class gets a version-free "a newer
@@ -1178,6 +1179,41 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     if minimum is None:
         return None, False
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
+
+
+def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
+    """Whether a local Diffusers manifest is safe to advertise or accept before eviction.
+
+    Diffusers needs a JSON object with a pipeline class. Merely finding a file is not enough: a
+    truncated download or an empty placeholder otherwise survives inventory and request preflight,
+    then fails only after the currently resident model has been unloaded.
+    """
+    if filename not in {"model_index.json", "modular_model_index.json"}:
+        return False
+    try:
+        path = Path(root).expanduser() / filename
+        if not path.is_file() or path.stat().st_size > _MAX_PIPELINE_MANIFEST_BYTES:
+            return False
+        payload = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    class_name = payload.get("_class_name")
+    if not isinstance(class_name, str) or not class_name.strip():
+        return False
+    if filename == "modular_model_index.json":
+        blocks_class = payload.get("_blocks_class_name")
+        if isinstance(blocks_class, str) and blocks_class.strip():
+            return True
+    return any(
+        not str(name).startswith("_")
+        and isinstance(spec, (list, tuple))
+        and len(spec) >= 2
+        and spec[0] is not None
+        and spec[1] is not None
+        for name, spec in payload.items()
+    )
 
 
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:

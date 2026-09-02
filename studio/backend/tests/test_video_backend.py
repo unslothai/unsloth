@@ -8,6 +8,7 @@ stack loads."""
 
 import builtins
 import contextlib
+import json
 import dataclasses
 import sys
 import threading
@@ -720,8 +721,19 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     # A local dir missing model_index.json is not a loadable pipeline; it must fail preflight BEFORE eviction.
     with pytest.raises(ValueError, match = "model_index.json"):
         backend.validate_load_request(str(d), family_override = "ltx-2")
-    # With a model_index.json it is a valid local pipeline pick and passes preflight.
+    # A malformed index is still rejected before eviction.
     (d / "model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(d), family_override = "ltx-2")
+    # With a valid model_index.json it is a valid local pipeline pick and passes preflight.
+    (d / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+            }
+        )
+    )
     fam = backend.validate_load_request(str(d), family_override = "ltx-2")
     assert fam.name == "ltx-2"
 
@@ -730,7 +742,14 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtim
     backend = VideoBackend()
     root = tmp_path / "opaque-h3"
     root.mkdir()
-    (root / "model_index.json").write_text("{}")
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+            }
+        )
+    )
 
     original_import = builtins.__import__
 
@@ -749,6 +768,16 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtim
     diffusers.ModularPipeline = _FakeModularPipeline
     diffusers.MiniMaxH3Transformer3DModel = _FakeTransformer
     (root / "modular_model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid modular_model_index.json"):
+        backend.validate_load_request(str(root), family_override = "minimax-h3")
+    (root / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "ModularPipeline",
+                "_blocks_class_name": "HunyuanVideo15PipelineBlocks",
+            }
+        )
+    )
     assert (
         backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
     )
@@ -776,7 +805,14 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             base_repo = str(bad_base),
         )
     # A local base_repo that IS a real pipeline dir passes the gate.
-    (bad_base / "model_index.json").write_text("{}")
+    (bad_base / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+            }
+        )
+    )
     fam = backend.validate_load_request(
         "unsloth/LTX-2.3-GGUF",
         gguf_filename = "x.gguf",

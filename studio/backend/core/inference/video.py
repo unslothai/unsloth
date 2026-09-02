@@ -1195,17 +1195,20 @@ class VideoBackend:
         # classes. A malformed local pick is a request error even on hosts where Diffusers is
         # absent or too old, and it must fail before the resident pipeline is evicted.
         if kind == "pipeline":
+            from .diffusion_families import local_pipeline_manifest_is_valid
+
             root = Path(repo_id).expanduser()
             # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
             indexes = (
                 ("modular_model_index.json",) if fam.modular_workflow else ("model_index.json",)
             )
             if root.exists() and not (
-                root.is_dir() and any((root / name).is_file() for name in indexes)
+                root.is_dir()
+                and any(local_pipeline_manifest_is_valid(root, name) for name in indexes)
             ):
                 raise ValueError(
                     f"Local pipeline path is not a diffusers directory "
-                    f"(no {' or '.join(indexes)}): {repo_id}"
+                    f"(no valid {' or '.join(indexes)}): {repo_id}"
                 )
         from .video_minimax_h3 import is_h3_native, validate_h3_transformer_filename
 

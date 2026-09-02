@@ -397,13 +397,14 @@ def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[
     Modular Diffusers relies on CUDA-style ``mem_get_info`` for offload and is rejected by the
     loader on MPS, so the advertised host capability must make the same exclusion.
     """
-    from .diffusion_families import family_pipeline_available
+    from .diffusion_families import family_pipeline_strictly_available
 
     target = (device or "").strip().lower()
     return tuple(
         fam
         for fam in _FAMILIES
-        if family_pipeline_available(fam) and not (target == "mps" and fam.modular_workflow)
+        if family_pipeline_strictly_available(fam)
+        and not (target == "mps" and fam.modular_workflow)
     )
 
 

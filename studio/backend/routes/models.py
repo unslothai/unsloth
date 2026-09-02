@@ -5356,7 +5356,11 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     # snapshot whose manifest earned it even in the active cache; refs/main may
                     # otherwise move between inventory and load. Ordinary rows retain the bare id
                     # whenever it resolves to the selected copy.
-                    if pipeline_artifact_kind is not None and selected is not None:
+                    if (
+                        row_task is None
+                        and pipeline_artifact_kind is not None
+                        and selected is not None
+                    ):
                         row["load_id"] = str(selected)
                     elif model_load_id:
                         row["load_id"] = model_load_id

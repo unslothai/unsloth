@@ -1389,7 +1389,14 @@ def test_a_local_modular_h3_pipeline_is_an_acceptable_training_base(tmp_path):
 
     modular = tmp_path / "MiniMax-H3"
     modular.mkdir()
-    (modular / "modular_model_index.json").write_text("{}")
+    (modular / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "ModularPipeline",
+                "_blocks_class_name": "HunyuanVideo15PipelineBlocks",
+            }
+        )
+    )
 
     _assert_trusted_base_model(str(modular), allow_modular = True)
     # Off by default: a conventional DiffusionPipeline load still needs the conventional index.
