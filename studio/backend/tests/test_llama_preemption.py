@@ -629,3 +629,73 @@ class TestTheWireCarriesAThoughtPartial:
         splice = source.split("def render_prompt_with_boundary", 1)[1].split("\ndef ", 1)[0]
         assert "trailing_assistant_text(messages)" in splice
         assert "trailing_assistant_reasoning" not in splice
+
+
+class TestReplayedWorkIsStillCharged:
+    """Carrying a partial across a pause moves tokens from generated to prompt.
+
+    The run of 2026-09-02 that first kept thoughts across a pause: six pauses carrying
+    2001, 2510, 8019, 3017, 1743 and 121 characters, and the crash the whole feature
+    exists to prevent came back, four context-exhaustion errors and 38 KV retries where
+    the previous build had none. The resumed request replays the partial as prompt while
+    the stream's counter restarts at zero, so `base_tokens + generated` measured the
+    original prompt and missed everything replayed on top of it.
+    """
+
+    def _controller(self, budget = 16384):
+        return _controller(budget = budget)
+
+    def test_a_replay_raises_the_baseline(self):
+        controller = self._controller()
+        controller.register("a", tokens = 1000)
+        controller.observe("a", 500)
+        assert controller.participant("a").tokens == 1500
+
+        controller.note_replayed("a", 500)
+        # Those 500 are now prompt, and the next attempt's counter starts at zero.
+        controller.observe("a", 0)
+        assert controller.participant("a").tokens == 1500, (
+            "occupancy fell back to the admission prompt and lost the replayed partial"
+        )
+
+    def test_replays_accumulate_across_pauses(self):
+        controller = self._controller()
+        controller.register("a", tokens = 1000)
+        for charged in (564, 59, 1079, 507):
+            controller.note_replayed("a", charged)
+        controller.observe("a", 0)
+        assert controller.participant("a").tokens == 1000 + 564 + 59 + 1079 + 507
+
+    def test_a_pause_with_nothing_kept_is_not_charged(self):
+        """A pause before the first token replays nothing, so it costs nothing."""
+        controller = self._controller()
+        controller.register("a", tokens = 1000)
+        controller.note_replayed("a", 0)
+        controller.observe("a", 0)
+        assert controller.participant("a").tokens == 1000
+
+    def test_an_unknown_generation_is_ignored(self):
+        controller = self._controller()
+        controller.note_replayed("gone", 500)  # must not raise
+
+    def test_the_adapter_charges_only_what_was_actually_kept(self):
+        from core.inference.llama_preemption import (
+            ControllerPreemptionPolicy,
+            PreemptSignal,
+            StreamCheckpoint,
+        )
+
+        controller = self._controller()
+        controller.register("a", tokens = 1000)
+        policy = ControllerPreemptionPolicy(controller, "a", PreemptSignal())
+
+        # Decoded tokens but nothing carried: re-issued whole, so nothing is replayed.
+        policy.on_preempted(StreamCheckpoint(charged_tokens = 700))
+        controller.observe("a", 0)
+        assert controller.participant("a").tokens == 1000
+
+        policy.on_preempted(
+            StreamCheckpoint(charged_tokens = 700, reasoning_text = "a thought")
+        )
+        controller.observe("a", 0)
+        assert controller.participant("a").tokens == 1700

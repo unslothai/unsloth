@@ -627,6 +627,28 @@ class PreemptionController:
                 # later growth is measured from here rather than from admission.
                 participant.base_tokens = participant.tokens
 
+    def note_replayed(self, gen_id: str, tokens: int) -> None:
+        """Tokens a paused attempt decoded that the NEXT attempt sends back as prompt.
+
+        They do not leave the cache, they change category. The resumed request replays
+        the partial so the model can continue it, so what was `generated` last attempt
+        is `prompt` this one, and the stream's own counter restarts at zero. Without
+        this the sweep recomputes occupancy as `base_tokens + generated` against the
+        ORIGINAL prompt and undercounts by the whole replayed partial, by more on every
+        pause.
+
+        Measured 2026-09-02, the run that first carried thoughts across a pause: one
+        chat paused four times replaying 564, 59, 1079 and 507 tokens, the ledger saw
+        none of them, and the run went from zero context-exhaustion errors to four with
+        38 KV retries. Keeping the work was right; not charging for it was not.
+        """
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None:
+                return
+            participant.base_tokens = participant.base_tokens + max(0, int(tokens or 0))
+            participant.tokens = max(participant.tokens, participant.base_tokens)
+
     def set_state(self, gen_id: str, state: str) -> None:
         """Report a safe point. Ends the epoch when the winner stops decoding.
 
@@ -885,6 +907,12 @@ class ControllerPreemptionPolicy:
         participant = self._controller.participant(self._gen_id)
         if participant is None:
             return
+        # Before the state change, so a sweep that runs between the two sees the larger
+        # figure rather than the stale one.
+        if checkpoint.charged_tokens and (
+            checkpoint.has_resume_point() or checkpoint.has_reasoning_resume_point()
+        ):
+            self._controller.note_replayed(self._gen_id, checkpoint.charged_tokens)
         self._controller.set_state(self._gen_id, ParticipantState.PAUSED)
         lease = participant.lease
         if lease is not None:
