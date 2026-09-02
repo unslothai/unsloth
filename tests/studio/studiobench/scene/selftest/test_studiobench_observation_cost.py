@@ -83,6 +83,7 @@ def _runner(order: list):
 
 # ── defect one: the observation is outside the window ───────────────
 
+
 def test_the_census_and_the_digest_are_taken_after_the_action_window_closes():
     """THE REGRESSION TEST FOR THE 14.3-vs-49.0 fps READING.
 
@@ -125,6 +126,7 @@ def test_the_gap_windows_census_is_taken_before_the_gap_opens():
 
 
 # ── defect two: the silent substitution ─────────────────────────────
+
 
 class _Page:
     """A page whose New chat button is present but refuses to be clicked, which is the real
@@ -224,6 +226,7 @@ def test_thread_reopen_says_so_in_the_log_as_well_as_in_the_row():
 
 
 # ── the action bar does not exist while a reply is being written ────
+
 
 class _RunningPage:
     """A page whose reply finishes after `runs_for` polls."""

@@ -40,6 +40,7 @@ from studiobench.scoring.schema import EXCLUSION_REASONS, check_exclusion_reason
 
 # ---------------------------------------------------------------------------------------
 
+
 def test_a_120ms_stall_seen_within_tolerance_passes():
     assert evaluate_stall_gate(121.0).passed is True
     assert evaluate_stall_gate(139.0).passed is True
@@ -63,6 +64,7 @@ def test_no_stall_reading_at_all_is_a_failure_not_a_pass():
 
 # ---------------------------------------------------------------------------------------
 
+
 def test_a_400ms_input_delay_must_move_p95_by_350ms():
     assert evaluate_input_delay_gate(20.0, 415.0).passed is True
 
@@ -78,6 +80,7 @@ def test_an_input_path_that_does_not_move_is_not_measuring_input():
 
 # ---------------------------------------------------------------------------------------
 
+
 def test_a_heavy_and_a_trivial_scene_must_differ():
     assert evaluate_scene_contrast_gate(300.0, 100.0).passed is True
 
@@ -92,6 +95,7 @@ def test_an_instrument_that_cannot_tell_heavy_from_trivial_is_blind():
 
 
 # ---------------------------------------------------------------------------------------
+
 
 def test_longtask_support_is_read_from_supported_entry_types():
     supported = evaluate_longtask_support(["mark", "measure", "longtask"])
@@ -114,6 +118,7 @@ def test_an_unreadable_support_list_is_recorded_and_not_guessed():
 
 # ---------------------------------------------------------------------------------------
 
+
 def test_a_flat_control_ratio_passes():
     assert evaluate_clock_pair(10_000.0, 10_020.0).passed is True
 
@@ -128,6 +133,7 @@ def test_a_moving_control_ratio_means_the_measurement_moved():
 
 
 # ---------------------------------------------------------------------------------------
+
 
 def test_three_agreeing_clocks_keep_the_window():
     verdict = evaluate_tri_clock(
@@ -193,6 +199,7 @@ def test_clock_disagreement_is_a_declared_exclusion_reason():
 
 # ---------------------------------------------------------------------------------------
 
+
 def _healthy(**overrides):
     args = {
         "stall_observed_ms": 122.0,
@@ -233,6 +240,7 @@ def test_the_abort_message_says_why_reporting_nothing_is_better():
 
 
 # ── the streaming-cost recovery gate ─────────────────────────────────────────────────────────
+
 
 def _recovery(
     base,

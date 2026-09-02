@@ -40,6 +40,7 @@ def _deps():
 
 # ── a fake site-packages with real RECORD metadata ───────────────────
 
+
 def _make_dist(
     site: Path,
     name: str,
@@ -317,6 +318,7 @@ def test_findings_are_capped_when_the_files_are_deleted(site):
 
 # ── the failure path ─────────────────────────────────────────────────
 
+
 def test_a_clean_tree_passes_through(monkeypatch):
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
@@ -453,6 +455,7 @@ def test_windows_is_told_the_powershell_installer(monkeypatch, capsys):
 
 
 # ── the update command wiring ────────────────────────────────────────
+
 
 def test_update_exposes_verify_defaulting_on():
     import inspect
@@ -705,6 +708,7 @@ def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, 
 
 
 # ── runtime-irrelevant rows must not fail an update ──────────────────
+
 
 def test_a_shared_top_level_test_tree_is_not_damage(site):
     # Reported as `einx: test/conftest.py is missing`. einx and torchao both ship it and

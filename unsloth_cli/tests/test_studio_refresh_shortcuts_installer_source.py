@@ -48,9 +48,8 @@ def _posix(monkeypatch, tmp_path):
     return studio
 
 
-
-
 # ── where the installer comes from ─────────────────────────────────────────────────
+
 
 def test_the_installer_is_fetched_from_unsloth_ai():
     studio = _studio()
@@ -116,9 +115,8 @@ def test_a_wheel_install_fetches_and_pipes_to_bash(monkeypatch, tmp_path):
     assert runs == [(["bash", "-s", "--", "--shortcuts-only"], b"FETCHED")]
 
 
-
-
 # ── what a bad response must not do ────────────────────────────────────────────────
+
 
 def test_a_failed_fetch_skips_instead_of_executing(monkeypatch, tmp_path, capsys):
     studio = _posix(monkeypatch, tmp_path)

@@ -141,6 +141,7 @@ def _finished_ab(
 
 # ── a resume must be a resume OF THIS RUN ───────────────────────────────────────────────────
 
+
 def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
     paths = _finished_ab(tmp_path)
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "other", "--resume"])
@@ -240,6 +241,7 @@ def test_the_refusal_happens_before_anything_is_installed_or_recorded(tmp_path):
 
 
 # ── the controls: a legitimate resume still resumes ──────────────────────────────────────────
+
 
 def test_the_same_configuration_still_resumes(tmp_path):
     paths = _finished_ab(tmp_path)
@@ -571,6 +573,7 @@ def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_pat
 
 # ── the controls: neither axis may swallow a resume that is legitimate ───────────────────────
 
+
 def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
     paths = _fixture_payload(
         tmp_path, "same", "sess-1", stream_tail_chars = 24_000, corpus_dollars = True
@@ -587,6 +590,7 @@ def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
 
 
 # ── the browser engine that rendered every number ────────────────────────
+
 
 def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
     """The engine RENDERED every number in the payload, and the cell id does not name it.
@@ -865,6 +869,7 @@ def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_pa
 
 # ── the engine controls ───────────────────────────────────────────────────
 
+
 def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
     """The legacy control for this axis, and the one for a session that never got a browser up.
 
@@ -934,6 +939,7 @@ def test_the_report_a_mode_change_would_have_produced(tmp_path):
 
 
 # ── a fresh run does not append to the run before it ─────────────────────────────────────────
+
 
 def test_a_fresh_run_moves_the_previous_payload_aside(tmp_path):
     paths = _finished_ab(tmp_path)

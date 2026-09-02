@@ -171,6 +171,7 @@ METRIC = "reasoning_toggle.close_ms"
 
 # ── the floor's own censoring ────────────────────────────────────────
 
+
 def test_the_censored_null_is_marked_unpoolable_in_the_first_place(tmp_path):
     """The precondition, stated so a fix that stopped marking it could not pass the rest."""
     floors = floor_table.summarise([_null(tmp_path, censored = True)])
@@ -255,6 +256,7 @@ def test_a_whole_floor_still_certifies_a_real_effect(tmp_path, capsys):
 
 
 # ── the rest of the comparability identity ───────────────────────────
+
 
 def _floor_and_result(
     tmp_path,
@@ -378,6 +380,7 @@ def test_a_payload_with_no_run_meta_at_all_is_not_scored(tmp_path):
 
 
 # ── both guards have to be reachable from the shipped entry point ────
+
 
 def test_the_cli_applies_both_guards(tmp_path, capsys):
     """A guard reachable only from a keyword argument nobody passes is not a guard.

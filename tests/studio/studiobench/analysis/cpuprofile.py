@@ -131,7 +131,6 @@ class CpuProfile:
             return []
         return self.stack(node)
 
-
     # ------------------------------------------------------------------ stacks
 
     def stack(self, node_id: int) -> list[CallFrame]:
@@ -169,7 +168,6 @@ class CpuProfile:
         hi = t1 if t1 is not None else (1 << 62)
         return [s for s in self.samples if lo <= s.ts < hi]
 
-
     # ------------------------------------------------------------- aggregation
 
     def self_time_us(
@@ -203,7 +201,6 @@ class CpuProfile:
             if f.key == key:
                 return f
         return None
-
 
     # ------------------------------------------------------------------- gates
 

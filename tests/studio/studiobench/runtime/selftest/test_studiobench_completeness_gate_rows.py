@@ -160,6 +160,7 @@ def test_an_undifferentiated_coverage_None_is_not_a_pass_either(tmp_path):
 
 # ── the two ends, joined: the probe's own output through the gate ───
 
+
 def _coverage(**traverse) -> dict:
     """What `probe_thread_completeness` would hand the gate, from a real traversal record."""
     got = {"probe_attempted": True, "head_reached": True}
@@ -250,6 +251,7 @@ def test_a_probe_that_never_ran_fails_the_cell_rather_than_passing_it(tmp_path):
 
 
 # ── every per-cell gate, not just the completeness one ──────────────
+
 
 def test_every_per_cell_gate_names_its_cell():
     """THE SAME DEFECT, IN FOUR MORE PLACES. `excluded_from_rows` reads

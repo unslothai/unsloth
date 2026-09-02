@@ -134,6 +134,7 @@ def sigs(*trees: dict) -> list[str]:
 
 # ── the normaliser: things that MUST be erased ──────────────────────
 
+
 def test_rendered_durations_collapse():
     # unslothai/unsloth#9054: a 295 vs 310 ms difference in the action bar, which is wall clock.
     got = norm_text("copied in 295ms", "copied in 310ms", "took 1.2 s", "ran for 3 min")
@@ -209,6 +210,7 @@ def test_text_content_moves_the_signature():
 
 
 # ── the signature: every KEPT property, tested as kept ──────────────
+
 
 @pytest.mark.parametrize(
     "attr,before,after",
@@ -347,6 +349,7 @@ def test_content_below_the_depth_cap_is_not_compared():
 
 
 # ── the comparison layer, in pure Python ────────────────────────────
+
 
 def capture(
     digest = "aaaa",
@@ -488,6 +491,7 @@ def test_a_capped_style_probe_is_not_comparable_rather_than_equal():
 
 
 # ── mutation detection and the derived unstable set ─────────────────
+
 
 def test_mutation_detected_reports_a_real_change():
     got = P.mutation_detected(capture(), capture("zzzz"))

@@ -55,6 +55,7 @@ def _count(text: str, patterns) -> int:
 
 # ── the gap this closes ─────────────────────────────────────────────
 
+
 def test_the_corpus_contains_math_at_all():
     # The literal v1 defect, stated as an assertion so it cannot come back unnoticed.
     joined = "\n".join(_texts())
@@ -88,6 +89,7 @@ def test_there_is_both_display_and_inline_math():
 
 
 # ── what adding it had to leave alone ───────────────────────────────
+
 
 def test_the_fence_share_is_what_it_was_before_math_existed():
     # The span-density calibration in the module docstring is a statement about how much of the corpus
@@ -152,6 +154,7 @@ def test_every_expression_is_balanced():
 
 
 # ── still frozen ────────────────────────────────────────────────────
+
 
 def test_the_shipped_corpus_matches_the_generator_byte_for_byte():
     # The whole point of freezing. If this fails, someone edited the generator without re-running

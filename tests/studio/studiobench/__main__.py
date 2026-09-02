@@ -63,6 +63,7 @@ def engines_installed(probe_text: str) -> list:
 
 # ── doctor ──────────────────────────────────────────────────────────
 
+
 def doctor(args) -> int:
     """What is here, what is missing, and what each missing thing costs. Never raises."""
     ok = True
@@ -200,6 +201,7 @@ def doctor(args) -> int:
 
 
 # ── the run ─────────────────────────────────────────────────────────
+
 
 def _windowed_arms(spec: str, labels: list) -> set:
     """The arms `--windowed-arm` names, checked against the arms this run will actually have.

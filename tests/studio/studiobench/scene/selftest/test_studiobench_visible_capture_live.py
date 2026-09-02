@@ -130,6 +130,7 @@ def _capture(page) -> dict:
 
 # ── what the viewport actually showed ───────────────────────────────
 
+
 def test_it_reports_only_what_the_viewport_showed(page):
     _watch(page)
     got = _capture(page)
@@ -189,6 +190,7 @@ def test_an_unmounted_message_is_still_reported_as_having_been_visible(page):
 
 # ── the trap ────────────────────────────────────────────────────────
 
+
 def test_the_capture_never_reads_geometry(page):
     """THE CONTENT-VISIBILITY TRAP, held closed by construction rather than by review.
 
@@ -221,6 +223,7 @@ def test_the_capture_never_reads_geometry(page):
 
 # ── refusals ────────────────────────────────────────────────────────
 
+
 def test_capturing_without_watching_is_refused_not_reported_empty(page):
     got = page.evaluate("async () => await window.__sb.parityVisible.capture()")
     assert got["visible_attempted"] is False
@@ -235,6 +238,7 @@ def test_a_page_with_no_thread_viewport_is_refused(page):
 
 
 # ── the instrument must not charge its own cost to the action ───────
+
 
 def test_the_top_up_is_proportional_to_the_mutation_not_to_the_document(page):
     """WORKSPACE TASK #102, WHICH THIS NEARLY REPEATED.

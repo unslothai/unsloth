@@ -18,9 +18,8 @@ from pathlib import Path
 from tests.studio.studiobench.scoring import payload_rules
 
 
-
-
 # ── defect 4: window rows outlive their cell ────────────────────────────────
+
 
 def _ladder_payload() -> list[dict]:
     """A 100K rung that finished on both arms, and a 1M rung whose treatment cell did not.
@@ -78,9 +77,8 @@ def test_completed_cell_ids_ignores_rows_that_are_not_cells():
     assert "r1M.treatment.rep0" not in payload_rules.completed_cell_ids(rows)
 
 
-
-
 # ── defect 1: census_peak is not comparable across arms ─────────────────────
+
 
 def test_census_peak_is_refused_for_cross_arm_comparison():
     why = payload_rules.refuse_uncomparable("census_peak")
@@ -100,9 +98,8 @@ def test_a_normal_metric_is_still_comparable():
     assert payload_rules.refuse_uncomparable("select_all_copy.copy_ms") is None
 
 
-
-
 # ── defect 2: a metric censored at some rungs but not others ───────────────
+
 
 def _censored_payload() -> list[dict]:
     """`open_ms` measured at 100K and censored at 500K, which is what the ladder actually did."""
@@ -155,9 +152,8 @@ def test_a_metric_measured_everywhere_is_poolable():
     assert payload_rules.refuse_partial_censoring(rows, "reasoning_toggle.close_ms") is None
 
 
-
-
 # ── defect 7: a census is only a census if the DOM had settled ─────────────
+
 
 def test_an_unsettled_census_is_not_marked_settled():
     unsettled = {
@@ -174,9 +170,8 @@ def test_an_unsettled_census_is_not_marked_settled():
     assert payload_rules.settled(settled)
 
 
-
-
 # ── the comparability key ──────────────────────────────────────────────────
+
 
 def _meta(
     corpus_hash: str,
@@ -473,9 +468,8 @@ def test_the_key_looks_like_a_token_that_can_be_quoted():
     assert key.startswith("cmp:") and len(key) == len("cmp:") + 10
 
 
-
-
 # ── window rows must belong to the attempt that finished, not merely to the id ──
+
 
 def _resumed_window_payload() -> list[dict]:
     """One cell that died at 28.7 fps and its completed retry at 46.7 fps, same cell id.

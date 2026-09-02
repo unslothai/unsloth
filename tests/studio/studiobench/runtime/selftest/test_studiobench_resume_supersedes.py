@@ -95,9 +95,8 @@ def _window(
     }
 
 
-
-
 # ── the ratio ───────────────────────────────────────────────────────
+
 
 def test_the_dead_attempts_frames_are_not_the_retrys_frames():
     cell_id = "r10K.base.rep0"
@@ -131,9 +130,8 @@ def test_two_windows_of_the_same_attempt_are_still_pooled():
     assert reading["max_frame_ms"].value == 100.0
 
 
-
-
 # ── the score ───────────────────────────────────────────────────────
+
 
 def _payload(directory, rows):
     Path(directory).mkdir(parents = True, exist_ok = True)

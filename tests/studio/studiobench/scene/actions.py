@@ -988,6 +988,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
 
 # ── 6. settings ─────────────────────────────────────────────────────
 
+
 @register_action(name = "settings", default_budget_ms = 12000)
 def settings(ctx: ActionContext) -> ActionResult:
     """Open the Settings dialog, scroll its body, close it.
@@ -1071,6 +1072,7 @@ def settings(ctx: ActionContext) -> ActionResult:
 
 # ── 7. model change ─────────────────────────────────────────────────
 
+
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
     """Open the model picker and select a row.
@@ -1136,6 +1138,7 @@ def model_change(ctx: ActionContext) -> ActionResult:
 
 # ── 8. composer lengths, then send ──────────────────────────────────
 
+
 @register_action(name = "composer_fill", default_budget_ms = 10000)
 def composer_fill(ctx: ActionContext) -> ActionResult:
     """Short, medium and very long text into the composer, timing each paint.
@@ -1199,6 +1202,7 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
 
 
 # ── 9. copy markdown ────────────────────────────────────────────────
+
 
 @register_action(name = "copy_markdown", default_budget_ms = 6000)
 def copy_markdown(ctx: ActionContext) -> ActionResult:
@@ -1266,6 +1270,7 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
 
 
 # ── 10, 11. selection ───────────────────────────────────────────────
+
 
 @register_action(name = "select_text", default_budget_ms = 6000)
 def select_text(ctx: ActionContext) -> ActionResult:
@@ -1475,6 +1480,7 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
 
 
 # ── 12. image upload ────────────────────────────────────────────────
+
 
 @register_action(name = "send_turn", default_budget_ms = 10000)
 def send_turn(ctx: ActionContext) -> ActionResult:

@@ -81,6 +81,7 @@ def _window(
 
 # ── the three absences, kept apart ──────────────────────────────────────────────────────────
 
+
 def test_action_absent_from_scene_is_not_attempted():
     m = measures_from_records([_cell()])["10000" if False else 10_000]
     keystroke = m["keystroke_p95_ms"]
@@ -125,6 +126,7 @@ def test_scroll_settle_says_it_is_gesture_time_not_settle_time():
 
 
 # ── frame metrics ───────────────────────────────────────────────────────────────────────────
+
 
 def test_frame_metrics_pool_the_active_windows():
     recs = [_cell(), _window("c1", [16.0] * 50 + [200.0], duration_ms = 1000.0)]
@@ -215,6 +217,7 @@ def test_names_come_from_action_rows_not_the_lossy_embedded_copy():
 
 # ── the bare-zero ban still bites after the harness-row exemptions ───────────────────────────
 
+
 def test_bare_zero_outside_an_attested_block_still_fails():
     with pytest.raises(PayloadSchemaError):
         validate_payload({"excluded_cells": [], "result": {"cost_ms": 0}})
@@ -261,6 +264,7 @@ def test_real_payload_shape_round_trips(tmp_path):
 
 
 # ── per-cell readings, which is what makes an A/B paired ─────────────────────────────────────
+
 
 def test_measures_by_cell_keeps_every_repetition():
     """Collapsing reps leaves the bootstrap with one pair per metric and nothing to resample."""
@@ -368,6 +372,7 @@ def test_the_scroll_intent_block_still_attests_in_the_session_layer():
 
 # ── ran is not "did what it claimed" ────────────────────────────────────────────────────────
 
+
 def test_an_action_whose_own_assertion_failed_is_not_a_reading():
     """`report/payload.py` lists this cell under EXCLUDED CELLS with "must not be quoted".
 
@@ -399,6 +404,7 @@ def test_an_action_whose_assertion_passed_is_still_a_reading():
 
 
 # ── the composer click, which is the driver's cost and not the build's ───────────────────────
+
 
 def test_setup_windows_are_excluded_so_the_click_does_not_become_the_worst_frame():
     """`setup:composer_click` is mostly Playwright's injected actionability script, which blocks

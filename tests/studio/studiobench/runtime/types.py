@@ -250,6 +250,7 @@ class ActionContext:
 
 # ── instruments ─────────────────────────────────────────────────────
 
+
 class Instrument:
     """Base class. Subclassing is optional; duck typing on `name`/`level` is enough."""
 
@@ -310,6 +311,7 @@ class BenchContext:
 
 
 # ── the output directory lock ───────────────────────────────────────
+
 
 class OutDirLock:
     """One output directory, held by one run, FROM BEFORE THE FIRST THING THAT MOVES OR STARTS.
@@ -581,6 +583,7 @@ class OutDirLock:
 
 
 # ── the recorder ────────────────────────────────────────────────────
+
 
 class Recorder:
     """Append-only JSONL. Every line is flushed and fsynced, so a renderer crash at rung 4 still

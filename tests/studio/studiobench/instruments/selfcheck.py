@@ -148,6 +148,7 @@ class SelfCheckReport:
 
 # ---------------------------------------------------------------------------------------
 
+
 def evaluate_stall_gate(
     observed_ms: float | None,
     *,

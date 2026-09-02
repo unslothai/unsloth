@@ -49,6 +49,7 @@ FOLLOW = ("r" * 300, "c" * 1_200)
 
 # ── level 1: the pacer and the action, over a real socket ────────────────────────────────────
 
+
 def _consume(pacer: Pacer, *, stop_after_bytes: int | None = None) -> None:
     """Read one stream off the wire. `stop_after_bytes` closes the socket mid-reply, which is what
     an interrupted opening reply looks like from the pacer's side."""
@@ -200,6 +201,7 @@ def test_send_turn_keeps_the_stats_of_every_turn_before_it():
 
 
 # ── the check on its own ─────────────────────────────────────────────────────────────────────
+
 
 def test_the_check_passes_when_every_planned_turn_streamed_in_full():
     streams = [
@@ -630,6 +632,7 @@ def test_a_send_turn_that_did_not_run_is_not_demanded_of_the_pacer(cell_runner, 
 
 
 # ── level 3: the whole cell, against a real pacer over real wire bytes ───────────────────────
+
 
 class _WirePage:
     """A page whose sends really do fetch a stream off the pacer, so `isRunning` is true for

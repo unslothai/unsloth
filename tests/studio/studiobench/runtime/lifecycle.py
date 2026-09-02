@@ -328,6 +328,7 @@ def external_checkpoint_id(provider: ProviderSeed, model_id: str) -> str:
 
 # ── HTTP, stdlib ────────────────────────────────────────────────────
 
+
 class HttpError(RuntimeError):
     def __init__(self, status: int, body: str, url: str) -> None:
         super().__init__(f"HTTP {status} from {url}: {body[:400]}")
@@ -373,6 +374,7 @@ def wait_for_healthz(base_url: str, timeout_s: float = 180.0) -> bool:
 
 
 # ── install and launch ──────────────────────────────────────────────
+
 
 def _run(
     cmd: list[str],

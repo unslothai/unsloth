@@ -207,6 +207,7 @@ class Seeder:
 
 # ── the equivalence check ───────────────────────────────────────────
 
+
 def dom_signature(page) -> dict:
     """What the app BUILT, read from the DOM. The only fair comparison between the two paths."""
     return page.evaluate("() => window.__sb.dom.counts()")
@@ -290,6 +291,7 @@ def compare_signatures(
 
 
 # ── chars per token ─────────────────────────────────────────────────
+
 
 def measure_chars_per_token(
     text: str, base_url: str, auth: Optional[StudioAuth], model_id: str

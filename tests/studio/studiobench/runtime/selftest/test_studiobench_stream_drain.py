@@ -306,6 +306,7 @@ def _rows(state):
 
 # ── what the real drain returns ──────────────────────────────────────────────────────────────
 
+
 def test_the_drain_reports_rather_than_raises_when_the_reply_never_ends(cell_runner):
     """The premise, taken from the shipped `_drain_stream` rather than asserted about it."""
 
@@ -319,6 +320,7 @@ def test_the_drain_reports_rather_than_raises_when_the_reply_never_ends(cell_run
 
 
 # ── what the cell does with it ───────────────────────────────────────────────────────────────
+
 
 def test_a_cell_whose_reply_never_finished_does_not_complete(cell_runner):
     cell_runner["stops_running_after_ms"] = None
@@ -353,6 +355,7 @@ def test_the_rung_scores_incomplete_and_the_run_cannot_exit_zero(cell_runner):
 
 
 # ── the controls ─────────────────────────────────────────────────────────────────────────────
+
 
 def test_a_cell_whose_reply_finished_still_completes(cell_runner):
     """The control that matters: the ordinary cell is untouched, and its readings are scored."""

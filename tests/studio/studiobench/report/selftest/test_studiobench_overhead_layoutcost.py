@@ -40,6 +40,7 @@ from studiobench.scoring import Measure  # noqa: E402
 
 # ---------------------------------------------------------------------------------------
 
+
 def test_a_missing_snapshot_is_not_attempted_rather_than_zero():
     reading = reading_from_snapshot(None)
     assert set(reading.unavailable) == set(COUNTER_FAMILIES)
@@ -114,6 +115,7 @@ def test_layoutcost_js_parses():
 
 
 # ---------------------------------------------------------------------------------------
+
 
 def test_an_instrument_whose_cost_tracks_the_treatment_is_disqualified():
     verdict = overhead_growth_gate(

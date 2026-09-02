@@ -183,7 +183,6 @@ class Trace:
         with open(p, "r", encoding = "utf-8") as fh:
             return cls.from_json_text(fh.read())
 
-
     # ---------------------------------------------------------------- threads
 
     def thread_name(self, pid: int, tid: int) -> str:
@@ -221,7 +220,6 @@ class Trace:
     def renderer_main(self) -> Thread:
         pid, tid = self.profiled_thread()
         return self.thread(pid, tid)
-
 
     # ------------------------------------------------------------------ joins
 

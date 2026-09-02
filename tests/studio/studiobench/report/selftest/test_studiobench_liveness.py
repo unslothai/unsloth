@@ -326,6 +326,7 @@ def test_the_superseded_attempt_does_not_count_as_a_second_cell(tmp_path):
 
 # ── the controls: what must still fail ──────────────────────────────
 
+
 def test_a_cell_that_was_never_re_run_still_fails(tmp_path):
     """A crash with no retry behind it is still a crash."""
 

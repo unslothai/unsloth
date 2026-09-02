@@ -594,6 +594,7 @@ def test_the_reserve_is_still_the_whole_of_what_its_two_halves_reserve():
 
 # ── the same give-up path, on an arm that mounts a window ────────────────────────────────────
 
+
 class _WindowedPage(_Page):
     """A thread whose MOUNTED count never moves because the window refills as it grows.
 
