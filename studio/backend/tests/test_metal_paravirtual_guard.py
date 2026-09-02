@@ -670,6 +670,21 @@ def _drafter_gate(
 ):
     """Run load_model's real unpinnable-drafter statements and report what the launch
     would see: (resolved drafter, extra args, warnings)."""
+    scope, warnings = _drafter_gate_scope(
+        paravirtual = paravirtual, caps = caps, drafter = drafter, extra_args = extra_args
+    )
+    return scope["launch_mtp_draft_path"], scope["extra_args"], warnings
+
+
+def _drafter_gate_scope(
+    *,
+    paravirtual: bool,
+    caps: dict,
+    drafter = "/models/mtp-gemma.gguf",
+    extra_args = None,
+    suppressed = None,
+):
+    """The same statements, returning the scope, for callers reading more than the drafter."""
     body = None
     for node in ast.walk(_load_model_tree()):
         stmts = getattr(node, "body", None)
@@ -709,9 +724,10 @@ def _drafter_gate(
         "n_parallel": 1,
         "cmd": ["--parallel", "1"],
         "logger": log,
+        "_suppressed_draft_path": suppressed,
     }
     exec(ast.unparse(ast.Module(body = body, type_ignores = [])), scope)
-    return scope["launch_mtp_draft_path"], scope["extra_args"], log.warnings
+    return scope, log.warnings
 
 
 @pytest.fixture(autouse = True)
@@ -1524,10 +1540,10 @@ def test_a_launched_drafter_records_no_suppression(monkeypatch, tmp_path):
     assert backend.mtp_draft_suppressed_path is None
     src = _load_model_source()
     # Only the unpinnable branch records it, and it records what it is about to clear.
-    assert src.index("_pv_suppressed_draft_path = launch_mtp_draft_path") < src.index(
+    assert src.index("_suppressed_draft_path = launch_mtp_draft_path") < src.index(
         "                    launch_mtp_draft_path = None"
     )
-    assert "self._mtp_draft_suppressed_path = _pv_suppressed_draft_path" in src
+    assert "self._mtp_draft_suppressed_path = _suppressed_draft_path" in src
 
 
 # ── an inherited projector must not slip past the projector guard ────
@@ -1991,7 +2007,7 @@ def test_the_requested_extras_default_to_the_launched_ones():
 
 
 def test_the_drop_records_the_requested_extras_before_rewriting_them():
-    """The recording contract, mirroring _pv_suppressed_draft_path: capture, then strip."""
+    """The recording contract, mirroring _suppressed_draft_path: capture, then strip."""
     src = _load_model_source()
     assert src.index("_pv_suppressed_spec_extra_args = list(extra_args)") < src.index(
         "                            strip_spec = True,"
@@ -2056,3 +2072,18 @@ def test_the_route_really_can_deliver_a_manual_cpu_request_carrying_an_override(
         )
         == extras
     )
+
+
+def test_the_drop_records_only_the_drafter_it_removed():
+    """Extras trigger this drop with none of ours launched, where recording the launched
+    None would erase a record an earlier drop made."""
+    earlier = "/cache/snapshots/abc/mtp-model.gguf"
+    scope, _warnings = _drafter_gate_scope(
+        paravirtual = True,
+        caps = {},
+        drafter = None,
+        extra_args = ["--model-draft", "/models/user-drafter.gguf"],
+        suppressed = earlier,
+    )
+    assert scope["launch_mtp_draft_path"] is None
+    assert scope["_suppressed_draft_path"] == earlier

@@ -9453,6 +9453,7 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
             _mmproj_env_is_audio_only,
+            _mtp_drafter_loads_standalone,
             extra_args_disable_mmproj,
         )
 
@@ -9636,7 +9637,13 @@ def _estimate_gguf_required_gb(
                 ):
                     _sized_attrs.append("gguf_dflash_file")
             else:
-                _sized_attrs.append("gguf_mtp_file")
+                # The launch drops a drafter it cannot open, so charging one here would
+                # refuse a load that fits.
+                _mtp = getattr(config, "gguf_mtp_file", None)
+                if not (
+                    _mtp and Path(_mtp).is_file() and not _mtp_drafter_loads_standalone(str(_mtp))
+                ):
+                    _sized_attrs.append("gguf_mtp_file")
 
         for attr in _sized_attrs:
             f = getattr(config, attr, None)

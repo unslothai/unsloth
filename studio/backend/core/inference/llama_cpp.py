@@ -3326,6 +3326,34 @@ def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
     return _pick_mtp(candidates, allow_nested = False)
 
 
+def _mtp_drafter_loads_standalone(path: str) -> bool:
+    """Does *path* have the embeddings a ``--model-draft`` file needs?
+
+    llama-server loads a draft model as a complete model, so a bare head extract makes it
+    exit with "tensor 'token_embd.weight' not found". Only that tensor is checked, the
+    rest of the set being per-architecture; split sets and bad headers fail open."""
+    try:
+        from gguf import GGUFReader
+
+        reader = GGUFReader(path)
+
+        def field(key: str):
+            entry = reader.fields.get(key)
+            return entry.contents() if entry is not None else None
+
+        if int(field("split.count") or 0) > 1:
+            return True
+        if any(t.name == "token_embd.weight" for t in reader.tensors):
+            return True
+        arch = field("general.architecture")
+        return bool(arch and field(f"{arch}.nextn_shared_target_tensors"))
+    except Exception as exc:
+        logger.debug(
+            "MTP drafter header unreadable, leaving it to llama-server: %s (%s)", path, exc
+        )
+        return True
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
@@ -6207,10 +6235,9 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
-        # Drafter this load resolved then deliberately suppressed (virtualised Metal
-        # with no draft-layer flag). The dedup keys on the drafter the caller asked
-        # for, still on disk, so without this the detected path never matches the
-        # launched None and every repeat Apply tears down a healthy server.
+        # Drafter this load resolved then suppressed: unloadable sidecar, or virtualised
+        # Metal with no draft-layer flag. The caller keeps detecting it on disk, so
+        # without this record every repeat Apply tears down a healthy server.
         self._mtp_draft_suppressed_path: Optional[str] = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
@@ -7309,6 +7336,8 @@ class LlamaCppBackend:
         if (
             intent.gguf_path is None
             and self._spec_fallback_reason == "drafter_not_found"
+            # The fetch did find it and the load dropped it; refetching finds it again.
+            and self._mtp_draft_suppressed_path is None
             and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
             and not (self._spec_drafter_kind == "dspark" and self._dspark_sidecar_absent)
             # DFlash asks through _dflash_retry_needed below, which is set only for
@@ -18453,6 +18482,7 @@ class LlamaCppBackend:
             # The canonical mode drives which drafter is downloaded, sized and
             # launched, so resolve it once before either branch can use it.
             _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+            _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # can't quarantine future loads.
@@ -18636,6 +18666,22 @@ class LlamaCppBackend:
             ):
                 # A root mtp-*.gguf may mirror the embedded head; -md would replace it.
                 logger.info("Main GGUF contains an embedded MTP head; ignoring separate drafter.")
+                mtp_draft_path = None
+
+            # Before the fit prices it, or a drafter that never launches pushes layers
+            # off the GPU. DSpark/DFlash borrow token_embd from the target by design.
+            if (
+                mtp_draft_path
+                and _spec_canon not in ("dspark", "dflash")
+                and not _mtp_drafter_loads_standalone(mtp_draft_path)
+            ):
+                logger.warning(
+                    "Dropping MTP drafter %s: it carries neither token_embd.weight nor "
+                    "nextn_shared_target_tensors, so llama-server cannot load it as "
+                    "--model-draft; loading without it.",
+                    mtp_draft_path,
+                )
+                _unloadable_mtp_draft_path = mtp_draft_path
                 mtp_draft_path = None
 
             if _load_cancelled():
@@ -21929,7 +21975,7 @@ class LlamaCppBackend:
                     mtp_draft_path = mtp_draft_path,
                     drafter_label = _DRAFTER_DISPLAY_LABELS.get(_spec_canon, "MTP"),
                 )
-                _pv_suppressed_draft_path: Optional[str] = None
+                _suppressed_draft_path: Optional[str] = _unloadable_mtp_draft_path
                 _pv_suppressed_spec_extra_args: Optional[List[str]] = None
                 # Same shape as the projector drop above: the CPU pin below needs a
                 # draft-layer flag from the probe, and without one the drafter keeps its
@@ -21978,7 +22024,10 @@ class LlamaCppBackend:
                     # Remember what was suppressed: the drafter stays on disk, so caller
                     # and route keep detecting it, and comparing that against the
                     # launched None would reload a healthy server on every repeat Apply.
-                    _pv_suppressed_draft_path = launch_mtp_draft_path
+                    # Only what this drop removed: extras trigger it with none of ours
+                    # launched, and None would clear a record an earlier drop made.
+                    if launch_mtp_draft_path:
+                        _suppressed_draft_path = launch_mtp_draft_path
                     launch_mtp_draft_path = None
                     if extra_args:
                         # Same reason: record the extras as REQUESTED next to the
@@ -23625,7 +23674,7 @@ class LlamaCppBackend:
                 self._gguf_load_identity = self._gguf_load_source_identity(model_path, mmproj_path)
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
-                self._mtp_draft_suppressed_path = _pv_suppressed_draft_path
+                self._mtp_draft_suppressed_path = _suppressed_draft_path
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant

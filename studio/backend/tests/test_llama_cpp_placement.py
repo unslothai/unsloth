@@ -3559,3 +3559,55 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     assert backend.last_load_warning is None
+
+
+def _write_mtp_drafter(path: Path, *, with_token_embd: bool) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names += ["token_embd.weight", "output_norm.weight"]
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def _headless_mtp_backend(tmp_path):
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf
+
+
+def test_an_mtp_drafter_llama_server_cannot_load_is_dropped(tmp_path):
+    """Dropped before the launch it would abort, and recorded so Apply does not reload."""
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    drafter = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+
+    cmd = _launch(backend, gguf, mtp_draft_path = str(drafter), speculative_type = "mtp")["cmd"]
+
+    assert "--model-draft" not in cmd
+    assert str(drafter) not in cmd
+    assert backend.mtp_draft_path is None
+    assert backend.mtp_draft_suppressed_path == str(drafter)
+
+
+def test_a_drafter_carrying_its_own_embeddings_still_reaches_the_command(tmp_path):
+    """The control for the drop above: same load, one tensor different."""
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    drafter = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+
+    cmd = _launch(backend, gguf, mtp_draft_path = str(drafter), speculative_type = "mtp")["cmd"]
+
+    assert cmd[cmd.index("--model-draft") + 1] == str(drafter)
+    assert backend.mtp_draft_path == str(drafter)
+    assert backend.mtp_draft_suppressed_path is None
