@@ -455,6 +455,7 @@ def test_uv_cache_lifecycle_wraps_all_install_time_uv_work():
     assert root < capture < configure < first_uv_probe < restore
     assert '[Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")' in source
     assert "$previousUvCacheDir = [Environment]::GetEnvironmentVariable(" in source
+    assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -477,7 +478,7 @@ def test_uv_cache_lifecycle_defaults_preserves_and_restores(
     script = f"""
 $ErrorActionPreference = "Stop"
 {functions}
-[Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $null, "Process")
+Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
 if ($env:TEST_INITIAL_PRESENT -eq "1") {{
     [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $env:TEST_INITIAL_VALUE, "Process")
 }}
@@ -495,6 +496,7 @@ try {{
 [pscustomobject]@{{
     Active = $active
     PresentAfter = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+    ProviderPresentAfter = Test-Path -LiteralPath Env:UV_CACHE_DIR
     Restored = [string][Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
 }} | ConvertTo-Json -Compress
 """
@@ -513,6 +515,7 @@ try {{
             os.path.normpath(str(tmp_path / "cache" / "uv"))
         )
     assert result["PresentAfter"] is initial_present
+    assert result["ProviderPresentAfter"] is initial_present
     assert result["Restored"] == initial_value
 
 
@@ -524,7 +527,7 @@ def test_two_uv_cache_lifecycles_in_one_session_use_their_own_roots(tmp_path: Pa
     script = f"""
 $ErrorActionPreference = "Stop"
 {functions}
-[Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $null, "Process")
+Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
 $active = @()
 foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
     $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
@@ -539,6 +542,7 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
 [pscustomobject]@{{
     Active = @($active)
     PresentAfter = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+    ProviderPresentAfter = Test-Path -LiteralPath Env:UV_CACHE_DIR
 }} | ConvertTo-Json -Compress
 """
     first = tmp_path / "first studio"
@@ -554,3 +558,4 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
         os.path.normcase(os.path.normpath(str(second / "cache" / "uv"))),
     ]
     assert result["PresentAfter"] is False
+    assert result["ProviderPresentAfter"] is False

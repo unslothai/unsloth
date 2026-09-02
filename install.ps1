@@ -1240,7 +1240,10 @@ public static class UnslothStudioFinalPathV2
         if ($WasPresent) {
             [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $PreviousValue, "Process")
         } else {
-            [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $null, "Process")
+            # PowerShell's environment provider can retain an empty entry after the
+            # .NET deletion API. Remove through the provider so an absent caller value
+            # is absent again, rather than leaking a present-but-empty variable.
+            Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
         }
     }
 
