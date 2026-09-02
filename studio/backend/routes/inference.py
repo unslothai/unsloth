@@ -493,6 +493,21 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
         )
 
 
+# The only codecs whose generator reads instructions/language; every other backend
+# drops them, so folding them into a budget would refuse a request they never see.
+_EXTRA_PROMPT_FIELD_AUDIO_TYPES = ("higgs_tts2", "moss_tts_local")
+
+
+def _speech_prompt_for_budget(audio_type: Optional[str], budget: dict) -> str:
+    """The string the post-load guard will measure for *audio_type*."""
+    text = budget.get("text") or ""
+    if audio_type not in _EXTRA_PROMPT_FIELD_AUDIO_TYPES:
+        return text
+    return _native_tts_prompt_for_budget(
+        text, audio_type, budget.get("instructions"), budget.get("language")
+    )
+
+
 def _native_tts_prompt_for_budget(
     text: str, audio_type: Optional[str], instructions: Optional[str], language: Optional[str]
 ) -> str:
@@ -7121,13 +7136,18 @@ def _target_speech_audio_type(
 
     try:
         if not is_gguf:
-            # Non-GGUF weights go to the worker the device picks, and the MLX worker
-            # answers generate_audio with "not supported" -- a codec checkpoint still
-            # reaches it, so on Apple Silicon this swap would evict for nothing.
-            if _host_serves_mlx():
-                return None
-            from core.inference.native_audio import REMOTE_CODE_AUDIO_TYPES
+            from core.inference.native_audio import (
+                REMOTE_CODE_AUDIO_TYPES,
+                is_native_audio_model,
+            )
 
+            # Non-GGUF weights go to the worker the device picks. The worker selects the
+            # native-audio backend before the MLX fast path, so those checkpoints still
+            # serve on Apple Silicon (NativeAudioBackend has an MPS path); an ordinary
+            # codec checkpoint does reach MLX, which answers generate_audio with
+            # "not supported", so only that shape is refused here.
+            if _host_serves_mlx() and not is_native_audio_model(load_path):
+                return None
             audio_type = detect_audio_type(
                 load_path, hf_token = os.environ.get("HF_TOKEN"), local_files_only = True
             )
@@ -8331,12 +8351,7 @@ async def _maybe_auto_switch_model(
                     speech_type,
                 )
                 prompt_tokens = _byte_fallback_prompt_tokens(
-                    _native_tts_prompt_for_budget(
-                        speech_budget.get("text") or "",
-                        speech_type,
-                        speech_budget.get("instructions"),
-                        speech_budget.get("language"),
-                    )
+                    _speech_prompt_for_budget(speech_type, speech_budget)
                 )
                 if target_context and _speech_budget_exhausted(target_context, prompt_tokens):
                     raise HTTPException(
@@ -16679,7 +16694,7 @@ async def _generate_tts_wav(
         )
     if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
         raise HTTPException(status_code = 400, detail = _MINIMAX_NEEDS_DESCRIPTION)
-    if audio_type in ("higgs_tts2", "moss_tts_local"):
+    if audio_type in _EXTRA_PROMPT_FIELD_AUDIO_TYPES:
         prompt_for_budget = _native_tts_prompt_for_budget(
             text,
             audio_type,

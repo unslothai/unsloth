@@ -159,19 +159,32 @@ def test_a_failing_probe_refuses_rather_than_evicts(monkeypatch):
     assert inference_route._target_speech_audio_type("/srv/tts", False) is None
 
 
-def test_a_non_gguf_speech_target_is_refused_on_an_mlx_host(monkeypatch):
-    # The MLX worker answers generate_audio with "not supported", and a codec checkpoint
-    # still reaches it, so accepting the swap here would evict the resident model for a
-    # target that cannot speak. Checked before detect_audio_type, which never runs.
+def test_an_ordinary_codec_checkpoint_is_refused_on_an_mlx_host(monkeypatch):
+    # A checkpoint the worker would hand to MLX cannot speak: MLX answers generate_audio
+    # with "not supported". Refused before detect_audio_type, which never runs.
     import routes.inference as inference_route
-    from core.inference import local_model_resolver
+    from core.inference import local_model_resolver, native_audio
     from utils.models import model_config
 
     monkeypatch.setattr(local_model_resolver, "_host_serves_mlx", lambda: True)
+    monkeypatch.setattr(native_audio, "is_native_audio_model", lambda _p: False)
     monkeypatch.setattr(
         model_config, "detect_audio_type", lambda *_a, **_kw: pytest.fail("probed on MLX")
     )
     assert inference_route._target_speech_audio_type("/srv/orpheus", False) is None
+
+
+def test_a_native_audio_checkpoint_still_switches_on_an_mlx_host(monkeypatch):
+    # The worker picks the native-audio backend before the MLX fast path, and that
+    # backend has an MPS device path, so Higgs must not be refused on Apple Silicon.
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver, native_audio
+    from utils.models import model_config
+
+    monkeypatch.setattr(local_model_resolver, "_host_serves_mlx", lambda: True)
+    monkeypatch.setattr(native_audio, "is_native_audio_model", lambda _p: True)
+    monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_kw: "higgs_tts2")
+    assert inference_route._target_speech_audio_type("/srv/higgs", False) == "higgs_tts2"
 
 
 def test_a_non_gguf_speech_target_is_allowed_off_mlx(monkeypatch):

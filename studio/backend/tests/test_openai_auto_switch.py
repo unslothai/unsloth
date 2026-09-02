@@ -3772,6 +3772,20 @@ def test_moss_ignores_a_saved_context_override(monkeypatch):
         )
 
 
+def test_a_codec_that_drops_instructions_is_not_budgeted_for_them(monkeypatch):
+    # SNAC/BiCodec/DAC generators never see instructions -- the GGUF call does not pass
+    # them and the transformers one deletes them -- so counting them here would refuse a
+    # short, valid request that succeeds once the same target is loaded.
+    budget = {"text": "hi", "instructions": "x" * 4000, "language": "en"}
+    assert inference_route._speech_prompt_for_budget("snac", budget) == "hi"
+    assert inference_route._speech_prompt_for_budget("bicodec", budget) == "hi"
+    assert inference_route._speech_prompt_for_budget("dac", budget) == "hi"
+    assert inference_route._speech_prompt_for_budget("csm", budget) == "hi"
+    # The two that do read them keep counting them.
+    assert "x" * 4000 in inference_route._speech_prompt_for_budget("higgs_tts2", budget)
+    assert "en" in inference_route._speech_prompt_for_budget("moss_tts_local", budget)
+
+
 def test_the_preflight_counts_the_fields_the_target_folds_in(monkeypatch):
     # Higgs and MOSS build their prompt from instructions (and MOSS the language) as
     # well as the text, so a long instructions field has to be counted before the swap.
