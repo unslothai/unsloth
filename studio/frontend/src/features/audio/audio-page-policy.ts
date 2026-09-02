@@ -277,15 +277,21 @@ export function isGgufTtsTarget({
   repoId,
   ggufFilename,
   loadId,
+  isGguf,
 }: {
   repoId: string;
   ggufFilename?: string | null;
   loadId?: string | null;
+  /** The catalog's own answer, when the caller has one. The tests below are
+   * name heuristics: a GGUF repo with no exact variant, whose ids neither
+   * contain "gguf" nor end in ".gguf", is invisible to them. */
+  isGguf?: boolean | null;
 }): boolean {
   const endsWithGguf = (value: string | null | undefined): boolean =>
     Boolean(value?.toLowerCase().endsWith(".gguf"));
   return Boolean(
-    ggufFilename ||
+    isGguf ||
+      ggufFilename ||
       /(?:^|[-/])gguf(?:$|[-/])/i.test(repoId) ||
       endsWithGguf(repoId) ||
       endsWithGguf(loadId),

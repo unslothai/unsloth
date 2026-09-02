@@ -755,6 +755,27 @@ test("a direct .gguf pick is a GGUF target even without a variant filename", () 
   );
 });
 
+test("the catalog's own answer outranks the name heuristics", () => {
+  // A GGUF repo with no exact variant, whose repo and load ids neither contain
+  // "gguf" nor end in ".gguf", is invisible to every test below. The picker
+  // already knows better from the catalog; recomputing from the ids alone threw
+  // that away, and a CPU RAM load then omitted gpu_layers: 0 and landed on the
+  // GPU regardless of the placement the user chose.
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: true }),
+    true,
+  );
+  // Absent or false, the heuristics still decide; nothing is forced off GGUF.
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox-GGUF", isGguf: false }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: null }),
+    false,
+  );
+});
+
 test("a safetensors pick is not a GGUF target", () => {
   assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft" }), false);
   assert.equal(isGgufTtsTarget({ repoId: "bosonai/higgs-tts-2-3b-base" }), false);

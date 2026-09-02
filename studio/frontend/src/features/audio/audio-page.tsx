@@ -381,6 +381,7 @@ export function AudioPage({
     loadId?: string | null;
     audioType?: string | null;
     remoteCodeApproval?: RemoteCodeApproval;
+    isGguf?: boolean | null;
   } | null>(null);
   const ttsStatusRefreshGeneration = useRef(0);
   const ttsLoadGeneration = useRef(0);
@@ -465,6 +466,7 @@ export function AudioPage({
     loadId?: string | null;
     audioType?: string | null;
     remoteCodeApproval?: RemoteCodeApproval;
+    isGguf?: boolean | null;
     generation: number;
   } | null>(null);
   const stagedTtsLoadDeferred = useRef(false);
@@ -902,6 +904,11 @@ export function AudioPage({
       loadId?: string | null,
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,
+      // The picker already decided this from the catalog. Recomputing it here from
+      // the ids alone loses a GGUF repo with no exact variant whose ids do not spell
+      // "gguf", and a CPU RAM load of one would then omit the zero-offload fields and
+      // land on the GPU anyway.
+      isGguf?: boolean | null,
     ) => {
       // A routed pick that arrives while a previous load is still tearing down would
       // otherwise be dropped here, and the route effect has already cleared ?model=, so
@@ -913,6 +920,7 @@ export function AudioPage({
           loadId,
           audioType,
           remoteCodeApproval,
+          isGguf,
         };
         return;
       }
@@ -952,6 +960,7 @@ export function AudioPage({
           loadId,
           audioType,
           remoteCodeApproval,
+          isGguf,
         };
         return;
       }
@@ -1002,7 +1011,7 @@ export function AudioPage({
           if (controller.signal.aborted || !isCurrent()) return;
         }
         const wantsCpu = audioDevice === "cpu";
-        const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId });
+        const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -1111,6 +1120,7 @@ export function AudioPage({
       queued.loadId,
       queued.audioType,
       queued.remoteCodeApproval,
+      queued.isGguf,
     );
   }, []);
   const invalidatePendingStagedTts = useCallback(() => {
@@ -1209,6 +1219,7 @@ export function AudioPage({
         pending.loadId,
         pending.audioType,
         pending.remoteCodeApproval,
+        pending.isGguf,
       );
     },
   });
@@ -1235,6 +1246,7 @@ export function AudioPage({
       pending.loadId,
       pending.audioType,
       pending.remoteCodeApproval,
+      pending.isGguf,
     );
   }, [active, busy]);
 
@@ -1304,6 +1316,7 @@ export function AudioPage({
               meta.loadId,
               meta.audioType,
               remoteCodeApproval,
+              meta.isGguf,
             );
             return;
           }
@@ -1323,6 +1336,7 @@ export function AudioPage({
             loadId: meta.loadId,
             audioType: meta.audioType,
             remoteCodeApproval,
+            isGguf: meta.isGguf,
             generation,
           };
           stageTtsDownload(
@@ -1349,6 +1363,7 @@ export function AudioPage({
           loadId: meta.loadId,
           audioType: meta.audioType,
           remoteCodeApproval,
+          isGguf: meta.isGguf,
           generation,
         };
         stageTtsDownload([
@@ -1370,6 +1385,7 @@ export function AudioPage({
         meta.loadId,
         meta.audioType,
         remoteCodeApproval,
+        meta.isGguf,
       );
     },
     [stageTtsDownload],

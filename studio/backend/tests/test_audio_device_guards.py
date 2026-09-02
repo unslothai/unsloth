@@ -478,3 +478,16 @@ def test_the_chat_claim_outlives_the_worker_that_earned_it():
     hook = load_src.index("on_prior_worker_released()")
     assert load_src.index("did not exit and still holds GPU") < hook
     assert load_src.index("was not released; ") < hook
+
+
+def test_whisper_cpp_publishes_the_load_before_choosing_its_placement():
+    """The training hook reads is_loading() without this method's lock. A placement
+    decided ahead of that flag is invisible to training: it sees no load in flight,
+    reads the outgoing model's CPU placement, preserves it as holding no VRAM, and
+    the command already built then starts a GPU-backed server beside the run."""
+    import inspect
+
+    from core.inference.stt_ggml_sidecar import GgmlSttSidecar
+
+    src = inspect.getsource(GgmlSttSidecar.load)
+    assert src.index("self._loading = True") < src.index("elif _training_active():")

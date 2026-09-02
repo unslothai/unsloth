@@ -969,22 +969,6 @@ class GgmlSttSidecar:
             reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
             marker = _whisper_install_marker(binary)
-            if force_cpu:
-                # Tracked, so the reuse check above restarts on a change.
-                command.append("--no-gpu")
-            elif _training_active():
-                # Keep whisper.cpp off the accelerator during training (like the Transformers sidecar's CPU choice) so a
-                # mid-training dictation cannot reclaim the VRAM training just freed.
-                command.append("--no-gpu")
-            elif marker is not None and marker.get("backend") == "cpu":
-                # A deliberate CPU install must stay CPU: the slim wiring links every llama ggml backend (including
-                # CUDA/ROCm), so without this flag a cpu-selected install would still grab the GPU.
-                command.append("--no-gpu")
-            logger.info(
-                "Starting whisper-server for STT model %s on 127.0.0.1:%s",
-                model_id,
-                port,
-            )
             cancel_event = (
                 request_cancel_event if request_cancel_event is not None else threading.Event()
             )
@@ -995,6 +979,30 @@ class GgmlSttSidecar:
             try:
                 if cancel_event.is_set():
                     raise SttLoadCancelledError("GGUF STT model loading was cancelled.")
+                # Placement is decided under the loading flag, never before it. The
+                # training hook reads is_loading() without this method's lock, so a
+                # decision taken ahead of the flag is one training cannot see: it would
+                # find no load in flight, look at the previous model instead, and read
+                # the CPU placement that is about to be replaced. It then preserves that
+                # model as holding no VRAM while this command starts a GPU-backed server
+                # beside the run. Published first, the same hook cancels this startup
+                # and waits for it to settle.
+                if force_cpu:
+                    # Tracked, so the reuse check above restarts on a change.
+                    command.append("--no-gpu")
+                elif _training_active():
+                    # Keep whisper.cpp off the accelerator during training (like the Transformers sidecar's CPU choice) so a
+                    # mid-training dictation cannot reclaim the VRAM training just freed.
+                    command.append("--no-gpu")
+                elif marker is not None and marker.get("backend") == "cpu":
+                    # A deliberate CPU install must stay CPU: the slim wiring links every llama ggml backend (including
+                    # CUDA/ROCm), so without this flag a cpu-selected install would still grab the GPU.
+                    command.append("--no-gpu")
+                logger.info(
+                    "Starting whisper-server for STT model %s on 127.0.0.1:%s",
+                    model_id,
+                    port,
+                )
                 self._release_locked()
                 # release the reservation as late as possible: whisper-server binds the port moments after this close
                 reservation.close()
