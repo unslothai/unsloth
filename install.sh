@@ -647,7 +647,16 @@ _resolve_studio_destinations() {
     _LOCAL_BIN="$HOME/.local/bin"
     _STUDIO_HOME_REDIRECT=default
 }
+
+_configure_uv_cache() {
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*) ;;
+        *) UV_CACHE_DIR="$STUDIO_HOME/cache/uv" ;;
+    esac
+    export UV_CACHE_DIR
+}
 _resolve_studio_destinations
+_configure_uv_cache
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks
 # whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it
 # several times (uv bootstrap, venv), so testing $PATH there answers yes for a shell that would

@@ -1074,3 +1074,26 @@ class TestAmdBnbFloorParity:
             assert (
                 "4-bit QLoRA needs a source build" in text
             ), f"{name} must tell aarch64 users 4-bit needs a source build"
+
+
+class TestInstallUvCacheRootParity:
+    """Both top-level installers must configure uv after resolving StudioHome."""
+
+    def test_shell_configures_the_cache_before_uv_setup(self):
+        source = INSTALL_SH.read_text(encoding = "utf-8")
+        resolved = source.index("\n_resolve_studio_destinations\n")
+        configured = source.index("\n_configure_uv_cache\n")
+        uv_setup = source.index("\n# ── Install uv ──\n")
+
+        assert "_configure_uv_cache() {" in source
+        assert resolved < configured < uv_setup
+
+    def test_powershell_configures_and_restores_the_cache(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        resolved = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
+        captured = source.index("$hadPreviousUvCacheDir =")
+        configured = source.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome", captured)
+        uv_setup = source.index("if (-not (Test-UvVersionOk))", configured)
+        restored = source.index("Restore-StudioUvCacheEnvironment -WasPresent", uv_setup)
+
+        assert resolved < captured < configured < uv_setup < restored

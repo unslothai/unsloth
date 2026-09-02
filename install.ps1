@@ -1225,6 +1225,25 @@ public static class UnslothStudioFinalPathV2
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
+    function Set-StudioUvCacheEnvironment {
+        param([Parameter(Mandatory = $true)][string]$StudioRoot)
+        if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
+            $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioRoot "cache") "uv"
+        }
+    }
+
+    function Restore-StudioUvCacheEnvironment {
+        param(
+            [bool]$WasPresent,
+            [AllowNull()][string]$PreviousValue
+        )
+        if ($WasPresent) {
+            [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $PreviousValue, "Process")
+        } else {
+            [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $null, "Process")
+        }
+    }
+
     $Rule = [string]::new([char]0x2500, 52)
     $Sloth = [char]::ConvertFromUtf32(0x1F9A5)
 
@@ -3119,7 +3138,10 @@ exit 0
     $studioNeedsRuntimeLock = $true
     $studioUsesLegacyLayout = ($StudioRedirectMode -ne 'env') -or $studioUsesTauriManagedRoot
     $studioAutoStartProcess = $null
+    $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+    $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
     try {
+        Set-StudioUvCacheEnvironment -StudioRoot $StudioHome
         if ($studioNeedsRuntimeLock) {
             try {
                 $studioRuntimeMutexNames = @(
@@ -6543,6 +6565,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         Write-StudioLine ""
     }
     } finally {
+        Restore-StudioUvCacheEnvironment -WasPresent $hadPreviousUvCacheDir -PreviousValue $previousUvCacheDir
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }

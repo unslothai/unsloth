@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -60,6 +61,13 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
         timeout = 30,
     )
     return result.stdout.strip()
+
+
+def _uv_cache_functions(source: str) -> str:
+    return "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Set-StudioUvCacheEnvironment", "Restore-StudioUvCacheEnvironment")
+    )
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -434,3 +442,115 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     assert 'Write-StudioLine "        Managed Python: $VenvPython"' in source
     assert 'Write-StudioLine "        Recorded base Python home: $recordedBaseHome"' in source
     assert 'return (Exit-InstallFailure "Managed Python is unavailable' in source
+
+
+def test_uv_cache_lifecycle_wraps_all_install_time_uv_work():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    root = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
+    capture = source.index("$hadPreviousUvCacheDir =")
+    configure = source.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome", capture)
+    first_uv_probe = source.index("if (-not (Test-UvVersionOk))", configure)
+    restore = source.index("Restore-StudioUvCacheEnvironment -WasPresent", first_uv_probe)
+
+    assert root < capture < configure < first_uv_probe < restore
+    assert '[Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")' in source
+    assert "$previousUvCacheDir = [Environment]::GetEnvironmentVariable(" in source
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("initial_present", "initial_value"),
+    [
+        (False, ""),
+        (True, ""),
+        (True, "   "),
+        (True, "caller cache/uv artifacts"),
+    ],
+)
+@pytest.mark.parametrize("fail", [False, True])
+def test_uv_cache_lifecycle_defaults_preserves_and_restores(
+    tmp_path: Path, shell: str, initial_present: bool, initial_value: str, fail: bool
+):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = _uv_cache_functions(source)
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+[Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $null, "Process")
+if ($env:TEST_INITIAL_PRESENT -eq "1") {{
+    [Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $env:TEST_INITIAL_VALUE, "Process")
+}}
+$hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+$previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+$active = $null
+try {{
+    Set-StudioUvCacheEnvironment -StudioRoot $env:TEST_STUDIO_HOME
+    $active = [string][Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+    if ($env:TEST_FAIL -eq "1") {{ throw "intentional failure" }}
+}} catch {{
+}} finally {{
+    Restore-StudioUvCacheEnvironment -WasPresent $hadPreviousUvCacheDir -PreviousValue $previousUvCacheDir
+}}
+[pscustomobject]@{{
+    Active = $active
+    PresentAfter = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+    Restored = [string][Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+}} | ConvertTo-Json -Compress
+"""
+    env = os.environ.copy()
+    env.pop("UV_CACHE_DIR", None)
+    env["TEST_INITIAL_PRESENT"] = "1" if initial_present else "0"
+    env["TEST_INITIAL_VALUE"] = initial_value
+    env["TEST_STUDIO_HOME"] = str(tmp_path)
+    env["TEST_FAIL"] = "1" if fail else "0"
+    result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
+
+    if initial_value.strip():
+        assert result["Active"] == initial_value
+    else:
+        assert os.path.normcase(os.path.normpath(result["Active"])) == os.path.normcase(
+            os.path.normpath(str(tmp_path / "cache" / "uv"))
+        )
+    assert result["PresentAfter"] is initial_present
+    assert result["Restored"] == initial_value
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_two_uv_cache_lifecycles_in_one_session_use_their_own_roots(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = _uv_cache_functions(source)
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+[Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $null, "Process")
+$active = @()
+foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
+    $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+    $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+    try {{
+        Set-StudioUvCacheEnvironment -StudioRoot $root
+        $active += [string][Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+    }} finally {{
+        Restore-StudioUvCacheEnvironment -WasPresent $hadPreviousUvCacheDir -PreviousValue $previousUvCacheDir
+    }}
+}}
+[pscustomobject]@{{
+    Active = @($active)
+    PresentAfter = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+}} | ConvertTo-Json -Compress
+"""
+    first = tmp_path / "first studio"
+    second = tmp_path / "second studio"
+    env = os.environ.copy()
+    env.pop("UV_CACHE_DIR", None)
+    env["TEST_STUDIO_HOME_ONE"] = str(first)
+    env["TEST_STUDIO_HOME_TWO"] = str(second)
+    result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
+
+    assert [os.path.normcase(os.path.normpath(value)) for value in result["Active"]] == [
+        os.path.normcase(os.path.normpath(str(first / "cache" / "uv"))),
+        os.path.normcase(os.path.normpath(str(second / "cache" / "uv"))),
+    ]
+    assert result["PresentAfter"] is False
