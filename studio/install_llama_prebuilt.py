@@ -2388,6 +2388,8 @@ def run_capture(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = env,
         **windows_hidden_subprocess_kwargs(),
@@ -2561,8 +2563,8 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     int(cuda_match.group(1)),
                     int(cuda_match.group(2)),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"nvidia-smi driver probe failed: {exc}")
 
         try:
             caps = run_capture(
@@ -3384,6 +3386,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
             if result.returncode == 0:
@@ -3409,6 +3413,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
         except Exception:
@@ -5725,6 +5731,8 @@ def validate_quantize(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = 120,
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
         **windows_hidden_subprocess_kwargs(),
@@ -5815,6 +5823,8 @@ def validate_server(
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
                     **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),

@@ -2194,3 +2194,36 @@ class TestARepairedTorchThatCannotImport:
         monkeypatch.setattr(stack_mod, "pip_install", _pip)
         assert stack_mod._ensure_expected_torch_flavor() is False
         assert any("cannot be imported" in ln for ln in lines), lines
+
+
+# What a localized nvidia-smi writes, which -X utf8 decodes as UTF-8 (#10173).
+_LOCALIZED_NVIDIA_SMI = (
+    "import sys\n"
+    "if sys.argv[1:] == ['--query-gpu=compute_cap', '--format=csv,noheader,nounits']:\n"
+    "    sys.stdout.buffer.write(b'8.6\\n')\n"
+    "else:\n"
+    "    sys.stdout.buffer.write(b'| NVIDIA-SMI 591.86    CUDA Version: 13.1 |\\n')\n"
+    "    sys.stdout.buffer.write('\\u4e02\\u4fdd\\u7559\\u6240\\u6709\\u6743\\u5229\\u3002\\n'.encode('gbk'))\n"
+)
+
+
+def test_detect_index_url_reads_a_localized_nvidia_smi_banner(monkeypatch, tmp_path):
+    fake = tmp_path / "nvidia-smi.py"
+    fake.write_text(_LOCALIZED_NVIDIA_SMI, encoding = "utf-8")
+    real_run = subprocess.run
+
+    def run_fake_nvidia_smi(command, *args, **kwargs):
+        if command and command[0] == "nvidia-smi":
+            command = [sys.executable, str(fake), *command[1:]]
+        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setattr(stack_mod.subprocess, "run", run_fake_nvidia_smi)
+    monkeypatch.setattr(
+        stack_mod.shutil,
+        "which",
+        lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
+    )
+    assert _detect_cuda_torch_index_url() == f"{stack_mod._PYTORCH_WHL_BASE}/cu130"
