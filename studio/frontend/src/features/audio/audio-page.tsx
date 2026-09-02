@@ -2678,6 +2678,18 @@ export function AudioPage({
                     onValueChange={(value) => {
                       const next = value === "cpu" ? "cpu" : "auto";
                       if (next === audioDevice) return;
+                      // MiniMax's runtime needs CUDA, so the backend refuses a CPU
+                      // load in preflight. That refusal is deliberately early and
+                      // non-destructive, but it cannot save a model this handler has
+                      // already ejected, and the reload it would need is the one that
+                      // gets refused. Keep the working model instead of trading it for
+                      // a load that cannot succeed.
+                      if (next === "cpu" && status?.audio_type === "minimax_music3") {
+                        toast.info(
+                          "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
+                        );
+                        return;
+                      }
                       setAudioDeviceState(next);
                       // Otherwise the choice does nothing until the next swap.
                       if (ttsLoaded) handleEject();

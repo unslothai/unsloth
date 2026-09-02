@@ -384,3 +384,17 @@ def test_the_stale_chat_claim_is_dropped_before_the_load_not_only_after():
     src = inspect.getsource(ri._load_model_impl)
     before_load = src[: src.index("backend.load_model,")]
     assert before_load.count("release, CHAT") >= 1
+
+
+def test_the_gguf_audio_codec_follows_the_servers_own_placement():
+    """The codec is a second allocation. A server launched at zero offload is
+    classified holds_no_vram, which lets the route skip GPU arbitration and leaves
+    it resident when training reclaims memory; a codec on CUDA would hold VRAM
+    under both of those promises."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    src = inspect.getsource(LlamaCppBackend.init_audio_codec)
+    device_line = next(l for l in src.splitlines() if l.strip().startswith("device ="))
+    assert "holds_no_vram" in device_line, device_line

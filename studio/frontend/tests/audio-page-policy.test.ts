@@ -772,3 +772,17 @@ test("a CPU GGUF audio load declares speculation off", () => {
     /gpu_memory_mode: "manual" as const,\s*gpu_layers: 0,\s*speculative_type: "off" as const,/,
   );
 });
+
+test("selecting CPU never ejects a resident MiniMax, which cannot load on CPU", () => {
+  // The backend refuses a CPU MiniMax load in preflight, deliberately before it
+  // evicts anything. That cannot help if the control already ejected the model:
+  // the reload needed to recover is the one that gets refused.
+  const handler = audioPageSource.slice(
+    audioPageSource.indexOf('const next = value === "cpu" ? "cpu" : "auto";'),
+  );
+  const guard = handler.indexOf('status?.audio_type === "minimax_music3"');
+  const eject = handler.indexOf("handleEject()");
+  assert.ok(guard > -1, "no MiniMax guard on the placement control");
+  assert.ok(guard < eject, "the guard must return before the eject");
+  assert.match(handler.slice(guard, eject), /return;/);
+});
