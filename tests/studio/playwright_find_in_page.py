@@ -523,9 +523,7 @@ def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
     # Adding the attribute is the direction that used to be filtered out of the
     # observer's own batch, leaving the region counted until something else
     # happened to mutate.
-    page.evaluate(
-        "() => document.getElementById('probe-skip')?.setAttribute('data-find-skip', '')"
-    )
+    page.evaluate("() => document.getElementById('probe-skip')?.setAttribute('data-find-skip', '')")
     page.wait_for_timeout(900)
     after = counter(page)
     check(
