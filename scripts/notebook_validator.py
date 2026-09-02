@@ -701,13 +701,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             tails[-1] = False
             buf_conditional = any(tails)
             i += 2
-        elif ch == ";" or (
-            # `A & B` backgrounds A and runs B, `A | B` runs both: unconditional either way.
-            # `>&` and `&>` are redirections, not separators.
-            ch in "&|"
-            # `>&`, `&>` and `>|` are redirections rather than separators.
-            and not (ch == "&" and (line[i - 1 : i] == ">" or line[i + 1 : i + 2] == ">"))
-            and not (ch == "|" and line[i - 1 : i] == ">")
+        elif (
+            ch == ";"
+            or (
+                # `A & B` backgrounds A and runs B, `A | B` runs both: unconditional either way.
+                # `>&` and `&>` are redirections, not separators.
+                ch in "&|"
+                # `>&`, `&>` and `>|` are redirections rather than separators.
+                and not (ch == "&" and (line[i - 1 : i] == ">" or line[i + 1 : i + 2] == ">"))
+                and not (ch == "|" and line[i - 1 : i] == ">")
+            )
         ):
             flush()
             tails[-1] = False
@@ -717,9 +720,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             if ch in "({":
                 # `$(`, `<(` and `>(` open a substitution, which lives inside a word and runs
                 # its own commands; a bare `(` groups this line's.
-                groupings.append(
-                    not (ch == "(" and buf and buf[-1] in "$<>")
-                )
+                groupings.append(not (ch == "(" and buf and buf[-1] in "$<>"))
                 tails.append(False)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command

