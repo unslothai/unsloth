@@ -33,7 +33,7 @@ _ALWAYS_PINNED = (
 )
 
 # Shared user data / large re-downloads: portable mode only.
-_PORTABLE_ONLY = ("HF_DATASETS_CACHE", "TORCH_HOME")
+_PORTABLE_ONLY = ("HF_DATASETS_CACHE", "HF_ASSETS_CACHE", "TORCH_HOME")
 
 _HF_ENV = ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "HUGGINGFACE_HUB_CACHE")
 
