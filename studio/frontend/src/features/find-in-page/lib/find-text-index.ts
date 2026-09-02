@@ -513,9 +513,12 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
 const CLUSTER_PATTERN =
   /[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]*[\u11a8-\u11ff\ud7cb-\ud7fb]*|[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
 
-/** A trailing Jamo closing a syllable, and the leading Jamo that opens one. */
+/** A trailing Jamo closing a syllable, and a leading Jamo with the vowel that makes it a syllable.
+ *  The vowel is required: a bare leading Jamo is its own grapheme, not a syllable waiting to be
+ *  closed, so a trailing Jamo after one belongs to something else and must not be fenced off. */
 const HANGUL_TRAILING_PATTERN = /[\u11a8-\u11ff\ud7cb-\ud7fb]/;
-const HANGUL_OPEN_PATTERN = /^[\u1100-\u115f\ua960-\ua97c]/;
+const HANGUL_OPEN_PATTERN =
+  /^[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]/;
 
 /**
  * The needle as a regex source in which each cluster may match either of its spellings.
@@ -550,7 +553,8 @@ function canonicalSource(needle: string, dotted: boolean): string {
     const trailing = HANGUL_TRAILING_PATTERN.exec(cluster);
     if (trailing !== null) {
       const half =
-        cluster.slice(0, trailing.index).normalize("NFC") + trailing[0];
+        cluster.slice(0, trailing.index).normalize("NFC") +
+        cluster.slice(trailing.index);
       if (!spellings.includes(half)) spellings.push(half);
     }
     out +=

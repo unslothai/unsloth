@@ -1549,6 +1549,36 @@ test("a Hangul syllable is matched whole, in every spelling it can be stored in"
   assert.deepEqual(findMatches(index(GA), GA, 10), [{ start: 0, end: 1 }]);
 });
 
+test("Hangul clusters keep every Jamo, and only a real syllable is fenced", () => {
+  const index = (body: string) =>
+    buildTextIndex(el("DIV", [el("P", [text(body)])]));
+
+  // A grapheme can carry more than one trailing Jamo. The half-composed spelling has to keep the
+  // whole suffix: dropping all but the first both shortened the match and let it land on text that
+  // lacks the query's final Jamo.
+  const TWO_TRAILING = "\uac00\u11a8\u11a8";
+  assert.deepEqual(findMatches(index(TWO_TRAILING), TWO_TRAILING, 10), [
+    { start: 0, end: 3 },
+  ]);
+  assert.deepEqual(
+    findMatches(index("\uac01\u11a8"), "\u1100\u1161\u11a8\u11a8", 10),
+    [{ start: 0, end: 2 }],
+    "the same grapheme, spelt half-composed in the text",
+  );
+  // ... but never on text that is missing the last Jamo the query asked for.
+  assert.deepEqual(
+    findMatches(index("\uac00\u11a8"), "\uac00\u11a8\u11a8", 10),
+    [],
+  );
+
+  // A bare leading Jamo is its own grapheme, not a syllable waiting to be closed, so a trailing
+  // Jamo after one belongs to something else and must not be fenced off.
+  assert.deepEqual(
+    findMatches(index("\uac00\u1100\u11a8"), "\uac00\u1100", 10),
+    [{ start: 0, end: 2 }],
+  );
+});
+
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
   const dom = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
