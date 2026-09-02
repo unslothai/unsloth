@@ -825,8 +825,9 @@ def _active_chain(
     Walked newest leaf back to root, the same shape the frontend's `orderBySelectedBranch`
     uses to decide what the model is actually shown. `parent_id` is missing on rows written
     before that column, so the previous row stands in for it, which is exactly a flat list
-    when nothing branches. ``fallback=False`` lets callers decline when the request cannot
-    seed a chain instead of silently reading the newest stored sibling. ``require_unique``
+    when nothing branches. Unlike the frontend, this default path never roots a null after
+    a recorded parent. ``fallback=False`` lets callers decline when the request cannot seed
+    a chain instead of silently reading the newest stored sibling. ``require_unique``
     likewise declines when indistinguishable leaves tie for the best branch match and trims
     the winner after the last stored row the request actually matched.
     """

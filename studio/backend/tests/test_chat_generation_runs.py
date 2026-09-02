@@ -299,6 +299,66 @@ def test_settled_generation_response_can_be_explicitly_edited(chat_home):
     _assert_protected(authoritative)
 
 
+def test_explicit_edit_keeps_display_metadata_but_not_the_run_claim(chat_home):
+    """The shape the edit pencil sends: the details the reply is shown with, minus the run's claim.
+
+    Passing the whole stored metadata back through is refused, because the record still says the
+    run owns the turn and detaching it is the whole point of an explicit edit.
+    """
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    streamed = studio_db.get_chat_message("thread-1", "assistant-1")
+    streamed["metadata"].update(
+        {
+            "generationStatus": "running",
+            "timing": {"tokensPerSecond": 42.5, "durationMs": 1200},
+            "contextUsage": {"promptTokens": 900, "contextLength": 4096},
+        }
+    )
+    studio_db.upsert_chat_message(streamed)
+    assert runs_db.finish_run(
+        "run-1", worker_token = token, status = "completed", finish_reason = "length"
+    )
+    run = runs_db.get_run("run-1", "alice")
+    settled = studio_db.get_chat_message("thread-1", "assistant-1")
+    settled["metadata"].update(
+        {
+            "generationSeq": run["lastEventSeq"],
+            "generationStatus": "completed",
+            "generationSettled": True,
+        }
+    )
+    studio_db.upsert_chat_message(settled)
+    authoritative = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert authoritative["metadata"]["incomplete"] == {"reason": "length"}
+
+    edited = {**authoritative, "content": [{"type": "text", "text": "edited"}]}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+
+    edited["metadata"] = {
+        key: value
+        for key, value in authoritative["metadata"].items()
+        if key
+        not in {
+            "serverManaged",
+            "generationRunId",
+            "generationSeq",
+            "generationStatus",
+            "generationSettled",
+        }
+    }
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert saved["content"] == [{"type": "text", "text": "edited"}]
+    assert saved["metadata"] == {
+        "incomplete": {"reason": "length"},
+        "timing": {"tokensPerSecond": 42.5, "durationMs": 1200},
+        "contextUsage": {"promptTokens": 900, "contextLength": 4096},
+    }
+    assert runs_db.get_run("run-1", "alice") is None
+
+
 def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
     run, _created = _create()
     worker_token = runs_db.get_worker_token("run-1")

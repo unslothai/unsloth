@@ -426,6 +426,11 @@ VALID_SPECULATIVE_TYPES = frozenset(
         "draft-dflash",
         "ngram-mod",
         "ngram-simple",
+        # /load canonicalizes these three to "off"; without them here _clean_str
+        # drops the field, so a saved disable became no override at all.
+        "none",
+        "disable",
+        "disabled",
     }
 )
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
