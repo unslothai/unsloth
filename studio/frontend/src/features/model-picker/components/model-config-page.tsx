@@ -3045,13 +3045,7 @@ export function ModelConfigPage({
       ? "Reload model"
       : "Load model";
 
-  const handleRun = () => {
-    if (budgetSettling) {
-      return;
-    }
-    // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
-    // blur handler, which runs after this click closure captured the stale value. Commit every
-    // numeric input imperatively so the staged load honors what was typed, not just Context.
+  const commitDraft = () => {
     const committedContext = target.isGguf
       ? contextInputRef.current?.commit()
       : undefined;
@@ -3090,9 +3084,6 @@ export function ModelConfigPage({
     const effectiveConfig = resolvedIsDiffusion
       ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
       : committedConfig;
-    // pinFixedLayerContext above was computed from the render-time config, before the same-click
-    // GPU Layers draft was committed. Recompute from effectiveConfig so a positive fixed-layer
-    // value still pins the fitted context, else a later fresh load recreates the OOM.
     const effectivePinFixedLayerContext =
       target.isGguf &&
       effectiveConfig.gpuMemoryMode === "manual" &&
@@ -3105,72 +3096,78 @@ export function ModelConfigPage({
         ? { ...effectiveConfig, customContextLength: activeLoadedContext }
         : effectiveConfig
       : runtimeConfig;
-    // Non-GGUF load substitutes the resolved max sequence length; recompute from the committed draft.
     const effectiveMaxSeqLengthValue =
       committedMaxSeqLength == null
         ? maxSeqLengthValue
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
-    // Recheck the committed draft so Save/Forget reloads when needed.
-    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
-    const effectivePersistenceOnly =
-      isActiveModel && effectiveAtBaseline && rememberChanged;
-    // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalizedRuntimeConfig = normalizePerModelConfig(
-      effectiveRuntimeConfig,
-    );
-    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
-    let saveFailed = false;
+    return { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue };
+  };
+
+  const persistConfig = (next: PerModelConfig) => {
+    const normalized = normalizePerModelConfig(next);
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    if (remember) {
-      saveFailed = !savePerModelConfig(
-        configId,
-        target.ggufVariant,
-        normalizedRuntimeConfig,
-        evicted,
-      );
-    } else {
-      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
-    }
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips Ollama, and a native-path lease is the same.
-    if (
-      !saveFailed &&
-      (target.apiLoadable ?? target.isGguf) &&
-      !nativePathToken
-    ) {
+    const saved = remember
+      ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
+      : deletePerModelConfig(configId, target.ggufVariant);
+    if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
       syncModelOverride(
         configId,
         target.ggufVariant,
-        remember ? normalizedRuntimeConfig : null,
+        remember ? normalized : null,
       );
     }
-    // Saving can push the local map over budget and drop other models, whose server entries would
-    // keep applying with nothing able to forget them. Not a Forget: only the mirrored fields go.
     for (const dropped of evicted) {
       syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
         keepLaunchFlags: true,
       });
     }
+    return { saved, defaultConfig: isDefaultConfig(normalized) };
+  };
+
+  const finishPersist = (defaultConfig: boolean) => {
+    const nextRemember = remember && !defaultConfig;
+    setSavedRemember(nextRemember);
+    setRemember(nextRemember);
+    toast.success(
+      nextRemember
+        ? "Settings saved."
+        : remember
+          ? "Default settings kept."
+          : "Settings forgotten.",
+    );
+  };
+
+  const handleSave = () => {
+    const { effectiveRuntimeConfig } = commitDraft();
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
+    if (!saved) {
+      toast.error("Couldn't save settings for this model.");
+      return;
+    }
+    finishPersist(defaultConfig);
+  };
+
+  const handleRun = () => {
+    if (budgetSettling) {
+      return;
+    }
+    const { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue } =
+      commitDraft();
+    const effectivePersistenceOnly =
+      isActiveModel &&
+      perModelConfigsEqual(effectiveConfig, baseline) &&
+      rememberChanged;
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
     if (effectivePersistenceOnly) {
-      if (saveFailed) {
+      if (!saved) {
         toast.error("Couldn't save settings for this model.");
         return;
       }
-      const nextRemember = remember && !defaultConfig;
-      setSavedRemember(nextRemember);
-      setRemember(nextRemember);
-      toast.success(
-        nextRemember
-          ? "Settings saved."
-          : remember
-            ? "Default settings kept."
-            : "Settings forgotten.",
-      );
+      finishPersist(defaultConfig);
       return;
     }
-    if (saveFailed) {
+    if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
     // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
@@ -3450,6 +3447,22 @@ export function ModelConfigPage({
           >
             Reset
           </Button>
+          {!persistenceOnly && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={
+                !extraArgsLoadable ||
+                extraArgsHydrating ||
+                (!remember && !savedRemember)
+              }
+              onClick={handleSave}
+            >
+              {remember ? "Save settings" : "Forget settings"}
+            </Button>
+          )}
           <Button
             type="button"
             size="sm"
