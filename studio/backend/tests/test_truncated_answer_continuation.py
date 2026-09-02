@@ -26,6 +26,8 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -305,6 +307,57 @@ def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
     # The first pass ends on the user turn, where the generation prompt is what
     # makes the model answer at all, so it must keep llama-server's default.
     assert "add_generation_prompt" not in payloads[0]
+
+
+def test_a_respawn_refit_during_a_continuation_drops_the_flags(monkeypatch):
+    """The refit puts back a list that ends on the USER turn; the flags must not stay.
+
+    `_refit_final_after_respawn` rebuilds the payload from `conversation`, which never
+    learned about the continuation -- that appended its partial to the payload alone. Left
+    set, llama-server renders the prompt with no generation prompt and the model continues
+    the user's own message instead of answering it; measured against llama.cpp b10715, a
+    turn asking "What is 2+2?" comes back as "What is 2+2?".
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+    # The refit only runs once a preflight has been attempted, and it counts tokens.
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
+    def _respawned() -> bool:
+        # The replacement server came back with a smaller window, which is what makes
+        # the refit do its work rather than return early.
+        backend._effective_context_length = 2048
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # The continuation's own open: llama-server died before the headers, which
+            # is the one failure `_open_chat_stream_with_respawn_retry` replays.
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    _run_no_tools(backend, context_overflow = "truncate_oldest")
+
+    assert calls["n"] == 3, "the continuation has to be opened, die, and be retried"
+    replayed = payloads[-1]
+    assert replayed["messages"][-1]["role"] == "user", "the refit put the conversation back"
+    assert "continue_final_message" not in replayed
+    assert "add_generation_prompt" not in replayed
 
 
 def test_the_final_continuation_is_capped(monkeypatch):

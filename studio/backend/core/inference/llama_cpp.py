@@ -31690,6 +31690,14 @@ class LlamaCppBackend:
                 stream_payload["messages"] = neutralize_control_markup_in_messages(
                     conversation, None, self.markup_profile
                 )
+                # `conversation` never learned about an answer continuation -- that
+                # appended its partial to the PAYLOAD -- so this refit puts a list
+                # back that ends on the user turn. The flags describing the partial
+                # have to go with it. Left set, llama-server renders the prompt with
+                # no generation prompt at all and the model continues the USER's
+                # message: asked "What is 2+2?" it replies "What is 2+2?".
+                stream_payload.pop("continue_final_message", None)
+                stream_payload.pop("add_generation_prompt", None)
                 if truncation:
                     if _records_boundary(truncation):
                         truncation.update(
