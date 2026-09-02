@@ -819,11 +819,19 @@ def test_the_two_corrections_only_cancel_as_a_set(backend, tied_gguf_with_ple):
     one vocabulary matrix in VRAM. What that argument assumes is that the
     ``token_embd`` inside ``gguf_size`` stays there to stand in for the
     duplicate. The host-pinned discount removes it, because llama.cpp pins the
-    input layer to the CPU (llama-model.cpp:1481-1483, "there is very little
-    benefit to offloading the input layer"), and both embeddings are input-layer
-    tensors (llama-arch.cpp:709 and :900). The one exception is the tied
-    duplicate, which llama-model-loader.cpp:1118-1119 remaps to
-    LLM_TENSOR_OUTPUT and does place on the GPU.
+    input layer to the CPU (``dev_input = { cpu_dev, ... }`` in
+    ``llama_model::load_tensors``, commented "there is very little benefit to
+    offloading the input layer"), and both ``LLM_TENSOR_TOKEN_EMBD`` and
+    ``LLM_TENSOR_PER_LAYER_TOKEN_EMBD`` map to ``LLM_TENSOR_LAYER_INPUT`` in
+    ``LLM_TENSOR_INFOS``. The one exception is the tied duplicate, which
+    ``llama_model_loader::create_tensor`` remaps to ``LLM_TENSOR_OUTPUT`` and
+    does place on the GPU.
+
+    Named by symbol rather than by line. Verified against llama.cpp b81c99b
+    (2026-09-02) at llama-arch.cpp:709 and :900, llama-model.cpp:1485 and
+    llama-model-loader.cpp:1159-1160; the two latter numbers had already moved
+    from :1481 and :1118 in the 84 commits since this was first written, so the
+    line is the perishable part and the symbol is not.
 
     So the three terms are only correct together, and each half alone is wrong
     by exactly one vocabulary matrix in the OPPOSITE direction. This test states
