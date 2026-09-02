@@ -30,6 +30,7 @@ import {
   MAX_INDEX_CHARS,
   MAX_MATCHES,
   MAX_NODE_CHARS,
+  PORTAL_RESERVE_CHARS,
   buildTextIndex,
   endPositionAt,
   findMatches,
@@ -302,6 +303,37 @@ test("an oversized node does not take the whole budget with it", () => {
   assert.equal(findMatches(index, "in front of the reader").length, 1);
   // The log is still there, up to its share.
   assert.equal(index.text.startsWith("x".repeat(MAX_NODE_CHARS)), true);
+});
+
+test("a popover over a document at the ceiling is still searchable", () => {
+  // The workspace filling the budget used to end the walk, and the portal roots come after it, so
+  // the one surface the reader is actually looking at fell out of the index entirely. That is the
+  // case portal support exists for, so it gets a reserve rather than the leftovers.
+  const filler = Array.from({ length: 50 }, () =>
+    el("P", [text("x".repeat(MAX_NODE_CHARS))]),
+  );
+  const popover = el("DIV", [el("P", [text("a model named unsloth zephyr")])]);
+  const index = buildTextIndex(el("DIV", filler), [popover]);
+  assert.equal(index.truncated, true);
+  assert.equal(findMatches(index, "unsloth zephyr").length, 1);
+});
+
+test("the reserve is only held back when there is a portal to hold it for", () => {
+  // With nothing portaled the workspace gets the whole budget, so the ceiling means what it says.
+  const filler = Array.from({ length: 50 }, () =>
+    el("P", [text("x".repeat(MAX_NODE_CHARS))]),
+  );
+  const alone = buildTextIndex(el("DIV", filler));
+  assert.equal(alone.text.length, MAX_INDEX_CHARS);
+  // And with one, the workspace gives up only the reserve, not more.
+  const withPopover = buildTextIndex(el("DIV", filler), [
+    el("DIV", [el("P", [text("unsloth")])]),
+  ]);
+  assert.ok(
+    withPopover.text.length > MAX_INDEX_CHARS - PORTAL_RESERVE_CHARS,
+    `index was ${withPopover.text.length}`,
+  );
+  assert.ok(withPopover.text.length <= MAX_INDEX_CHARS);
 });
 
 test("an element the engine is not painting is skipped", () => {

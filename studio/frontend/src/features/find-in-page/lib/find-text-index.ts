@@ -30,6 +30,16 @@ export const MAX_MATCHES = 5_000;
  *  reader is looking at are not indexed at all. A share each, and the walk goes on. */
 export const MAX_NODE_CHARS = 100_000;
 
+/**
+ * Budget held back from the workspace for the surfaces portaled in front of it.
+ *
+ * The workspace is walked first, because that is where it sits in the document, and a conversation
+ * long enough to reach the ceiling would otherwise spend the whole budget before the popover the
+ * reader is actually looking at was reached. A popover, a menu or a listbox is small; this is 2.5%
+ * of the ceiling and only held back while one of them is open.
+ */
+export const PORTAL_RESERVE_CHARS = 100_000;
+
 /** Elements whose subtree holds no findable text. Form controls carry theirs in `value`; a `Range`
  *  over `SVG` or `CANVAS` content is not paintable on every engine. */
 const SKIP_TAGS: ReadonlySet<string> = new Set([
@@ -375,6 +385,10 @@ export function buildTextIndex(
   let truncated = false;
   /** The ceiling was reached, which is the only thing that stops the walk. */
   let full = false;
+  /** What `full` is measured against. Raised for the portaled surfaces below, which the workspace
+   *  gives up a share of the budget for, and only when there is one of them to give it to. */
+  let ceiling =
+    MAX_INDEX_CHARS - (extraRoots.length > 0 ? PORTAL_RESERVE_CHARS : 0);
   // Written lazily, so a run of empty blocks costs nothing and no separator lands at either end.
   let pendingSeparator = false;
 
@@ -406,7 +420,7 @@ export function buildTextIndex(
         // Checked before the separator is written, not after: a separator emitted with the ceiling
         // already reached pushes `length` past it, and the negative `room` that follows turns
         // `slice(0, room)` into "all but the last character" of the next node.
-        if (length >= MAX_INDEX_CHARS) {
+        if (length >= ceiling) {
           truncated = true;
           full = true;
           return;
@@ -421,7 +435,7 @@ export function buildTextIndex(
         // A share of the budget, not all of it. Taking the prefix that fits keeps a document made
         // of one huge node findable, but taking the WHOLE remaining budget for it left everything
         // after it out, the messages on screen included.
-        const take = Math.min(MAX_INDEX_CHARS - length, MAX_NODE_CHARS);
+        const take = Math.min(ceiling - length, MAX_NODE_CHARS);
         if (take <= 0) {
           truncated = true;
           full = true;
@@ -447,6 +461,11 @@ export function buildTextIndex(
   };
 
   visit(root, false);
+  // The reserve, handed over. A workspace that filled its share stops the walk, and the portaled
+  // surfaces come after it, so without this the one thing in front of the reader was the one thing
+  // left out. `truncated` stays as the workspace left it: what it dropped is still dropped.
+  ceiling = MAX_INDEX_CHARS;
+  full = false;
   for (const extra of extraRoots) {
     if (full) break;
     // A boundary between roots: they are separate surfaces, and a match must not run across.
