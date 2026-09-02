@@ -3911,7 +3911,9 @@ def test_a_standard_codec_target_preflights_against_the_loader_default(tmp_path,
     # A GGUF keeps its header window: llama.cpp takes the model default.
     monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
     assert (
-        inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0", None, "snac")
+        inference_route._target_effective_context_length(
+            "/local/B.gguf", True, "Q8_0", None, "snac"
+        )
         == 8192
     )
 
