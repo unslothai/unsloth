@@ -10,10 +10,7 @@ export type ParentLinkedMessage = {
 
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
-// A stored null means "this message starts a branch" only once the thread has shown that it
-// records parent links at all. Until then the row predates the field, so storage order stands
-// in for ancestry -- which is what keeps a legacy chain whole when later turns start carrying
-// real parents. Rows must be fed in the order they are stored.
+// Rows in storage order. A null is a root only after a recorded parent; earlier it chains.
 export function createParentResolver(): (
   message: ParentLinkedMessage,
 ) => string | null {
