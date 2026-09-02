@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -75,3 +76,31 @@ def test_compare_report_serializes_non_finite_psnr_as_strict_json(
         parse_constant = lambda token: pytest.fail(f"non-standard JSON constant: {token}"),
     )
     assert report["comparison"]["psnr_db"] is None
+
+
+def test_process_rss_is_plausible_or_absent():
+    value = _DIFFUSION_BENCH._process_rss_bytes()
+    assert value is None or (isinstance(value, int) and 2**20 < value < 2**44)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "/proc fallback is Linux only")
+def test_process_rss_falls_back_to_proc_without_psutil(monkeypatch):
+    """The /proc branch is unreachable wherever psutil is installed, which is everywhere the
+    benchmark normally runs, so drive it directly rather than leaving it unexercised."""
+    real_import = __import__
+
+    def without_psutil(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("psutil unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", without_psutil)
+    value = _DIFFUSION_BENCH._process_rss_bytes()
+    assert isinstance(value, int) and value > 0
+
+
+def test_host_rss_guard_is_off_unless_requested():
+    """Back-compat for existing scripted callers: the new threshold only engages when asked
+    for, so an invocation written before this flag existed behaves exactly as it did."""
+    args = _DIFFUSION_BENCH._build_parser().parse_args(["--write-baseline", "out.json"])
+    assert args.max_host_rss_growth_mib is None

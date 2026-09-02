@@ -79,6 +79,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     raise_on_unified_memory_shortfall,
+    reclaim_offload_host_memory,
     settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -5712,6 +5713,13 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
+                # Same whole-model offload lifecycle as the image path: diffusers has offloaded
+                # every component and dropped its transfer copies, so ask the host allocator to
+                # return those pages before the next request. Video weights are larger than image
+                # weights, so the retention is worse here. Placed AFTER progress is cleared: the
+                # trim can block for a few hundred ms on a large heap, and the page should not
+                # still be showing an active generation while it runs.
+                reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
                     "seed": int(seed),

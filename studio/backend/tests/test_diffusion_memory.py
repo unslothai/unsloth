@@ -10,6 +10,7 @@ matrix and the applier's pipeline calls are exercised in isolation.
 
 from __future__ import annotations
 
+import sys
 import types
 
 import core.inference.diffusion_memory as diffusion_memory
@@ -193,6 +194,80 @@ def test_host_memory_reclaimer_caches_unsupported_or_missing_apis(monkeypatch):
         assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
     finally:
         diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason = "exercises the real glibc allocator symbol",
+)
+def test_host_memory_reclaimer_calls_the_real_glibc_symbol():
+    """Every other reclaimer test replaces ctypes, so none of them would notice if the library,
+    the symbol name or the ABI stopped resolving against a real libc. Spy on the real CDLL
+    instead of standing in for it, so the assertions land on the very function pointer the
+    resolver configured (a fresh CDLL(None).malloc_trim would carry default argtypes and prove
+    nothing)."""
+    import ctypes
+
+    if not hasattr(ctypes.CDLL(None), "malloc_trim"):
+        pytest.skip("no malloc_trim on this libc (musl); the resolver correctly declines")
+
+    real_cdll = ctypes.CDLL
+    captured = {}
+
+    def spy(name, *args, **kwargs):
+        library = real_cdll(name, *args, **kwargs)
+        captured["library"] = library
+        return library
+
+    monkeypatch_target = diffusion_memory.ctypes
+    original = monkeypatch_target.CDLL
+    monkeypatch_target.CDLL = spy
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is True
+        pressure = captured["library"].malloc_trim
+        # int malloc_trim(size_t pad) -- assert the VALUES, not merely that they were set.
+        assert pressure.argtypes == [ctypes.c_size_t]
+        assert pressure.restype is ctypes.c_int
+        # glibc returns 1 when it released memory to the OS and 0 when it could not.
+        assert pressure(0) in (0, 1)
+    finally:
+        monkeypatch_target.CDLL = original
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+
+def test_host_memory_reclaimer_survives_a_python_without_ctypes(monkeypatch):
+    """A Python built without libffi has no _ctypes. This module is imported by diffusion,
+    video, llama_cpp, sd_cpp_backend and routes.inference, so a hard ctypes dependency would
+    turn a missing optional optimisation into a backend that cannot start at all."""
+    monkeypatch.setattr(diffusion_memory, "ctypes", None)
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory._resolve_host_memory_reclaimer() is None
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_NONE) is False
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+
+def test_host_memory_reclaimer_reports_an_unsupported_allocator_once(monkeypatch):
+    """The call site discards the return value, so an allocator we can never trim has to say so
+    itself or a permanent no-op is invisible while host RAM climbs."""
+    messages = []
+    logger = types.SimpleNamespace(
+        info = lambda fmt, *args: messages.append(fmt % args),
+        warning = lambda fmt, *args: messages.append(fmt % args),
+    )
+    monkeypatch.setattr(diffusion_memory, "_host_memory_reclaim_unsupported_logged", False)
+    monkeypatch.setattr(diffusion_memory.sys, "platform", "haiku")
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL, logger = logger) is False
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL, logger = logger) is False
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    assert len(messages) == 1, messages
+    assert "haiku" in messages[0]
 
 
 # ── filename / size estimates ─────────────────────────────────────────────────

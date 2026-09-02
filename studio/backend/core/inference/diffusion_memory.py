@@ -16,7 +16,6 @@ imported lazily.
 
 from __future__ import annotations
 
-import ctypes
 import functools
 import os
 import sys
@@ -57,11 +56,24 @@ DEFAULT_BASE_OVERHEAD_MIB = 2048
 
 
 _host_memory_reclaim_warning_logged = False
+_host_memory_reclaim_unsupported_logged = False
+
+# Imported at module scope but never REQUIRED: a Python built without libffi has no _ctypes, and
+# this module is on the import path of the whole inference stack (diffusion, video, llama_cpp,
+# sd_cpp_backend, routes.inference). A hard dependency here would turn "allocator pressure is
+# unavailable" into "Studio cannot start". Kept as a module attribute rather than a lazy local so
+# the reclaimer tests can still monkeypatch ``diffusion_memory.ctypes``.
+try:
+    import ctypes
+except Exception:  # noqa: BLE001 - no ctypes just means no allocator pressure API
+    ctypes = None  # type: ignore[assignment]
 
 
 @functools.lru_cache(maxsize = 1)
 def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
     """Resolve this process allocator's native pressure API once, if the OS exposes one."""
+    if ctypes is None:
+        return None
     try:
         if sys.platform.startswith("linux"):
             allocator = ctypes.CDLL(None)
@@ -110,11 +122,26 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
     global _host_memory_reclaim_warning_logged
+    global _host_memory_reclaim_unsupported_logged
     if offload_policy != OFFLOAD_MODEL:
         return False
     try:
         reclaim = _resolve_host_memory_reclaimer()
         if reclaim is None:
+            # Say so exactly once. Without this an allocator we cannot trim (musl, a Python with
+            # no _ctypes, an unsupported platform) is indistinguishable from one we trim on every
+            # generation: the call site discards the result, so a permanent no-op would otherwise
+            # leave no trace anywhere while host RAM climbs.
+            if logger is not None and not _host_memory_reclaim_unsupported_logged:
+                _host_memory_reclaim_unsupported_logged = True
+                try:
+                    logger.info(
+                        "diffusion.memory: no host allocator pressure API on this platform "
+                        "(%s); offloaded host pages will not be returned early",
+                        sys.platform,
+                    )
+                except Exception:  # noqa: BLE001 - even a broken logger cannot fail generation
+                    pass
             return False
         reclaim()
         return True

@@ -877,6 +877,50 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert status["loaded"] is False
 
 
+def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, monkeypatch):
+    """Video shares the image path's whole-model offload lifecycle, and its weights are larger,
+    so the same host-allocator retention applies. Reclaim once per successful generation, only
+    under the 'model' policy, and only after progress has been cleared."""
+    from core.inference import video as video_mod
+
+    trace = []
+    monkeypatch.setattr(
+        video_mod,
+        "reclaim_offload_host_memory",
+        lambda policy, logger = None: trace.append(policy) or True,
+    )
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    # The epilogue hands the ENGAGED policy through on every successful generation, exactly once,
+    # and the helper itself decides whether that policy is worth a trim.
+    for policy in ("none", "group", "streaming", "sequential", "model"):
+        backend._state = dataclasses.replace(backend._state, offload_policy = policy)
+        backend.generate(
+            prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8
+        )
+    assert trace == ["none", "group", "streaming", "sequential", "model"]
+
+    # And the real helper trims only under whole-model offload, so the other four are no-ops.
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(
+        diffusion_memory, "_resolve_host_memory_reclaimer", lambda: (lambda: None)
+    )
+    assert [diffusion_memory.reclaim_offload_host_memory(p) for p in trace] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+
+    # Progress is already idle by the time the trim runs: it can block for a few hundred ms on a
+    # large heap, and the page must not still be advertising an active generation.
+    assert backend.generate_progress()["active"] is False
+
+
 def test_load_holds_generate_lock_across_placement(fake_runtime, tmp_path, monkeypatch):
     # The video load must hold _generate_lock across GPU placement so an unload -- which barriers on that lock -- cannot
     # hand the GPU away mid-move. unload() must block until placement releases it, and the superseded load then aborts.
