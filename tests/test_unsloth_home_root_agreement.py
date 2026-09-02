@@ -121,3 +121,61 @@ def test_a_legacy_install_still_keeps_llama_cpp_at_the_legacy_path(tmp_path):
     # Not custom, so nothing is exported at all and the backend default stands.
     assert result["cli_llama"] is None
     assert result["backend_llama"] == str(home / ".unsloth" / "studio" / "llama.cpp")
+
+
+_MAIN_PROBE = """
+import json, sys, types
+sys.path.insert(0, {backend!r})
+# main.py pulls in the whole app on import, so exec only its module-level
+# llama.cpp block, which is what decides the managed path and marks it.
+import os, re
+from pathlib import Path
+src = Path({backend!r}, "main.py").read_text(encoding = "utf-8")
+start = src.index('if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:')
+end = src.index('# The studio bundles unsloth_zoo', start)
+from utils.paths.storage_roots import studio_root as _studio_root
+_LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
+_STUDIO_ROOT_RESOLVED = _studio_root().resolve()
+marked = []
+mod = types.ModuleType("utils.llama_cpp_path_settings")
+mod.mark_managed_llama_cpp_path = lambda p: marked.append(str(p))
+sys.modules["utils.llama_cpp_path_settings"] = mod
+exec(compile(src[start:end], "main.py", "exec"), globals())
+print(json.dumps({{
+    "exported": os.environ.get("UNSLOTH_LLAMA_CPP_PATH"),
+    "marked": marked,
+}}))
+"""
+
+
+def _main_probe(env_overrides: dict) -> dict:
+    env = dict(os.environ)
+    for key in ("UNSLOTH_HOME", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
+        env.pop(key, None)
+    env.update(env_overrides)
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    source = _MAIN_PROBE.format(backend = str(REPO_ROOT / "studio" / "backend"))
+    out = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output = True, text = True, cwd = str(REPO_ROOT), env = env, check = True,
+    )
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_main_marks_the_same_llama_cpp_path_run_py_exports(tmp_path):
+    # A direct `uvicorn main:app` exports this outright; under run.py main.py
+    # keeps the correct value but would mark the wrong one managed, which makes
+    # the bundled path look like an immutable user override.
+    master = tmp_path / "portable"
+    result = _main_probe({"UNSLOTH_HOME": str(master)})
+
+    assert result["exported"] == str(master / "llama.cpp")
+    assert result["marked"] == [str(master / "llama.cpp")]
+
+
+def test_main_leaves_a_plain_custom_root_alone(tmp_path):
+    explicit = tmp_path / "explicit"
+    result = _main_probe({"UNSLOTH_STUDIO_HOME": str(explicit)})
+
+    assert result["exported"] == str(explicit / "llama.cpp")
+    assert result["marked"] == [str(explicit / "llama.cpp")]

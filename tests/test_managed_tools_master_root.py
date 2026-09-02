@@ -25,14 +25,21 @@ BACKEND = REPO / "studio" / "backend"
 PROBE = """
 import json, os, sys
 sys.path.insert(0, os.environ["_BACKEND"])
-from utils.paths.storage_roots import studio_root, unsloth_home
+from utils.paths import storage_roots as sr
 from utils.node_runtime import managed_node_dir
 from core.inference.stt_ggml_sidecar import _managed_whisper_cpp_dir
+
+# studio_root() is called constantly, so a warning it emits for a supported
+# layout is not one line, it is a flooded log.
+_warnings = []
+sr.logger.warning = lambda msg, *a, **k: _warnings.append(msg % a if a else msg)
+
 print(json.dumps({
-    "studio": str(studio_root()),
-    "master": None if unsloth_home() is None else str(unsloth_home()),
+    "studio": str(sr.studio_root()),
+    "master": None if sr.unsloth_home() is None else str(sr.unsloth_home()),
     "node": str(managed_node_dir()),
     "whisper": str(_managed_whisper_cpp_dir()),
+    "warnings": _warnings,
 }))
 """
 
@@ -95,6 +102,19 @@ def test_a_flat_root_keeps_the_tools_at_that_root(tmp_path):
     assert r["studio"] == str(root)
     assert r["node"] == str(root / "node")
     assert r["whisper"] == str(root / "whisper.cpp")
+    # Path.parents excludes the path itself, so an equality check is what keeps
+    # this supported layout from warning that it is not self-contained.
+    assert r["warnings"] == []
+
+
+def test_a_studio_home_outside_the_master_root_still_warns(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    r = _resolve(
+        {"UNSLOTH_HOME": str(tmp_path / "portable"), "UNSLOTH_STUDIO_HOME": str(tmp_path / "elsewhere")},
+        home,
+    )
+    assert any("not self-contained" in w for w in r["warnings"])
 
 
 def test_the_builder_and_the_resolver_agree_on_the_same_directory(tmp_path):

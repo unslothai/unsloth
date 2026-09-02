@@ -88,7 +88,9 @@ def studio_root() -> Path:
     if override:
         resolved = _resolved(override)
         master = unsloth_home()
-        if master is not None and master not in resolved.parents:
+        # Path.parents excludes the path itself, so the supported flat layout
+        # (both naming one root) would otherwise warn on every call.
+        if master is not None and master != resolved and master not in resolved.parents:
             # Not fatal: failing here would break a resolver called at import time.
             logger.warning(
                 "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
