@@ -3729,9 +3729,7 @@ def test_minimax_without_a_description_is_refused_before_the_switch(monkeypatch)
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(
-        inference_route, "_target_speech_audio_type", lambda *_a: "minimax_music3"
-    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "minimax_music3")
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._maybe_auto_switch_model(
@@ -3753,9 +3751,7 @@ def test_minimax_with_a_description_still_switches(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(
-        inference_route, "_target_speech_audio_type", lambda *_a: "minimax_music3"
-    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "minimax_music3")
     asyncio.run(
         inference_route._maybe_auto_switch_model(
             "org/minimax",

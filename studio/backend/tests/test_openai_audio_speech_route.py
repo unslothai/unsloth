@@ -249,7 +249,11 @@ def test_a_named_target_is_not_budgeted_against_the_resident_model(monkeypatch):
     with pytest.raises(RuntimeError, match = "reached the switch"):
         asyncio.run(
             routes_module._generate_tts_wav(
-                "a long line", payload, _SpeechBudgetRequest(), "tester", requested_model = "org/B-GGUF"
+                "a long line",
+                payload,
+                _SpeechBudgetRequest(),
+                "tester",
+                requested_model = "org/B-GGUF",
             )
         )
     assert seen == ["org/B-GGUF"]
@@ -267,7 +271,9 @@ def test_a_reload_only_request_is_still_budgeted_first(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
-            routes_module._generate_tts_wav("a long line", _SpeechBudgetPayload(), _SpeechBudgetRequest(), "tester")
+            routes_module._generate_tts_wav(
+                "a long line", _SpeechBudgetPayload(), _SpeechBudgetRequest(), "tester"
+            )
         )
     assert exc.value.status_code == 400
 

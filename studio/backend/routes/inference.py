@@ -7013,6 +7013,7 @@ def _target_speech_audio_type(
         detect_audio_type,
         detect_gguf_model,
     )
+
     try:
         if not is_gguf:
             # Non-GGUF weights go to the worker the device picks, and the MLX worker
@@ -16418,9 +16419,7 @@ _TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
     )
 )
 _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
-_MINIMAX_NEEDS_DESCRIPTION = (
-    "MiniMax Music 3 requires a music description in addition to lyrics."
-)
+_MINIMAX_NEEDS_DESCRIPTION = "MiniMax Music 3 requires a music description in addition to lyrics."
 
 
 async def _generate_tts_wav(
