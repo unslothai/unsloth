@@ -1775,14 +1775,12 @@ test("a cut in the middle of the document is unsafe on both sides", () => {
       ]),
     ]),
   );
-  // Both sides here: what was dropped is a trailing Jamo, which reaches forward as readily as the
-  // vowel form before it reaches back. `a clipped node does not run into the next one` holds the
-  // other direction, where the dropped text ends in a space and the next node keeps its first
-  // character.
-  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  // The near side only. What was dropped is a trailing Jamo, which reaches back into the vowel form
+  // before it, but forward only into another trailing Jamo, and `tail` starts with none.
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
   assert.equal(index.text[MAX_NODE_CHARS - 1], "\uac00");
   assert.deepEqual(findMatches(index, "\uac00", 10), []);
-  assert.equal(findMatches(index, "ail", 10).length, 1);
+  assert.equal(findMatches(index, "tail", 10).length, 1);
 });
 
 test("what was dropped decides the far side of a cut, not what was kept", () => {
@@ -1919,6 +1917,73 @@ test("no match a cut leaves behind disagrees with the page it was cut from", () 
     usableFarSide > 10,
     `only ${usableFarSide} junctions kept a usable far side`,
   );
+});
+
+test("what the dropped tail was is not the question; what it meets is", () => {
+  // Refusing on the class of the last dropped code point alone could only ever say no. A closed
+  // syllable reaches forward into another trailing Jamo and nothing else, and an even run of
+  // regional indicators pairs off among itself, so in both cases the next node begins exactly
+  // where it appears to.
+  const cut = (dropped: string, resumed: string) =>
+    buildTextIndex(
+      el("DIV", [
+        el("P", [
+          text(`${"x".repeat(MAX_NODE_CHARS)}${dropped}`),
+          text(`${resumed}QQ`),
+        ]),
+      ]),
+    );
+  const at = (code: number) => String.fromCodePoint(code);
+  for (const [dropped, resumed] of [
+    ["각", "hello"],
+    ["ᆨ", "hello"],
+    [at(0x1f1e6) + at(0x1f1e7), at(0x1f1e8)],
+  ] as const) {
+    assert.equal(
+      findMatches(cut(dropped, resumed), resumed, 5).length,
+      1,
+      `${escape(dropped)} then ${escape(resumed)}`,
+    );
+  }
+  // And still fenced where the two really do join.
+  for (const [dropped, resumed] of [
+    ["ᄀ", "가"],
+    ["가", "ᆨ"],
+    [at(0x1f1e6), at(0x1f1e7)],
+    [at(0x1f469) + "\u200d", at(0x1f469)],
+  ] as const) {
+    assert.deepEqual(
+      findMatches(cut(dropped, resumed), resumed, 5),
+      [],
+      `${escape(dropped)} then ${escape(resumed)}`,
+    );
+  }
+});
+
+test("an odd run of regional indicators displaces the whole run after a cut", () => {
+  // Parity is counted from the separator, so a run the cut fell inside has every boundary in it
+  // moved, not only the one at the seam. Found by the junction fuzz, not by a review.
+  const at = (code: number) => String.fromCodePoint(code);
+  const flags = at(0x1f1e7) + at(0x1f1e6) + at(0x1f1e7);
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"x".repeat(MAX_NODE_CHARS)}${at(0x1f1e6)}`),
+        text(`${flags}a`),
+      ]),
+    ]),
+  );
+  // Every indicator in the resumed run, not just the first.
+  assert.deepEqual(
+    [...index.unsafe],
+    [
+      MAX_NODE_CHARS,
+      MAX_NODE_CHARS + 1,
+      MAX_NODE_CHARS + 3,
+      MAX_NODE_CHARS + 5,
+    ],
+  );
+  assert.deepEqual(findMatches(index, at(0x1f1e7), 10), []);
 });
 
 test("a real block boundary after a cut is still a boundary", () => {

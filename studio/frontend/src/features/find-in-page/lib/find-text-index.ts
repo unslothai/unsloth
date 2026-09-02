@@ -279,6 +279,8 @@ export function buildTextIndex(
   let pendingClip: string | null = null;
   /** Whether that tail ran past its window, leaving the context it hangs from unknown. */
   let pendingClipPartial = false;
+  /** Where a run of regional indicators resumes after a cut that fell inside one. */
+  const regionalCuts: number[] = [];
   /** The ceiling, the only thing that stops the walk. */
   let full = false;
   let ceiling =
@@ -332,12 +334,10 @@ export function buildTextIndex(
             length += 1;
             separated = true;
             // The far side of a separator standing for dropped text is a boundary only when
-            // neither side reaches the other. `joinsForward` first, because the junction alone
-            // cannot see the pictograph a ZWJ needs behind it.
+            // neither side reaches the other, which the kept context is chosen to be enough to say.
             if (
               pendingClip !== null &&
               (pendingClipPartial ||
-                joinsForward(lastPoint(pendingClip)) ||
                 continuesGrapheme(
                   pendingClip +
                     String.fromCodePoint(data.codePointAt(0) as number),
@@ -345,6 +345,15 @@ export function buildTextIndex(
                 ))
             ) {
               unsafe.add(length);
+            }
+            // Parity is what makes a regional indicator pair, and it is counted from the
+            // separator, so an odd run left behind takes the next indicator with it and displaces
+            // every boundary in the run that resumes, not only its first.
+            if (
+              pendingClipPartial ||
+              trailingRegionals(pendingClip ?? "") % 2 === 1
+            ) {
+              regionalCuts.push(length);
             }
           }
           pendingClip = null;
@@ -392,8 +401,18 @@ export function buildTextIndex(
     pendingSeparator = true;
     visit(extra, false);
   }
+  const joined = parts.join("");
+  for (const from of regionalCuts) {
+    for (
+      let at = from;
+      REGIONAL_INDICATOR_PATTERN.test(joined.slice(at, at + 2));
+      at += 2
+    ) {
+      unsafe.add(at);
+    }
+  }
   // Folded once over the joined document: a fold is context-sensitive and cannot go node at a time.
-  return { text: foldText(parts.join("")), segments, truncated, unsafe };
+  return { text: foldText(joined), segments, truncated, unsafe };
 }
 
 /** Null when the query cannot match: empty, or carrying the separator (only a paste can). */
@@ -466,44 +485,48 @@ const EXTENDS_LEFT_PATTERN =
 const LINKER_PATTERN =
   /[\u{94d}\u{9cd}\u{acd}\u{b4d}\u{c4d}\u{d4d}\u{e3a}\u{eba}\u{1039}\u{17d2}\u{1a60}\u{1b44}\u{1bab}\u{a9c0}\u{aaf6}\u{10a3f}\u{11133}\u{1193e}\u{11a47}\u{11a99}\u{11f42}]/u;
 
-/** The last code point of `text`, or the empty string. */
-function lastPoint(text: string): string {
-  if (text.length === 0) return "";
-  return text.slice(
-    text.length - (isTrailingHalf(text.charCodeAt(text.length - 1)) ? 2 : 1),
-  );
-}
-
-/** How far back a dropped tail is read for context. GB9c and GB11 both allow any number of
- *  extenders in the middle, so there has to be a stop somewhere; past it the junction is called
+/** How far back a dropped tail is read for context. Every rule that chains allows any number of
+ *  links in the middle, so there has to be a stop somewhere; past it the junction is called
  *  unknown rather than guessed at. */
 const CLIP_CONTEXT_LIMIT = 32;
 
-/** As much of the end of `dropped` as the junction can turn on: the run of things that chain into
- *  what follows, and the one code point they hang from. Null when that run outran the window. */
+/** How many regional indicators `text` ends on. An even run pairs off among itself and leaves what
+ *  follows where it was; an odd one takes the next indicator with it and displaces the rest. */
+function trailingRegionals(text: string): number {
+  let run = 0;
+  for (let at = text.length; at > 0; at -= 2) {
+    if (!REGIONAL_INDICATOR_PATTERN.test(text.slice(at - 2, at))) break;
+    run += 1;
+  }
+  return run;
+}
+
+/** Every link a rule can chain through: extenders and linkers for GB9c, a ZWJ for GB11, and a
+ *  regional indicator, whose run has to be counted whole for its parity to mean anything. */
+function chainsBack(point: string): boolean {
+  return (
+    EXTEND_PATTERN.test(point) ||
+    LINKER_PATTERN.test(point) ||
+    REGIONAL_INDICATOR_PATTERN.test(point) ||
+    point === "\u200d"
+  );
+}
+
+/** As much of the end of `dropped` as the junction can turn on: the run of things a rule chains
+ *  through, and the one code point they hang from. Null when that run outran the window.
+ *
+ *  Enough context and `continuesGrapheme` answers the junction on its own, which is the point: a
+ *  short-circuit on what the dropped tail was could only ever say no, and a closed syllable or an
+ *  even run of regional indicators lets the next node begin exactly where it looks like it does. */
 function clipContext(dropped: string): string | null {
   let at = dropped.length;
   for (let seen = 0; seen < CLIP_CONTEXT_LIMIT; seen += 1) {
     if (at === 0) return dropped;
     const [point, start] = pointBefore(dropped, at);
     at = start;
-    if (!EXTEND_PATTERN.test(point) && !LINKER_PATTERN.test(point)) {
-      return dropped.slice(at);
-    }
+    if (!chainsBack(point)) return dropped.slice(at);
   }
   return null;
-}
-
-/** Whether a grapheme carrying this can carry on into whatever follows it. Prepend joins forward
- *  by definition, Hangul builds a syllable forwards, a regional indicator pairs with the next and
- *  a ZWJ exists to join. Nothing else reaches to its right. */
-function joinsForward(point: string): boolean {
-  return (
-    PREPEND_PATTERN.test(point) ||
-    REGIONAL_INDICATOR_PATTERN.test(point) ||
-    point === "\u200d" ||
-    hangulClass(point) !== null
-  );
 }
 
 /** The code point ending at `end`, and where it starts. */
