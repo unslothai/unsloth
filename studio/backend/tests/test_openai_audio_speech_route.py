@@ -28,8 +28,8 @@ _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject, **_kwargs):
-        calls.append({"text": text, "payload": payload})
+    async def _fake_generate(text, payload, request, current_subject, **kwargs):
+        calls.append({"text": text, "payload": payload, **kwargs})
         if generate is not None:
             return await generate(text)
         return _WAV, 24000, "unsloth/orpheus-3b-0.1-ft", "snac"
@@ -197,6 +197,25 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
     routes_module._raise_if_prompt_leaves_no_speech_budget("A short line.")
 
 
+def test_the_named_model_reaches_the_switch_hook(monkeypatch):
+    cli, calls, _saved = _make_client(monkeypatch)
+    assert cli.post("/v1/audio/speech", json = {"input": "hi", "model": "org/B-GGUF"}).status_code == 200
+    assert calls[0]["requested_model"] == "org/B-GGUF"
+
+
+def test_an_omitted_model_only_restores_an_idle_evicted_model(monkeypatch):
+    cli, calls, _saved = _make_client(monkeypatch)
+    assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 200
+    assert calls[0]["requested_model"] == routes_module._RELOAD_ONLY_MODEL
+
+
+def test_the_switch_hook_requires_a_speech_target():
+    import inspect
+
+    source = inspect.getsource(routes_module._generate_tts_wav)
+    assert "require_speech = True" in source
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
@@ -221,7 +240,7 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
     restore = next(
         i
         for i, line in enumerate(source.splitlines())
-        if "_RELOAD_ONLY_MODEL, request, current_subject" in line
+        if "await _maybe_auto_switch_model(" in line
     )
     assert len(guards) == 2, "one check before the restore, one after"
     assert guards[0] < restore < guards[1]

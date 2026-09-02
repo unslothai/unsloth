@@ -6996,6 +6996,32 @@ def _target_accepts_request_input(
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
+def _target_speaks(load_path: str, is_gguf: bool, gguf_variant: Optional[str] = None) -> bool:
+    from utils.models.model_config import (
+        _find_local_gguf_by_variant,
+        detect_audio_type,
+        detect_gguf_model,
+    )
+
+    try:
+        if not is_gguf:
+            audio_type = detect_audio_type(
+                load_path, hf_token = os.environ.get("HF_TOKEN"), local_files_only = True
+            )
+            return audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES
+        from utils.models.gguf_metadata import read_gguf_tts_audio_type
+
+        local_path = os.path.expanduser(load_path)
+        if gguf_variant and Path(local_path).is_dir():
+            gguf_file = _find_local_gguf_by_variant(local_path, gguf_variant)
+        else:
+            gguf_file = detect_gguf_model(local_path)
+        return bool(gguf_file) and read_gguf_tts_audio_type(gguf_file) in _GGUF_TTS_AUDIO_TYPES
+    except Exception as exc:
+        logger.debug("auto-switch: speech probe failed for %s: %s", load_path, exc)
+        return False
+
+
 _AUDIO_IMAGE_INPUT_DETAIL = (
     "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
@@ -7823,6 +7849,7 @@ async def _maybe_auto_switch_model(
     gguf_only: bool = False,
     audio_preflight: Optional[dict] = None,
     image_preflight: Optional[dict] = None,
+    require_speech: bool = False,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -8144,6 +8171,20 @@ async def _maybe_auto_switch_model(
                 status_code = 400,
                 detail = openai_error_body(
                     f"The requested model does not support the {modality_label} input in this request.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "model",
+                ),
+            )
+        if (
+            require_speech
+            and resolved is not None
+            and not await asyncio.to_thread(_target_speaks, target_id, target_is_gguf, variant)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "The requested model is not a text-to-speech model.",
                     status = 400,
                     code = "invalid_value",
                     param = "model",
@@ -16357,23 +16398,17 @@ async def _generate_tts_wav(
     current_subject: str,
     *,
     speech_api_default_max_tokens: bool = False,
+    requested_model: str = _RELOAD_ONLY_MODEL,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
     _raise_if_prompt_leaves_no_speech_budget(text)
-    # Restore an idle-evicted GGUF before selecting a backend: this path is
-    # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
-    # unload an audio GGUF the next request then failed to restore. Validation
-    # above ran first, so an invalid request never triggers a reload.
-    #
-    # Reload-only on purpose: a local GGUF's audio-input capability is not a cheap
-    # pre-load probe (the companion mmproj signal can't tell an audio projector
-    # from a vision one, and codec-based TTS ships no projector at all), so passing
-    # the client model through the resolver could load a text- or vision-only target
-    # and evict the working audio model before the audio backend check fails. Only
-    # the idle-stash restore runs here; switching TTS models is an explicit /load.
     await _maybe_auto_switch_model(
-        _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+        requested_model,
+        request,
+        current_subject,
+        claim_resident = False,
+        require_speech = True,
     )
     # Again, now that a context exists to measure against. The check above runs before the
     # restore so an invalid request never triggers a reload, but with nothing loaded it has
@@ -16594,7 +16629,11 @@ async def generate_audio(
     text = last_user_msg["content"]
 
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
-        text, payload, request, current_subject
+        text,
+        payload,
+        request,
+        current_subject,
+        requested_model = _switch_model_for_payload(payload),
     )
     persisted_clip = await asyncio.to_thread(
         _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
@@ -16736,8 +16775,9 @@ async def openai_audio_speech(
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
     With ``provider_id`` the request is proxied to that connection, forwarding
-    model/voice/speed/instructions. Otherwise the loaded model is used: ``model`` is informational,
-    ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
+    model/voice/speed/instructions. Otherwise a downloaded local model named in ``model``
+    is loaded first when model auto-switch is on, else the loaded model is used;
+    ``voice``/``speed`` are ignored, and only WAV exists, so another ``response_format`` is
     a 400 rather than a silent container mismatch."""
     if body.provider_id:
         fmt = (body.response_format or "wav").strip().lower()
@@ -16802,6 +16842,7 @@ async def openai_audio_speech(
             request,
             current_subject,
             speech_api_default_max_tokens = body.max_new_tokens is None,
+            requested_model = body.model or _RELOAD_ONLY_MODEL,
         )
         api_monitor.relabel(monitor_id, model_name)
         await asyncio.to_thread(

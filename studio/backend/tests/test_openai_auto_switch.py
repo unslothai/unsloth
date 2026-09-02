@@ -3670,6 +3670,72 @@ def test_require_vision_allows_vision_target(monkeypatch):
     assert len(rec.calls) == 1  # vision target still switches
 
 
+def test_require_speech_rejects_a_text_target_before_switch(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    probed = []
+    monkeypatch.setattr(
+        inference_route, "_target_speaks", lambda *args: probed.append(args) or False
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF", object(), "t", require_speech = True
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "text-to-speech" in json.dumps(exc.value.detail)
+    assert probed == [("/local/B.gguf", True, "Q8_0")]
+    assert rec.calls == []
+
+
+def test_require_speech_allows_a_speech_target(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_speaks", lambda *_a: True)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_speech = True)
+    )
+    assert len(rec.calls) == 1
+
+
+def test_require_speech_does_not_probe_a_reload_stash_restore(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = None,
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route, "_target_speaks", lambda *_a: pytest.fail("speech probed")
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, object(), "t", require_speech = True
+        )
+    )
+    assert rec.calls == []
+
+
 def test_an_audio_only_target_still_switches_for_an_audio_request(monkeypatch, tmp_path):
     # End to end through the real probe: a Voxtral-style snapshot whose projector
     # declares audio and no vision tower must still be swapped in for an audio
@@ -5056,39 +5122,43 @@ def test_a_count_never_spawns_mcp_servers():
     assert "get_enabled_mcp_tools" not in called
 
 
-def test_audio_generate_is_reload_only(monkeypatch):
-    # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
-    # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal
-    # can't tell an audio projector from a vision one), so resolving the client model
-    # could evict the working audio model for a target that then fails the audio
-    # check. Only the idle-stash restore runs: the hook gets the reload-only sentinel.
-    from models.inference import ChatCompletionRequest
-
+def _capture_audio_switch(monkeypatch):
     class _Reached(Exception):
         pass
 
     captured = {}
 
-    async def _capture(
-        model,
-        request,
-        subject,
-        *,
-        require_vision = False,
-        claim_resident = True,
-    ):
+    async def _capture(model, request, subject, **kwargs):
         captured["model"] = model
-        captured["claim_resident"] = claim_resident
+        captured.update(kwargs)
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    return _Reached, captured
+
+
+def test_audio_generate_switches_to_the_named_speech_model(monkeypatch):
+    from models.inference import ChatCompletionRequest
+
+    reached, captured = _capture_audio_switch(monkeypatch)
     payload = ChatCompletionRequest(
         model = "org/B-GGUF", messages = [{"role": "user", "content": "say hi"}]
     )
-    with pytest.raises(_Reached):
+    with pytest.raises(reached):
+        asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
+    assert captured["model"] == "org/B-GGUF"
+    assert captured["claim_resident"] is False
+    assert captured["require_speech"] is True
+
+
+def test_audio_generate_without_a_model_only_restores(monkeypatch):
+    from models.inference import ChatCompletionRequest
+
+    reached, captured = _capture_audio_switch(monkeypatch)
+    payload = ChatCompletionRequest(messages = [{"role": "user", "content": "say hi"}])
+    with pytest.raises(reached):
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
     assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
-    assert captured["claim_resident"] is False
 
 
 def test_note_model_unloaded_clears_reload_stash(monkeypatch):

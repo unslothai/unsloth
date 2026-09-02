@@ -101,9 +101,12 @@ def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     added = tok_config.get("added_tokens_decoder", {})
     if not added:
         return None
-    token_contents = [value.get("content", "") for value in added.values()]
+    return classify_audio_token_contents([value.get("content", "") for value in added.values()])
+
+
+def classify_audio_token_contents(tokens: list[str]) -> Optional[str]:
     for audio_type, check_fn in AUDIO_TOKEN_PATTERNS.items():
-        if check_fn(token_contents):
+        if check_fn(tokens):
             return audio_type
     return None
 

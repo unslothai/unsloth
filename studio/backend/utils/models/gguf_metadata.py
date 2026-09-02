@@ -52,6 +52,8 @@ _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
 
+_TTS_AUDIO_TYPE_CACHE: Dict[_CacheKey, Optional[str]] = {}
+
 # Whether the GGUF tensor table contains a sequence-classification head. None
 # means the file could not be read or parsed, so callers can fail closed.
 _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
@@ -608,6 +610,74 @@ def _read_gguf_string(path: str, wanted_key: str) -> Optional[str]:
             except StopIteration:
                 break
         _STRING_CACHE[ckey] = result
+    return result
+
+
+def _parse_gguf_marker_tokens(path: str) -> Optional[list[str]]:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20:
+                    return None
+                key = f.read(klen).decode("utf-8", "replace")
+                vt_bytes = f.read(4)
+                if len(vt_bytes) < 4:
+                    return None
+                vtype = struct.unpack("<I", vt_bytes)[0]
+                if key != "tokenizer.ggml.tokens" or vtype != 9:
+                    if not _skip_gguf_value(f, vtype):
+                        return None
+                    continue
+                atype, alen = struct.unpack("<IQ", f.read(12))
+                if atype != 8 or alen > 1 << 30:
+                    return None
+                markers: list[str] = []
+                for _ in range(alen):
+                    slen = struct.unpack("<Q", f.read(8))[0]
+                    if slen > 1 << 20:
+                        return None
+                    raw = f.read(slen)
+                    if raw[:1] != b"<":
+                        continue
+                    try:
+                        markers.append(raw.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        continue
+                return markers
+    except (OSError, struct.error) as e:
+        logger.debug(f"_parse_gguf_marker_tokens: cannot read {path}: {e}")
+    return None
+
+
+def read_gguf_tts_audio_type(path: str) -> Optional[str]:
+    from utils.audio_tokens import classify_audio_token_contents, is_tts_audio_type
+
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    with _CACHE_LOCK:
+        if fkey in _TTS_AUDIO_TYPE_CACHE:
+            return _TTS_AUDIO_TYPE_CACHE[fkey]
+    markers = _parse_gguf_marker_tokens(path)
+    audio_type = classify_audio_token_contents(markers) if markers else None
+    result = audio_type if is_tts_audio_type(audio_type) else None
+    with _CACHE_LOCK:
+        while len(_TTS_AUDIO_TYPE_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _TTS_AUDIO_TYPE_CACHE.pop(next(iter(_TTS_AUDIO_TYPE_CACHE)))
+            except StopIteration:
+                break
+        _TTS_AUDIO_TYPE_CACHE[fkey] = result
     return result
 
 
