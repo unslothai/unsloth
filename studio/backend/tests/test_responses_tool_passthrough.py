@@ -1028,6 +1028,7 @@ class TestResponsesNonStreamingAdapter:
         message,
         payload = None,
         llama_backend = None,
+        finish_reason = None,
     ):
         import routes.inference as inf_mod
 
@@ -1039,7 +1040,7 @@ class TestResponsesNonStreamingAdapter:
             return JSONResponse(
                 content = {
                     "model": "test-model",
-                    "choices": [{"message": message}],
+                    "choices": [{"message": message, "finish_reason": finish_reason}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3},
                 }
             )
@@ -1057,6 +1058,26 @@ class TestResponsesNonStreamingAdapter:
             return json.loads(response.body.decode())
 
         return asyncio.run(run())
+
+    def test_a_truncated_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "half an ans"},
+            finish_reason = "length",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "max_output_tokens"}
+
+    def test_a_natural_stop_is_still_completed(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "a whole answer"},
+            finish_reason = "stop",
+        )
+
+        assert body["status"] == "completed"
+        assert body["incomplete_details"] is None
 
     def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
@@ -3031,3 +3052,47 @@ def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
 
     row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
     assert row["stop_reason"] == "stop"
+
+
+def test_a_truncated_responses_stream_ends_on_response_incomplete(monkeypatch):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "half an ans"}, "finish_reason": "length"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request()
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
+
+
+def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatch):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "a whole answer"}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request()
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.incomplete") == []
+    completed = TestResponsesStreamAdapter._payloads(lines, "response.completed")[0]
+    assert completed["response"]["status"] == "completed"
+    assert completed["response"]["incomplete_details"] is None

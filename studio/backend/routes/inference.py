@@ -25835,6 +25835,7 @@ async def _responses_non_streaming(
         text = ""
         reasoning_text = ""
         tool_calls: list[dict] = []
+        truncated = bool(choices) and choices[0].get("finish_reason") == "length"
         if choices:
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
@@ -25879,7 +25880,10 @@ async def _responses_non_streaming(
         response = ResponsesResponse(
             id = resp_id,
             created_at = int(time.time()),
-            status = "completed",
+            status = "incomplete" if truncated else "completed",
+            incomplete_details = (
+                {"reason": "max_output_tokens"} if truncated else None
+            ),
             model = body.get("model", payload.model),
             output = output_items,
             usage = ResponsesUsage(
@@ -26911,15 +26915,25 @@ async def _responses_stream(
             api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
             yield _sse("response.output_item.done", item_done)
 
-        # response.completed
+        # A healed call reaches the client as a function_call item while the upstream chunk
+        # still says "stop", so report what this adapter emitted -- same rule the chat
+        # stream's synthetic finish line applies.
+        if healer is not None and healer.healed:
+            stream_finish_reason = "tool_calls"
+
         total_tokens = input_tokens + output_tokens
-        completed_response = {
-            "type": "response.completed",
+        truncated = stream_finish_reason == "length"
+        terminal_event = "response.incomplete" if truncated else "response.completed"
+        terminal_response = {
+            "type": terminal_event,
             "response": {
                 "id": resp_id,
                 "object": "response",
                 "created_at": created_at,
-                "status": "completed",
+                "status": "incomplete" if truncated else "completed",
+                "incomplete_details": (
+                    {"reason": "max_output_tokens"} if truncated else None
+                ),
                 "model": _clean_model,
                 "output": _snapshot_output(),
                 "usage": {
@@ -26929,15 +26943,10 @@ async def _responses_stream(
                 },
             },
         }
-        # A healed call reaches the client as a function_call item while the upstream chunk
-        # still says "stop", so report what this adapter emitted -- same rule the chat
-        # stream's synthetic finish line applies.
-        if healer is not None and healer.healed:
-            stream_finish_reason = "tool_calls"
         if stream_finish_reason:
             api_monitor.set_perf(monitor_id, stop_reason = stream_finish_reason)
         api_monitor.finish(monitor_id)
-        yield _sse("response.completed", completed_response)
+        yield _sse(terminal_event, terminal_response)
 
     async def admitted_event_generator():
         # Register for the body's whole lifetime, admission wait included: the run holds a decode
