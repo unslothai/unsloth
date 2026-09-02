@@ -1429,6 +1429,33 @@ test("a dismissed or superseded search abandons its queued reveal passes", async
   assert.match(engine, /cancelRevealPasses\(\);/);
 });
 
+test("a query too large to compile falls back instead of throwing on the first scan", () => {
+  // V8 compiles a regex lazily, so an oversized pattern is accepted by the constructor and throws
+  // `SyntaxError` on the first `exec` instead. Guarding only the constructor left the throw coming
+  // out through the keystroke that caused it, which tears the bar out of the DOM. Whitespace is
+  // what gets a query there: every run becomes `\\s+`, so a spaced paste doubles on the way in.
+  const index = buildTextIndex(el("DIV", [el("P", [text("b".repeat(60000))])]));
+  // Longer than the compiler will take once the whitespace flexes, shorter than the haystack, so
+  // the length guard cannot short-circuit it before the pattern is built.
+  const query = "a ".repeat(10000).trim();
+  assert.ok(query.length < index.text.length);
+  // The premise: this pattern really does survive construction and die on use.
+  const escaped = query.replace(/\s+/g, "\\s+");
+  let lazy = false;
+  try {
+    new RegExp(escaped, "g").exec("");
+  } catch {
+    lazy = true;
+  }
+  assert.equal(
+    lazy,
+    true,
+    "premise: the pattern throws at compile-on-first-use",
+  );
+  // No throw, and no matches: the literal scan is exact, so a spaced query simply finds nothing.
+  assert.deepEqual(findMatches(index, query, 10), []);
+});
+
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
   const dom = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),

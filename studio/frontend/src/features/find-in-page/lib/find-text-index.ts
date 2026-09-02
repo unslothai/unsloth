@@ -513,10 +513,15 @@ function matchPattern(variants: string[], needle: string): RegExp | null {
     variant.replace(REGEX_META_PATTERN, "\\$&").replace(/\s+/g, "\\s+"),
   );
   try {
-    return new RegExp(
+    const pattern = new RegExp(
       escaped.length === 1 ? escaped[0] : `(?:${escaped.join("|")})`,
       "g",
     );
+    // V8 compiles lazily, so an oversized pattern is accepted here and throws on the first `exec`
+    // instead, back outside this `try`. One run against nothing forces the compile while it can
+    // still be caught, and leaves `lastIndex` at 0 for the real scan.
+    pattern.exec("");
+    return pattern;
   } catch {
     // Every engine caps how large a pattern it will compile, and the cap is its own business:
     // the spec sets none, so there is no length to test against that would be right everywhere.
