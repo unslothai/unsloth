@@ -1707,18 +1707,31 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
     ),
     "utf8",
   );
-  // On the landmark, so it catches Escape bubbling from all four controls. On the field alone, a
-  // keyboard user who tabs to a button and presses Escape leaves the bar open and hands the key to
-  // the window listener, where bare Escape declines a pending tool request.
-  const landmark = bar.slice(bar.indexOf('role="search"'));
-  const beforeField = landmark.slice(0, landmark.indexOf("<input"));
+  // On the WINDOW, in the capture phase, for the lifetime of the open bar. A handler on the bar
+  // only reaches presses that started inside it, so clicking a message to read it left a bar
+  // Escape would not close -- and with a tool request waiting, that same unprevented Escape went
+  // on to `declineToolRequest`, which is bare Escape and is not shielded by `isTextEntryFocused`
+  // on a message body. Closing a find bar must not be able to answer a tool request.
+  const effect = bar.slice(bar.indexOf("const onEscape ="));
+  const body = effect.slice(0, effect.indexOf("window.addEventListener"));
+  assert.match(body, /event\.key !== "Escape"/);
+  assert.match(body, /event\.preventDefault\(\);/);
+  assert.match(body, /event\.stopPropagation\(\);/);
+  assert.match(body, /close\(\);/);
+  // Capture, so it runs ahead of the registry's own keydown listener rather than racing it.
+  assert.match(effect, /window\.addEventListener\("keydown", onEscape, true\)/);
   assert.match(
-    beforeField,
-    /if \(event\.key !== "Escape"\) return;[\s\S]*?event\.preventDefault\(\);[\s\S]*?event\.stopPropagation\(\);[\s\S]*?close\(\);/,
+    effect,
+    /window\.removeEventListener\("keydown", onEscape, true\)/,
   );
-  // And not left behind on the field as well, where it would swallow the bubble first.
+  // Two presses it deliberately does not take: a modal above the bar owns Escape, and an open
+  // popover, menu or listbox is dismissed by its own Escape first.
+  assert.match(body, /isSurfaceBackgrounded\(/);
+  assert.match(body, /resolvePortalSurfaces\(/);
+  // And nothing left on the landmark, which would take the inside presses before the window does.
+  const landmark = bar.slice(bar.indexOf('role="search"'));
   assert.equal(
-    landmark.slice(landmark.indexOf("<input")).includes('"Escape"'),
+    landmark.slice(0, landmark.indexOf(">")).includes("onKeyDown"),
     false,
   );
 });
@@ -2132,9 +2145,8 @@ test("Escape is left to the IME while it is composing", async () => {
     ),
     "utf8",
   );
-  const landmark = bar.slice(bar.indexOf('role="search"'));
-  const escape = landmark.slice(0, landmark.indexOf("<input"));
-  const guard = escape.indexOf("isImeComposing(event.nativeEvent)");
+  const escape = bar.slice(bar.indexOf("const onEscape ="));
+  const guard = escape.indexOf("isImeComposing(event)");
   const consume = escape.indexOf("event.preventDefault()");
   assert.ok(guard > 0 && guard < consume);
   // Safe to let through: the global listener stands aside for a composing event before it looks

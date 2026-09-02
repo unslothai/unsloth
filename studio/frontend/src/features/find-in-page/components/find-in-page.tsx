@@ -17,6 +17,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
+import { resolveFindScope, resolvePortalSurfaces } from "../lib/find-dom.ts";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-text-index.ts";
 import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 
@@ -114,6 +115,31 @@ function FindBar() {
     };
   }, []);
 
+  // Escape closes the bar for as long as it is open, wherever focus is.
+  //
+  // On the bar it only reached presses that started inside it, so clicking a message to read it
+  // left the reader with a bar Escape would not close -- and with a tool request waiting, that
+  // same unprevented Escape carried on to `declineToolRequest` (bare Escape, and
+  // `isTextEntryFocused` is false on a message body) and denied the call. Closing a find bar must
+  // not be able to answer a tool request.
+  //
+  // Capture on the window, so it runs before the registry's own keydown listener rather than
+  // racing it, and two things are deliberately left alone: a modal above the bar backgrounds the
+  // scope and owns Escape, and an open popover, menu or listbox is dismissed by its own Escape
+  // first. Composition is left to the IME, as before.
+  useEffect(() => {
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isImeComposing(event)) return;
+      if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
+      if (resolvePortalSurfaces(resolveFindScope()).length > 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    window.addEventListener("keydown", onEscape, true);
+    return () => window.removeEventListener("keydown", onEscape, true);
+  }, [close]);
+
   // Every press of the chord, not just the one that opened the bar: pressing it again selects what
   // is in the field so the next keystroke replaces the last search.
   useEffect(() => {
@@ -136,18 +162,9 @@ function FindBar() {
       data-find-skip=""
       role="search"
       aria-label={t("shell.find.label")}
-      // On the bar, not the field: Escape has to close from the walk and close buttons too, where
-      // the bare-Escape shortcut would otherwise take it and answer a tool request. Stopped as well
-      // as prevented, to keep it off the window listener the shortcuts are on.
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        // Escape dismisses an IME candidate; taken, it closes the bar out from under a word still
-        // being typed.
-        if (isImeComposing(event.nativeEvent)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        close();
-      }}
+      // Escape is handled on the window for the lifetime of the bar (see the effect above), which
+      // covers the walk buttons and the field as well as everything outside it, so there is no
+      // handler here to also reach the presses that start inside.
       className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5"
     >
       <input
