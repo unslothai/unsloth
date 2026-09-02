@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
@@ -2181,6 +2182,9 @@ export function SharedComposer({
   return (
     <div
       className="chat-composer-surface"
+      // Compare mode's composer, same as the thread's: find searches the conversation, not the
+      // chrome around it. This one is rendered from `chat-page.tsx`, outside the marked one.
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       onDragOver={(e) => {
         if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();

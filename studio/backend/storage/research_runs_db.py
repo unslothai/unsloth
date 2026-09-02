@@ -172,9 +172,8 @@ def _bind_assistant_locked(
     existing_run_id = (
         existing_metadata.get("researchRunId") if isinstance(existing_metadata, dict) else None
     )
-    # Only bind to an empty placeholder or this run's own message: an untagged
-    # reply carries text/source parts that _update_assistant drops on completion,
-    # so binding one silently overwrites an existing answer.
+    # Only bind to an empty placeholder or this run's own message: an untagged reply carries parts
+    # _update_assistant drops on completion, so binding one silently overwrites an existing answer.
     existing_answer = any(
         isinstance(part, dict)
         and (
@@ -363,11 +362,10 @@ def rebind_cancelled(
             plan_revision = revision,
             created = now,
         )
-        # retry_count is the attempt epoch every event is stamped with, and the new question
-        # is a new attempt: without the bump its report would carry the stopped question's
-        # reasoning (get_reasoning_text joins every event at the run's current attempt) and its
-        # activity panel would fold the two questions together. The retry BUDGET is counted per
-        # question in retry(), so spending an epoch here does not spend a retry.
+        # retry_count is the attempt epoch every event is stamped with, and a new question is a new
+        # attempt: without the bump its report would carry the stopped question's reasoning, since
+        # get_reasoning_text joins every event at the run's current attempt. The retry BUDGET is counted
+        # per question, so spending an epoch here spends no retry.
         conn.execute(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
@@ -389,8 +387,8 @@ def rebind_cancelled(
         conn.execute("DELETE FROM research_plan_steps WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_document_sources WHERE run_id=?", (run_id,))
-        # Events replay into the activity panel, so a kept approval would show "Plan approved"
-        # for a question this run no longer researches.
+        # Events replay into the activity panel, so a kept approval would show "Plan approved" for a
+        # question this run no longer researches.
         conn.execute(
             "DELETE FROM research_events WHERE run_id=? AND event_type='run.approved'", (run_id,)
         )
@@ -787,9 +785,8 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             raise KeyError(run_id)
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
-        # Counted per question, not per run row: a thread holds one run for its lifetime and
-        # re-points it at each new question, so a raw retry_count would hand a fresh question
-        # whatever the stopped one left over -- and nothing at all once three were spent.
+        # Counted per question, not per run row: a thread re-points one run at each new question, so a raw
+        # retry_count would hand a fresh question whatever the stopped one left over.
         spent = conn.execute(
             "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
             "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
@@ -871,8 +868,8 @@ def _has_claimable(now: int) -> bool:
 
 
 def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
-    # Advisory only: the row can disappear between this probe and the transaction below,
-    # which the "row is None" branch inside already handles.
+    # Advisory only: the row can disappear between this probe and the transaction below, which the "row
+    # is None" branch already handles.
     if not _has_claimable(now_ms()):
         return None
     conn = get_connection()
@@ -1342,7 +1339,6 @@ def wait_for_events(
         return events
     with _EVENTS_CHANGED:
         # Recheck under the condition lock so a commit cannot be missed between
-        # the initial query and waiting for its notification.
         events = list_events(run_id, after)
         if events:
             return events

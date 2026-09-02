@@ -21,6 +21,7 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
+import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
@@ -548,8 +549,13 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
+              {/* The find bar floats over this region and searches it: the workspace on screen,
+                  without the sidebar, the navbar, or the off-route workspaces parked here under
+                  `inert`. Gated off behind a modal, which owns Escape while it is up. */}
+              <FindInPage enabled={routeShortcutEnabled} />
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
                   `active` lets ChatPage close its body-portaled surfaces (model

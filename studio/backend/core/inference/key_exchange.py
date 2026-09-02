@@ -36,7 +36,6 @@ def init_key_pair() -> None:
     """Generate an RSA-2048 key pair. Called once at server startup."""
     global _private_key, _public_key_pem, _public_key_fingerprint
     if _private_key is not None:
-        # Re-entry invalidates in-flight ciphertext from the old public key; log loudly.
         logger.warning(
             "init_key_pair called again — replacing existing RSA keypair "
             "(previous fingerprint=%s). Any frontend that cached the old "
@@ -109,8 +108,7 @@ def decrypt_api_key(encrypted_b64: str) -> str:
             ),
         )
     except Exception as exc:
-        # Log state to distinguish key mismatch from padding/algo mismatch or
-        # corrupted bytes. RSA-2048 ciphertext is exactly 256 bytes.
+        # RSA-2048 ciphertext is exactly 256 bytes; log state to separate key mismatch from padding
         logger.warning(
             "decrypt_api_key: RSA decrypt failed (ciphertext_len=%d, expected=256, "
             "fingerprint=%s, exc=%s): %s",

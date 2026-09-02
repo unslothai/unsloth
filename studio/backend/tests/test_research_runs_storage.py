@@ -3249,6 +3249,15 @@ def test_sustained_heartbeat_errors_stop_before_lease_expiry(research_home, monk
     assert supervisor._cancel_event("run-1").is_set()
 
 
+# A hang guard, not a latency assertion. These three cancellation tests used a fixed
+# 50ms sleep to "wait" for the request to start and then gave cancellation one second to
+# land. CI runs this suite in parallel with tens of thousands of other tests, so a busy
+# runner blew the bound and reported cancellation as broken. The waits below are now
+# signalled by the fake itself, and this bound only exists so a genuine hang fails
+# instead of running until the suite timeout.
+_CANCEL_TIMEOUT_S = 30.0
+
+
 def test_completion_cancellation_closes_loopback_request(research_home, monkeypatch):
     from core import research_runs as worker
 
@@ -3256,6 +3265,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeClient:
         def __init__(self, **kwargs):
@@ -3271,6 +3281,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
             return object()
 
         async def send(self, request, *, stream):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3288,10 +3299,12 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
         task = asyncio.create_task(
             supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True
@@ -3304,9 +3317,11 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     research_db.claim_next(supervisor.worker_id)
     iterator_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeResponse:
         async def _lines(self):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
                 yield "unreachable"
@@ -3322,10 +3337,12 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
                 pass
 
         task = asyncio.create_task(consume())
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert iterator_cancelled["value"] is True
@@ -3338,6 +3355,7 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeClient:
         def __init__(self, **kwargs):
@@ -3353,6 +3371,7 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
             return object()
 
         async def send(self, request, *, stream):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3370,10 +3389,12 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
         task = asyncio.create_task(
             supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True

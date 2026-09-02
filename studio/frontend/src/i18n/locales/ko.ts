@@ -52,6 +52,13 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
+    find: {
+      label: "페이지에서 찾기",
+      previous: "이전 결과",
+      next: "다음 결과",
+      close: "찾기 닫기",
+      truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const ko = {
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       actions: {
+        findInPage: {
+          label: "페이지에서 찾기",
+          description: "이 페이지의 텍스트를 검색합니다",
+        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",
@@ -1228,7 +1239,7 @@ export const ko = {
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
       intro:
-        "명령은 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
+        "명령은 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",
