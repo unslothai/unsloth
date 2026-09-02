@@ -42,6 +42,7 @@ def test_installer_bwrap_probe_uses_production_mount_primitives():
     assert "--keep-groups" in probe
     assert 'find_library("seccomp") or "libseccomp.so.2"' in probe
     assert 'hasattr(os, "memfd_create")' in probe
+    assert 'bubblewrap_path_trusted "$PYTHON_BIN"' in probe
     assert '"$PYTHON_BIN" -I -S -c' in probe
 
 

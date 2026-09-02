@@ -2516,6 +2516,7 @@ case "$OS" in
             BWRAP_BIN="$(command -v bwrap 2>/dev/null)" || return 1
             bubblewrap_path_trusted "$BWRAP_BIN" || return 1
             PYTHON_BIN="$(command -v python3 2>/dev/null)" || return 1
+            bubblewrap_path_trusted "$PYTHON_BIN" || return 1
             "$PYTHON_BIN" -I -S -c '
 import ctypes
 import ctypes.util
