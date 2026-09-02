@@ -28,6 +28,7 @@ from auth.authentication import (
 )
 from utils.keyless_api_access import (
     KeylessToolPolicyMiddleware,
+    X_API_KEY_HEADER_NAME,
     KEYLESS_ADMISSION_STATE_KEY,
     KEYLESS_API_ACCESS_SETTING_KEY,
     _reset_scope_cache,
@@ -777,6 +778,17 @@ def test_credentials_never_downgrade_to_keyless():
     assert resolve(request_for()).scheme == KEYLESS_SCHEME
     for token in ("not-needed", "lm-studio", "ollama"):
         assert resolve(bearer_request(token)).scheme == KEYLESS_FALLBACK_SCHEME
+        assert asgi_request_is_keyless(
+            asgi_scope(headers = {"x-api-key": token}),
+            ("inference", False),
+        )
+    duplicate_x_api_key_scope = asgi_scope()
+    duplicate_x_api_key_scope["headers"] = [
+        (X_API_KEY_HEADER_NAME, b"not-needed"),
+        (X_API_KEY_HEADER_NAME, b"not-needed"),
+    ]
+    assert not asgi_request_is_keyless(duplicate_x_api_key_scope, ("inference", False))
+
     set_keyless_api_access("inference")
     with pytest.raises(HTTPException):
         subject_of(bearer_request("not-needed", path = "/v1/load"))
@@ -803,6 +815,10 @@ def test_credentials_never_downgrade_to_keyless():
     valid, _ = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME, name = "valid", expires_at = None)
     assert subject_of(bearer_request(valid)) == storage.DEFAULT_ADMIN_USERNAME
+    assert not asgi_request_is_keyless(
+        asgi_scope(headers = {"x-api-key": valid}),
+        ("inference", False),
+    )
     for name, expires in (
         ("expired", (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat()),
         ("revoked", None),

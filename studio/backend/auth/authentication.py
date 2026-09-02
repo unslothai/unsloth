@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
@@ -26,6 +26,9 @@ from .storage import (
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
+X_API_KEY_HEADER = "x-api-key"
+X_API_KEY_HEADER_NAME = X_API_KEY_HEADER.encode("ascii")
+NOT_AUTHENTICATED_DETAIL = "Not authenticated"
 
 # internal schemes, never sent by a client: no token at all, and a token to ignore if unusable
 KEYLESS_SCHEME = "Keyless"
@@ -183,11 +186,21 @@ class _BearerOrKeyless(HTTPBearer):
             )
         if usable_bearer:
             return HTTPAuthorizationCredentials(scheme = scheme, credentials = token)
-        return await super().__call__(request)
+        has_x_api_key = any(
+            bytes(name).lower() == X_API_KEY_HEADER_NAME for name, _value in raw_headers
+        )
+        if has_x_api_key:
+            return None
+        return await strict_bearer_security(request)
 
 
 # scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
-security = _BearerOrKeyless(scheme_name = "HTTPBearer")  # Reads Authorization: Bearer <token>
+security = _BearerOrKeyless(
+    auto_error = False,
+    scheme_name = "HTTPBearer",
+)  # Reads Authorization: Bearer <token>
+x_api_key_security = APIKeyHeader(name = X_API_KEY_HEADER, auto_error = False)
+strict_bearer_security = HTTPBearer(auto_error = True, scheme_name = "HTTPBearer")
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -315,17 +328,56 @@ def reload_secret() -> None:
     load_jwt_secret()
 
 
-async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+def _normalise_x_api_key_dependency(x_api_key: Any) -> Optional[str]:
+    return x_api_key if isinstance(x_api_key, str) else None
+
+
+def _x_api_key_keeps_keyless_admission(x_api_key: str) -> bool:
+    from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
+    return x_api_key in APPROVED_DUMMY_BEARERS
+
+
+def _resolve_credentials(
+    credentials: Optional[HTTPAuthorizationCredentials], x_api_key: Any
+) -> HTTPAuthorizationCredentials:
+    resolved_x_api_key = _normalise_x_api_key_dependency(x_api_key)
+    if credentials is not None and not is_keyless(credentials):
+        return credentials
+    if resolved_x_api_key is not None:
+        if is_keyless(credentials) and _x_api_key_keeps_keyless_admission(resolved_x_api_key):
+            return credentials
+        if not resolved_x_api_key.startswith(API_KEY_PREFIX):
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = _invalid_api_key_detail(resolved_x_api_key),
+            )
+        return HTTPAuthorizationCredentials(
+            scheme = X_API_KEY_HEADER,
+            credentials = resolved_x_api_key,
+        )
+    if credentials is not None:
+        return credentials
+    raise HTTPException(
+        status_code = status.HTTP_401_UNAUTHORIZED,
+        detail = NOT_AUTHENTICATED_DETAIL,
+    )
+
+
+async def get_current_subject(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Depends(x_api_key_security),
+) -> str:
     """Validate JWT and require the password-change flow to be completed."""
     subject, _generation = await _get_current_credential(
-        credentials,
+        _resolve_credentials(credentials, x_api_key),
         allow_password_change = False,
     )
     return subject
 
 
 async def get_current_credential(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Depends(x_api_key_security),
 ) -> Tuple[str, Optional[str]]:
     """As get_current_subject, but also returns the credential generation.
 
@@ -333,13 +385,14 @@ async def get_current_credential(
     a concurrent reset has revoked.
     """
     return await _get_current_credential(
-        credentials,
+        _resolve_credentials(credentials, x_api_key),
         allow_password_change = False,
     )
 
 
 async def authenticated_via_api_key(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Depends(x_api_key_security),
 ) -> bool:
     """True when the caller used an sk-unsloth API key, not a UI session JWT.
 
@@ -348,9 +401,13 @@ async def authenticated_via_api_key(
     caller too: it is the same programmatic surface, only without the key, so every
     guard an API key faces still applies to it.
     """
-    if is_keyless(credentials):
+    resolved_x_api_key = _normalise_x_api_key_dependency(x_api_key)
+    if is_keyless(credentials) and (
+        resolved_x_api_key is None or _x_api_key_keeps_keyless_admission(resolved_x_api_key)
+    ):
         return True
-    return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
+    resolved = _resolve_credentials(credentials, resolved_x_api_key)
+    return resolved.credentials.startswith(API_KEY_PREFIX)
 
 
 async def credentials_for_token(
@@ -381,9 +438,14 @@ async def credentials_for_token(
 
 
 async def authenticated_without_credential(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Depends(x_api_key_security),
 ) -> bool:
     """Dependency form of ``admitted_without_credential``."""
+    resolved_x_api_key = _normalise_x_api_key_dependency(x_api_key)
+    if resolved_x_api_key is not None:
+        resolved = _resolve_credentials(credentials, resolved_x_api_key)
+        return admitted_without_credential(resolved)
     return admitted_without_credential(credentials)
 
 
@@ -414,22 +476,25 @@ async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_a
 
 
 async def authenticated_via_desktop_jwt(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> bool:
     """True when the caller is the local desktop app, not a browser session or API key.
 
     Lets routes treat the desktop as an authority of its own: it authenticates
     with a local secret rather than the account password.
     """
+    if credentials is None or is_keyless(credentials):
+        return False
     return await run_in_threadpool(is_desktop_access_token, credentials.credentials)
 
 
 async def get_current_subject_allow_password_change(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Depends(x_api_key_security),
 ) -> str:
     """Validate JWT but allow access to the password-change endpoint."""
     subject, _generation = await _get_current_credential(
-        credentials,
+        _resolve_credentials(credentials, x_api_key),
         allow_password_change = True,
     )
     return subject
