@@ -618,11 +618,25 @@ def _kv_entry_windowed(entry):
     return any(getattr(entry, name, None) is not None for name in ("max_size", "window_size"))
 
 
+def _kv_quant_targets(entries):
+    """Indices to convert, and how many were held back: windowed entries keep their ring,
+    and deeper than two entries the last full-attention layer stays unquantized as the
+    most sensitive.
+    """
+    targets = [
+        index
+        for index, entry in enumerate(entries)
+        if getattr(entry, "to_quantized", None) is not None and not _kv_entry_windowed(entry)
+    ]
+    if len(entries) > 2 and targets:
+        targets.pop()
+        return targets, 1
+    return targets, 0
+
+
 def _quantize_kv_entries(entries, bits):
-    for index, entry in enumerate(entries):
-        convert = getattr(entry, "to_quantized", None)
-        if convert is not None and not _kv_entry_windowed(entry):
-            entries[index] = convert(group_size = MLX_KV_GROUP_SIZE, bits = bits)
+    for index in _kv_quant_targets(entries)[0]:
+        entries[index] = entries[index].to_quantized(group_size = MLX_KV_GROUP_SIZE, bits = bits)
     return entries
 
 
@@ -641,12 +655,8 @@ def _kv_quant_probe(language_model, entries, bits):
     """
     import mlx.core as mx
 
-    targets = [
-        index
-        for index, entry in enumerate(entries)
-        if getattr(entry, "to_quantized", None) is not None and not _kv_entry_windowed(entry)
-    ]
-    skipped = len(entries) - len(targets)
+    targets, held = _kv_quant_targets(entries)
+    skipped = len(entries) - len(targets) - held
     if not targets:
         # Verdict already known, so skip the cost of a full model call.
         return 0, skipped, None, True
@@ -734,6 +744,7 @@ def _kv_quant_eligibility(
     if not entries:
         return "none", "this model builds no KV cache to quantize", True
 
+    total = len(entries)
     windowed = sum(_kv_entry_windowed(entry) for entry in entries)
     language_model = getattr(model, "language_model", model) if is_vlm else model
     converted, skipped, failure, retainable = _kv_quant_probe(language_model, entries, bits)
@@ -748,7 +759,14 @@ def _kv_quant_eligibility(
     if failure is not None:
         return "refused", f"this model's KV cache cannot be quantized: {failure}", True
     if not converted:
-        return "none", "this model's KV cache layout cannot be quantized", True
+        if skipped < total:
+            reason = (
+                "it has a single full-attention layer, and the last full-attention "
+                "layer stays unquantized"
+            )
+        else:
+            reason = "this model's KV cache layout cannot be quantized"
+        return "none", reason, True
     if not skipped:
         return "full", "", retainable
     if windowed == skipped:
