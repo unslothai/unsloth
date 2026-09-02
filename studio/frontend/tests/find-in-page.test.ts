@@ -1514,6 +1514,41 @@ test("a Hangul query finds the syllables it is looking at", () => {
   assert.equal(findMatches(decomposed, "\uac00\ub098\ub2e4", 10).length, 1);
 });
 
+test("a Hangul syllable is matched whole, in every spelling it can be stored in", () => {
+  // Three canonical spellings, not two. Besides fully composed and fully decomposed there is the
+  // half-composed one, an LV syllable followed by a loose trailing Jamo, which is exactly what
+  // joining two text nodes produces when the syllable straddles them.
+  const GA = "\uac00"; // 가
+  const GAG = "\uac01"; // 각, the same syllable closed by a trailing consonant
+  const GAG_NFD = "\u1100\u1161\u11a8";
+  const GAG_HALF = "\uac00\u11a8";
+  const index = (body: string) =>
+    buildTextIndex(el("DIV", [el("P", [text(body)])]));
+
+  // Every spelling of the text is reachable from every spelling of the query.
+  for (const body of [GAG, GAG_NFD, GAG_HALF]) {
+    for (const query of [GAG, GAG_NFD, GAG_HALF]) {
+      const hits = findMatches(index(body), query, 10);
+      assert.equal(
+        hits.length,
+        1,
+        `${escape(body)} searched for ${escape(query)}`,
+      );
+      // And the highlight covers the whole syllable as that text spells it, never part of it.
+      assert.deepEqual(hits[0], { start: 0, end: body.length });
+    }
+  }
+
+  // An open syllable must not stop short of the trailing Jamo that closes the one on screen.
+  // Decomposed, 가 would otherwise match the first two thirds of 각 and highlight part of a letter,
+  // while composed text never could, since there the whole syllable is one code point.
+  for (const body of [GAG, GAG_NFD, GAG_HALF]) {
+    assert.deepEqual(findMatches(index(body), GA, 10), [], escape(body));
+  }
+  // The open syllable is still found where it really is open.
+  assert.deepEqual(findMatches(index(GA), GA, 10), [{ start: 0, end: 1 }]);
+});
+
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
   const dom = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),

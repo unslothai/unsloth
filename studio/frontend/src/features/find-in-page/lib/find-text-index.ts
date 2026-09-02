@@ -513,6 +513,10 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
 const CLUSTER_PATTERN =
   /[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]*[\u11a8-\u11ff\ud7cb-\ud7fb]*|[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
 
+/** A trailing Jamo closing a syllable, and the leading Jamo that opens one. */
+const HANGUL_TRAILING_PATTERN = /[\u11a8-\u11ff\ud7cb-\ud7fb]/;
+const HANGUL_OPEN_PATTERN = /^[\u1100-\u115f\ua960-\ua97c]/;
+
 /**
  * The needle as a regex source in which each cluster may match either of its spellings.
  *
@@ -540,10 +544,25 @@ function canonicalSource(needle: string, dotted: boolean): string {
     // A decomposed dotted I folds to `i` plus a combining dot, which has no precomposed form, so
     // NFC cannot put it back and the plain query would miss a word plainly on screen.
     if (dotted && cluster === "i") spellings.push(`i${COMBINING_DOT}`);
+    // A Hangul syllable has a third spelling: the LV part precomposed with its trailing Jamo left
+    // alone. Joining two text nodes produces exactly that, an LV syllable in one and the T in the
+    // next, and it normalizes to the same word.
+    const trailing = HANGUL_TRAILING_PATTERN.exec(cluster);
+    if (trailing !== null) {
+      const half =
+        cluster.slice(0, trailing.index).normalize("NFC") + trailing[0];
+      if (!spellings.includes(half)) spellings.push(half);
+    }
     out +=
       spellings.length === 1
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
+    // An open syllable must not stop short of a trailing Jamo that completes the one on screen:
+    // decomposed, `\uac00` would otherwise match the first two thirds of `\uac01` and highlight
+    // part of a letter. Composed text never had this, since there the syllable is one code point.
+    if (trailing === null && HANGUL_OPEN_PATTERN.test(cluster)) {
+      out += "(?![\\u11a8-\\u11ff\\ud7cb-\\ud7fb])";
+    }
   }
   return out;
 }
