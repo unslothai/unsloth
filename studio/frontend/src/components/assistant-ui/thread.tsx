@@ -155,6 +155,7 @@ import {
   isSurfaceInForeground,
   useShortcut,
 } from "@/features/settings";
+import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { create } from "zustand";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -164,13 +165,15 @@ import {
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "@/features/chat/utils/prompt-queue-events";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   PLUS_MENU_ORDER,
   CONVERSATION_MARKDOWN_LABEL,
-  PROMPT_QUEUE_RUN_FAILED_EVENT,
-  PROMPT_QUEUE_STOP_EVENT,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -289,12 +292,13 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
   CornerDownRightIcon,
-  GitBranchIcon,
   FastForwardIcon,
+  GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
   Loader2Icon,
@@ -4844,6 +4848,10 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       ref={attachComposer}
+      // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
+      // all this leaves to find are the pill labels, and a search for "code" or "images" would land
+      // on the toolbar instead of on the conversation.
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
@@ -5153,22 +5161,6 @@ function useImeComposerInputHandlers({
 }
 
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 // svgrepo.com lightbulb (filled, with base).
 const BulbIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -5316,7 +5308,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
               </span>
             ) : null}
-            <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent

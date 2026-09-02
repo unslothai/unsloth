@@ -165,6 +165,10 @@ def _install_device_type_stub(name: str) -> None:
     stub.device_synchronize = lambda *a, **k: None
     stub.device_empty_cache = lambda *a, **k: None
     stub.device_is_bf16_supported = lambda *a, **k: False
+    stub.arch_lacks_bf16 = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    )
+    stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 
 

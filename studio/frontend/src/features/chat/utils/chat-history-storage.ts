@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  ChatMessageProtectedError,
   ChatThreadDeletedError,
   type ChatThreadWritePatch,
   batchListChatMessages,
@@ -388,7 +389,7 @@ async function saveLegacyChatThread(
     if (!(error instanceof ChatThreadDeletedError)) {
       throw error;
     }
-    markChatThreadDeleted(thread.id);
+    forgetChatThread(thread.id);
     return undefined;
   }
 }
@@ -951,6 +952,82 @@ export async function moveStoredChatItemToProject(
   );
 }
 
+// Payloads the server answered 409 for, so the ~300ms autosave stops resending them.
+// Keyed by payload, not by id: a protected message can be refused transiently, when its
+// generationSeq lost a race, and blocking the id would drop the terminal write
+// (_safe_generation_assistant_update).
+const rejectedChatMessagePayloads = new Map<string, Map<string, string>>();
+
+// Entries hold whole messages, and only the delete paths clear them. Exceeding the cap
+// costs one extra request for whichever message fell out.
+const MAX_REJECTED_PAYLOADS = 32;
+
+/** Least-recently-written first, both across threads and within one. */
+function evictOldestRejectedPayloads(): void {
+  let total = 0;
+  for (const perThread of rejectedChatMessagePayloads.values()) {
+    total += perThread.size;
+  }
+  while (total > MAX_REJECTED_PAYLOADS) {
+    const oldestThread = rejectedChatMessagePayloads.entries().next().value;
+    if (!oldestThread) return;
+    const [threadId, perThread] = oldestThread;
+    const oldestMessage = perThread.keys().next().value;
+    if (oldestMessage === undefined) {
+      rejectedChatMessagePayloads.delete(threadId);
+      continue;
+    }
+    perThread.delete(oldestMessage);
+    if (perThread.size === 0) rejectedChatMessagePayloads.delete(threadId);
+    total -= 1;
+  }
+}
+
+function rememberRejectedPayload(
+  threadId: string,
+  messageId: string,
+  payload: string,
+): void {
+  const perThread = rejectedChatMessagePayloads.get(threadId) ?? new Map<string, string>();
+  perThread.delete(messageId);
+  perThread.set(messageId, payload);
+  rejectedChatMessagePayloads.delete(threadId);
+  rejectedChatMessagePayloads.set(threadId, perThread);
+  evictOldestRejectedPayloads();
+}
+
+/** Deterministic JSON: key order must not decide whether two payloads look equal. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+    .join(",")}}`;
+}
+
+// Every entry, not just the deleted thread's: a collision is recorded under the thread we
+// wrote TO, so deleting the thread that OWNS the id frees it elsewhere in the map.
+export function clearServerOwnedChatMessages(): void {
+  rejectedChatMessagePayloads.clear();
+}
+
+function forgetChatThread(threadId: string): void {
+  markChatThreadDeleted(threadId);
+  clearServerOwnedChatMessages();
+}
+
+function forgetChatThreads(threadIds: string[]): void {
+  markChatThreadsDeleted(threadIds);
+  clearServerOwnedChatMessages();
+}
+
 export async function saveStoredChatMessage(
   message: MessageRecord,
 ): Promise<MessageRecord> {
@@ -958,9 +1035,23 @@ export async function saveStoredChatMessage(
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
+  const payload = stableStringify(message);
+  if (rejectedChatMessagePayloads.get(message.threadId)?.get(message.id) === payload) {
+    // Refresh: otherwise the message being resent right now is the one aging out.
+    rememberRejectedPayload(message.threadId, message.id, payload);
+    return message;
+  }
   await ensureStoredChatThread(message.threadId);
   // The per-chunk autosave behind a streaming response.
-  return saveChatMessage(message, { coalesce: true });
+  try {
+    return await saveChatMessage(message, { coalesce: true });
+  } catch (error) {
+    if (error instanceof ChatMessageProtectedError) {
+      rememberRejectedPayload(message.threadId, message.id, payload);
+      return message;
+    }
+    throw error;
+  }
 }
 
 export async function syncStoredChatMessages(
@@ -971,7 +1062,13 @@ export async function syncStoredChatMessages(
   if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
   await ensureStoredChatThread(threadId);
-  return syncChatMessages(threadId, messages, options);
+  const synced = await syncChatMessages(threadId, messages, options);
+  // Deleting rows frees their ids while the thread survives, so no tombstone runs. Gated on
+  // an actual deletion: an ordinary sync runs constantly and would undo the whole cache.
+  if (options.pruneMissing || (options.deletedMessageIds?.length ?? 0) > 0) {
+    clearServerOwnedChatMessages();
+  }
+  return synced;
 }
 
 export async function saveStoredChatThread(
@@ -985,7 +1082,7 @@ export async function saveStoredChatThread(
     return await writeChatThreadRecord(thread);
   } catch (error) {
     if (error instanceof ChatThreadDeletedError) {
-      markChatThreadDeleted(thread.id);
+      forgetChatThread(thread.id);
     }
     throw error;
   }
@@ -1059,7 +1156,7 @@ export async function deleteStoredChatThreads(
         .catch(() => undefined),
     undefined,
   );
-  markChatThreadsDeleted(ids);
+  forgetChatThreads(ids);
   return kept;
 }
 
@@ -1178,7 +1275,7 @@ async function clearStoredChatsWithAdmissionClosed(options: {
   const deleted = new Set(result.deletedThreadIds);
   result.failedThreadIds = allThreadIds.filter((id) => !deleted.has(id));
 
-  markChatThreadsDeleted(result.deletedThreadIds);
+  forgetChatThreads(result.deletedThreadIds);
   notifyChatHistoryUpdated();
 
   if (result.backend === "failed" && result.legacy === "failed") {

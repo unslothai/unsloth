@@ -31,10 +31,8 @@ _HELP = (
 
 
 def _you_prompt(colors: bool) -> str:
-    # The prompt must go through input(), not a separate print — readline
-    # redraws erase anything they didn't draw, eating the label. GNU readline
-    # wants colors wrapped in \001/\002; libedit (macOS) prints those
-    # literally, so it gets raw ANSI.
+    # Must go through input(): readline redraws erase text they did not draw. GNU readline wants
+    # \001/\002 around colors; libedit (macOS) prints those literally.
     try:
         import readline
     except ImportError:
@@ -66,7 +64,6 @@ def _compare_blocked_reason(model_config) -> Optional[str]:
 def _get_base_load_in_4bit(model_config) -> bool:
     """Determine load_in_4bit for base model based on tuned adapter precision."""
     if not model_config.is_lora or not model_config.path:
-        # Fallback to default if not a LoRA or no path
         return True
 
     try:
@@ -86,7 +83,6 @@ def _get_base_load_in_4bit(model_config) -> bool:
         elif training_method == "qlora":
             return True
         elif not training_method:
-            # Fallback: check base model name for -bnb-4bit suffix
             if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
                 return False
             return True
@@ -96,9 +92,8 @@ def _get_base_load_in_4bit(model_config) -> bool:
 
 
 def _compare_needs_second_model() -> bool:
-    # MLX can't toggle the adapter off, so compare loads the base separately.
-    # detect_hardware() would print into the chat (and import torch), so
-    # probe its MLX condition quietly: Apple Silicon with mlx installed.
+    # MLX cannot toggle the adapter off, so compare loads the base separately; probe MLX quietly since
+    # detect_hardware() prints into the chat and imports torch.
     try:
         from studio.backend.utils.hardware import hardware as hw
 
@@ -303,9 +298,7 @@ def chat(
     compare_mode = compare
     messages = []
 
-    # Compare's base column: server mode keeps the tuned model remote and
-    # loads the base locally; local MLX (no adapter toggle) does the same;
-    # local CUDA just toggles the adapter on the one loaded model.
+    # Compare's base column: server mode and local MLX load the base separately; local CUDA just toggles the adapter.
     dual_compare = compare_blocked is None and (server_mode or _compare_needs_second_model())
     base_backend = None
 
@@ -328,8 +321,7 @@ def chat(
                 markup = False,
             )
         try:
-            # Use the same precision as the tuned model for fair comparison
-            base_load_opts = dict(load_opts)  # Copy original options
+            base_load_opts = dict(load_opts)
             base_load_opts["load_in_4bit"] = _get_base_load_in_4bit(model_config)
             base_backend = load_chat_backend(base_id, fresh_backend = True, **base_load_opts)
         except Exception as exc:
@@ -446,7 +438,6 @@ def chat(
                         render_columns(
                             "base", base_text, f"{name} (tuned)", tuned_text, console = console
                         )
-                    # History continues as the tuned model; base is just the reference.
                     answer = tuned_text
                 else:
                     if should_print:

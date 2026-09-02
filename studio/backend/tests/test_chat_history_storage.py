@@ -1148,6 +1148,120 @@ def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     assert params == {"temperature": 0.9, "topP": 0.8}
 
 
+def test_settings_compare_and_set_rejects_a_newer_nested_edit(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"temperature": 0.6, "presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+    studio_db.upsert_chat_settings_merge({"inferenceParams": {"presencePenalty": 0.4}})
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+    )
+
+    assert applied is False
+    assert settings["inferenceParams"]["presencePenalty"] == 0.4
+    assert studio_db.list_chat_settings() == settings
+
+
+def test_settings_compare_and_set_atomically_applies_a_matching_patch(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"temperature": 0.6, "presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+    )
+
+    assert applied is True
+    assert settings["inferenceParams"] == {"temperature": 0.6, "presencePenalty": 1.5}
+
+
+def test_settings_compare_and_set_fences_an_expected_absent_field(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+    studio_db.upsert_chat_settings_merge({"reasoningEnabled": False})
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+        ["reasoningEnabled"],
+    )
+
+    assert applied is False
+    assert settings["reasoningEnabled"] is False
+    assert settings["inferenceParams"]["presencePenalty"] == 0.0
+
+
+def test_settings_compare_and_set_fences_an_expected_absent_nested_path(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    original = {"inferenceParams": {"presencePenalty": 0.0}}
+    studio_db.upsert_chat_settings_merge(original)
+    studio_db.upsert_chat_settings_merge({"inferenceParams": {"topK": 40}})
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        original,
+        {"inferenceParams": {"presencePenalty": 1.5}},
+        expected_absent_paths = [["inferenceParams", "topK"]],
+    )
+
+    assert applied is False
+    assert settings["inferenceParams"]["topK"] == 40
+    assert settings["inferenceParams"]["presencePenalty"] == 0.0
+
+
+def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp_path, monkeypatch):
+    """An empty patch is not a settings change. Without the same short-circuit the
+    unconditional merge has, it would rewrite updated_at on every key, which reads
+    as a fresh edit to anything watching those timestamps."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParams": {"temperature": 0.6}, "autoTitle": True}
+    )
+    conn = studio_db.get_connection()
+    before = {
+        row["key"]: row["updated_at"]
+        for row in conn.execute("SELECT key, updated_at FROM chat_settings")
+    }
+    conn.close()
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current({}, {})
+
+    conn = studio_db.get_connection()
+    after = {
+        row["key"]: row["updated_at"]
+        for row in conn.execute("SELECT key, updated_at FROM chat_settings")
+    }
+    conn.close()
+    assert applied is True
+    assert after == before
+    assert settings["inferenceParams"] == {"temperature": 0.6}
+
+
+def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_path, monkeypatch):
+    """Normalizing a differently cased model key writes a whole new exact-key row.
+    The subset compare only checks the spelling that was read, so the exact key
+    needs its own absence fence or a newer tab's row is overwritten wholesale."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    lower = "unsloth/qwen3.8-27b-gguf"
+    exact = "unsloth/Qwen3.8-27B-GGUF"
+    legacy = {"temperature": 0.6, "minP": 0.01, "presencePenalty": 0.0}
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {lower: legacy}})
+    newer = {"temperature": 0.31, "presencePenalty": 0.4}
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {exact: newer}})
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        {"inferenceParamsByModel": {lower: legacy}},
+        {"inferenceParamsByModel": {exact: {**legacy, "minP": 0.0, "presencePenalty": 1.5}}},
+        expected_absent_paths = [["inferenceParamsByModel", exact]],
+    )
+
+    assert applied is False
+    assert settings["inferenceParamsByModel"][exact] == newer
+
+
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
     """Per-model memory patches one model at a time, so the merge has to keep the
     others. Without this, tuning a second model would wipe the first one's settings
@@ -1844,3 +1958,75 @@ def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, mon
 
     replay = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
     assert replay == ([], ["src"])
+
+
+def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch):
+    """Repeated identical user sends (e.g. user sending 'Hello' multiple times) have distinct IDs and persist separately."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    msg1 = {
+        "id": "u1",
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "user",
+        "content": [{"type": "text", "text": "Hello"}],
+        "attachments": [{"name": "doc.pdf", "content": [{"type": "text", "text": "raw"}]}],
+        "createdAt": 1000,
+    }
+    studio_db.upsert_chat_message(msg1)
+    studio_db.upsert_chat_message(
+        {
+            "id": "a1",
+            "threadId": "thread-1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hi"}],
+            "createdAt": 1500,
+        }
+    )
+
+    # Second turn with identical text & attachments, but distinct message ID
+    msg2 = {
+        "id": "u2",
+        "threadId": "thread-1",
+        "parentId": "a1",
+        "role": "user",
+        "content": [{"type": "text", "text": "Hello"}],
+        "attachments": [{"name": "doc.pdf", "content": [{"type": "text", "text": "raw"}]}],
+        "createdAt": 2000,
+    }
+    res = studio_db.upsert_chat_message(msg2)
+    assert res["id"] == "u2"
+
+    # Both messages must persist separately
+    messages = studio_db.list_chat_messages("thread-1")
+    assert {m["id"] for m in messages} == {"u1", "a1", "u2"}
+
+
+def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, monkeypatch):
+    """In a flat thread where parent_id is None, repeated identical sends with different IDs must not collapse."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    payload = [
+        {
+            "id": "u1",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+            "createdAt": 1000,
+        },
+        {
+            "id": "u2",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+            "createdAt": 2000,
+        },
+    ]
+    messages = studio_db.sync_chat_messages("thread-1", payload)
+    assert len(messages) == 2
+    assert [m["id"] for m in messages] == ["u1", "u2"]

@@ -133,6 +133,7 @@ class GitHubClient:
         )
 
     def _check_rate_and_wait(self, kind: str) -> None:
+        # Reset remaining so we don't spin
         if kind == "graphql":
             remaining = self.graphql_remaining
             reset = self.graphql_reset
@@ -144,7 +145,6 @@ class GitHubClient:
         if remaining is not None and remaining < min_remaining:
             if reset:
                 self._sleep_until(reset)
-                # Reset remaining so we don't spin
                 if kind == "graphql":
                     self.graphql_remaining = None
                 else:

@@ -35,14 +35,12 @@ FENCE = re.compile(r"```.*?```", re.S)
 DISPLAY = (re.compile(r"\$\$\n(.*?)\n\$\$", re.S), re.compile(r"\\\[\n(.*?)\n\\\]", re.S))
 INLINE = (re.compile(r"\$ ([^$\n]+?) \$"), re.compile(r"\\\( (.+?) \\\)"))
 
-# The v1 corpus, measured before math was added.
-#
-# The tolerance is set from measurement rather than taste. With MATH_BLOCK_PROB at 0 the share is
-# 0.4754, i.e. EXACTLY v1, which is the substitution design working: inline math is spent from the
-# prose block's own budget and costs the fence share nothing. At the shipped 0.16 it reads 0.4779,
-# a drift of 0.0025. At 0.60 it reads 0.4689, a drift of 0.0065. So 0.005 leaves the shipped value
-# a factor of two of headroom while failing well before the parameter could be raised far enough to
-# re-weight the film.
+# The v1 corpus, measured before math was added. The tolerance is set from measurement: with
+# MATH_BLOCK_PROB at 0 the share is 0.4754, EXACTLY v1, which is the substitution design working,
+# since inline math is spent from the prose block's own budget. At the shipped 0.16 it reads
+# 0.4779 and at 0.60 it reads 0.4689, so 0.005 leaves the shipped value a factor of two of
+# headroom while failing well before the parameter could re-weight the film.
+# Drifts of 0.0025 and 0.0065 against v1.
 V1_FENCE_SHARE = 0.4754
 FENCE_SHARE_TOLERANCE = 0.005
 
@@ -65,10 +63,9 @@ def test_the_corpus_contains_math_at_all():
 
 
 def test_both_delimiter_families_are_present():
-    # `$...$` is what remark-math consumes directly. `\(...\)` and `\[...\]` reach the renderer
-    # ONLY if preprocessLaTeX rewrites them first, so a corpus carrying only the first kind
-    # exercises the renderer while leaving the preprocessor uncovered, which is the situation this
-    # corpus version exists to end.
+    # `$...$` is what remark-math consumes directly. `\(...\)` and `\[...\]` reach the renderer ONLY
+    # if preprocessLaTeX rewrites them first, so a corpus carrying only the first kind leaves the
+    # preprocessor uncovered.
     joined = "\n".join(_texts())
     assert joined.count("$$") > 0
     assert joined.count("\\[") > 0
@@ -76,8 +73,8 @@ def test_both_delimiter_families_are_present():
 
 
 def test_math_is_spread_across_the_thread_not_pooled_into_one_turn():
-    # A single maths-heavy turn measures one large KaTeX tree. The cost this is meant to expose
-    # accumulates over a long thread, so it has to be present in most turns.
+    # A single maths-heavy turn measures one large KaTeX tree; the cost this exposes accumulates over
+    # a long thread, so it has to be present in most turns.
     texts = _texts()
     with_math = [t for t in texts if _count(t, DISPLAY) or _count(t, INLINE)]
     assert len(with_math) >= max(2, int(len(texts) * 0.8))
@@ -95,10 +92,10 @@ def test_there_is_both_display_and_inline_math():
 
 
 def test_the_fence_share_is_what_it_was_before_math_existed():
-    # The span-density calibration in the module docstring is a statement about how much of the
-    # corpus is fenced code. Math takes the PROSE slot and is drawn from the prose size
-    # distribution precisely so this number does not move; if it has moved, the 5.6 chars/span
-    # target no longer describes this film and the docstring is lying.
+    # The span-density calibration in the module docstring is a statement about how much of the corpus
+    # is fenced code. Math takes the PROSE slot and is drawn from the prose size distribution
+    # precisely so this number does not move; if it has moved, the 5.6 chars/span target no longer
+    # describes this film.
     texts = _texts()
     total = sum(len(t) for t in texts)
     fenced = sum(len(m.group(0)) for t in texts for m in FENCE.finditer(t))
@@ -106,9 +103,9 @@ def test_the_fence_share_is_what_it_was_before_math_existed():
 
 
 def test_the_preamble_stays_free_of_math_and_fences():
-    # The field capture held a flat 60 fps and exactly zero spans for its first 33,348 characters.
-    # The preamble stands in for that. Give it math and the film loses the one stretch against
-    # which the onset of cost is visible, and every rung starts with a rendering cost instead.
+    # The field capture held a flat 60 fps and exactly zero spans for its first 33,348 characters, and
+    # the preamble stands in for that. Give it math and the film loses the one stretch against which
+    # the onset of cost is visible.
     for index in range(4):
         unit = generate_unit(index)
         head = unit.reasoning[: int(len(unit.reasoning) * 0.20)]
@@ -119,8 +116,8 @@ def test_the_preamble_stays_free_of_math_and_fences():
 
 
 def test_prose_without_the_math_flag_has_none():
-    # `_prose` is also what builds tool arguments and results, where a stray dollar sign would be
-    # rendered by a different component than the one under test.
+    # `_prose` also builds tool arguments and results, where a stray dollar sign would be rendered by
+    # a different component than the one under test.
     import random
 
     text = _prose(random.Random(7), 4_000, "x")
@@ -168,8 +165,8 @@ def test_the_shipped_corpus_matches_the_generator_byte_for_byte():
 
 
 def test_the_manifest_records_the_math_parameters():
-    # The corpus hash covers the generator's parameters as well as its bytes, so two corpora with
-    # the same text and different declared densities cannot compare as identical.
+    # The corpus hash covers the generator's parameters as well as its bytes, so two corpora with the
+    # same text and different declared densities cannot compare as identical.
     manifest = Corpus.load().manifest
     assert "math_block_prob" in manifest
     assert "inline_math_prob" in manifest

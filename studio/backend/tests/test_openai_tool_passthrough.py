@@ -130,10 +130,21 @@ class TestFriendlyUpstreamError:
         raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
         msg = _friendly_upstream_error(raw)
         assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
-        assert "tool-calling grammar" in msg and "Update Unsloth" in msg
+        assert "compile a grammar" in msg and "Update Unsloth" in msg
 
-    def test_failed_to_initialize_samplers_alone_matches(self):
-        assert "tool-calling grammar" in _friendly_upstream_error("Failed to initialize samplers")
+    def test_sampler_failure_without_a_grammar_keeps_its_own_text(self):
+        # llama-server prefixes every sampler failure the same way, so a bad penalty
+        # would otherwise be reported as an uncompilable schema.
+        detail = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
+        msg = _friendly_upstream_error(detail)
+        assert "compile a grammar" not in msg
+        assert "penalty_repeat" in msg
+
+    def test_message_does_not_blame_the_model(self):
+        # The request's schemas decide the failure; swapping the GGUF changes nothing.
+        msg = _friendly_upstream_error("failed to parse grammar")
+        assert "schema" in msg
+        assert "GGUF" not in msg and "quant and tool-schema" not in msg
 
     def test_unrelated_error_passes_through(self):
         assert _friendly_upstream_error("out of memory") == "llama-server error: out of memory"
@@ -146,7 +157,7 @@ class TestFriendlyUpstreamError:
         exc = _openai_passthrough_error(
             400, '{"error":{"message":"Failed to initialize samplers: failed to parse grammar"}}'
         )
-        assert "tool-calling grammar" in exc.detail
+        assert "compile a grammar" in exc.detail
         # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
@@ -2308,8 +2319,35 @@ class TestBuildPassthroughPayloadToolChoice:
                 },
             },
             "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
-            "boundedScript": {"type": "string", "maxLength": 2000},
+            # Each keyword's highest compilable bound survives; the first one that reaches
+            # llama.cpp's rule budget does not.
+            "keptScript": {"type": "string", "maxLength": 1999, "minLength": 1999},
+            "budgetScript": {"type": "string", "maxLength": 2000},
+            "budgetFloor": {"type": "string", "minLength": 2000},
+            "keptList": {"type": "array", "items": {"type": "string"}, "maxItems": 1997},
+            "budgetList": {"type": "array", "items": {"type": "string"}, "maxItems": 1998},
+            "keptFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2000},
+            "budgetFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2001},
+            # An integral bound can decode to float, and llama.cpp reads one either way.
+            "floatList": {"type": "array", "items": {"type": "string"}, "minItems": 2001.0},
+            # draft-07 tuple form, which llama.cpp visits member by member.
+            "tupleList": {
+                "type": "array",
+                "items": [{"type": "string", "maxLength": 2000}],
+            },
+            # Unsatisfiable pairs, small enough to pass every limit above: they reach the
+            # parser as a descending repetition, which exhausts memory.
+            "impossibleList": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 5,
+                "maxItems": 2,
+            },
+            "impossibleScript": {"type": "string", "minLength": 5, "maxLength": 2},
+            "referenced": {"$ref": "#/$defs/Bounded"},
         }
+        # llama.cpp resolves the reference, so its target has to be filtered too.
+        schema["$defs"] = {"Bounded": {"type": "string", "maxLength": 2000}}
 
         body = _build_passthrough_payload(**args)
         forwarded = body["tools"][0]["function"]["parameters"]["properties"]
@@ -2321,10 +2359,69 @@ class TestBuildPassthroughPayloadToolChoice:
         assert nested["anyOf"][1]["pattern"] == "^fixed$"
         assert nested["default"] == {"pattern": "annotation data"}
         assert forwarded["largeScript"] == {"type": "string", "minLength": 1}
-        assert forwarded["boundedScript"]["maxLength"] == 2000
+        assert forwarded["keptScript"] == {"type": "string", "maxLength": 1999, "minLength": 1999}
+        assert forwarded["budgetScript"] == {"type": "string"}
+        assert forwarded["budgetFloor"] == {"type": "string"}
+        assert forwarded["keptList"]["maxItems"] == 1997
+        assert forwarded["budgetList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["keptFloorList"]["minItems"] == 2000
+        assert forwarded["budgetFloorList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["floatList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["tupleList"]["items"] == [{"type": "string"}]
+        assert schema["properties"]["budgetScript"]["maxLength"] == 2000
+        assert schema["properties"]["budgetList"]["maxItems"] == 1998
+        assert forwarded["impossibleList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["impossibleScript"] == {"type": "string"}
+        assert schema["properties"]["tupleList"]["items"][0]["maxLength"] == 2000
+        assert schema["properties"]["impossibleList"]["minItems"] == 5
+        assert body["tools"][0]["function"]["parameters"]["$defs"] == {
+            "Bounded": {"type": "string"}
+        }
+        assert schema["$defs"]["Bounded"]["maxLength"] == 2000
         assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
         assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
         assert schema["properties"]["largeScript"]["maxLength"] == 65536
+
+    def test_repetition_limits_match_the_measured_grammar_budget(self):
+        # First bound llama-server refuses, measured against llama.cpp b10639 and b10679 by
+        # posting each schema to a live server. maxItems costs N+2 rules, not N+1, so 1998 is
+        # already over budget even though the other three keywords reach 2000.
+        from routes.inference import _JSON_SCHEMA_REPETITION_LIMITS
+        first_rejected = {"maxItems": 1998, "maxLength": 2000, "minItems": 2001, "minLength": 2000}
+        assert _JSON_SCHEMA_REPETITION_LIMITS == {
+            keyword: value - 1 for keyword, value in first_rejected.items()
+        }
+
+    def test_response_format_schema_drops_incompatible_constraints(self):
+        # Guided decoding reaches the same grammar engine tool schemas do.
+        rf = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "report",
+                "schema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string", "maxLength": 2000}},
+                },
+            },
+        }
+        body = _build_passthrough_payload(**self._args(), response_format = rf)
+        forwarded = body["response_format"]["json_schema"]["schema"]["properties"]["summary"]
+        assert forwarded == {"type": "string"}
+        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"]["json_schema"]["name"] == "report"
+        assert rf["json_schema"]["schema"]["properties"]["summary"]["maxLength"] == 2000
+
+    def test_response_format_json_object_schema_is_filtered_too(self):
+        # An array bound only reaches the grammar when the items schema does too.
+        rf = {
+            "type": "json_object",
+            "schema": {"type": "array", "items": {"type": "string"}, "maxItems": 1999},
+        }
+        body = _build_passthrough_payload(**self._args(), response_format = rf)
+        assert body["response_format"] == {
+            "type": "json_object",
+            "schema": {"type": "array", "items": {"type": "string"}},
+        }
 
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
@@ -2349,6 +2446,17 @@ class TestBuildPassthroughPayloadToolChoice:
             stream_options = {"include_usage": False},
         )
         assert body.get("stream_options") == {"include_usage": False}
+
+    def test_an_explicit_seed_disables_slot_prompt_cache_reuse(self):
+        seeded = _build_passthrough_payload(**self._args(), seed = 3407)
+        randomized = _build_passthrough_payload(**self._args(), seed = -1)
+        ordinary = _build_passthrough_payload(**self._args())
+
+        assert seeded["seed"] == 3407
+        assert seeded["cache_prompt"] is False
+        assert randomized["seed"] == -1
+        assert "cache_prompt" not in randomized
+        assert "cache_prompt" not in ordinary
 
     def test_response_format_without_tools_omits_tool_fields(self):
         args = self._args()
@@ -5109,13 +5217,26 @@ class TestGgufVisionToolRouting:
                     current_subject = "test",
                 )
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            # Generous budgets. What this test asserts is that cancelling the
+            # request drains the worker, and none of the numbers below are part
+            # of that: they only bound how long to wait before calling it hung.
+            # A one-second bound on a THREAD START is a bound on the scheduler,
+            # not on this code, and it went red once on a runner busy with the
+            # rest of the backend suite. Failing here still takes seconds, and
+            # the assertion is unchanged.
+            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
 
-            assert released.is_set()
+            # Waited on, not sampled. Cancelling the task unblocks the awaiting
+            # coroutine; it does not join the worker, which is off polling
+            # cancel_event every 5ms and only then sets this. Reading it the
+            # instant the await returns is a race that happens to be won on an
+            # idle box, and it is the drain itself that matters, not whether it
+            # had already finished by the time we looked.
+            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
             assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -5227,6 +5348,11 @@ class TestGgufVisionToolRouting:
 
         assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
         assert captured["perf_callback"] is None
+
+    # Wall-clock bound for the cancel drain. Only ever hit when something is
+    # genuinely stuck, so it is sized for a loaded runner rather than for the
+    # ~5ms this takes when it works.
+    _DRAIN_BUDGET_S = 30.0
 
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         async def _run():
@@ -5708,10 +5834,10 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
 
-            first = await asyncio.wait_for(response.body_iterator.__anext__(), timeout = 0.2)
+            first = await asyncio.wait_for(response.body_iterator.__anext__(), timeout = 5.0)
             assert first == ": keep-alive\n\n"
 
             gate.set()
@@ -6104,7 +6230,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -8667,12 +8793,12 @@ class TestApiMonitorProviderAndCompletionStreams:
                     current_subject = "test",
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), 5.0)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
             assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
 
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, 5.0)
 
             assert client.closed.is_set()
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
@@ -10170,3 +10296,29 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
     # Choice 0 is always the caller's own seed, on both drains.
     assert _choice_seed(-2, 0, negative_is_random = True) == -2
     assert _choice_seed(None, 2, negative_is_random = True) is None
+
+
+def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
+    """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED: the seed is a
+    uint32 there, so ``-1``, ``4294967295`` and ``2**64-1`` are all the sentinel and the
+    schemas accept all three. Both helpers must agree, or choice 0 keeps the caller's random
+    seed while choice 1 is offset into a fixed one, half reproducible and half uncached."""
+    from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
+    from routes.inference import _choice_seed
+
+    for seed in (-1, 0xFFFFFFFF, 2**64 - 1):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) == _LLAMA_RANDOM_SEED for v in served), (seed, served)
+
+        for value in served:
+            payload: dict = {}
+            _apply_seeded_llama_request(payload, value)
+            assert "cache_prompt" not in payload, (seed, value, payload)
+
+    for seed in (0, 5, 4294967294):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED for v in served), (seed, served)
+        for value in served:
+            payload = {}
+            _apply_seeded_llama_request(payload, value)
+            assert payload["cache_prompt"] is False, (seed, value)

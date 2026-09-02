@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
-from unsloth_cli import _studio_deps, _studio_runtime_gate
+from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -289,10 +289,11 @@ def _is_application_control_block(error: OSError) -> bool:
 
 
 @contextlib.contextmanager
-def _studio_runtime_launch_guard(*, inherited: bool = False):
+def _studio_runtime_launch_guard(*, inherited: bool = False, wait: bool = False):
     guard = _studio_runtime_gate.studio_runtime_launch_guard(
         STUDIO_HOME,
         inherited = inherited,
+        wait = wait,
     )
     try:
         acquired = guard.__enter__()
@@ -670,13 +671,16 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
-def _install_state() -> dict:
+def _install_state(deep: bool = False) -> dict:
     """verify_install() result for this install root.
 
     STUDIO_HOME is an extra search root so a CLI installed outside the managed
     venv still inspects the venv the desktop app launches.
     """
-    return _studio_deps.install_state(extra_roots = (STUDIO_HOME / "unsloth_studio",))
+    return _studio_deps.install_state(
+        extra_roots = (STUDIO_HOME / "unsloth_studio",),
+        deep = deep,
+    )
 
 
 _RUN_MODULE = None
@@ -1939,6 +1943,7 @@ def studio_default(
 
     _require_bind_host(host)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
@@ -2119,29 +2124,32 @@ def studio_default(
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    with _studio_deps.studio_backend_imports("unsloth studio"):
-        run_mod = _load_run_module()
-    run_server = run_mod.run_server
+    with _studio_runtime_launch_guard(
+        inherited = runtime_gate_handoff,
+        wait = runtime_gate_acquire,
+    ):
+        with _studio_deps.studio_backend_imports("unsloth studio"):
+            run_mod = _load_run_module()
+        run_server = run_mod.run_server
 
-    if not silent:
-        display_host = _display_host_for_bind(run_mod, host)
-        typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
+        if not silent:
+            display_host = _display_host_for_bind(run_mod, host)
+            typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
 
-    run_kwargs = dict(
-        host = host,
-        port = port,
-        silent = silent,
-        api_only = api_only,
-        llama_parallel_slots = parallel,
-        cloudflare = cloudflare,
-        secure = secure,
-        enable_tools = enable_tools,
-    )
-    # Forward the frontend validated before the gate (in-venv path), so the
-    # in-process server serves exactly the dist we vouched for.
-    if resolved_frontend is not None:
-        run_kwargs["frontend_path"] = resolved_frontend
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        run_kwargs = dict(
+            host = host,
+            port = port,
+            silent = silent,
+            api_only = api_only,
+            llama_parallel_slots = parallel,
+            cloudflare = cloudflare,
+            secure = secure,
+            enable_tools = enable_tools,
+        )
+        # Forward the frontend validated before the gate (in-venv path), so the
+        # in-process server serves exactly the dist we vouched for.
+        if resolved_frontend is not None:
+            run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
     try:
@@ -3037,6 +3045,8 @@ def _pid_alive(pid: int) -> bool:
                 ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 10,
             ).stdout
         except Exception:
@@ -3984,7 +3994,8 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     is the shape behind "just re-run the installer", and it is only actionable
     if the update says so.
     """
-    if _studio_deps.running_outside_managed_venv((STUDIO_HOME / "unsloth_studio",)):
+    managed_venv = _studio_stage.runtime_root(STUDIO_HOME) / "unsloth_studio"
+    if _studio_deps.running_outside_managed_venv((managed_venv,)):
         # This CLI does not live in the venv the update just wrote, so its own
         # file list describes the wrong tree. Silence beats a wrong answer.
         return
@@ -4113,11 +4124,24 @@ def update(
         "--verify/--no-verify",
         help = "After updating, scan installed files for damage an update cannot repair.",
     ),
+    stage: bool = typer.Option(
+        False,
+        "--stage",
+        hidden = True,
+        help = "Prepare the update in a copy of the environment without touching the live one.",
+    ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
     # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
     # subprocess resolves the same install root the user originally chose.
     _ensure_studio_env_exported()
+    # `is True`, not truthiness: only the CLI resolves the parameter to a bool. An
+    # in-process caller that leaves it out gets typer's OptionInfo sentinel, which
+    # is truthy, and every such call would stage instead of updating.
+    if stage is True:
+        _stage_update(local = local, package = package, verbose = verbose, verify = verify)
+        return
+    staging = _studio_stage.is_staging()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
@@ -4176,9 +4200,16 @@ def update(
     # the gate keeps a second Unsloth process off the venv, the transaction
     # keeps the launcher recoverable across the setup it wraps.
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
-        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        with _WindowsLauncherUpdateTransaction() as launcher_update:
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff or staging):
+        if not staging:
+            _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        # Constructed after the idle scan, which test_studio_runtime_gate pins: the
+        # transaction wraps the mutation, so nothing of it may precede the gate.
+        launcher_transaction = _WindowsLauncherUpdateTransaction()
+        if staging:
+            # A staged run writes no launcher; there is nothing to keep recoverable.
+            launcher_transaction.enabled = False
+        with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
             # This deliberately runs even with --no-verify: the broad package scan
             # is optional, but a successful update must leave its own launcher usable.
@@ -4187,11 +4218,37 @@ def update(
                 _fail_if_install_damaged(package)
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
-    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+    if staging or os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
         if verbose:
             typer.echo("  refresh-launcher  skipped (Tauri update)")
         return
     _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _stage_update(*, local: bool, package: str, verbose: bool, verify: bool) -> None:
+    if local:
+        typer.echo("Error: --stage cannot be combined with --local.", err = True)
+        raise typer.Exit(2)
+    if _studio_stage.is_staging():
+        typer.echo("Error: --stage cannot run inside a staged update.", err = True)
+        raise typer.Exit(2)
+    args = ["--package", package]
+    if verbose:
+        args.append("--verbose")
+    if not verify:
+        args.append("--no-verify")
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        try:
+            result = _studio_stage.stage(STUDIO_HOME, update_args = args, echo = typer.echo)
+        except _studio_stage.StageError as exc:
+            typer.echo(f"[TAURI:ERROR] {exc}")
+            raise typer.Exit(1)
+        except Exception as exc:
+            # convert staging exceptions to the structured error stream consumed by the desktop.
+            typer.echo(f"[TAURI:ERROR] {type(exc).__name__}: {exc}")
+            raise typer.Exit(1)
+    typer.echo(f"Staged Unsloth Studio {result['backend_version']} at {result['root']}")
 
 
 class _WindowsLauncherUpdateTransaction:
@@ -4735,8 +4792,11 @@ def verify_install(
 
     Exits 0 when complete, 1 otherwise. setup.sh / setup.ps1 use the exit code
     to decide whether the "already up to date" fast path may be taken.
+
+    Scans the installed files too, unlike `desktop-capabilities`: nothing times
+    this one out.
     """
-    state = _install_state()
+    state = _install_state(deep = True)
 
     if json_output:
         typer.echo(json.dumps(state, sort_keys = True))

@@ -25,7 +25,14 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
-from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import (
+    BATCH_MAX,
+    BATCH_MIN,
+    CACHE_RAM_MAX_MIB,
+    CTX_CHECKPOINTS_MAX,
+    PARALLEL_MAX,
+    PARALLEL_MIN,
+)
 from loggers import get_logger
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
@@ -72,6 +79,7 @@ from storage.studio_db import (
     upsert_chat_legacy_imports,
     upsert_chat_message,
     upsert_chat_settings_merge,
+    upsert_chat_settings_merge_if_current,
     write_chat_thread_settings,
     upsert_chat_thread,
 )
@@ -113,8 +121,8 @@ class ChatRagKnowledgeBaseSource(BaseModel):
 class ChatThreadSettings(BaseModel):
     """The chat settings captured per thread; a thread storing none uses the global ones."""
 
-    # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take
-    # a bare NaN, which is then stored as a token no strict reader can parse back.
+    # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take a bare NaN, stored as a token no
+    # strict reader can parse back.
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     reasoningEnabled: Optional[bool] = None
@@ -300,9 +308,9 @@ class ChatThreadPatch(BaseModel):
     # Applies just the fields it names. For the writer that knows what changed but not
     # what else the row holds, which is any write made before the row has been read.
     settingsPatch: Optional[ChatThreadSettings] = None
-    # Orders this writer's snapshot writes against its OWN earlier ones, so a keepalive
-    # sent on unload cannot be undone by a PATCH the server already had in hand. Never
-    # compared across writers: two browsers' counters mean nothing to each other.
+    # Orders this writer's snapshot writes against its OWN earlier ones.
+    # So a keepalive sent on unload cannot be undone by a PATCH the server already had in hand. Never compared across
+    # writers: two browsers' counters mean nothing to each other.
     settingsSeq: Optional[int] = None
     settingsWriter: Optional[str] = None
 
@@ -400,12 +408,9 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
-    # allow_inf_nan: json.loads accepts bare NaN and Infinity, and pydantic takes them
-    # for a float, so `{"temperature": NaN}` used to be stored as a bare NaN token in
-    # value_json. Python reads that back, so the row is never quarantined, while the
-    # response model renders it as null: the value is silently lost and the row is not
-    # valid JSON for any strict reader. Refuse it at the door instead, the way
-    # models/training.py already does for every numeric training field.
+    # allow_inf_nan: json.loads accepts bare NaN and Infinity.
+    # A bare NaN token in value_json reads back fine but renders as null, so refuse it at the door the way
+    # models/training.py does.
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     temperature: Optional[float] = None
@@ -438,7 +443,15 @@ class ChatPresetLoadConfig(BaseModel):
     # preset carrying a loadConfig, including one that only pinned nParallel.
     nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    # Same forbid trap as nBatch/nUbatch: normalizePresetLoadConfig always emits these
+    # keys (null included). Without them, saving a named system-prompt preset that
+    # carries any loadConfig 400s the whole customPresets write (#9879).
+    loadMode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = None
+    specDraftCacheDtype: Optional[str] = None
+    ctxCheckpoints: NotABoolean = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cacheRam: NotABoolean = Field(default = None, ge = -1, le = CACHE_RAM_MAX_MIB)
     tensorParallel: Optional[bool] = None
+    disableVision: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
@@ -527,9 +540,8 @@ class ChatSettingsPayload(BaseModel):
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
-    # Local GGUF auto-compaction. Off omits context_overflow so a full window
-    # errors instead of silently dropping history. contextPolicy/headroom are
-    # the per-request overrides for UNSLOTH_CONTEXT_POLICY and
+    # Off omits context_overflow, so a full window errors instead of silently dropping history.
+    # contextPolicy/headroom are the per-request overrides for UNSLOTH_CONTEXT_POLICY and
     # ROLLING_COMPACTION_HEADROOM_RATIO.
     autoCompactEnabled: Optional[bool] = None
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
@@ -558,6 +570,38 @@ class ChatSettingsResponse(BaseModel):
     settings: dict[str, Any]
 
 
+class ConditionalChatSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    expected: ChatSettingsPayload
+    expectedAbsent: list[str] = Field(default_factory = list)
+    expectedAbsentPaths: list[list[str]] = Field(default_factory = list)
+    patch: ChatSettingsPayload
+
+    @field_validator("expectedAbsent")
+    @classmethod
+    def _known_absent_fields(cls, value: list[str]) -> list[str]:
+        unknown = set(value) - set(ChatSettingsPayload.model_fields)
+        if unknown:
+            unknown_names = ", ".join(sorted(unknown))
+            raise ValueError(f"Unknown chat settings field(s): {unknown_names}")
+        return value
+
+    @field_validator("expectedAbsentPaths")
+    @classmethod
+    def _known_absent_paths(cls, value: list[list[str]]) -> list[list[str]]:
+        for path in value:
+            if len(path) < 2 or any(not segment for segment in path):
+                raise ValueError("Expected-absent paths require at least two non-empty segments")
+            if path[0] not in ChatSettingsPayload.model_fields:
+                raise ValueError(f"Unknown chat settings field: {path[0]}")
+        return value
+
+
+class ConditionalChatSettingsResponse(ChatSettingsResponse):
+    applied: bool
+
+
 class ChatMessagesBatchRequest(BaseModel):
     threadIds: list[str]
 
@@ -580,6 +624,17 @@ class ChatImportLedgerRecordResponse(BaseModel):
     # (ON CONFLICT DO NOTHING skips already-recorded ids).
     accepted: int
     inserted: int
+
+
+# Both conflicts are 409 and mean opposite things (protected: stop resending; thread
+# collision: surface the failure), so they are told apart by a header, not by `detail`.
+# main.py must expose the header for a cross-origin Studio to read it.
+CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
+
+
+def _conflict_headers(exc: Exception) -> dict:
+    kind = "protected" if isinstance(exc, ChatMessageProtectedError) else "thread-collision"
+    return {CONFLICT_KIND_HEADER: kind}
 
 
 @router.get("/threads", response_model = ChatThreadListResponse)
@@ -738,7 +793,7 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         try:
             research_runs_db.request_cancel(run_id)
         except Exception:  # noqa: BLE001
-            pass  # no row to update, which is the ordinary case after a delete
+            pass
 
 
 def _cancel_active_generations(thread_ids: list[str]) -> None:
@@ -798,10 +853,8 @@ async def delete_threads(
     _cancel_research_runs(request, deleted_research_run_ids)
     _cancel_chat_generation_runs(request, deleted_chat_run_ids)
     _cancel_active_generations(payload.ids)
-    # Keyed by thread id, so nothing can reference the folder once the thread
-    # is gone. Clean it up rather than leaking one per chat.
-    # In a worker: right after an upgrade this also runs the legacy move, and a
-    # cross-filesystem copy on the event loop stops every other request.
+    # Keyed by thread id, so the folder is unreachable once the thread is gone; done in a worker because the
+    # post-upgrade legacy move can be a cross-filesystem copy.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
     # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
     # drop them rather than leaking a scope per deleted chat.
@@ -822,13 +875,9 @@ def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) ->
     except Exception:
         return
     for thread_id in thread_ids or []:
-        # As next to the sandbox removal: the rows went first and the sandbox pass ran in
-        # between, so another tab can have recreated this id and already be archiving
-        # turns under it. That chat is alive, and its memory is not this delete's to take
-        # -- but the conversation the user DID delete is, and skipping the scope kept it
-        # too, recallable under the live id with nothing left to sweep it. So cut at the
-        # instant the delete was accepted instead of skipping: everything archived before
-        # it belongs to the deleted conversation, everything after to the new one.
+        # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this id, and
+        # skipping the scope left the deleted conversation recallable.
+        # Everything archived before that instant belongs to the deleted conversation, everything after to the new one.
         recreated = get_chat_thread(str(thread_id)) is not None
         if recreated and not cutoff:
             continue
@@ -1031,6 +1080,7 @@ def delete_attachment(
             safe_curated_detail(exc),
             event = "chat_history.delete_attachment_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
@@ -1098,10 +1148,8 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
             )
         )
     except ProjectWorkspaceError as exc:
-        # A project is the only thing Unsloth writes to Documents, so a folder it
-        # cannot create there fails here and nowhere else. Only this error, and
-        # only its own path: the same upsert also opens the database, which
-        # lives somewhere else entirely.
+        # A project is the only thing Unsloth writes to Documents, so only this error and only its own path: the same
+        # upsert also opens the database, which lives elsewhere.
         raise log_and_http_error(
             exc,
             500,
@@ -1256,8 +1304,6 @@ async def delete_project(
             lambda: delete_chat_project(project_id, delete_files = False)
         )
     except Exception:
-        # the row transaction may still have committed, and an ownerless scope has to be
-        # retired by someone; periodic reconciliation is the fallback if this also fails
         try:
             if await run_in_threadpool(get_chat_project, project_id) is None:
                 await run_in_threadpool(_delete_project_rag_sources, project_id)
@@ -1280,8 +1326,7 @@ async def delete_project(
         list(project.get("activeChatGenerationRunIds") or []),
     )
     _cancel_active_generations(member_ids)
-    # before any workspace work: the row is already gone, so a later failure must not
-    # leave the scope owned by nothing
+    # before any workspace work: the row is already gone.
     try:
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
@@ -1503,8 +1548,8 @@ async def delete_project(
                 shared,
             )
             if not idle:
-                # Nothing else would come back to it: the collection otherwise
-                # waits for some later delete that may never happen.
+                # Nothing else comes back to it: the collection would otherwise wait for a later delete
+                # that may never happen.
                 finish_workspace_delete_when_idle(project_id, session_id = shared)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
@@ -1577,6 +1622,7 @@ def save_thread_message(
             safe_curated_detail(exc),
             event = "chat_history.save_message_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
@@ -1620,6 +1666,7 @@ def replace_thread_messages(
             safe_curated_detail(exc),
             event = "chat_history.replace_messages_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
@@ -1693,10 +1740,10 @@ async def clear_history(
                 False,
                 snapshot_and_fence_registrations(),
             )
-        # Answered by the transaction itself. Read separately beforehand it is a guess:
-        # a concurrent retry of the same operation id sees the same unrecorded ledger,
-        # and the one BEGIN IMMEDIATE puts second replays while still believing it
-        # cleared. `replayed` here is whichever the transaction actually did.
+        # Answered by the transaction itself: read beforehand it is a guess, and a concurrent retry of the same
+        # operation id would replay while believing it cleared.
+        # The one BEGIN IMMEDIATE puts second replays while still believing it cleared; `replayed` is whichever the
+        # transaction actually did.
         cleared, cleared_runs, cleared_chat_runs, replayed = clear_chat_history_with_replay_status(
             payload.ids,
             operation_id = payload.operationId,
@@ -1714,14 +1761,11 @@ async def clear_history(
                 unreaped_clear_operation_image_ids(payload.operationId),
             )
         snapshot = snapshot_and_fence_registrations()
-        # Recorded before the reap runs, so a crash in the seconds of cleanup that follow
-        # leaves a retry able to finish exactly this set and nothing wider.
+        # Recorded before the reap runs.
         record_clear_operation_reap_scope(payload.operationId, snapshot)
         return cleared, cleared_runs, cleared_chat_runs, False, snapshot
 
-    # The clear reports what it deleted, which is what gets cleaned up: a thread
-    # added between the listing above and the delete is gone too, and its
-    # sandbox would otherwise be stranded.
+    # The clear reports what it deleted.
     (
         cleared,
         cleared_runs,
@@ -1729,9 +1773,8 @@ async def clear_history(
         replayed,
         reapable_image_ids,
     ) = await run_in_threadpool(_clear_rows)
-    # A chat started between the listing and the transaction is in `cleared`
-    # but was never cancelled, and a generation still running would dispatch a
-    # tool and rebuild the sandbox this call is about to remove.
+    # A chat started between the listing and the transaction is in `cleared` but was never
+    # cancelled, so its live generation could rebuild the sandbox this call removes.
     listed = set(thread_ids)
     late = [thread_id for thread_id in cleared if thread_id not in listed]
     _cancel_active_generations(thread_ids)
@@ -1745,29 +1788,12 @@ async def clear_history(
     await run_in_threadpool(
         _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
-    # "Clear all chats" is the common bulk delete, so it has to clean up the
-    # same folders DELETE /threads does; otherwise every sandbox is stranded.
-    # delete_files matches DELETE /threads: off by default, since the files are
-    # the user's, but a caller clearing everything can ask for them too.
+    # "Clear all chats" is the common bulk delete.
+    # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
-    # Search thumbnails are keyed by id, not thread, so this is the one place they
-    # can be reaped; they reveal what was searched for. Runs for both _clear_rows
-    # branches -- each drops every thread -- so this
-    # is NOT gated on `payload is None`, which the frontend never sends and which
-    # therefore meant the reap never ran.
-    #
-    # A REPLAY must not reap the registry wholesale: the transaction above deliberately keeps
-    # chats created since the original clear, and this registry is global, so wiping it takes
-    # the images of a chat this call is not deleting and leaves its cards 404ing out of
-    # thumbnail_bytes. Ordinarily it has nothing to do -- the request that recorded the
-    # operation reaps them, and Starlette does not cancel a handler when the client hangs up,
-    # so the attempt this retry replaces still runs to here.
-    #
-    # The exception is a process that DIED in between. The operation is recorded and the
-    # thumbnails of every deleted chat are still on disk, saying what was searched for, and
-    # only a replay is left to notice. `reapable_image_ids` is then the original clear's own
-    # snapshot, read back off the ledger, so finishing its reap is bounded to exactly what it
-    # was responsible for and cannot reach a newer chat's images.
+    # Search thumbnails are keyed by id, not thread.
+    # reapable_image_ids is the original clear's own snapshot off the ledger, so a replay's reap cannot reach a newer
+    # chat's images.
     if not replayed or reapable_image_ids:
         from core.inference.search_images import clear_cache
         await run_in_threadpool(clear_cache, reapable_image_ids)
@@ -1786,16 +1812,42 @@ def get_settings(current_subject: str = Depends(get_current_subject)):
     return ChatSettingsResponse(settings = list_chat_settings())
 
 
+@router.post("/settings/compare-and-set", response_model = ConditionalChatSettingsResponse)
+def compare_and_set_settings(
+    payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
+):
+    # A raw dict, as put_settings takes: automatic validation of a typed body
+    # renders the offending input back, and Starlette dumps with allow_nan =
+    # False, so a rejected NaN would 500 a request the validator refused.
+    try:
+        parsed = ConditionalChatSettingsPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
+    try:
+        settings, applied = upsert_chat_settings_merge_if_current(
+            parsed.expected.model_dump(exclude_unset = True),
+            parsed.patch.model_dump(exclude_unset = True),
+            parsed.expectedAbsent,
+            parsed.expectedAbsentPaths,
+        )
+        return ConditionalChatSettingsResponse(settings = settings, applied = applied)
+    except CorruptSettingsError as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.compare_and_set_settings_conflict",
+            log = logger,
+        ) from exc
+
+
 @router.put("/settings", response_model = ChatSettingsResponse)
 def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_current_subject)):
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        # safe_validation_errors, not exc.errors(): the raw errors echo the offending
-        # input, and Starlette's JSONResponse dumps with allow_nan = False, so a
-        # rejected NaN or Infinity made the 400 handler itself unrenderable and the
-        # caller got a 500 for a request the validator had already refused. It also
-        # bounds a multi-megabyte value being quoted back.
+        # safe_validation_errors, not exc.errors(): raw errors echo the input, and Starlette dumps with allow_nan=False,
+        # so a rejected NaN made the 400 handler itself 500.
         raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
@@ -1873,11 +1925,7 @@ def fork_thread(
         # threadpool lets run concurrently. Report it gone rather than as a server fault.
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = list_chat_messages(payload.newThreadId)
-    # Best-effort OpenAI container snapshot. Stub: a follow-up patch can
-    # call /v1/containers list+download / create+upload here and patch
-    # the new openaiCodeExecContainerId. For v1 we always start clean
-    # and surface the same warning regardless of provider so the UI can
-    # show a consistent "sandbox starts fresh" toast.
+    # Stub: v1 always starts a fresh container and surfaces the same warning for every provider.
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."

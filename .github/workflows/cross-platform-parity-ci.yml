@@ -67,6 +67,12 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
+      # row here is the sole place the keep path meets a real loader. install_*.py
+      # above is only the entrypoint; these two are the rest of what it loads.
+      - 'tests/studio/install/test_keep_install_backcompat_9979.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
@@ -124,6 +130,12 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
+      # row here is the sole place the keep path meets a real loader. install_*.py
+      # above is only the entrypoint; these two are the rest of what it loads.
+      - 'tests/studio/install/test_keep_install_backcompat_9979.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
@@ -212,6 +224,7 @@ jobs:
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
           tests/test_installer_profile_hardening.py
+          tests/studio/install/test_keep_install_backcompat_9979.py
           -q -rs
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
