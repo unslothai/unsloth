@@ -784,19 +784,20 @@ def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch, tmp_pa
     sandbox = _load_sandbox_module()
 
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_rlimit_python_path", lambda: "/usr/bin/python3")
+    monkeypatch.setattr(sandbox, "_linux_real_uid_task_count", lambda: 321)
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "77")
     argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "print(1)"], str(tmp_path))
     sep = argv.index("--")
     inner = argv[sep + 1 :]
     # Inner argv now starts with a python wrapper, not the user's argv.
     assert inner[0].endswith("python") or inner[0].endswith("python3")
-    assert inner[1:3] == ["-I", "-c"]
-    assert "RLIMIT_NPROC" in inner[3]
-    assert "execvp" in inner[3]
-    # The override must be baked into the script: _build_safe_env strips
-    # env vars, so reading UNSLOTH_STUDIO_SANDBOX_NPROC at runtime inside
-    # the namespace would always see the default.
-    assert "nproc = 77" in inner[3]
+    assert inner[1:4] == ["-I", "-S", "-c"]
+    assert "RLIMIT_NPROC" in inner[4]
+    assert "execvp" in inner[4]
+    # The host baseline plus the configured additional budget must be baked
+    # into the script: _build_safe_env strips the operator override.
+    assert "nproc = 398" in inner[4]
     # Original argv is appended after the wrapper.
     assert inner[-3:] == ["/usr/bin/python3", "-c", "print(1)"]
 
@@ -806,10 +807,39 @@ def test_linux_bwrap_nproc_falls_back_to_default_when_env_invalid(monkeypatch, t
     sandbox = _load_sandbox_module()
 
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_rlimit_python_path", lambda: "/usr/bin/python3")
+    monkeypatch.setattr(sandbox, "_linux_real_uid_task_count", lambda: 12)
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "not-a-number")
     argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "1"], str(tmp_path))
     inner = argv[argv.index("--") + 1 :]
-    assert "nproc = 10000" in inner[3]
+    assert "nproc = 10012" in inner[4]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
+def test_linux_bwrap_skips_nproc_when_host_uid_count_is_unavailable(monkeypatch, tmp_path):
+    sandbox = _load_sandbox_module()
+
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_rlimit_python_path", lambda: "/usr/bin/python3")
+    monkeypatch.setattr(sandbox, "_linux_real_uid_task_count", lambda: None)
+    requested = ["/usr/bin/python3", "-c", "print(1)"]
+    argv = sandbox._linux_bwrap_argv(requested, str(tmp_path))
+
+    assert argv[argv.index("--") + 1 :] == requested
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
+def test_linux_bwrap_skips_nproc_when_only_a_writable_python_is_available(
+    monkeypatch, tmp_path
+):
+    sandbox = _load_sandbox_module()
+
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_rlimit_python_path", lambda: None)
+    requested = ["/project/.venv/bin/python", "-c", "print(1)"]
+    argv = sandbox._linux_bwrap_argv(requested, str(tmp_path))
+
+    assert argv[argv.index("--") + 1 :] == requested
 
 
 # ---------------------------------------------------------------------------

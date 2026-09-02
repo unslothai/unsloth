@@ -2515,6 +2515,21 @@ case "$OS" in
         bubblewrap_usable() {
             BWRAP_BIN="$(command -v bwrap 2>/dev/null)" || return 1
             bubblewrap_path_trusted "$BWRAP_BIN" || return 1
+            PYTHON_BIN="$(command -v python3 2>/dev/null)" || return 1
+            "$PYTHON_BIN" -I -S -c '
+import ctypes
+import ctypes.util
+import os
+
+library_name = ctypes.util.find_library("seccomp") or "libseccomp.so.2"
+library = ctypes.CDLL(library_name)
+for symbol in ("seccomp_init", "seccomp_rule_add", "seccomp_export_bpf"):
+    getattr(library, symbol)
+if not hasattr(os, "memfd_create"):
+    raise RuntimeError("memfd_create is unavailable")
+fd = os.memfd_create("unsloth-studio-sandbox-install-probe")
+os.close(fd)
+' </dev/null >/dev/null 2>&1 || return 1
             TRUE_BIN="$(command -v true 2>/dev/null)" || TRUE_BIN="/usr/bin/true"
             set -- "$BWRAP_BIN"
             if bubblewrap_requires_keep_groups; then

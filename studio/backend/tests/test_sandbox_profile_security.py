@@ -40,6 +40,9 @@ def test_installer_bwrap_probe_uses_production_mount_primitives():
     assert "bubblewrap_path_trusted" in probe
     assert "bubblewrap_requires_keep_groups" in probe
     assert "--keep-groups" in probe
+    assert 'find_library("seccomp") or "libseccomp.so.2"' in probe
+    assert 'hasattr(os, "memfd_create")' in probe
+    assert '"$PYTHON_BIN" -I -S -c' in probe
 
 
 def test_python_read_paths_rejects_filesystem_roots(monkeypatch):

@@ -1576,7 +1576,7 @@ _NPROC_FLOOR = 64
 
 
 def _resolve_nproc_limit() -> int:
-    """Read UNSLOTH_STUDIO_SANDBOX_NPROC on the host; default 10000.
+    """Read the sandbox's additional task budget; default 10000.
 
     ``_build_safe_env`` is a strict whitelist, so the env var is not
     propagated into the sandbox. Bake the value into the wrapper at
@@ -1601,6 +1601,76 @@ def _resolve_nproc_limit() -> int:
     return value
 
 
+def _linux_real_uid_task_count() -> int | None:
+    """Count tasks currently charged to this process's real Linux UID.
+
+    ``RLIMIT_NPROC`` is accounted against the real host UID even after
+    Bubblewrap enters a user namespace. The inner limit therefore needs to
+    include the tasks that UID already owns, or a busy host can exhaust the
+    limit before the sandbox starts its first worker.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        real_uid = os.getuid()
+        process_entries = os.scandir("/proc")
+    except (AttributeError, OSError):
+        return None
+
+    total = 0
+    saw_process = False
+    with process_entries:
+        for entry in process_entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                with open(os.path.join(entry.path, "status"), encoding = "utf-8") as status_file:
+                    uid = None
+                    threads = None
+                    for line in status_file:
+                        if line.startswith("Uid:"):
+                            fields = line.split()
+                            uid = int(fields[1]) if len(fields) >= 2 else None
+                        elif line.startswith("Threads:"):
+                            fields = line.split()
+                            threads = int(fields[1]) if len(fields) >= 2 else None
+                        if uid is not None and threads is not None:
+                            break
+            except (OSError, ValueError):
+                # Processes can exit between scandir and status reads.
+                continue
+            if uid == real_uid:
+                saw_process = True
+                total += max(1, threads or 1)
+    return total if saw_process else None
+
+
+def _linux_nproc_rlimit_target() -> int | None:
+    """Return the host-UID baseline plus this sandbox's task budget."""
+    baseline = _linux_real_uid_task_count()
+    if baseline is None:
+        logger.warning("Could not count host UID tasks; leaving RLIMIT_NPROC unchanged")
+        return None
+    return baseline + _resolve_nproc_limit()
+
+
+def _linux_rlimit_python_path() -> str | None:
+    """Return a trusted interpreter that can run the pre-exec limit wrapper."""
+    candidates = (
+        getattr(sys, "_base_executable", None),
+        os.path.join(sys.base_prefix, "bin", "python3"),
+        "/usr/bin/python3",
+        "/bin/python3",
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        resolved = os.path.realpath(candidate)
+        if _linux_executable_path_is_trusted(resolved):
+            return resolved
+    return None
+
+
 # Import-time sanity: catch the case where a maintainer accidentally
 # adds a literal `{` to the template (e.g. a dict literal) which would
 # turn .format() into a KeyError at every tool call.
@@ -1612,22 +1682,24 @@ assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(
 def _linux_inner_rlimit_wrapper(inner_argv: list[str]) -> list[str]:
     """Wrap ``inner_argv`` with a tiny Python that sets RLIMIT_NPROC.
 
-    Why: ``_sandbox_preexec_for_bwrap`` cannot call ``setrlimit(NPROC)``
-    on the parent because that limit is per-real-UID and bwrap's setuid
-    helper would EAGAIN on busy multi-tenant hosts where the operator
-    already runs many processes. Inside the bwrap user namespace the
-    counter is per-mapped-UID (typically ``nobody``), so applying NPROC
-    there does not collide with the host UID's process count. The
-    wrapper runs in the namespace, clamps NPROC to the configured value
-    (or the inherited hard cap, whichever is smaller), then ``execvp``s
-    the original argv so the LLM-controlled command runs with the cap.
+    Linux charges this limit to the real host UID, not the user-namespace
+    mapping. Bake the observed host-UID task count into the target so the
+    configured value is an additional sandbox budget rather than a total that
+    a busy host may already exceed. If ``/proc`` cannot be read reliably, do
+    not install a misleading or immediately exhausted limit.
     """
-    exe = os.path.abspath(os.path.normpath(sys.executable))
-    script = _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = _resolve_nproc_limit())
+    exe = _linux_rlimit_python_path()
+    if exe is None:
+        logger.warning("No trusted Python executable is available for the RLIMIT_NPROC wrapper")
+        return inner_argv
+    target = _linux_nproc_rlimit_target()
+    if target is None:
+        return inner_argv
+    script = _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = target)
     # Isolated mode keeps the model-writable CWD and PYTHONPATH from shadowing
     # stdlib modules imported by this trusted wrapper. execvp then launches the
     # requested command with its normal environment and import behavior.
-    return [exe, "-I", "-c", script, *inner_argv]
+    return [exe, "-I", "-S", "-c", script, *inner_argv]
 
 
 def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
