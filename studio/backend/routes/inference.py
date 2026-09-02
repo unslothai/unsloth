@@ -7069,6 +7069,7 @@ def _target_effective_context_length(
     is_gguf: bool,
     gguf_variant: Optional[str] = None,
     override_id: Optional[str] = None,
+    audio_type: Optional[str] = None,
 ) -> Optional[int]:
     """The context the switch will actually ask this target to load with.
 
@@ -7078,6 +7079,11 @@ def _target_effective_context_length(
     the two cannot drift. A non-positive resolution means the loader decides, which is
     not something to refuse on, so it falls back to the declared window.
     """
+    # NativeAudioBackend._context_length discards the requested value for both MOSS
+    # types and runs at the model's own window, so a saved override is not the limit
+    # there and reading it would refuse or admit against a number nothing applies.
+    if audio_type in _CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES:
+        return _target_native_context_length(load_path, is_gguf, gguf_variant)
     try:
         from utils.openai_auto_switch_settings import (
             resolve_fit_max_seq_length,
@@ -7120,9 +7126,16 @@ def _target_speech_audio_type(
             # reaches it, so on Apple Silicon this swap would evict for nothing.
             if _host_serves_mlx():
                 return None
+            from core.inference.native_audio import REMOTE_CODE_AUDIO_TYPES
+
             audio_type = detect_audio_type(
                 load_path, hf_token = os.environ.get("HF_TOKEN"), local_files_only = True
             )
+            # The switch builds its LoadRequest from the stored override, which carries no
+            # trust_remote_code, and NativeAudioBackend.load_model refuses these three
+            # without it -- after the resident model is already gone. Never accept one.
+            if audio_type in REMOTE_CODE_AUDIO_TYPES:
+                return None
             return audio_type if audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES else None
         from utils.models.gguf_metadata import read_gguf_tts_audio_type
 
@@ -7962,8 +7975,7 @@ async def _maybe_auto_switch_model(
     audio_preflight: Optional[dict] = None,
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
-    speech_has_instructions: bool = False,
-    speech_prompt_tokens: Optional[int] = None,
+    speech_budget: Optional[dict] = None,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -8306,17 +8318,27 @@ async def _maybe_auto_switch_model(
                 )
             # Same rule as the post-load check below, applied before the swap: MiniMax
             # needs a description, and finding that out afterwards costs the resident model.
-            if speech_prompt_tokens is not None:
+            if speech_budget is not None:
+                # The same prompt the post-load guard measures: Higgs and MOSS fold
+                # instructions (and MOSS the language) in with the text, so counting the
+                # text alone would pass a request that then 400s with the model gone.
                 target_context = await asyncio.to_thread(
                     _target_effective_context_length,
                     target_id,
                     target_is_gguf,
                     variant,
                     override_id,
+                    speech_type,
                 )
-                if target_context and _speech_budget_exhausted(
-                    target_context, speech_prompt_tokens
-                ):
+                prompt_tokens = _byte_fallback_prompt_tokens(
+                    _native_tts_prompt_for_budget(
+                        speech_budget.get("text") or "",
+                        speech_type,
+                        speech_budget.get("instructions"),
+                        speech_budget.get("language"),
+                    )
+                )
+                if target_context and _speech_budget_exhausted(target_context, prompt_tokens):
                     raise HTTPException(
                         status_code = 400,
                         detail = openai_error_body(
@@ -8328,7 +8350,9 @@ async def _maybe_auto_switch_model(
                             param = "input",
                         ),
                     )
-            if speech_type == "minimax_music3" and not speech_has_instructions:
+            if speech_type == "minimax_music3" and not str(
+                (speech_budget or {}).get("instructions") or ""
+            ).strip():
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
@@ -16537,6 +16561,8 @@ _TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
     )
 )
 _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
+# NativeAudioBackend._context_length ignores the requested window for these.
+_CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano"))
 _MINIMAX_NEEDS_DESCRIPTION = "MiniMax Music 3 requires a music description in addition to lyrics."
 
 
@@ -16562,15 +16588,17 @@ async def _generate_tts_wav(
         current_subject,
         claim_resident = False,
         require_speech = True,
-        speech_has_instructions = bool(str(payload.audio_instructions or "").strip()),
-        # So a prompt that fits neither model is refused before the swap, not after it.
-        # Deliberately not _prompt_token_estimate: that reads the *resident* tokenizer,
-        # and this count is compared with the *target's* context. The pre-load answer has
-        # to be the one the post-switch guard will reach for the target, which for a
-        # llama.cpp model is this byte-level bound, or the two disagree and the
-        # disagreement is paid for with the resident model.
-        speech_prompt_tokens = (
-            None if requested_model == _RELOAD_ONLY_MODEL else _byte_fallback_prompt_tokens(text)
+        # The fields the preflight needs to rebuild the prompt the target will be
+        # measured by; it cannot be counted here, because the codec that decides which
+        # fields count is only known once the target has been probed.
+        speech_budget = (
+            None
+            if requested_model == _RELOAD_ONLY_MODEL
+            else {
+                "text": text,
+                "instructions": payload.audio_instructions,
+                "language": payload.audio_language,
+            }
         ),
     )
     # Again, now that a context exists to measure against. The check above runs before the

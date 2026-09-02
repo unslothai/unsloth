@@ -3738,6 +3738,70 @@ def test_the_pre_load_budget_uses_the_count_the_target_will_be_measured_by(monke
     assert inference_route._byte_fallback_prompt_tokens(text) == 40
 
 
+def test_a_remote_code_speech_target_is_refused(monkeypatch):
+    # The switch builds its load from the stored override, which carries no
+    # trust_remote_code, and NativeAudioBackend.load_model refuses these three without
+    # it -- after the resident model is gone. They must never pass the gate.
+    from utils.models import model_config
+
+    for audio_type in ("moss_tts_local", "moss_tts_nano", "higgs_tts3"):
+        monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_k: audio_type)
+        assert inference_route._target_speech_audio_type("/srv/moss", False) is None
+    # A native type that does not need remote code still switches.
+    monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_k: "higgs_tts2")
+    assert inference_route._target_speech_audio_type("/srv/higgs2", False) == "higgs_tts2"
+
+
+def test_moss_ignores_a_saved_context_override(monkeypatch):
+    # NativeAudioBackend._context_length discards the requested window for both MOSS
+    # types, so the override is not the limit and must not be read as one.
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a: pytest.fail("override read for a MOSS target"),
+    )
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 4096)
+    for audio_type in ("moss_tts_local", "moss_tts_nano"):
+        assert (
+            inference_route._target_effective_context_length(
+                "/srv/moss", False, None, None, audio_type
+            )
+            == 4096
+        )
+
+
+def test_the_preflight_counts_the_fields_the_target_folds_in(monkeypatch):
+    # Higgs and MOSS build their prompt from instructions (and MOSS the language) as
+    # well as the text, so a long instructions field has to be counted before the swap.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/higgs", None, "org/higgs"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "higgs_tts2")
+    monkeypatch.setattr(inference_route, "_target_effective_context_length", lambda *_a: 2048)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/higgs",
+                object(),
+                "t",
+                require_speech = True,
+                speech_budget = {"text": "hi", "instructions": "x" * 4000},
+            )
+        )
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # the resident model survives
+
+
 def test_a_saved_context_override_wins_over_the_declared_window(monkeypatch):
     # The load applies the saved override, so the preflight has to judge against it:
     # reading the header alone refuses prompts the larger saved context accepts.
@@ -3817,7 +3881,7 @@ def test_a_prompt_too_long_for_the_target_is_refused_before_the_switch(monkeypat
                 object(),
                 "t",
                 require_speech = True,
-                speech_prompt_tokens = 9000,
+                speech_budget = {"text": "x" * 9000},
             )
         )
     assert exc.value.status_code == 400
@@ -3843,7 +3907,7 @@ def test_a_prompt_that_fits_the_target_still_switches(monkeypatch):
             object(),
             "t",
             require_speech = True,
-            speech_prompt_tokens = 100,
+            speech_budget = {"text": "hi"},
         )
     )
     assert len(rec.calls) == 1
@@ -3868,7 +3932,7 @@ def test_an_unreadable_target_context_does_not_block_the_switch(monkeypatch):
             object(),
             "t",
             require_speech = True,
-            speech_prompt_tokens = 9_000_000,
+            speech_budget = {"text": "x" * 9000},
         )
     )
     assert len(rec.calls) == 1
@@ -3917,7 +3981,7 @@ def test_minimax_with_a_description_still_switches(monkeypatch):
             object(),
             "t",
             require_speech = True,
-            speech_has_instructions = True,
+            speech_budget = {"text": "hi", "instructions": "a warm ballad"},
         )
     )
     assert len(rec.calls) == 1
