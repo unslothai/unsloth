@@ -53,9 +53,7 @@ def _enable_verbose_access_logs() -> None:
 _CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
 _CMD_SHIM_MAX_BYTES = 8192
 
-# Written at the master root by install.sh --portable / --root. Same constant as
-# storage_roots.PORTABLE_MARKER, duplicated because the CLI must not import the
-# backend package.
+# storage_roots.PORTABLE_MARKER, duplicated: the CLI must not import the backend.
 _PORTABLE_MARKER = ".unsloth-portable-root"
 
 
@@ -78,13 +76,9 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """
     if (candidate / "share" / "studio.conf").is_file():
         return True
-    # A NESTED portable install (install.sh --root DIR) keeps share/ and bin/ at
-    # the master root, one level above the venv, so neither sentinel below is
-    # beside it and the CLI fell back to ~/.unsloth/studio -- which made
-    # `source <root>/studio/unsloth_studio/bin/activate; unsloth studio`, the
-    # invocation the installer itself suggests, exit with "Unsloth Studio not
-    # set up", or silently drive a different install when a legacy one existed.
-    # storage_roots._infer_studio_home_from_venv accepts the same two spellings.
+    # A NESTED portable install keeps share/ and bin/ one level above the venv,
+    # so neither sentinel below is beside it and the CLI fell back to
+    # ~/.unsloth/studio. Same spellings as _infer_studio_home_from_venv.
     if (candidate / _PORTABLE_MARKER).is_file() or (candidate.parent / _PORTABLE_MARKER).is_file():
         return True
     if platform.system() != "Windows":
@@ -147,7 +141,7 @@ STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
 
 def _portable_master_root() -> Optional[Path]:
-    """Master root of a portable install (install.sh --portable / --root), or None.
+    """Master root of a portable install, or None.
 
     Mirrors storage_roots.unsloth_home(): the environment first, then the
     on-disk marker, which is all a venv-activated CLI has to go on.
@@ -186,11 +180,9 @@ def _ensure_studio_env_exported() -> None:
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    # The native runtimes are siblings of studio/, at the master root, so
-    # STUDIO_HOME/llama.cpp is one level too deep. run.py keeps a non-blank
-    # UNSLOTH_LLAMA_CPP_PATH, so exporting the wrong one here wins everywhere.
-    # _portable_master_root also reads the on-disk marker, which is all an
-    # activated venv has to go on.
+    # The runtimes sit BESIDE studio/, so STUDIO_HOME/llama.cpp is one level too
+    # deep, and run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so the wrong
+    # value exported here wins everywhere.
     _master = _portable_master_root()
     if _master is not None:
         _llama_dir = _master / "llama.cpp"
@@ -4130,12 +4122,8 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
         # The assignments go before `sh`, not before `curl`: that is the form
         # install.sh documents, and it is sh that reads them.
         env = ""
-        # A portable install is named by its MASTER root, not by STUDIO_HOME:
-        # install.sh derives the Studio root, the shim, share/ and every cache
-        # from UNSLOTH_HOME, so passing only UNSLOTH_STUDIO_HOME here would
-        # rebuild the same venv as a plain custom-root install and push bin/,
-        # share/, llama.cpp and the uv, npm and CUDA caches back outside the
-        # root the user chose. Portable mode is POSIX-only, so this branch only.
+        # install.sh derives everything from UNSLOTH_HOME, so passing only
+        # UNSLOTH_STUDIO_HOME would push the caches back outside the root.
         _master_root = _portable_master_root()
         if _master_root is not None:
             env = f"UNSLOTH_HOME={shlex.quote(str(_master_root))} "

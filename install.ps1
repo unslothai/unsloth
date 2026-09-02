@@ -642,8 +642,6 @@ function Install-UnslothStudio {
         # and the host's real one is broken. The next run sweeps the old ones.
     }
 
-    # Refuse the POSIX-only portable options rather than half-applying them.
-    # Message is shared by the flags and by the environment check below it.
     function Deny-PortableMode([string] $Which) {
         Write-StudioLine "ERROR: $Which is not supported on Windows yet." -ForegroundColor Red
         Write-StudioLine "       Portable mode (install.sh --portable / --root) is POSIX-only for now." -ForegroundColor Yellow
@@ -669,11 +667,9 @@ function Install-UnslothStudio {
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
-            # Portable mode is POSIX-only for now. Accepting these silently
-            # would be worse than refusing: the backend DOES honour UNSLOTH_HOME
-            # (storage_roots.py), so the install would land in
-            # %USERPROFILE%\.unsloth\studio while Studio resolved <root>\studio
-            # and found nothing there.
+            # POSIX-only. Accepting silently would split the install: the
+            # backend does honour UNSLOTH_HOME, so this would land in
+            # %USERPROFILE%\.unsloth\studio while Studio resolved <root>\studio.
             "--portable" { return (Exit-InstallFailure (Deny-PortableMode "--portable")) }
             "--root"     { return (Exit-InstallFailure (Deny-PortableMode "--root")) }
             "--package"  {
@@ -695,10 +691,8 @@ function Install-UnslothStudio {
         }
     }
 
-    # The environment form matters more than the flags: `irm ... | iex` takes no
-    # arguments, so UNSLOTH_HOME is how a piped install would ask for portable
-    # mode, and it needs no flag to be set. Left unhandled it produces the exact
-    # split described above, so stop here instead.
+    # `irm ... | iex` takes no arguments, so UNSLOTH_HOME is how a piped install
+    # asks for portable mode; unhandled it produces the same split.
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
         return (Exit-InstallFailure (Deny-PortableMode "UNSLOTH_HOME"))
     }

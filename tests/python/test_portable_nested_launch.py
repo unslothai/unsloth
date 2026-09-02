@@ -3,24 +3,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """A NESTED portable install (`install.sh --root DIR`) must resolve the same way
-from every entry point (issue #8865).
+from every entry point.
 
 Nested is the shape `--root` produces: the venv is at <root>/studio/unsloth_studio
 while bin/, share/ and the native runtimes are siblings of studio/, at <root>.
-Three resolvers derive paths from that layout and each one used to get it wrong:
-
-  * unsloth_cli.commands.studio  -- accepted only share/studio.conf or bin/unsloth
-    BESIDE the venv, both of which live one level higher here, so
-    `source <root>/studio/unsloth_studio/bin/activate; unsloth studio` (the
-    invocation install.sh prints) fell back to ~/.unsloth/studio and exited
-    "Unsloth Studio not set up. Run install.sh first."
-  * node_runtime.managed_node_dir       -- looked in <root>/studio/node while
-    setup.sh installs Node at <root>/node.
-  * stt_ggml_sidecar._managed_whisper_cpp_dir -- same, for <root>/whisper.cpp,
-    and there is no UNSLOTH_WHISPER_CPP_PATH export to bridge it.
+Three resolvers used to get that wrong: unsloth_cli.commands.studio accepted only
+share/studio.conf or bin/unsloth BESIDE the venv, both one level higher here;
+node_runtime.managed_node_dir looked in <root>/studio/node; and
+stt_ggml_sidecar._managed_whisper_cpp_dir the same for whisper.cpp.
 
 Each case runs in a subprocess so the module-level resolvers get a real import.
-Flat portable, legacy and plain custom-root installs are asserted unchanged.
 """
 
 from __future__ import annotations
@@ -36,7 +28,6 @@ REPO = Path(__file__).resolve().parents[2]
 BACKEND = REPO / "studio" / "backend"
 MARKER = ".unsloth-portable-root"
 
-# Managed runtime dirs, as the backend resolves them at launch.
 RUNTIME_PROBE = r"""
 import json, os, sys
 sys.path.insert(0, os.environ["_BACKEND"])
@@ -51,8 +42,6 @@ print("__JSON__" + json.dumps({
 }))
 """
 
-# The CLI, imported with sys.prefix pointing at the installed venv -- which is
-# what an activated shell gives it, with none of the installer's environment.
 CLI_PROBE = r"""
 import json, os, shlex, sys
 sys.prefix = sys.exec_prefix = os.environ["_PREFIX"]
@@ -119,7 +108,6 @@ def main() -> int:
         home = tmp / "home"
         home.mkdir()
 
-        # ── 1. Nested portable: the runtimes are siblings of studio/ ──
         nested = tmp / "opt" / "uns"
         prefix = _make_install(nested, flat = False)
         env = {"UNSLOTH_HOME": str(nested), "UNSLOTH_PORTABLE": "1",
@@ -129,7 +117,6 @@ def main() -> int:
         check("nested: node beside studio/", str(nested / "node"), r["node"])
         check("nested: whisper beside studio/", str(nested / "whisper.cpp"), r["whisper"])
 
-        # ── 2. Flat portable: the master root IS the Studio root ──
         flat = tmp / "flatroot"
         _make_install(flat, flat = True)
         env = {"UNSLOTH_HOME": str(flat), "UNSLOTH_PORTABLE": "1",
@@ -138,7 +125,6 @@ def main() -> int:
         check("flat: node under the root", str(flat / "node"), r["node"])
         check("flat: whisper under the root", str(flat / "whisper.cpp"), r["whisper"])
 
-        # ── 3. Non-portable installs are untouched ──
         custom = tmp / "custom"
         (custom / "share").mkdir(parents = True)
         (custom / "share" / "studio.conf").write_text("")
@@ -154,25 +140,18 @@ def main() -> int:
         check("legacy: whisper at ~/.unsloth/whisper.cpp",
               str(legacy_home / ".unsloth" / "whisper.cpp"), r["whisper"])
 
-        # ── 4. The CLI, activated out of a nested portable venv, no env ──
-        # This is the documented `source <root>/studio/unsloth_studio/bin/activate;
-        # unsloth studio`. Falling back to ~/.unsloth/studio here made that command
-        # exit 1, or drive an unrelated install when a legacy one was present.
+        # Falling back to ~/.unsloth/studio made `source .../activate; unsloth
+        # studio` exit 1, or drive an unrelated install.
         r = _run(CLI_PROBE, {"_PREFIX": str(prefix)}, home)
         check("cli: resolves the nested Studio root", str(nested / "studio"), r["studio_home"])
         check("cli: treats it as a custom root", True, r["custom"])
         check("cli: finds the master root from the marker", str(nested), r["master"])
         check("cli: reinstall command names UNSLOTH_HOME",
               f"UNSLOTH_HOME={nested}", r["reinstall_env"])
-        # The CLI re-exports these for the backend and every worker it spawns.
-        # STUDIO_HOME/llama.cpp would be one level too deep, and pinning it into
-        # UNSLOTH_LLAMA_CPP_PATH would make the wrong path stick everywhere.
         check("cli: exports llama.cpp beside studio/",
               str(nested / "llama.cpp"), r["llama"])
         check("cli: exports the master root", str(nested), r["exported_home"])
 
-        # A dev venv that merely happens to be called unsloth_studio must still
-        # not be mistaken for an install: no marker, no sentinels, no adoption.
         dev = tmp / "dev"
         (dev / "unsloth_studio" / "bin").mkdir(parents = True)
         r = _run(CLI_PROBE, {"_PREFIX": str(dev / "unsloth_studio")}, home)

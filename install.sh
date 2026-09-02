@@ -67,10 +67,8 @@ _next_is_package=false
 _next_is_python=false
 _next_is_llama_cpp_dir=false
 _next_is_root=false
-# Portable mode: one master root holding the Studio install, the native runtimes
-# and every cache, so the whole thing deletes with one rm and nothing is hidden
-# in the home directory (issue #8865). Seeded from the environment for piped
-# installs, as the flags below cannot reach `curl ... | sh`.
+# Portable mode: one master root holding Studio, the runtimes and every cache,
+# so nothing is written outside it. Env-seeded for `curl ... | sh`.
 _PORTABLE_MODE=false
 _UNSLOTH_ROOT="${UNSLOTH_HOME:-}"
 # Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
@@ -94,10 +92,7 @@ for arg in "$@"; do
         continue
     fi
     if [ "$_next_is_root" = true ]; then
-        # A directory is about to be created here, so a missing value must stop
-        # rather than be guessed at. Untreated, `--root --local` took --local as
-        # the path AND swallowed the flag, and `--root ""` quietly became a
-        # plain --portable somewhere the user never named.
+        # Untreated, `--root --local` took --local as the path.
         case "$arg" in
             "" ) echo "ERROR: --root requires a path argument." >&2; exit 1 ;;
             -* ) echo "ERROR: --root requires a path argument, got the flag '$arg'." >&2; exit 1 ;;
@@ -130,19 +125,11 @@ done
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 case "${UNSLOTH_PORTABLE:-}" in 1|true|TRUE|yes|YES|on|ON) _PORTABLE_MODE=true ;; esac
-# `install.sh --root` with nothing after it. Silently this produced a plain
-# default install, which is the opposite of what was asked for.
 [ "$_next_is_root" = true ] && { echo "ERROR: --root requires a path argument." >&2; exit 1; }
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
-# --portable with no --root keeps the install where it already is; the point of
-# the flag on its own is containment, not moving anything.
-#
-# _PORTABLE_FLAT: whether the master root IS the Studio root. A root the user
-# named for Studio specifically must not gain a studio/ level underneath it --
-# that would relocate an existing install and leave the old one behind, and
-# `UNSLOTH_PORTABLE=1 UNSLOTH_STUDIO_HOME=/home/me/unsloth` is the most natural
-# way to ask for this. A root of our choosing nests, matching ~/.unsloth.
+# _PORTABLE_FLAT: the master root IS the Studio root. A root the user named for
+# Studio must not gain a studio/ level, which would relocate an existing install.
 _PORTABLE_FLAT=false
 if [ "$_PORTABLE_MODE" = true ] && [ -z "$_UNSLOTH_ROOT" ]; then
     _existing_studio="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
@@ -162,9 +149,8 @@ fi
 # Custom Unsloth roots are not supported with --tauri (desktop app still
 # resolves ~/.unsloth/studio). Pass through if the override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
-    # Same reason the env overrides are rejected below: the desktop app resolves
-    # ~/.unsloth/studio in Rust and never sees a per-session variable, so a
-    # portable install would leave it launching a Studio that is not there.
+    # The desktop app resolves ~/.unsloth/studio in Rust and sees no per-session
+    # variable, so it would launch a Studio that is not there.
     if [ "$_PORTABLE_MODE" = true ]; then
         echo "ERROR: --portable and --root are not supported with --tauri." >&2
         echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
@@ -654,10 +640,7 @@ PYTHON_VERSION=""  # resolved after platform detection
 # over STUDIO_HOME (the more specific signal beats the generic alias).
 _resolve_studio_destinations() {
     _override_var=""
-    # Portable mode outranks everything: --root/--portable is the most explicit
-    # signal there is, and the whole promise is that nothing lands elsewhere.
-    # STUDIO_HOME becomes a child so the native runtimes and shared caches can
-    # be its siblings rather than being buried inside the Studio install.
+    # STUDIO_HOME becomes a child so the runtimes and caches are its siblings.
     if [ "$_PORTABLE_MODE" = true ]; then
         _override="$_UNSLOTH_ROOT"
         _override_var="--root"
@@ -683,16 +666,10 @@ _resolve_studio_destinations() {
         [ -w "$_override" ] || { echo "ERROR: $_override_var=$_override is not writable." >&2; exit 1; }
         _resolved_root="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
         if [ "$_PORTABLE_MODE" = true ]; then
-            # The master root, one level above STUDIO_HOME. llama.cpp, node,
-            # whisper.cpp and the caches are its siblings, matching the layout
-            # the runtime already builds from $HOME/.unsloth.
             UNSLOTH_ROOT="$_resolved_root"
-            # A root that already holds the venv directly IS the Studio root.
-            # The shim and studio.conf export UNSLOTH_HOME on every launch, so
-            # `unsloth studio update` re-enters this function with the root set
-            # but nothing saying the layout was flat; without this it re-derives
-            # <root>/studio and the refresh dies with "unsloth binary missing".
-            # Same rule storage_roots.studio_root() uses on the Python side.
+            # A root holding the venv directly IS the Studio root (flat layout);
+            # otherwise an update re-derives <root>/studio and finds no venv.
+            # Same rule as storage_roots.studio_root().
             [ -d "$_resolved_root/unsloth_studio" ] && _PORTABLE_FLAT=true
             if [ "$_PORTABLE_FLAT" = true ]; then
                 STUDIO_HOME="$UNSLOTH_ROOT"
@@ -743,55 +720,33 @@ _resolve_studio_destinations() {
 _resolve_studio_destinations
 UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
 
-# ── Portable mode: pin every root before anything can use a default ──
-# Placed here, immediately after the destinations resolve and long before the uv
-# bootstrap, because uv reads UV_CACHE_DIR and friends when it runs and there is
-# no way to move a cache afterwards. Without these, a portable install still
-# leaves several GB of torch and CUDA wheels in ~/.cache/uv and a downloaded
-# CPython in ~/.local/share/uv -- by far the largest thing issue #8865 is about.
+# Must run before the uv bootstrap: a cache cannot be moved afterwards.
 _export_portable_roots() {
     [ "$_PORTABLE_MODE" = true ] || return 0
     export UNSLOTH_HOME="$UNSLOTH_ROOT"
     export UNSLOTH_PORTABLE=1
-    # The runtime resolvers read this directly; UNSLOTH_HOME alone would send
-    # them to $UNSLOTH_HOME/studio, which is the same place, but being explicit
-    # keeps setup.sh and the backend from having to agree on the derivation.
     export UNSLOTH_STUDIO_HOME="$STUDIO_HOME"
     export UNSLOTH_LLAMA_CPP_PATH="$UNSLOTH_ROOT/llama.cpp"
 
-    # uv keeps its cache, its downloaded interpreters and its tools in three
-    # different places, none of which follow UV_INSTALL_DIR.
+    # uv's cache, interpreters and tools are three separate places.
     export UV_INSTALL_DIR="$UNSLOTH_ROOT/bin"
     export UV_CACHE_DIR="$UNSLOTH_ROOT/cache/uv"
     export UV_PYTHON_INSTALL_DIR="$UNSLOTH_ROOT/cache/uv-python"
     export UV_TOOL_DIR="$UNSLOTH_ROOT/cache/uv-tools"
     export UV_TOOL_BIN_DIR="$UNSLOTH_ROOT/bin"
-    # Separate from UV_PYTHON_INSTALL_DIR: `uv python install` puts the
-    # interpreter in the install dir but its python3.x symlinks here, and
-    # unset that is ~/.local/bin -- the interpreter lands inside the root and
-    # the links pointing at it do not.
+    # Separate from UV_PYTHON_INSTALL_DIR: the python3.x symlinks land here,
+    # defaulting to ~/.local/bin.
     export UV_PYTHON_BIN_DIR="$UNSLOTH_ROOT/bin"
-    # astral's installer writes PATH lines into every shell rc it can find.
-    # Portable mode already skips our own rc writes; this stops uv's.
     export UV_NO_MODIFY_PATH=1
 
-    # npm, which builds the frontend. Its logs and update-notifier stamp live
-    # inside the cache dir, so this one variable covers all of ~/.npm.
     export NPM_CONFIG_CACHE="$UNSLOTH_ROOT/cache/npm"
-    # NVIDIA's JIT cache. The backend pins this at runtime (storage_roots), but
-    # the installer's own CUDA probes run before any of that exists.
     export CUDA_CACHE_PATH="$UNSLOTH_ROOT/cache/cuda"
 
-    # The venv is built from the cache by hardlink where it can be. Landing them
-    # on different filesystems silently degrades that to a full copy, which for
-    # a torch install is several GB written twice.
+    # Same filesystem, or uv's hardlink into the venv degrades to a full copy.
     mkdir -p -- "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" 2>/dev/null || true
 
-    # On-disk marker so the roots survive an invocation that carries none of
-    # this environment. The installer itself suggests `source .../activate;
-    # unsloth studio`, which reaches the venv binary directly, past the shim;
-    # without the marker the backend infers ~/.unsloth and quietly builds a
-    # second, split install beside the portable one. storage_roots reads it.
+    # Marker so the roots survive an invocation carrying none of this
+    # environment: `source .../activate` reaches the venv binary past the shim.
     printf '%s\n' "$UNSLOTH_ROOT" > "$UNSLOTH_ROOT/.unsloth-portable-root" 2>/dev/null || true
 
     substep "portable: everything under $UNSLOTH_ROOT"
@@ -1735,7 +1690,6 @@ LAUNCHER_EOF
                     || _css_legacy_studio="$HOME/.unsloth/studio"
             fi
             if [ "$_PORTABLE_MODE" = true ]; then
-                # Siblings of studio/, matching the ~/.unsloth shape.
                 _css_llama_path="$UNSLOTH_ROOT/llama.cpp"
             elif [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
                 _css_llama_path="$HOME/.unsloth/llama.cpp"
@@ -1743,9 +1697,8 @@ LAUNCHER_EOF
                 _css_llama_path="$STUDIO_HOME/llama.cpp"
             fi
             if [ "$_PORTABLE_MODE" = true ]; then
-                # The launcher runs from the desktop / a fresh shell, which
-                # inherits nothing, so the uv roots have to be restated here or
-                # `unsloth studio update` would repopulate ~/.cache/uv.
+                # The launcher inherits nothing, so restate the uv roots or an
+                # update repopulates ~/.cache/uv.
                 _css_quoted_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
                 printf '%s\n' "export UNSLOTH_HOME='$_css_quoted_root'"
                 printf '%s\n' "export UNSLOTH_PORTABLE=1"
@@ -1754,12 +1707,10 @@ LAUNCHER_EOF
                 printf '%s\n' "export UV_TOOL_DIR='$_css_quoted_root/cache/uv-tools'"
                 printf '%s\n' "export UV_TOOL_BIN_DIR='$_css_quoted_root/bin'"
                 printf '%s\n' "export UV_PYTHON_BIN_DIR='$_css_quoted_root/bin'"
-                # setup.sh reinstalls uv whenever `command -v uv` misses, and
-                # portable mode deliberately puts nothing on a login PATH, so it
-                # misses every time. Its destination cascade is astral's
-                # (UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME, then
-                # ~/.local/bin), so without this every `unsloth studio update`
-                # drops uv and uvx into the home directory.
+                # setup.sh reinstalls uv whenever `command -v uv` misses, which
+                # is every update here. astral's cascade (UV_INSTALL_DIR,
+                # UV_UNMANAGED_INSTALL, XDG_BIN_HOME) ends at ~/.local/bin, so
+                # UV_INSTALL_DIR must be pinned.
                 printf '%s\n' "export UV_INSTALL_DIR='$_css_quoted_root/bin'"
                 printf '%s\n' "export UV_NO_MODIFY_PATH=1"
                 printf '%s\n' "export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
@@ -6218,18 +6169,12 @@ if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
     echo "       Move or remove it manually, then re-run the installer." >&2
     exit 1
 fi
-# Portable mode needs a wrapper, not a symlink. A symlink carries no environment,
-# so `bin/unsloth` from a fresh shell would find the interpreter (the backend
-# infers STUDIO_HOME from sys.prefix) but send uv and llama.cpp back to the
-# ~/.unsloth defaults -- a half-contained install that looks fine until it
-# downloads several GB into the home directory. Written to a temp file and
-# renamed so an interrupted run never leaves a partial shim on PATH.
+# A wrapper, not a symlink: a symlink carries no environment, so uv and
+# llama.cpp would fall back to ~/.unsloth. Temp file plus rename is atomic.
 if [ "$_PORTABLE_MODE" = true ]; then
     _shim_tmp="$_LOCAL_BIN/.unsloth.shim.$$"
-    # Every path below is embedded in a single-quoted shell string, so an
-    # apostrophe in it would close the quote and leave an unparseable shim
-    # (`/home/o'brien/unsloth` is the realistic case). studio.conf already
-    # escapes for the same reason; this is the same transformation.
+    # Each path is interpolated into a single-quoted shell string, so an
+    # apostrophe (`/home/o'brien/...`) would close the quote; escape it.
     _shim_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
     _shim_studio=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
     _shim_venv=$(printf '%s' "$VENV_DIR" | sed "s/'/'\\\\''/g")
@@ -6255,15 +6200,9 @@ if [ "$_PORTABLE_MODE" = true ]; then
         && mv -f "$_shim_tmp" "$_shim_path" 2>/dev/null
     }; then
         substep "portable shim at $_shim_path"
-        # Converting an existing default install with --portable leaves that
-        # install's shim at ~/.local/bin/unsloth. It is a symlink to the very
-        # venv this run just rebuilt, so it still launches -- with none of the
-        # environment above, sending uv, npm and llama.cpp straight back to the
-        # home directory. It also wins on a new shell's PATH, because portable
-        # mode writes no rc line by design. Nothing outside the root is touched
-        # here (that is the promise of the mode), so say so instead. Only a
-        # symlink resolving to THIS install qualifies; another install's shim is
-        # left to the "another 'unsloth' wins on PATH" check below.
+        # A converted default install leaves its symlink at ~/.local/bin, which
+        # still launches without the environment above and wins on PATH. Warn
+        # rather than delete: portable mode writes nothing outside the root.
         _legacy_shim="$HOME/.local/bin/unsloth"
         if [ "$_legacy_shim" != "$_shim_path" ] && [ -L "$_legacy_shim" ] \
             && [ "$_legacy_shim" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
@@ -6487,10 +6426,8 @@ if [ -n "$_path_unsloth" ] && [ -x "$VENV_DIR/bin/python" ]; then
     }
     _installed_real=$(_canon "$_installed_bin")
     _path_real=$(_canon "$_path_unsloth")
-    # The portable shim is a wrapper script, not a symlink, so it resolves to
-    # itself rather than to the venv entry point. Without this it always looks
-    # like a foreign `unsloth` and the warning tells the user to avoid the shim
-    # this installer just told them to use.
+    # The shim is a wrapper, so it resolves to itself and would otherwise always
+    # look like a foreign `unsloth`.
     _shim_real=""
     [ "$_PORTABLE_MODE" = true ] && _shim_real=$(_canon "$_shim_path")
     if [ -n "$_installed_real" ] && [ -n "$_path_real" ] \
@@ -6511,17 +6448,12 @@ echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 if [ "$_PORTABLE_MODE" = true ]; then
-    # Worth stating plainly: the promise of this mode is that the answer to
-    # "what did it touch, and how do I remove it" is one path.
     echo ""
     substep "portable install; everything lives in:"
     substep "  $UNSLOTH_ROOT"
     substep "launch it with $_LOCAL_BIN/unsloth studio"
-    # A bare `scripts/uninstall.sh` finds nothing here: portable mode writes
-    # studio.conf to <root>/share and never to ~/.local/share/unsloth, and it
-    # leaves ~/.local/bin alone, so the uninstaller has no way to discover the
-    # root. Printed without it, the line reports success and leaves everything
-    # on disk. The uninstaller reads UNSLOTH_HOME for exactly this.
+    # studio.conf goes to <root>/share, never ~/.local/share/unsloth, so a bare
+    # `scripts/uninstall.sh` cannot discover the root and removes nothing.
     _uninstall_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
     substep "remove it with rm -rf, or:"
     substep "  UNSLOTH_HOME='$_uninstall_root' scripts/uninstall.sh"

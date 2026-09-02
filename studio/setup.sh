@@ -2486,9 +2486,8 @@ fi
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
-# A portable install (install.sh --portable / --root) exports the master root,
-# where the native runtimes are siblings of studio/ rather than children of it --
-# the same shape as the ~/.unsloth default, just relocated.
+# A portable install exports the master root, where the native runtimes are
+# siblings of studio/ rather than children of it.
 _PORTABLE_ROOT="${UNSLOTH_HOME:-}"
 if [ -n "$STAGE_ROOT" ]; then
     UNSLOTH_HOME="$RUNTIME_ROOT"

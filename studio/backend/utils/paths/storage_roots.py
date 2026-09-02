@@ -20,10 +20,8 @@ from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_pat
 logger = get_logger(__name__)
 
 
-# Written by install.sh --portable / --root at the master root. On disk rather
-# than in the environment because a venv-activated `unsloth` (which the
-# installer itself suggests: source .../activate) inherits no variables, and
-# without this it silently falls back to ~/.unsloth -- a second, split install.
+# Written by install.sh at the master root. On disk because a venv-activated
+# `unsloth` inherits no variables.
 PORTABLE_MARKER = ".unsloth-portable-root"
 
 
@@ -45,8 +43,7 @@ def _infer_studio_home_from_venv() -> Path | None:
         has_sentinel = (
             (candidate / "share" / "studio.conf").is_file()
             or (candidate / "bin" / shim_name).is_file()
-            # A nested portable install keeps share/ and bin/ at the master
-            # root, one level up, so neither sentinel above is beside the venv.
+            # A nested portable install keeps share/ and bin/ one level up.
             or (candidate / PORTABLE_MARKER).is_file()
             or (candidate.parent / PORTABLE_MARKER).is_file()
         )
@@ -101,12 +98,11 @@ def unsloth_home() -> Path | None:
     `install.sh --portable` / `--root DIR`, one level above STUDIO_HOME, but
     equal to it when a portable install was pointed at UNSLOTH_STUDIO_HOME.
 
-    llama.cpp, node and whisper.cpp are SIBLINGS of studio/, the same spelling
+    llama.cpp, node and whisper.cpp are SIBLINGS of studio/, the spelling
     studio/setup.sh and scripts/build_whisper_cpp.sh already give UNSLOTH_HOME,
     which is why node_runtime, stt_ggml_sidecar and run.py resolve them here.
-
-    Falls back to the on-disk marker: a directly-invoked venv binary carries
-    none of the installer's environment.
+    Falls back to the on-disk marker so a directly-invoked venv binary, carrying
+    none of the installer's environment, still finds the same root.
     """
     from_env = _env_unsloth_home()
     if from_env is not None:
@@ -171,17 +167,15 @@ def studio_root() -> Path:
         override = (os.environ.get("STUDIO_HOME") or "").strip()
     if override:
         resolved = _resolved(override)
-        # _env_unsloth_home, not unsloth_home: the latter's on-disk fallback
-        # calls back into here. Path.parents excludes the path itself, so the
-        # supported flat layout would otherwise warn on every call.
+        # _env_unsloth_home: unsloth_home's on-disk fallback calls back here.
+        # Path.parents excludes the path itself, so the flat layout would warn.
         master = _env_unsloth_home()
         if master is not None and master != resolved and master not in resolved.parents:
             _warn_root_conflict(resolved, master)
         return resolved
     master = _env_unsloth_home()
     if master is not None:
-        # Flat when the master root IS the Studio root, which is what
-        # `UNSLOTH_PORTABLE=1 UNSLOTH_STUDIO_HOME=...` installs.
+        # Flat layout: a root holding the venv directly IS the Studio root.
         try:
             if (master / "unsloth_studio").is_dir():
                 return master
@@ -512,14 +506,7 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
         # root that would still write outside the volume.
         "HF_ASSETS_CACHE": str(root / "huggingface" / "assets"),
         "TORCH_HOME": str(root / "torch"),
-        # Project workspaces are the last Unsloth-owned thing outside the root:
-        # they default under ~/Documents, which is neither a cache nor something
-        # the user would think to look for when clearing Unsloth out. Set as the
-        # documented override so an explicit one still wins.
-        #
-        # documents_root() itself is deliberately NOT pinned -- that is the
-        # user's own Documents folder, used as a browse root for picking their
-        # files, not a directory Unsloth owns.
+        # documents_root() stays unpinned: the user's own folder, not ours.
         "UNSLOTH_STUDIO_PROJECTS_HOME": str(root.parent / "projects"),
     }
 
