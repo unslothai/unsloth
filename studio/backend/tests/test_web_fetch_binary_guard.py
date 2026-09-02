@@ -379,8 +379,8 @@ def test_malformed_charset_falls_back(monkeypatch):
 
 @pytest.mark.parametrize("charset", ["utf-16", "utf-16-le", "utf-32"])
 def test_declared_wide_codec_still_honoured(monkeypatch, charset):
-    # The probe byte the guard decodes is undecodable in these codecs; a real
-    # text codec must survive that, not be discarded with the unusable labels.
+    # The guard discards a label whose decode raises, and these codecs raise on
+    # plenty of inputs; a real text codec that decodes ITS OWN page must be kept.
     body = "MARKERWORD and more text".encode(charset)
     out = _fetch_with(monkeypatch, body, f"text/plain; charset={charset}")
     assert "MARKERWORD" in out
