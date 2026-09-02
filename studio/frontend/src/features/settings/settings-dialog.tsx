@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { FloatingMonitor } from "@/components/floating-monitor";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import { Button } from "@/components/ui/button";
 import {
@@ -134,7 +133,9 @@ class SettingsPanelBoundary extends Component<
   }
 
   render() {
-    if (!this.state.failed) return this.props.children;
+    if (!this.state.failed) {
+      return this.props.children;
+    }
     return (
       <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
         <p className="text-muted-foreground text-sm">{this.props.message}</p>
@@ -261,7 +262,9 @@ export function SettingsDialog() {
   // Once opened, pull the other panels in on idle so a tab click never waits on the
   // network. Nothing runs while closed, which is its state for the whole launch.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      return;
+    }
     return scheduleIdleTask(() => {
       for (const load of Object.values(TAB_LOADERS)) {
         // Warming a panel nobody asked for must not surface as an unhandled rejection;
@@ -273,12 +276,16 @@ export function SettingsDialog() {
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return null;
+    if (!q) {
+      return null;
+    }
     return TABS.map((tab) => {
       const tabLabel = t(tab.labelKey);
       const entries = SETTINGS_SEARCH_INDEX[tab.id]
         .filter((key) => {
-          if (t(key).toLowerCase().includes(q)) return true;
+          if (t(key).toLowerCase().includes(q)) {
+            return true;
+          }
           const keywordsKey = SETTINGS_SEARCH_KEYWORDS[key];
           return keywordsKey ? t(keywordsKey).toLowerCase().includes(q) : false;
         })
@@ -310,12 +317,18 @@ export function SettingsDialog() {
   // renders deferred and some sections load their data lazily, so observe the
   // panel until the requested row exists instead of imposing a render deadline.
   useEffect(() => {
-    if (!pendingScroll) return;
+    if (!pendingScroll) {
+      return;
+    }
     // Wait until the destination tab is mounted before matching, so a same-named
     // row in the previous tab (for example "Storage") is not scrolled to instead.
-    if (panelTab !== pendingScroll.tab) return;
+    if (panelTab !== pendingScroll.tab) {
+      return;
+    }
     const root = mainScrollRef.current;
-    if (!root) return;
+    if (!root) {
+      return;
+    }
     const attempt = (): boolean => {
       const target = [
         ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
@@ -333,11 +346,15 @@ export function SettingsDialog() {
       return false;
     };
     const observer = new MutationObserver(() => {
-      if (attempt()) observer.disconnect();
+      if (attempt()) {
+        observer.disconnect();
+      }
     });
     observer.observe(root, { childList: true, subtree: true });
     const frame = window.requestAnimationFrame(() => {
-      if (attempt()) observer.disconnect();
+      if (attempt()) {
+        observer.disconnect();
+      }
     });
     return () => {
       observer.disconnect();
@@ -346,7 +363,9 @@ export function SettingsDialog() {
   }, [pendingScroll, panelTab]);
 
   useEffect(() => {
-    if (open) return;
+    if (open) {
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
       setQuery("");
       setPendingScroll(null);
@@ -371,7 +390,9 @@ export function SettingsDialog() {
   });
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
       const button = tabButtonRefs.current[activeTab];
       button?.focus({ preventScroll: true });
@@ -612,7 +633,6 @@ export function SettingsDialog() {
           </div>
         </DialogContent>
       </Dialog>
-      <FloatingMonitor />
     </>
   );
 }
