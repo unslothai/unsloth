@@ -135,8 +135,13 @@ def kernel_age_hours(kernel, now: datetime) -> float | None:
     return (now - last_run).total_seconds() / 3600.0
 
 
-def find_ours(api, now: datetime | None = None, max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
-              page_size: int = PAGE_SIZE, max_pages: int = MAX_PAGES) -> list[dict]:
+def find_ours(
+    api,
+    now: datetime | None = None,
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    page_size: int = PAGE_SIZE,
+    max_pages: int = MAX_PAGES,
+) -> list[dict]:
     """Every kernel on this account that WE pushed, newest first.
 
     The filter is ``launch.parse_slug`` and nothing else. See this module's
@@ -151,8 +156,7 @@ def find_ours(api, now: datetime | None = None, max_age_hours: float = DEFAULT_M
     found: list[dict] = []
     for page in range(1, max_pages + 1):
         kernels = (
-            api.kernels_list(mine = True, page = page, page_size = page_size, sort_by = "dateRun")
-            or []
+            api.kernels_list(mine = True, page = page, page_size = page_size, sort_by = "dateRun") or []
         )
         if not kernels:
             break
@@ -166,13 +170,15 @@ def find_ours(api, now: datetime | None = None, max_age_hours: float = DEFAULT_M
             last_run = _as_naive_utc(getattr(kernel, "last_run_time", None))
             if last_run is not None and last_run < cutoff:
                 return found
-            found.append({
-                "slug": ref,
-                "sha": parsed["sha"],
-                "kind": parsed["kind"],
-                "legacy": parsed["legacy"],
-                "age_hours": kernel_age_hours(kernel, now),
-            })
+            found.append(
+                {
+                    "slug": ref,
+                    "sha": parsed["sha"],
+                    "kind": parsed["kind"],
+                    "legacy": parsed["legacy"],
+                    "age_hours": kernel_age_hours(kernel, now),
+                }
+            )
     return found
 
 
@@ -205,15 +211,22 @@ def verdict_of(reports: list[dict], expect: int) -> tuple[str, str]:
     mode silently changes what the CI means.
     """
     if not reports:
-        return "infra", ("the kernel finished but produced no payload report; "
-                         "nothing was learned about the code under test")
+        return "infra", (
+            "the kernel finished but produced no payload report; "
+            "nothing was learned about the code under test"
+        )
     failing = [r for r in reports if not r.get("passed")]
     if failing:
         names = ", ".join(str(r.get("payload") or "?") for r in failing)
-        return "fail", f"{len(failing)} of {len(reports)} payload(s) failed their assertions: {names}"
+        return (
+            "fail",
+            f"{len(failing)} of {len(reports)} payload(s) failed their assertions: {names}",
+        )
     if len(reports) < expect:
-        return "partial", (f"only {len(reports)} of {expect} payload(s) reported back, "
-                           "so this is half a comparison rather than a result")
+        return "partial", (
+            f"only {len(reports)} of {expect} payload(s) reported back, "
+            "so this is half a comparison rather than a result"
+        )
     return "pass", f"all {len(reports)} payload(s) passed"
 
 
@@ -231,13 +244,25 @@ VERDICT_STATE = {
 }
 
 
-def collect_one(api, entry: dict, outdir: Path, expect: int, max_age_hours: float,
-                delete: bool = True) -> dict:
+def collect_one(
+    api,
+    entry: dict,
+    outdir: Path,
+    expect: int,
+    max_age_hours: float,
+    delete: bool = True,
+) -> dict:
     """Read one kernel to a conclusion. Returns the record for the result file."""
     slug = entry["slug"]
     state = _status_of(api, slug)
-    record = {**entry, "state": state, "verdict": None, "reason": "", "deleted": False,
-              "reports": 0}
+    record = {
+        **entry,
+        "state": state,
+        "verdict": None,
+        "reason": "",
+        "deleted": False,
+        "reports": 0,
+    }
 
     if state in ("QUEUED", "RUNNING"):
         age = entry.get("age_hours")
@@ -287,7 +312,9 @@ def collect_one(api, entry: dict, outdir: Path, expect: int, max_age_hours: floa
     except Exception as exc:  # noqa: BLE001
         record["evidence"] = None
         record["verdict"] = "infra"
-        record["reason"] = f"the kernel finished but its evidence would not download ({type(exc).__name__})"
+        record["reason"] = (
+            f"the kernel finished but its evidence would not download ({type(exc).__name__})"
+        )
         _log(f"could not collect {slug}: {type(exc).__name__}")
         # NOT deleted. The evidence is still up there and the next pass can try
         # again; deleting now would destroy the only copy of a finished run's
@@ -298,7 +325,9 @@ def collect_one(api, entry: dict, outdir: Path, expect: int, max_age_hours: floa
     record["reports"] = len(reports)
     verdict, reason = verdict_of(reports, expect)
     if state in launch.TERMINAL_BAD and verdict == "infra":
-        reason = f"the kernel ended {state} without reporting; the session died rather than the code"
+        reason = (
+            f"the kernel ended {state} without reporting; the session died rather than the code"
+        )
     record["verdict"] = verdict
     record["reason"] = reason
     if delete:
@@ -329,14 +358,16 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
         kind = record.get("kind")
         if not sha or kind not in STATUS_CONTEXTS:
             continue
-        out.append({
-            "sha": sha,
-            "context": STATUS_CONTEXTS[kind],
-            "state": VERDICT_STATE.get(record["verdict"], "success"),
-            "description": f"{record['verdict']}: {record['reason']}"[:140],
-            "target_url": target_url,
-            "slug": record["slug"],
-        })
+        out.append(
+            {
+                "sha": sha,
+                "context": STATUS_CONTEXTS[kind],
+                "state": VERDICT_STATE.get(record["verdict"], "success"),
+                "description": f"{record['verdict']}: {record['reason']}"[:140],
+                "target_url": target_url,
+                "slug": record["slug"],
+            }
+        )
     return out
 
 
@@ -344,22 +375,28 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--outdir", required = True, help = "where evidence is downloaded")
     ap.add_argument(
-        "--expect", type = int, default = 1,
+        "--expect",
+        type = int,
+        default = 1,
         help = "payload reports a collected kernel should carry",
     )
     ap.add_argument("--max-age-hours", type = float, default = DEFAULT_MAX_AGE_HOURS)
     ap.add_argument(
-        "--sha", default = "",
+        "--sha",
+        default = "",
         help = "when given, report whether a kernel for THIS commit is already in "
         "flight, so the caller can skip dispatching a second one",
     )
     ap.add_argument(
-        "--kind", default = "", choices = ("", *launch.KIND_CODES),
+        "--kind",
+        default = "",
+        choices = ("", *launch.KIND_CODES),
         help = "narrow --sha to one workflow's kernels",
     )
     ap.add_argument("--target-url", default = "", help = "run URL to attach to each status")
     ap.add_argument(
-        "--no-delete", action = "store_true",
+        "--no-delete",
+        action = "store_true",
         help = "collect and report without deleting. For inspection only: a kernel "
         "left up keeps billing",
     )
@@ -371,12 +408,18 @@ def main() -> int:
     result: dict = {"owner": None, "kernels": [], "statuses": [], "in_flight_for_sha": False}
 
     def finish(code: int = 0) -> int:
-        (outdir / "collect_result.json").write_text(
-            json.dumps(result, indent = 2), encoding = "utf-8"
-        )
+        (outdir / "collect_result.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
         _out("in_flight", "true" if result["in_flight_for_sha"] else "false")
-        _out("collected", str(sum(1 for k in result["kernels"] if k.get("verdict") not in
-                                  (None, "pending", "gone"))))
+        _out(
+            "collected",
+            str(
+                sum(
+                    1
+                    for k in result["kernels"]
+                    if k.get("verdict") not in (None, "pending", "gone")
+                )
+            ),
+        )
         _out("pending", str(sum(1 for k in result["kernels"] if k.get("verdict") == "pending")))
         return code
 
@@ -408,8 +451,9 @@ def main() -> int:
             _log("collection budget spent; the rest is left for the next pass")
             break
         result["kernels"].append(
-            collect_one(api, entry, outdir, args.expect, args.max_age_hours,
-                        delete = not args.no_delete)
+            collect_one(
+                api, entry, outdir, args.expect, args.max_age_hours, delete = not args.no_delete
+            )
         )
 
     result["statuses"] = statuses_from(result["kernels"], args.target_url)

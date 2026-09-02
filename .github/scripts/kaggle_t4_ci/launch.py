@@ -258,7 +258,11 @@ OUTPUT_PAGE_LIMIT = 20
 READ_CHUNK_BYTES = 1 << 16
 
 
-def worst_case_seconds(max_wait: int, kernels: int, dispatch: bool = False) -> int:
+def worst_case_seconds(
+    max_wait: int,
+    kernels: int,
+    dispatch: bool = False,
+) -> int:
     """Wall clock ONE invocation of this launcher can take, from its constants.
 
     Every phase that can keep a pushed kernel UP is in it, because a kernel
@@ -1288,8 +1292,10 @@ def main() -> int:
         # That is the silent-green failure this whole change is built around,
         # so it is a usage error at the only moment it is still cheap.
         if not args.commit_sha or not args.kind:
-            ap.error("--dispatch requires --commit-sha and --kind: without both, the "
-                     "kernel runs and no collector can attribute its result")
+            ap.error(
+                "--dispatch requires --commit-sha and --kind: without both, the "
+                "kernel runs and no collector can attribute its result"
+            )
 
     # Before the first network call, and globally: the Kaggle client has no
     # per-call timeout of its own. See SOCKET_TIMEOUT_SEC.
@@ -1561,9 +1567,7 @@ def main() -> int:
         # protection must require.
         if args.dispatch:
             result["verdict"] = "dispatched"
-            result["dispatched"] = [
-                {"slug": k["slug"], "notebook": k["notebook"]} for k in live
-            ]
+            result["dispatched"] = [{"slug": k["slug"], "notebook": k["notebook"]} for k in live]
             result["commit_sha"] = args.commit_sha
             result["kind"] = args.kind
             result["reason"] = (

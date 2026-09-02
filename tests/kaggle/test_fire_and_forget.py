@@ -114,7 +114,6 @@ def test_the_gate_still_recognises_a_dispatched_kernel_as_ours():
     after the quota for the first two was already committed.
     """
     import gate
-
     for kind in ("notebook", "studio"):
         name = launch.slug_name(kind, "abcdef01")
         assert name.startswith(gate.OWN_KERNEL_PREFIX), (
@@ -164,7 +163,8 @@ def test_dispatch_without_a_commit_is_a_usage_error(monkeypatch, capsys):
     """A dispatch whose slug carries no commit runs, costs quota, and reports to
     nobody. Refused at the only moment it is still free."""
     monkeypatch.setattr(
-        sys, "argv",
+        sys,
+        "argv",
         ["launch.py", "--notebook", "k.ipynb", "--outdir", "out", "--dispatch"],
     )
     with pytest.raises(SystemExit) as excinfo:
@@ -195,7 +195,7 @@ def test_dispatch_does_not_report_pass():
     would look like a result rather than like an absence.
     """
     src = (CI_DIR / "launch.py").read_text(encoding = "utf-8")
-    block = src[src.index("if args.dispatch:", src.index("result[\"slug\"] = live[0]")):]
+    block = src[src.index("if args.dispatch:", src.index('result["slug"] = live[0]')) :]
     block = block[: block.index("return finish()")]
     assert '"dispatched"' in block, block[:400]
     assert 'result["verdict"] = "pass"' not in block
@@ -214,7 +214,11 @@ def test_the_dispatch_worst_case_excludes_the_phases_it_never_runs():
 
 
 class _StubKernel:
-    def __init__(self, ref, last_run_time = None):
+    def __init__(
+        self,
+        ref,
+        last_run_time = None,
+    ):
         self.ref = ref
         self.last_run_time = last_run_time
 
@@ -228,7 +232,13 @@ class _StubApi:
         self._statuses = statuses
         self.status_calls: list[str] = []
 
-    def kernels_list(self, mine = True, page = 1, page_size = 100, sort_by = "dateRun"):
+    def kernels_list(
+        self,
+        mine = True,
+        page = 1,
+        page_size = 100,
+        sort_by = "dateRun",
+    ):
         return self._kernels if page == 1 else []
 
     def kernels_status(self, ref):
@@ -245,8 +255,13 @@ def test_a_running_kernel_within_its_ceiling_is_left_completely_alone(tmp_path):
     still coming."""
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "RUNNING"})
     deleted: list[str] = []
-    entry = {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01",
-             "kind": "notebook", "legacy": False, "age_hours": 0.5}
+    entry = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 0.5,
+    }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "pending"
     assert record["deleted"] is False
@@ -268,8 +283,13 @@ def test_a_kernel_past_its_ceiling_is_reaped_and_reported(tmp_path, monkeypatch)
     deleted: list[str] = []
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "RUNNING"})
-    entry = {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01",
-             "kind": "notebook", "legacy": False, "age_hours": 9.0}
+    entry = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 9.0,
+    }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "reaped"
     assert deleted == ["me/unsloth-t4-ci-nabcdef01-1111"]
@@ -283,8 +303,13 @@ def test_a_kernel_with_no_timestamp_is_never_reaped(tmp_path, monkeypatch):
     deleted: list[str] = []
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "RUNNING"})
-    entry = {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01",
-             "kind": "notebook", "legacy": False, "age_hours": None}
+    entry = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": None,
+    }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "pending"
     assert deleted == []
@@ -294,13 +319,19 @@ def test_evidence_is_downloaded_before_the_kernel_is_deleted(tmp_path, monkeypat
     """A delete that lands first turns a finished run into a result nobody can
     ever read. Asserted by ORDER of the real calls, not by reading the source."""
     order: list[str] = []
-    monkeypatch.setattr(launch, "fetch_evidence",
-                        lambda slug, dest, deadline = None: order.append("fetch") or {})
+    monkeypatch.setattr(
+        launch, "fetch_evidence", lambda slug, dest, deadline = None: order.append("fetch") or {}
+    )
     monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: order.append("delete") or True)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
-    entry = {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01",
-             "kind": "notebook", "legacy": False, "age_hours": 0.4}
+    entry = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 0.4,
+    }
     collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert order == ["fetch", "delete"], order
 
@@ -308,15 +339,25 @@ def test_evidence_is_downloaded_before_the_kernel_is_deleted(tmp_path, monkeypat
 def test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted(tmp_path, monkeypatch):
     """Deleting here destroys the only copy of a finished run's result, to
     reclaim a session slot the kernel is no longer using. The next pass retries."""
-    def _boom(slug, dest, deadline = None):
+
+    def _boom(
+        slug,
+        dest,
+        deadline = None,
+    ):
         raise TimeoutError("slow")
 
     deleted: list[str] = []
     monkeypatch.setattr(launch, "fetch_evidence", _boom)
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
-    entry = {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01",
-             "kind": "notebook", "legacy": False, "age_hours": 0.4}
+    entry = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 0.4,
+    }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "infra"
     assert deleted == [], "evidence that would not download must not be deleted"
@@ -328,8 +369,13 @@ def test_an_unreadable_status_does_nothing_at_all(tmp_path, monkeypatch):
     deleted: list[str] = []
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": RuntimeError("503 upstream")})
-    entry = {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01",
-             "kind": "notebook", "legacy": False, "age_hours": 0.4}
+    entry = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 0.4,
+    }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "pending"
     assert deleted == []
@@ -366,8 +412,13 @@ def test_infra_and_partial_do_not_go_red():
 def test_a_failed_payload_reaches_github_as_a_failure():
     """Driven end to end through the real verdict and status functions, since
     every rule above this one is fed a dict written by hand."""
-    record = {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01",
-              "kind": "notebook", "verdict": None, "reason": ""}
+    record = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "verdict": None,
+        "reason": "",
+    }
     verdict, reason = collect.verdict_of([{"passed": False, "payload": "gptoss"}], 1)
     record["verdict"], record["reason"] = verdict, reason
     status = collect.statuses_from([record])[0]
@@ -430,9 +481,9 @@ def test_the_gpu_job_collects_before_it_dispatches(path):
     running so a re-run does not pay for a second session."""
     body = path.read_text(encoding = "utf-8")
     assert "kaggle_t4_ci/collect.py" in body, f"{path.name} never collects"
-    assert body.index("kaggle_t4_ci/collect.py") < body.index("--dispatch"), (
-        f"{path.name} dispatches before it collects"
-    )
+    assert body.index("kaggle_t4_ci/collect.py") < body.index(
+        "--dispatch"
+    ), f"{path.name} dispatches before it collects"
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
@@ -517,9 +568,9 @@ def test_a_dispatch_posts_a_pending_status():
     that was never configured."""
     for path, context in ((NOTEBOOK_WF, "kaggle-t4-notebook"), (STUDIO_WF, "kaggle-studio-gpu")):
         body = path.read_text(encoding = "utf-8")
-        assert re.search(r"state=pending -f context=" + re.escape(context), body), (
-            f"{path.name} never posts a pending {context} status"
-        )
+        assert re.search(
+            r"state=pending -f context=" + re.escape(context), body
+        ), f"{path.name} never posts a pending {context} status"
 
 
 def test_the_reporters_do_not_run_over_an_empty_evidence_directory():
