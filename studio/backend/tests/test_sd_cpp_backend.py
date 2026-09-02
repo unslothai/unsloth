@@ -112,6 +112,8 @@ def test_native_status_preserves_the_logical_picker_identity():
     status = b.status()
     assert status["repo_id"].endswith("/snapshots/abc")
     assert status["display_repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+    result = b.generate(prompt = "logical identity", steps = 1, seed = 1)
+    assert result["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
 
 
 def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():

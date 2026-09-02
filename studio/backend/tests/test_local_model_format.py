@@ -469,6 +469,19 @@ def test_hub_inventory_types_opaque_diffusers_pipeline_structurally(tmp_path):
     assert row.artifact_kind == "diffusers_pipeline"
 
 
+def test_hub_inventory_accepts_a_bom_prefixed_pipeline_manifest(tmp_path):
+    from hub.services.models.common import _classify_local_path
+
+    pipeline = tmp_path / "powershell-pipeline"
+    manifest = _pipeline_manifest(pipeline)
+    manifest.write_bytes(b"\xef\xbb\xbf" + manifest.read_bytes())
+    _touch(pipeline / "transformer" / "diffusion_pytorch_model.safetensors")
+
+    [row] = _classify_local_path(pipeline, "custom")
+
+    assert row.artifact_kind == "diffusers_pipeline"
+
+
 def test_hub_inventory_distinguishes_modular_pipeline_roots(tmp_path):
     from hub.services.models.common import (
         _classify_local_path,

@@ -2049,6 +2049,32 @@ function VideoGenerator({
     };
   }, [active, ensureSrc, loadGallery, onInitialReady, refreshStatus]);
 
+  // A resident pipeline can outlive this component (browser refresh, route remount, or a load
+  // started by another client). Rebuild the complete Reapply target from backend-owned state just
+  // as Images does. GGUF and single-file status carries no checkpoint filename, so those remain
+  // intentionally ineligible until the user picks them again.
+  useEffect(() => {
+    const repoId = status?.loaded ? status.repo_id : null;
+    if (!repoId || lastLoad.current || status?.model_kind !== "pipeline") return;
+    const h3Task =
+      status.h3_task === "fl2va" || status.h3_task === "ref2va"
+        ? status.h3_task
+        : undefined;
+    lastLoad.current = {
+      repoId,
+      kind: "pipeline",
+      displayRepoId: status.display_repo_id ?? undefined,
+      h3Task,
+    };
+    setCanReapply(true);
+  }, [
+    status?.display_repo_id,
+    status?.h3_task,
+    status?.loaded,
+    status?.model_kind,
+    status?.repo_id,
+  ]);
+
   // Ejected from the loaded models indicator, which does not run handleUnload:
   // without this the controls keep offering to generate on a freed runtime, and
   // Reapply still points at the model that was just ejected. The runtime is

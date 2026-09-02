@@ -2305,7 +2305,10 @@ class SdCppDiffusionBackend:
                     "images": images,
                     "seed": int(seed),
                     "seeds": seeds,
-                    "repo_id": state.repo_id,
+                    # Persist the same stable identity status() advertises. A cached load may use
+                    # an exact snapshot path physically while the gallery and picker should keep
+                    # naming the logical Hub model.
+                    "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants
                     # make different pixels.
                     "model_kind": "gguf",

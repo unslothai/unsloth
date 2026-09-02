@@ -1425,6 +1425,18 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
         assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
 
 
+def test_video_reapply_recovers_a_resident_pipeline_target_after_remount():
+    """The backend keeps a loaded video pipeline across a browser refresh, while React refs do
+    not. Reapply must therefore reconstruct the physical target, logical picker identity, and H3
+    partition from status instead of requiring the user to select a 100+ GB model again."""
+    src = _read("features/video/video-page.tsx")
+    assert 'status?.model_kind !== "pipeline"' in src
+    assert "displayRepoId: status.display_repo_id ?? undefined," in src
+    assert 'status.h3_task === "fl2va" || status.h3_task === "ref2va"' in src
+    assert "lastLoad.current = {" in src
+    assert "setCanReapply(true);" in src
+
+
 def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
     """The chat picker can only forward a GGUF filename (ggufFilename is GGUF-specific), so a
     curated single-file artifact -- an LTX-2.3 checkpoint, an FP8 transformer -- arrives with no

@@ -1194,7 +1194,10 @@ def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
         path = Path(root).expanduser() / filename
         if not path.is_file() or path.stat().st_size > _MAX_PIPELINE_MANIFEST_BYTES:
             return False
-        payload = json.loads(path.read_text(encoding = "utf-8"))
+        # Match pipeline_class_from_index: PowerShell commonly writes hand-authored JSON with a
+        # UTF-8 BOM, which Diffusers can otherwise load and must not disappear at inventory or
+        # preflight.
+        payload = json.loads(path.read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError, RecursionError):
         return False
     if not isinstance(payload, dict):
