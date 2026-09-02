@@ -630,7 +630,9 @@ def test_the_transformers_vision_streamer_preserves_tool_tokens():
     import pathlib
 
     tree = ast.parse(
-        (pathlib.Path(__file__).resolve().parents[1] / "core/inference/inference.py").read_text()
+        (pathlib.Path(__file__).resolve().parents[1] / "core/inference/inference.py").read_text(
+            encoding = "utf-8"
+        )
     )
     fn = next(
         node
@@ -861,7 +863,9 @@ def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
     import pathlib
 
     tree = ast.parse(
-        (pathlib.Path(__file__).resolve().parents[1] / "core/inference/inference.py").read_text()
+        (pathlib.Path(__file__).resolve().parents[1] / "core/inference/inference.py").read_text(
+            encoding = "utf-8"
+        )
     )
     fn = next(
         node
