@@ -2674,7 +2674,9 @@ class TestAnthropicMessagesToolRouting:
         )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        fields = {"tools": [{"name": "x", "input_schema": {"type": "object"}}]} if with_tools else {}
+        fields = (
+            {"tools": [{"name": "x", "input_schema": {"type": "object"}}]} if with_tools else {}
+        )
 
         response = _drive(
             anthropic_messages(
