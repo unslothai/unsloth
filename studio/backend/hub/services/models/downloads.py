@@ -309,8 +309,9 @@ async def download_model_response(
         adoptable = _registry.adoptable(key)
         if adoptable:
             # The adopter is an initiator too, so the account that asked for this
-            # download sees it in its own activity list.
-            download_lifecycle.note_download_initiator(key, _registry)
+            # download sees it in its own activity list. It joins the running
+            # job's initiators rather than replacing them.
+            download_lifecycle.note_download_initiator(key)
         return {
             "job_key": key,
             "state": claim_state,
@@ -327,7 +328,7 @@ async def download_model_response(
     # Immediately after the claim, not just before the launch: claim() publishes
     # the job as running, and a cancel arriving before this saw no initiator and
     # was authorized to stop it.
-    download_lifecycle.note_download_initiator(key, _registry)
+    download_lifecycle.note_download_initiator(key, replaces_previous_job = True)
     download_manifest.clear_cancel_marker(
         "model",
         repo_id,

@@ -17780,12 +17780,19 @@ async def stt_status(
     transformers_downloaded = [
         model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
     ]
-    if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
+    if (
+        model
+        and model not in STT_MODELS
+        and not _stt_model_is_foreign(model)
+        and stt_sidecar.is_model_downloaded(model)
+    ):
         transformers_downloaded.append(model)
     return JSONResponse(
         content = {
             "available": is_available(),
-            "loaded_model": sidecar.loaded_model,
+            # Curated ids are public and unchanged; a custom private repository
+            # another account loaded reads as nothing loaded.
+            "loaded_model": _redacted_stt_model(sidecar.loaded_model),
             "loading": sidecar.is_loading(),
             "device": sidecar.device,
             "keep_alive_seconds": sidecar.keep_alive_seconds,
@@ -17795,14 +17802,14 @@ async def stt_status(
             # either generically. Top-level fields above kept for old clients.
             "transformers": {
                 "available": is_available(),
-                "loaded_model": sidecar.loaded_model,
+                "loaded_model": _redacted_stt_model(sidecar.loaded_model),
                 "loading": sidecar.is_loading(),
                 "device": sidecar.device,
                 "keep_alive_seconds": sidecar.keep_alive_seconds,
                 "default_model": DEFAULT_STT_MODEL,
                 "models": list(STT_MODELS.keys()),
                 "downloaded_models": transformers_downloaded,
-                "download": stt_sidecar.download_status(),
+                "download": _redacted_stt_download_status(stt_sidecar.download_status()),
             },
             # llama.cpp (mtmd) engine: non-Whisper ASR models.
             "mtmd": {
@@ -17938,6 +17945,36 @@ def _reject_private_stt_model_from_another_account(model: Any) -> None:
         None,
         shared_cache_answers_offline = False,
     )
+
+
+def _stt_model_is_foreign(model: Any) -> bool:
+    """Whether this dictation model is one this account could not have obtained."""
+    try:
+        _reject_private_stt_model_from_another_account(model)
+    except HTTPException:
+        return True
+    return False
+
+
+def _redacted_stt_model(model: Any) -> Any:
+    """The model id, or None when it belongs to another account.
+
+    The sidecars are installation-wide, so the status route reported whichever
+    private repository somebody else had loaded, and answered a model= query
+    with whether that repository is in the shared cache. Both are the repository
+    name, which is the thing worth hiding.
+    """
+    return None if _stt_model_is_foreign(model) else model
+
+
+def _redacted_stt_download_status(status: Any) -> Any:
+    """A download status with another account's repository name removed."""
+    if not isinstance(status, dict):
+        return status
+    for field in ("model", "cancelled_model"):
+        if _stt_model_is_foreign(status.get(field)):
+            status = {**status, field: None}
+    return status
 
 
 def _claim_stt_download(engine: str, module) -> bool:

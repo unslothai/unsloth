@@ -4361,48 +4361,6 @@ def test_a_cached_private_dictation_model_stays_with_its_downloader(monkeypatch)
         reset_workspace_subject(token)
 
 
-def test_a_finished_download_does_not_hand_its_key_to_the_next_job(monkeypatch):
-    from hub.services import download_lifecycle
-
-    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
-
-    class _Registry:
-        def __init__(self) -> None:
-            self.live = True
-
-        def adoptable(self, key: str) -> bool:
-            return self.live
-
-    registry = _Registry()
-
-    token = _bind("alice")
-    try:
-        download_lifecycle.note_download_initiator("org/model", registry)
-    finally:
-        reset_workspace_subject(token)
-
-    token = _bind("bob")
-    try:
-        # While Alice's job runs, Bob adopting the same repository joins it.
-        download_lifecycle.note_download_initiator("org/model", registry)
-        assert download_lifecycle.download_is_visible_to_caller("org/model") is True
-
-        # Once it finishes the key is free, and claiming it for a new job leaves
-        # yesterday's downloaders behind rather than carrying their cancel rights
-        # and their view of somebody else's transfer into it.
-        registry.live = False
-        download_lifecycle.note_download_initiator("org/model", registry)
-        assert download_lifecycle._download_initiators["org/model"] == {"bob"}
-    finally:
-        reset_workspace_subject(token)
-
-    token = _bind("alice")
-    try:
-        assert download_lifecycle.download_is_visible_to_caller("org/model") is False
-    finally:
-        reset_workspace_subject(token)
-
-
 def test_a_retired_username_leaves_no_embedding_memo_behind(monkeypatch):
     from utils import embedding_model_settings
 
@@ -4654,6 +4612,7 @@ def test_a_private_cached_dataset_is_not_readable_by_another_account(monkeypatch
     from routes import inference as inference_routes
 
     monkeypatch.setattr(cache_access, "_dataset_downloaders", {}, raising = False)
+    monkeypatch.setattr(cache_access, "_pending_downloads", {}, raising = False)
     monkeypatch.setattr(
         inference_routes,
         "_hub_repo_is_anonymously_readable",
@@ -4662,7 +4621,11 @@ def test_a_private_cached_dataset_is_not_readable_by_another_account(monkeypatch
 
     token = _bind("alice")
     try:
-        cache_access.note_dataset_downloader("alice/private-set")
+        # Starting a download proves nothing: the worker has not authenticated
+        # yet, so asking for one is not the grant.
+        cache_access.note_dataset_download_attempt("job-1", "alice/private-set")
+        assert cache_access.caller_may_read_cached_dataset("alice/private-set") is False
+        cache_access.confirm_dataset_download("job-1")
         assert cache_access.caller_may_read_cached_dataset("alice/private-set") is True
     finally:
         reset_workspace_subject(token)
@@ -4672,9 +4635,31 @@ def test_a_private_cached_dataset_is_not_readable_by_another_account(monkeypatch
         # The cache is installation-wide and check-format only rejected the
         # anonymous sentinel, so any nonempty token read Alice's rows.
         assert cache_access.caller_may_read_cached_dataset("alice/private-set") is False
-        # Public datasets, which is nearly all of them, are unaffected, and so is
-        # an installation whose Hub cannot be reached.
+        # Public datasets, which is nearly all of them, are unaffected.
         assert cache_access.caller_may_read_cached_dataset("org/public-set") is True
+        # A doomed download does not buy the grant either.
+        cache_access.note_dataset_download_attempt("job-2", "alice/private-set")
+        assert cache_access.caller_may_read_cached_dataset("alice/private-set") is False
+    finally:
+        reset_workspace_subject(token)
+
+    # An unanswerable Hub withholds rather than guesses: offline and rate limited
+    # both read as None, and treating that as permission published the inventory
+    # and the rows for as long as the Hub was unreachable.
+    monkeypatch.setattr(
+        inference_routes, "_hub_repo_is_anonymously_readable", lambda repo_id, repo_type: None
+    )
+    token = _bind("bob")
+    try:
+        assert cache_access.caller_may_read_cached_dataset("org/public-set") is False
+    finally:
+        reset_workspace_subject(token)
+
+    # And the grant is retired with the account, so a namesake does not inherit it.
+    cache_access.forget_workspace("alice")
+    token = _bind("alice")
+    try:
+        assert cache_access.caller_may_read_cached_dataset("alice/private-set") is False
     finally:
         reset_workspace_subject(token)
 
@@ -4778,3 +4763,82 @@ def test_the_idle_unload_loop_asks_the_owning_workspace(monkeypatch):
             # The import block at the top of the loop names them too.
             if not stripped.startswith(setting) and setting in stripped:
                 assert "_in_owning_workspace" in stripped, stripped
+
+
+def test_a_replacement_download_does_not_inherit_the_last_jobs_initiators(monkeypatch):
+    from hub.services import download_lifecycle
+
+    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
+
+    token = _bind("alice")
+    try:
+        download_lifecycle.note_download_initiator("org/model", replaces_previous_job = True)
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # Claiming the key for a new job says the previous set belonged to the
+        # last one. Asking the registry could not: claim() publishes the
+        # replacement before this runs, so the job always looked live and Alice
+        # kept both the view of Bob's transfer and the right to cancel it.
+        download_lifecycle.note_download_initiator("org/model", replaces_previous_job = True)
+        assert download_lifecycle._download_initiators["org/model"] == {"bob"}
+        # An adopter joins the running job rather than replacing its initiators.
+        download_lifecycle.note_download_initiator("org/model")
+        assert download_lifecycle._download_initiators["org/model"] == {"bob"}
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        assert download_lifecycle.download_is_visible_to_caller("org/model") is False
+        download_lifecycle.note_download_initiator("org/model")
+        assert download_lifecycle._download_initiators["org/model"] == {"alice", "bob"}
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_another_accounts_dictation_model_is_not_named_in_status(monkeypatch):
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_STT_MODEL_DOWNLOADERS", {}, raising = False)
+    monkeypatch.setattr(
+        inference_routes,
+        "_hub_repo_is_anonymously_readable",
+        lambda repo_id, repo_type: repo_id != "alice/private-whisper",
+    )
+
+    token = _bind("alice")
+    try:
+        inference_routes._note_stt_model_downloader("alice/private-whisper")
+        assert (
+            inference_routes._redacted_stt_model("alice/private-whisper")
+            == "alice/private-whisper"
+        )
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The sidecars are installation-wide, so the status route named whichever
+        # private repository somebody else had loaded, and a model= query
+        # answered whether it is in the shared cache.
+        assert inference_routes._redacted_stt_model("alice/private-whisper") is None
+        assert inference_routes._redacted_stt_model("openai/whisper-large-v3") is not None
+        redacted = inference_routes._redacted_stt_download_status(
+            {"downloading": True, "model": "alice/private-whisper", "bytes_done": 5}
+        )
+        assert redacted["model"] is None
+        assert redacted["downloading"] is True and redacted["bytes_done"] == 5
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        assert (
+            inference_routes._redacted_stt_model("alice/private-whisper")
+            == "alice/private-whisper"
+        )
+    finally:
+        reset_workspace_subject(token)

@@ -376,6 +376,12 @@ def finalize_worker_exit(
     if state == "complete":
         hf_cache_scan.invalidate_hf_cache_scans()
         registry.set_job(key, "complete")
+        if repo_type == "dataset":
+            # The worker authenticated and finished, so the account that asked
+            # for this job has now demonstrated it can reach the repository, and
+            # may read the copy in the shared cache.
+            from hub.services.datasets import cache_access
+            cache_access.confirm_dataset_download(key)
         # Where /v1 learns a new model exists: its resolver answers from a cached scan
         # with no watcher, so it would report the model absent and serve whatever is
         # resident. Models only: noting a dataset id as a local model would refuse a
@@ -1318,20 +1324,21 @@ _download_initiators: dict[str, set[str]] = {}
 _download_initiators_lock = threading.Lock()
 
 
-def note_download_initiator(
-    key: str, registry: Optional[download_registry.DownloadRegistry] = None
-) -> None:
+def note_download_initiator(key: str, *, replaces_previous_job: bool = False) -> None:
     """Record a workspace as one of this download's initiators.
 
-    A key names a repository, so it outlives the job that held it. Adding to the
-    set unconditionally carried yesterday's downloaders into today's job, which
-    kept their cancel rights and showed them somebody else's transfer. Passing
-    *registry* claims the key for a new job instead: with no live job on it, the
-    previous set belonged to a finished one and is dropped.
+    A key names a repository, so it outlives the job that held it, and adding to
+    the set unconditionally carried yesterday's downloaders into today's job with
+    their cancel rights and their view of it.
+
+    ``replaces_previous_job`` is the caller saying it has just claimed the key for
+    a new job, so whatever the set holds belonged to the last one. Asking the
+    registry instead did not work: claim() publishes the replacement before this
+    runs, so the job always looked live and the previous set was never dropped.
     """
     from utils.workspace_context import current_workspace_subject
     with _download_initiators_lock:
-        if registry is not None and not registry.adoptable(key):
+        if replaces_previous_job:
             _download_initiators.pop(key, None)
         _download_initiators.setdefault(key, set()).add(current_workspace_subject())
 

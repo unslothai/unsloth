@@ -194,8 +194,9 @@ async def download_dataset_response(
         adoptable = _registry.adoptable(key)
         if adoptable:
             # The adopter is an initiator too, so the account that asked for this
-            # download sees it in its own activity list.
-            download_lifecycle.note_download_initiator(key, _registry)
+            # download sees it in its own activity list. It joins the running
+            # job's initiators rather than replacing them.
+            download_lifecycle.note_download_initiator(key)
         return {
             "repo_id": repo_id,
             "state": claim_state,
@@ -212,12 +213,13 @@ async def download_dataset_response(
     # Immediately after the claim, not just before the launch: claim() publishes
     # the job as running, and a cancel arriving before this saw no initiator and
     # was authorized to stop it.
-    download_lifecycle.note_download_initiator(key, _registry)
-    # And durably, by repository: the job record is recycled with the key, but who
-    # is entitled to read this dataset out of the shared cache outlives the job.
+    download_lifecycle.note_download_initiator(key, replaces_previous_job = True)
+    # And the claim on the dataset itself, which outlives the job record: pending
+    # until the worker exits cleanly, because starting a download proves nothing
+    # about whether this account's token can actually reach the repository.
     from hub.services.datasets import cache_access
 
-    cache_access.note_dataset_downloader(repo_id)
+    cache_access.note_dataset_download_attempt(key, repo_id)
     download_manifest.clear_cancel_marker(
         "dataset",
         repo_id,

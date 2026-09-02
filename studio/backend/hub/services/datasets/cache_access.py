@@ -17,27 +17,70 @@ _lock = threading.Lock()
 _MAX_TRACKED = 512
 
 
-def note_dataset_downloader(repo_id: str) -> None:
+# Job key -> (repo, workspace) for a download that has started but not finished.
+# Starting one proves nothing: the worker has not authenticated yet, so recording
+# the grant here let a caller with any nonempty token defeat the gate simply by
+# asking for a doomed download of a repository somebody else had already cached.
+_pending_downloads: dict[str, tuple[str, str]] = {}
+
+
+def note_dataset_download_attempt(key: str, repo_id: str) -> None:
+    """Remember who asked for this job, pending the worker actually succeeding."""
     from utils.workspace_context import current_workspace_subject
 
     if not isinstance(repo_id, str) or not repo_id.strip():
         return
-    key = repo_id.strip()
     with _lock:
-        _dataset_downloaders.setdefault(key, set()).add(current_workspace_subject())
+        _pending_downloads[key] = (repo_id.strip(), current_workspace_subject())
+        while len(_pending_downloads) > _MAX_TRACKED:
+            _pending_downloads.pop(next(iter(_pending_downloads)))
+
+
+def confirm_dataset_download(key: str) -> None:
+    """Grant the access a finished download earned.
+
+    Only the account whose own job completed: an adopter of a running job never
+    recorded an attempt, so joining somebody's transfer does not inherit their
+    credential's reach.
+    """
+    with _lock:
+        pending = _pending_downloads.pop(key, None)
+        if pending is None:
+            return
+        repo_id, subject = pending
+        _dataset_downloaders.setdefault(repo_id, set()).add(subject)
         while len(_dataset_downloaders) > _MAX_TRACKED:
             _dataset_downloaders.pop(next(iter(_dataset_downloaders)))
+
+
+def forget_workspace(subject: str) -> None:
+    """Drop an account's grants and pending attempts, for retirement.
+
+    The subject is a reusable username, so a grant that outlives the account
+    lets the namesake list and preview the previous holder's cached private
+    datasets before any Hub check runs.
+    """
+    with _lock:
+        for repo_id in list(_dataset_downloaders):
+            holders = _dataset_downloaders.get(repo_id)
+            if not holders:
+                continue
+            holders.discard(subject)
+            if not holders:
+                _dataset_downloaders.pop(repo_id, None)
+        for key in [key for key, value in _pending_downloads.items() if value[1] == subject]:
+            _pending_downloads.pop(key, None)
 
 
 def caller_may_read_cached_dataset(repo_id: Optional[str]) -> bool:
     """Whether this account could have obtained this dataset itself.
 
     True for the owner, for an account that downloaded it here, and for a
-    repository the Hub serves anonymously, which is the ordinary case. False
-    only for a private or gated repository somebody else pulled into the shared
-    cache: reading its rows, or even listing it, is that account's disclosure.
-    An unanswerable Hub is treated as public, so an offline installation keeps
-    working exactly as it did.
+    repository the Hub confirms it serves anonymously, which is the ordinary
+    case. False for a private or gated repository somebody else pulled into the
+    shared cache, and for one whose visibility cannot be established: reading its
+    rows, or even listing it, is that account's disclosure, so an unreachable Hub
+    withholds rather than guesses. The owner is unaffected either way.
     """
     from auth.storage import is_installation_owner
     from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
@@ -54,4 +97,8 @@ def caller_may_read_cached_dataset(repo_id: Optional[str]) -> bool:
         return True
     from routes.inference import _hub_repo_is_anonymously_readable
 
-    return _hub_repo_is_anonymously_readable(key, "dataset") is not False
+    # Confirmed public, not merely unrefuted: offline, rate limited and any other
+    # transient failure all answer None, and treating that as permission handed
+    # over the inventory and the cached rows of a private dataset for exactly as
+    # long as the Hub was unreachable.
+    return _hub_repo_is_anonymously_readable(key, "dataset") is True

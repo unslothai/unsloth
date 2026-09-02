@@ -1250,6 +1250,14 @@ def _retire_workspace_directory(username: str) -> bool:
         forget_embedding_memos(username)
     except Exception:  # noqa: BLE001 - a cache we cannot reach must not block a deletion
         logger.warning("Could not clear embedding memos for %s", username, exc_info = True)
+    # And the grants saying this account may read a private dataset out of the
+    # installation-wide cache: keyed by the same reusable username, so the
+    # namesake would list and preview the previous holder's cached data.
+    try:
+        from hub.services.datasets.cache_access import forget_workspace as forget_dataset_grants
+        forget_dataset_grants(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear dataset grants for %s", username, exc_info = True)
     # Moving the files is not enough on its own: a worker still bound to this
     # subject recreates the pathname on its next lookup, and a namesake created
     # in between would then be sharing a workspace with a deleted account's job.
