@@ -58,7 +58,7 @@ print("__JSON__" + json.dumps({
     "caches": {k: os.environ.get(k) for k in (
         "UNSLOTH_PORTABLE", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_TOOL_DIR",
         "UV_TOOL_BIN_DIR", "UV_PYTHON_BIN_DIR", "UV_INSTALL_DIR", "UV_NO_MODIFY_PATH",
-        "NPM_CONFIG_CACHE", "CUDA_CACHE_PATH",
+        "NPM_CONFIG_CACHE", "CUDA_CACHE_PATH", "PIP_CACHE_DIR",
     )},
     # The env prefix _fail_if_install_damaged puts on its reinstall command.
     "reinstall_env": (
@@ -180,6 +180,8 @@ def main() -> int:
             "UV_NO_MODIFY_PATH": "1",
             "NPM_CONFIG_CACHE": str(nested / "cache" / "npm"),
             "CUDA_CACHE_PATH": str(nested / "cache" / "cuda"),
+            # pip is install_python_stack's fallback when uv fails, and it caches by default.
+            "PIP_CACHE_DIR": str(nested / "cache" / "pip"),
         }
         for key, want in expected_caches.items():
             check(f"cli: exports {key}", want, r["caches"].get(key))

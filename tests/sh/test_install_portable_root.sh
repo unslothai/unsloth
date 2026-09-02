@@ -39,6 +39,7 @@ case "$blockC" in *"UV_PYTHON_INSTALL_DIR="*) : ;; *) echo "FAIL: blockC lost th
 case "$blockC" in *"UV_PYTHON_BIN_DIR="*) : ;; *) echo "FAIL: blockC lost the uv python bin dir"; exit 1 ;; esac
 case "$blockC" in *"NPM_CONFIG_CACHE="*) : ;; *) echo "FAIL: blockC lost the npm cache"; exit 1 ;; esac
 case "$blockC" in *"CUDA_CACHE_PATH="*) : ;; *) echo "FAIL: blockC lost the cuda cache"; exit 1 ;; esac
+case "$blockC" in *"PIP_CACHE_DIR="*) : ;; *) echo "FAIL: blockC lost the pip cache"; exit 1 ;; esac
 
 SNIP='substep() { :; }
 '"$blockA"'
@@ -47,9 +48,9 @@ _resolve_studio_destinations
 UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
 '"$blockC"'
 _export_portable_roots
-printf "%s|%s|%s|%s|%s|%s|%s|%s\n" "$UNSLOTH_ROOT" "$STUDIO_HOME" "$DATA_DIR" "$_LOCAL_BIN" \
+printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$UNSLOTH_ROOT" "$STUDIO_HOME" "$DATA_DIR" "$_LOCAL_BIN" \
     "${UV_CACHE_DIR:-}" "${UV_PYTHON_INSTALL_DIR:-}" "$_STUDIO_HOME_REDIRECT" \
-    "${UV_PYTHON_BIN_DIR:-}"'
+    "${UV_PYTHON_BIN_DIR:-}" "${PIP_CACHE_DIR:-}"'
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -70,6 +71,7 @@ check "default -> ~/.unsloth/studio"        "$H/.unsloth/studio"     "$(field "$
 check "default -> ~/.local/share/unsloth"   "$H/.local/share/unsloth" "$(field "$out" 3)"
 check "default -> ~/.local/bin"             "$H/.local/bin"          "$(field "$out" 4)"
 check "default leaves UV_CACHE_DIR unset"   ""                       "$(field "$out" 5)"
+check "default leaves PIP_CACHE_DIR unset"  ""                       "$(field "$out" 9)"
 # A fake HOME takes the "home redirected" branch; either is fine as long as it is
 # not "env", which skips the shell-rc and desktop-entry writes.
 case "$(field "$out" 7)" in
@@ -87,6 +89,8 @@ check "--portable uv cache"        "$H/.unsloth/cache/uv"       "$(field "$out" 
 check "--portable uv python dir"   "$H/.unsloth/cache/uv-python" "$(field "$out" 6)"
 check "--portable redirect marker" "env"                        "$(field "$out" 7)"
 check "--portable uv python bin dir" "$H/.unsloth/bin"          "$(field "$out" 8)"
+# pip is install_python_stack's fallback when uv fails, so ~/.cache/pip is reachable.
+check "--portable pip cache"       "$H/.unsloth/cache/pip"      "$(field "$out" 9)"
 
 H="$(new_home)"
 mkdir -p "$T/elsewhere"
@@ -195,7 +199,7 @@ fi
 H="$(new_home)"
 out="$(resolve "$H" --root "$R")"
 outside=""
-for i in 2 3 4 5 6 8; do
+for i in 2 3 4 5 6 8 9; do
     v="$(field "$out" "$i")"
     case "$v" in "$R"/*) ;; *) outside="$outside $i:$v" ;; esac
 done
@@ -209,7 +213,7 @@ shim_block="$(awk '
 ' "$INSTALL")"
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UNSLOTH_STUDIO_HOME UNSLOTH_LLAMA_CPP_PATH \
          UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR UV_NO_MODIFY_PATH \
-         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
+         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH PIP_CACHE_DIR; do
     case "$shim_block" in
         *"export $v="*) printf '  PASS  %s\n' "portable shim exports $v" ;;
         *) printf '  FAIL  %s\n' "portable shim exports $v"; fails=$((fails+1)) ;;
@@ -222,7 +226,7 @@ esac
 
 conf_block="$(sed -n '/studio.conf: exe path/,/studio\.conf"$/p' "$INSTALL")"
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR \
-         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH; do
+         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH PIP_CACHE_DIR; do
     case "$conf_block" in
         *"export $v="*) printf '  PASS  %s\n' "studio.conf exports $v" ;;
         *) printf '  FAIL  %s\n' "studio.conf exports $v"; fails=$((fails+1)) ;;
@@ -244,9 +248,17 @@ fi
 
 done_block="$(sed -n '/portable install; everything lives in:/,/were left untouched/p' "$INSTALL")"
 case "$done_block" in
+    *"rm -rf '"*)
+        printf '  PASS  %s\n' "closing message removes the root with rm -rf" ;;
+    *) printf '  FAIL  %s\n' "closing message removes the root with rm -rf"; fails=$((fails+1)) ;;
+esac
+# See tests/sh/test_uninstall_portable_root_scope.sh: that command also removes a
+# default install, so it must never be offered as the way to remove this root.
+case "$done_block" in
     *"UNSLOTH_HOME='"*"scripts/uninstall.sh"*)
-        printf '  PASS  %s\n' "closing message names UNSLOTH_HOME for the uninstaller" ;;
-    *) printf '  FAIL  %s\n' "closing message names UNSLOTH_HOME for the uninstaller"; fails=$((fails+1)) ;;
+        printf '  FAIL  %s\n' "closing message does not offer UNSLOTH_HOME=... scripts/uninstall.sh"
+        fails=$((fails+1)) ;;
+    *) printf '  PASS  %s\n' "closing message does not offer UNSLOTH_HOME=... scripts/uninstall.sh" ;;
 esac
 
 # setup.sh clears the desktop app's WebView caches under $HOME. Portable mode
