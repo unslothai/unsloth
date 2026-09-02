@@ -89,7 +89,7 @@ export async function withModelLoadNotice<T>(
   }
 }
 
-/** announce a successful release after the backend has cleared its runtime. */
+/** Announce a successful release after the backend has cleared its runtime. */
 export async function withModelUnloadNotice<T>(
   runtime: ModelRuntime,
   model: string | null,

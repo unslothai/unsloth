@@ -19177,7 +19177,7 @@ class LlamaCppBackend:
                         if hasattr(_gpu_mem, "known_vulkan_igpus"):
                             _known_vulkan_igpus = _gpu_mem.known_vulkan_igpus
                         elif _gpu_mem:
-                            # test and custom probes using the legacy list contract
+                            # Test and custom probes using the legacy list contract.
                             _known_vulkan_igpus = {
                                 idx for idx, _free, total in _gpu_mem if total <= 0
                             }
@@ -19262,7 +19262,7 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
-                    # keep only classified iGPUs this launch can still target; a
+                    # Keep only classified iGPUs this launch can still target; a
                     # failed inventory or type lookup stays unknown for the later probe.
                     if is_vulkan_backend:
                         _shared_gpu_ids = (
@@ -24258,7 +24258,7 @@ class LlamaCppBackend:
                             self._memory_policy_active = (
                                 bool(_retry_managed) or self._memory_policy_active
                             )
-                            # resolve the final respawn argv so per-model load mode remains represented.
+                            # Resolve the final respawn argv so the per-model load mode stays represented.
                             self._memory_state = resolve_effective_memory_state(cmd, env)
                             logger.info(
                                 "Arch-crash retry changed where the weights live; "

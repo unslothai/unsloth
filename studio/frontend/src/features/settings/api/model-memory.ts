@@ -184,7 +184,7 @@ async function saveModelMemorySettings(
 export function updateModelMemorySettings(
   patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
 ): Promise<ModelMemorySettings> {
-  // a get already in flight predates this write, and later reads must wait for it.
+  // A GET already in flight predates this write, and later reads must wait for it.
   inFlightModelMemory = null;
   modelMemoryGeneration += 1;
   const previousWrites = pendingModelMemoryWrites ?? Promise.resolve();

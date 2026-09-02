@@ -204,7 +204,7 @@ def test_every_toggle_pair_produces_the_same_argv_on_a_discrete_offload(
     reporter_host, monkeypatch, keep_resident, no_ram_reserve
 ):
     """All four cells are byte-identical here, which is exactly what the reporter
-    observes when he toggles the boxes and reloads. Nothing is being ignored: with
+    observes when they toggle the boxes and reload. Nothing is being ignored: with
     the weights on the cards there is no flag either toggle can contribute."""
     host_resident = _gate()
     managed, extras = _policy(
