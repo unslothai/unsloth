@@ -4149,3 +4149,91 @@ def test_only_the_deleted_accounts_folder_sync_worker_is_stopped(monkeypatch):
 
     # Unknown accounts are a no-op rather than an error.
     folder_sync.stop_workspace_auto_sync("carol")
+
+
+def test_a_failed_start_hands_ownership_back_to_the_previous_account():
+    import threading as _threading
+
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend.__new__(TrainingBackend)
+    backend._lock = _threading.RLock()
+    backend._proc = None
+    backend._active_workspace_subject = "alice"
+    backend._current_start_key = ("alice", "req-alice")
+
+    def _fail(*_a, **_k):
+        # Everything between the claim and the spawn can refuse: the pump join,
+        # the config build, the sidecar check, the GPU selection.
+        backend._active_workspace_subject = "bob"
+        backend._current_start_key = ("bob", "req-bob")
+        return False
+
+    backend._start_training_with_lifecycle_reserved_impl = _fail
+    assert backend._start_training_with_lifecycle_reserved("job-1") is False
+    # Alice keeps her completed status and metrics; Bob, who started nothing,
+    # cannot read them.
+    assert backend._active_workspace_subject == "alice"
+    assert backend._current_start_key == ("alice", "req-alice")
+
+    def _raise(*_a, **_k):
+        backend._active_workspace_subject = "bob"
+        raise RuntimeError("spawn refused")
+
+    backend._start_training_with_lifecycle_reserved_impl = _raise
+    with pytest.raises(RuntimeError):
+        backend._start_training_with_lifecycle_reserved("job-2")
+    assert backend._active_workspace_subject == "alice"
+
+    class _Live:
+        def is_alive(self):
+            return True
+
+    def _succeed(*_a, **_k):
+        backend._active_workspace_subject = "bob"
+        backend._proc = _Live()
+        return True
+
+    backend._start_training_with_lifecycle_reserved_impl = _succeed
+    assert backend._start_training_with_lifecycle_reserved("job-3") is True
+    # A live worker means the claim is the truth and must not be rolled back.
+    assert backend._active_workspace_subject == "bob"
+
+
+def test_a_refused_recipe_start_leaves_the_previous_job_intact(monkeypatch):
+    import threading as _threading
+    from collections import deque
+
+    from fastapi import HTTPException
+
+    from core.data_recipe.jobs import manager as manager_module
+    from core.data_recipe.jobs.manager import Job, JobManager
+
+    service = JobManager.__new__(JobManager)
+    service._lock = _threading.RLock()
+    service._proc = None
+    service._job = Job(job_id = "alice-job", status = "completed", started_at = 0.0)
+    service._events = deque([{"seq": 1}])
+    service._subs = []
+    service._seq = 1
+    service._workspace_subject = "alice"
+    service._finished_jobs = {}
+
+    def _refuse(_recipe):
+        raise HTTPException(status_code = 403, detail = "no")
+
+    monkeypatch.setattr(manager_module, "_reject_uncontained_recipe_paths", _refuse)
+
+    token = _bind("bob")
+    try:
+        # The refusal is preflight on the recipe alone, so it now runs before
+        # anything is replaced: a forbidden path used to destroy Alice's finished
+        # job and leave Bob with a replacement that never started.
+        with pytest.raises(HTTPException):
+            service.start(recipe = {}, run = {})
+    finally:
+        reset_workspace_subject(token)
+
+    assert service._workspace_subject == "alice"
+    assert service._job is not None and service._job.job_id == "alice-job"
+    assert list(service._events) == [{"seq": 1}]

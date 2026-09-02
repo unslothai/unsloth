@@ -647,38 +647,54 @@ class DiffusionTrainingService:
                 raise RuntimeError("A diffusion training job is already running.")
 
             job_id = uuid.uuid4().hex
+            # Captured before the claim. Queue and process construction, the
+            # environment setup and start() itself can all raise after it, and the
+            # route only releases its reservation, so without the rollback below the
+            # previous owner's terminal state became readable by the account that
+            # failed to start, while they themselves saw an idle service.
+            previous_workspace_subject = self._active_workspace_subject
+            previous_state = self._state
             self._active_workspace_subject = workspace_subject
-            self._discard_requested = False
-            self._own_checkpoints = []
-            self._child_cleared_own = False
-            self._stop_signalled = False
-            event_queue = self._ctx.Queue()
-            self._stop_queue = self._ctx.Queue()
-            self._proc = self._ctx.Process(
-                target = self._target,
-                kwargs = {
-                    "event_queue": event_queue,
-                    "stop_queue": self._stop_queue,
-                    "config": config,
-                },
-                daemon = True,
-            )
-            # Keep the lease secret out of the child's env, as other orchestrators do.
-            from utils.native_path_leases import native_path_secret_removed_for_child_start
+            spawned = False
+            try:
+                self._discard_requested = False
+                self._own_checkpoints = []
+                self._child_cleared_own = False
+                self._stop_signalled = False
+                event_queue = self._ctx.Queue()
+                self._stop_queue = self._ctx.Queue()
+                self._proc = self._ctx.Process(
+                    target = self._target,
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": self._stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                # Keep the lease secret out of the child's env, as other orchestrators do.
+                from utils.native_path_leases import native_path_secret_removed_for_child_start
 
-            # And the owner's Hub and W&B credentials, for the same reason the LLM
-            # trainer does: this child is spawned, so it copies the live parent
-            # environment, and the trainers pass token=cfg.hf_token straight into
-            # from_pretrained, where None means "use whatever is ambient".
-            from utils.hf_cache_settings import child_environment_for_spawn
+                # And the owner's Hub and W&B credentials, for the same reason the LLM
+                # trainer does: this child is spawned, so it copies the live parent
+                # environment, and the trainers pass token=cfg.hf_token straight into
+                # from_pretrained, where None means "use whatever is ambient".
+                from utils.hf_cache_settings import child_environment_for_spawn
 
-            from .training import _ambient_credentials_suppressed_for
+                from .training import _ambient_credentials_suppressed_for
 
-            with (
-                child_environment_for_spawn(_ambient_credentials_suppressed_for(workspace_subject)),
-                native_path_secret_removed_for_child_start(),
-            ):
-                self._proc.start()
+                with (
+                    child_environment_for_spawn(_ambient_credentials_suppressed_for(workspace_subject)),
+                    native_path_secret_removed_for_child_start(),
+                ):
+                    self._proc.start()
+                spawned = True
+            finally:
+                if not spawned:
+                    # Nothing started, so the claim was never earned.
+                    self._proc = None
+                    self._active_workspace_subject = previous_workspace_subject
+                    self._state = previous_state
             try:
                 from utils.process_lifetime import adopt_pid
                 adopt_pid(self._proc.pid)  # bind to parent lifetime (no zombie on exit)

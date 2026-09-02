@@ -1771,7 +1771,38 @@ class TrainingBackend:
                     **kwargs,
                 )
 
-    def _start_training_with_lifecycle_reserved(
+    def _start_training_with_lifecycle_reserved(self, *args, **kwargs) -> bool:
+        """Publish ownership only for a start that actually reaches a live worker.
+
+        The claim below has to happen early, because everything between it and
+        the spawn reads _active_workspace_subject: the credential suppression
+        handed to the child, and the workspace binding of the threads it starts.
+        But the pump join, the config build, the provenance and sidecar checks,
+        the GPU selection and the spawn itself can all fail or refuse after it,
+        and every one of those used to leave the new subject in place. The
+        previous owner lost their completed status and metrics at that moment,
+        and the caller who never started anything could read them.
+
+        So the claim stays where it is and is undone here instead, on every exit
+        that did not produce a running process. Skipped when a process is alive,
+        since then the claim is the truth.
+        """
+        with self._lock:
+            previous_subject = self._active_workspace_subject
+            previous_start_key = self._current_start_key
+        started = False
+        try:
+            started = self._start_training_with_lifecycle_reserved_impl(*args, **kwargs)
+            return started
+        finally:
+            if not started:
+                with self._lock:
+                    proc = self._proc
+                    if proc is None or not proc.is_alive():
+                        self._active_workspace_subject = previous_subject
+                        self._current_start_key = previous_start_key
+
+    def _start_training_with_lifecycle_reserved_impl(
         self,
         job_id: str,
         *,

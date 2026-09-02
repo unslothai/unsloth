@@ -269,6 +269,14 @@ class JobManager:
         if llm_column_count <= 0:
             llm_column_count = 1
 
+        # Before the lock and before anything is replaced. The artifact root only
+        # confines what the worker WRITES; the recipe is forwarded verbatim and
+        # its seed sources open the paths they name, so an absolute path was a
+        # read of another account's file straight into the generated dataset.
+        # Hoisted here because it needs nothing from the claim below, and
+        # refusing after it destroyed the previous account's finished job.
+        _reject_uncontained_recipe_paths(recipe)
+
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("job already running")
@@ -277,67 +285,82 @@ class JobManager:
             # Before the replacement, so the previous account keeps its finished
             # run rather than losing it to whoever starts next.
             self._retain_finished_job_locked()
-            self._workspace_subject = current_workspace_subject()
-            self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
-            self._job.progress_columns_total = llm_column_count
-            self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
-            self._job.internal_api_key_id = internal_api_key_id
-            self._events.clear()
-            # Dropped with the events: a stream opened for the previous job stays
-            # in _subs after that job ends, and this singleton is shared, so the
-            # next account's events and logs would be broadcast down it. subscribe()
-            # already refuses a new stream from another workspace.
-            self._subs.clear()
-            self._seq = 0
+            # Captured so a failure between here and a live child hands the
+            # previous account its job back, rather than leaving them without one
+            # and this caller with a replacement that never starts.
+            previous_workspace_subject = self._workspace_subject
+            previous_job = self._job
+            previous_events = list(self._events)
+            previous_seq = self._seq
+            spawned = False
+            try:
+                self._workspace_subject = current_workspace_subject()
+                self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
+                self._job.progress_columns_total = llm_column_count
+                self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
+                self._job.internal_api_key_id = internal_api_key_id
+                self._events.clear()
+                # Dropped with the events: a stream opened for the previous job stays
+                # in _subs after that job ends, and this singleton is shared, so the
+                # next account's events and logs would be broadcast down it. subscribe()
+                # already refuses a new stream from another workspace.
+                self._subs.clear()
+                self._seq = 0
 
-            run_payload = dict(run)
-            run_payload["_job_id"] = job_id
-            # spawn starts a fresh interpreter, so request ContextVars do not
-            # cross the process boundary. Pass the authenticated workspace's
-            # concrete artifact root instead of falling back to the owner path.
-            from utils.paths import recipe_datasets_root
+                run_payload = dict(run)
+                run_payload["_job_id"] = job_id
+                # spawn starts a fresh interpreter, so request ContextVars do not
+                # cross the process boundary. Pass the authenticated workspace's
+                # concrete artifact root instead of falling back to the owner path.
+                from utils.paths import recipe_datasets_root
 
-            run_payload["_artifact_root"] = str(recipe_datasets_root())
-            # The artifact root only confines what the worker WRITES. The recipe
-            # itself is forwarded verbatim, and its seed sources open the paths
-            # they name, so an absolute path was a read of another account's file
-            # straight into the generated dataset.
-            _reject_uncontained_recipe_paths(recipe)
-            from utils.native_path_leases import (
-                native_path_secret_removed_for_child_start,
-                run_without_native_path_secret,
-            )
-            from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
-
-            cache_env = get_hf_cache_paths().child_env({})
-            # Same suppression the trainers apply: this child is spawned, so it
-            # copies the live parent environment. Defence in depth behind the
-            # route's refusal of api_key_env, which is what actually stops a
-            # managed account naming an arbitrary variable to read.
-            from core.training.training import _ambient_credentials_suppressed_for
-
-            cache_env.update(_ambient_credentials_suppressed_for(self._workspace_subject))
-
-            with (
-                child_environment_for_spawn(cache_env),
-                native_path_secret_removed_for_child_start(),
-            ):
-                mp_q = _CTX.Queue()
-                proc = _CTX.Process(
-                    target = run_without_native_path_secret,
-                    args = ("core.data_recipe.jobs.worker", "run_job_process", cache_env),
-                    kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
-                    daemon = True,
+                run_payload["_artifact_root"] = str(recipe_datasets_root())
+                from utils.native_path_leases import (
+                    native_path_secret_removed_for_child_start,
+                    run_without_native_path_secret,
                 )
-                proc.start()
-                from utils.process_lifetime import adopt_pid
+                from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+                cache_env = get_hf_cache_paths().child_env({})
+                # Same suppression the trainers apply: this child is spawned, so it
+                # copies the live parent environment. Defence in depth behind the
+                # route's refusal of api_key_env, which is what actually stops a
+                # managed account naming an arbitrary variable to read.
+                from core.training.training import _ambient_credentials_suppressed_for
 
-            self._mp_q = mp_q
-            self._proc = proc
-            self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
-            self._pump_thread.start()
+                cache_env.update(_ambient_credentials_suppressed_for(self._workspace_subject))
+
+                with (
+                    child_environment_for_spawn(cache_env),
+                    native_path_secret_removed_for_child_start(),
+                ):
+                    mp_q = _CTX.Queue()
+                    proc = _CTX.Process(
+                        target = run_without_native_path_secret,
+                        args = ("core.data_recipe.jobs.worker", "run_job_process", cache_env),
+                        kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                        daemon = True,
+                    )
+                    proc.start()
+                    from utils.process_lifetime import adopt_pid
+
+                    adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+
+                self._mp_q = mp_q
+                self._proc = proc
+                self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
+                self._pump_thread.start()
+                spawned = True
+            finally:
+                if not spawned:
+                    # Nothing is running, so this caller replaced a job for
+                    # nothing. Give the previous account its job, its events
+                    # and its ownership back.
+                    self._workspace_subject = previous_workspace_subject
+                    self._job = previous_job
+                    self._events.clear()
+                    self._events.extend(previous_events)
+                    self._seq = previous_seq
 
             self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
             return job_id

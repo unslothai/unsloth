@@ -483,6 +483,15 @@ class ExportOrchestrator:
                 workspace_subject = current_workspace_subject()
             if self._export_active and not self.owns_workspace(workspace_subject):
                 return False, "Export resources are currently in use by another account."
+            # Captured before the claim. The sidecar recheck below refuses, and a
+            # worker that survives _shutdown_subprocess leaves the previous
+            # account's loaded checkpoint resident; both used to return with the
+            # ownership already transferred, so the caller who started nothing
+            # could export from weights that are not theirs.
+            # getattr, like owns_workspace: the lightweight test doubles that
+            # construct this class with __new__ never set the attribute.
+            previous_workspace_subject = getattr(self, "_workspace_subject", None)
+            claimed = False
             self._workspace_subject = workspace_subject
             sub_config["subject"] = workspace_subject
             # Fresh log buffer so the UI sees only this run's output.
@@ -492,6 +501,8 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message = False, ""
             try:
+                # From here the claim is undone by the finally below unless a
+                # worker really is running as this subject.
                 # Handshake with the sidecar install route: _export_active is set above, so either this
                 # recheck refuses BEFORE tearing down the old worker (keeping the loaded checkpoint), or
                 # the install sees is_export_active() and 409s. The spawn-time recheck stays as a last resort.
@@ -543,6 +554,9 @@ class ExportOrchestrator:
 
                 if resp.get("success"):
                     self.current_checkpoint = resp.get("checkpoint")
+                    # A worker is up and loaded as this subject: the claim is now
+                    # the truth, so the rollback below must not undo it.
+                    claimed = True
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
@@ -557,6 +571,12 @@ class ExportOrchestrator:
                     op_success, op_message = False, error
                     return False, error
             finally:
+                if not claimed:
+                    # No worker is running as this subject, so the claim above was
+                    # never earned. Hand ownership back rather than leaving the
+                    # previous account's still-resident checkpoint exportable by
+                    # whoever failed to replace it.
+                    self._workspace_subject = previous_workspace_subject
                 self._record_op_finished(op_success, op_message, None)
                 self._active_op_kind = None
                 self._export_active = False
