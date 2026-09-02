@@ -389,6 +389,17 @@ def _compare(args: argparse.Namespace) -> int:
     baseline = json.loads(baseline_path.read_text())
     out_dir = Path(args.out_dir).resolve()
     args._image_out = out_dir / "compare.png"
+    # --write-baseline takes any path, so a baseline can legitimately be sitting on one of the
+    # two names this run writes. Refuse up front rather than destroying the reference metrics
+    # after a full generation has already been paid for.
+    for written in (out_dir / "compare.json", args._image_out):
+        if baseline_path == written:
+            print(
+                f"error: baseline {baseline_path} is the file this run writes; "
+                f"pass a different --out-dir or rename the baseline",
+                file = sys.stderr,
+            )
+            return 2
 
     # Refuse a noisy cross-hardware / cross-dtype comparison unless forced.
     base_env = baseline.get("env", {})

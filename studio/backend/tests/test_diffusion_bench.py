@@ -99,6 +99,49 @@ def test_process_rss_falls_back_to_proc_without_psutil(monkeypatch):
     assert isinstance(value, int) and value > 0
 
 
+@pytest.mark.parametrize("name", ["compare.json", "compare.png"])
+def test_compare_refuses_to_overwrite_its_own_baseline(tmp_path, monkeypatch, name):
+    """--write-baseline accepts any path, so a baseline can legitimately be sitting on one of the
+    names the compare run writes. Refuse instead of destroying the reference metrics, and refuse
+    BEFORE the generation rather than after paying for it.
+
+    _run and _psnr are stubbed so that without the guard this reaches the real write and
+    clobbers the baseline; otherwise the case would pass for the wrong reason.
+    """
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    reference = tmp_path / "reference.png"
+    reference.write_bytes(b"reference")
+    baseline_path = out_dir / name
+    baseline_path.write_text(json.dumps({
+        "env": {"gpu_name": "test-gpu", "status": {"device": "cuda", "dtype": "bfloat16"}},
+        "generate": {"median_latency_s": 1.0, "peak_vram_bytes": 100,
+                     "host_rss": {"post_warmup_growth_bytes": 0}},
+        "accuracy": {"reference_png": str(reference)},
+    }))
+    before = baseline_path.read_text()
+
+    monkeypatch.setattr(_DIFFUSION_BENCH, "_gpu_name", lambda: "test-gpu")
+    monkeypatch.setattr(_DIFFUSION_BENCH, "_run", lambda args: {
+        "env": {"status": {"device": "cuda", "dtype": "bfloat16"}},
+        "generate": {"median_latency_s": 1.0, "peak_vram_bytes": 100,
+                     "host_rss": {"post_warmup_growth_bytes": 0}},
+    })
+    monkeypatch.setattr(_DIFFUSION_BENCH, "_psnr", lambda ref, candidate: 99.0)
+
+    args = SimpleNamespace(
+        compare = str(baseline_path),
+        out_dir = str(out_dir),
+        force_compare = False,
+        max_latency_regression = 0.1,
+        max_vram_regression = 0.1,
+        max_host_rss_growth_mib = None,
+        min_psnr = 30.0,
+    )
+    assert _DIFFUSION_BENCH._compare(args) == 2
+    assert baseline_path.read_text() == before, "the baseline was overwritten"
+
+
 def test_host_rss_guard_is_off_unless_requested():
     """Back-compat for existing scripted callers: the new threshold only engages when asked
     for, so an invocation written before this flag existed behaves exactly as it did."""
