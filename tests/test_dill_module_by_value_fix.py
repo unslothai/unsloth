@@ -345,7 +345,8 @@ def test_the_widening_only_covers_modules_that_import_back():
 
     # `__main__`, SYNTHESISED rather than read off this process: under pytest `sys.modules["__main__"]` is a console
     # script whose `__spec__` is None, so it is already refused above and an assertion on it passes without exercising
-    # the exclusion
+    # the exclusion -- which is how a mutation deleting the exclusion survived this file once. `python -m pkg` gives
+    # it a real spec.
     for hostile in ("__main__", "__mp_main__"):
         fake = types.ModuleType(hostile)
         fake.__spec__ = types.SimpleNamespace(name = hostile, origin = f"/somewhere/pkg/{hostile}.py")

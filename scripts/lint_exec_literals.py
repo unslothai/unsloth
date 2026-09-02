@@ -245,6 +245,7 @@ def main() -> int:
     stale = sorted(k for k in allowed if k not in observed)
     if stale:
         # A baseline that outlives its call site quietly re-permits whatever lands on that digest next, so it is an
+        # error rather than a note.
         print(f"{len(stale)} baseline entr(y/ies) no longer match any call. Run --update:\n")
         for f, s, d in stale:
             print(f"  {f}  {s}  {d}")

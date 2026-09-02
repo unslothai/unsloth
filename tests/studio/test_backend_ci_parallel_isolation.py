@@ -82,23 +82,35 @@ BACKEND_ISOLATED = [
     ("tests/test_profile_stats.py", "counts event-loop ticks during a 0.5s blocking call"),
 ]
 
-# What the scan does NOT cover, recorded because the gap is structural.
-
-# What the scan above does NOT cover, recorded because the gap is structural rather than a missing case.
-# It finds assertions that COMPARE clock-derived values.
-# A test can depend on timing without any clock in it at all: test_tunnel_safe_long_post patches the keepalive threshold
-# to 0.05s and makes the work sleep 0.2s, then asserts on the RESULT
-# It failed exactly that way on a staging 3.13 leg that had been green.
+# What the scan above does NOT cover, recorded because the gap is structural rather than a missing case. It finds
+# assertions that COMPARE clock-derived values. A test can depend on timing without any clock in it at all:
+# test_tunnel_safe_long_post patches the keepalive threshold to 0.05s and makes the work sleep 0.2s, then asserts on
+# the RESULT -- that the response starts with padding -- so whether it passes turns on which of two timers fired
+# first, and nothing in the expression is a duration. It failed exactly that way on a staging 3.13 leg that had been
+# green.
+#
 # test_scan_loras_off_event_loop is the same shape from the other direction: it counts how many times a heartbeat
-# coroutine ticked during a 0.3s sleep and requires at least three.
-# Descheduling the worker costs ticks without the scan being wrong, and the assertion compares a COUNT, so again there
-# is no duration to find.
-# The first arrived from a staging failure, the second from review, and the third from reading the other eight
-# candidates once the shape was clear: test_anthropic_messages counts SSE keepalives emitted during a 0.24s stall, which
-# loses keepalives to a descheduled worker exactly as the heartbeat test loses ticks.
+# coroutine ticked during a 0.3s sleep and requires at least three. Descheduling the worker costs ticks without the
+# scan being wrong, and the assertion compares a COUNT, so again there is no duration to find.
+#
+# Ten backend files pair a sub-second sleep with a small threshold constant. Four times the threshold was not enough
+# margin for the one that failed, so the ratio is not a usable rule, and flagging all ten would serialise a large part
+# of the suite on a guess.
+#
+# So this class is found by reading rather than by scanning. The first arrived from a staging failure, the second from
+# review, and the third from reading the other eight candidates once the shape was clear: test_anthropic_messages
+# counts SSE keepalives emitted during a 0.24s stall, which loses keepalives to a descheduled worker exactly as the
+# heartbeat test loses ticks.
+#
 # That same pass turned up one false positive worth naming, because the grep that finds these is crude:
 # test_diffusion_backend asserts len(staged) > 1 near a 0.2s sleep, but `staged` is a list comprehension over cached
-# filenames and has no timing in it at all. It also costs 152s, so isolating it on the strength of a pattern match would
+# filenames and has no timing in it at all. It also costs 152s, so isolating it on the strength of a pattern match
+# would have been expensive as well as wrong. Read the assertion before adding a file here.
+
+# Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so under four workers on four
+# vCPUs it measures the scheduler as much as the code. Above it there is enough headroom to survive being descheduled.
+# Twenty-two backend files assert some elapsed bound and serialising all of them would give back most of what -n 4
+# buys, so the line is drawn where the measurement stops being about the code.
 BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
 
 

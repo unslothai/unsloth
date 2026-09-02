@@ -17,7 +17,8 @@ _MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
 
 def _import_mlx_unsloth():
     """Import unsloth and skip when the current platform is not using MLX."""
-    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps (e.g.
+    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps (e.g. bitsandbytes) skip cleanly
+    # instead of erroring at collection.
     if not (
         platform.system() == "Darwin"
         and platform.machine() == "arm64"

@@ -88,7 +88,8 @@ COLAB_ORACLE_FILES: dict[str, str] = {
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
 # Only the pip oracle feeds a rule: `lint --colab-pin` reads it, and that is what R-INST-002/003/004/005 resolve
-# against.
+# against. apt-list / os-info are human context (what else the image ships), so their drift is reported but never
+# fails --strict -- otherwise an Ubuntu security bump nothing can consult turns the daily cron red.
 COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 

@@ -385,11 +385,9 @@ def cmd_train(args) -> int:
     metrics["merged_dir"] = str(merged_dir)
     assert any(merged_dir.glob("*.safetensors"))
 
-    # Save GGUF (best-effort).
-    # gemma-3-270m-it) llama.cpp's convert_hf_to_gguf asserts on the tokenizer vocab
-    # an llama.cpp limitation, not an unsloth_zoo bug.
-    # Soft-skip with a recorded reason so the LoRA + merged_16bit assertions still gate the PR.
-    # For some models (e.g.
+    # Save GGUF (best-effort). For some models (e.g. gemma-3-270m-it) llama.cpp's convert_hf_to_gguf asserts on the
+    # tokenizer vocab -- an llama.cpp limitation, not an unsloth_zoo bug. Soft-skip with a recorded reason so the
+    # LoRA + merged_16bit assertions still gate the PR.
     gguf_dir = workdir / "gguf"
     metrics["gguf_supported"] = False
     metrics["gguf_skip_reason"] = None

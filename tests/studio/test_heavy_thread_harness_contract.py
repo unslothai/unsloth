@@ -185,6 +185,15 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
 
 
 def test_the_fork_count_stub_answers_the_shape_the_endpoint_returns() -> None:
+    # `getThreadForkCounts` reads `data.counts` and builds a Map from it, and the badge renders nothing for a message
+    # the Map has no entry for. `{"counts":{}}` is therefore "no message has forks" in the endpoint's own vocabulary.
+    # A body of some other shape leaves the Map empty by accident rather than by contract, and an accident is what
+    # this stub already had once: the endpoint used to be per message and answer `{"count":n}`, the allowlist kept
+    # matching that older URL after the app stopped requesting it, and every fork-count GET went to the network
+    # instead. Before that, `{}` against the per-message endpoint left `data.count` undefined, `undefined <= 0` false,
+    # and a badge reading "undefined forks from this message" on every assistant message: measured at 25000 chars,
+    # 10 badges and 4031 DOM nodes rather than 0 and 3981. Either way the fixture stops being the thing the table says
+    # was measured.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     # Pin the fork-count entry to its own body rather than scanning the whole file:
     forks = next(
@@ -229,11 +238,9 @@ def test_the_stub_matches_the_fork_count_url_the_app_actually_requests() -> None
 
 
 def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
-    # `getThreadForkCounts` reads `data.counts` and builds a Map from it, and the badge renders nothing for a message
-    # the Map has no entry for.
-    # Before that, `{}` against the per-message endpoint left `data.count` undefined, `undefined <= 0` false, and a
-    # badge reading "undefined forks from this message" on every assistant message: measured at 25000 chars, 10 badges
-    # and 4031 DOM nodes rather than 0 and 3981.
+    # A blanket `/api/` match resolves any other request a measured interaction makes before Playwright emits it, so
+    # `measure_cell`'s listener never increments `stray_api_requests` and the API fan-out this harness claims to
+    # detect cannot reach it.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert 'url.includes("/api/")' not in page, (
         "the fetch stub is matching every /api/ request again, which hides stray requests from "
@@ -245,6 +252,9 @@ def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
 
 
 def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
+    # A blanket `/api/` match answers every request the measured interactions make before Playwright emits it, so
+    # `stray_api_requests` stays at zero and the fan-out this harness exists to detect is invisible to it. Narrowing
+    # it is what revealed the project-list and knowledge-base GETs on reopen, and the delete's own three-request sync.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert (
         'url.includes("/api/")' not in page
@@ -253,12 +263,9 @@ def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
 
 
 def test_every_stubbed_endpoint_is_reported() -> None:
-    # Playwright emits it, so `measure_cell`'s listener never increments `stray_api_requests` and
-    # the API fan-out this harness claims to detect cannot reach it.
-    # point, but it must not remove the request from the record. An endpoint that is answered and
-    # A blanket `/api/` match resolves any other request a measured interaction makes before Playwright emits it, so
-    # A blanket `/api/` match answers every request the measured interactions make before Playwright emits it, so
     # Answering a request inside the page removes its round trip from the timings, which is the point, but it must not
+    # remove the request from the record. An endpoint that is answered and not counted is one nobody can see the cost
+    # of later.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert "__stubbedApi" in page, "stubbed requests must be recorded on the page"
     harness = source("playwright_heavy_thread.py")

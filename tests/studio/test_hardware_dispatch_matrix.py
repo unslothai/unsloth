@@ -359,12 +359,15 @@ def test_xpu_takes_priority_over_mlx_when_both_available(spoof_hardware):
 
 
 # Unsloth's placement, against the loader's opt-in device map.
-# Unsloth does not pass the sentinel and never sets that variable, but an operator can set it process-wide, and
-# Unsloth's "sequential" is not a default it forgot to change: it is get_device_map() saying "one device".
+#
+# unsloth's loader upgrades a "sequential" device_map to the "unsloth" planning sentinel when
+# UNSLOTH_AUTO_DEVICE_MAP=1. Unsloth does not pass the sentinel and never sets that variable, but an operator can set
+# it process-wide, and Unsloth's "sequential" is not a default it forgot to change: it is get_device_map() saying
+# "one device". These pin the two facts that keep that safe on every profile above -- Unsloth's multi-GPU answer is
+# "balanced", which is never upgraded, and its single-GPU answer is reached only inside a worker that has already
+# narrowed the visible devices to the selection.
 
 
-# when UNSLOTH_AUTO_DEVICE_MAP=1. Unsloth does not pass the sentinel and never sets that
-# Unsloth's placement, against the loader's opt-in device map.
 def _loader_device_map_helpers():
     """The two loader functions, rebuilt over a fabricated torch.
 

@@ -1861,13 +1861,14 @@ _PIP_DOWNLOAD_PIN_FLAGS = [
 _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 
 
-# sdist fallback.
-# So on resolve failure we drop to per-spec and fetch any sdist-only package's raw tarball from the PyPI JSON API for
-# scan_archive() to read statically: no pip, no build, same no-exec guarantee.
+# sdist fallback. `--only-binary :all:` never builds an sdist (no setup.py exec), but a wheel-less project then can't
+# be fetched at all and one such package fails the whole --with-deps resolve (exit 2) -- a coverage hole. So on
+# resolve failure we drop to per-spec and fetch any sdist-only package's raw tarball from the PyPI JSON API for
+# scan_archive() to read statically: no pip, no build, same no-exec guarantee. Transport failures are still exit 2;
+# only "no wheel" is downgraded to a direct fetch.
 
-# sdist fallback. `--only-binary :all:` never builds an sdist (no setup.py
-# exec), but a wheel-less project then can't be fetched at all and one such
-# How many levels of indirect-dep recovery to chase (a wheel dep whose own child is sdist-only, and so on).
+# How many levels of indirect-dep recovery to chase (a wheel dep whose own child is sdist-only, and so on). Bounded
+# with dedup so recovery always terminates.
 _MAX_DEP_FOLLOWUP_DEPTH = 2
 _SDIST_DOWNLOAD_TIMEOUT = 180
 # Never fetch an archive larger than we would be willing to scan (iter_archive_files cap).

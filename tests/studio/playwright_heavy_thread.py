@@ -173,7 +173,11 @@ HIGHLIGHT_PROBE_MS = int(os.environ.get("SMOKE_HIGHLIGHT_PROBE_MS", "100"))
 ACTIONS = ("keystroke", "scroll", "jump", "menu", "delete", "reopen")
 
 # Installed into every page before anything else runs.
-# which playwright_chat_autoscroll.py does on purpose, because it counts frames
+#
+# The rAF wrapper COUNTS, it does not pump. Replacing rAF with a fixed timer -- which
+# playwright_chat_autoscroll.py does on purpose, because it counts frames -- would destroy every time-to-paint number
+# this file exists to read. The harness's own waits use the unwrapped reference, so __rafCount stays a count of the
+# page's frames rather than of this file's.
 RECORDER_INIT = """
 (() => {
   const nativeRaf = window.requestAnimationFrame.bind(window);

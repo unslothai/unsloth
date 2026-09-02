@@ -1515,11 +1515,13 @@ def _outbound_host_evidence(text: str, host: str) -> str:
         # Host-config form: capture the whole line (path/headers/body), so a changed outbound payload on the same
         re.compile(rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE),
     )
-    # the new payload cannot inherit the old key. Forms are claimed in order, and a
-    # minified file cannot make the overlap check quadratic; once chosen is full
-    # the rest are folded into a digest AS THEY ARRIVE (never accumulated into a
-    # list, so a host repeated millions of times cannot OOM the scan) and an added
-    # Record EVERY outbound context for the host, not just the first form that matches:
+    # Record EVERY outbound context for the host, not just the first form that matches: a file that already has a
+    # baselined URL for the host and later adds a separate host-config request (or a second URL) must change the
+    # evidence so the new payload cannot inherit the old key. Forms are claimed in order, and a region already claimed
+    # by an earlier form is skipped, so the common single-context case keeps its existing snippet. Each form is capped
+    # at _MAX_EVIDENCE_MATCHES matches so a host repeated thousands of times in a minified file cannot make the
+    # overlap check quadratic; once chosen is full the rest are folded into a digest AS THEY ARRIVE (never accumulated
+    # into a list, so a host repeated millions of times cannot OOM the scan) and an added context still reopens.
     lines, sl_blanked, ml_blanked, nl = _index_text(text)
     claimed: list[tuple[int, int]] = []
     chosen: list[re.Match] = []

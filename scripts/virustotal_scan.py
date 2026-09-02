@@ -186,6 +186,8 @@ def _md_text(text: str) -> str:
 # Also written by the workflow's placeholder step, so a reader sees one heading whether or not the scan produced a
 # summary.
 # Says neither "pre-flight" nor "post-publish": the scan runs after `publish-release`, but `inputs.draft` defaults to
+# true, so the ordinary run has uploaded the assets to a draft rather than published them. Naming the assets is the
+# only wording true of both dispatches.
 SUMMARY_HEADING = "### VirusTotal release asset scan"
 
 

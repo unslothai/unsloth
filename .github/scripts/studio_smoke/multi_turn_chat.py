@@ -126,12 +126,16 @@ def check(label: str, first: list[str], second: list[str]) -> None:
     numbers = re.findall(r"\d+", first[0])
     assert numbers, f"{label}: turn-1 answer should contain a number, got {first[0]!r}"
 
-    # History grounding is asserted on the LAST turn, per turn.
-    # measured against llama-server b10360 on the UD-Q4_K_XL file the workflow loads.
-    # that looking for 'paris' in the JOINED transcript proves nothing, because turn 3 supplies it on its own
-    # 10009 asserted this on turn 2 instead, requiring the reply to restate turn 1's number, and that is a false failure
-    # on macOS: in the same run that turn 2 came back "You haven't provided the previous question.", turn 4 answered
-    # "The capital of France is Paris.", which is only possible with history attached. #10009's actual finding
+    # History grounding is asserted on the LAST turn, per turn. "Repeat the city name" names no city, so 'Paris' can
+    # only have come from turn 3, and a server that kept only the latest turn answers "Okay, I'm ready." -- measured
+    # against llama-server b10360 on the UD-Q4_K_XL file the workflow loads.
+    #
+    # #10009 asserted this on turn 2 instead, requiring the reply to restate turn 1's number, and that is a false
+    # failure on macOS: in the same run that turn 2 came back "You haven't provided the previous question.", turn 4
+    # answered "The capital of France is Paris.", which is only possible with history attached. Whether a 270M model
+    # phrases a recalled number is a property of the model, not of the server's history wiring, so it cannot carry
+    # this assertion. #10009's actual finding -- that looking for 'paris' in the JOINED transcript proves nothing,
+    # because turn 3 supplies it on its own -- is what the per-turn check below keeps.
     assert len(first) == len(PROMPTS), f"{label}: expected {len(PROMPTS)} replies, got {len(first)}"
     assert "paris" in first[-1].lower(), (
         f"{label}: the last turn must name the city from turn 3, so history reached the "

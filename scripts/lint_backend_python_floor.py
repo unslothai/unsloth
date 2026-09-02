@@ -40,7 +40,9 @@ WORKFLOW = REPO / ".github" / "workflows" / "studio-backend-ci.yml"
 
 # Both trees the matrix legs actually execute.
 # studio-backend-ci lists 'unsloth_cli/**' in its own paths filter and runs `pytest unsloth_cli/tests` as a step on
-# every leg, so a post-floor stdlib name on a shipped CLI path was covered by the old 3.10 leg exactly as a backend one
+# every leg, so a post-floor stdlib name on a shipped CLI path was covered by the old 3.10 leg exactly as a backend
+# one was. Scanning only the backend would have moved that coverage to the push to main while looking like it had
+# replaced it.
 ROOTS = (
     REPO / "studio" / "backend",
     REPO / "unsloth_cli",

@@ -170,7 +170,7 @@ def main(argv = None) -> int:
     exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
     # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears;
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
-    # fp8 bakes the accumulate mode in;
+    # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
     filter_fn = make_filter_fn(
         args.min_features,

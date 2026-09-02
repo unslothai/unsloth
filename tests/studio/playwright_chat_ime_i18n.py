@@ -548,6 +548,7 @@ with sync_playwright() as p:
         }"""
     )
     send_btn_keydown = page.locator('button[aria-label="Send message"]')
+    # Wait past the watchdog so composingRef has cleared.
     try:
         expect(send_btn_keydown).not_to_be_disabled(timeout = 8_000)
     except Exception:
@@ -597,13 +598,13 @@ with sync_playwright() as p:
         }"""
     )
     send_btn_rearm = page.locator('button[aria-label="Send message"]')
-    # Wait past the watchdog so composingRef has cleared.
     # First watchdog cycle: wait for it to clear composingRef.
     try:
         expect(send_btn_rearm).not_to_be_disabled(timeout = 8_000)
     except Exception:
         soft_fail("watchdog did not clear before re-arm test (first cycle)")
-    # IME-confirm keydown re-pins composingRef;
+    # IME-confirm keydown re-pins composingRef; without the re-arm fix the watchdog never runs again and Send stays
+    # blocked forever.
     composer.evaluate(
         """(el) => {
             el.focus();
@@ -613,9 +614,16 @@ with sync_playwright() as p:
             }));
         }"""
     )
-    # Second watchdog cycle: requestSubmit() after the re-armed window must be allowed;
-    # Since #8136 rendered the send without waiting on persistence, that swap lands inside the 250ms settle window, and
-    # the detached node keeps '你好' forever
+    # Second watchdog cycle: requestSubmit() after the re-armed window must be allowed; the buggy build stays gated
+    # forever.
+    #
+    # The flush has to be read off the composer that is on screen when the submit settles, not off the node captured
+    # before it. A send in a new chat swaps the empty-thread view for the thread view, so React unmounts the textarea
+    # this step composed into and mounts a fresh one. Since #8136 rendered the send without waiting on persistence,
+    # that swap lands inside the 250ms settle window, and the detached node keeps '你好' forever -- which reads as
+    # "Send never unlocked" on a build that sent the message correctly. `sent` is the corroboration that the flush
+    # came from a real send and not from the composer being replaced: a blocked submit leaves the text in the live
+    # composer and adds no user message.
     rearm_probe = page.evaluate(
         """async (selector) => {
             const ta = document.querySelector(selector);

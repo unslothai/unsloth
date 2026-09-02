@@ -118,7 +118,8 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
     # Regression: an explicit list that names MLP leaves together with finetune_mlp_modules=False must NOT train
     # experts.
     # get_peft_regex scopes the MLP leaves out (its emitted regex carries no mlp tag block), so detection has to key on
-    # that SCOPED regex
+    # that SCOPED regex -- keying on the original list would let its gate/up/down leaves silently re-enable the frozen
+    # experts.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,

@@ -171,8 +171,9 @@ def main(argv: list[str]) -> int:
     home = Path(os.environ.get("UNSLOTH_STUDIO_HOME") or (Path.home() / ".unsloth" / "studio"))
     say("install_in_progress_marker", (home / ".desktop-install-in-progress").exists())
 
-    # ground truth: does the backend actually boot? ──────────────────────── Own the whole process tree:
     # ── ground truth: does the backend actually boot? ────────────────────────
+    # Own the whole process tree: the CLI spawns uvicorn/python children that would hold the port and hang the next
+    # leg's probe. Same reason the driver kills the group.
     popen_kw: dict = {}
     if os.name == "posix":
         popen_kw["start_new_session"] = True
@@ -180,7 +181,7 @@ def main(argv: list[str]) -> int:
         popen_kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     # Straight to the artefact file, never a PIPE: nothing drains a pipe until after the polling loop, so a backend
     # whose imports outrun the OS buffer (64 KiB on Linux and macOS, one page on Windows) blocks BEFORE binding the
-    # port, and backend_ok
+    # port, and backend_ok -- what the verdict pivots on -- would be false for a perfectly good install.
     blog_path = out / "backend.log"
     blog_fh = blog_path.open("w", encoding = "utf-8", errors = "replace")
     # An interrupted install can leave the console script with its venv interpreter gone.
