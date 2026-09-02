@@ -2429,6 +2429,13 @@ async def get_model_config(
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    from routes.inference import _reject_uncontained_local_path
+
+    # Both identifiers reach the filesystem: the config read reports the adapter
+    # base model, modality, context length and the rest of another workspace's
+    # checkpoint metadata, and a miss is itself a probe.
+    for candidate in (model_name, local_path):
+        _reject_uncontained_local_path(candidate, "inspect")
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token,
@@ -3625,6 +3632,9 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(model_name, "inspect")
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token,
@@ -3671,6 +3681,9 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(model_name, "inspect")
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token,

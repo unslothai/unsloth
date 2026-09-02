@@ -7095,6 +7095,22 @@ def _resolve_model_identifier_for_request(
     return resolved
 
 
+def _running_load_attempt_is_mine() -> bool:
+    """Whether the load in flight, if any, was started by this account.
+
+    True when nothing is loading: there is no load to protect, and the unload
+    then falls through to the paths that decide on the resident model instead.
+    """
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return True
+    with _scoped_load_attempts_lock:
+        attempt = _running_load_attempt
+    if attempt is None:
+        return True
+    return getattr(attempt, "subject", subject) == subject
+
+
 def _resident_text_model_identifiers() -> list[str]:
     """What the two shared text backends currently hold, however it was named."""
     identifiers: list[str] = []
@@ -16098,6 +16114,16 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 return UnloadResponse(status = "unloaded", model = request.model_path)
             finally:
                 attempt.cancel_complete.set()
+
+        # Both "stop loading" fast paths below cancel a load in flight, and they run
+        # ahead of the scoped generation check, so an unforced unload naming the same
+        # model was enough to kill another account's multi-gigabyte load repeatedly.
+        # The attempt already records who started it, so ask.
+        if not _running_load_attempt_is_mine():
+            raise HTTPException(
+                status_code = 409,
+                detail = "Another account is loading a model. Wait for it to finish.",
+            )
 
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only

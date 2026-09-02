@@ -4958,3 +4958,60 @@ def test_a_cached_private_embedding_repo_needs_more_than_being_cached(monkeypatc
         settings_routes._reject_private_embedding_repo("alice/private-embeddings", None)
     finally:
         reset_workspace_subject(token)
+
+
+def test_only_the_loading_account_may_cancel_its_load(monkeypatch):
+    from routes import inference as inference_routes
+
+    class _Attempt:
+        def __init__(self, subject: str) -> None:
+            self.model_path = "unsloth/gemma-3-4b-it-GGUF"
+            self.subject = subject
+
+    monkeypatch.setattr(
+        inference_routes, "_running_load_attempt", _Attempt("alice"), raising = False
+    )
+
+    token = _bind("alice")
+    try:
+        assert inference_routes._running_load_attempt_is_mine() is True
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # Both stop-loading fast paths run ahead of the scoped generation check,
+        # so naming the same public identifier was enough to kill somebody
+        # else's multi-gigabyte load, repeatedly.
+        assert inference_routes._running_load_attempt_is_mine() is False
+    finally:
+        reset_workspace_subject(token)
+
+    # Nothing loading means there is no load to protect, and the unload falls
+    # through to the paths that decide on the resident model instead.
+    monkeypatch.setattr(inference_routes, "_running_load_attempt", None, raising = False)
+    token = _bind("bob")
+    try:
+        assert inference_routes._running_load_attempt_is_mine() is True
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_metadata_inspection_routes_contain_their_paths():
+    import inspect
+
+    from routes import models as models_routes
+
+    # A config read reports the adapter base model, modality and context length
+    # of whatever directory it is pointed at, and a miss is itself a probe.
+    for route, fields in (
+        (models_routes.get_model_config, ("model_name", "local_path")),
+        (models_routes.check_vision_model, ("model_name",)),
+        (models_routes.check_embedding_model, ("model_name",)),
+    ):
+        source = inspect.getsource(route)
+        guarded, _, rest = source.partition("_reject_uncontained_local_path")
+        assert rest, route.__name__
+        assert "hf_token_arg" not in guarded, route.__name__
+        for field in fields:
+            assert field in rest.split("hf_token_arg")[0], (route.__name__, field)

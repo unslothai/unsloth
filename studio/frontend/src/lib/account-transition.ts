@@ -21,6 +21,7 @@
 
 const LAST_ACCOUNT_KEY = "unsloth.browser-account.v1";
 const LEGACY_DATA_OWNER_KEY = "unsloth.legacy-data-owner.v1";
+const LEGACY_QUARANTINE_KEY = "unsloth.legacy-quarantine.v1";
 
 /**
  * Dispatched on window when a different account signs in on this browser.
@@ -46,6 +47,9 @@ export const ACCOUNT_SCOPED_STORAGE_KEYS: readonly string[] = [
   "unsloth_user_profile",
   // Absolute path of the last model loaded, which the startup auto-load reads.
   "unsloth.last-local-model-load.v1",
+  // Delete confirmations and "always delete chat files", which decide what the
+  // next account's first deletion does before it has expressed any preference.
+  "unsloth_chat_preferences",
   // Hub search terms, which are repository and model names somebody typed.
   "unsloth.hub.recentSearches",
   // Custom provider names, base URLs and model lists, plus their key handles.
@@ -146,6 +150,53 @@ export function legacyBrowserDataBelongsToCurrentAccount(): boolean {
  * Returns whether a purge happened, which is what a caller uses to decide
  * whether it also has to reset in-memory stores before the new session mounts.
  */
+/**
+ * Move the pre-accounts values aside, for a managed account signing in first.
+ *
+ * Not a purge: the values are the original single user's, and the owner marker
+ * alone only gates the three legacy migration helpers, while the training,
+ * voice and profile stores hydrate straight from the keys. Deleting them would
+ * lose the owner's data to whoever happened to reach the login page first, so
+ * they are held until the owner signs in and restored to them then.
+ */
+function quarantineLegacyState(): void {
+  const held: Record<string, string> = {};
+  for (const key of ACCOUNT_SCOPED_STORAGE_KEYS) {
+    const value = readItem(key);
+    if (value !== null) held[key] = value;
+  }
+  for (const key of storedKeys()) {
+    if (!ACCOUNT_SCOPED_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+    const value = readItem(key);
+    if (value !== null) held[key] = value;
+  }
+  if (Object.keys(held).length === 0) return;
+  try {
+    writeItem(LEGACY_QUARANTINE_KEY, JSON.stringify(held));
+  } catch {
+    // Unserialisable or over quota: clearing without holding is still correct,
+    // because the alternative is leaving it readable by this account.
+  }
+  purgeAccountScopedBrowserState();
+}
+
+/** Give the held values back to the account they belong to. */
+function releaseLegacyQuarantine(): void {
+  const raw = readItem(LEGACY_QUARANTINE_KEY);
+  if (raw === null) return;
+  removeItem(LEGACY_QUARANTINE_KEY);
+  let held: Record<string, unknown>;
+  try {
+    held = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  for (const [key, value] of Object.entries(held)) {
+    // Never over something this account has written since.
+    if (typeof value === "string" && readItem(key) === null) writeItem(key, value);
+  }
+}
+
 export function notifyAccountAuthenticated(
   username: string,
   installationOwner?: string | null,
@@ -160,13 +211,48 @@ export function notifyAccountAuthenticated(
   // credential to migrate into its own workspace. The server says who the owner
   // is, so use that and leave the data unattributed until they sign in.
   const owner = (installationOwner ?? "").trim().toLowerCase();
-  if (owner && account === owner) writeItem(LEGACY_DATA_OWNER_KEY, account);
-  if (previous === null || previous === account) return false;
-  purgeAccountScopedBrowserState();
+  const isOwner = Boolean(owner) && account === owner;
+  if (isOwner) writeItem(LEGACY_DATA_OWNER_KEY, account);
+  if (previous === null && !isOwner) {
+    // First sign-in after the upgrade, and not by the owner: everything on this
+    // browser is the previous single user's.
+    quarantineLegacyState();
+    announceAccountChange();
+    return true;
+  }
+  const changed = previous !== null && previous !== account;
+  if (changed) purgeAccountScopedBrowserState();
+  // After the purge, never before it: the held values are this account's own and
+  // clearing the incoming account's keys would take them straight back out.
+  if (isOwner) releaseLegacyQuarantine();
+  if (!changed) return false;
+  announceAccountChange();
+  return true;
+}
+
+function announceAccountChange(): void {
   try {
     window.dispatchEvent(new Event(ACCOUNT_CHANGED_EVENT));
   } catch {
     // No window (tests, SSR): the stores that listen do not exist either.
   }
-  return true;
+}
+
+// A sign-in in one tab writes origin-wide storage that every other tab's
+// authFetch then reads, so a tab still mounted for the previous account would
+// keep its hydrated state and send that account's actions on the new account's
+// token. The storage event is the only cross-document signal there is, and a
+// reload is the one reset that covers every store rather than the listed few.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    const changed = (event as StorageEvent).key;
+    if (changed !== LAST_ACCOUNT_KEY) return;
+    const next = (event as StorageEvent).newValue;
+    if (next === null || next === readItem(LAST_ACCOUNT_KEY)) return;
+    try {
+      window.location.reload();
+    } catch {
+      // A window without navigation is a test harness, which has no UI to stale.
+    }
+  });
 }

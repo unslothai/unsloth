@@ -47,14 +47,27 @@ test("a managed account signing in first does not inherit the legacy data", () =
   seedAlicesBrowser();
   // On an upgraded install a managed account can reach the login page before
   // the owner does. Claiming the data there would let it migrate the original
-  // user's conversations, prompts and Hub credential into its own workspace.
-  assert.equal(notifyAccountAuthenticated("bob", "alice"), false);
+  // user's conversations, prompts and Hub credential into its own workspace,
+  // and leaving the keys in place would let its stores hydrate from them.
+  assert.equal(notifyAccountAuthenticated("bob", "alice"), true);
   assert.equal(legacyBrowserDataBelongsToCurrentAccount(), false);
-  // Still on disk, for the account it belongs to.
-  assert.equal(store.get("unsloth_hf_token"), "alice-value");
+  assert.equal(store.get("unsloth_hf_token"), undefined);
+  assert.equal(store.get("chat-draft:thread-1"), undefined);
 
+  // Held, not deleted: it is the previous single user's, and the owner gets it
+  // back rather than losing it to whoever reached the login page first.
   assert.equal(notifyAccountAuthenticated("alice", "alice"), true);
   assert.equal(legacyBrowserDataBelongsToCurrentAccount(), true);
+  assert.equal(store.get("unsloth_hf_token"), "alice-value");
+  assert.equal(store.get("chat-draft:thread-1"), "unsent private text");
+});
+
+test("chat deletion preferences do not carry into the next account", () => {
+  seedAlicesBrowser();
+  store.set("unsloth_chat_preferences", "{\"alwaysDeleteChatFiles\":true}");
+  notifyAccountAuthenticated("alice", "alice");
+  notifyAccountAuthenticated("bob", "alice");
+  assert.equal(store.get("unsloth_chat_preferences"), undefined);
 });
 
 test("hub search terms do not survive an account change", () => {
