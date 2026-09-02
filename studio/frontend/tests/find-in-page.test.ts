@@ -1805,6 +1805,122 @@ test("what was dropped decides the far side of a cut, not what was kept", () => 
   assert.equal(findMatches(settled, "가", 10).length, 1);
 });
 
+test("the dropped tail is read back far enough to answer for itself", () => {
+  // One code point was not enough. A linker with marks after it still joins the consonant that
+  // follows, so the junction has to see back past the marks to the linker, and past a ZWJ to the
+  // pictograph it hangs from. Both chains are unbounded in UAX 29, so there is a window, and
+  // outrunning it is called unknown rather than guessed at.
+  const conjunct = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"x".repeat(MAX_NODE_CHARS)}\u0915\u094d\u0301`),
+        text("\u0924!!"),
+      ]),
+    ]),
+  );
+  assert.deepEqual([...conjunct.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  assert.deepEqual(findMatches(conjunct, "\u0924", 10), []);
+  // A tail of marks longer than the window keeps nothing to hang them on, so it stays unsafe.
+  const beyond = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"x".repeat(MAX_NODE_CHARS)}\u0915${"\u0301".repeat(64)}`),
+        text("\u0924!!"),
+      ]),
+    ]),
+  );
+  assert.deepEqual([...beyond.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+});
+
+test("no match a cut leaves behind disagrees with the page it was cut from", () => {
+  // The property behind the four cases above, over junctions built from the shapes that have gone
+  // wrong: every match is mapped back through the segment table to the uncut page text and has to
+  // land where the platform breaks. Fixed sequence, so a failure repeats.
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const at = (code: number) => String.fromCodePoint(code);
+  const pieces = [
+    "z",
+    " ",
+    "؀",
+    "가",
+    "각",
+    "ᄀ",
+    "ᅡ",
+    "ᆨ",
+    at(0x1f1e6),
+    at(0x1f1e7),
+    "‍",
+    "‌",
+    at(0x1f469),
+    at(0x1f44d),
+    at(0x1f3fb),
+    "क",
+    "्",
+    "त",
+    "́",
+    "ा",
+    "a",
+    at(0x1193f),
+    "️",
+  ];
+  let seed = 15200;
+  const pick = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return pieces[seed % pieces.length];
+  };
+  let checked = 0;
+  let usableFarSide = 0;
+  for (let round = 0; round < 60; round += 1) {
+    let dropped = "";
+    for (let i = 0; i < 1 + (round % 4); i += 1) dropped += pick();
+    let resumed = "";
+    for (let i = 0; i < 1 + (round % 3); i += 1) resumed += pick();
+    const first = `${"x".repeat(MAX_NODE_CHARS)}${dropped}`;
+    const second = `${resumed}QQ`;
+    const index = buildTextIndex(
+      el("DIV", [el("P", [text(first), text(second)])]),
+    );
+    const page = first + second;
+    const marks = new Uint8Array(page.length + 1);
+    for (const { index: offset } of segmenter.segment(page)) marks[offset] = 1;
+    marks[page.length] = 1;
+    if (!index.unsafe.has(MAX_NODE_CHARS + 1)) usableFarSide += 1;
+    const toPage = (offset: number) => {
+      for (const segment of index.segments) {
+        if (
+          offset >= segment.start &&
+          offset <= segment.start + segment.length
+        ) {
+          const base =
+            segment.node === index.segments[0].node ? 0 : first.length;
+          return base + (offset - segment.start);
+        }
+      }
+      return -1;
+    };
+    for (const query of new Set([resumed, "QQ", "xxx", dropped])) {
+      for (const hit of findMatches(index, query, 20)) {
+        const start = toPage(hit.start);
+        const end = toPage(hit.end);
+        if (start < 0 || end < 0) continue;
+        checked += 1;
+        assert.equal(
+          marks[start],
+          1,
+          `${escape(query)} starts inside a grapheme`,
+        );
+        assert.equal(marks[end], 1, `${escape(query)} ends inside a grapheme`);
+      }
+    }
+  }
+  assert.ok(checked > 200, `only ${checked} matches checked`);
+  // Refusing everything would satisfy the above, so the other direction is asserted too.
+  assert.ok(
+    usableFarSide > 10,
+    `only ${usableFarSide} junctions kept a usable far side`,
+  );
+});
+
 test("a real block boundary after a cut is still a boundary", () => {
   // The separator standing in for dropped text and the one a block writes are the same character,
   // but only the first is uncertain: a block break is one wherever the dropped text ended. The

@@ -277,6 +277,8 @@ export function buildTextIndex(
    *  block boundary. It is the only thing that can say whether the next node begins where it looks
    *  like it does, and it is readable here and nowhere later. */
   let pendingClip: string | null = null;
+  /** Whether that tail ran past its window, leaving the context it hangs from unknown. */
+  let pendingClipPartial = false;
   /** The ceiling, the only thing that stops the walk. */
   let full = false;
   let ceiling =
@@ -334,7 +336,8 @@ export function buildTextIndex(
             // cannot see the pictograph a ZWJ needs behind it.
             if (
               pendingClip !== null &&
-              (joinsForward(pendingClip) ||
+              (pendingClipPartial ||
+                joinsForward(lastPoint(pendingClip)) ||
                 continuesGrapheme(
                   pendingClip +
                     String.fromCodePoint(data.codePointAt(0) as number),
@@ -365,7 +368,9 @@ export function buildTextIndex(
           pendingSeparator = true;
           // Only these can join to what follows them, so only these let the dropped tail reach
           // into the next node. Anything else and the next node begins where it looks like it does.
-          pendingClip = lastPoint(data.slice(take));
+          pendingClip = clipContext(data.slice(take));
+          pendingClipPartial = pendingClip === null;
+          if (pendingClip === null) pendingClip = "";
         }
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike, preserved);
@@ -469,6 +474,26 @@ function lastPoint(text: string): string {
   );
 }
 
+/** How far back a dropped tail is read for context. GB9c and GB11 both allow any number of
+ *  extenders in the middle, so there has to be a stop somewhere; past it the junction is called
+ *  unknown rather than guessed at. */
+const CLIP_CONTEXT_LIMIT = 32;
+
+/** As much of the end of `dropped` as the junction can turn on: the run of things that chain into
+ *  what follows, and the one code point they hang from. Null when that run outran the window. */
+function clipContext(dropped: string): string | null {
+  let at = dropped.length;
+  for (let seen = 0; seen < CLIP_CONTEXT_LIMIT; seen += 1) {
+    if (at === 0) return dropped;
+    const [point, start] = pointBefore(dropped, at);
+    at = start;
+    if (!EXTEND_PATTERN.test(point) && !LINKER_PATTERN.test(point)) {
+      return dropped.slice(at);
+    }
+  }
+  return null;
+}
+
 /** Whether a grapheme carrying this can carry on into whatever follows it. Prepend joins forward
  *  by definition, Hangul builds a syllable forwards, a regional indicator pairs with the next and
  *  a ZWJ exists to join. Nothing else reaches to its right. */
@@ -512,8 +537,10 @@ function hangulClass(ch: string): string | null {
   if (HANGUL_LEADING_PATTERN.test(ch)) return "L";
   if (HANGUL_VOWEL_PATTERN.test(ch)) return "V";
   if (HANGUL_TRAILING_PATTERN.test(ch)) return "T";
+  // Written as one range rather than two refusals: `charCodeAt` of nothing is NaN, which is neither
+  // below nor above, and fell through to call the empty string a syllable.
   const cp = ch.charCodeAt(0);
-  if (cp < 0xac00 || cp > 0xd7a3) return null;
+  if (!(cp >= 0xac00 && cp <= 0xd7a3)) return null;
   return (cp - 0xac00) % 28 === 0 ? "LV" : "LVT";
 }
 
