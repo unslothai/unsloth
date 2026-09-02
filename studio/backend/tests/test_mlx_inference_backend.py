@@ -4130,11 +4130,58 @@ class _SnapshotLanguageModel:
         self,
         inputs,
         cache = None,
+        inputs_embeds = None,
         **_kwargs,
     ):
         for entry in cache:
-            entry.advance(inputs)
+            entry.advance(inputs if inputs is not None else inputs_embeds)
         return object()
+
+
+class _Prepared2D:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.shape = (1, len(self.rows))
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, item):
+        if item == 0:
+            return SimpleNamespace(tolist = lambda: list(self.rows))
+        return _Prepared2D(self.rows[item[1]])
+
+
+class _BidirectionalLanguageModel(_SnapshotLanguageModel):
+    config = SimpleNamespace(use_bidirectional_attention = "vision")
+
+    def __init__(self):
+        self.policy_rows = []
+
+    def chunked_prefill_policy(self, **kwargs):
+        self.policy_rows.append(kwargs["prefill_kwargs"]["mm_token_type_ids"].shape[1])
+        return True
+
+
+class _BidirectionalModel:
+    """A wrapper with a chunking policy of its own, like gemma4_unified."""
+
+    def __init__(self, embedded):
+        self.config = {"model_type": "fake", "image_token_id": 9}
+        self.language_model = _BidirectionalLanguageModel()
+        self.policy_rows = self.language_model.policy_rows
+        self._embedded = embedded
+
+    def chunked_prefill_policy(self, **kwargs):
+        self.policy_rows.append(kwargs["prefill_kwargs"]["mm_token_type_ids"].shape[1])
+        return True
+
+    def get_input_embeddings(self, input_ids, pixel_values, **_kwargs):
+        self._embedded.append(pixel_values)
+        return SimpleNamespace(inputs_embeds = input_ids, per_layer_inputs = None)
 
 
 def _install_fake_vlm_runtime(
@@ -4147,8 +4194,9 @@ def _install_fake_vlm_runtime(
     """mlx_vlm whose stream_generate drives prompt_cache_state the way dispatch does.
 
     ``prompt_ids`` also carries knobs: ``decline`` (dispatch refuses the offered
-    prefix), ``diffusion`` (the model object that routes to diffusion), and
-    ``legacy`` (a result type without ``cached_tokens``).
+    prefix), ``diffusion`` (the model object that routes to diffusion),
+    ``legacy`` (a result type without ``cached_tokens``), and ``prepared``
+    (what ``prepare_inputs`` returns, or a callable given its kwargs).
     """
     # Extends the fake _install_fake_mlx put in place; the real package is
     # never touched.
@@ -4171,6 +4219,8 @@ def _install_fake_vlm_runtime(
     ):
         calls.append(kwargs)
         ids = list(prompt_ids["ids"])
+        if kwargs.get("input_ids") is not None:
+            ids = kwargs["input_ids"][0].tolist()
         state = kwargs.get("prompt_cache_state")
         cache = kwargs.get("prompt_cache")
         cached = 0
@@ -4182,6 +4232,13 @@ def _install_fake_vlm_runtime(
                 cached = 0
             else:
                 cache = state.cache
+        for host in (model, model.language_model):
+            policy = getattr(host, "chunked_prefill_policy", None)
+            if policy is not None and "mm_token_type_ids" in kwargs:
+                policy(
+                    prompt_cache = cache,
+                    prefill_kwargs = {"mm_token_type_ids": kwargs["mm_token_type_ids"]},
+                )
         if cache is not None:
             step = kwargs.get("prefill_step_size") or len(ids)
             pos = cached
@@ -4214,10 +4271,21 @@ def _install_fake_vlm_runtime(
     diffusion_module = types.ModuleType("mlx_vlm.generate.diffusion")
     # Asked about the loaded model, as dispatch would be.
     diffusion_module.is_diffusion_model = lambda model: model is prompt_ids.get("diffusion")
+    utils_module = types.ModuleType("mlx_vlm.utils")
+
+    def _prepare_inputs(_processor, **kwargs):
+        prepared = prompt_ids.get("prepared")
+        return prepared(kwargs) if callable(prepared) else prepared
+
+    utils_module.prepare_inputs = _prepare_inputs
+    utils_module.should_add_special_tokens = lambda _model_type, _processor: False
     mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.__version__ = prompt_ids.get("version", "0.7.0")
     mlx_vlm.stream_generate = _stream
     mlx_vlm.models = models_pkg
     mlx_vlm.generate = generate_pkg
+    mlx_vlm.utils = utils_module
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils_module)
     mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {}, apply_chat_template = None)
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setitem(sys.modules, "mlx_vlm.models", models_pkg)
@@ -4378,6 +4446,109 @@ def test_mlx_vlm_image_requests_reuse_snapshots_keyed_by_the_image(monkeypatch):
     del backend._model.config["image_token_id"]
     list(backend._generate_vlm(image_turn, _fake_image(b"aaaa"), *_VLM_ARGS))
     assert "prompt_cache_state" not in calls[-1] and len(store) == 0
+
+
+def test_mlx_vlm_bidirectional_models_prefill_the_image_block_once(monkeypatch):
+    ids = list(range(1000, 1700))
+    ids[100:201] = [9] * 101  # image rows 100-150, video rows 151-200: 201 rows
+    prepared = {"pixel_values": "pixels", "attention_mask": "mask"}
+
+    def prepare(token_ids):
+        prepared["input_ids"] = _Prepared2D(token_ids)
+        prepared["mm_token_type_ids"] = _Prepared2D(
+            (1 if i <= 150 else 2) if t == 9 else 0 for i, t in enumerate(token_ids)
+        )
+
+    prepare(ids)
+    prepare_calls = []
+    prompt_ids = {"ids": ids, "prepared": lambda kw: prepare_calls.append(kw) or prepared}
+    calls = []
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    embedded = []
+    backend._model = _BidirectionalModel(embedded)
+    language_model = backend._model.language_model
+    # The block's clock: two seconds pass while the tower runs.
+    clock = SimpleNamespace(perf_counter = lambda: 2.0 * len(embedded))
+    monkeypatch.setattr("core.inference.mlx_inference.time", clock)
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._render_registered_vlm_prompt", lambda *_a, **_k: "p"
+    )
+    image_turn = [{"role": "user", "content": [{"type": "image"}]}]
+
+    def turn(image = _fake_image(b"aaaa")):
+        list(backend._generate_vlm(image_turn, image, *_VLM_ARGS))
+        return calls[-1]
+
+    # The block is produced once and served; its copy is what the store holds.
+    first = turn()
+    store = backend._vlm_snapshot_store
+    # Prepared as mlx-vlm would, including its special-token rule.
+    assert prepare_calls[0]["add_special_tokens"] is False
+    assert first["input_ids"] is prepared["input_ids"] and first["pixel_values"] == "pixels"
+    assert first["mask"] == "mask" and first["mm_token_type_ids"] is prepared["mm_token_type_ids"]
+    assert first["prompt_cache_state"].reused_tokens == 201 and embedded == ["pixels"]
+    assert first["prompt_cache_state"].media_block.rows(ids[:-1]) == 0
+    # The grid continues from the block: the block, then 201 + 256.
+    assert [len(item[1]) for item in store._entries] == [201, 457]
+    assert store.nbytes == 2 * 4 * (201 + 457)
+    # The block was produced for this request: prefill at a rate including its time, not reuse.
+    stats = backend.last_generation_stats
+    assert stats["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
+    assert stats["timings"]["prompt_n"] == 700
+    assert stats["timings"]["prompt_per_second"] == pytest.approx(700 / (700 / 100.0 + 2.0))
+    # Both chunking policies saw the suffix past the block, and are the classes' again.
+    assert language_model.policy_rows == [700 - 201] * 2
+    assert "chunked_prefill_policy" not in vars(backend._model)
+    assert "chunked_prefill_policy" not in vars(language_model)
+    # Later turns chain from it without another vision pass.
+    prompt_ids["ids"] = ids + [1] * 300
+    prepare(prompt_ids["ids"])
+    assert turn()["prompt_cache_state"].reused_tokens == 457 and embedded == ["pixels"]
+    assert backend.last_generation_stats["usage"]["prompt_tokens_details"]["cached_tokens"] == 457
+    assert turn()["prompt_cache_state"].reused_tokens == 969
+    assert [len(item[1]) for item in store._entries] == [969]
+    # A block whose tower fails once: prefilled as before (the tower runs again for
+    # that), and the time spent still counts.
+    store.clear()
+    tower = backend._model.get_input_embeddings
+
+    def failing_tower(*_args, **_kwargs):
+        monkeypatch.setattr(backend._model, "get_input_embeddings", tower)
+        return embedded.append("x") or 1 / 0
+
+    monkeypatch.setattr(backend._model, "get_input_embeddings", failing_tower)
+    assert turn()["prompt_cache_state"].produced_tokens == 0
+    assert backend.last_generation_stats["timings"]["prompt_per_second"] == pytest.approx(
+        1000 / (10 + 2.0)
+    )
+    # A text turn, a request whose inputs cannot be prepared, and a causal
+    # model prefill through mlx-vlm as before; the store stays.
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert "input_ids" not in calls[-1] and "prompt_cache_state" in calls[-1]
+    prompt_ids["prepared"] = lambda _kw: (_ for _ in ()).throw(ValueError("bad image"))
+    assert "input_ids" not in turn() and "prompt_cache_state" in calls[-1]
+    assert backend._vlm_snapshot_store is store
+    prompt_ids["prepared"] = lambda _kw: prepared
+    monkeypatch.setattr(language_model.config, "use_bidirectional_attention", None)
+    assert "input_ids" not in turn()
+    # An mlx-vlm before the overlay guard for a resumed suffix gets no block.
+    monkeypatch.setattr(language_model.config, "use_bidirectional_attention", "vision")
+    monkeypatch.setattr(sys.modules["mlx_vlm"], "__version__", "0.6.3")
+    assert "input_ids" not in turn() and "prompt_cache_state" in calls[-1]
+    monkeypatch.setattr(sys.modules["mlx_vlm"], "__version__", "0.6.4")
+    assert "input_ids" in turn()
+
+
+def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
+    from core.inference.mlx_inference import _vlm_add_special_tokens as rule
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", types.ModuleType("mlx_vlm.utils"))
+    template = SimpleNamespace(chat_template = "t")
+    assert rule("gemma4", template) is False and rule("gemma4", SimpleNamespace()) is True
+    assert rule("qwen2_vl", template) is True
+    sys.modules["mlx_vlm.utils"].should_add_special_tokens = lambda *_: "mlx-vlm's answer"
+    assert rule("gemma4", template) == "mlx-vlm's answer"
 
 
 def test_mlx_vlm_image_requests_keep_snapshots_inside_the_image_unserved(monkeypatch):

@@ -158,6 +158,13 @@ def test_shape_stable_prefix_is_the_last_whole_chunk_before_the_held_token(token
     assert shape_stable_prefix(tokens) == prefix
 
 
+@pytest.mark.parametrize(
+    ("tokens", "prefix"), [(600, 0), (648, 647), (903, 647), (904, 903), (1160, 1159)]
+)
+def test_shape_stable_prefix_starts_the_grid_at_the_media_block(tokens, prefix):
+    assert shape_stable_prefix(tokens, origin = 647) == prefix
+
+
 def test_copy_cache_entries_duplicates_every_array_and_keeps_scalars(fake_mx):
     kv, state = FakeKV(), FakeState()
     kv.advance([1, 2, 3])
@@ -473,10 +480,11 @@ def _generate(
     honour_reuse = True,
     kwargs = None,
     media_token_ids = (),
+    **session_kwargs,
 ):
     """One request the way mlx-vlm drives the duck type."""
     with VLMPromptCacheSession(
-        store, "m", language_model, make_cache, media_token_ids = media_token_ids
+        store, "m", language_model, make_cache, media_token_ids = media_token_ids, **session_kwargs
     ) as session:
         prefix = session.find_prefix_length(token_ids)
         cache = session.cache
@@ -675,6 +683,120 @@ def test_media_session_keeps_only_the_snapshot_it_serves(fake_mx):
     assert list(store._entries) == [("m", tuple(prompt[:768]))]
     assert session(releases_unserved = True).find_prefix_length(_media_prompt(700)) == 0
     assert len(store) == 0 and store.nbytes == 0
+
+
+class FakeMediaBlock:
+    """A prompt's first ``rows`` rows are its image; prefilled outside the count."""
+
+    fail = False
+    prefilled = 0
+    store = None
+
+    def __init__(self, rows):
+        self.block_rows = rows
+
+    def rows(self, token_ids):
+        return self.block_rows if len(token_ids) > self.block_rows else 0
+
+    def prefill(self, forward, rows):
+        if self.fail:
+            raise RuntimeError("no block")
+        self.prefilled += 1
+        self.entries_at_prefill = len(self.store)
+        entries = make_cache()
+        forward.unrecorded(list(range(rows)), cache = entries)
+        return entries
+
+
+def _block_prompt(n):
+    return [9] * 100 + list(range(1000, 900 + n))
+
+
+def test_session_prefills_the_media_block_and_chains_from_it(fake_mx):
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    language_model = FakeLanguageModel()
+    block = FakeMediaBlock(100)
+    block.store = store
+    store.store("t", [1, 2, 3], _snapshot(range(3)))
+    kwargs = dict(media_token_ids = (9,), media_block = block, releases_unserved = True)
+    generate = lambda n, **kw: _generate(store, language_model, _block_prompt(n), **kwargs, **kw)
+    # A miss: the store is emptied for the media pass, the block is produced outside
+    # the forward count and served, its copy stored at the first forward, capture at 356.
+    session, cache, stored = generate(500)
+    assert session.reused_tokens == 100 and block.prefilled == 1 and stored
+    assert block.entries_at_prefill == 0 and session.produced_seconds > 0
+    assert session.produced_tokens == 100 and cache[0].offset == 500 and len(fake_mx) == 2
+    assert [len(item[1]) for item in store._entries] == [100, 356]
+    # A hit chains on that grid without another block, keeping what served it.
+    session, _cache, stored = generate(700)
+    assert session.reused_tokens == 356 and block.prefilled == 1 and stored
+    assert session.produced_tokens == 0
+    assert [len(item[1]) for item in store._entries] == [356, 612]
+    store.clear()
+    session, _cache, stored = generate(300)  # no whole chunk past the block
+    assert session.reused_tokens == 100 and block.prefilled == 2 and not stored
+    assert [len(item[1]) for item in store._entries] == [100]
+    # Declined and run from zero: the capture lands at 256, off the grid; block dropped.
+    session, _cache, stored = generate(500, honour_reuse = False)
+    assert session.reused_tokens == 100 and block.prefilled == 2
+    assert not stored and len(store) == 0
+
+
+def test_session_captures_nothing_when_the_media_block_fails(fake_mx, caplog):
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    failing = FakeMediaBlock(100)
+    failing.fail = True
+    with caplog.at_level("INFO"):
+        session, cache, stored = _generate(
+            store,
+            FakeLanguageModel(),
+            _block_prompt(500),
+            media_token_ids = (9,),
+            media_block = failing,
+        )
+    assert session.reused_tokens == 0 and cache[0].offset == 500
+    assert not stored and len(store) == 0 and not fake_mx
+    assert session.produced_tokens == 0 and session.produced_seconds > 0
+    assert "media block not prefilled" in caplog.text
+
+
+class FakeTypeIds:
+    def __init__(self, n, start):
+        self.shape = (1, n)
+        self.start = start
+
+    def __getitem__(self, item):
+        offset = item[1].start or 0
+        return FakeTypeIds(self.shape[1] - offset, self.start + offset)
+
+
+class FakeHost:
+    def __init__(self):
+        self.seen = []
+
+    def chunked_prefill_policy(self, **kwargs):
+        self.seen.append(kwargs["prefill_kwargs"]["mm_token_type_ids"].start)
+        return True
+
+
+def test_session_feeds_the_chunking_policy_only_the_rows_past_the_cache(fake_mx):
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    host, plain = FakeHost(), object()
+    resumed = make_cache()
+    resumed[0].advance(range(100))
+    ask = lambda cache, n: host.chunked_prefill_policy(
+        prompt_cache = cache, prefill_kwargs = {"mm_token_type_ids": FakeTypeIds(n, 0)}
+    )
+    with VLMPromptCacheSession(
+        store, "m", FakeLanguageModel(), make_cache, policy_hosts = (host, plain)
+    ):
+        assert ask(resumed, 300) is True
+        ask(make_cache(), 300)
+        ask(resumed, 50)
+    assert host.seen == [100, 0, 0]
+    assert "chunked_prefill_policy" not in vars(host)
+    ask(resumed, 300)
+    assert host.seen[-1] == 0
 
 
 def test_snapshot_module_imports_mlx_only_when_copying(monkeypatch):

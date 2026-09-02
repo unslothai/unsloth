@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import threading
+import time
 from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
 from typing import Optional, Generator
@@ -42,44 +43,29 @@ logger = get_logger(__name__)
 
 # Prefix reuse for mlx-vlm generation, owned by Studio.
 #
-# A multi-turn chat re-sends its whole history every turn. mlx-vlm prefills all
-# but the last prompt token in chunks of ``prefill_step_size``, and a forward
-# pass is not shape-invariant: KV rows for the same tokens differ in the last
-# bits between a 256-token chunk and a 140-token one. So a reused turn only
-# answers as an unreused one when both run the same chunk sequence over the
-# same rows. Every request here prefills on one fixed grid, and a snapshot of
-# the whole cache is taken exactly where a chunk of that grid ends. Resuming
-# from it leaves the remaining chunks identical to a cold request's.
-#
-# The snapshot is captured by counting the language model's forward passes:
-# Studio knows the resume offset, the boundary and the step, so it knows which
-# forward ends on the boundary, and copies every cache entry as the next one
-# begins, after whatever generation does to the cache between two forwards.
-# Nothing depends on how an entry is written, so attention caches, rotating
-# windows and recurrent state all work the same way.
-#
-# Everything talks to mlx-vlm through public generation kwargs:
-# ``prompt_cache`` (the entries a cold request fills), ``prompt_cache_state``
-# (``.cache``, ``.find_prefix_length``, ``.update``) and ``prefill_step_size``.
+# A forward pass is not shape-invariant, so a reused turn answers as an unreused one
+# only when both run the same chunks over the same rows: every request prefills on one
+# fixed grid, and the cache is snapshotted where a chunk of that grid ends, by counting
+# the language model's forwards. mlx-vlm is driven through public generation kwargs
+# only: ``prompt_cache``, ``prompt_cache_state`` and ``prefill_step_size``.
 
-# Small enough that a short chat turn still has a reusable boundary; each
-# halving costs roughly a third of cold prefill throughput.
+# Small enough that a short chat turn has a boundary; halving it costs roughly
+# a third of cold prefill throughput.
 VLM_PROMPT_CACHE_PREFILL_STEP = 256
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
-def shape_stable_prefix(token_count):
-    """Rows of a prompt this long that whole chunks of the grid produced.
-
-    mlx-vlm holds the final prompt token back for the first decode step, so
-    the rows past this boundary came from a short chunk or from that token.
-    """
+def shape_stable_prefix(token_count, origin = 0):
+    """Rows whole chunks produced from ``origin``; mlx-vlm holds the last token back."""
     step = VLM_PROMPT_CACHE_PREFILL_STEP
-    return max(0, token_count - 1) // step * step
+    rows = token_count - 1
+    if rows < origin:
+        return 0
+    return origin + (rows - origin) // step * step
 
 
 def _is_cache(value):
-    """Every mlx-vlm cache class carries ``state``; checked on the type so no property runs."""
+    """Every mlx-vlm cache class carries ``state``; read off the type so no property runs."""
     return hasattr(value, "__dict__") and hasattr(type(value), "state")
 
 
@@ -123,21 +109,12 @@ def _release_value(value, mx):
 
 
 def release_cache_entries(entries):
-    """Drop every array the entries hold, in place, for a holder that keeps
-    referencing the entries themselves."""
     import mlx.core as mx
     entries[:] = [_release_value(entry, mx) for entry in entries]
 
 
 def copy_cache_entries(entries):
-    """Independent copies of cache entries, evaluated so they own their data.
-
-    Shallow at the object level and deep at the array level: ints such as an
-    offset or a ring index travel with the object, and every array is
-    duplicated wherever it sits, including inside the caches a composite entry
-    such as ``CacheList`` nests, or the tuple of caches some layouts use as an
-    entry.
-    """
+    """Copies, object-shallow and array-deep, evaluated so they own their data."""
     import mlx.core as mx
 
     for entry in entries:
@@ -154,11 +131,7 @@ def cache_entries_nbytes(entries):
 
 
 def cache_entries_offset(entries):
-    """Tokens the entries hold, from the first one that counts them, else None.
-
-    Only ``offset`` counts prompt rows; an encoder-decoder layout counts
-    something else and so is never stored.
-    """
+    """Tokens the entries hold, else None: only ``offset`` counts prompt rows."""
     for entry in entries:
         offset = getattr(entry, "offset", None)
         if isinstance(offset, int):
@@ -174,11 +147,7 @@ def cache_entries_offset(entries):
 
 
 def media_prefix_end(token_ids, media_token_ids):
-    """Rows up to and including the last media placeholder token, 0 if none.
-
-    mlx-vlm resumes a cache only when the prefix holds every media token, so
-    the rows the suffix embeds are text; a shorter prefix is never served.
-    """
+    """Rows through the last media placeholder, 0 if none: what mlx-vlm resumes past."""
     media = {int(token) for token in media_token_ids}
     if not media:
         return 0
@@ -197,18 +166,9 @@ def _chunk_rows(args, kwargs):
 
 
 def _place_per_layer_inputs(kwargs, rows, start):
-    """Hand this forward the rows of ``per_layer_inputs`` that are its own.
-
-    gemma4 E2B/E4B and gemma3n take an embedding per layer that mlx-vlm
-    computes once for the whole uncached prompt (media placeholders mapped to
-    a fixed id) and passes to every forward. The language model slices it at
-    its absolute cache offset, which is right for a cold prompt and shifted
-    for a resumed one, whose array starts at the resume offset; so a chunk is
-    sliced here relative to that offset. A single-token forward gets none and
-    computes its own from the token id, as the reference model does: left the
-    array, the model would read some prompt row for a generated token, and
-    which row depends on the array's length, so cold and warm would differ.
-    """
+    """Slice ``per_layer_inputs`` to this forward's own rows: mlx-vlm computes it for
+    the whole uncached prompt and the model slices it at an offset a resume shifts. A
+    single-token forward gets none and computes its own, as the reference model does."""
     inputs = kwargs.get("per_layer_inputs")
     shape = getattr(inputs, "shape", None)
     if not shape:
@@ -234,14 +194,9 @@ _RECORDING_CLASSES = {}
 
 
 def _prompt_wide_position_ids(args, kwargs):
-    """Whether ``position_ids`` spans more than the chunk being fed.
-
-    For a resumed cache mlx-vlm primes mRoPE positions for the whole prompt
-    and hands them to every chunk. The model's own primed state carries the
-    same positions sliced at the cache offset, and not every family slices
-    the kwarg the same way (glm4v feeds it through as is), so a prompt-wide
-    kwarg is withheld and the model's state used instead.
-    """
+    """Whether ``position_ids`` spans more than the chunk being fed: mlx-vlm primes
+    mRoPE prompt-wide and not every family slices the kwarg (glm4v feeds it through
+    as is), so a prompt-wide one is withheld for the model's own primed state."""
     shape = getattr(kwargs.get("position_ids"), "shape", None)
     if not shape:
         return False
@@ -259,15 +214,12 @@ def _recording_class(base):
         return cls
 
     def __call__(self, *args, **kwargs):
-        # A plain attribute: nn.Module stores dicts and lists in its module
-        # tree, so the record must not be one.
+        # A plain attribute: nn.Module stores dicts and lists in its module tree.
         record = self.__dict__.get("_studio_forward_record")
         cache = kwargs.get("cache")
         if record is not None:
             offset = cache_entries_offset(cache) if cache is not None else None
             if record.resume_offset is None:
-                # Where dispatch actually resumed, which may be zero when it
-                # declined the offered prefix.
                 record.resume_offset = offset or 0
                 if record.on_resume is not None:
                     record.on_resume(record.resume_offset)
@@ -276,18 +228,14 @@ def _recording_class(base):
             _place_per_layer_inputs(
                 kwargs, _chunk_rows(args, kwargs), (offset or 0) - record.resume_offset
             )
-        # Copied as the next forward begins, not as the boundary forward
-        # returns: generate_step still converts the cache between the two
-        # (KV quantization once past its start), and the snapshot has to hold
-        # what a cold prefill holds at the same offset.
+        # As the next forward begins, not as the boundary one returns: generate_step
+        # converts the cache between the two (KV quantization).
         if (
             record is not None
             and record.capture_at
             and record.forwards == record.capture_at
             and cache is not None
         ):
-            # A layout that cannot be copied costs this request its snapshot,
-            # never its answer.
             try:
                 record.snapshot = copy_cache_entries(cache)
             except Exception as exc:
@@ -302,9 +250,30 @@ def _recording_class(base):
     return cls
 
 
-class RecordingForward:
-    """Installs the counting forward on a language model for one generation."""
+def _offset_aware_policy(host):
+    """``chunked_prefill_policy`` of ``host`` fed only the token types past the
+    cache: with the vision block already there, the suffix is text and may chunk."""
+    base_policy = type(host).chunked_prefill_policy
 
+    def policy(
+        *,
+        prompt_cache = None,
+        prefill_kwargs = None,
+        **rest,
+    ):
+        offset = cache_entries_offset(prompt_cache) if prompt_cache is not None else 0
+        if offset and prefill_kwargs:
+            prefill_kwargs = dict(prefill_kwargs)
+            for key in ("mm_token_type_ids", "token_type_ids"):
+                shape = getattr(prefill_kwargs.get(key), "shape", None)
+                if shape and len(shape) > 1 and shape[1] > offset:
+                    prefill_kwargs[key] = prefill_kwargs[key][:, offset:]
+        return base_policy(host, prompt_cache = prompt_cache, prefill_kwargs = prefill_kwargs, **rest)
+
+    return policy
+
+
+class RecordingForward:
     def __init__(self, language_model):
         self._language_model = language_model
         self.record = _ForwardRecord()
@@ -323,6 +292,10 @@ class RecordingForward:
         model.__dict__.pop("_studio_forward_record", None)
         model.__class__ = self._base
         return False
+
+    def unrecorded(self, *args, **kwargs):
+        """A forward the record does not count: rows prepared outside the generation."""
+        return self._base.__call__(self._language_model, *args, **kwargs)
 
 
 class VLMPromptSnapshotStore:
@@ -382,7 +355,6 @@ class VLMPromptSnapshotStore:
             self.nbytes -= dropped[1]
 
     def retain(self, item):
-        """Drop every snapshot but ``item``, or all of them when it is None."""
         for other in [other for other in self._entries if other != item]:
             self.discard(other)
 
@@ -392,18 +364,12 @@ class VLMPromptSnapshotStore:
 
 
 class VLMPromptCacheSession:
-    """The ``prompt_cache_state`` one generation hands to mlx-vlm.
-
-    ``cache`` starts as the fresh entries the request should also pass as
-    ``prompt_cache``. mlx-vlm calls ``find_prefix_length`` with the prompt's
-    ids before generating; that is where the snapshot to resume from is chosen,
-    ``cache`` is swapped to it, and the capture forward is set. The copy that
-    keeps the store's snapshot immune to the generation is taken at the first
-    forward, once mlx-vlm has resumed from it. After
-    the generation, ``finish`` stores what was captured. With
-    ``releases_unserved`` the lookup also drops every snapshot that does not
-    serve this request, the headroom a media pass needs.
-    """
+    """The ``prompt_cache_state`` one generation hands to mlx-vlm: ``find_prefix_length``
+    picks the snapshot to resume from, swaps ``cache`` to it and arms the capture, and
+    ``finish`` stores it. ``releases_unserved`` frees the rest, the headroom a media pass
+    needs. A ``media_block`` prefills the rows through the last vision token for models
+    that cannot chunk them, becoming the grid's origin, and ``policy_hosts`` are the
+    models whose ``chunked_prefill_policy`` would then refuse to chunk the suffix."""
 
     def __init__(
         self,
@@ -413,11 +379,19 @@ class VLMPromptCacheSession:
         make_cache,
         media_token_ids = (),
         releases_unserved = False,
+        media_block = None,
+        policy_hosts = (),
     ):
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
         self._releases_unserved = releases_unserved
+        self.media_block = media_block
+        self._origin = 0
+        # Produced for this request: prefill work rather than reuse, for the stats.
+        self.produced_tokens = 0
+        self.produced_seconds = 0.0
+        self._policy_hosts = tuple(policy_hosts)
         self._forward = RecordingForward(language_model)
         self.cache = make_cache()
         self.reused_tokens = 0
@@ -426,28 +400,49 @@ class VLMPromptCacheSession:
 
     def __enter__(self):
         self._forward.__enter__()
+        self._patched_hosts = [
+            host for host in self._policy_hosts if hasattr(type(host), "chunked_prefill_policy")
+        ]
+        for host in self._patched_hosts:
+            host.chunked_prefill_policy = _offset_aware_policy(host)
         return self
 
     def __exit__(self, *exc):
+        for host in self._patched_hosts:
+            del host.chunked_prefill_policy
         self._forward.__exit__(*exc)
         return False
 
     def find_prefix_length(self, token_ids):
         token_ids = list(token_ids)
         self._token_ids = token_ids
-        boundary = shape_stable_prefix(len(token_ids))
+        origin = self.media_block.rows(token_ids) if self.media_block is not None else 0
+        self._origin = origin
+        boundary = shape_stable_prefix(len(token_ids), origin)
         self._media_end = media_prefix_end(token_ids, self._media_token_ids)
         record = self._forward.record
         if boundary < self._media_end:
-            # A boundary inside the media span serves nothing and stores
-            # nothing: the prompt has to grow past it first.
+            # Inside the media span: the prompt has to grow past it first.
             self._keep(None)
             return 0
         entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
+        if entries is None and origin:
+            # Produced here instead, in the one square forward the vision tokens need.
+            self._keep(None)
+            started = time.perf_counter()
+            try:
+                entries, prefix_len = self.media_block.prefill(self._forward, origin), origin
+                self.produced_tokens = origin
+            except Exception as exc:
+                # Prefilled by mlx-vlm as before, off this grid: no capture.
+                logger.info("MLX VLM prompt cache: media block not prefilled (%s)", exc)
+                self._keep(None)
+                return 0
+            finally:
+                # Spent either way, and outside mlx-vlm's prompt timer.
+                self.produced_seconds = time.perf_counter() - started
         if entries is not None:
-            # Served as is: the copy is taken at the first forward, once
-            # mlx-vlm has resumed from these entries, and not at all when it
-            # declines the offer.
+            # The copy is taken at the first forward, once mlx-vlm has resumed.
             self.cache = entries
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
@@ -456,55 +451,48 @@ class VLMPromptCacheSession:
         return prefix_len
 
     def _keep(self, item):
-        # At lookup, before any media pass: a request mlx-vlm prefills from
-        # zero starts one at the first forward.
+        # At lookup, before the media pass a declined request starts.
         if self._releases_unserved:
             self._store.retain(item)
 
     def _detach_served(self, offset):
         prefix_ids = self._token_ids[: self.reused_tokens]
         if offset != self.reused_tokens:
-            # Declined: mlx-vlm prefills from its fresh cache, media pass
-            # included, while still referencing the served entries. Their
-            # arrays go now, before that pass is evaluated, and the snapshot
-            # is not kept, since it would be declined again.
+            # Declined: mlx-vlm prefills from its fresh cache, so these arrays go
+            # now, before its media pass is evaluated.
             self._store.discard((self._key, tuple(prefix_ids)))
             try:
                 release_cache_entries(self.cache)
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: declined snapshot not released (%s)", exc)
             return
-        # Resumed from the served entries, this generation is about to advance
-        # them: the store keeps a copy taken now, the request the original.
+        # About to be advanced by this generation: the store keeps a copy.
         try:
             copy = copy_cache_entries(self.cache)
         except Exception as exc:
-            # A copy that cannot be made costs the next turn its reuse, never
-            # this answer.
+            # Costs the next turn its reuse, never this answer.
             logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
             self._store.discard((self._key, tuple(prefix_ids)))
             return
         self._store.store(self._key, prefix_ids, copy)
 
     def update(self, _token_ids, _cache):
-        """mlx-vlm's after-generation hook; storing happens in ``finish`` instead,
-        which also runs when the consumer stops reading early."""
+        """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a
+        consumer that stops reading early."""
 
     def finish(self):
-        """Store the captured snapshot under the prompt rows it holds."""
         snapshot = self._forward.record.snapshot
         if snapshot is None or self._token_ids is None:
             return False
-        # Read off the snapshot rather than assumed: mlx-vlm may decline the
-        # reuse it was offered and prefill from zero, in which case the capture
-        # landed on an earlier boundary and holds that shorter prefix.
+        # Read off the snapshot: a declined offer captures an earlier boundary.
         held = cache_entries_offset(snapshot)
         step = VLM_PROMPT_CACHE_PREFILL_STEP
         if (
             not held
-            or held % step
+            or held < self._origin
+            or (held - self._origin) % step
             or held < self._media_end
-            or held > shape_stable_prefix(len(self._token_ids))
+            or held > shape_stable_prefix(len(self._token_ids), self._origin)
         ):
             logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
             return False
@@ -1926,6 +1914,87 @@ def _mlx_sampling_processors(
 # current helper's list, which carries laguna -- only 0.6.9 stopped tokenizing laguna with
 # the markers, and 0.6.0-0.6.8 are what this stands in for.
 _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
+# First mlx-vlm whose gemma-4 mask overlay skips a resumed suffix's non-square mask (#1445).
+_VLM_MEDIA_BLOCK_MIN_VERSION = "0.6.4"
+
+
+def _vlm_add_special_tokens(model_type, processor):
+    try:
+        from mlx_vlm.utils import should_add_special_tokens
+        return should_add_special_tokens(model_type, processor)
+    except Exception:
+        # The rule those releases inline, which Studio's runtime gate still accepts.
+        return (
+            getattr(processor, "chat_template", None) is None
+            if model_type in _VLM_INLINE_SPECIAL_TOKEN_FAMILIES
+            else True
+        )
+
+
+class _VLMMediaBlock:
+    """A prompt's rows through its last vision token, prefilled by Studio: models whose
+    vision tokens attend to each other prefill in one forward that lands off the grid,
+    and this is that forward cut where the grid can continue."""
+
+    def __init__(self, model, processor, prompt, images, make_cache):
+        from mlx_vlm.utils import prepare_inputs
+
+        self._model = model
+        self._make_cache = make_cache
+        config = getattr(model, "config", None)
+        read = config.get if isinstance(config, dict) else lambda attr: getattr(config, attr, None)
+        self._inputs = prepare_inputs(
+            processor,
+            images = images,
+            prompts = prompt,
+            image_token_index = read("image_token_index"),
+            add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
+        )
+
+    def generate_kwargs(self):
+        inputs = dict(self._inputs)
+        return {
+            "input_ids": inputs.pop("input_ids"),
+            "pixel_values": inputs.pop("pixel_values", None),
+            "mask": inputs.pop("attention_mask", None),
+            **inputs,
+        }
+
+    def rows(self, token_ids):
+        ids = self._inputs["input_ids"]
+        if ids.shape[0] != 1 or ids[0].tolist() != list(token_ids):
+            return 0
+        types = self._inputs.get("mm_token_type_ids", self._inputs.get("token_type_ids"))
+        if types is None:
+            return 0
+        visual = [index for index, kind in enumerate(types[0].tolist()) if kind in (1, 2)]
+        return visual[-1] + 1 if visual else 0
+
+    def prefill(self, forward, rows):
+        import mlx.core as mx
+
+        inputs = self._inputs
+        extra = {
+            key: value
+            for key, value in inputs.items()
+            if key not in ("input_ids", "pixel_values", "attention_mask")
+        }
+        features = self._model.get_input_embeddings(
+            input_ids = inputs["input_ids"], pixel_values = inputs.get("pixel_values"), **extra
+        )
+        kwargs = {
+            key: extra[key][:, :rows]
+            for key in ("mm_token_type_ids", "token_type_ids")
+            if key in extra
+        }
+        if features.per_layer_inputs is not None:
+            kwargs["per_layer_inputs"] = features.per_layer_inputs[:, :rows]
+        entries = self._make_cache()
+        forward.unrecorded(
+            inputs = None, inputs_embeds = features.inputs_embeds[:, :rows], cache = entries, **kwargs
+        )
+        mx.eval([entry.state for entry in entries])
+        return entries
 
 
 class MLXInferenceBackend:
@@ -2003,7 +2072,6 @@ class MLXInferenceBackend:
             store.clear()
 
     def _vlm_prompt_cache_store(self):
-        """The loaded model's store, or None; shares the text path's budget."""
         if self._vlm_snapshot_store is not None or self._vlm_snapshot_store_unavailable:
             return self._vlm_snapshot_store
         max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
@@ -2011,9 +2079,8 @@ class MLXInferenceBackend:
             self._vlm_snapshot_store_unavailable = True
             logger.info("MLX VLM prompt cache disabled by budget")
             return None
-        # Reuse needs a dispatcher that primes mRoPE state for a resumed cache,
-        # reports what it reused, and routes diffusion models itself; mlx-vlm
-        # gained all three together with the cached_tokens field.
+        # Reuse needs a dispatcher that primes mRoPE state for a resumed cache, reports
+        # what it reused and routes diffusion itself: all three came with cached_tokens.
         try:
             from mlx_vlm.generate import GenerationResult
             from mlx_vlm.generate.diffusion import is_diffusion_model
@@ -2032,7 +2099,6 @@ class MLXInferenceBackend:
 
     @staticmethod
     def _vlm_media_token_ids(config):
-        """The placeholder ids mlx-vlm's dispatcher reads off the same config."""
         ids = set()
         for attr in ("image_token_id", "image_token_index", "video_token_id", "video_token_index"):
             value = config.get(attr) if isinstance(config, dict) else getattr(config, attr, None)
@@ -2044,52 +2110,78 @@ class MLXInferenceBackend:
     def _vlm_image_digest(images):
         digest = hashlib.sha256()
         for image in images:
-            # What the tower sees: mlx-vlm converts to RGB, so palette indices
-            # or an alpha channel must not decide the key; some of its
-            # processors apply the EXIF orientation, so that must.
+            # What the tower sees: RGB, so palette indices and alpha decide nothing.
             rgb = image.convert("RGB")
             digest.update(f"{rgb.size}:{image.getexif().get(0x0112, 1)}:".encode())
             digest.update(rgb.tobytes())
         return digest.hexdigest()[:16]
 
+    @staticmethod
+    def _vlm_bidirectional_vision(model):
+        config = getattr(getattr(model, "language_model", model), "config", None)
+        return getattr(config, "use_bidirectional_attention", None) == "vision"
+
     def _vlm_prompt_cache_session(
         self,
         adapter_state,
         images = None,
+        prompt = None,
     ):
-        """A session for one text or image request, or None to prefill as before."""
         store = self._vlm_prompt_cache_store()
         if store is None or self._vlm_is_diffusion_model(self._model):
             # Diffusion generation never consults the prefix hook.
             return None
         media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
         if images and not media_ids:
-            # Without the placeholder ids nothing can tell where the image's
-            # rows end, and neither can the dispatcher's own media check.
+            # Neither side can tell where the image's rows end without them.
             return None
         try:
             from mlx_vlm.models.cache import make_prompt_cache
 
             language_model = getattr(self._model, "language_model", self._model)
             window = self._kv_cache_window
-            # Base-vs-LoRA compare must not serve one side's KV to the other,
-            # and two images that tokenize alike must not share rows.
+            # Base-vs-LoRA compare must not serve one side's KV to the other.
             key = f"{self.active_model_name}|{adapter_state!r}"
             if images:
                 key += f"|{self._vlm_image_digest(images)}"
+            make_cache = lambda: make_prompt_cache(language_model, max_kv_size = window)
+            block = self._vlm_media_block(prompt, images, make_cache)
             return VLMPromptCacheSession(
                 store,
                 key,
                 language_model,
-                lambda: make_prompt_cache(language_model, max_kv_size = window),
+                make_cache,
                 media_token_ids = media_ids,
                 releases_unserved = bool(images),
+                media_block = block,
+                policy_hosts = (self._model, language_model) if block is not None else (),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
             self._vlm_snapshot_store = None
             self._vlm_snapshot_store_unavailable = True
             logger.info("MLX VLM prompt cache unavailable (%s); prefilling every request", exc)
+            return None
+
+    @staticmethod
+    def _vlm_media_block_available():
+        try:
+            import mlx_vlm
+            from packaging.version import Version
+            return Version(mlx_vlm.__version__) >= Version(_VLM_MEDIA_BLOCK_MIN_VERSION)
+        except Exception:
+            return False
+
+    def _vlm_media_block(self, prompt, images, make_cache):
+        if not images or prompt is None or not self._vlm_bidirectional_vision(self._model):
+            return None
+        if not self._vlm_media_block_available():
+            return None
+        try:
+            return _VLMMediaBlock(self._model, self._processor, prompt, images, make_cache)
+        except Exception as exc:
+            # This request prefills the image as before; the store stays.
+            logger.info("MLX VLM prompt cache: media block not prepared (%s)", exc)
             return None
 
     def _prepare_prompt_cache(self, prompt, adapter_state):
@@ -2677,16 +2769,7 @@ class MLXInferenceBackend:
             # answer mlx_vlm makes for every generation; ask it rather than guess, or the
             # count is off by whatever the generation's own choice would have added.
             _model_type = getattr(getattr(self._model, "config", None), "model_type", None)
-            try:
-                from mlx_vlm.utils import should_add_special_tokens
-                add_special = should_add_special_tokens(_model_type, self._processor)
-            except Exception:
-                # The rule those releases inline, which Studio's runtime gate still accepts.
-                add_special = (
-                    getattr(self._processor, "chat_template", None) is None
-                    if _model_type in _VLM_INLINE_SPECIAL_TOKEN_FAMILIES
-                    else True
-                )
+            add_special = _vlm_add_special_tokens(_model_type, self._processor)
             return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
 
         render_result = self._render_text_prompt(
@@ -3221,10 +3304,12 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        session = self._vlm_prompt_cache_session(_adapter_state, images)
+        session = self._vlm_prompt_cache_session(_adapter_state, images, prompt)
         if session is not None:
             vlm_kwargs["prompt_cache"] = session.cache
             vlm_kwargs["prompt_cache_state"] = session
+            if session.media_block is not None:
+                vlm_kwargs.update(session.media_block.generate_kwargs())
             # Reused and unreused turns must prefill on the same grid to match.
             vlm_kwargs["prefill_step_size"] = VLM_PROMPT_CACHE_PREFILL_STEP
         session_scope = session if session is not None else nullcontext()
@@ -3280,29 +3365,30 @@ class MLXInferenceBackend:
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
                 finally:
-                    cached_n = 0
+                    cached_n = produced_n = 0
+                    produced_s = 0.0
                     if session is not None:
-                        # Not from mlx-vlm's after-generation hook, which a stop
-                        # sequence or a cancel never reaches.
+                        # Not from mlx-vlm's hook, which a stop or cancel never reaches.
                         try:
                             session.finish()
                         except Exception as exc:
                             logger.debug("MLX VLM prompt cache: snapshot not stored (%s)", exc)
-                        # What mlx-vlm reused, not what it was offered: it may
-                        # decline the offer and prefill from zero.
+                        # What mlx-vlm reused, less the rows produced here as prefill.
                         cached_n = int(getattr(final_response, "cached_tokens", 0) or 0)
+                        produced_n, produced_s = session.produced_tokens, session.produced_seconds
+                        cached_n = max(cached_n - produced_n, 0)
                     # mlx_vlm exposes the same stats fields as mlx_lm, minus a
                     # finish reason, so that one is derived.
                     if final_response is not None:
                         tokenizer = getattr(self._processor, "tokenizer", self._processor)
                         stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
-                        # mlx-vlm counts the reused prefix in prompt_tokens and
-                        # rates the whole prompt against the prefill it ran.
+                        # mlx-vlm rates the whole prompt against the prefill it ran,
+                        # which leaves out the rows the session produced first.
                         prompt_n = int(getattr(final_response, "prompt_tokens", 0) or 0)
                         prefilled_n = max(prompt_n - cached_n, 0)
                         prompt_tps = float(getattr(final_response, "prompt_tps", 0.0) or 0.0)
-                        if cached_n and prompt_n:
-                            prompt_tps *= prefilled_n / prompt_n
+                        if prompt_tps and (cached_n or produced_s):
+                            prompt_tps = prefilled_n / (prompt_n / prompt_tps + produced_s)
                         self.last_generation_stats = _build_generation_stats(
                             prefilled_n,
                             prompt_tps,
