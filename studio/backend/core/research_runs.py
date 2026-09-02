@@ -162,10 +162,10 @@ def _synthesis_needs_recovery(report: str, finish_reason: str | None) -> bool:
     return finish_reason == "length" or not report
 
 
-# Finish reasons that mean the model stopped before it was done, so the text is a fragment
-# rather than a report. "content_filter" is external_provider's mapping for a refusal and
-# for Gemini's SAFETY / RECITATION / PROHIBITED_CONTENT / BLOCKLIST stops.
-_UNFINISHED_FINISH_REASONS = frozenset({"length", "content_filter"})
+# A shorter recovery outranks a usable first draft only when the provider positively says
+# it reached a natural stop. Missing and unknown reasons can instead mean a bare EOF after
+# partial text, while every supported report path normalizes natural completion to "stop".
+_NATURAL_FINISH_REASONS = frozenset({"stop"})
 
 
 def _auto_scrape_default() -> int:
@@ -2630,8 +2630,7 @@ class ResearchSupervisor:
             comparable_recovered = _delivered(recovered)
             comparable_report = _delivered(report)
             recovered_whole = (
-                bool(comparable_recovered)
-                and recovery_finish_reason not in _UNFINISHED_FINISH_REASONS
+                bool(comparable_recovered) and recovery_finish_reason in _NATURAL_FINISH_REASONS
             )
             take_recovery = recovered_whole or len(comparable_recovered) >= len(comparable_report)
             requested_max_tokens = recovery_max_tokens
@@ -2651,13 +2650,13 @@ class ResearchSupervisor:
                     synthesis_usage,
                     requested_max_tokens = requested_max_tokens,
                 ).rstrip(".")
+        report = _validate_report_sources(report, sources)
+        report = _validate_report_document_sources(report, document_sources)
         if not report:
             raise ValueError(
                 "Local model returned no safely identifiable final report. Disable thinking or "
                 "use a compatible chat template and retry."
             )
-        report = _validate_report_sources(report, sources)
-        report = _validate_report_document_sources(report, document_sources)
         # Above the report, and after the validators so they only ever see what the model
         # wrote. Above, because a report that ran out of budget stops wherever it happened to
         # be -- inside a code fence, a list, a quote -- and anything appended under an

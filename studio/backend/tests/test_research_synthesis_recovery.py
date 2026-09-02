@@ -152,6 +152,17 @@ def test_two_empty_attempts_still_fail_the_run(research_home, monkeypatch):
         )
 
 
+def test_attempts_emptied_by_validation_still_fail_the_run(research_home, monkeypatch):
+    only_sources = "## Sources\n\n- [invented](https://invented.test/report)"
+
+    with pytest.raises(ValueError, match = "no safely identifiable final report"):
+        _run_synthesis(
+            monkeypatch,
+            synthesis = (only_sources, "", "length", {"completion_tokens": 16384}),
+            recovery = (only_sources, "", "length", {"completion_tokens": 16384}),
+        )
+
+
 def test_a_complete_recovery_beats_a_longer_truncated_first_draft(research_home, monkeypatch):
     """`length` is the one finish reason that means the text is unfinished, so size is
     the wrong tiebreak: picking the longer draft delivered a truncated report, and
@@ -167,6 +178,22 @@ def test_a_complete_recovery_beats_a_longer_truncated_first_draft(research_home,
     assert finished["status"] == "completed"
     assert finished["report"].strip() == complete
     assert "Incomplete report." not in finished["report"]
+
+
+@pytest.mark.parametrize("finish_reason", [None, "future_reason"])
+def test_only_an_explicit_stop_lets_a_shorter_recovery_outrank_the_draft(
+    research_home, monkeypatch, finish_reason
+):
+    finished = _run_synthesis(
+        monkeypatch,
+        synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
+        recovery = (SHORTER_DRAFT, "", finish_reason, None),
+    )
+
+    assert finished["status"] == "completed"
+    assert FIRST_DRAFT in finished["report"]
+    assert SHORTER_DRAFT not in finished["report"]
+    assert "Incomplete report." in finished["report"]
 
 
 def test_a_filtered_recovery_does_not_outrank_a_longer_draft(research_home, monkeypatch):
