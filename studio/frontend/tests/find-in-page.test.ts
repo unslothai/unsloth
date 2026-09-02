@@ -1986,6 +1986,32 @@ test("an odd run of regional indicators displaces the whole run after a cut", ()
   assert.deepEqual(findMatches(index, at(0x1f1e7), 10), []);
 });
 
+test("a cut whose context outran its window does not outlive the cut", () => {
+  // Outrunning the window makes a junction unknown, which is the right answer for that junction and
+  // for no other. Held as a flag beside the context rather than inside it, it survived the block
+  // boundary that cleared the context and went on refusing the start of every later block.
+  const at = (code: number) => String.fromCodePoint(code);
+  const flag = at(0x1f1e6) + at(0x1f1e7);
+  const index = buildTextIndex(
+    el("DIV", [
+      el("SPAN", [text(`${"x".repeat(MAX_NODE_CHARS)}${"\u0301".repeat(40)}`)]),
+      el("P", [text(flag)]),
+    ]),
+  );
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
+  assert.equal(findMatches(index, flag, 10).length, 1);
+  // The window itself still does its job at the junction it belongs to.
+  const inline = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"x".repeat(MAX_NODE_CHARS)}\u0915${"\u0301".repeat(40)}`),
+        text("\u0924!!"),
+      ]),
+    ]),
+  );
+  assert.deepEqual([...inline.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+});
+
 test("a real block boundary after a cut is still a boundary", () => {
   // The separator standing in for dropped text and the one a block writes are the same character,
   // but only the first is uncertain: a block break is one wherever the dropped text ended. The

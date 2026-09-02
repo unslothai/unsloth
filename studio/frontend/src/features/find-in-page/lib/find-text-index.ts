@@ -273,12 +273,11 @@ export function buildTextIndex(
   let truncated = false;
   /** See `FindTextIndex.unsafe`. */
   const unsafe = new Set<number>();
-  /** The last code point dropped, while the separator now due stands for that rather than for a
-   *  block boundary. It is the only thing that can say whether the next node begins where it looks
-   *  like it does, and it is readable here and nowhere later. */
-  let pendingClip: string | null = null;
-  /** Whether that tail ran past its window, leaving the context it hangs from unknown. */
-  let pendingClipPartial = false;
+  /** What was dropped, while the separator now due stands for that rather than for a block
+   *  boundary. It is the only thing that can say whether the next node begins where it looks like
+   *  it does, and it is readable here and nowhere later. Null at a real boundary, which takes the
+   *  window state with it. */
+  let pendingClip: ClipContext | null = null;
   /** Where a run of regional indicators resumes after a cut that fell inside one. */
   const regionalCuts: number[] = [];
   /** The ceiling, the only thing that stops the walk. */
@@ -337,11 +336,11 @@ export function buildTextIndex(
             // neither side reaches the other, which the kept context is chosen to be enough to say.
             if (
               pendingClip !== null &&
-              (pendingClipPartial ||
+              (pendingClip.partial ||
                 continuesGrapheme(
-                  pendingClip +
+                  pendingClip.tail +
                     String.fromCodePoint(data.codePointAt(0) as number),
-                  pendingClip.length,
+                  pendingClip.tail.length,
                 ))
             ) {
               unsafe.add(length);
@@ -350,8 +349,9 @@ export function buildTextIndex(
             // separator, so an odd run left behind takes the next indicator with it and displaces
             // every boundary in the run that resumes, not only its first.
             if (
-              pendingClipPartial ||
-              trailingRegionals(pendingClip ?? "") % 2 === 1
+              pendingClip !== null &&
+              (pendingClip.partial ||
+                trailingRegionals(pendingClip.tail) % 2 === 1)
             ) {
               regionalCuts.push(length);
             }
@@ -378,8 +378,6 @@ export function buildTextIndex(
           // Only these can join to what follows them, so only these let the dropped tail reach
           // into the next node. Anything else and the next node begins where it looks like it does.
           pendingClip = clipContext(data.slice(take));
-          pendingClipPartial = pendingClip === null;
-          if (pendingClip === null) pendingClip = "";
         }
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike, preserved);
@@ -512,21 +510,29 @@ function chainsBack(point: string): boolean {
   );
 }
 
+/** What was dropped, as far back as the junction can turn on it. `partial` when the run outran the
+ *  window, leaving what it hangs from unknown; carried alongside the tail rather than beside it, so
+ *  that dropping the context drops both and a stale flag cannot outlive the cut it came from. */
+interface ClipContext {
+  tail: string;
+  partial: boolean;
+}
+
 /** As much of the end of `dropped` as the junction can turn on: the run of things a rule chains
- *  through, and the one code point they hang from. Null when that run outran the window.
+ *  through, and the one code point they hang from.
  *
  *  Enough context and `continuesGrapheme` answers the junction on its own, which is the point: a
  *  short-circuit on what the dropped tail was could only ever say no, and a closed syllable or an
  *  even run of regional indicators lets the next node begin exactly where it looks like it does. */
-function clipContext(dropped: string): string | null {
+function clipContext(dropped: string): ClipContext {
   let at = dropped.length;
   for (let seen = 0; seen < CLIP_CONTEXT_LIMIT; seen += 1) {
-    if (at === 0) return dropped;
+    if (at === 0) return { tail: dropped, partial: false };
     const [point, start] = pointBefore(dropped, at);
     at = start;
-    if (!chainsBack(point)) return dropped.slice(at);
+    if (!chainsBack(point)) return { tail: dropped.slice(at), partial: false };
   }
-  return null;
+  return { tail: dropped.slice(at), partial: true };
 }
 
 /** The code point ending at `end`, and where it starts. */
