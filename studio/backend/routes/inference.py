@@ -7157,7 +7157,9 @@ def _caller_could_have_loaded(identifier: str) -> bool:
     try:
         _reject_uncontained_local_path(identifier, "use")
         _reject_private_hub_repo_without_an_account_token(
-            identifier, None, shared_cache_answers_offline = False,
+            identifier,
+            None,
+            shared_cache_answers_offline = False,
         )
     except HTTPException:
         return False
