@@ -762,6 +762,53 @@ _export_portable_roots() {
 }
 _export_portable_roots
 
+# The mirror image of that marker. It is the only portable signal that survives on
+# disk, and everything reads it: storage_roots.unsloth_home(), setup.sh's
+# _setup_portable_mode, unsloth_cli._looks_like_installer_managed_studio_home. Since
+# portable_mode() is true whenever unsloth_home() is, a marker left behind by an
+# earlier --portable run keeps a NORMAL reinstall of the same tree redirecting the HF
+# caches and the projects root, with UNSLOTH_PORTABLE=0 powerless to turn it off and
+# no supported way back. Only the marker THIS install would be read through is
+# dropped; a portable root that merely happens to be nearby keeps its own.
+_clear_stale_portable_marker() {
+    if [ "$_PORTABLE_MODE" = true ]; then return 0; fi
+    # --shortcuts-only rewrites launchers and installs nothing, so it is not the
+    # reinstall that converts a tree back; carrying no portable environment is
+    # normal for it, and it must not cost a working portable install its marker.
+    if [ "$_SHORTCUTS_ONLY" = true ]; then return 0; fi
+    _spm_name=".unsloth-portable-root"
+    # Flat layout: the master root IS the Studio root, so the marker sits in the
+    # directory being installed into. Unless a nested portable install still lives
+    # at <root>/studio, in which case the marker is that install's, not ours.
+    if [ -f "$STUDIO_HOME/$_spm_name" ]; then
+        if [ -d "$STUDIO_HOME/studio/unsloth_studio" ]; then
+            substep "portable marker kept: $STUDIO_HOME/studio still resolves through it" "$C_WARN"
+        elif rm -f -- "$STUDIO_HOME/$_spm_name" 2>/dev/null; then
+            substep "removed the stale portable marker in $STUDIO_HOME"
+        else
+            substep "could not remove $STUDIO_HOME/$_spm_name; this install still reads as portable" "$C_WARN"
+        fi
+    fi
+    # Nested layout: <root>/studio is the one spelling under which a parent marker
+    # names THIS install. Any other child of a portable root is a different tree,
+    # and its marker is not ours to delete.
+    case "$STUDIO_HOME" in
+        */studio) ;;
+        *) return 0 ;;
+    esac
+    # No dirname: the suffix is already matched, and BSD dirname has no `--`.
+    _spm_parent="${STUDIO_HOME%/studio}"
+    [ -n "$_spm_parent" ] || _spm_parent="/"
+    if [ -f "$_spm_parent/$_spm_name" ]; then
+        if rm -f -- "$_spm_parent/$_spm_name" 2>/dev/null; then
+            substep "removed the stale portable marker in $_spm_parent"
+        else
+            substep "could not remove $_spm_parent/$_spm_name; this install still reads as portable" "$C_WARN"
+        fi
+    fi
+}
+_clear_stale_portable_marker
+
 # mkdir -p follows a layout directory the user pre-symlinked to another volume, so
 # the tree lands there and the `rm -rf '<root>'` printed below leaves it behind.
 # Named rather than refused: the big-disk layout is deliberate, our promise is what
