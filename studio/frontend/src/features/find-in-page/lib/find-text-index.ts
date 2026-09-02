@@ -396,18 +396,32 @@ const CLUSTER_PATTERN =
 const HANGUL_TRAILING_PATTERN = /[\u11a8-\u11ff\ud7cb-\ud7fb]/;
 /** A leading Jamo, and a leading Jamo followed by the vowel that makes the two a syllable. */
 const HANGUL_LEADING_PATTERN = /^[\u1100-\u115f\ua960-\ua97c]/;
+/** Characters that join to whatever follows them (UAX 29 Prepend), plus the leading Jamo that
+ *  joins a syllable. Checked in code rather than as a lookbehind: JavaScriptCore only shipped
+ *  lookbehind in Safari 16.4, and an engine without it fell back to an unfenced scan. */
+const PREPEND_PATTERN = /[\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2\u0d4e]/;
+
+/** True when a match at `at` would begin part way through the grapheme before it. */
+function beginsInsideGrapheme(text: string, at: number): boolean {
+  if (at === 0) return false;
+  const before = text[at - 1];
+  return PREPEND_PATTERN.test(before) || HANGUL_LEADING_PATTERN.test(before);
+}
+
 /** Any Hangul Jamo or precomposed syllable. */
 const HANGUL_ANY_PATTERN =
   /[\u1100-\u11ff\ua960-\ua97c\ud7b0-\ud7fb\uac00-\ud7a3]/;
 
 /** What may still join a grapheme, by the last Jamo the query got to (UAX 29 GB6/GB7/GB8). */
 const HANGUL_AFTER_L =
-  "(?![\\u1100-\\u115f\\ua960-\\ua97c\\u1160-\\u11a7\\ud7b0-\\ud7c6\\uac00-\\ud7a3])";
-const HANGUL_AFTER_V = "(?![\\u1160-\\u11ff\\ud7b0-\\ud7c6\\ud7cb-\\ud7fb])";
-const HANGUL_AFTER_T = "(?![\\u11a8-\\u11ff\\ud7cb-\\ud7fb])";
+  "(?![\\u1100-\\u115f\\ua960-\\ua97c\\u1160-\\u11a7\\ud7b0-\\ud7c6\\uac00-\\ud7a3\\u0300-\\u036f\\u0483-\\u0489\\u0591-\\u05bd\\u0610-\\u061a\\u064b-\\u065f\\u0670\\u06d6-\\u06dc\\u0e31\\u0e34-\\u0e3a\\u1ab0-\\u1aff\\u1dc0-\\u1dff\\u20d0-\\u20f0\\ufe00-\\ufe0f\\ufe20-\\ufe2f\\u200d])";
+const HANGUL_AFTER_V =
+  "(?![\\u1160-\\u11ff\\ud7b0-\\ud7c6\\ud7cb-\\ud7fb\\u0300-\\u036f\\u0483-\\u0489\\u0591-\\u05bd\\u0610-\\u061a\\u064b-\\u065f\\u0670\\u06d6-\\u06dc\\u0e31\\u0e34-\\u0e3a\\u1ab0-\\u1aff\\u1dc0-\\u1dff\\u20d0-\\u20f0\\ufe00-\\ufe0f\\ufe20-\\ufe2f\\u200d])";
+const HANGUL_AFTER_T =
+  "(?![\\u11a8-\\u11ff\\ud7cb-\\ud7fb\\u0300-\\u036f\\u0483-\\u0489\\u0591-\\u05bd\\u0610-\\u061a\\u064b-\\u065f\\u0670\\u06d6-\\u06dc\\u0e31\\u0e34-\\u0e3a\\u1ab0-\\u1aff\\u1dc0-\\u1dff\\u20d0-\\u20f0\\ufe00-\\ufe0f\\ufe20-\\ufe2f\\u200d])";
 
 const HANGUL_SYLLABLE_PATTERN =
-  /^[\u1100-\u115f\ua960-\ua97c][\u1160-\u11a7\ud7b0-\ud7c6]/;
+  /^[\u1100-\u115f\ua960-\ua97c]+[\u1160-\u11a7\ud7b0-\ud7c6]/;
 
 /**
  * Per cluster, because alternating whole spellings of the WHOLE query reaches only all-composed or
@@ -417,6 +431,7 @@ const HANGUL_SYLLABLE_PATTERN =
  * cannot be written in. Every engine's own find matches it. */
 function canonicalSource(needle: string, dotted: boolean): string {
   let out = "";
+  let fence = "";
   for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
     if (/^\s/.test(cluster)) {
       out += out.endsWith("\\s+") ? "" : "\\s+";
@@ -437,30 +452,26 @@ function canonicalSource(needle: string, dotted: boolean): string {
         cluster.slice(trailing.index);
       if (!spellings.includes(half)) spellings.push(half);
     }
-    // A match may not START inside a grapheme. Only the first cluster needs it: the rest are
-    // anchored by the text already matched before them. Built as a string, so an engine without
-    // lookbehind throws where `matchPattern` catches it and falls back to the literal scan.
-    if (out === "" && HANGUL_LEADING_PATTERN.test(cluster)) {
-      out += "(?<![\\u1100-\\u115f\\ua960-\\ua97c])";
-    }
     out +=
       spellings.length === 1
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
-    // ... nor may it STOP inside one. What can still join depends on how far the syllable has got,
-    // which is what UAX 29 says about Hangul: a leading Jamo takes another leading Jamo, a vowel or
-    // a whole syllable; a vowel takes another vowel or a trailing Jamo; a trailing Jamo takes only
-    // another trailing Jamo. Guessing this rule one range at a time is what kept getting it wrong.
-    if (HANGUL_LEADING_PATTERN.test(cluster)) {
-      out +=
-        trailing !== null
-          ? HANGUL_AFTER_T
-          : HANGUL_SYLLABLE_PATTERN.test(cluster)
-            ? HANGUL_AFTER_V
-            : HANGUL_AFTER_L;
-    }
+    // Only the last cluster's fence survives, so remember this one and let a later cluster
+    // overwrite it. Fencing every cluster would have the query reject its own next character.
+    fence = HANGUL_LEADING_PATTERN.test(cluster)
+      ? trailing !== null
+        ? HANGUL_AFTER_T
+        : HANGUL_SYLLABLE_PATTERN.test(cluster)
+          ? HANGUL_AFTER_V
+          : HANGUL_AFTER_L
+      : "";
   }
-  return out;
+  // A match may not STOP inside a grapheme. What can still join depends on how far the syllable
+  // got, which is what UAX 29 says about Hangul: a leading Jamo takes another leading Jamo, a vowel
+  // or a whole syllable; a vowel takes another vowel or a trailing Jamo; a trailing Jamo takes only
+  // another trailing Jamo. Any of them also takes a combining mark, a joiner or a variation
+  // selector. Guessing this rule one range at a time is what kept getting it wrong.
+  return out + fence;
 }
 
 function escapeForRegex(text: string): string {
@@ -512,12 +523,20 @@ function eachMatch(
   const composedNeedle = needle.normalize("NFC");
   const asTyped = (hit: string): boolean =>
     variants.includes(hit) || hit.normalize("NFC") === composedNeedle;
+  // Only a Hangul-initial query can begin inside a grapheme in a way the pattern cannot see.
+  const fenced = HANGUL_LEADING_PATTERN.test(needle.normalize("NFD"));
   const pattern = matchPattern(variants, needle);
   if (pattern) {
     for (;;) {
       const hit = pattern.exec(index.text);
       if (hit === null) return;
       const end = hit.index + hit[0].length;
+      // The other half of the grapheme fence. The pattern carries the end of it; this is the start,
+      // which cannot be a lookbehind if the search is to work the same on every engine.
+      if (fenced && beginsInsideGrapheme(index.text, hit.index)) {
+        pattern.lastIndex = hit.index + 1;
+        continue;
+      }
       if (
         touchesPreserved(index.segments, hit.index, end) &&
         !asTyped(hit[0])

@@ -1470,6 +1470,12 @@ test("no Hangul match ever begins or ends inside a grapheme", () => {
     "hello \uac00",
     "\uac00 hello",
     "\uac00\ub098\ub2e4",
+    "caf\u00e9",
+    "cafe\u0301",
+    "\uac00\u0301", // a syllable and a combining mark are one grapheme
+    "\uac00\u200d\ub098", // ... and so is a joiner between two
+    "\u0600\uac00", // a Prepend joins whatever follows it
+    "\u1100\uac00\ub098", // two leading Jamo, then a second syllable
   ]);
   for (const lead of leads) {
     corpus.add(lead);
@@ -1478,7 +1484,12 @@ test("no Hangul match ever begins or ends inside a grapheme", () => {
       corpus.add(open);
       corpus.add(open.normalize("NFC"));
       for (const other of vowels) corpus.add(open + other);
-      for (const other of leads) corpus.add(lead + other + vowel);
+      for (const other of leads) {
+        corpus.add(lead + other + vowel);
+        corpus.add(lead + other + vowel + "\ub098");
+      }
+      corpus.add(open.normalize("NFC") + "\u0301");
+      corpus.add("\u0600" + open.normalize("NFC"));
       for (const trail of trails) {
         const closed = open + trail;
         corpus.add(closed);
@@ -1507,8 +1518,55 @@ test("no Hangul match ever begins or ends inside a grapheme", () => {
       findMatches(index, body, 10).length >= 1,
       `${escape(body)} cannot find itself`,
     );
+    // A fence that is too eager is the other failure, and it does not show up as a bad range: the
+    // match simply goes missing. Every leading run of whole graphemes must still be findable.
+    let prefix = "";
+    for (const { segment } of segmenter.segment(index.text)) {
+      prefix += segment;
+      if (prefix === index.text) break;
+      assert.ok(
+        findMatches(index, prefix, 10).length >= 1,
+        `${escape(body)} cannot find its own prefix ${escape(prefix)}`,
+      );
+    }
   }
   assert.ok(checked > 200, `only ${checked} matches exercised`);
+});
+
+test("the grapheme fences do not depend on lookbehind", async () => {
+  // JavaScriptCore only shipped lookbehind in Safari 16.4, and a pattern using one throws on older
+  // engines straight into the unfenced literal scan, quietly undoing both boundaries. So the start
+  // of the fence is checked in code and the pattern carries none.
+  const source = await readFile(
+    new URL(
+      "../src/features/find-in-page/lib/find-text-index.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(source.includes("(?<"), false, "no lookbehind in the pattern");
+
+  const real = globalThis.RegExp;
+  const refuse = function (pattern: string, flags?: string) {
+    if (typeof pattern === "string" && pattern.includes("(?<")) {
+      throw new SyntaxError("Invalid regular expression");
+    }
+    return new real(pattern, flags);
+  };
+  refuse.prototype = real.prototype;
+  globalThis.RegExp = refuse as unknown as RegExpConstructor;
+  try {
+    const closed = buildTextIndex(el("DIV", [el("P", [text("\uac01\u11a8")])]));
+    assert.deepEqual(findMatches(closed, "\uac01", 10), []);
+    const led = buildTextIndex(el("DIV", [el("P", [text("\u1100\uac00")])]));
+    assert.deepEqual(findMatches(led, "\uac00", 10), []);
+    const plain = buildTextIndex(
+      el("DIV", [el("P", [text("\uac00\ub098\ub2e4")])]),
+    );
+    assert.deepEqual(findMatches(plain, "\uac00", 10), [{ start: 0, end: 1 }]);
+  } finally {
+    globalThis.RegExp = real;
+  }
 });
 
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
