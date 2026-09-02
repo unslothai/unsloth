@@ -842,6 +842,71 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
     )
 
 
+def _historical_image_thread():
+    from models.inference import ChatMessage
+    return [
+        ChatMessage(role = "user", content = "EARLIER_QUESTION with no picture"),
+        ChatMessage(role = "assistant", content = "hello"),
+        ChatMessage(
+            role = "user",
+            content = [
+                {"type": "text", "text": "IMAGE_QUESTION about the picture"},
+                {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+            ],
+        ),
+        ChatMessage(role = "assistant", content = "it is a dot"),
+        ChatMessage(role = "user", content = "LATER_QUESTION unrelated to it"),
+    ]
+
+
+def _plain_route_messages(chat_template_info):
+    """The messages the backend receives for a tool-less request over the thread."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["chat_template_info"] = chat_template_info
+    payload = ChatCompletionRequest(
+        model = "default", stream = False, messages = _historical_image_thread()
+    )
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+    assert backend.calls, "generation never ran"
+    return backend.calls[0]["messages"]
+
+
+def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
+    """The plain route attached the thread's latest picture to the newest question on
+    every request, so the prompt prefix holding it was never shared between turns."""
+    # A template-less processor still places the image: the gate is renders_image.
+    sent = _plain_route_messages({"template": _CHATML_WITH_TOOLS, "renders_image": True})
+    earlier, owning, later = [m for m in sent if m.get("role") == "user"]
+    assert [p.get("type") for p in owning["content"]] == ["image", "text"]
+    assert owning["content"][1]["text"] == "IMAGE_QUESTION about the picture"
+    assert earlier["content"] == "EARLIER_QUESTION with no picture"
+    assert later["content"] == "LATER_QUESTION unrelated to it"
+
+
+def test_no_image_marker_on_the_plain_route_when_the_render_is_text_only():
+    """A tokenizer text template takes strings, not part lists, whatever the
+    processor carries."""
+    sent = _plain_route_messages(
+        {"template": _CHATML_WITH_TOOLS, "processor_template": _CHATML_WITH_TOOLS}
+    )
+    assert all(isinstance(m.get("content"), str) for m in sent if m.get("role") == "user")
+
+
 def test_a_tool_loop_replay_is_wrapped_for_a_part_based_processor():
     """A parts-expecting processor template raises while iterating replayed assistant and
     role="tool" turns left as bare strings, turning a valid request into a 500 (#10092)."""
