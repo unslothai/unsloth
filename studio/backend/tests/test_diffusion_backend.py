@@ -9535,9 +9535,7 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
     assert lowered.estimates["model_dense_mib"] < measured
 
 
-def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(
-    fake_runtime, tmp_path
-):
+def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(fake_runtime, tmp_path):
     """A cache snapshot is a local load target but still has trustworthy Hub provenance.
 
     The inventory pins opaque pipelines to the exact snapshot it inspected. Treating that path as
@@ -9558,12 +9556,7 @@ def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(
         supports_default_torch_compile = False,
         supports_pinned_transfer = False,
     )
-    snapshot = (
-        tmp_path
-        / "models--Tongyi-MAI--Z-Image-Turbo"
-        / "snapshots"
-        / ("a" * 40)
-    )
+    snapshot = tmp_path / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
     fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
     measured = 40_000
