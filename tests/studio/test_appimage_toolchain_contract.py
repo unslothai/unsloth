@@ -37,7 +37,7 @@ def _assert_no_rolling_release_aliases(script: str) -> None:
 
 
 def test_every_fetched_tool_has_a_sha256_digest() -> None:
-    script = TOOL_SCRIPT.read_text(encoding="utf-8")
+    script = TOOL_SCRIPT.read_text(encoding = "utf-8")
     values = _assignments(script)
     fetches = FETCH.findall(script)
     assert fetches, "expected digest-verified AppImage tool fetches"
@@ -46,13 +46,13 @@ def test_every_fetched_tool_has_a_sha256_digest() -> None:
         url_name = f"{prefix}_URL"
         digest_name = f"{prefix}_SHA256"
         assert url_name in values, f"{filename} has no URL assignment"
-        assert re.fullmatch(r"[0-9a-f]{64}", values.get(digest_name, "")), (
-            f"{filename} has no full SHA-256 digest"
-        )
+        assert re.fullmatch(
+            r"[0-9a-f]{64}", values.get(digest_name, "")
+        ), f"{filename} has no full SHA-256 digest"
 
 
 def test_fetched_tools_do_not_use_rolling_release_aliases() -> None:
-    _assert_no_rolling_release_aliases(TOOL_SCRIPT.read_text(encoding="utf-8"))
+    _assert_no_rolling_release_aliases(TOOL_SCRIPT.read_text(encoding = "utf-8"))
 
 
 def test_the_former_continuous_plugin_url_is_rejected() -> None:
@@ -61,5 +61,5 @@ APPIMAGE_PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/
 APPIMAGE_PLUGIN_SHA256="0441769ab38009504d2678c38cd7e526955388dd30a215b4a20afaa5471652f2"
 fetch "$APPIMAGE_PLUGIN_URL" "$APPIMAGE_PLUGIN_SHA256" linuxdeploy-plugin-appimage.AppImage
 """
-    with pytest.raises(AssertionError, match="APPIMAGE_PLUGIN_URL"):
+    with pytest.raises(AssertionError, match = "APPIMAGE_PLUGIN_URL"):
         _assert_no_rolling_release_aliases(former_pin)
