@@ -7017,26 +7017,81 @@ def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Op
     return detect_gguf_model(local_path)
 
 
+def _local_config_context_length(load_path: str) -> Optional[int]:
+    """``max_position_embeddings`` from a local checkpoint's config.json, or None.
+
+    The resolver only yields downloaded targets, so this is a local file read; a
+    multimodal config keeps the window on its text sub-config.
+    """
+    import json
+
+    config_path = Path(os.path.expanduser(load_path))
+    if config_path.is_dir():
+        config_path = config_path / "config.json"
+    if not config_path.is_file():
+        return None
+    with open(config_path, encoding = "utf-8") as f:
+        config = json.load(f)
+    if not isinstance(config, dict):
+        return None
+    for source in (config, config.get("text_config")):
+        if isinstance(source, dict):
+            value = _positive_int_or_none(source.get("max_position_embeddings"))
+            if value is not None:
+                return value
+    return None
+
+
 def _target_native_context_length(
     load_path: str,
     is_gguf: bool,
     gguf_variant: Optional[str] = None,
 ) -> Optional[int]:
-    """The target's own training context, or None when it cannot be read cheaply.
+    """The target's own declared context, or None when it cannot be read cheaply.
 
-    GGUF carries it in the header, which the staged UI already reads before a load.
-    A non-GGUF checkpoint has no equally cheap answer here, so it returns None and the
-    post-switch guard stays the one that catches it.
+    GGUF carries it in the header, which the staged UI already reads before a load;
+    a non-GGUF checkpoint declares it in config.json next to the weights.
     """
-    if not is_gguf:
-        return None
     try:
+        if not is_gguf:
+            return _local_config_context_length(load_path)
         from utils.models.gguf_metadata import read_gguf_context_length
         gguf_file = _resolve_target_gguf_file(load_path, gguf_variant)
         return read_gguf_context_length(gguf_file) if gguf_file else None
     except Exception as exc:
         logger.debug("auto-switch: context probe failed for %s: %s", load_path, exc)
         return None
+
+
+def _target_effective_context_length(
+    load_path: str,
+    is_gguf: bool,
+    gguf_variant: Optional[str] = None,
+    override_id: Optional[str] = None,
+) -> Optional[int]:
+    """The context the switch will actually ask this target to load with.
+
+    A saved per-model override wins, because that is what the load applies; reading the
+    declared window alone would refuse prompts a larger saved context accepts, and admit
+    prompts a smaller one cannot hold. Resolved through the same helpers as the load, so
+    the two cannot drift. A non-positive resolution means the loader decides, which is
+    not something to refuse on, so it falls back to the declared window.
+    """
+    try:
+        from utils.openai_auto_switch_settings import (
+            resolve_fit_max_seq_length,
+            resolve_override_for_load,
+        )
+
+        _key, override = resolve_override_for_load(load_path, override_id, gguf_variant)
+        configured = _positive_int_or_none(
+            resolve_fit_max_seq_length(override, is_gguf = is_gguf) if override else None
+        )
+        if configured is not None:
+            return configured
+    except Exception as exc:
+        logger.debug("auto-switch: context override lookup failed for %s: %s", load_path, exc)
+    return _target_native_context_length(load_path, is_gguf, gguf_variant)
 
 
 def _target_speech_audio_type(
@@ -8252,7 +8307,11 @@ async def _maybe_auto_switch_model(
             # needs a description, and finding that out afterwards costs the resident model.
             if speech_prompt_tokens is not None:
                 target_context = await asyncio.to_thread(
-                    _target_native_context_length, target_id, target_is_gguf, variant
+                    _target_effective_context_length,
+                    target_id,
+                    target_is_gguf,
+                    variant,
+                    override_id,
                 )
                 if target_context and _speech_budget_exhausted(
                     target_context, speech_prompt_tokens

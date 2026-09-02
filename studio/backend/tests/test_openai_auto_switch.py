@@ -3738,6 +3738,62 @@ def test_the_pre_load_budget_uses_the_count_the_target_will_be_measured_by(monke
     assert inference_route._byte_fallback_prompt_tokens(text) == 40
 
 
+def test_a_saved_context_override_wins_over_the_declared_window(monkeypatch):
+    # The load applies the saved override, so the preflight has to judge against it:
+    # reading the header alone refuses prompts the larger saved context accepts.
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(
+        settings, "resolve_override_for_load", lambda *_a: ("k", {"max_seq_length": 32768})
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "_target_native_context_length",
+        lambda *_a: pytest.fail("declared window used despite an override"),
+    )
+    assert inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0") == 32768
+
+
+def test_a_target_without_an_override_uses_the_declared_window(monkeypatch):
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", lambda *_a: (None, {}))
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
+    assert inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0") == 8192
+
+
+def test_a_fit_owned_context_falls_back_to_the_declared_window(monkeypatch):
+    # Manual GPU memory with auto layers resolves to 0, meaning llama.cpp sizes the
+    # context. That is not a number to refuse a request on.
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a: ("k", {"gpu_memory_mode": "manual", "gpu_layers": None}),
+    )
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
+    assert inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0") == 8192
+
+
+def test_a_non_gguf_target_declares_its_context_in_config_json(tmp_path):
+    import json
+
+    (tmp_path / "config.json").write_text(json.dumps({"max_position_embeddings": 4096}))
+    assert inference_route._target_native_context_length(str(tmp_path), False) == 4096
+
+    multimodal = tmp_path / "mm"
+    multimodal.mkdir()
+    (multimodal / "config.json").write_text(
+        json.dumps({"text_config": {"max_position_embeddings": 2048}})
+    )
+    assert inference_route._target_native_context_length(str(multimodal), False) == 2048
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert inference_route._target_native_context_length(str(bare), False) is None
+
+
 def test_a_prompt_too_long_for_the_target_is_refused_before_the_switch(monkeypatch):
     # The whole point of the gate: a request that cannot run must not cost the resident
     # model. The loaded-model guard cannot answer this one, since the target is different.
@@ -3753,7 +3809,7 @@ def test_a_prompt_too_long_for_the_target_is_refused_before_the_switch(monkeypat
         recorder = rec,
     )
     monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
-    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
+    monkeypatch.setattr(inference_route, "_target_effective_context_length", lambda *_a: 8192)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._maybe_auto_switch_model(
@@ -3780,7 +3836,7 @@ def test_a_prompt_that_fits_the_target_still_switches(monkeypatch):
         recorder = rec,
     )
     monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
-    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
+    monkeypatch.setattr(inference_route, "_target_effective_context_length", lambda *_a: 8192)
     asyncio.run(
         inference_route._maybe_auto_switch_model(
             "org/B-GGUF",
@@ -3805,7 +3861,7 @@ def test_an_unreadable_target_context_does_not_block_the_switch(monkeypatch):
         recorder = rec,
     )
     monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
-    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: None)
+    monkeypatch.setattr(inference_route, "_target_effective_context_length", lambda *_a: None)
     asyncio.run(
         inference_route._maybe_auto_switch_model(
             "org/B-GGUF",
