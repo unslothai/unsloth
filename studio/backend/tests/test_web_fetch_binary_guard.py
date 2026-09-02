@@ -340,6 +340,20 @@ def test_declared_latin1_cp1252_punctuation_kept(monkeypatch, charset):
     assert "binary content" not in out
 
 
+@pytest.mark.parametrize("charset", ["unicode", "utf8mb4", "x-user-defined"])
+def test_unknown_charset_falls_back_instead_of_failing_the_fetch(monkeypatch, charset):
+    body = b"<html><body><p>MARKERWORD in a page a browser renders fine.</p></body></html>"
+    out = _fetch_with(monkeypatch, body, f"text/html; charset={charset}")
+    assert "MARKERWORD" in out
+    assert "unknown encoding" not in out
+
+
+def test_unknown_charset_still_reaches_the_bom_codec(monkeypatch):
+    body = codecs.BOM_UTF16_LE + "MARKERWORD and more text".encode("utf-16-le")
+    out = _fetch_with(monkeypatch, body, "text/plain; charset=utf16le")
+    assert "MARKERWORD" in out
+
+
 def test_high_byte_binary_not_rescued_as_cp1252(monkeypatch):
     # cp1252 maps these bytes to printable characters, but they lack ASCII structure.
     body = bytes(range(0xA0, 0x100)) * 40

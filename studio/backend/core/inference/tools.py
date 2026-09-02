@@ -12104,7 +12104,12 @@ def _fetch_url_raw(
             )
 
         declared = resp.headers.get_content_charset()
-        declared_codec = codecs.lookup(declared).name if declared else None
+        try:
+            declared_codec = codecs.lookup(declared).name if declared else None
+        except LookupError:
+            # A label Python does not ship is no better than none.
+            declared = None
+            declared_codec = None
         bom_codec = next(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
