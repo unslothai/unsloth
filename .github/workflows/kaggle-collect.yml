@@ -152,15 +152,36 @@ jobs:
           # Read line by line rather than interpolating: a description is
           # composed from a Kaggle payload's own failure text, and that string
           # must never reach a shell as code.
+          #
+          # THE SHA HAS TO BE EXPANDED FIRST. The slug carries only 8 hex
+          # characters -- a full 40-character sha plus the prefix does not fit
+          # inside Kaggle's slug limit -- and the statuses API REFUSES an
+          # abbreviation:
+          #
+          #     POST /statuses/2ecb19df
+          #     422 "Sha must be a valid hex object ID"
+          #
+          # Measured against a real repository, not inferred. Without the
+          # expansion every status this workflow exists to publish 422s, the
+          # `|| echo` below turns that into a warning nobody reads, and the
+          # collection runs forever while the commit keeps a pending check.
+          # That is the precise failure this whole design is built against, so
+          # a sha that cannot be resolved is REPORTED and skipped rather than
+          # posted and lost.
           while IFS=$'\t' read -r sha state context description target_url; do
             [ -n "$sha" ] || continue
-            echo "posting $context=$state for $sha"
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+            full="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .sha 2>/dev/null || true)"
+            if [ -z "$full" ]; then
+              echo "::warning title=Could not resolve a collected commit::$sha is not a commit in this repository any more, so the $context result for it cannot be posted. The kernel was still collected and deleted."
+              continue
+            fi
+            echo "posting $context=$state for $full"
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$full" \
               -f state="$state" \
               -f context="$context" \
               -f description="$description" \
               -f target_url="$target_url" \
-              --silent || echo "::warning title=Could not post a commit status::$context for $sha"
+              --silent || echo "::warning title=Could not post a commit status::$context for $full"
           done < statuses.txt
 
       - name: Summarise

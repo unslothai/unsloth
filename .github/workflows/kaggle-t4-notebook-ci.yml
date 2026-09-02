@@ -1110,12 +1110,22 @@ jobs:
           PY
           # Read rather than interpolate: a description carries a payload's own
           # failure text, which must never reach a shell as code.
+          #
+          # The slug carries 8 hex characters and the statuses API refuses an
+          # abbreviation with 422 "Sha must be a valid hex object ID", measured.
+          # So it is expanded first; otherwise every collected verdict 422s into
+          # a warning and the commit keeps a pending check forever.
           while IFS=$'\t' read -r sha state context description target_url; do
             [ -n "$sha" ] || continue
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+            full="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .sha 2>/dev/null || true)"
+            if [ -z "$full" ]; then
+              echo "::warning title=Could not resolve a collected commit::$sha is no longer a commit here, so its $context result cannot be posted."
+              continue
+            fi
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$full" \
               -f state="$state" -f context="$context" \
               -f description="$description" -f target_url="$target_url" \
-              --silent || echo "::warning title=Could not post a commit status::$context for $sha"
+              --silent || echo "::warning title=Could not post a commit status::$context for $full"
           done < statuses.txt
 
       - name: Note that this commit is already running on Kaggle

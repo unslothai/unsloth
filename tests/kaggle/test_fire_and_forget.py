@@ -597,3 +597,55 @@ def test_the_reporters_wait_for_an_EXECUTED_NOTEBOOK_not_just_a_directory():
                 f"DIRECTORY, which a dispatching run creates and does not fill: "
                 f"if={condition!r}"
             )
+
+
+def test_an_abbreviated_sha_is_EXPANDED_before_a_status_is_posted():
+    """MEASURED AGAINST THE REAL API, and it fails closed in the worst way.
+
+        POST /repos/{o}/{r}/statuses/2ecb19df
+        422 "Sha must be a valid hex object ID"
+
+    The slug can only carry 8 hex characters: a full 40-character sha plus the
+    `unsloth-t4-ci-` prefix and the uniqueness suffix does not fit inside the
+    50-character slug this repo's `_slugify` produces, so the abbreviation is
+    forced.
+
+    Every posting step therefore has to resolve it first. Without that, each
+    collected verdict 422s, the `|| echo` beside it turns that into a warning
+    nobody reads, and the commit keeps a PENDING check forever while the
+    collection quietly succeeds. That is the whole failure this file exists to
+    prevent, arriving through the one call that publishes the answer.
+
+    Asserted structurally rather than by mocking `gh`, because what has to be
+    true is that the value posted is not the value read from the slug.
+    """
+    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
+        body = path.read_text(encoding = "utf-8")
+        if "statuses.txt" not in body:
+            continue
+        assert re.search(r'gh api "repos/\$GITHUB_REPOSITORY/commits/\$sha" -q \.sha', body), (
+            f"{path.name} posts a status without expanding the 8-character sha the "
+            "slug carries; the statuses API answers that with 422"
+        )
+        assert 'statuses/$full"' in body, (
+            f"{path.name} still posts to the abbreviated sha rather than the resolved one"
+        )
+        assert 'statuses/$sha"' not in body, (
+            f"{path.name} posts to $sha somewhere, which is the abbreviation"
+        )
+
+
+def test_a_commit_that_no_longer_exists_is_reported_not_silently_dropped():
+    """A force-push can remove the commit a running kernel was dispatched for.
+
+    Posting is then impossible, and that is fine -- but it must SAY so. A
+    `continue` with no message is indistinguishable from a collection that
+    found nothing, which is the state this whole file is written against.
+    """
+    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
+        body = path.read_text(encoding = "utf-8")
+        if "statuses.txt" not in body:
+            continue
+        assert "Could not resolve a collected commit" in body, (
+            f"{path.name} drops an unresolvable commit without a word"
+        )
