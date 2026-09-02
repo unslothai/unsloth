@@ -24,6 +24,12 @@ export interface NativeDocumentFolderSelection {
   displayName: string;
 }
 
+export interface NativeProjectFolderSelection {
+  token: string;
+  displayName: string;
+  displayPath: string;
+}
+
 export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSelection | null> {
   if (!isTauri) {
     throw new Error(
@@ -32,6 +38,17 @@ export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSe
   }
   return invokeNative<NativeDocumentFolderSelection | null>(
     "pick_native_document_folder",
+  );
+}
+
+export async function pickNativeProjectFolder(): Promise<NativeProjectFolderSelection | null> {
+  if (!isTauri) {
+    throw new Error(
+      "Existing project folders are only available in the desktop app.",
+    );
+  }
+  return invokeNative<NativeProjectFolderSelection | null>(
+    "pick_native_project_folder",
   );
 }
 

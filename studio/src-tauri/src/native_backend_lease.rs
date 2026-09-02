@@ -19,6 +19,8 @@ pub enum NativePathOperation {
     DatasetImport,
     Attach,
     LinkDocuments,
+    SetProjectWorkspace,
+    OpenProject,
     Reveal,
     Open,
 }
@@ -30,6 +32,7 @@ pub enum NativePathKind {
     Dataset,
     Attachment,
     DocumentFolder,
+    ProjectWorkspace,
     Artifact,
 }
 
@@ -68,6 +71,7 @@ pub struct NativePathLeasePayload {
     pub modified_ms: Option<u64>,
     pub device_id: Option<String>,
     pub file_id: Option<String>,
+    pub change_time_ns: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -122,6 +126,7 @@ pub struct NativePathLeaseRequest {
     pub modified_ms: Option<u64>,
     pub device_id: Option<String>,
     pub file_id: Option<String>,
+    pub change_time_ns: Option<String>,
 }
 
 pub fn sign_path_lease(
@@ -146,6 +151,7 @@ pub fn sign_path_lease(
         modified_ms: request.modified_ms,
         device_id: request.device_id,
         file_id: request.file_id,
+        change_time_ns: request.change_time_ns,
     };
     sign_payload(secret, &payload).map(|native_path_lease| NativePathLeaseResponse {
         native_path_lease,
@@ -214,6 +220,7 @@ mod tests {
                 modified_ms: Some(456),
                 device_id: Some("7".to_string()),
                 file_id: Some("8".to_string()),
+                change_time_ns: None,
             },
         )
         .unwrap();
@@ -239,6 +246,7 @@ mod tests {
                 modified_ms: None,
                 device_id: Some("7".to_string()),
                 file_id: Some("8".to_string()),
+                change_time_ns: None,
             },
         )
         .unwrap();

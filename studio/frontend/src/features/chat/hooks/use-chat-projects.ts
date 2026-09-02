@@ -2,14 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { CHAT_PROJECTS_UPDATED_EVENT } from "../api/chat-api";
+import {
+  CHAT_HISTORY_REVISION_KEY,
+  CHAT_PROJECTS_UPDATED_EVENT,
+} from "../api/chat-api";
 import type { ProjectRecord } from "../types";
 import {
+  changeStoredChatProjectFolder,
   createStoredChatProject,
   deleteStoredChatProject,
   isExpectedBackgroundChatStorageError,
   listStoredChatProjects,
   moveStoredChatItemToProject,
+  openStoredChatProjectFolder,
+  disconnectStoredChatProjectFolder,
   updateStoredChatProject,
 } from "../utils/chat-history-storage";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
@@ -106,13 +112,20 @@ export function useChatProjects(): {
       lastProjectsUpdateEvent = event;
       void refresh(true, followUpIfPending);
     };
+    const onCrossTabHistoryUpdated = (event: StorageEvent) => {
+      if (event.key === CHAT_HISTORY_REVISION_KEY) {
+        void refresh(true, true);
+      }
+    };
     // Cached rows render immediately, then one shared request reconciles
     // changes made by another browser tab or API client.
     void refresh(projectsLoaded);
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+    window.addEventListener("storage", onCrossTabHistoryUpdated);
     return () => {
       cancelled = true;
       window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+      window.removeEventListener("storage", onCrossTabHistoryUpdated);
     };
   }, []);
 
@@ -121,6 +134,35 @@ export function useChatProjects(): {
 
 export async function createChatProject(name: string): Promise<ProjectRecord> {
   return createStoredChatProject(name);
+}
+
+export async function openChatProjectFromFolder(
+  nativePathToken: string,
+  name: string,
+): Promise<ProjectRecord> {
+  return openStoredChatProjectFolder(nativePathToken, name);
+}
+
+export async function changeChatProjectWorkspaceFolder(
+  projectId: string,
+  nativePathToken: string,
+  expectedWorkspaceRevision: number,
+): Promise<ProjectRecord> {
+  return changeStoredChatProjectFolder(
+    projectId,
+    nativePathToken,
+    expectedWorkspaceRevision,
+  );
+}
+
+export async function disconnectChatProjectWorkspaceFolder(
+  projectId: string,
+  expectedWorkspaceRevision: number,
+): Promise<ProjectRecord> {
+  return disconnectStoredChatProjectFolder(
+    projectId,
+    expectedWorkspaceRevision,
+  );
 }
 
 export async function renameChatProject(

@@ -1,6 +1,10 @@
 use crate::native_backend_lease::{NativePathKind, NativePathOperation, NativePathType};
 use serde::{Deserialize, Serialize};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -25,6 +29,7 @@ pub struct ClassifiedPath {
     pub modified_ms: Option<u64>,
     pub device_id: String,
     pub file_id: String,
+    pub change_time_ns: String,
 }
 
 pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String> {
@@ -188,6 +193,36 @@ pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, St
     Ok(ClassifiedPath {
         path_kind: NativePathKind::DocumentFolder,
         allowed_operations: vec![NativePathOperation::LinkDocuments],
+        ..classified
+    })
+}
+
+pub fn classify_native_project_folder(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::Directory {
+        return Err("Only folders can be used as project workspaces.".to_string());
+    }
+    reject_project_folder_root(&classified.canonical_path)?;
+    reject_sensitive_project_folder(&classified.canonical_path)?;
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::DocumentFolder,
+        allowed_operations: vec![NativePathOperation::OpenProject],
+        ..classified
+    })
+}
+
+/// Classify a folder selected as a project workspace. This has its own lease
+/// kind and operation so a document-source token can never be replayed here.
+pub fn classify_native_project_workspace(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::Directory {
+        return Err("Only folders can be used as project workspaces.".to_string());
+    }
+    reject_project_folder_root(&classified.canonical_path)?;
+    reject_sensitive_project_folder(&classified.canonical_path)?;
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::ProjectWorkspace,
+        allowed_operations: vec![NativePathOperation::SetProjectWorkspace],
         ..classified
     })
 }
@@ -380,6 +415,7 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
     }
     let (path_type, size_bytes, modified_ms) = refresh_path_fingerprint(&canonical_path)?;
     let (device_id, file_id) = stable_path_identity(&canonical_path)?;
+    let change_time_ns = path_change_time_ns(&canonical_path)?;
     let display_label = sanitize_display_label(
         canonical_path
             .file_name()
@@ -397,7 +433,43 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         modified_ms,
         device_id,
         file_id,
+        change_time_ns,
     })
+}
+
+fn path_change_time_ns(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|e| format!("Path is not available: {e}"))?;
+    #[cfg(unix)]
+    {
+        return Ok(
+            (metadata.ctime() * 1_000_000_000 + i64::from(metadata.ctime_nsec())).to_string(),
+        );
+    }
+    #[cfg(windows)]
+    {
+        return windows_filetime_to_unix_ns(metadata.creation_time())
+            .map(|value| value.to_string())
+            .ok_or_else(|| "Path change time is unavailable.".to_string());
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        return metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|value| value.as_nanos().to_string())
+            .ok_or_else(|| "Path change time is unavailable.".to_string());
+    }
+}
+
+fn windows_filetime_to_unix_ns(filetime: u64) -> Option<u128> {
+    // FILETIME is 100 ns ticks since 1601-01-01. Python's st_ctime_ns and
+    // the signed lease payload use Unix-epoch nanoseconds, so normalize at
+    // the native boundary instead of comparing unlike clocks downstream.
+    const UNIX_EPOCH_IN_FILETIME_TICKS: u64 = 116_444_736_000_000_000;
+    filetime
+        .checked_sub(UNIX_EPOCH_IN_FILETIME_TICKS)
+        .map(|ticks| u128::from(ticks) * 100)
 }
 
 fn ensure_artifact_root(kind: NativeArtifactKind, canonical_path: &Path) -> Result<(), String> {
@@ -451,6 +523,14 @@ fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
 fn reject_document_folder_root(path: &Path) -> Result<(), String> {
     if path.parent().is_none() {
         Err("A filesystem root cannot be linked as a document folder.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn reject_project_folder_root(path: &Path) -> Result<(), String> {
+    if path.parent().is_none() {
+        Err("A filesystem root cannot be used as a project workspace.".to_string())
     } else {
         Ok(())
     }
@@ -551,6 +631,82 @@ pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String
     }
 }
 
+pub(crate) fn reject_sensitive_project_folder(path: &Path) -> Result<(), String> {
+    let has_credential_segment = path.components().any(|component| {
+        matches!(
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .as_str(),
+            ".1password"
+                | ".aws"
+                | ".azure"
+                | ".bitwarden"
+                | ".gcloud"
+                | ".gnupg"
+                | ".kube"
+                | ".password-store"
+                | ".pki"
+                | ".ssh"
+                | "1password"
+                | "bitwarden"
+                | "keychains"
+                | "keyrings"
+        )
+    });
+    if has_credential_segment {
+        return Err("Credential folders cannot be used as project workspaces.".to_string());
+    }
+
+    let mut sensitive_roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        if same_native_path(path, &home) {
+            return Err(
+                "The entire home folder cannot be used as a project workspace.".to_string(),
+            );
+        }
+        sensitive_roots.push(home.join(".unsloth"));
+    }
+
+    #[cfg(unix)]
+    sensitive_roots.extend(
+        [
+            "/boot", "/etc", "/root", "/run", "/usr", "/var/lib", "/var/run",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    #[cfg(target_os = "macos")]
+    sensitive_roots.extend(
+        [
+            "/Library",
+            "/System",
+            "/private/etc",
+            "/private/var/db",
+            "/private/var/root",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    #[cfg(windows)]
+    for variable in ["WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+        if let Some(value) = std::env::var_os(variable) {
+            sensitive_roots.push(PathBuf::from(value));
+        }
+    }
+
+    if sensitive_roots.iter().any(|sensitive| {
+        same_path_or_descendant(path, sensitive)
+            && !(is_linux_removable_media_path(path)
+                && same_native_path(sensitive, Path::new("/run")))
+    }) {
+        Err("System or Unsloth state folders cannot be used as project workspaces.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn is_linux_removable_media_path(path: &Path) -> bool {
     let media_root = Path::new("/run/media");
@@ -565,10 +721,7 @@ fn is_linux_removable_media_path(_path: &Path) -> bool {
 fn same_native_path(left: &Path, right: &Path) -> bool {
     #[cfg(windows)]
     {
-        return left
-            .to_string_lossy()
-            .replace('/', "\\")
-            .eq_ignore_ascii_case(&right.to_string_lossy().replace('/', "\\"));
+        return comparable_native_path(left) == comparable_native_path(right);
     }
     #[cfg(not(windows))]
     {
@@ -576,17 +729,28 @@ fn same_native_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+#[cfg(windows)]
+fn comparable_native_path(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('/', "\\");
+    let lowered = text.to_ascii_lowercase();
+    let stripped = if lowered.starts_with("\\\\?\\unc\\") {
+        format!("\\\\{}", &text[8..])
+    } else {
+        text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()
+    };
+    let trimmed = stripped.trim_end_matches('\\');
+    if trimmed.is_empty() {
+        stripped.to_ascii_lowercase()
+    } else {
+        trimmed.to_ascii_lowercase()
+    }
+}
+
 fn same_path_or_descendant(path: &Path, root: &Path) -> bool {
     #[cfg(windows)]
     {
-        let path = path
-            .to_string_lossy()
-            .replace('/', "\\")
-            .to_ascii_lowercase();
-        let root = root
-            .to_string_lossy()
-            .replace('/', "\\")
-            .to_ascii_lowercase();
+        let path = comparable_native_path(path);
+        let root = comparable_native_path(root);
         return path == root
             || path
                 .strip_prefix(&root)
@@ -806,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn document_folder_is_directory_with_link_only_capability() {
+    fn document_folder_is_directory_with_link_capability() {
         let path = temp_path("documents");
         fs::create_dir(&path).unwrap();
         let classified = classify_native_document_folder(&path).unwrap();
@@ -817,6 +981,47 @@ mod tests {
             vec![NativePathOperation::LinkDocuments]
         );
         let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_folder_is_directory_with_project_capability() {
+        let path = temp_path("project");
+        fs::create_dir(&path).unwrap();
+        let classified = classify_native_project_folder(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::DocumentFolder);
+        assert_eq!(classified.path_type, NativePathType::Directory);
+        assert_eq!(
+            classified.allowed_operations,
+            vec![NativePathOperation::OpenProject]
+        );
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_workspace_has_a_dedicated_lease_kind_and_operation() {
+        let path = temp_path("project-workspace");
+        fs::create_dir(&path).unwrap();
+        let classified = classify_native_project_workspace(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::ProjectWorkspace);
+        assert_eq!(
+            classified.allowed_operations,
+            vec![NativePathOperation::SetProjectWorkspace]
+        );
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn windows_filetime_boundary_is_normalized_to_unix_nanoseconds() {
+        const UNIX_EPOCH_IN_FILETIME_TICKS: u64 = 116_444_736_000_000_000;
+        assert_eq!(
+            windows_filetime_to_unix_ns(UNIX_EPOCH_IN_FILETIME_TICKS),
+            Some(0)
+        );
+        assert_eq!(
+            windows_filetime_to_unix_ns(UNIX_EPOCH_IN_FILETIME_TICKS + 10_000_000),
+            Some(1_000_000_000)
+        );
+        assert_eq!(windows_filetime_to_unix_ns(0), None);
     }
 
     #[test]
@@ -837,6 +1042,24 @@ mod tests {
         assert!(reject_sensitive_document_folder(&home.join("work").join(".local")).is_err());
         assert!(reject_sensitive_document_folder(&home.join("work").join("keyrings")).is_err());
         assert!(reject_sensitive_document_folder(&home.join(".unsloth").join("studio")).is_err());
+    }
+
+    #[test]
+    fn project_folder_policy_allows_coding_locations_but_not_credentials() {
+        let Some(home) = dirs::home_dir() else { return };
+        assert!(reject_sensitive_project_folder(&home.join(".config").join("project")).is_ok());
+        assert!(reject_sensitive_project_folder(&home.join(".local").join("src")).is_ok());
+        assert!(reject_sensitive_project_folder(&home.join("work").join(".ssh")).is_err());
+        assert!(reject_sensitive_project_folder(&home.join(".unsloth").join("studio")).is_err());
+        assert!(reject_sensitive_project_folder(&home).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn project_folder_policy_allows_private_temp_but_not_private_system_state() {
+        assert!(reject_sensitive_project_folder(Path::new("/private/tmp/project")).is_ok());
+        assert!(reject_sensitive_project_folder(Path::new("/private/etc")).is_err());
+        assert!(reject_sensitive_project_folder(Path::new("/private/var/db/project")).is_err());
     }
 
     #[cfg(target_os = "linux")]

@@ -23548,6 +23548,41 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     ``create=False`` resolves the path without materialising it, so a read-only
     request cannot leave a directory behind for every id it is asked about.
     """
+    prefix = "project-"
+    if session_id.startswith(prefix):
+        from storage.studio_db import get_chat_project, get_chat_thread
+        from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
+
+        # User-controlled thread ids may look project-shaped. Tool routing gives
+        # a real thread precedence, and the file routes make the same decision.
+        thread = get_chat_thread(session_id)
+        if thread is None:
+            project_id = session_id[len(prefix) :]
+            project = get_chat_project(project_id) if project_id else None
+            if project is not None and project.get("workspaceKind") == "folder":
+                raise HTTPException(
+                    status_code = status.HTTP_403_FORBIDDEN,
+                    detail = "Existing project folders are available only through project tools.",
+                )
+            if project is not None:
+                # Return the managed path captured by the same row read that
+                # authorized it. A concurrent switch to an existing folder can
+                # no longer make the second resolution expose that folder.
+                managed_root = project.get("managedRootPath") or project.get("rootPath")
+                sandbox_path = project.get("sandboxPath")
+                if not managed_root or not sandbox_path:
+                    raise HTTPException(status_code = 404, detail = "This project has no workspace")
+                managed_root = os.path.realpath(str(managed_root))
+                sandbox_path = os.path.realpath(str(sandbox_path))
+                if sandbox_path != os.path.join(managed_root, "sandbox"):
+                    raise HTTPException(status_code = 403, detail = "Access denied")
+                return sandbox_path
+        # The thread/project decision above is the authorization snapshot. Do
+        # not let the generic resolver read project state again: a folder
+        # project created after an absent lookup, or after this thread is
+        # deleted, must not redirect a public sandbox request into that folder.
+        resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
+        return os.path.realpath(resolver(session_id, resolve_project = False))
     from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
 
     resolver = get_sandbox_workdir if create else resolve_sandbox_workdir

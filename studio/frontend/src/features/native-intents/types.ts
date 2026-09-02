@@ -4,10 +4,18 @@ export type NativePathOperation =
   | "dataset-preview"
   | "dataset-import"
   | "attach"
+  | "open-project"
+  | "set-project-workspace"
   | "reveal"
   | "open";
 
-export type NativePathKind = "model" | "dataset" | "attachment" | "artifact";
+export type NativePathKind =
+  | "model"
+  | "dataset"
+  | "attachment"
+  | "document-folder"
+  | "project-workspace"
+  | "artifact";
 
 export type NativePathSourceKind =
   | "dialog"

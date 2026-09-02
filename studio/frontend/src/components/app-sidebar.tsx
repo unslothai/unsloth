@@ -4635,8 +4635,9 @@ export function AppSidebar() {
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
                 {confirmingDelete?.kind === "project"
-                  ? (confirmingDelete.project.rootPath ??
-                    "The project workspace folder will be removed from disk.")
+                  ? confirmingDelete.project.workspaceKind === "folder"
+                    ? "The existing folder stays on disk. Only Unsloth-managed workspace files can be removed."
+                    : "The Unsloth-managed workspace folder will be removed from disk."
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsFilesDescription")
                     : confirmingDelete?.kind === "chats"

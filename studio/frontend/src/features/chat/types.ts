@@ -20,12 +20,25 @@ export interface ProjectRecord {
   id: string;
   name: string;
   instructions?: string;
-  rootPath?: string | null;
-  sandboxPath?: string | null;
+  workspaceKind?: "managed" | "folder";
+  workspacePath?: string | null;
+  workspaceAvailable?: boolean;
+  workspaceError?: string | null;
+  workspaceRevision?: number;
   archived: boolean;
   createdAt: number;
   updatedAt: number;
 }
+
+export type ProjectCreateRecord = Pick<
+  ProjectRecord,
+  "id" | "name" | "instructions" | "archived" | "createdAt" | "updatedAt"
+>;
+
+export type ProjectPatch = Pick<
+  ProjectRecord,
+  "name" | "instructions" | "archived" | "createdAt" | "updatedAt"
+>;
 
 export interface ThreadRecord {
   id: string;
