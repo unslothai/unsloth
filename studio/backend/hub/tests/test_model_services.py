@@ -1880,7 +1880,7 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
         lambda repo_path, _snapshot = None: {"_hidden_stt": "custom-whisper" in str(repo_path)},
     )
 
-    rows = cache_inventory._scan_cached_models(active_hub_cache = repo_path.parent)
+    rows = cache_inventory._scan_cached_models(active_hub_cache = curated_path.parent)
 
     rows_by_repo = {row["repo_id"]: row for row in rows}
     assert set(rows_by_repo) == {"unsloth/whisper-tiny", "Org/custom-whisper"}
