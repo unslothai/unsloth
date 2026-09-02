@@ -162,6 +162,44 @@ def _portable_master_root() -> Optional[Path]:
     return None
 
 
+_PORTABLE_CONF_EXPORT = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def _portable_root_env(master: Path) -> dict[str, str]:
+    """Cache and tool roots a portable install pins, keyed by variable name.
+
+    Derived from the root, then overlaid with <root>/share/studio.conf when the
+    installer wrote one, so this list cannot drift from install.sh.
+    """
+    derived = {
+        "UNSLOTH_PORTABLE": "1",
+        "UV_CACHE_DIR": str(master / "cache" / "uv"),
+        "UV_PYTHON_INSTALL_DIR": str(master / "cache" / "uv-python"),
+        "UV_TOOL_DIR": str(master / "cache" / "uv-tools"),
+        "UV_TOOL_BIN_DIR": str(master / "bin"),
+        "UV_PYTHON_BIN_DIR": str(master / "bin"),
+        "UV_INSTALL_DIR": str(master / "bin"),
+        "UV_NO_MODIFY_PATH": "1",
+        "NPM_CONFIG_CACHE": str(master / "cache" / "npm"),
+        "CUDA_CACHE_PATH": str(master / "cache" / "cuda"),
+    }
+    try:
+        conf = (master / "share" / "studio.conf").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return derived
+    for line in conf.splitlines():
+        matched = _PORTABLE_CONF_EXPORT.match(line)
+        if matched is None or matched.group(1) not in derived:
+            continue
+        try:
+            parts = shlex.split(matched.group(2))
+        except ValueError:
+            continue
+        if len(parts) == 1:
+            derived[matched.group(1)] = parts[0]
+    return derived
+
+
 def _ensure_studio_env_exported() -> None:
     """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH only for real
     custom roots so subprocesses inherit the right install. Called from each
@@ -188,6 +226,11 @@ def _ensure_studio_env_exported() -> None:
         _llama_dir = _master / "llama.cpp"
         if not os.environ.get("UNSLOTH_HOME"):
             os.environ["UNSLOTH_HOME"] = str(_master)
+        # Without these, an activated-venv `unsloth studio update` hands setup.sh a
+        # bare environment and uv/npm repopulate ~/.cache and ~/.local/bin.
+        for _name, _value in _portable_root_env(_master).items():
+            if not os.environ.get(_name):
+                os.environ[_name] = _value
     elif _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:

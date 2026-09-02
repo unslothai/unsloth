@@ -23,6 +23,39 @@ if (-not $envMatch.Success) { exit 1 }
 Check "--portable rejected in the flag parser" ($src -match '"--portable"\s*\{\s*return \(Exit-InstallFailure \(Deny-PortableMode')
 Check "--root rejected in the flag parser"     ($src -match '"--root"\s*\{\s*return \(Exit-InstallFailure \(Deny-PortableMode')
 
+# Run the real parse loop. `switch` matches exactly, so --root=DIR (one argument,
+# and the form install.sh accepts) misses the "--root" arm and used to install normally.
+$loopMatch = [regex]::Match($src, '(?ms)^    for \(\$i = 0; \$i -lt \$argList\.Count; \$i\+\+\) \{.*?\n    \}')
+Check "flag parse loop found in install.ps1" $loopMatch.Success
+if (-not $loopMatch.Success) { exit 1 }
+
+$parseHarness = @'
+function Write-StudioLine { param([string]$Message, $ForegroundColor) }
+function Exit-InstallFailure { param([string]$Message) return "DENIED: $Message" }
+function Deny-PortableMode { param([string]$Which) return "$Which is not supported on Windows yet." }
+function Invoke-ParseFlags {
+    $argList = $args
+    $script:UnslothVerbose = $false
+    $StudioLocalInstall = $false
+    $PackageName = "unsloth"
+    $TauriMode = $false
+    $SkipTorch = $false
+    $ShortcutsOnly = $false
+    $WithLlamaCppDir = ""
+'@ + "`n" + $loopMatch.Value + @'
+
+    return "ACCEPTED"
+}
+foreach ($case in @('--root=C:\portable', '--root', '--portable', '--local')) {
+    Write-Output ("{0} => {1}" -f $case, (Invoke-ParseFlags $case))
+}
+'@
+$parsed = (pwsh -NoProfile -Command $parseHarness 2>&1 | Out-String)
+Check "--root=DIR is rejected"  ($parsed -match [regex]::Escape('--root=C:\portable => DENIED: --root is not supported')) $parsed
+Check "--root is rejected"      ($parsed -match '--root => DENIED: --root is not supported') $parsed
+Check "--portable is rejected"  ($parsed -match '--portable => DENIED: --portable is not supported') $parsed
+Check "--local still installs"  ($parsed -match '--local => ACCEPTED') $parsed
+
 $harness = @"
 function Write-StudioLine { param([string]`$Message, `$ForegroundColor) Write-Host `$Message }
 $($denyMatch.Value -replace '^    ', '' -replace "`n    ", "`n")

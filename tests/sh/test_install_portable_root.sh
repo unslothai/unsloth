@@ -156,6 +156,25 @@ reject "--root with no value"        --local --root
 reject "--root with an empty value"  --local --root ""
 reject "--root= with nothing after"  --local --root=
 reject "--root followed by a flag"   --root --local
+reject "--root with a blank value"   --local --root "   "
+reject "--root= with a blank value"  --local "--root=   "
+
+# A blank UNSLOTH_HOME used to pass the non-empty check, enable portable mode, then
+# resolve to "" and export UV_INSTALL_DIR=/bin, UV_CACHE_DIR=/cache/uv.
+H="$(new_home)"
+out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" UNSLOTH_HOME="   " \
+    bash -c "$SNIP" _)"
+check "blank UNSLOTH_HOME is not portable"   "$H/.unsloth/studio" "$(field "$out" 2)"
+check "blank UNSLOTH_HOME sets no uv cache"  ""                   "$(field "$out" 5)"
+check "blank UNSLOTH_HOME sets no uv bin"    ""                   "$(field "$out" 8)"
+
+# Untrimmed, the blank won the precedence check and the real root was ignored.
+H="$(new_home)"
+mkdir -p "$H/aliased"
+A="$(CDPATH= cd -P -- "$H/aliased" && pwd -P)"
+out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+    UNSLOTH_STUDIO_HOME="  " STUDIO_HOME="$A" bash -c "$SNIP" _)"
+check "blank UNSLOTH_STUDIO_HOME falls back to STUDIO_HOME" "$A" "$(field "$out" 2)"
 
 H="$(new_home)"
 mkdir -p "$H/custom"
@@ -229,6 +248,60 @@ case "$done_block" in
         printf '  PASS  %s\n' "closing message names UNSLOTH_HOME for the uninstaller" ;;
     *) printf '  FAIL  %s\n' "closing message names UNSLOTH_HOME for the uninstaller"; fails=$((fails+1)) ;;
 esac
+
+# setup.sh clears the desktop app's WebView caches under $HOME. Portable mode
+# prints "the desktop app and shell PATH were left untouched", so it must not.
+SETUP="$HERE/../../studio/setup.sh"
+blockW="$(awk '
+    /^_clear_webview_caches\(\) \{$/ {grab = 1}
+    grab {print}
+    grab && /^\}$/ {exit}
+' "$SETUP")"
+blockP="$(awk '
+    /^_setup_portable_mode\(\) \{$/ {grab = 1}
+    grab {print}
+    grab && /^\}$/ {exit}
+' "$SETUP")"
+guard="$(awk '
+    /^if \[ -z "\$STAGE_ROOT" \] && \[ -x "\$VENV_DIR\/bin\/python" \]/ {grab = 1}
+    grab {print}
+    grab && /^fi$/ {exit}
+' "$SETUP")"
+case "$blockW" in *"WebKitCache"*) : ;; *) echo "FAIL: blockW extraction broke"; exit 1 ;; esac
+case "$blockP" in *"UNSLOTH_PORTABLE"*) : ;; *) echo "FAIL: blockP extraction broke"; exit 1 ;; esac
+case "$guard" in *"_clear_webview_caches"*) : ;; *) echo "FAIL: guard extraction broke"; exit 1 ;; esac
+
+WVSNIP='substep() { :; }
+'"$blockW"'
+'"$blockP"'
+STAGE_ROOT=""
+STUDIO_HOME="$HOME/.unsloth/studio"
+VENV_DIR="$STUDIO_HOME/unsloth_studio"
+'"$guard"'
+[ -e "$HOME/.local/share/ai.unsloth.studio/WebKitCache" ] && printf kept || printf cleared'
+
+webview_case() { # label expected mode
+    _label="$1"; _expected="$2"; _mode="${3:-none}"
+    _h="$(new_home)"
+    mkdir -p "$_h/.unsloth/studio/unsloth_studio/bin" \
+        "$_h/.local/share/ai.unsloth.studio/WebKitCache" "$_h/portable"
+    : > "$_h/.unsloth/studio/unsloth_studio/bin/python"
+    chmod +x "$_h/.unsloth/studio/unsloth_studio/bin/python"
+    : > "$_h/.local/share/ai.unsloth.studio/.webview-cache-cleared"
+    printf '%s\n' "$_h/portable" > "$_h/portable/.unsloth-portable-root"
+    case "$_mode" in
+        env)    _got="$(env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" \
+                    UNSLOTH_PORTABLE=1 bash -c "$WVSNIP" _)" ;;
+        marker) _got="$(env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" \
+                    UNSLOTH_HOME="$_h/portable" bash -c "$WVSNIP" _)" ;;
+        *)      _got="$(env -i HOME="$_h" PATH="$PATH" USER="${USER:-tester}" \
+                    bash -c "$WVSNIP" _)" ;;
+    esac
+    check "$_label" "$_expected" "$_got"
+}
+webview_case "normal install still clears the WebView cache"  cleared none
+webview_case "portable install leaves the WebView cache"      kept    env
+webview_case "portable marker alone leaves the WebView cache" kept    marker
 
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "All checks passed"

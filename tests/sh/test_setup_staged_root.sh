@@ -63,7 +63,7 @@ check "setup.ps1 still removes it on a live update" \
 
 # The WebView cache belongs to the app that is still running and rendering from it.
 check "setup.sh skips the webview cache clear while staging" \
-    "$(has "$SETUP_SH" 'if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ]; then')"
+    "$(has "$SETUP_SH" 'if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ] && ! _setup_portable_mode; then')"
 check "setup.ps1 skips the webview cache clear while staging" \
     "$(has "$SETUP_PS1" 'if (-not $StageRoot -and (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf)) {')"
 
