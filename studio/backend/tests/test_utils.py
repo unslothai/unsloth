@@ -10,6 +10,7 @@ is imported at top level; tests needing torch/mlx internals skip when unavailabl
 import platform
 import sys
 import types
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -235,7 +236,8 @@ class TestGetGpuMemoryInfo:
         assert 0 <= result["utilization_pct"] <= 100
         assert "device_name" in result
 
-    def _mlx_memory_info(
+    @contextmanager
+    def _mlx_machine(
         self,
         *,
         available_gb,
@@ -265,6 +267,10 @@ class TestGetGpuMemoryInfo:
                 return_value = {"vram_used_bytes": int(used_gb * (1024**3))},
             ),
         ):
+            yield
+
+    def _mlx_memory_info(self, **machine):
+        with self._mlx_machine(**machine):
             return get_gpu_memory_info()
 
     def test_mlx_free_is_what_a_new_allocation_can_get(self):
@@ -283,6 +289,21 @@ class TestGetGpuMemoryInfo:
         result = self._mlx_memory_info(available_gb = 6, recommended_gb = 0)
 
         assert abs(result["free_gb"] - 6.0) < 0.01
+
+    def test_mlx_utilization_device_publishes_the_same_free_as_the_summary(self):
+        """The Resources tab reads the per-device figure, and /api/system falls
+        back to total - used for any device that does not report free. On
+        unified memory that fallback is the 14.8 GB overstatement the tests
+        above reject, so this probe has to carry free itself."""
+        from utils.hardware.hardware import get_visible_gpu_utilization
+
+        with self._mlx_machine(available_gb = 6, recommended_gb = 11):
+            summary_free = get_gpu_memory_info()["free_gb"]
+            device = get_visible_gpu_utilization()["devices"][0]
+
+        assert abs(device["vram_free_gb"] - summary_free) < 0.01
+        assert abs(device["vram_free_gb"] - 6.0) < 0.01
+        assert device["vram_total_gb"] - device["vram_used_gb"] > 14.0
 
     # --- CUDA-specific mocked test ---
 

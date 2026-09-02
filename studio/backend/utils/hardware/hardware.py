@@ -2401,6 +2401,11 @@ def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
 
     Total RAM minus GPU-only usage counts host RAM as free, which the
     training-method policy then reads as room it does not have.
+
+    A floor rather than a capacity: macOS reclaims compressed and file-backed
+    pages, so MLX can still allocate past what psutil calls available. Reading
+    low costs a QLoRA suggestion where LoRA would have fit; reading high costs
+    an OOM partway through a run.
     """
     free = max(0, int(available_bytes or 0))
     try:
@@ -5119,6 +5124,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "temperature_c": None,
                     "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
                     "vram_total_gb": round(mem.get("total_gb", 0), 2),
+                    # Unified memory: free is not total - used, so publish it
+                    # rather than let the caller subtract.
+                    "vram_free_gb": round(mem.get("free_gb", 0), 2),
                     "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
                     "power_draw_w": None,
                     "power_limit_w": None,
