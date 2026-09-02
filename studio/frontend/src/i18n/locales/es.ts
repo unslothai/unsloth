@@ -54,6 +54,13 @@ export const es = {
     shutdown: "Apagar",
   },
   shell: {
+    find: {
+      label: "Buscar en la página",
+      previous: "Coincidencia anterior",
+      next: "Coincidencia siguiente",
+      close: "Cerrar búsqueda",
+      truncated: "Esta página es demasiado larga para buscarla por completo.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -226,6 +233,10 @@ export const es = {
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
       actions: {
+        findInPage: {
+          label: "Buscar en la página",
+          description: "Buscar el texto de esta página",
+        },
         openSettings: {
           label: "Abrir ajustes",
           description: "Abrir el diálogo de ajustes",
@@ -699,7 +710,7 @@ export const es = {
         sectionTitle: "Cambio automático de modelo (API de OpenAI)",
         enable: "Cambiar de modelo según la solicitud",
         enableDescription:
-          "Si una solicitud de la API especifica un GGUF que ya está descargado, carga ese modelo antes de responder. Desactivado por defecto.",
+          "Si una solicitud de la API especifica un modelo que ya está descargado, carga ese modelo antes de responder. Desactivado por defecto.",
         idleUnload: "Liberar automáticamente por inactividad",
         idleUnloadDescription:
           "Libera la VRAM después de este número de segundos de inactividad. El valor 0 mantiene el modelo cargado; el mínimo es 60.",
@@ -811,7 +822,7 @@ export const es = {
         embeddingModel: "Modelo de embeddings",
         embeddingModelDescription:
           "Modelo de Hugging Face o ruta local usada para indexar y buscar tus documentos. El valor predeterminado es {defaultModel}.",
-        searchPlaceholder: "Buscar modelos de embedding",
+        searchPlaceholder: "Buscar cualquier modelo en HF",
         reindexWarning:
           "Solo afecta a los documentos recién indexados. Vuelve a subir los existentes tras cambiar el modelo.",
         emptyError:
@@ -821,7 +832,24 @@ export const es = {
         saveError: "No se pudo guardar el modelo de embeddings.",
         saved: "Modelo de embeddings guardado.",
         saveAnyway: "Guardar de todos modos",
-        resetAction: "Restablecer al valor predeterminado",
+        recommended: "Recomendado",
+        onDevice: "En el dispositivo",
+        searching: "Buscando en Hugging Face…",
+        checking: "Comprobando…",
+        noResults: "No se encontraron modelos de embedding",
+        download: "Descargar",
+        unload: "Descargar de memoria",
+        unloadFailed: "No se pudo descargar el modelo de embedding",
+        downloadingStatus: "Descargando…",
+        notDownloaded: "No descargado",
+        notDownloadedSized: "No descargado · {size}",
+        loaded: "Cargado",
+        downloading: "Descargando {model}",
+        downloadingDescription:
+          "El progreso está en el panel de descargas. La indexación lo usará cuando termine.",
+        downloadFailed: "No se pudo iniciar la descarga",
+        downloadConflict: "Reanuda esta descarga desde el Hub",
+        downloadBusy: "La descarga ya está en curso",
       },
       storage: {
         sectionTitle: "Almacenamiento",
@@ -833,6 +861,16 @@ export const es = {
         copied: "Ruta copiada",
         openError: "No se pudo abrir la carpeta",
         copyError: "No se pudo copiar la ruta",
+      },
+      repairInstall: {
+        label: "Reparar la instalación",
+        description:
+          "Vuelve a ejecutar el instalador sobre el entorno gestionado. Útil si no se detecta la GPU o si la aplicación no arranca.",
+        action: "Reparar instalación",
+        confirmTitle: "¿Reparar esta instalación?",
+        confirmDescription:
+          "Detiene el servidor y vuelve a ejecutar el instalador, que reinstala PyTorch para la GPU de este equipo. Se conservan las conversaciones y los ajustes. Puede tardar varios minutos.",
+        confirmAction: "Reparar ahora",
       },
       resetPreferences: {
         sectionTitle: "Zona de peligro",
@@ -1091,6 +1129,8 @@ export const es = {
         currentLoad: "Carga actual",
         free: "Libre: {value}",
         noGpu: "No hay GPU visible",
+        gpuUnusable: "GPU no utilizable",
+        gpuUnusableDetail: "Detectada, pero PyTorch no puede usarla",
       },
       gpu: {
         title: "Dispositivos GPU",
@@ -1100,6 +1140,12 @@ export const es = {
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
           "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+        noUsableGpu: "Ninguna GPU de esta máquina se puede usar con PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch es una compilación solo para CPU ({version}), por lo que las GPU de abajo no se pueden usar. Repare la instalación para restaurar la compatibilidad con GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) no puede inicializar las GPU de abajo, por lo que no se pueden usar. Revise el controlador de la GPU o repare la instalación.",
+        unusableDevice: "no utilizable",
         unknownDevice: "GPU desconocida",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1213,6 +1259,7 @@ export const es = {
         processMemory: "Memoria del proceso",
         notInstalled: "No instalado",
         unknown: "Desconocido",
+        vramWithShared: "{vram} de VRAM + {shared} de memoria compartida",
       },
     },
     agents: {
@@ -1220,7 +1267,7 @@ export const es = {
       description:
         "Conecta agentes de programación como Claude Code y Codex a un modelo local con unsloth start.",
       intro:
-        "conecta Claude Code, Codex, Hermes, OpenClaw, OpenCode y otros agentes a un modelo servido localmente por Unsloth, totalmente sin conexión. Ejecuta un servidor compatible con OpenAI y nunca modifica los archivos de configuración de tu agente.",
+        "conecta Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode y otros agentes a un modelo servido localmente por Unsloth, totalmente sin conexión. Ejecuta un servidor compatible con OpenAI y nunca modifica los archivos de configuración de tu agente.",
       readDocs: "Leer la documentación",
       copy: "Copiar",
       copied: "Copiado",
@@ -1242,6 +1289,15 @@ export const es = {
       docs: "Documentación",
       agentDocs: "Abrir la documentación de configuración de {agent}",
       copyGeneratedCommand: "Copiar el comando generado",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo ya cargado en Unsloth.",
       subagent: {
@@ -1332,6 +1388,9 @@ export const es = {
         showAllQuantizations: "Mostrar todas las cuantizaciones",
         showAllQuantizationsDescription:
           "Activado: muestra todas las cuantizaciones de «On Device», incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
+        showMemoryBar: "Mostrar barra de uso de VRAM",
+        showMemoryBarDescription:
+          "Muestra debajo de la fila de cada modelo descargado su uso estimado de VRAM: pesos, caché KV con la longitud de contexto con la que se cargará y cualquier reserva de borrador especulativo.",
       },
       menu: {
         title: "Menú del chat",
@@ -1358,10 +1417,40 @@ export const es = {
       rememberParamsPerModel: "Recordar los ajustes por modelo",
       rememberParamsPerModelDescription:
         "Al cambiar de modelo se restauran la temperatura, el prompt y los demás ajustes que usaste por última vez con ese modelo. Desactivado, se mantiene un único conjunto de ajustes para todos los modelos.",
+      autoCompact: "Compactar automáticamente chats largos",
+      autoCompactDescription:
+        "Cuando un chat GGUF local alcance la longitud de contexto configurada, descarta los turnos antiguos en vez de devolver un error. Esto no depende de la VRAM libre.",
+      compactionStyle: "Cuando se llena el contexto",
+      compactionStyleDescription:
+        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
+      compactionStyleInherit: "Usar valor del servidor",
+      compactionStyleCheckpoint: "Restablecer conversación",
+      compactionStyleRollingDefault:
+        "Descartar turnos antiguos (~25% de espacio extra)",
+      compactionStyleRolling10:
+        "Descartar turnos antiguos (~10% de espacio extra)",
+      compactionStyleRolling5:
+        "Descartar turnos antiguos (~5% de espacio extra)",
+      compactionStyleRollingNone:
+        "Descartar turnos antiguos (sin recorte adicional)",
+      autoCompactKeywords:
+        "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen compaction rolling headroom",
       thinking: {
         collapseByDefault: "Contraer el razonamiento de forma predeterminada",
         collapseByDefaultDescription:
           "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
+      },
+      currentDate: {
+        label: "Indicar al modelo la fecha de hoy",
+        description:
+          "Añade la fecha actual al prompt para que la búsqueda web y Deep Research busquen fuentes recientes en lugar de asumir la fecha de corte del entrenamiento del modelo.",
+        loadError: "No se pudieron cargar los ajustes de fecha actual",
+        saveError: "No se pudieron actualizar los ajustes de fecha actual",
+      },
+      tools: {
+        collapseByDefault: "Contraer la actividad de herramientas por defecto",
+        collapseByDefaultDescription:
+          "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
       },
       webSearch: {
         title: "Búsqueda web",
@@ -1380,6 +1469,11 @@ export const es = {
         blockedBanner: "Se bloqueó {count} recurso externo de {hosts}.",
         blockedBannerPlural: "Se bloquearon {count} recursos externos de {hosts}.",
         blockedBannerAction: "Permitir en este Canvas",
+        blockedTitle: "El acceso a la red del Canvas está desactivado",
+        blockedHint:
+          "Activa “{setting}” en Ajustes → Chat para que los Canvas carguen recursos externos, o permítelo solo en este Canvas.",
+        blockedSettingsAction: "Abrir ajustes",
+        blockedDismiss: "Descartar",
       },
       data: "Datos",
       exportHistory: "Exportar historial de chat",
@@ -1455,6 +1549,8 @@ export const es = {
       archivedImagesDescription: "Consulta y gestiona las imágenes que has archivado.",
       archivedVideos: "Vídeos archivados",
       archivedVideosDescription: "Consulta y gestiona los vídeos que has archivado.",
+      archivedAudio: "Audio archivado",
+      archivedAudioDescription: "Consulta y gestiona los clips de audio que has archivado.",
       manageAction: "Gestionar",
       manageChats: "Gestionar chats",
       manageChatsDescription:
@@ -1643,7 +1739,7 @@ export const es = {
         desktopAvailable:
           "La versión {version} de la app de escritorio está disponible",
         desktopAvailableDescription:
-          "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
+          "Actualiza ahora para prepararla en segundo plano. Puedes seguir trabajando y reiniciar cuando esté lista.",
         desktopExternalServer:
           "Ejecuta `unsloth studio update` desde el terminal que inició el servidor.",
         desktopManualInstall:
@@ -1654,11 +1750,20 @@ export const es = {
         desktopCurrent: "La app de escritorio está actualizada",
         desktopCurrentDescription:
           "Unsloth seguirá buscando actualizaciones automáticamente.",
+        desktopPreparingDescription:
+          "La actualización se está preparando en segundo plano. Puedes seguir trabajando.",
+        desktopReadyToRestartDescription:
+          "Todo está listo. Reinicia para terminar de instalar la actualización.",
+        desktopReadyToInstallDescription:
+          "La actualización de la aplicación se descargó. Completa la actualización del backend para instalarla.",
         checkForUpdates: "Buscar actualizaciones",
         checkAgain: "Buscar de nuevo",
         retryCheck: "Intentarlo de nuevo",
         checking: "Buscando...",
+        preparing: "Preparando...",
         updateNow: "Actualizar ahora",
+        restartToUpdate: "Reiniciar para actualizar",
+        finishUpdate: "Finalizar actualización",
         openReleasePage: "Abrir la página de versiones",
         unknownInstall:
           "No se pudo detectar cómo se instaló Unsloth. Para instalaciones con el instalador o desde PyPI, usa los comandos anteriores.",
@@ -2437,5 +2542,14 @@ export const es = {
       raft: "RAFT",
       classification: "Clasificación",
     },
+  },
+  modelMemory: {
+    readout:
+      "Pesos {model} + contexto {context} = {total} de {budget} de VRAM utilizable",
+    readoutWithSpec:
+      "Pesos {model} + KV {kv} + borrador MTP {spec} = {total} de {budget} de VRAM utilizable",
+    kvRate: "KV reservado, ~{rate}/token",
+    oomLikely: "Con la configuración actual es probable un error de memoria",
+    tooLarge: "Más grande que la VRAM, se descargará a la CPU. Una cuantización más pequeña es más rápida",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

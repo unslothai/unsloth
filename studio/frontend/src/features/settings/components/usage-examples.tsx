@@ -13,7 +13,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  getInferenceStatus,
+  isExternalModelId,
+  useChatRuntimeStore,
+} from "@/features/chat";
+import { publicModelId } from "@/features/hub";
+import { isServedByLlamaCpp } from "@/features/model-picker";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -37,10 +43,19 @@ import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
+  agentRunsOnActiveModel,
   buildAgentCommand,
+  compatibilityFromSources,
+  fallbackAgent,
   isLoopbackHost,
   normalizeHost,
+  pickCompatibleAgent,
+  psSingle,
+  sameBaseModelId,
+  shSingle,
+  statusGgufVerdict,
 } from "./agent-command";
+import { keylessBaseEligible } from "./keyless-example-eligibility";
 
 type ExampleType =
   | "curl"
@@ -119,12 +134,16 @@ const DOC_LINKS = [
     label: "Hermes Agent",
     href: "https://unsloth.ai/docs/integrations/hermes-agent",
   },
+  {
+    label: "DeepSeek Harness",
+    href: "https://github.com/deepseek-ai/deepseek-harness",
+  },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors
 // CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
 // (see ../api/coding-agents.ts).
-const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes"];
+const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes", "dsh"];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
@@ -135,12 +154,10 @@ const AGENT_LABELS: Record<string, string> = {
   openclaw: "OpenClaw",
   opencode: "OpenCode",
   hermes: "Hermes",
+  dsh: "DeepSeek Harness",
 };
 
 const j = (s: string): string => JSON.stringify(s);
-// Inner escaping for a single-quoted argument (POSIX '\'' , PowerShell '').
-export const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
-export const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
 function bodyExtraLines(variant: Variant, indent: string): string[] {
@@ -381,14 +398,6 @@ function looksLikePath(id: string): boolean {
   );
 }
 
-// Same model, ignoring any ":quant" a caller pinned.
-function sameBaseModelId(a: string, b: string): boolean {
-  const base = (id: string) => id.trim().toLowerCase().split(":")[0];
-  return (
-    a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b)
-  );
-}
-
 // The model the examples name: always an id /v1 resolves against, null when there is none.
 function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -497,46 +506,6 @@ function canUseLocalAgentDetection(base: string): boolean {
   }
 }
 
-function isPrivateLanHost(hostname: string): boolean {
-  const host = normalizeHost(hostname).toLowerCase();
-  if (host.startsWith("::ffff:")) {
-    return isPrivateLanHost(host.slice("::ffff:".length));
-  }
-  const ipv4 = host.split(".").map(Number);
-  if (
-    ipv4.length === 4 &&
-    ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
-  ) {
-    return (
-      ipv4[0] === 10 ||
-      (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31) ||
-      (ipv4[0] === 192 && ipv4[1] === 168) ||
-      (ipv4[0] === 169 && ipv4[1] === 254)
-    );
-  }
-  return /^f[cd][0-9a-f]*:/i.test(host) || /^fe[89ab][0-9a-f]*:/i.test(host);
-}
-
-function keylessBaseEligible(
-  base: string,
-  scope: KeylessApiAccessScope,
-  exposure: KeylessApiAccessExposure | null,
-): boolean {
-  if (scope === "off" || exposure === "colab" || exposure === "public_url") {
-    return false;
-  }
-  try {
-    const host = normalizeHost(new URL(base).hostname);
-    if (isLoopbackHost(host)) return true;
-    return (
-      scope === "inference" &&
-      (isPrivateLanHost(host) || exposure === "private_lan")
-    );
-  } catch {
-    return false;
-  }
-}
-
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
   typeof unslothLightTheme,
   typeof unslothDarkTheme,
@@ -628,11 +597,109 @@ export function UsageExamples({
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
   const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
+  // isGguf at the moment of a hand-made pick, null if there has been none this session.
+  // A manual pick is kept only until the model's GGUF-ness changes under it.
+  const clickedUnderGgufRef = useRef<boolean | null>(null);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
   const localAgentDetection = canUseLocalAgentDetection(base);
+  // isServedByLlamaCpp owns which store fields count; a context length is not among them,
+  // since MLX reports one too.
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  // null when these fields do not describe the model the snippet names: before status
+  // lands they all read like a non-GGUF model, and under an external selection
+  // use-chat-model-runtime stops updating them while the snippet still follows /v1/models.
+  const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const storeIsGguf: boolean | null =
+    !activeCheckpoint || isExternalModelId(activeCheckpoint)
+      ? null
+      : isServedByLlamaCpp({
+          loadedIsGguf,
+          activeGgufVariant,
+          activeNativePathToken,
+          checkpoint: activeCheckpoint,
+        });
+
+  // Only the chat and hub pages mount useChatModelRuntime, and local checkpoints are not
+  // persisted, so off those routes the store never answers and the server has to. Tags the
+  // answer below, so a switch made here invalidates it. JSON because each part can be a
+  // path or a repo id, leaving no separator safe to assume absent.
+  const storeModelKey = JSON.stringify([
+    activeCheckpoint,
+    activeGgufVariant,
+    activeNativePathToken,
+  ]);
+  // Above the derivation below, which checks the verdict against the model named here.
+  const keylessBase =
+    !(useTunnel && cloudflareUrl) &&
+    keylessBaseEligible(base, keylessScope, keylessExposure);
+  const model = useExampleModelName(keylessBase && !apiKey);
+
+  const [statusAnswer, setStatusAnswer] = useState<{
+    key: string;
+    resident: string | null;
+    isGguf: boolean | null;
+  } | null>(null);
+  // useChatModelRuntime re-reads status on mount, on model-list changes and on focus,
+  // never on a timer, so only this poll notices a swap made while the tab stays focused.
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    const update = () => {
+      void getInferenceStatus()
+        .then((status) => {
+          if (cancelled) return false;
+          // Two silences, both unknown, as the CLI gate reads them: a server that does
+          // not report the field, and is_gguf's False default with no model named.
+          const resident =
+            status.active_model ?? status.model_identifier ?? null;
+          const answer = statusGgufVerdict(resident, status.is_gguf);
+          setStatusAnswer({ key: storeModelKey, resident, isGguf: answer });
+          return answer !== null;
+        })
+        .catch(() => {
+          // Keep the last answer: a failed probe is no evidence about the model.
+          return false;
+        })
+        .then((resolved) => {
+          if (cancelled) return;
+          timeoutId = window.setTimeout(
+            update,
+            resolved ? CATALOG_IDLE_MS : CATALOG_RETRY_MS,
+          );
+        });
+    };
+
+    update();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [storeModelKey]);
+
+  // status reports active_model_name raw while /v1/models publishes public_model_id(...),
+  // so collapse it the same way or a path-loaded model never matches and the verdict is
+  // dropped for good. A stale key means the switch was made here, and the store is fresher.
+  const isGguf: boolean | null = compatibilityFromSources(
+    storeIsGguf,
+    statusAnswer !== null && statusAnswer.key === storeModelKey
+      ? {
+          isGguf: statusAnswer.isGguf,
+          resident:
+            statusAnswer.resident === null
+              ? null
+              : publicModelId(statusAnswer.resident),
+        }
+      : null,
+    model,
+  );
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -652,6 +719,7 @@ export function UsageExamples({
       // longer targets a loopback base -- don't leave it selected, but
       // never touch a choice the user made by hand.
       if (!agentPickedByUserRef.current) {
+        // The effect below corrects this; isGguf read here would be a stale closure.
         setAgent(DEFAULT_AGENT);
       }
       return;
@@ -675,74 +743,56 @@ export function UsageExamples({
     };
   }, [localAgentDetection]);
 
-  // a restored agent this build no longer offers cannot build a command.
+  // Drop a restored preference this build no longer offers, or that cannot run the model.
   useEffect(() => {
     if (!agentPickedByUserRef.current) return;
+    if (isGguf === null) return;
+    if (clickedUnderGgufRef.current === isGguf) return;
     if (localAgentDetection && !agentsLoaded) return;
-    if (availableAgents.includes(agent)) return;
+    if (
+      availableAgents.includes(agent) &&
+      agentRunsOnActiveModel(agent, isGguf)
+    ) {
+      return;
+    }
+    const reset = fallbackAgent(isGguf, availableAgents);
+    if (reset === null) return; // nothing offered runs; moving would not help
     agentPickedByUserRef.current = false;
     setStoredAgent(null);
-    setAgent(DEFAULT_AGENT);
+    setAgent(reset);
   }, [
     agent,
     agentsLoaded,
     availableAgents,
+    isGguf,
     localAgentDetection,
     setStoredAgent,
   ]);
 
-  // Single source of truth for the auto-picked agent, re-derived whenever
-  // the detected list or the loaded model's GGUF-ness changes -- in either
-  // direction. `codex` needs a GGUF model (unsloth_cli's
-  // _require_gguf_for_codex exits otherwise), so it's only preferred once
-  // the loaded model actually qualifies; loading a GGUF model *after* a
-  // non-GGUF-gated fallback picked something else re-steers back to codex
-  // just as loading a non-GGUF model steers away from it. Never overrides a
-  // choice the user made by hand.
-  // activeGgufVariant alone only covers an HF-repo GGUF pick (a specific
-  // quant variant string) -- a direct local .gguf file (custom folder /
-  // LM Studio / drag-drop) is just as much a GGUF the codex preflight would
-  // accept, but never has a "variant" to report, and would otherwise read as
-  // non-GGUF here. activeNativePathToken covers the drag-drop/picked-file
-  // case; ggufContextLength is only ever populated when the backend's
-  // /api/inference/status last reported is_gguf: true for the active model
-  // (see applyActiveModelStatusToStore), so together these three cover every
-  // path a model can be GGUF through, matching the same is_gguf-or-equivalent
-  // check hasGgufSource applies to a staged pick.
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeNativePathToken = useChatRuntimeStore(
-    (s) => s.activeNativePathToken,
-  );
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  // The guard is "detection has not answered", not "the list is empty": empty is a valid
+  // answer, and acting on an unresolved list flips the command between paints.
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
-    if (detectedAgents.length === 0) return;
-    const isGguf =
-      activeGgufVariant != null ||
-      activeNativePathToken != null ||
-      ggufContextLength != null;
-    const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
-    if (preferred) {
-      setAgent(preferred);
-    } else if (agent === "codex" && !isGguf) {
-      // codex was auto-picked while a GGUF model was active and it's the
-      // only detected agent; now that the model isn't GGUF anymore, nothing
-      // detected is actually runnable, so fall back to the default instead
-      // of leaving a codex command unsloth_cli will reject.
-      setAgent(DEFAULT_AGENT);
+    if (isGguf === null) return;
+    if (localAgentDetection && !agentsLoaded) return;
+    const next = pickCompatibleAgent(
+      detectedAgents,
+      agent,
+      isGguf,
+      availableAgents,
+    );
+    if (next !== null) {
+      setAgent(next);
     }
   }, [
     agent,
+    agentsLoaded,
+    availableAgents,
     detectedAgents,
-    activeGgufVariant,
-    activeNativePathToken,
-    ggufContextLength,
+    isGguf,
+    localAgentDetection,
   ]);
 
-  const keylessBase =
-    !(useTunnel && cloudflareUrl) &&
-    keylessBaseEligible(base, keylessScope, keylessExposure);
-  const model = useExampleModelName(keylessBase && !apiKey);
   // The approved SDK dummy is printed only for a transport the backend can admit.
   const key =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
@@ -971,6 +1021,7 @@ export function UsageExamples({
                   type="button"
                   onClick={() => {
                     agentPickedByUserRef.current = true;
+                    clickedUnderGgufRef.current = isGguf;
                     setAgent(id);
                     setStoredAgent(id);
                   }}

@@ -51,12 +51,11 @@ test("a pin on the iGPU does not offer its own RAM twice, nor throw the rest awa
 });
 
 test("pinning both keeps the discrete card as a pool beside system RAM", () => {
-  // This asserted 96 and the reasoning given was that under-counting the dGPU refuses
-  // a load rather than admitting one, so it was the safe direction. That was wrong,
-  // and only half the effect was being looked at: the flag it also sets makes the row
-  // show a lone Shared figure and drop the GPU verdict entirely, so a fixed placement
-  // larger than the discrete card had nothing left to catch it. Two pools now, with
-  // the ceiling counting the shared bytes once: 16 dedicated + 96 RAM, not 28 + 96.
+  // This asserted 96, on the reasoning that under-counting the dGPU refuses a load
+  // rather than admitting one. That looked at half the effect: the flag it also sets
+  // makes the row show a lone Shared figure and drop the GPU verdict, so a fixed
+  // placement larger than the discrete card had nothing to catch it. Two pools now,
+  // counting the shared bytes once: 16 dedicated + 96 RAM, not 28 + 96.
   const capacity = resolveMemoryCapacityGb({
     ...HOST,
     pinnedDevices: [DGPU, IGPU, IGPU],
@@ -296,6 +295,101 @@ test("a pin decides the pool question for the cards it names", () => {
   assert.equal(onBoth.singleMemoryPool, false);
   assert.equal(onBoth.gpuCapacityGb, 28);
   assert.equal(onBoth.totalCapacityGb, 107);
+});
+
+test("a partially host-backed APU keeps its reserved memory beside system RAM", () => {
+  const apu = {
+    memoryTotalGb: 100,
+    sharedMemory: true,
+    sharedMemoryHostBackedGb: 92,
+  };
+  const capacity = resolveMemoryCapacityGb({
+    pinnedDevices: [apu],
+    hostGpuTotalGb: 100,
+    hostDedicatedGpuTotalGb: 8,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 128,
+    unifiedMemory: false,
+  });
+  assert.equal(capacity.gpuCapacityGb, 100);
+  assert.equal(capacity.totalCapacityGb, 136);
+  assert.equal(capacity.singleMemoryPool, false);
+});
+
+test("the gpu budget does not discount a partial APU reserve twice", () => {
+  const apu = {
+    memoryTotalGb: 100,
+    sharedMemory: true,
+    sharedMemoryHostBackedGb: 92,
+  };
+  const common = {
+    hostDevices: [apu],
+    hostGpuTotalGb: 100,
+    hostDedicatedGpuTotalGb: 8,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 128,
+    unifiedMemory: false,
+    gpuBudgetFraction: 0.8,
+  };
+  const pinned = resolveMemoryCapacityGb({
+    ...common,
+    pinnedDevices: [apu],
+  });
+  const unpinned = resolveMemoryCapacityGb({
+    ...common,
+    pinnedDevices: [],
+  });
+  assert.equal(pinned.gpuCapacityGb, 80);
+  assert.equal(pinned.totalCapacityGb, 136);
+  assert.deepEqual(unpinned, pinned);
+});
+
+test("the gpu budget is applied to each APU sharing one host pool", () => {
+  const apu = {
+    memoryTotalGb: 100,
+    sharedMemory: true,
+    sharedMemoryHostBackedGb: 92,
+  };
+  const common = {
+    hostDevices: [apu, apu],
+    hostGpuTotalGb: 108,
+    hostDedicatedGpuTotalGb: 16,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 128,
+    unifiedMemory: false,
+    gpuBudgetFraction: 0.8,
+  };
+  const pinned = resolveMemoryCapacityGb({
+    ...common,
+    pinnedDevices: [apu, apu],
+  });
+  const unpinned = resolveMemoryCapacityGb({
+    ...common,
+    pinnedDevices: [],
+  });
+  assert.equal(pinned.gpuCapacityGb, 108);
+  assert.equal(pinned.totalCapacityGb, 144);
+  assert.deepEqual(unpinned, pinned);
+});
+
+test("duplicate fully shared Vulkan views do not erase the gpu budget", () => {
+  const igpu = {
+    memoryTotalGb: 12,
+    sharedMemory: true,
+  };
+  const capacity = resolveMemoryCapacityGb({
+    pinnedDevices: [],
+    hostDevices: [igpu, igpu],
+    hostGpuTotalGb: 12,
+    hostDedicatedGpuTotalGb: 0,
+    hostSharesSystemRam: true,
+    systemRamTotalGb: 12,
+    unifiedMemory: false,
+    gpuBudgetFraction: 0.8,
+  });
+  assert.equal(capacity.gpuCapacityGb, 9.6);
+  assert.equal(capacity.totalCapacityGb, 12);
+  assert.equal(capacity.singleMemoryPool, true);
 });
 
 test("a discrete-only host is unchanged by the dedicated-only ceiling", () => {

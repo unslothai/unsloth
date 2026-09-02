@@ -310,12 +310,15 @@ from routes import (
     openai_codex_auth_router,
     rag_router,
     research_runs_router,
+    chat_generation_runs_router,
     training_history_router,
     training_router,
     video_router,
+    video_openai_router,
     youtube_router,
 )
 from routes.llama import router as llama_router
+from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
@@ -640,6 +643,16 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_compiled_cache_unless_shared(app)
 
+    # Here because both launch paths reach it after the frontend decision: run.py calls
+    # setup_frontend(), and `uvicorn main:app` bypasses run.py entirely. With no
+    # catch-all the engine paths match on method alone and answer 405, read as "exists".
+    if not getattr(app.state, "frontend_mounted", False):
+        try:
+            from routes.llama_compat import add_get_denials
+            add_get_denials(app)
+        except Exception:  # noqa: BLE001 -- never block startup over a discovery route
+            _lifespan_log.warning("could not install API-only probe denials", exc_info = True)
+
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
     try:
@@ -663,12 +676,39 @@ async def lifespan(app: FastAPI):
     # Hardware detection and MLX autorepair moved out of this lifespan: both import heavy
     # runtimes and uvicorn binds only once this returns, so they held the login screen.
 
+    # Before the first writer, so startup's own connections stop checkpointing too.
+    try:
+        from storage.studio_db import open_wal_keeper
+        open_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
+
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
         from storage.studio_db import cleanup_orphaned_runs
         cleanup_orphaned_runs()
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
+    try:
+        from storage.chat_generation_runs_db import reconcile_orphaned_runs
+        reconciled_chat_runs = reconcile_orphaned_runs()
+        if reconciled_chat_runs:
+            _lifespan_log.warning(
+                "Marked %s interrupted chat generation run(s) failed after restart.",
+                reconciled_chat_runs,
+            )
+    except Exception as exc:
+        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+    try:
+        # The boot pass above only settles runs orphaned by the previous process. A run
+        # that wedges while this one keeps serving needs the same reconciliation on an
+        # interval, bounded to runs whose progress lease has expired.
+        from core.inference.chat_generation_runs import start_lease_sweeper
+        start_lease_sweeper(app)
+    except Exception as exc:
+        _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
 
     reap_hub_orphan_workers()
     try:
@@ -703,6 +743,10 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -799,6 +843,10 @@ async def lifespan(app: FastAPI):
     if _research_supervisor is not None:
         await _research_supervisor.stop()
 
+    _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
+    if _chat_generation_supervisor is not None:
+        await _chat_generation_supervisor.stop()
+
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
@@ -810,6 +858,11 @@ async def lifespan(app: FastAPI):
     )
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.
     reset_background_warm()
+
+    # Last, so every other shutdown step has had its final write first.
+    from storage.studio_db import close_wal_keeper
+
+    close_wal_keeper()
 
 
 app = FastAPI(
@@ -1077,13 +1130,15 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
 
 _BODY_PROTECTED_PREFIXES = (
     # Blanket-protect the whole /v1 surface, like /api/inference: every /v1 POST buffers a JSON
-    # body and none is a multipart passthrough, so one prefix caps them all.
+    # body (the multipart routes are listed as exact passthroughs below), so one prefix caps them all.
     "/v1",
     "/p/",
     "/api/inference",
@@ -1111,6 +1166,10 @@ _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
 )
+_VIDEO_MULTIPART_UPLOAD_PATHS = (
+    "/v1/videos",
+    "/api/inference/videos",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1119,7 +1178,14 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
+    *_VIDEO_MULTIPART_UPLOAD_PATHS,
 )
+# Which of those may arrive with no Content-Length and be counted instead of refused.
+# Deliberately NOT the whole set above: this middleware runs before authentication, and
+# a counted body is a held body, so the dataset path (whose cap is the configurable
+# upload limit, up to 8 GB) and the 25 MB stt paths keep their 411. The videos
+# reference image is bounded at 32 MB, the same order as the default protected cap.
+_CHUNKED_UPLOAD_EXACT_PATHS = _VIDEO_MULTIPART_UPLOAD_PATHS
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
@@ -1127,6 +1193,11 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1145,6 +1216,11 @@ def _get_request_body_max_bytes(path: str) -> int:
     # multipart headroom over the raw stt cap for the openai transcription route on both mounts
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     return default_request_body_limit_bytes()
 
 
@@ -1194,6 +1270,7 @@ class MaxBodyMiddleware:
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
+        chunked_upload_exact_paths: tuple = (),
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1203,6 +1280,8 @@ class MaxBodyMiddleware:
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
         # Exact path, not prefix: sibling JSON sub-routes must keep the normal (small) body cap.
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
+        # The subset of those allowed to omit Content-Length; the rest still get a 411.
+        self.chunked_upload_exact_paths = chunked_upload_exact_paths
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
@@ -1255,14 +1334,16 @@ class MaxBodyMiddleware:
 
         if self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
-            if declared is None:
+            if declared is not None:
+                if declared > upload_max_bytes:
+                    await _send_413(send, declared, upload_max_bytes)
+                    return
+                await self.app(scope, receive, send)
+                return
+            if path.rstrip("/") not in self.chunked_upload_exact_paths:
                 await _send_411(send)
                 return
-            if declared > upload_max_bytes:
-                await _send_413(send, declared, upload_max_bytes)
-                return
-            await self.app(scope, receive, send)
-            return
+            max_bytes = upload_max_bytes
 
         if declared is not None and declared > max_bytes:
             await _send_413(send, declared, max_bytes)
@@ -1312,6 +1393,7 @@ app.add_middleware(
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
+    chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -1358,6 +1440,9 @@ app.add_middleware(
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
+    # allow_headers is the REQUEST side; a response header is unreadable to JS unless
+    # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
+    expose_headers = ["X-Unsloth-Conflict-Kind"],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight
     # already cached by the browser does not. Measured in WebKit: with Starlette's
     # 600s default, a state-changing request still REACHED the server after remote
@@ -1383,15 +1468,27 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
+app.include_router(
+    chat_generation_runs_router,
+    prefix = "/api/inference/chat-runs",
+    tags = ["inference"],
+)
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
 # Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+# llama-server / Ollama discovery probes. Declares its own full paths (/props,
+# /version, /api/tags, ...) so it needs no prefix, and must be registered here --
+# ahead of the SPA catch-all in serve_frontend() -- or /props and /version go on
+# resolving to index.html with a 200.
+app.include_router(llama_compat_router, tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 
@@ -1478,11 +1575,15 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
         generation = _hw_module.DETECTION_GENERATION
         device = _hw_module.DEVICE
         chat_only = bool(_hw_module.CHAT_ONLY)
-        reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
-        # Inside the guarded read, with the reason it belongs to. Read after it, a forced
-        # re-detect starting in between would pair this reply's reason with a detail from
-        # a different pass, or with none at all.
-        detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
+        # Refreshed, not the frozen global: the three inventory-sensitive verdicts can change
+        # after startup (an eGPU attached, a driver that finished restarting). Reason and detail
+        # come back together, or a forced re-detect starting in between would pair this reply's
+        # reason with a detail from a different pass.
+        try:
+            reason, detail = _hw_module.current_chat_only_verdict()
+        except Exception:
+            reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+            detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         if (
             device is not None
             and _hw_module.DETECTION_COMPLETE.is_set()
@@ -1974,8 +2075,9 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             llama_uses_vulkan = False
             gpu_ids_supported = True
-        # Preserve backend/index metadata from the visibility probe: a CPU training host can expose
-        # a Vulkan inference GPU, and the UI must label it Vulkan, not the top-level CPU backend.
+        # The spread also carries `physical_devices` and `mismatch`: GPUs the OS sees that this PyTorch
+        # cannot open (#8473). They stay their own fields, because `devices` below is the runtime-usable
+        # list that model fit budgets against and the training device picker pins from.
         gpu_info = {
             **visibility_info,
             "available": visibility_info.get("available", False),
@@ -2478,7 +2580,17 @@ def setup_frontend(
         if file_path.is_file():
             return FileResponse(file_path)
 
+        # Last, so a real asset always wins: an engine endpoint Studio does not serve
+        # must 404 rather than render the app shell, which reads as "supported" to a
+        # client that checks the status before the body. Deliberately after the file
+        # lookup -- a build that ever ships one of these names still serves it.
+        if is_engine_probe_path(full_path):
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+
         # Serve index.html as bytes — avoids Content-Length mismatch
         return _build_index_response(request)
 
+    # The catch-all above is what 404s a GET probe. The lifespan reads this to decide
+    # whether the engine paths still need their own GET denial.
+    app.state.frontend_mounted = True
     return True

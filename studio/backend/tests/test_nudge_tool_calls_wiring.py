@@ -112,7 +112,7 @@ def test_studio_routes_forward_the_request_flag():
     # (external API clients that omit it fall back to the opt-in default).
     from routes import inference as routes_inference
     for handler in (
-        routes_inference.openai_chat_completions,
+        routes_inference.produce_openai_chat_completions,
         routes_inference.anthropic_messages,
     ):
         src = inspect.getsource(handler)

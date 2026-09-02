@@ -52,6 +52,13 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
+    find: {
+      label: "페이지에서 찾기",
+      previous: "이전 결과",
+      next: "다음 결과",
+      close: "찾기 닫기",
+      truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -223,6 +230,10 @@ export const ko = {
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       actions: {
+        findInPage: {
+          label: "페이지에서 찾기",
+          description: "이 페이지의 텍스트를 검색합니다",
+        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",
@@ -687,7 +698,7 @@ export const ko = {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
         enable: "요청에 따라 모델 전환",
         enableDescription:
-          "API 요청에 지정된 GGUF가 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
+          "API 요청에 지정된 모델이 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
@@ -792,7 +803,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
-        searchPlaceholder: "임베딩 모델 검색",
+        searchPlaceholder: "HF의 모든 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -800,7 +811,23 @@ export const ko = {
         saveError: "임베딩 모델을 저장하지 못했습니다.",
         saved: "임베딩 모델이 저장되었습니다.",
         saveAnyway: "그래도 저장",
-        resetAction: "기본값으로 재설정",
+        recommended: "추천",
+        onDevice: "기기에 있음",
+        searching: "Hugging Face 검색 중…",
+        checking: "확인 중…",
+        noResults: "임베딩 모델을 찾을 수 없습니다",
+        download: "다운로드",
+        unload: "언로드",
+        unloadFailed: "임베딩 모델을 언로드할 수 없습니다",
+        downloadingStatus: "다운로드 중…",
+        notDownloaded: "다운로드되지 않음",
+        notDownloadedSized: "다운로드되지 않음 · {size}",
+        loaded: "로드됨",
+        downloading: "{model} 다운로드 중",
+        downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 색인에 사용됩니다.",
+        downloadFailed: "다운로드를 시작할 수 없습니다",
+        downloadConflict: "Hub에서 이 다운로드를 재개하세요",
+        downloadBusy: "이미 다운로드가 진행 중입니다",
       },
       storage: {
         sectionTitle: "저장소",
@@ -811,6 +838,16 @@ export const ko = {
         copied: "경로가 복사되었습니다",
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
+      },
+      repairInstall: {
+        label: "설치 복구",
+        description:
+          "관리 환경에 대해 설치 프로그램을 다시 실행합니다. GPU가 감지되지 않거나 앱이 시작되지 않을 때 사용하세요.",
+        action: "설치 복구",
+        confirmTitle: "이 설치를 복구할까요?",
+        confirmDescription:
+          "서버를 중지하고 설치 프로그램을 다시 실행하여 이 컴퓨터의 GPU에 맞는 PyTorch를 다시 설치합니다. 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmAction: "지금 복구",
       },
       resetPreferences: {
         sectionTitle: "위험 구역",
@@ -1067,6 +1104,8 @@ export const ko = {
         currentLoad: "현재 부하",
         free: "{value} 여유",
         noGpu: "인식되는 GPU 없음",
+        gpuUnusable: "GPU 사용 불가",
+        gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
       },
       gpu: {
         title: "GPU 장치",
@@ -1075,6 +1114,12 @@ export const ko = {
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
+        mismatchCpuBuild:
+          "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
+        mismatchUnavailable:
+          "PyTorch({version})가 아래 GPU를 초기화하지 못해 사용할 수 없습니다. GPU 드라이버를 확인하거나 설치를 복구하세요.",
+        unusableDevice: "사용 불가",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1187,6 +1232,7 @@ export const ko = {
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
         unknown: "알 수 없음",
+        vramWithShared: "{vram} VRAM + {shared} 공유 메모리",
       },
     },
     agents: {
@@ -1194,7 +1240,7 @@ export const ko = {
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
       intro:
-        "명령은 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
+        "명령은 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",
@@ -1216,6 +1262,15 @@ export const ko = {
       docs: "문서",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 쓰려면 --model을 빼세요.",
       subagent: {
@@ -1303,6 +1358,9 @@ export const ko = {
         showAllQuantizations: "모든 양자화 표시",
         showAllQuantizationsDescription:
           "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+        showMemoryBar: "VRAM 사용량 막대 표시",
+        showMemoryBarDescription:
+          "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
       },
       menu: {
         title: "채팅 메뉴",
@@ -1329,10 +1387,36 @@ export const ko = {
       rememberParamsPerModel: "모델별로 설정 기억",
       rememberParamsPerModelDescription:
         "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
+      autoCompact: "긴 채팅 자동 압축",
+      autoCompactDescription:
+        "로컬 GGUF 채팅이 설정한 컨텍스트 길이에 도달하면 오류를 반환하는 대신 오래된 턴을 삭제합니다. 사용 가능한 VRAM을 기준으로 하지 않습니다.",
+      compactionStyle: "컨텍스트가 가득 찼을 때",
+      compactionStyleDescription:
+        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
+      compactionStyleInherit: "서버 기본값 사용",
+      compactionStyleCheckpoint: "대화 재설정",
+      compactionStyleRollingDefault: "오래된 턴 삭제(약 25% 추가 여유)",
+      compactionStyleRolling10: "오래된 턴 삭제(약 10% 추가 여유)",
+      compactionStyleRolling5: "오래된 턴 삭제(약 5% 추가 여유)",
+      compactionStyleRollingNone: "오래된 턴 삭제(추가 잘라내기 없음)",
+      autoCompactKeywords:
+        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
+      currentDate: {
+        label: "모델에 오늘 날짜 알려주기",
+        description:
+          "프롬프트에 현재 날짜를 추가해 웹 검색과 Deep Research가 모델의 학습 데이터 기준 시점을 가정하지 않고 최신 출처를 찾도록 합니다.",
+        loadError: "현재 날짜 설정을 불러오지 못했습니다",
+        saveError: "현재 날짜 설정을 업데이트하지 못했습니다",
+      },
+      tools: {
+        collapseByDefault: "기본적으로 도구 활동 접기",
+        collapseByDefaultDescription:
+          "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
       },
       webSearch: {
         title: "웹 검색",
@@ -1351,6 +1435,11 @@ export const ko = {
         blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerAction: "이 Canvas에서 허용",
+        blockedTitle: "Canvas 네트워크 액세스가 꺼져 있습니다",
+        blockedHint:
+          "설정 → 채팅에서 “{setting}”을 켜면 Canvas가 외부 리소스를 불러올 수 있습니다. 이 Canvas에서만 허용할 수도 있습니다.",
+        blockedSettingsAction: "설정 열기",
+        blockedDismiss: "닫기",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",
@@ -1424,6 +1513,8 @@ export const ko = {
       archivedImagesDescription: "보관한 이미지를 확인하고 관리합니다.",
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
+      archivedAudio: "보관된 오디오",
+      archivedAudioDescription: "보관한 오디오 클립을 확인하고 관리합니다.",
       manageAction: "관리",
       manageChats: "채팅 관리",
       manageChatsDescription:
@@ -1606,7 +1697,7 @@ export const ko = {
         desktopCheckingDescription: "보통 몇 초 정도 걸립니다.",
         desktopAvailable: "데스크톱 앱 {version} 버전을 사용할 수 있습니다",
         desktopAvailableDescription:
-          "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
+          "지금 업데이트하면 백그라운드에서 준비됩니다. 계속 작업하다가 준비되면 다시 시작하세요.",
         desktopExternalServer:
           "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
         desktopManualInstall:
@@ -1616,11 +1707,17 @@ export const ko = {
           "연결 상태를 확인한 후 다시 시도하세요.",
         desktopCurrent: "데스크톱 앱이 최신 버전입니다",
         desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
+        desktopPreparingDescription: "업데이트를 백그라운드에서 준비하고 있습니다. 계속 작업할 수 있습니다.",
+        desktopReadyToRestartDescription: "모두 준비되었습니다. 다시 시작하면 업데이트 설치가 완료됩니다.",
+        desktopReadyToInstallDescription: "앱 업데이트를 다운로드했습니다. 설치하려면 백엔드 업데이트를 완료하세요.",
         checkForUpdates: "업데이트 확인",
         checkAgain: "다시 확인",
         retryCheck: "다시 시도",
         checking: "확인 중...",
+        preparing: "준비 중...",
         updateNow: "지금 업데이트",
+        restartToUpdate: "다시 시작하여 업데이트",
+        finishUpdate: "업데이트 완료",
         openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",
@@ -2372,5 +2469,14 @@ export const ko = {
       raft: "RAFT",
       classification: "분류",
     },
+  },
+  modelMemory: {
+    readout:
+      "가중치 {model} + 컨텍스트 {context} = 사용 가능한 VRAM {budget} 중 {total}",
+    readoutWithSpec:
+      "가중치 {model} + KV {kv} + MTP 초안 {spec} = 사용 가능한 VRAM {budget} 중 {total}",
+    kvRate: "KV 사전 예약, 약 {rate}/토큰",
+    oomLikely: "현재 설정에서는 메모리 부족이 발생할 수 있습니다",
+    tooLarge: "VRAM보다 커서 CPU로 오프로드됩니다. 더 작은 양자화가 더 빠릅니다",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

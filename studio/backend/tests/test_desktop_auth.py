@@ -806,6 +806,10 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     llama_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
     preview_module.router = APIRouter()
+    llama_compat_module = ModuleType("routes.llama_compat")
+    llama_compat_module.router = APIRouter()
+    # main.py imports this name alongside the router and calls it from serve_frontend.
+    llama_compat_module.is_engine_probe_path = lambda full_path: False
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
@@ -832,6 +836,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
+    monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)

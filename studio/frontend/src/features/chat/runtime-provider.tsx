@@ -43,6 +43,14 @@ import {
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { getResearchThreadState } from "./api/research-api";
 import {
+  cancelChatGenerationRun,
+  type ChatGenerationRun,
+  getActiveChatGenerationRuns,
+  ChatGenerationStalledError,
+  followChatGenerationRun,
+  isTerminalChatGenerationRun,
+} from "./api/chat-generation-api";
+import {
   TEXT_ATTACHMENT_ACCEPT,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
@@ -79,12 +87,42 @@ import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import type { OpenAIChatChunk } from "./types/api";
+import {
+  budgetImpliesTruncation,
+  restoredAssistantStatus,
+} from "./utils/continuation";
+import {
+  generationChunkCountsTowardTiming,
+  generationChunkHasSubstantiveDelta,
+  generationIsCorroboratedLive,
+  threadHasDurableGenerationRun,
+  generationNeedsRecovery,
+  isLiveGenerationRun,
+  generationRawContent,
+  loadGenerationOverlaySnapshot,
+  markServerActiveGenerationRunsUnknown,
+  forgetServerActiveGenerationRun,
+  syncServerActiveGenerationRuns,
+  recoveredContentToImport,
+  recoveredReasoningSummaryMetadata,
+  recoveredGenerationFinalMetadata,
+  generationRecoveryMetadata,
+  shouldPreserveGenerationMetadata,
+  subscribeGenerationRecoveryTriggers,
+} from "./utils/chat-generation-recovery";
+import { mergeContextTruncation } from "./utils/context-truncation";
+import {
+  extractDeltaText,
+  parseAssistantContent,
+} from "./utils/parse-assistant-content";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+import { createParentResolver } from "./utils/message-order";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -671,6 +709,36 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
     | undefined;
+  const generationStatus = custom.generationStatus;
+  const hasRunId = typeof custom.generationRunId === "string";
+  const generationUnfinished =
+    hasRunId &&
+    (generationStatus === "queued" ||
+      generationStatus === "running" ||
+      generationStatus === "cancelling");
+  const generationUnsettled =
+    hasRunId &&
+    generationStatus === "completed" &&
+    custom.generationSettled !== true;
+  // Persisted metadata alone must never restore a running message: a run that never
+  // terminalised still says "running" on every later load, and `{type:"running"}`
+  // unmounts Send, so the reply the user cannot stop is the one they cannot reply past.
+  // Ask whether the run is corroborated live, and otherwise show the partial as
+  // interrupted, which keeps every character and offers the Continue bar.
+  // The gate is for unfinished runs only. A completed-but-unsettled run has a terminal
+  // status, so /chat-runs/active never lists it and it could never be corroborated; it
+  // still owns an unreplayed tail, and the follow that replays it returns on the first
+  // snapshot rather than holding the composer.
+  const needsGenerationRecovery =
+    generationUnsettled ||
+    (generationUnfinished && generationIsCorroboratedLive(custom, m.threadId));
+  const restoredCustom =
+    generationUnfinished &&
+    !needsGenerationRecovery &&
+    custom.incomplete === undefined
+      ? { ...custom, incomplete: { reason: "interrupted" as const } }
+      : custom;
+  const restoredStatus = restoredAssistantStatus({ custom: restoredCustom });
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -679,9 +747,9 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       ThreadMessage,
       { role: "assistant" }
     >["content"],
-    status: { type: "complete" as const, reason: "unknown" as const },
+    status: needsGenerationRecovery ? { type: "running" } : restoredStatus,
     metadata: {
-      custom,
+      custom: restoredCustom,
       ...(savedTiming ? { timing: savedTiming } : {}),
       steps: [],
       unstable_annotations: [],
@@ -689,6 +757,332 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       unstable_state: null,
     },
   };
+}
+
+type GenerationRecovery = {
+  promise: Promise<void>;
+  views: Set<ReturnType<typeof useAui>>;
+};
+
+const generationRecoveries = new Map<string, GenerationRecovery>();
+
+function scheduleGenerationRecovery(
+  threadId: string,
+  storedMessage: MessageRecord,
+  aui: ReturnType<typeof useAui>,
+): void {
+  const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
+  const runId = metadata.generationRunId;
+  if (typeof runId !== "string" || !generationNeedsRecovery(metadata)) return;
+  // This tab is streaming the run itself. Following it from storage as well gives the reply
+  // two writers, and the follower is always behind, so it imports a lagging prefix over the
+  // live text. It also costs a PUT and a full re-parse per chunk against the same backend the
+  // model is saturating.
+  if (isLiveGenerationRun(runId)) return;
+  const existingRecovery = generationRecoveries.get(runId);
+  if (existingRecovery) {
+    existingRecovery.views.add(aui);
+    return;
+  }
+  const views = new Set([aui]);
+
+  const recovery = (async () => {
+    let cursor = Number(metadata.generationSeq ?? 0);
+    if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
+    let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
+    let completionTokens: number | undefined;
+    let recoveryUsage:
+      | {
+          prompt_tokens?: unknown;
+          completion_tokens?: unknown;
+          total_tokens?: unknown;
+          prompt_tokens_details?: { cached_tokens?: unknown };
+          cache_creation_input_tokens?: unknown;
+          cache_read_input_tokens?: unknown;
+        }
+      | undefined = (metadata.generationRecoveryUsage as typeof recoveryUsage) ?? undefined;
+    let recoveryTimings: Record<string, unknown> | undefined =
+      (metadata.generationRecoveryTimings as Record<string, unknown>) ?? undefined;
+    let firstChunkAt =
+      typeof metadata.generationFirstChunkAt === "number" &&
+      Number.isFinite(metadata.generationFirstChunkAt)
+        ? metadata.generationFirstChunkAt
+        : undefined;
+    let totalChunks = Number(metadata.generationChunkCount ?? 0);
+    if (!Number.isSafeInteger(totalChunks) || totalChunks < 0) totalChunks = 0;
+    let currentMetadata = { ...metadata };
+    const serverCancel = () => {
+      void cancelChatGenerationRun(runId).catch(() => {});
+    };
+    const runtime = useChatRuntimeStore.getState();
+    runtime.registerThreadServerCancel(threadId, serverCancel);
+    runtime.setThreadRunning(threadId, true, {
+      local: true,
+      owner: serverCancel,
+    });
+
+    /**
+     * Write one state of the reply to storage and to every view showing it.
+     *
+     * `running` is the caller's, not derived here: a follow that hit its no-progress
+     * deadline settles the message while its persisted run status is still non-terminal,
+     * which is exactly the pair `generationNeedsRecovery` reads as "still going".
+     */
+    const commit = async (
+      nextMetadata: Record<string, unknown>,
+      running: boolean,
+    ) => {
+      currentMetadata = nextMetadata;
+      const content = parseAssistantContent(
+        reasoningOpen ? `${raw}</think>` : raw,
+      ) as MessageRecord["content"];
+      await saveStoredChatMessage({
+        id: storedMessage.id,
+        threadId,
+        parentId: storedMessage.parentId ?? null,
+        role: "assistant",
+        content,
+        metadata: nextMetadata,
+        createdAt: storedMessage.createdAt,
+      }).catch(() => {
+        // The producer may have committed a newer status between the event and
+        // this write. Keep following; the terminal publish carries all content.
+      });
+
+      for (const view of views) {
+        if (view.threadListItem().getState().remoteId !== threadId) continue;
+        try {
+          const exported = view.thread().export();
+          const messages = exported.messages.map((item) =>
+            item.message.id === storedMessage.id
+              ? {
+                  ...item,
+                  message: {
+                    ...item.message,
+                    // The status and the metadata are always this publish's:
+                    // they are what the recovery is following the run FOR. The
+                    // body is not, because a run this tab is also streaming is
+                    // replayed hundreds of characters behind the live reply.
+                    content: recoveredContentToImport(
+                      item.message.content,
+                      content,
+                    ),
+                    status: running
+                      ? { type: "running" as const }
+                      : restoredAssistantStatus({ custom: nextMetadata }),
+                    metadata: {
+                      ...item.message.metadata,
+                      custom: nextMetadata,
+                    },
+                  } as ThreadMessage,
+                }
+              : item,
+          );
+          view.thread().import({ ...exported, messages });
+        } catch {
+          // Storage remains authoritative if the thread unmounted between awaits.
+        }
+      }
+    };
+
+    const publish = async (run: ChatGenerationRun) => {
+      const status = run.status;
+      const runModel = useChatRuntimeStore
+        .getState()
+        .models.find((model) => model.id === run.requestPayload.model);
+      const lengthLimited =
+        run.finishReason === "length" ||
+        budgetImpliesTruncation({
+          isMlx: runModel?.isMlx === true,
+          maxTokens: run.requestPayload.max_tokens,
+          completionTokens,
+        });
+      let nextMetadata = generationRecoveryMetadata({
+        current: currentMetadata,
+        runId,
+        status,
+        cursor,
+        lastEventSeq: run.lastEventSeq,
+        lengthLimited,
+        firstChunkAt,
+        totalChunks,
+        usage: recoveryUsage,
+        timings: recoveryTimings,
+      });
+      if (nextMetadata.generationSettled === true) {
+        nextMetadata = recoveredGenerationFinalMetadata({
+          current: nextMetadata,
+          run,
+          usage: recoveryUsage,
+          timings: recoveryTimings,
+          firstChunkAt,
+          totalChunks,
+        });
+      }
+      await commit(nextMetadata, generationNeedsRecovery(nextMetadata));
+    };
+
+    try {
+      let lastPublishedStatus = "";
+      let identityValidated = false;
+      // The follower reports its no-progress deadline by throwing, and the settlement
+      // below is exactly what must happen when it does. Without this catch the throw
+      // reaches the outer no-op handler and leaves a message marked running forever.
+      let followStalled = false;
+      try {
+        for await (const update of followChatGenerationRun(runId, {
+          replayFrom: cursor,
+        })) {
+          if (!identityValidated) {
+            if (
+              update.run.threadId !== threadId ||
+              update.run.assistantMessageId !== storedMessage.id
+            ) {
+              return;
+            }
+            if (cursor === 0 && raw.length === 0) {
+              const requestMessages = update.run.requestPayload.messages;
+              const lastRequestMessage = Array.isArray(requestMessages)
+                ? requestMessages.at(-1)
+                : undefined;
+              if (
+                lastRequestMessage?.role === "assistant" &&
+                typeof lastRequestMessage.content === "string"
+              ) {
+                // Continue sends the old partial as an assistant prefill. The
+                // server-owned placeholder is empty until the first client save,
+                // so a reload before that save must seed replay from the request.
+                raw = lastRequestMessage.content;
+              }
+            }
+            identityValidated = true;
+          }
+          if (update.event && update.event.seq > cursor) {
+            cursor = update.event.seq;
+            if (update.event.type === "chunk") {
+              const chunk = update.event.payload as {
+                _reasoningDurationMs?: unknown;
+                usage?: {
+                  prompt_tokens?: unknown;
+                  completion_tokens?: unknown;
+                  total_tokens?: unknown;
+                  prompt_tokens_details?: { cached_tokens?: unknown };
+                  cache_creation_input_tokens?: unknown;
+                  cache_read_input_tokens?: unknown;
+                };
+                timings?: Record<string, unknown>;
+                choices?: Array<{
+                  delta?: {
+                    content?: unknown;
+                    reasoning_content?: unknown;
+                  };
+                }>;
+                context_truncated?: OpenAIChatChunk["context_truncated"];
+              };
+              if ("_reasoningDurationMs" in chunk) {
+                currentMetadata = recoveredReasoningSummaryMetadata(
+                  currentMetadata,
+                  chunk._reasoningDurationMs,
+                );
+                lastPublishedStatus = update.run.status;
+                await publish(update.run);
+                continue;
+              }
+              if (generationChunkCountsTowardTiming(chunk)) {
+                totalChunks += 1;
+              }
+              if (generationChunkHasSubstantiveDelta(chunk)) {
+                firstChunkAt ??= update.event.createdAt;
+              }
+              if (chunk.context_truncated) {
+                currentMetadata = {
+                  ...currentMetadata,
+                  contextTruncation: mergeContextTruncation(
+                    currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+                    chunk.context_truncated,
+                  ),
+                };
+              }
+              if (chunk.usage) recoveryUsage = chunk.usage;
+              if (chunk.timings) recoveryTimings = chunk.timings;
+              if (typeof chunk.usage?.completion_tokens === "number") {
+                completionTokens = chunk.usage.completion_tokens;
+              }
+              const deltaRecord = chunk.choices?.[0]?.delta;
+              const reasoning =
+                typeof deltaRecord?.reasoning_content === "string"
+                  ? deltaRecord.reasoning_content
+                  : "";
+              const delta = extractDeltaText(deltaRecord?.content).text;
+              if (reasoning) {
+                if (!reasoningOpen) raw += "<think>";
+                raw += reasoning;
+                reasoningOpen = true;
+              }
+              if (delta) {
+                if (reasoningOpen) raw += "</think>";
+                raw += delta;
+                reasoningOpen = false;
+              }
+            }
+          }
+          const shouldPublish =
+            update.event?.type === "chunk" ||
+            update.run.status !== lastPublishedStatus ||
+            (["cancelled", "completed", "failed"].includes(update.run.status) &&
+              cursor >= update.run.lastEventSeq);
+          if (shouldPublish) {
+            lastPublishedStatus = update.run.status;
+            await publish(update.run);
+          }
+          if (isTerminalChatGenerationRun(update.run)) {
+            // Only another successful active-list sync would otherwise drop it, so the
+            // thread would keep reading as durable and a later subscriber-owned stream
+            // on it would be capped, losing the checkpoints that are its only
+            // persistence.
+            forgetServerActiveGenerationRun(runId);
+          }
+        }
+      } catch (error) {
+        if (!(error instanceof ChatGenerationStalledError)) throw error;
+        followStalled = true;
+      }
+      if (followStalled || generationNeedsRecovery(currentMetadata)) {
+        // Fence the run before presenting the reply as resumable. Settling only in this
+        // tab leaves the row queued/running/cancelling, and create_run refuses a thread
+        // that already has an active generation, so Continue and the next message would
+        // both 409 against a reply the UI had just declared finished. Best effort, and
+        // not sufficient on its own: a producer wedged inside the engine stays in
+        // `cancelling`, which is still active. That case is what the server-side sweeper
+        // settles, and this path is reachable mainly when the sweeper is disabled.
+        serverCancel();
+        // The follow returned with the run still non-terminal, so its no-progress
+        // deadline expired. Settle the reply here rather than leaving a message that
+        // says "running" until the next reload, which is what keeps Send unmounted.
+        // Everything replayed so far is kept.
+        await commit(
+          {
+            ...currentMetadata,
+            incomplete: { reason: "interrupted" as const },
+            // The run row may still be non-terminal, so without this marker
+            // generationNeedsRecovery stays true and the next online, pageshow or
+            // visibility trigger starts another follower that republishes the message
+            // as running. history.load clears it if /chat-runs/active still names the
+            // run, so the server, not this tab, gets the last word.
+            generationLocallyInterrupted: true,
+          },
+          false,
+        );
+      }
+    } finally {
+      const store = useChatRuntimeStore.getState();
+      store.setThreadRunning(threadId, false, { owner: serverCancel });
+      store.clearThreadServerCancel(threadId, serverCancel);
+    }
+  })()
+    .catch(() => {})
+    .finally(() => generationRecoveries.delete(runId));
+  generationRecoveries.set(runId, { promise: recovery, views });
 }
 
 export async function ensureThreadRecord({
@@ -936,7 +1330,9 @@ function createStudioDbAdapter(
       const firstAssistant =
         firstUserIndex === -1
           ? undefined
-          : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
+          : messages.find(
+              (m, i) => m.role === "assistant" && i > firstUserIndex,
+            );
       const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
@@ -1177,6 +1573,31 @@ function useStudioRuntimeAdapters(
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
+  useEffect(() => {
+    const recoverCurrentThread = () => {
+      const remoteId = aui.threadListItem().getState().remoteId;
+      if (!remoteId) return;
+      void listStoredChatMessages(remoteId)
+        .then((messages) => {
+          for (const message of messages) {
+            if (
+              message.role === "assistant" &&
+              typeof (message.metadata as Record<string, unknown> | undefined)
+                ?.generationRunId === "string"
+            ) {
+              scheduleGenerationRecovery(remoteId, message, aui);
+            }
+          }
+        })
+        .catch(() => {});
+    };
+    return subscribeGenerationRecoveryTriggers(
+      globalThis,
+      document,
+      recoverCurrentThread,
+    );
+  }, [aui]);
+
   // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
   // repository otherwise keeps the attachment, and a later repo-to-storage sync
   // (e.g. deleting a message in the thread) would write it back.
@@ -1365,19 +1786,129 @@ function useStudioRuntimeAdapters(
           assistant: 2,
         };
         let msgs: MessageRecord[];
+        let activeGenerationRuns: ChatGenerationRun[];
+        let activeGenerationRunsLoaded: boolean;
         try {
-          msgs = await listStoredChatMessages(remoteId);
+          const snapshot = await loadGenerationOverlaySnapshot(
+            remoteId,
+            getActiveChatGenerationRuns,
+            listStoredChatMessages,
+          );
+          msgs = snapshot.messages;
+          activeGenerationRuns = snapshot.activeRuns;
+          activeGenerationRunsLoaded = snapshot.activeRunsLoaded;
         } catch (error) {
           if (!isExpectedBackgroundChatStorageError(error)) {
             throw error;
           }
           msgs = [];
+          activeGenerationRuns = [];
+          activeGenerationRunsLoaded = false;
+        }
+        // The endpoint is named for active runs but returns rows, so a run that
+        // terminalised between the write and this read comes back with it, and
+        // force-writing `generationSettled: false` over a finished reply revives it.
+        // Take the still-live rows only and publish them as the corroboration
+        // `toThreadMessage` restores a running status from. A failed read is silence,
+        // not a report of "nothing is running".
+        activeGenerationRuns = activeGenerationRuns.filter(
+          (run) => !isTerminalChatGenerationRun(run),
+        );
+        // And drop any run the message snapshot already shows as finished. The runs read
+        // happens first, so a run that completed in between is still listed as running
+        // here. Filtering the LIST rather than skipping at the overlay matters: the
+        // registry sync below runs first, and a stale mapping there keeps the thread
+        // reading as durable, so a later subscriber-owned stream on it would be capped
+        // and lose everything it streamed past the cap. In another tab nothing else
+        // would ever remove that mapping.
+        const terminalMessageRuns = new Set(
+          msgs
+            .filter((message) => {
+              const custom = (message.metadata ?? {}) as Record<string, unknown>;
+              const status = custom.generationStatus;
+              return (
+                status === "completed" ||
+                status === "failed" ||
+                status === "cancelled"
+              );
+            })
+            .map((message) => message.id),
+        );
+        activeGenerationRuns = activeGenerationRuns.filter(
+          (run) => !terminalMessageRuns.has(run.assistantMessageId),
+        );
+        // The runs read happens BEFORE the messages read, so a run created between the
+        // two would read as interrupted and re-enable the composer for a thread the
+        // server is still generating on. Close that gap with one more lookup, and only
+        // when a message actually names a run the first read missed.
+        if (!activeGenerationRunsLoaded) {
+          // The initial read failed, so this thread has no current answer. Retract any
+          // answer from an earlier load: another tab may have started a run since, and
+          // the stale answer would restore that live reply as interrupted and briefly
+          // enable a conflicting send.
+          markServerActiveGenerationRunsUnknown(remoteId);
+        }
+        if (activeGenerationRunsLoaded) {
+          let answered = true;
+          const known = new Set(activeGenerationRuns.map((run) => run.id));
+          const missed = msgs.some((message) => {
+            const custom = (message.metadata ?? {}) as Record<string, unknown>;
+            const runId = custom.generationRunId;
+            const status = custom.generationStatus;
+            return (
+              typeof runId === "string" &&
+              !known.has(runId) &&
+              (status === "queued" ||
+                status === "running" ||
+                status === "cancelling")
+            );
+          });
+          if (missed) {
+            try {
+              const second = await getActiveChatGenerationRuns(remoteId);
+              activeGenerationRuns = second.filter(
+                (run) => !isTerminalChatGenerationRun(run),
+              );
+            } catch {
+              // `missed` already proved the first list predates this run, so it is not
+              // an answer either. Leave the thread unanswered rather than promoting a
+              // list known to be stale, and retract any answer from an earlier load:
+              // another tab may have started a run since, and the stale answer would
+              // restore that live reply as interrupted.
+              answered = false;
+              markServerActiveGenerationRunsUnknown(remoteId);
+            }
+          }
+          if (answered) {
+            syncServerActiveGenerationRuns(
+              remoteId,
+              activeGenerationRuns.map((run) => run.id),
+            );
+          }
+        }
+        for (const run of activeGenerationRuns) {
+          const assistant = msgs.find(
+            (message) => message.id === run.assistantMessageId,
+          );
+          if (!assistant) continue;
+
+          assistant.metadata = {
+            ...(assistant.metadata ?? {}),
+            generationRunId: run.id,
+            generationStatus: run.status,
+            generationSettled: false,
+            serverManaged: true,
+            // The server still has this run, which overrules a follower that gave up on
+            // it locally. Clearing the marker here is what lets a genuinely slow run be
+            // picked back up instead of staying interrupted for the life of the page.
+            generationLocallyInterrupted: false,
+          };
         }
         // Durable research can outlive this runtime. Reattach its server-owned
         // assistant message to the inline card after navigation or refresh.
-        const researchThreadState = await getResearchThreadState(remoteId).catch(
-          () => null,
-        );
+        const researchThreadState = await getResearchThreadState(
+          remoteId,
+        ).catch(() => null);
         if (researchThreadState) {
           useResearchRunStore
             .getState()
@@ -1406,6 +1937,23 @@ function useStudioRuntimeAdapters(
           if (aOrder !== bOrder) return aOrder - bOrder;
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
+        for (const message of msgs) {
+          if (
+            message.role === "assistant" &&
+            typeof (message.metadata as Record<string, unknown> | undefined)
+              ?.generationRunId === "string"
+          ) {
+            scheduleGenerationRecovery(
+              remoteId,
+              {
+                ...message,
+                content: cloneContent(message.content),
+                metadata: { ...(message.metadata ?? {}) },
+              },
+              aui,
+            );
+          }
+        }
 
         // Restore context usage from last assistant message if model matches.
         const lastAssistant = [...msgs]
@@ -1424,17 +1972,20 @@ function useStudioRuntimeAdapters(
           | undefined;
         const store = useChatRuntimeStore.getState();
         // Window check applies only when a local GGUF window is known; external
-        // providers have ggufContextLength === null.
+        // providers have loadedContextLength === null. llama.cpp stops at the window, so
+        // a saved count past it is stale; MLX runs past it by design, and a thread whose
+        // recount is unsupported -- a VLM, or one carrying tool history -- would never
+        // get another count to replace the one rejected here.
+        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
-          !store.ggufContextLength ||
-          (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
+          !localLimit || (savedUsage?.totalTokens ?? 0) <= localLimit;
         // Legacy unscoped usage (no modelId) is trusted only when a known local
         // window bounds the totals, so an old local turn can't be misattributed
         // to a newly-selected external provider.
         const modelMatches = savedUsage?.modelId
           ? savedUsage.modelId === store.params.checkpoint
-          : typeof store.ggufContextLength === "number" &&
-            store.ggufContextLength > 0;
+          : typeof store.loadedContextLength === "number" &&
+            store.loadedContextLength > 0;
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
@@ -1463,17 +2014,13 @@ function useStudioRuntimeAdapters(
         // preserve the chain. Fall back to fromArray for fully legacy threads.
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
-          let previousId: string | null = null;
+          const resolveParent = createParentResolver();
           return completeLoad(
             {
-              messages: msgs.map((m) => {
-                const parentId = m.parentId != null ? m.parentId : previousId;
-                previousId = m.id;
-                return {
-                  parentId,
-                  message: toThreadMessage(m),
-                };
-              }),
+              messages: msgs.map((m) => ({
+                parentId: resolveParent(m),
+                message: toThreadMessage(m),
+              })),
             },
             remoteId,
           );
@@ -1580,26 +2127,40 @@ function useStudioRuntimeAdapters(
           const sameResearchRun =
             typeof existingMetadata?.researchRunId === "string" &&
             existingMetadata.researchRunId === incomingMetadata?.researchRunId;
+          const sameGenerationRun =
+            typeof existingMetadata?.generationRunId === "string" &&
+            existingMetadata.generationRunId ===
+              incomingMetadata?.generationRunId;
+          const preserveGeneration = shouldPreserveGenerationMetadata(
+            existingMetadata,
+            incomingMetadata,
+          );
           const preserveServerManaged =
             existingMetadata?.serverManaged === true &&
-            (sameResearchRun ||
+            (preserveGeneration ||
+              sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // Echo the backend's stored metadata verbatim on autosave: merging
-          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
-          // server never persisted, so _research_message_would_change sees a diff and
-          // rejects every streamed/snapshot update with 409.
-          const metadata = preserveServerManaged
-            ? existingMetadata
-            : incomingMetadata;
+          // The backend owns this message and refuses client edits, and every field the save
+          // would send was just read back from it, so the request is answered 409 every time.
+          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs
+          // from the `ensureStoredChatThread` inside `saveStoredChatMessage`. Returning here
+          // drops both.
+          //
+          // `parentId` is the one field not echoed back, so a reparent could differ. It is
+          // dropped either way: the server rejects the whole request, so it never landed here.
+          if (preserveServerManaged) {
+            await throwIfHistoryWasCleared(remoteId);
+            return;
+          }
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content: preserveServerManaged ? existingMessage!.content : content,
+            content,
             ...(attachments.length > 0 && { attachments }),
-            ...(metadata && { metadata }),
+            ...(incomingMetadata && { metadata: incomingMetadata }),
             createdAt,
           });
           await throwIfHistoryWasCleared(remoteId);
@@ -1865,7 +2426,7 @@ function ThreadNewChatSwitch({
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // Read only by the recount below: New Chat itself must not care whether a run is still going.
   const runActive = useChatRuntimeStore((s) =>
@@ -2078,7 +2639,7 @@ function ThreadNewChatSwitch({
       modelLoading ||
       runActive ||
       !checkpoint ||
-      ggufContextLength == null
+      loadedContextLength == null
     ) {
       return;
     }
@@ -2091,7 +2652,7 @@ function ThreadNewChatSwitch({
     // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
   }, [
     checkpoint,
-    ggufContextLength,
+    loadedContextLength,
     isLoading,
     modelLoading,
     nonce,
@@ -2416,7 +2977,7 @@ function ThreadContextUsageRecount({
 }: { enabled: boolean }): ReactElement | null {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
   // for being busy would never be retried. Every run, not just local ones, since that is what the
@@ -2432,7 +2993,7 @@ function ThreadContextUsageRecount({
       modelLoading ||
       runActive ||
       !checkpoint ||
-      ggufContextLength == null
+      loadedContextLength == null
     ) {
       return;
     }
@@ -2443,7 +3004,7 @@ function ThreadContextUsageRecount({
     activeThreadId,
     checkpoint,
     enabled,
-    ggufContextLength,
+    loadedContextLength,
     runActive,
     modelLoading,
   ]);
@@ -2659,7 +3220,10 @@ function ThreadBackendAutosave({
   const checkpoints = useCallback((): RunCheckpointScheduler => {
     checkpointsRef.current ??= createRunCheckpointScheduler(
       (threadId) => queueSaveRef.current(threadId),
-      { isActive: (threadId) => isRunActiveRef.current(threadId) },
+      {
+        isActive: (threadId) => isRunActiveRef.current(threadId),
+        isBounded: (threadId) => threadHasDurableGenerationRun(threadId),
+      },
     );
     return checkpointsRef.current;
   }, []);

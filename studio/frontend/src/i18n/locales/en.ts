@@ -47,6 +47,13 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
+    find: {
+      label: "Find in page",
+      previous: "Previous match",
+      next: "Next match",
+      close: "Close find",
+      truncated: "This page is too long to search in full.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -223,6 +230,10 @@ export const en = {
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
       actions: {
+        findInPage: {
+          label: "Find in page",
+          description: "Search the text on this page",
+        },
         openSettings: {
           label: "Open settings",
           description: "Open the settings dialog",
@@ -688,7 +699,7 @@ export const en = {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
         enableDescription:
-          "Load a downloaded GGUF named in an API request before serving. Off by default.",
+          "Load a downloaded model named in an API request before serving. Off by default.",
         autoDownload: "Download missing models",
         autoDownloadDescription:
           "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",
@@ -796,7 +807,7 @@ export const en = {
         embeddingModel: "Embedding model",
         embeddingModelDescription:
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
-        searchPlaceholder: "Search embedding models",
+        searchPlaceholder: "Search any model on HF",
         reindexWarning:
           "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
         emptyError: "Enter a Hugging Face model id or local path.",
@@ -804,7 +815,24 @@ export const en = {
         saveError: "Failed to save the embedding model.",
         saved: "Embedding model saved.",
         saveAnyway: "Save anyway",
-        resetAction: "Reset to default",
+        recommended: "Recommended",
+        onDevice: "On device",
+        searching: "Searching Hugging Face…",
+        checking: "Checking…",
+        noResults: "No embedding models found",
+        download: "Download",
+        unload: "Unload",
+        unloadFailed: "Couldn't unload the embedding model",
+        downloadingStatus: "Downloading…",
+        notDownloaded: "Not downloaded",
+        notDownloadedSized: "Not downloaded · {size}",
+        loaded: "Loaded",
+        downloading: "Downloading {model}",
+        downloadingDescription:
+          "Progress is in the downloads panel. Indexing uses it once it lands.",
+        downloadFailed: "Couldn't start the download",
+        downloadConflict: "Resume this download from the Hub",
+        downloadBusy: "Download already in progress",
       },
       storage: {
         sectionTitle: "Storage",
@@ -815,6 +843,16 @@ export const en = {
         copied: "Path copied",
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
+      },
+      repairInstall: {
+        label: "Repair installation",
+        description:
+          "Reruns the installer over the managed environment. Use this if the GPU is not detected or the app will not start.",
+        action: "Repair install",
+        confirmTitle: "Repair this installation?",
+        confirmDescription:
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+        confirmAction: "Repair now",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
@@ -1065,6 +1103,8 @@ export const en = {
         currentLoad: "Current load",
         free: "{value} free",
         noGpu: "No visible GPU",
+        gpuUnusable: "GPU unusable",
+        gpuUnusableDetail: "Detected, but PyTorch cannot use it",
       },
       gpu: {
         title: "GPU devices",
@@ -1073,6 +1113,12 @@ export const en = {
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noUsableGpu: "No GPU on this machine is usable by PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
+        mismatchUnavailable:
+          "PyTorch ({version}) cannot initialise the GPUs below, so they cannot be used. Check the GPU driver, or repair the installation.",
+        unusableDevice: "unusable",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1186,6 +1232,8 @@ export const en = {
         processMemory: "Process memory",
         notInstalled: "Not installed",
         unknown: "Unknown",
+        // {vram} is the dedicated total, {shared} the shared pool beside it.
+        vramWithShared: "{vram} VRAM + {shared} shared",
       },
     },
     agents: {
@@ -1193,7 +1241,7 @@ export const en = {
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
+        "connects Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
@@ -1306,6 +1354,9 @@ export const en = {
         showAllQuantizations: "Show all quantizations",
         showAllQuantizationsDescription:
           "On: list every quantization in “On Device”, including not downloaded. Off: show only downloaded quantizations.",
+        showMemoryBar: "Show VRAM usage bar",
+        showMemoryBarDescription:
+          "Chart each downloaded model's estimated VRAM use under its row: weights, KV cache at the context it will load with, and any speculative draft reserve.",
       },
       menu: {
         title: "Chat menu",
@@ -1332,10 +1383,36 @@ export const en = {
       rememberParamsPerModel: "Remember settings per model",
       rememberParamsPerModelDescription:
         "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
+      autoCompact: "Auto-compact long chats",
+      autoCompactDescription:
+        "When a local GGUF chat fills the context length you set, drop older turns instead of returning an error. This is not based on free VRAM.",
+      compactionStyle: "When context fills",
+      compactionStyleDescription:
+        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
+      compactionStyleInherit: "Use server default",
+      compactionStyleCheckpoint: "Reset conversation",
+      compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
+      compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
+      compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
+      compactionStyleRollingNone: "Drop oldest turns (no extra trim)",
+      autoCompactKeywords:
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+      },
+      currentDate: {
+        label: "Tell the model today's date",
+        description:
+          "Add the current date to the prompt so web search and Deep Research look for recent sources instead of assuming the model's training cutoff.",
+        loadError: "Failed to load current date settings",
+        saveError: "Failed to update current date settings",
+      },
+      tools: {
+        collapseByDefault: "Collapse tool activity by default",
+        collapseByDefaultDescription:
+          "Keep tool inputs and outputs collapsed while tools run. Expand any tool row to inspect it.",
       },
       webSearch: {
         title: "Web search",
@@ -1354,6 +1431,11 @@ export const en = {
         blockedBanner: "Blocked {count} external resource from {hosts}.",
         blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
         blockedBannerAction: "Allow for this canvas",
+        blockedTitle: "Canvas network access is off",
+        blockedHint:
+          "Turn on “{setting}” in Settings → Chat to let canvases load external resources, or allow it just for this canvas.",
+        blockedSettingsAction: "Open Settings",
+        blockedDismiss: "Dismiss",
       },
       data: "Data",
       exportHistory: "Export chat history",
@@ -1425,6 +1507,8 @@ export const en = {
       archivedImagesDescription: "View and manage images you have archived.",
       archivedVideos: "Archived videos",
       archivedVideosDescription: "View and manage videos you have archived.",
+      archivedAudio: "Archived audio",
+      archivedAudioDescription: "View and manage audio clips you have archived.",
       manageAction: "Manage",
       manageChats: "Manage chats",
       manageChatsDescription:
@@ -1607,7 +1691,7 @@ export const en = {
         desktopCheckingDescription: "This usually takes a few seconds.",
         desktopAvailable: "Desktop app {version} is available",
         desktopAvailableDescription:
-          "Update now and the desktop app will restart when it finishes.",
+          "Update now to prepare it in the background. You keep working and restart when it is ready.",
         desktopExternalServer:
           "Run `unsloth studio update` from the terminal that started your server.",
         desktopManualInstall:
@@ -1617,11 +1701,20 @@ export const en = {
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
           "Unsloth will continue checking automatically.",
+        desktopPreparingDescription:
+          "The update is being prepared in the background. You can keep working.",
+        desktopReadyToRestartDescription:
+          "Everything is ready. Restart to finish installing the update.",
+        desktopReadyToInstallDescription:
+          "The app update is downloaded. Finish updating the backend to install it.",
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
         checking: "Checking...",
+        preparing: "Preparing...",
         updateNow: "Update now",
+        restartToUpdate: "Restart to update",
+        finishUpdate: "Finish update",
         openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
@@ -2361,5 +2454,16 @@ export const en = {
       raft: "RAFT",
       classification: "Classification",
     },
+  },
+  modelMemory: {
+    readout:
+      "Weights {model} + context {context} = {total} of {budget} usable VRAM",
+    readoutWithSpec:
+      "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
+    // Measured against llama.cpp: the cache is allocated at context creation,
+    // sized to n_ctx, so the rate is what a longer context actually costs.
+    kvRate: "KV reserved, ~{rate}/token",
+    oomLikely: "With current settings OOM likely",
+    tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
   },
 } as const;

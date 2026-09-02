@@ -90,14 +90,41 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI
+  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather
+  // than clamping it, so an overstated cap is a failed request and an
+  // understated one only a shorter answer. First match wins: a bare family
+  // prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
+  // `-chat-latest` aliases go first because they cap at 16,384 whatever their
+  // family does.
   {
     providerType: "openai",
-    prefixes: ["gpt-5.6", "gpt-5.5-pro", "gpt-5.5"],
+    prefixes: [
+      "gpt-5.3-chat-latest",
+      "gpt-5.2-chat-latest",
+      "gpt-5.1-chat-latest",
+      "gpt-5-chat-latest",
+    ],
+    cap: 16384,
+  },
+  {
+    providerType: "openai",
+    prefixes: ["gpt-5.6", "gpt-5.5-pro", "gpt-5.5", "gpt-5.2", "gpt-5.1"],
     cap: 128000,
   },
   { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
   { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
+  { providerType: "openai", prefixes: ["gpt-5"], cap: 128000 },
+  { providerType: "openai", prefixes: ["gpt-4.1"], cap: 32768 },
+  { providerType: "openai", prefixes: ["gpt-4.5"], cap: 16384 },
+  // `chatgpt-4o-latest` shares the gpt-4o cap but not its prefix.
+  { providerType: "openai", prefixes: ["gpt-4o", "chatgpt-4o"], cap: 16384 },
+  // Under the 8,192 default, so these two fail on an untouched config.
+  {
+    providerType: "openai",
+    prefixes: ["gpt-3.5-turbo", "gpt-4-turbo"],
+    cap: 4096,
+  },
+  { providerType: "openai", prefixes: ["gpt-4"], cap: 8192 },
   // Anthropic
   {
     providerType: "anthropic",
@@ -119,8 +146,16 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
       "claude-opus-4-5",
       "claude-sonnet-4-5",
       "claude-haiku-4-5",
+      // Dated 4.0 id, surfaced now the `-YYYYMMDD` filters are gone.
+      "claude-sonnet-4-20250514",
     ],
     cap: 64000,
+  },
+  // Below the 32,768 fallback, so a raised Max Tokens would overshoot.
+  {
+    providerType: "anthropic",
+    prefixes: ["claude-opus-4-1", "claude-opus-4-20250514"],
+    cap: 32000,
   },
   // Gemini
   {
@@ -778,17 +813,43 @@ const OPENAI_REASONING_MODELS = [
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
   {
-    prefixes: ["gpt-5.3-chat-latest"],
-    supportsOff: false,
-    levels: ["medium"],
-  },
-  {
     prefixes: ["gpt-5.3-codex"],
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
+  // 5.1 replaced "minimal" with "none" and 400s on the former; 5.2 adds
+  // xhigh. Both sit ahead of bare `gpt-5`, which keeps the old ladder.
   {
-    prefixes: ["gpt-5", "gpt-5.1", "gpt-5.2"],
+    prefixes: ["gpt-5.2"],
+    supportsOff: true,
+    levels: ["none", "low", "medium", "high", "xhigh"],
+  },
+  // 5.1 Codex keeps reasoning mandatory: `none` 400s (openai/codex#6647).
+  // `xhigh` arrived with codex-max, which sorts first or the plain codex
+  // prefix swallows it.
+  {
+    prefixes: ["gpt-5.1-codex-max"],
+    supportsOff: false,
+    levels: ["low", "medium", "high", "xhigh"],
+  },
+  {
+    prefixes: ["gpt-5.1-codex"],
+    supportsOff: false,
+    levels: ["low", "medium", "high"],
+  },
+  {
+    prefixes: ["gpt-5.1"],
+    supportsOff: true,
+    levels: ["none", "low", "medium", "high"],
+  },
+  // The Codex tuning drops the lowest tier without gaining "none".
+  {
+    prefixes: ["gpt-5-codex"],
+    supportsOff: false,
+    levels: ["low", "medium", "high"],
+  },
+  {
+    prefixes: ["gpt-5"],
     supportsOff: false,
     levels: ["minimal", "low", "medium", "high"],
   },
@@ -799,8 +860,16 @@ const OPENAI_REASONING_MODELS = [
   },
 ] as const;
 
+/** The ChatGPT-tuned aliases (`gpt-5.1-chat-latest`, Azure's `gpt-5-chat`).
+ * They are non-reasoning, so `reasoning.effort` fails the whole turn with
+ * "Unsupported parameter: 'reasoning.effort' is not supported with this model".
+ * Matched by suffix rather than enumerated because the prefix table below keys
+ * on family, and a family prefix silently swallows its own `-chat` variant. */
+const OPENAI_NON_REASONING_CHAT_ALIAS = /-chat(?:-latest)?$/;
+
 function resolveOpenAIReasoningEffortCapabilities(modelId: string): ReasoningCaps {
   const normalized = modelId.trim().toLowerCase();
+  if (OPENAI_NON_REASONING_CHAT_ALIAS.test(normalized)) return NO_REASONING_CAPS;
   const matched = OPENAI_REASONING_MODELS.find((entry) =>
     matchesModelPrefix(normalized, entry.prefixes),
   );

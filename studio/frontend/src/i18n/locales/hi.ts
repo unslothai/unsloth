@@ -55,6 +55,13 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    find: {
+      label: "पेज में खोजें",
+      previous: "पिछला मिलान",
+      next: "अगला मिलान",
+      close: "खोज बंद करें",
+      truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -226,6 +233,10 @@ export const hi = {
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
       actions: {
+        findInPage: {
+          label: "पेज में खोजें",
+          description: "इस पेज के टेक्स्ट में खोजें",
+        },
         openSettings: {
           label: "सेटिंग्स खोलें",
           description: "सेटिंग्स संवाद खोलें",
@@ -693,7 +704,7 @@ export const hi = {
         sectionTitle: "मॉडल ऑटो-स्विच (OpenAI API)",
         enable: "अनुरोध के अनुसार मॉडल बदलें",
         enableDescription:
-          "API अनुरोध में दिए गए डाउनलोड किए गए GGUF को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
+          "API अनुरोध में दिए गए डाउनलोड किए गए मॉडल को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
         idleUnload: "निष्क्रिय ऑटो-अनलोड",
         idleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद VRAM खाली करें। 0 पर मॉडल लोड रहता है; न्यूनतम 60 सेकंड।",
@@ -798,7 +809,7 @@ export const hi = {
         embeddingModel: "एम्बेडिंग मॉडल",
         embeddingModelDescription:
           "आपके दस्तावेज़ों को इंडेक्स और खोजने के लिए उपयोग किया जाने वाला Hugging Face मॉडल या स्थानीय पथ। डिफ़ॉल्ट {defaultModel} है।",
-        searchPlaceholder: "एम्बेडिंग मॉडल खोजें",
+        searchPlaceholder: "HF पर कोई भी मॉडल खोजें",
         reindexWarning:
           "केवल नए इंडेक्स किए गए दस्तावेज़ों को प्रभावित करता है। मॉडल बदलने के बाद मौजूदा दस्तावेज़ फिर से अपलोड करें।",
         emptyError: "एक Hugging Face मॉडल id या स्थानीय पथ दर्ज करें।",
@@ -806,7 +817,24 @@ export const hi = {
         saveError: "एम्बेडिंग मॉडल सहेजने में विफल।",
         saved: "एम्बेडिंग मॉडल सहेजा गया।",
         saveAnyway: "फिर भी सहेजें",
-        resetAction: "डिफ़ॉल्ट पर रीसेट करें",
+        recommended: "अनुशंसित",
+        onDevice: "डिवाइस पर",
+        searching: "Hugging Face पर खोज रहे हैं…",
+        checking: "जाँच रहे हैं…",
+        noResults: "कोई एम्बेडिंग मॉडल नहीं मिला",
+        download: "डाउनलोड करें",
+        unload: "अनलोड करें",
+        unloadFailed: "एम्बेडिंग मॉडल अनलोड नहीं हो सका",
+        downloadingStatus: "डाउनलोड हो रहा है…",
+        notDownloaded: "डाउनलोड नहीं हुआ",
+        notDownloadedSized: "डाउनलोड नहीं हुआ · {size}",
+        loaded: "लोड हो गया",
+        downloading: "{model} डाउनलोड हो रहा है",
+        downloadingDescription:
+          "प्रगति डाउनलोड पैनल में दिखती है। पूरा होने पर इंडेक्सिंग इसका उपयोग करेगी।",
+        downloadFailed: "डाउनलोड शुरू नहीं हो सका",
+        downloadConflict: "इस डाउनलोड को Hub से फिर से शुरू करें",
+        downloadBusy: "डाउनलोड पहले से चल रहा है",
       },
       storage: {
         sectionTitle: "स्टोरेज",
@@ -817,6 +845,16 @@ export const hi = {
         copied: "पथ कॉपी किया गया",
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
+      },
+      repairInstall: {
+        label: "इंस्टॉलेशन ठीक करें",
+        description:
+          "प्रबंधित परिवेश पर इंस्टॉलर को फिर से चलाता है। यदि GPU का पता नहीं चल रहा है या ऐप शुरू नहीं हो रहा है तो इसका उपयोग करें।",
+        action: "इंस्टॉल ठीक करें",
+        confirmTitle: "क्या यह इंस्टॉलेशन ठीक करना है?",
+        confirmDescription:
+          "सर्वर रोकता है और इंस्टॉलर फिर से चलाता है, जो इस मशीन के GPU के लिए PyTorch को दोबारा इंस्टॉल करता है। चैट और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
+        confirmAction: "अभी ठीक करें",
       },
       resetPreferences: {
         sectionTitle: "खतरनाक क्षेत्र",
@@ -1073,6 +1111,8 @@ export const hi = {
         currentLoad: "वर्तमान लोड",
         free: "{value} खाली",
         noGpu: "कोई दृश्यमान GPU नहीं",
+        gpuUnusable: "GPU अनुपयोगी",
+        gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
       },
       gpu: {
         title: "GPU डिवाइस",
@@ -1081,6 +1121,12 @@ export const hi = {
         detecting: "GPU खोजे जा रहे हैं...",
         unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
         noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
+        noUsableGpu: "इस मशीन का कोई भी GPU PyTorch के लिए उपयोग योग्य नहीं है।",
+        mismatchCpuBuild:
+          "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
+        mismatchUnavailable:
+          "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1193,6 +1239,7 @@ export const hi = {
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
         unknown: "अज्ञात",
+        vramWithShared: "{vram} VRAM + {shared} साझा मेमोरी",
       },
     },
     agents: {
@@ -1200,7 +1247,7 @@ export const hi = {
       description:
         "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
       intro:
-        "Claude Code, Codex, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
       readDocs: "दस्तावेज़ पढ़ें",
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",
@@ -1222,6 +1269,15 @@ export const hi = {
       docs: "दस्तावेज़",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
       subagent: {
@@ -1311,6 +1367,9 @@ export const hi = {
         showAllQuantizations: "सभी क्वांटाइज़ेशन दिखाएँ",
         showAllQuantizationsDescription:
           "चालू: “On Device” के सभी क्वांटाइज़ेशन की सूची दिखेगी, जिनमें डाउनलोड न किए गए क्वांटाइज़ेशन भी शामिल हैं। बंद: केवल डाउनलोड किए गए क्वांटाइज़ेशन दिखेंगे।",
+        showMemoryBar: "VRAM उपयोग बार दिखाएँ",
+        showMemoryBarDescription:
+          "हर डाउनलोड किए गए मॉडल की पंक्ति के नीचे उसका अनुमानित VRAM उपयोग दिखाएँ: वेट्स, जिस कॉन्टेक्स्ट लंबाई पर वह लोड होगा उस पर KV कैश, और स्पेकुलेटिव ड्राफ़्ट के लिए आरक्षित मेमोरी।",
       },
       menu: {
         title: "चैट मेन्यू",
@@ -1337,10 +1396,36 @@ export const hi = {
       rememberParamsPerModel: "हर मॉडल के लिए सेटिंग्स याद रखें",
       rememberParamsPerModelDescription:
         "मॉडल बदलने पर उस मॉडल के साथ आपने आखिरी बार जो तापमान, प्रॉम्प्ट और अन्य सेटिंग्स इस्तेमाल की थीं, वे वापस आ जाती हैं। बंद होने पर सभी मॉडलों के लिए एक ही सेट रहता है।",
+      autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
+      autoCompactDescription:
+        "जब लोकल GGUF चैट सेट की गई कॉन्टेक्स्ट लंबाई तक पहुँच जाए, तो त्रुटि लौटाने के बजाय पुराने टर्न हटा दें। यह खाली VRAM पर आधारित नहीं है।",
+      compactionStyle: "कॉन्टेक्स्ट भरने पर",
+      compactionStyleDescription:
+        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
+      compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
+      compactionStyleCheckpoint: "बातचीत रीसेट करें",
+      compactionStyleRollingDefault: "पुराने टर्न हटाएँ (~25% अतिरिक्त जगह)",
+      compactionStyleRolling10: "पुराने टर्न हटाएँ (~10% अतिरिक्त जगह)",
+      compactionStyleRolling5: "पुराने टर्न हटाएँ (~5% अतिरिक्त जगह)",
+      compactionStyleRollingNone: "पुराने टर्न हटाएँ (कोई अतिरिक्त कटौती नहीं)",
+      autoCompactKeywords:
+        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
           "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+      },
+      currentDate: {
+        label: "मॉडल को आज की तारीख बताएँ",
+        description:
+          "प्रॉम्प्ट में मौजूदा तारीख जोड़ें ताकि वेब सर्च और Deep Research मॉडल की ट्रेनिंग कटऑफ मान लेने के बजाय हाल के स्रोत खोजें।",
+        loadError: "मौजूदा तारीख की सेटिंग्स लोड नहीं हो सकीं",
+        saveError: "मौजूदा तारीख की सेटिंग्स अपडेट नहीं हो सकीं",
+      },
+      tools: {
+        collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
+        collapseByDefaultDescription:
+          "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
       },
       webSearch: {
         title: "वेब खोज",
@@ -1359,6 +1444,11 @@ export const hi = {
         blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
         blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
         blockedBannerAction: "इस Canvas के लिए अनुमति दें",
+        blockedTitle: "Canvas नेटवर्क एक्सेस बंद है",
+        blockedHint:
+          "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
+        blockedSettingsAction: "सेटिंग्स खोलें",
+        blockedDismiss: "खारिज करें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",
@@ -1432,6 +1522,8 @@ export const hi = {
       archivedImagesDescription: "आपके द्वारा संग्रहित की गई छवियाँ देखें और प्रबंधित करें।",
       archivedVideos: "संग्रहित वीडियो",
       archivedVideosDescription: "आपके द्वारा संग्रहित किए गए वीडियो देखें और प्रबंधित करें।",
+      archivedAudio: "संग्रहित ऑडियो",
+      archivedAudioDescription: "आपके द्वारा संग्रहित किए गए ऑडियो क्लिप देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
       manageChats: "चैट प्रबंधित करें",
       manageChatsDescription:
@@ -1615,7 +1707,7 @@ export const hi = {
           "इसमें आम तौर पर कुछ सेकंड लगते हैं।",
         desktopAvailable: "डेस्कटॉप ऐप {version} उपलब्ध है",
         desktopAvailableDescription:
-          "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
+          "अभी अपडेट करें, यह पृष्ठभूमि में तैयार होगा। आप काम करते रह सकते हैं और तैयार होने पर फिर से शुरू करें।",
         desktopExternalServer:
           "जिस टर्मिनल से सर्वर शुरू किया गया था, उसमें `unsloth studio update` चलाएँ।",
         desktopManualInstall:
@@ -1625,11 +1717,20 @@ export const hi = {
           "अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
         desktopCurrent: "डेस्कटॉप ऐप नवीनतम संस्करण पर है",
         desktopCurrentDescription: "Unsloth अपने-आप जाँच करता रहेगा।",
+        desktopPreparingDescription:
+          "अपडेट पृष्ठभूमि में तैयार हो रहा है। आप काम करते रह सकते हैं।",
+        desktopReadyToRestartDescription:
+          "सब तैयार है। इंस्टॉल पूरा करने के लिए फिर से शुरू करें।",
+        desktopReadyToInstallDescription:
+          "ऐप अपडेट डाउनलोड हो गया है। इसे इंस्टॉल करने के लिए बैकएंड अपडेट पूरा करें।",
         checkForUpdates: "अपडेट की जाँच करें",
         checkAgain: "फिर से जाँचें",
         retryCheck: "फिर से कोशिश करें",
         checking: "जाँच हो रही है...",
+        preparing: "तैयार हो रहा है...",
         updateNow: "अभी अपडेट करें",
+        restartToUpdate: "अपडेट के लिए फिर से शुरू करें",
+        finishUpdate: "अपडेट पूरा करें",
         openReleasePage: "रिलीज़ पेज खोलें",
         unknownInstall:
           "यह पता नहीं लगाया जा सका कि Unsloth कैसे इंस्टॉल किया गया था। इंस्टॉलर या PyPI इंस्टॉल के लिए, ऊपर दिए गए कमांड का उपयोग करें।",
@@ -2380,5 +2481,14 @@ export const hi = {
       raft: "RAFT",
       classification: "क्लासिफिकेशन",
     },
+  },
+  modelMemory: {
+    readout:
+      "वेट्स {model} + कॉन्टेक्स्ट {context} = {budget} उपयोग-योग्य VRAM में से {total}",
+    readoutWithSpec:
+      "वेट्स {model} + KV {kv} + MTP ड्राफ़्ट {spec} = {budget} उपयोग-योग्य VRAM में से {total}",
+    kvRate: "KV आरक्षित, ~{rate}/टोकन",
+    oomLikely: "मौजूदा सेटिंग्स के साथ मेमोरी कम पड़ सकती है",
+    tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

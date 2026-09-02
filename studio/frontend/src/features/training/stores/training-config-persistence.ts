@@ -222,6 +222,7 @@ function migrateThroughVersion19(
       learningRateManuallySet: inferLegacyLearningRateWasManuallySet(state),
       modelAdapterLearningRate: null,
       datasetFormatBeforeCpt: null,
+      targetModulesBeforeCpt: null,
     } satisfies TrainingMethodProvenance;
   }
 }
@@ -257,6 +258,7 @@ function normalizeTrainingMethodProvenance(
       : {};
   const modelAdapterLearningRate = provenance.modelAdapterLearningRate;
   const datasetFormatBeforeCpt = provenance.datasetFormatBeforeCpt;
+  const targetModulesBeforeCpt = provenance.targetModulesBeforeCpt;
   return {
     learningRateManuallySet:
       typeof provenance.learningRateManuallySet === "boolean"
@@ -273,6 +275,12 @@ function normalizeTrainingMethodProvenance(
       isDatasetFormat(datasetFormatBeforeCpt) &&
       datasetFormatBeforeCpt !== "raw"
         ? datasetFormatBeforeCpt
+        : null,
+    targetModulesBeforeCpt:
+      persistedState.trainingMethod === "cpt" &&
+      Array.isArray(targetModulesBeforeCpt) &&
+      targetModulesBeforeCpt.length > 0
+        ? [...targetModulesBeforeCpt]
         : null,
   };
 }

@@ -53,7 +53,7 @@ SOURCES = (PROVIDER, STORE, QUEUE)
 BOUND_NAMES = {
     "aui",
     "checkpoint",
-    "ggufContextLength",
+    "loadedContextLength",
     "initialThreadId",
     "isLoading",
     "mainThreadId",
@@ -140,11 +140,27 @@ def _set_active_thread_id_reducer() -> str:
     ).strip()
 
 
+# `export { X } from "./y"` and `import type { X } from "./y"`, at the top level.
+# The harness inlines one file, so a surviving specifier is a module Node cannot
+# resolve in the temp dir; the names themselves are stubbed in the prelude.
+_REEXPORT = re.compile(
+    r"^(?:export|import)\s+(?:type\s+)?\{[^}]*\}\s+from\s+[\"'][^\"']+[\"'];\s*$",
+    re.MULTILINE,
+)
+
+
 def _prompt_queue_boundary_body() -> str:
-    """Everything in prompt-queue-boundary.ts after its import block, verbatim."""
+    """Everything in prompt-queue-boundary.ts after its import block, verbatim.
+
+    Re-export statements are dropped rather than replayed. They are module
+    plumbing, not body, and the slice marker is only the last plain import, so a
+    re-export written below it would otherwise be inlined into the harness and
+    fail to resolve.
+    """
     text = read(QUEUE)
     marker = 'from "./prompt-queue-model-boundary";'
-    return text[text.index(marker) + len(marker) :]
+    body = text[text.index(marker) + len(marker) :]
+    return _REEXPORT.sub("", body)
 
 
 HARNESS_PRELUDE = """
@@ -196,7 +212,7 @@ const state: any = {
   contextUsage: null,
   contextUsageByThreadId: {},
   params: { checkpoint: "", systemPrompt: "", systemVariables: "" },
-  ggufContextLength: null,
+  loadedContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
 };
@@ -449,7 +465,7 @@ function renderThreadNewChatSwitch(props: any): void {
   const isLoading = props.isLoading ?? false;
   // Read through useChatRuntimeStore selectors, so a re-render sees the store as it stands.
   const checkpoint = state.params.checkpoint;
-  const ggufContextLength = state.ggufContextLength;
+  const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   // The stale-switch correction subscribes to it, exactly as ThreadAutoSwitch does.
@@ -462,7 +478,7 @@ function renderThreadNewChatSwitch(props: any): void {
     nonce,
     paused,
     checkpoint,
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     runActive,
   };
@@ -594,7 +610,7 @@ def _run(imports: str, body: str) -> dict:
 # A resident GGUF, so the second effect has something it could price. Only the tests about
 # the pause gate need it; everywhere else the bar has nothing to count and stands down.
 LOADED_MODEL = """
-    seed({ params: { checkpoint: "unsloth/gguf-model" }, ggufContextLength: 8192 });
+    seed({ params: { checkpoint: "unsloth/gguf-model" }, loadedContextLength: 8192 });
 """
 
 

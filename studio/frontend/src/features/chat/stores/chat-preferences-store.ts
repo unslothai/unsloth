@@ -28,6 +28,8 @@ export interface ChatPreferencesState {
   setShowResponseModel: (value: boolean) => void;
   collapseThinkingByDefault: boolean;
   setCollapseThinkingByDefault: (value: boolean) => void;
+  collapseToolActivityByDefault: boolean;
+  setCollapseToolActivityByDefault: (value: boolean) => void;
   pastedTextMinChars: number;
   setPastedTextMinChars: (value: number) => void;
 }
@@ -59,6 +61,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       collapseThinkingByDefault: false,
       setCollapseThinkingByDefault: (collapseThinkingByDefault) =>
         set({ collapseThinkingByDefault }),
+      collapseToolActivityByDefault: true,
+      setCollapseToolActivityByDefault: (collapseToolActivityByDefault) =>
+        set({ collapseToolActivityByDefault }),
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
       setPastedTextMinChars: (pastedTextMinChars) =>
         set({ pastedTextMinChars }),
@@ -74,6 +79,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
           collapseThinkingByDefault: saved?.collapseThinkingByDefault ?? false,
+          collapseToolActivityByDefault:
+            saved?.collapseToolActivityByDefault ?? true,
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),

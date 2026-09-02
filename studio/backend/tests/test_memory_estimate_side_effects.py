@@ -3,26 +3,23 @@
 
 """Side-effect contracts for POST /api/inference/estimate-memory.
 
-``test_memory_estimate.py`` guards the arithmetic. This file guards the four
-promises the route's docstring makes about what it does NOT do -- "no model is
-loaded, no device is touched, nothing is downloaded" -- and it guards them
-behaviourally rather than by reading the source, because the panel fires this
-endpoint on every settings change and a regression here is a Hub round trip, a
-disk write, or a reaped llama-server behind a slider drag.
+``test_memory_estimate.py`` guards the arithmetic; this file guards the promises the
+route makes about what it does NOT do -- "no model is loaded, no device is touched,
+nothing is downloaded" -- behaviourally rather than by reading the source, because the
+panel fires this endpoint on every settings change and a regression here is a Hub round
+trip, a disk write, or a reaped llama-server behind a slider drag.
 
 Four properties, one section each:
 
-* the on-disk gate (``_estimate_target_is_on_this_disk``) is fail-OPEN on every
-  error path, so this pins exactly which hosts fall through it into the network.
+* the on-disk gate (``_estimate_target_is_on_this_disk``) is fail-OPEN on every error
+  path, so this pins which hosts fall through it into the network;
 * ``_probe_backend``'s ``except TypeError`` must not turn a fault raised INSIDE a
-  constructor into a silently process-reaping backend.
-* the blocking capability probe belongs off the event loop, the way
-  ``_effective_default_slots`` already puts it there.
-* both TTL caches are shared mutable module state reached from
-  ``asyncio.to_thread`` workers, i.e. from real threads.
+  constructor into a silently process-reaping backend;
+* the blocking capability probe belongs off the event loop, where
+  ``_effective_default_slots`` already puts it;
+* both TTL caches are shared mutable module state reached from real threads.
 
-No GPU, no network, no model load: every GGUF here is a synthetic header on
-tmp_path. Cross-platform.
+No GPU, no network, no model load: every GGUF here is a synthetic header on tmp_path.
 """
 
 import sys
@@ -238,20 +235,19 @@ class TestTheOnDiskGateAndTheNetwork:
         assert ri._estimate_target_is_on_this_disk("org/definitely-not-cached") is True
 
     def test_a_gate_that_could_not_be_answered_never_resolves_online(self, monkeypatch):
-        # THE claim under test. The PR body says "no model is loaded, no device is
-        # touched, nothing is downloaded", and the gate exists to keep that true by
+        # THE claim under test: "nothing is downloaded", which the gate keeps true by
         # stopping from_identifier before it walks to the Hub.
         #
-        # But the gate fails OPEN, and what it falls through to is not merely a local
-        # resolution: _cached_estimate_config tries offline first and then RETRIES
-        # ONLINE. So on a host where no cache root can be established, an uncached
-        # remote id gets the full identification -- model_info attempts and an
-        # hf_hub_download of config.json, which writes blob, ref, snapshot and lock
-        # into the HF cache -- for a request whose answer is "not on this disk".
+        # But the gate fails OPEN, and it falls through to more than a local resolution:
+        # _cached_estimate_config tries offline first and then RETRIES ONLINE. On a host
+        # where no cache root can be established, an uncached remote id therefore gets
+        # the full identification -- model_info attempts plus an hf_hub_download of
+        # config.json writing blob, ref, snapshot and lock -- for a request whose answer
+        # is "not on this disk".
         #
-        # The observable is the offline switch itself, not a socket: force_hf_offline
-        # flips huggingface_hub's own constant, so a resolution that sees it False is
-        # a resolution that was allowed to dial out.
+        # The observable is the offline switch, not a socket: force_hf_offline flips
+        # huggingface_hub's own constant, so a resolution seeing it False was allowed to
+        # dial out.
         monkeypatch.setattr(ri, "_estimate_hf_cache_roots", list)
         offline_at_each_call = []
 
@@ -400,17 +396,15 @@ class TestInertProbeFallback:
     """``_probe_backend`` must not answer a fault with a process-reaping backend."""
 
     def test_a_fault_inside_the_constructor_is_not_answered_by_reaping(self, monkeypatch):
-        # The fallback exists for stand-ins that PREDATE the keyword: two in
+        # The fallback is for stand-ins that PREDATE the keyword -- two in
         # test_chat_load_during_training.py are plain classes taking no arguments, so
-        # `LlamaCppBackend(manages_processes = False)` is a signature TypeError there
-        # and the bare constructor is both compatible and correct.
+        # the keyword is a signature TypeError and the bare constructor is correct.
         #
-        # A TypeError raised from INSIDE __init__ is a different animal and lands in
-        # the same except. The bare constructor it falls back to runs
-        # _kill_orphaned_servers -- which walks /proc and SIGNALS the llama-servers it
-        # recognises -- and registers an atexit handler holding the instance forever.
-        # So a fault becomes "reap the user's running server", on a route the settings
-        # panel fires on every change, and it does it silently.
+        # A TypeError raised from INSIDE __init__ lands in the same except, and the bare
+        # constructor it falls back to runs _kill_orphaned_servers, which walks /proc and
+        # SIGNALS the llama-servers it recognises, then registers an atexit handler
+        # holding the instance forever. A fault would silently become "reap the user's
+        # running server", on a route the panel fires on every change.
         constructions = []
         reaps = []
 
@@ -510,20 +504,17 @@ class TestSlotResolutionStaysOffTheEventLoop:
     def test_the_capability_probe_never_runs_on_the_event_loop_thread(
         self, monkeypatch, side_effect_gguf
     ):
-        # _effective_parallel_slots asks the binary whether it supports --kv-unified.
-        # _find_llama_server_binary walks nine candidate layouts on every call, before
-        # the capability cache is even consulted, and retries a denied one five times
-        # at 0.2s; on a cold cache the probe itself is `llama-server --help` with a ten
-        # second timeout.
+        # _effective_parallel_slots asks the binary about --kv-unified, and
+        # _find_llama_server_binary walks nine layouts per call before the capability
+        # cache is consulted, retrying a denied one five times at 0.2s; on a cold cache
+        # the probe is `llama-server --help` with a ten second timeout.
         #
-        # This route's own sibling already knows: _effective_default_slots wraps the
-        # same helper in asyncio.to_thread, and its docstring records that calling it
-        # inline "stalled every other request on the first open of the panel after an
-        # update". The loop this route runs on is the one streaming chat tokens.
+        # The sibling already knows: _effective_default_slots wraps the same helper in
+        # asyncio.to_thread because inline it "stalled every other request on the first
+        # open of the panel after an update". This route's loop streams chat tokens.
         #
-        # Asserted by thread identity rather than by a stopwatch: it is the same
-        # property, it cannot flake under a loaded xdist runner, and it says which
-        # thread the work belongs on instead of how slow it was allowed to be.
+        # Asserted by thread identity, not a stopwatch: same property, cannot flake
+        # under a loaded xdist runner, and it names the thread the work belongs on.
         _priced_locally(monkeypatch, side_effect_gguf)
 
         probe_threads = []

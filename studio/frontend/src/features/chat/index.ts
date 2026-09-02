@@ -16,6 +16,7 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  estimateKvCache,
   listLoras,
   listModels,
   listRecommendedFolders,
@@ -30,6 +31,7 @@ export {
   type CachedModelRepo,
   type ChatAttachmentPage,
   type ChatAttachmentRecord,
+  type KvCacheEstimate,
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
@@ -43,6 +45,7 @@ export {
   applyActiveModelStatusToStore,
   resolveInferenceCheckpointId,
 } from "./lib/apply-inference-status-to-store";
+export { isSpeechOnlyStatus } from "./lib/speech-only-status";
 export {
   ChatSettingsPanel,
   ParamSlider,
@@ -51,12 +54,19 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  hydrateModelDisclaimerPreference,
+  refreshModelDisclaimerPreference,
+  saveModelDisclaimerPreference,
+} from "./sync-model-disclaimer-preference";
 export { useChatActive, useInComparePane } from "./runtime-provider";
 export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
   readPersistedGpuMemoryMode,
   reconcilePersistedGpuIds,
   reconcilePersistedGpuSelection,
@@ -205,7 +215,10 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
-export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
+} from "./utils/youtube-url";
 export {
   isSearchImagesToolResult,
   searchImagePath,

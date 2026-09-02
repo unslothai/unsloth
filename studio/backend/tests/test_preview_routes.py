@@ -127,6 +127,30 @@ def test_page_renders_friendly_busy_message(client):
     assert "Unsloth is currently using another model" in response.text
 
 
+def test_page_renders_reasoning_stream(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "delta.reasoning_content" in text
+    assert 'choice.finish_reason === "length"' in text
+    assert "Reply cut off at the preview length limit." in text
+    assert "cutoff.hidden = !truncated" in text
+    assert 'cutoff.setAttribute("role", "status")' in text
+    assert "preview stream ended before completion" in text
+
+
+def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (hasContent || hasReasoning)" in text
+    assert "if (hasReasoning) reply.reasoning_content = reasoning" in text
+    assert "if (reasoning.trim())" in text
+
+
+def test_page_recovers_from_empty_reply(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (!hasContent && !hasReasoning)" in text
+    assert "The model returned an empty reply. Please try again." in text
+    assert "Reply cut off before the model returned an answer." in text
+
+
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
@@ -729,7 +753,7 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
     import inspect
     import threading
 
-    src = inspect.getsource(inference.openai_chat_completions)
+    src = inspect.getsource(inference.produce_openai_chat_completions)
     assert src.count("_mark_cancelled_json_response_failed(request, cancel_event)") == 3
 
     _reset_keepwarm_counters()
@@ -745,6 +769,47 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
         await send({"type": "http.response.body", "body": b"{}", "more_body": False})
 
     _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")
+    _reset_keepwarm_counters()
+
+
+def test_cancelled_anthropic_non_streaming_does_not_claim_slot(slot_state):
+    """/v1/messages answers 200 from partial output after a disconnect, same as the twin."""
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    total = 200
+    emitted = []
+
+    async def _app(scope, receive, send):
+        cancel_event = threading.Event()
+        started = threading.Event()
+
+        class _LeavingRequest:
+            def __init__(self):
+                self.scope = scope
+
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _run_gen():
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield "x"
+
+        response = await inference._anthropic_plain_non_streaming(
+            _LeavingRequest(), _run_gen, "msg_1", "m", cancel_event = cancel_event
+        )
+        assert response.status_code == 200
+        assert cancel_event.is_set()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/messages")
+    assert len(emitted) < total
     assert inference._is_preview_resident("/outputs/run/ckpt")
     _reset_keepwarm_counters()
 

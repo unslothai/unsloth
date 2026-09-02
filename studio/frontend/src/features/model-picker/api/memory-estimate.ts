@@ -162,14 +162,11 @@ function estimateRequestBody(
 /**
  * A byte count the row can show, or the fallback.
  *
- * `??` alone only defends against null and undefined, which is not the same as
- * defending against a value: JSON.parse turns `1e999` into Infinity without
- * complaint, a field can arrive as a string from a backend that stringified its
- * numbers, and a negative byte count is not a footprint. Each of those reaches
- * classifyMemoryFit, and NaN there used to come back "fits".
- *
- * Deliberately preserves the two skew fallbacks: an ABSENT key still falls through to
- * whatever the caller passes as the fallback, and an explicit 0 is a real answer.
+ * `??` defends against null and undefined, not against a value: JSON.parse turns
+ * `1e999` into Infinity, a field can arrive stringified, and a negative byte count is
+ * not a footprint. All three reach classifyMemoryFit, where NaN used to come back
+ * "fits". Both skew fallbacks are preserved: an ABSENT key falls through to the
+ * caller's fallback, and an explicit 0 is a real answer.
  */
 function finiteBytes(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -260,14 +257,14 @@ function routeAbsentStatus(status: number): boolean {
 /**
  * How long a structural miss is trusted before the next qualifying change re-probes.
  *
- * The memo is worth having: this route is POSTed after EVERY settings change, so a
- * new bundle against an old backend fires one debounced request per slider release
- * for the life of the tab, each landing in the API monitor as a 404.
+ * Worth memoing: this route is POSTed after EVERY settings change, so a new bundle
+ * against an old backend fires one debounced request per slider release for the life
+ * of the tab, each landing in the API monitor as a 404.
  *
- * It must not be PERMANENT. Studio replaces its own backend in place -- an upgrade, a
- * server-wide reload -- and a latched miss would keep the row hidden on a backend that
- * has since gained the route until the window itself is reloaded. A window costs at
- * most one wasted POST per window and heals with no plumbing to any restart signal.
+ * Not PERMANENT, though. Studio replaces its own backend in place, and a latched miss
+ * would keep the row hidden on a backend that has since gained the route until the
+ * window reloads. A TTL costs one wasted POST per window and heals with no plumbing to
+ * a restart signal.
  */
 const ROUTE_ABSENT_TTL_MS = 5 * 60 * 1000;
 let routeAbsentAt: number | null = null;

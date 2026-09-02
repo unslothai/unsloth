@@ -33,18 +33,19 @@ import json
 import os
 import sys
 
-# Code-interpreter convention prefixes. Remapping is gated on the prefix being
-# ABSENT (see _remap) so a genuine host mount / user dir is never shadowed.
+# remapping is gated on the prefix being ABSENT (see _remap) so a genuine host mount is never shadowed
+# Code-interpreter convention prefixes. Remapping is gated on the prefix being ABSENT (see _remap) so a genuine host
+# mount / user dir is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
-# Invented absolute write path -> healed CWD target, so re-writing the same
-# artifact re-serves it instead of tripping the anti-clobber guard.
+# Invented absolute write path -> healed CWD target, so re-writing the same artifact re-serves it instead of tripping
+# the anti-clobber guard.
 _remapped_writes: dict = {}
-# Each tool call is a fresh subprocess (in-process map starts empty), so this
-# on-disk sidecar carries the map across runs. It records only sources the
-# fallback healed, so an unrelated same-basename file is never adopted.
+# each tool call is a fresh subprocess, so an on-disk sidecar carries the map across runs;
+# Each tool call is a fresh subprocess (in-process map starts empty), so this on-disk sidecar carries the map across
+# runs. It records only sources the fallback healed, so an unrelated same-basename file is never adopted.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
 
 
@@ -164,8 +165,8 @@ def _remap_open(file, mode):
     # notify=False: emit the notice only once we commit to the mapping below.
     mapped = _remap(file, notify = False)
     if mapped is not file:
-        # Write always heals; a read only when the mapped target exists (else keep
-        # the original path so a missing input stays truthful).
+        # Write always heals; a read only when the mapped target exists (else keep the original path so a missing input
+        # stays truthful).
         if creating or os.path.exists(mapped):
             # Commit: emit the notice now (the notify=False peek above deferred it).
             _remap(file, notify = True)
@@ -185,19 +186,18 @@ def _remap_open(file, mode):
     if text == cwd or text.startswith(cwd + os.sep):
         return file
     parent = os.path.dirname(text)
-    # Redirect only when the parent is missing; an existing external directory is
-    # a deliberate target and stays truthful (os.path.exists follows symlinks).
+    # an existing external directory is a deliberate target and stays truthful (os.path.exists follows symlinks)
+    # Redirect only when the parent is missing; an existing external directory is a deliberate target and stays truthful
+    # (os.path.exists follows symlinks).
     if parent and os.path.exists(parent):
         return file
     base = os.path.basename(text)
-    # A trailing sep or '.'/'..' basename would redirect onto the CWD or its
-    # parent; refuse and let open raise.
+    # A trailing sep or '.'/'..' basename would redirect onto the CWD or its parent; refuse and let open raise.
     if base in ("", ".", ".."):
         return file
     remapped = os.path.join(cwd, base)
-    # Never clobber an unrelated file sharing this basename (lexists catches
-    # dangling symlinks). But a target this fallback already healed for the same
-    # invented path (in-process map or cross-run sidecar) is the artifact being
+    # Never clobber an unrelated file sharing this basename (lexists catches dangling symlinks). But a target this
+    # fallback already healed for the same invented path (in-process map or cross-run sidecar) is the artifact being
     # re-written, so re-serve it instead of raising on every overwrite.
     if os.path.lexists(remapped) and remapped not in (
         _remapped_writes.get(text),
@@ -223,8 +223,8 @@ def _remap(path, notify = True):
     if not isinstance(text, str):
         return path
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
-        # Heal only while the real prefix directory is absent, so a genuine host
-        # mount / user directory at that prefix is never shadowed.
+        # Heal only while the real prefix directory is absent, so a genuine host mount / user directory at that prefix
+        # is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
             return _map_onto_cwd(prefix, text, notify = notify)
     return path
@@ -256,8 +256,8 @@ def _install():
     ):
         return original_io_open(_remap_open(file, mode), mode, *args, **kwargs)
 
-    # mkdir/makedirs get only the prefix remap, never the write-mode fallback:
-    # an arbitrary absolute directory can legitimately succeed on the host.
+    # mkdir/makedirs get only the prefix remap, never the write-mode fallback: an arbitrary absolute directory can
+    # legitimately succeed on the host.
     def _makedirs(name, *args, **kwargs):
         return original_makedirs(_remap(name), *args, **kwargs)
 
@@ -271,9 +271,9 @@ def _install():
         *,
         dir_fd = None,
     ):
-        # Path.touch() etc. go through os.open, not builtins.open. Only O_CREAT
-        # can create, so only it maps to "creating" mode; O_TRUNC / O_APPEND
-        # without O_CREAT still require the file to exist, so behave as a read.
+        # only O_CREAT can create; O_TRUNC / O_APPEND without it still require the file to exist
+        # Path.touch() etc. go through os.open, not builtins.open. Only O_CREAT can create, so only it maps to
+        # "creating" mode; O_TRUNC / O_APPEND without O_CREAT still require the file to exist, so behave as a read.
         logical_mode = "w" if (flags & os.O_CREAT) else "r"
         mapped = _remap_open(path, logical_mode)
         if dir_fd is None:
@@ -281,9 +281,9 @@ def _install():
         return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
 
     def _path_mkdir(self, *args, **kwargs):
-        # pathlib probes Path.is_dir()/os.stat (unpatched) on FileExistsError, so
-        # a bare os.mkdir remap would still raise when the target exists. Remap
-        # the receiver up front so parents/exist_ok stays idempotent.
+        # pathlib probes the unpatched Path.is_dir()/os.stat on FileExistsError
+        # pathlib probes Path.is_dir()/os.stat (unpatched) on FileExistsError, so a bare os.mkdir remap would still
+        # raise when the target exists. Remap the receiver up front so parents/exist_ok stays idempotent.
         mapped = _remap(self)
         target = self if mapped is self else self.__class__(mapped)
         return original_path_mkdir(target, *args, **kwargs)
@@ -291,18 +291,17 @@ def _install():
     builtins.open = _open
     # pathlib.Path.open / write_text / read_text call io.open directly, so patch both.
     io.open = _io_open
-    # Python < 3.11 only: pathlib's accessor captured the ORIGINAL io.open at
-    # import (``_NormalAccessor.open = io.open``), so the io.open patch misses it.
-    # Repoint it at the same wrapper (staticmethod to stay unbound); 3.11+ dropped
-    # the accessor, so this is a no-op there.
+    # Python < 3.11 only: pathlib's accessor captured the ORIGINAL io.open at import (``_NormalAccessor.open =
+    # io.open``), so the io.open patch misses it. Repoint it at the same wrapper (staticmethod to stay unbound); 3.11+
+    # dropped the accessor, so this is a no-op there.
     accessor = getattr(pathlib, "_NormalAccessor", None)
     if accessor is not None and hasattr(accessor, "open"):
         accessor.open = staticmethod(_io_open)
     # Path.touch() and other low-level opens call os.open directly, so patch it too.
     os.open = _os_open
     os.makedirs = _makedirs
-    # Path.mkdir(parents=True) calls os.mkdir per component, so patch os.mkdir;
-    # patch Path.mkdir itself too so exist_ok/parents land on the mapped path.
+    # Path.mkdir(parents=True) calls os.mkdir per component, so patch os.mkdir; patch Path.mkdir itself too so
+    # exist_ok/parents land on the mapped path.
     os.mkdir = _mkdir
     pathlib.Path.mkdir = _path_mkdir
 

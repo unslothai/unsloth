@@ -63,11 +63,10 @@ export function useMemoryEstimate(
   request: MemoryEstimateRequest | null,
 ): MemoryEstimateState {
   const key = estimateKey(request);
-  // Which source the CURRENT render is for, computed during render rather than read
-  // from a ref the effect updates after paint. The effect below still clears on a
-  // switch, but it runs after React has already painted this render, so a direct
-  // switch between two GGUFs showed the previous model's footprint and fit colour
-  // under the new name for a frame. Both helpers are pure, so this is safe here.
+  // Computed during render, not read from a ref the effect updates after paint: the
+  // effect below still clears on a switch, but it runs after React has painted, so a
+  // direct switch between two GGUFs showed the previous model's footprint and fit
+  // colour under the new name for a frame. Both helpers are pure, so this is safe.
   const currentIdentity =
     request == null
       ? null
