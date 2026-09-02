@@ -66,14 +66,19 @@ print("__JSON__" + json.dumps({
 
 
 def _run(probe: str, env_extra: dict, home: Path) -> dict:
-    env = {"PATH": os.environ["PATH"], "HOME": str(home),
-           "_BACKEND": str(BACKEND), "_REPO": str(REPO)}
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "_BACKEND": str(BACKEND),
+        "_REPO": str(REPO),
+    }
     env.update({k: v for k, v in env_extra.items() if v is not None})
-    proc = subprocess.run([sys.executable, "-c", probe], env = env,
-                          capture_output = True, text = True, timeout = 300)
+    proc = subprocess.run(
+        [sys.executable, "-c", probe], env = env, capture_output = True, text = True, timeout = 300
+    )
     for line in proc.stdout.splitlines():
         if line.startswith("__JSON__"):
-            return json.loads(line[len("__JSON__"):])
+            return json.loads(line[len("__JSON__") :])
     raise RuntimeError(
         f"probe failed rc={proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-3000:]}"
     )
@@ -110,8 +115,11 @@ def main() -> int:
 
         nested = tmp / "opt" / "uns"
         prefix = _make_install(nested, flat = False)
-        env = {"UNSLOTH_HOME": str(nested), "UNSLOTH_PORTABLE": "1",
-               "UNSLOTH_STUDIO_HOME": str(nested / "studio")}
+        env = {
+            "UNSLOTH_HOME": str(nested),
+            "UNSLOTH_PORTABLE": "1",
+            "UNSLOTH_STUDIO_HOME": str(nested / "studio"),
+        }
         r = _run(RUNTIME_PROBE, env, home)
         check("nested: studio root", str(nested / "studio"), r["studio_root"])
         check("nested: node beside studio/", str(nested / "node"), r["node"])
@@ -119,8 +127,7 @@ def main() -> int:
 
         flat = tmp / "flatroot"
         _make_install(flat, flat = True)
-        env = {"UNSLOTH_HOME": str(flat), "UNSLOTH_PORTABLE": "1",
-               "UNSLOTH_STUDIO_HOME": str(flat)}
+        env = {"UNSLOTH_HOME": str(flat), "UNSLOTH_PORTABLE": "1", "UNSLOTH_STUDIO_HOME": str(flat)}
         r = _run(RUNTIME_PROBE, env, home)
         check("flat: node under the root", str(flat / "node"), r["node"])
         check("flat: whisper under the root", str(flat / "whisper.cpp"), r["whisper"])
@@ -135,10 +142,12 @@ def main() -> int:
         legacy_home = tmp / "legacyhome"
         (legacy_home / ".unsloth" / "studio").mkdir(parents = True)
         r = _run(RUNTIME_PROBE, {}, legacy_home)
-        check("legacy: node at ~/.unsloth/node",
-              str(legacy_home / ".unsloth" / "node"), r["node"])
-        check("legacy: whisper at ~/.unsloth/whisper.cpp",
-              str(legacy_home / ".unsloth" / "whisper.cpp"), r["whisper"])
+        check("legacy: node at ~/.unsloth/node", str(legacy_home / ".unsloth" / "node"), r["node"])
+        check(
+            "legacy: whisper at ~/.unsloth/whisper.cpp",
+            str(legacy_home / ".unsloth" / "whisper.cpp"),
+            r["whisper"],
+        )
 
         # Falling back to ~/.unsloth/studio made `source .../activate; unsloth
         # studio` exit 1, or drive an unrelated install.
@@ -146,17 +155,22 @@ def main() -> int:
         check("cli: resolves the nested Studio root", str(nested / "studio"), r["studio_home"])
         check("cli: treats it as a custom root", True, r["custom"])
         check("cli: finds the master root from the marker", str(nested), r["master"])
-        check("cli: reinstall command names UNSLOTH_HOME",
-              f"UNSLOTH_HOME={nested}", r["reinstall_env"])
-        check("cli: exports llama.cpp beside studio/",
-              str(nested / "llama.cpp"), r["llama"])
+        check(
+            "cli: reinstall command names UNSLOTH_HOME",
+            f"UNSLOTH_HOME={nested}",
+            r["reinstall_env"],
+        )
+        check("cli: exports llama.cpp beside studio/", str(nested / "llama.cpp"), r["llama"])
         check("cli: exports the master root", str(nested), r["exported_home"])
 
         dev = tmp / "dev"
         (dev / "unsloth_studio" / "bin").mkdir(parents = True)
         r = _run(CLI_PROBE, {"_PREFIX": str(dev / "unsloth_studio")}, home)
-        check("cli: a bare dev venv is not adopted",
-              str(home / ".unsloth" / "studio"), r["studio_home"])
+        check(
+            "cli: a bare dev venv is not adopted",
+            str(home / ".unsloth" / "studio"),
+            r["studio_home"],
+        )
         check("cli: and names no portable root", None, r["master"])
 
     print()
