@@ -1658,7 +1658,9 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
         i -= 1
     tail = text[i:]
     held = len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
-    return max(held, held_bare_gemma_tail_len(text, set(_gguf_active_tool_names(active_tools))))
+    return max(
+        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
+    )
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:

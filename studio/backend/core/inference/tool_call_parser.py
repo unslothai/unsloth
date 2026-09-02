@@ -2921,6 +2921,10 @@ def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> in
     ``promotable_gemma_call_pos`` needs the ``{``, so a mid-prose call leaks ``call:web``
     first. STREAMING holds this tail as it holds a split ``NAME[ARGS]`` rehearsal. Prose
     releases it, and so does a closed call, whose boundary the signal scan already owns.
+
+    ``enabled_tool_names`` may be a zero-argument callable, resolved only when the open-body
+    branch is reached. Both loops call this per streamed chunk, and materializing the name
+    list over a large MCP catalog costs more than the scan it gates.
     """
     # ``pos`` rather than a slice, so ``(?<!\w)`` still sees the character before the window.
     # This runs per chunk on the whole cumulative text, so an unanchored scan is quadratic.
@@ -2931,13 +2935,10 @@ def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> in
     # of a scan back to the opener on every chunk of prose.
     if text.rfind("{") > text.rfind("}"):
         idx = _last_bare_call_word(text)
-        if idx >= 0:
-            m = _GEMMA_BARE_TC_RE.match(text, idx)
-            if (
-                m is not None
-                and _markerless_promotable(m.group(1), enabled_tool_names)
-                and _gemma_body_brace_end(text, m.end() - 1) is None
-            ):
+        m = _GEMMA_BARE_TC_RE.match(text, idx) if idx >= 0 else None
+        if m is not None and _gemma_body_brace_end(text, m.end() - 1) is None:
+            names = enabled_tool_names() if callable(enabled_tool_names) else enabled_tool_names
+            if _markerless_promotable(m.group(1), names):
                 return len(text) - idx
     return _partial_call_word_len(text)
 

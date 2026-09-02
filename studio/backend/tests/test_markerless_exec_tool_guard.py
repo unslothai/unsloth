@@ -1057,3 +1057,49 @@ def test_the_gemma_tail_hold_does_not_rescan_the_whole_response():
     # Bounded, not blind: the trailing candidate is still found at the end of a long reply.
     assert held_bare_gemma_tail_len(prose + "call:web", EXEC_ENABLED) == 8
     assert held_bare_gemma_tail_len(prose + 'call:web_search{q:"x', EXEC_ENABLED) == 20
+
+
+def test_the_gemma_tail_hold_does_not_walk_the_tool_catalog_per_chunk():
+    """The hold runs on every streamed chunk, so materializing the enabled-name list over a
+    large MCP catalog would cost more than the scan it gates, and ordinary prose never reaches
+    the branch that needs it. Both loops pass a callable that this must leave unresolved."""
+    from core.inference.llama_cpp import _held_rehearsal_tail_len as gguf_hold
+    from core.inference.safetensors_agentic import _held_rehearsal_tail_len as st_hold
+    from core.inference.tool_call_parser import held_bare_gemma_tail_len
+
+    resolved = []
+
+    def names():
+        resolved.append(1)
+        return EXEC_ENABLED
+
+    for text in ("ordinary prose", "Here is prose call:web", "I recall: nothing", ""):
+        held_bare_gemma_tail_len(text, names)
+    assert resolved == [], "the name list was built for text with no open call body"
+
+    # It IS resolved once the branch that needs it is reached, and still answers correctly.
+    assert held_bare_gemma_tail_len('prose call:web_search{q:"x', names) == 20
+    assert len(resolved) == 1
+    assert held_bare_gemma_tail_len('prose call:terminal{command:"i', names) == 0
+
+    # A plain set still works, so the tests and any other caller are unaffected.
+    assert held_bare_gemma_tail_len('prose call:web_search{q:"x', EXEC_ENABLED) == 20
+
+    # And neither loop hands over a materialized list: capture what each actually passes.
+    # (``_is_rehearsal_prefix`` walks the catalog on its own, which predates this branch.)
+    import core.inference.llama_cpp as gguf_mod
+    import core.inference.safetensors_agentic as st_mod
+
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in ("web_search", "terminal", "python", "edit_file")
+    ]
+    for module, hold in ((st_mod, st_hold), (gguf_mod, gguf_hold)):
+        seen = []
+        real = module.held_bare_gemma_tail_len
+        module.held_bare_gemma_tail_len = lambda text, arg: seen.append(arg) or real(text, arg)
+        try:
+            hold("ordinary prose that ends in c", tools)
+        finally:
+            module.held_bare_gemma_tail_len = real
+        assert seen and all(callable(arg) for arg in seen), module.__name__

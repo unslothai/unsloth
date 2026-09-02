@@ -166,7 +166,9 @@ def _held_rehearsal_tail_len(
     )
     return max(
         held,
-        held_bare_gemma_tail_len(text, None if unrestricted else _active_tool_names(active_tools)),
+        held_bare_gemma_tail_len(
+            text, lambda: None if unrestricted else _active_tool_names(active_tools)
+        ),
     )
 
 
