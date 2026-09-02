@@ -4508,7 +4508,11 @@ export function createOpenAIStreamAdapter(
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
-            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            // A stored null is an edited root; `??` would reparent it.
+            parentId:
+              storedUserMessage && storedUserMessage.parentId !== undefined
+                ? storedUserMessage.parentId
+                : userMessageParentId,
             role: "user",
             content: userMessage.content,
             ...(userMessage.attachments?.length

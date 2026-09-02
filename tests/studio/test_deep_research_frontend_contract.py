@@ -146,7 +146,11 @@ def test_research_presave_keeps_the_follow_up_parent() -> None:
     assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
     assert "const userMessageParentId =" in presave
     assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
-    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" in presave
+    # A stored null is an edited root; `??` would reparent it under the predecessor.
+    assert "storedUserMessage && storedUserMessage.parentId !== undefined" in presave
+    assert "? storedUserMessage.parentId" in presave
+    assert ": userMessageParentId," in presave
+    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" not in presave
     assert "parentId: storedUserMessage?.parentId ?? null" not in presave
 
 
