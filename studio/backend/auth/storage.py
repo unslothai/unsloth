@@ -1266,6 +1266,19 @@ def _retire_workspace_directory(username: str) -> bool:
         forget_scan_created_remote_code(username)
     except Exception:  # noqa: BLE001 - same
         logger.warning("Could not clear remote-code grants for %s", username, exc_info = True)
+    # A download is not a workspace job, so the quiescing above never saw it, and
+    # its initiator set names the account. Same for the dictation models this
+    # account fetched into the shared cache.
+    try:
+        from hub.services.download_lifecycle import forget_workspace_initiators
+        forget_workspace_initiators(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear download initiators for %s", username, exc_info = True)
+    try:
+        from routes.inference import forget_stt_model_downloader
+        forget_stt_model_downloader(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear dictation grants for %s", username, exc_info = True)
     # Moving the files is not enough on its own: a worker still bound to this
     # subject recreates the pathname on its next lookup, and a namesake created
     # in between would then be sharing a workspace with a deleted account's job.

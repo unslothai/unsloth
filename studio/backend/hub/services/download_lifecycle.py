@@ -1343,6 +1343,46 @@ def note_download_initiator(key: str, *, replaces_previous_job: bool = False) ->
         _download_initiators.setdefault(key, set()).add(current_workspace_subject())
 
 
+def forget_workspace_initiators(subject: str) -> None:
+    """Drop a retired account from every initiator set.
+
+    A download is not a workspace job, so retirement's quiescing never saw it,
+    and the sets are keyed by the reusable username: a namesake inherited both
+    the view of the predecessor's transfer and the right to cancel it.
+    """
+    with _download_initiators_lock:
+        for key in list(_download_initiators):
+            holders = _download_initiators.get(key)
+            if not holders:
+                continue
+            holders.discard(subject)
+            if not holders:
+                _download_initiators.pop(key, None)
+
+
+def workspace_downloaded_repo(repo_id: str) -> bool:
+    """Whether the current workspace initiated a download of this repository.
+
+    Job keys carry the repository and, for models, a variant, so this matches on
+    the repository half. Used where the Hub cannot be reached and cache presence
+    would otherwise be the only answer available.
+    """
+    from utils.workspace_context import current_workspace_subject
+
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        return False
+    wanted = repo_id.strip().lower()
+    subject = current_workspace_subject()
+    with _download_initiators_lock:
+        for key, holders in _download_initiators.items():
+            if subject not in holders:
+                continue
+            head = key.split(":", 1)[0].strip().lower()
+            if head == wanted:
+                return True
+    return False
+
+
 def forget_download_initiator(key: str) -> None:
     """Drop a key's initiators outright, for a caller that knows the job is gone."""
     with _download_initiators_lock:

@@ -6834,12 +6834,15 @@ def _reject_private_hub_repo_without_an_account_token(
     readable = _hub_repo_is_anonymously_readable(candidate, repo_type)
     if readable:
         return
-    if (
-        readable is None
-        and shared_cache_answers_offline
-        and _repo_is_in_the_shared_cache(candidate, repo_type)
-    ):
-        return
+    if readable is None and shared_cache_answers_offline:
+        # Unanswerable. Cache presence alone is what put another account's
+        # private weights within reach here, so pair it with this account having
+        # asked for that repository itself.
+        from hub.services.download_lifecycle import workspace_downloaded_repo
+        if workspace_downloaded_repo(candidate) and _repo_is_in_the_shared_cache(
+            candidate, repo_type
+        ):
+            return
     raise HTTPException(
         status_code = 403,
         detail = (
@@ -7146,11 +7149,16 @@ def resident_text_model_workspace() -> Optional[str]:
 def _caller_could_have_loaded(identifier: str) -> bool:
     """Whether this account could have named that identifier itself.
 
-    The same question the load path asks, so the two cannot drift: a path inside
-    this workspace or a shared root, or a repository that is not private.
+    Both halves of the question the load path asks, so the two cannot drift: a
+    path inside this workspace or a shared root, and a repository this account
+    can actually reach. Containment alone was not enough, because a repo id is
+    not a path and every private repository passed it.
     """
     try:
         _reject_uncontained_local_path(identifier, "use")
+        _reject_private_hub_repo_without_an_account_token(
+            identifier, None, shared_cache_answers_offline = False,
+        )
     except HTTPException:
         return False
     return True
@@ -7173,12 +7181,13 @@ def resident_text_model_is_foreign() -> bool:
         if loaders.get(identifier) == subject:
             return False
     for identifier in identifiers:
-        loader = loaders.get(identifier)
-        foreign = loader is not None and loader != subject
-        if not foreign and _caller_could_have_loaded(identifier):
+        # Accessibility first, and who loaded it only when that fails. An
+        # ordinary public model is one every account may load for itself, so
+        # refusing it because somebody else got there first served a 409 for a
+        # model the caller could have loaded a moment later anyway.
+        if _caller_could_have_loaded(identifier):
             continue
         from auth.storage import is_installation_owner
-
         return not is_installation_owner()
     return False
 
@@ -17973,6 +17982,25 @@ _STT_DOWNLOAD_INITIATORS_LOCK = threading.Lock()
 _STT_MODEL_DOWNLOADERS: dict[str, set[str]] = {}
 
 
+def forget_stt_model_downloader(subject: str) -> None:
+    """Drop a retired account from every dictation-model downloader set.
+
+    Keyed by the reusable username, so a namesake inherited the right to load a
+    private snapshot the previous holder's token had fetched into the cache.
+    """
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        for model in list(_STT_MODEL_DOWNLOADERS):
+            holders = _STT_MODEL_DOWNLOADERS.get(model)
+            if not holders:
+                continue
+            holders.discard(subject)
+            if not holders:
+                _STT_MODEL_DOWNLOADERS.pop(model, None)
+        for engine, initiator in list(_STT_DOWNLOAD_INITIATORS.items()):
+            if initiator == subject:
+                _STT_DOWNLOAD_INITIATORS.pop(engine, None)
+
+
 def _note_stt_model_downloader(model: Any) -> None:
     if not isinstance(model, str) or not model.strip():
         return
@@ -18267,6 +18295,10 @@ async def _transcribe_audio_result(
         raise HTTPException(status_code = 400, detail = "Audio is empty.")
     if len(raw) > _MAX_AUDIO_RAW_BYTES:
         raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    # Every transcription route reaches this, and each one can load the model it
+    # names, so the ownership check belongs here rather than only on the explicit
+    # /audio/stt/load route it was first written for.
+    _reject_private_stt_model_from_another_account(model)
 
     serving_engine = _resolve_serving_stt_engine(engine)
     await asyncio.to_thread(

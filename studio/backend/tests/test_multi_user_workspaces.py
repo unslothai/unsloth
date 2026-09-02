@@ -3783,15 +3783,23 @@ def test_an_unanswerable_hub_probe_falls_back_to_the_shared_cache(monkeypatch):
     )
     guard = inference_routes._reject_private_hub_repo_without_an_account_token
 
+    from hub.services import download_lifecycle
+
+    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
+
     token = _bind("alice")
     try:
-        # Offline, or the Hub unreachable. A repo already in the shared cache is
-        # not a new disclosure: that cache is install-wide by design here.
         monkeypatch.setattr(
             inference_routes, "_repo_is_in_the_shared_cache", lambda repo, kind: True
         )
+        # Offline, or the Hub unreachable. Cache presence on its own is what put
+        # another account's private weights within reach, so it is not the
+        # answer; this account having asked for the repository is.
+        with pytest.raises(HTTPException):
+            guard("org/already-here", None)
+        download_lifecycle.note_download_initiator("org/already-here", replaces_previous_job = True)
         guard("org/already-here", None)
-        # Anything else is refused rather than guessed at.
+        # And a repo nobody fetched here is refused rather than guessed at.
         monkeypatch.setattr(
             inference_routes, "_repo_is_in_the_shared_cache", lambda repo, kind: False
         )
@@ -5013,3 +5021,94 @@ def test_the_metadata_inspection_routes_contain_their_paths():
         assert "hf_token_arg" not in guarded, route.__name__
         for field in fields:
             assert field in rest.split("hf_token_arg")[0], (route.__name__, field)
+
+
+def test_a_public_resident_model_is_shared_the_way_it_always_was(tmp_path, monkeypatch):
+    from routes import inference as inference_routes
+    from routes import models as models_routes
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(
+        models_routes, "advertised_shared_model_roots", lambda: [str(shared.resolve())]
+    )
+    monkeypatch.setattr(inference_routes, "_RESIDENT_TEXT_OWNER", None, raising = False)
+    monkeypatch.setattr(
+        inference_routes, "_hub_repo_is_anonymously_readable", lambda repo, kind: True
+    )
+    monkeypatch.setattr(
+        inference_routes, "_resident_text_model_identifiers", lambda: ["unsloth/gemma-3-4b-it"]
+    )
+    inference_routes._note_text_model_loader("unsloth/gemma-3-4b-it", "alice")
+
+    token = _bind("bob")
+    try:
+        # Bob may load this identifier himself, so refusing it because Alice got
+        # there first served a 409 for a model he could have loaded a moment
+        # later anyway. Accessibility decides; the loader is only a fast path.
+        assert inference_routes.resident_text_model_is_foreign() is False
+    finally:
+        reset_workspace_subject(token)
+
+    monkeypatch.setattr(
+        inference_routes, "_hub_repo_is_anonymously_readable", lambda repo, kind: False
+    )
+    token = _bind("bob")
+    try:
+        assert inference_routes.resident_text_model_is_foreign() is True
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_download_and_dictation_grants_do_not_outlive_their_account(monkeypatch):
+    from hub.services import download_lifecycle
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(download_lifecycle, "_download_initiators", {}, raising = False)
+    monkeypatch.setattr(inference_routes, "_STT_MODEL_DOWNLOADERS", {}, raising = False)
+    monkeypatch.setattr(inference_routes, "_STT_DOWNLOAD_INITIATORS", {}, raising = False)
+
+    token = _bind("alice")
+    try:
+        download_lifecycle.note_download_initiator("org/private", replaces_previous_job = True)
+        inference_routes._note_stt_download_initiator("transformers")
+        inference_routes._note_stt_model_downloader("alice/private-whisper")
+    finally:
+        reset_workspace_subject(token)
+
+    # A download is not a workspace job, so retirement's quiescing never saw it.
+    download_lifecycle.forget_workspace_initiators("alice")
+    inference_routes.forget_stt_model_downloader("alice")
+
+    token = _bind("alice")
+    try:
+        assert download_lifecycle.download_is_visible_to_caller("org/private") is False
+        assert inference_routes._STT_MODEL_DOWNLOADERS == {}
+        assert inference_routes._STT_DOWNLOAD_INITIATORS == {}
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_first_scan_to_pull_a_repository_keeps_it():
+    from routes import models as models_routes
+
+    models_routes._SCAN_CREATED_REMOTE_CODE.clear()
+    # Two accounts scanning the same uncached repository both find it absent.
+    # Taking the later claim let the second account's decline cleanup delete the
+    # cached code while the first was approving or loading it.
+    models_routes._note_scan_created_remote_code("org/code-dep", "alice")
+    models_routes._note_scan_created_remote_code("org/code-dep", "bob")
+    assert models_routes._SCAN_CREATED_REMOTE_CODE["org/code-dep"] == "alice"
+
+
+def test_every_transcription_route_asks_the_ownership_question():
+    import inspect
+
+    from routes import inference as inference_routes
+
+    # /audio/transcribe, /audio/transcribe/raw and /v1/audio/transcriptions all
+    # reach this, and each can load the model it names.
+    source = inspect.getsource(inference_routes._transcribe_audio_result)
+    guarded, _, rest = source.partition("_reject_private_stt_model_from_another_account")
+    assert rest, "implicit transcription loads are unguarded"
+    assert "load_stt" not in guarded

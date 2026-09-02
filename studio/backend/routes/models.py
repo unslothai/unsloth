@@ -2806,8 +2806,12 @@ _SCAN_CREATED_REMOTE_CODE_MAX = 256
 
 
 def _note_scan_created_remote_code(repo: str, subject: str) -> None:
+    # First claim wins. Two accounts scanning the same uncached repository both
+    # find it absent, and taking the later claim let the second account's decline
+    # cleanup delete the cached code while the first was approving or loading it.
     with _SCAN_CREATED_REMOTE_CODE_LOCK:
-        _SCAN_CREATED_REMOTE_CODE.pop(repo, None)
+        if repo in _SCAN_CREATED_REMOTE_CODE:
+            return
         _SCAN_CREATED_REMOTE_CODE[repo] = subject
         while len(_SCAN_CREATED_REMOTE_CODE) > _SCAN_CREATED_REMOTE_CODE_MAX:
             _SCAN_CREATED_REMOTE_CODE.pop(next(iter(_SCAN_CREATED_REMOTE_CODE)))
