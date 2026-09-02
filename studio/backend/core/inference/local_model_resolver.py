@@ -104,6 +104,32 @@ def _resolve_load_dir(p):
     return p
 
 
+def _resolve_gguf_load_dir(p, loader_id: str):
+    """Newest cached snapshot containing at least one complete main GGUF.
+
+    A later Hub revision can contain only a newly fetched companion such as an
+    MTP drafter or mmproj while the complete model weights remain in an older
+    snapshot. The generic resolver intentionally picks the newest snapshot, but
+    doing that for GGUF discovery makes the repo disappear from ``/v1/models``.
+    """
+    snapshots = p / "snapshots"
+    try:
+        if not snapshots.is_dir():
+            return p
+    except OSError:
+        return None
+
+    # Reuse the Hub inventory's selector so its On Device row and the OpenAI
+    # catalog cannot choose different revisions of the same cached repo.
+    from hub.utils.gguf import select_gguf_cache_snapshot
+
+    selected = select_gguf_cache_snapshot(loader_id, root = p.parent)
+    if selected is None:
+        return None
+    _variants, _has_vision, complete, snapshot = selected
+    return snapshot if complete else None
+
+
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Build an entry only when GGUF quants are on disk (not Transformers/
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
@@ -126,7 +152,9 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
-        load_dir = _resolve_load_dir(p)
+        load_dir = _resolve_gguf_load_dir(p, loader_id)
+        if load_dir is None:
+            return None
         variants, _ = list_local_gguf_variants(str(load_dir))
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:

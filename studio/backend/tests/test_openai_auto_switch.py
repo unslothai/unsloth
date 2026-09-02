@@ -1855,6 +1855,42 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
     assert entry.variants  # quant detected on disk
 
 
+def test_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
+    """A companion fetched at a newer revision must not hide older complete weights."""
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--unsloth--Qwen3.8-Flash-Next-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    quant_dir = old / "UD-Q4_K_XL"
+    quant_dir.mkdir(parents = True)
+    for shard in range(1, 5):
+        (quant_dir / f"Qwen3.8-Flash-Next-UD-Q4_K_XL-{shard:05d}-of-00004.gguf").write_bytes(
+            b"GGUF stub"
+        )
+
+    newer = repo / "snapshots" / "companion-revision" / "MTP"
+    newer.mkdir(parents = True)
+    (newer / "mtp-Qwen3.8-Flash-Next-Q8_0.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer.parent, (2_000, 2_000))
+
+    # The generic cache resolver correctly picks the latest revision; GGUF
+    # discovery needs the stronger rule because this revision has no weights.
+    assert Path(resolver._resolve_load_dir(repo)) == newer.parent.resolve()
+    info = SimpleNamespace(id = "unsloth/Qwen3.8-Flash-Next-GGUF", path = str(repo))
+    entry = resolver._local_gguf_entry(
+        "unsloth/Qwen3.8-Flash-Next-GGUF",
+        info,
+    )
+
+    assert entry is not None
+    assert Path(entry.load_path) == old
+    assert entry.variants == ("UD-Q4_K_XL",)
+    assert resolver.local_servable_model(info) == (True, ("UD-Q4_K_XL",))
+
+
 # ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
 
 
