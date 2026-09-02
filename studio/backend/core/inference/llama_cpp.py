@@ -5402,6 +5402,8 @@ def _build_ngram_mod_flags(
     n_match: int = 24,
     n_min: int = 48,
     n_max: int = 64,
+    *,
+    chain_with_mtp: bool = False,
 ) -> list[str]:
     """Emit the right ngram-mod knob flags for the running llama-server.
 
@@ -5411,6 +5413,9 @@ def _build_ngram_mod_flags(
     ``probe_server_capabilities``; ``ngram_mod_flavor`` says which set is
     real (vs a removal-stub). Returns ``[]`` when neither is available so
     the caller can drop ngram-mod entirely.
+
+    ``chain_with_mtp`` omits the legacy ``--draft-min``/``--draft-max`` pair,
+    which a chained MTP invocation owns and would otherwise invert.
     """
     flavor = caps.get("ngram_mod_flavor") if caps else None
     if flavor == "new":
@@ -5425,14 +5430,10 @@ def _build_ngram_mod_flags(
     if flavor == "legacy":
         # Pre-rename llama.cpp: same knobs lived under --spec-ngram-size-n
         # (lookup length) and generic --draft-min / --draft-max (N range).
-        return [
-            "--spec-ngram-size-n",
-            str(n_match),
-            "--draft-min",
-            str(n_min),
-            "--draft-max",
-            str(n_max),
-        ]
+        flags = ["--spec-ngram-size-n", str(n_match)]
+        if not chain_with_mtp:
+            flags.extend(["--draft-min", str(n_min), "--draft-max", str(n_max)])
+        return flags
     return []
 
 
@@ -5456,6 +5457,9 @@ _LEGACY_SPEC_MODE_MAP = {
     "draft-dspark": "dspark",
     "draft-dflash": "dflash",
     "ngram-mod": "ngram",
+    "none": "off",
+    "disable": "off",
+    "disabled": "off",
 }
 
 
@@ -6854,10 +6858,9 @@ class LlamaCppBackend:
         ):
             return False
         # Same rule for the tuning group: requested against requested, so a server
-        # launched with a different value is a reload. Compared even when the
-        # intent is blank, unlike spec_draft_n_max above: blank is the llama.cpp
-        # default and both sides hold what was requested, so two loads that asked
-        # for nothing still match, while clearing a knob relaunches.
+        # launched with a different value is a reload. A blank value is the llama.cpp
+        # default, so two loads that asked for nothing still match, while clearing a
+        # knob relaunches.
         if not self._is_diffusion and (
             _normalized_load_mode(self._requested_load_mode)
             != _normalized_load_mode(intent.load_mode)
@@ -6993,7 +6996,7 @@ class LlamaCppBackend:
         # The stand-down the UI asks the user to fix by updating llama.cpp. That leaves
         # the request identical, so without this the repaired load never happens.
         if (
-            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
+            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash", "ngram")
             and self.spec_binary_fallback_can_retry()
         ):
             return False
@@ -7021,18 +7024,19 @@ class LlamaCppBackend:
             # The MTP-free recovery clears the runtime value but retains the
             # user's prior value in its intent. Only a changed value should retry MTP.
             compared_draft_n_max = self._last_load_intent.spec_draft_n_max
-        if (
-            (
-                self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
-                # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
-                # types above cannot see it -- yet the depth is what priced the rollback
-                # copies that made the placement partial, so a change can re-enable MTP.
-                or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
-            )
-            and intent.spec_draft_n_max is not None
-            and intent.spec_draft_n_max != (compared_draft_n_max or 0)
-        ):
-            return False
+        draft_depth_matters = (
+            self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
+            # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
+            # types above cannot see it. The depth priced the rollback copies that
+            # made the placement partial, so a change can re-enable MTP.
+            or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
+        )
+        if draft_depth_matters:
+            requested_draft_n_max = intent.spec_draft_n_max
+            if (requested_draft_n_max is None) != (compared_draft_n_max is None):
+                return False
+            if requested_draft_n_max is not None and requested_draft_n_max != compared_draft_n_max:
+                return False
         if (self._chat_template_override or None) != (intent.chat_template_override or None):
             return False
 
@@ -24743,7 +24747,7 @@ class LlamaCppBackend:
             spec_value = mtp_token
             ngram_knobs: list[str] = []
             if chain_ngram:
-                ngram_knobs = _build_ngram_mod_flags(caps)
+                ngram_knobs = _build_ngram_mod_flags(caps, chain_with_mtp = True)
                 if ngram_knobs:
                     spec_value = f"ngram-mod,{mtp_token}"
                 else:
@@ -24760,6 +24764,19 @@ class LlamaCppBackend:
 
         def _emit_ngram_mod() -> bool:
             """Append --spec-type ngram-mod + flag-set knobs."""
+            if not caps.get("supports_ngram_mod"):
+                logger.warning(
+                    "Requested ngram-mod speculative decoding but llama-server "
+                    "does not advertise ngram-mod support; run `unsloth studio "
+                    "update`. Loading without speculative decoding."
+                )
+                # The stand-down the warning tells the user to fix, recorded so the
+                # update actually takes: an unrecorded one leaves the picker adopting
+                # this process forever. "binary_outdated" rather than "binary_no_mtp"
+                # because the retry rule for that one asks _SPEC_KIND_CAPABILITY about
+                # _spec_drafter_kind, which ngram-mod never sets, having no drafter.
+                self._spec_fallback_reason = "binary_outdated"
+                return False
             ngram_knobs = _build_ngram_mod_flags(caps)
             flags.extend(["--spec-type", "ngram-mod"])
             if not ngram_knobs:

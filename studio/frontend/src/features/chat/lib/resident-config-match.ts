@@ -44,6 +44,7 @@ type ResidentRuntime = Pick<
   | "gpu_placement_paravirtual"
   | "tensor_split"
   | "cpu_fallback_reason"
+  | "spec_fallback_reason"
 >;
 
 function sameList(
@@ -223,9 +224,15 @@ export function residentSpeculativeNeedsRepair(
   ) {
     return true;
   }
+  // ngram-mod is not in SPECULATIVE_MODES because it runs no drafter, so none of the
+  // drafter arms can repair it. It does still stand down on a build that does not
+  // advertise the mode, and that one records "binary_outdated", which an update repairs.
+  const modeCanRepair =
+    SPECULATIVE_MODES.has(mode) ||
+    (mode === "ngram" && status.spec_fallback_reason === "binary_outdated");
   if (
     !RETRYABLE_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") ||
-    !SPECULATIVE_MODES.has(mode)
+    !modeCanRepair
   ) {
     return false;
   }
@@ -313,11 +320,16 @@ const SETTING_CHECKS: SettingCheck[] = [
         standing.speculativeType),
   },
   {
-    // Only when the pick names one, as _runtime_matches_intent is guarded on
-    // `intent.spec_draft_n_max is not None`: an unset limit asks for no change, so
-    // comparing null against the count the resident load was launched with was a reload.
-    pinned: (c) => c.specDraftNMax != null,
-    agrees: (c, s) => c.specDraftNMax === (s.spec_draft_n_max ?? null),
+    // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
+    // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
+    // as the status carries a count only when a depth-consuming load recorded an override.
+    pinned: () => true,
+    agrees: (c, s) =>
+      // The MTP-free recovery clears the runtime value while _runtime_matches_intent
+      // still compares against _last_load_intent's count, so null here is "unknown",
+      // not "the default". Let /load answer, as RETRYABLE_SPEC_FALLBACKS assumes.
+      s.spec_fallback_reason !== "runtime_error" &&
+      (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
   {
     chatOnly: true,
@@ -349,11 +361,11 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Always pinned, unlike spec_draft_n_max: the status echoes what the load
-    // REQUESTED, so a resident server that asked for nothing reports null and a
-    // blank control agrees with it. Reading blank as "no opinion" instead would
-    // mean clearing the dtype back to the f16 default never relaunched, leaving
-    // the server on the quantized draft cache the panel no longer shows.
+    // Always pinned: the status echoes what the load requested, so a resident server
+    // that asked for nothing reports null and a blank control agrees with it. Reading
+    // blank as "no opinion" instead would mean clearing the dtype back to the f16
+    // default never relaunched, leaving the server on the quantized draft cache the
+    // panel no longer shows.
     pinned: () => true,
     agrees: (c, s) =>
       (c.specDraftCacheDtype ?? null) ===
