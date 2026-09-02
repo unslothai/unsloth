@@ -60,16 +60,16 @@ from hub.utils.gguf_plan import (
 from hub.utils.state_dir import RepoType
 from hub.utils.resumable_partials import restore_resumable_partials
 
-# Put huggingface_hub's 1.17 HTTP writer back where it is safe to. The SIGKILL then restart loop
-# documented above reads ``.incomplete`` for its resume offset, and 1.18+ leaves nothing to read.
+# Put huggingface_hub's 1.17 HTTP writer back: the SIGKILL then restart loop reads .incomplete for
+# its resume offset, and 1.18+ leaves nothing to read.
 _PARTIALS_RESUMABLE = restore_resumable_partials()
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
 
 
-# Bound the metadata fetch so a stalled connection fails the worker (exit 1) instead of hanging
-# at 0%. The file download itself is governed by huggingface_hub's own timeout.
+# Bound the metadata fetch so a stalled connection fails the worker instead of hanging at 0%; the
+# file download itself is governed by huggingface_hub's own timeout.
 _METADATA_REQUEST_TIMEOUT = 10.0
 _METADATA_RETRY_TIMEOUT = 30.0
 _METADATA_RETRY_DELAY = 1.0
@@ -154,10 +154,8 @@ def _parent_is_alive(parent_pid: int) -> bool:
 
 
 def _terminate_orphaned_self() -> None:
-    # Hard exit from the watchdog thread: a self-SIGTERM would be deferred while the main thread is
-    # GIL-blocked in a C socket read. The partial .incomplete resumes byte-exact and marker/manifest
-    # writes are atomic, so code 130 is safe. The diagnostic is best-effort: a dead parent's closed
-    # stderr pipe can raise BrokenPipeError, which must never preempt the exit.
+    # Hard exit from the watchdog thread: a self-SIGTERM would be deferred while the main thread is GIL-
+    # blocked in a C socket read, and the partial resumes byte-exact with atomic marker writes.
     try:
         print(
             "Parent process exited; stopping orphaned download worker.",
@@ -239,8 +237,8 @@ def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     )
 
 
-# Tied to drain_stderr_excerpt's 500-byte head/tail window in the parent: listing every expected
-# file would blow past it and lose the diagnostic, so cap the preview.
+# Tied to drain_stderr_excerpt's 500-byte head/tail window: listing every expected file would blow
+# past it and lose the diagnostic.
 _VERIFY_PATH_LIST_CAP = 10
 
 
@@ -554,9 +552,8 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
 
-    # One metadata fetch powers both the ignore-pattern decision (drop consolidated.* when
-    # transformers weights exist) and the manifest's expected_files. A failure is non-fatal: fall
-    # back to the legacy ignore set and skip the manifest, losing verification but not the download.
+    # One metadata fetch powers both the ignore-pattern decision and the manifest's expected_files; a
+    # failure is non-fatal and falls back to the legacy ignore set, losing verification only.
     try:
         info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
@@ -570,9 +567,8 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     download_manifest.clear_cancel_marker("model", repo_id, None)
     if info is not None:
         ignore_patterns, expected_files = _snapshot_download_plan(info)
-        # Written for every transport. The manifest verifies the finalized files under snapshots/, which
-        # both transports produce identically (XET also renames a full, correctly-sized blob into place).
-        # XET's block-level dedup lives only in the chunk-cache, so per-file size verification is valid.
+        # The manifest verifies the finalized files under snapshots/, which both transports produce
+        # identically; XET's block-level dedup lives only in the chunk cache.
         download_manifest.write_manifest("model", repo_id, None, expected_files, mode)
     else:
         ignore_patterns = list(SNAPSHOT_IGNORE_PATTERNS)
@@ -624,9 +620,9 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
-    # plan_for_variant, not .get: a repo that files every variant under one shared container
-    # qualifies every key, and a stored pin or an explicit repo:Q4_K_M then missed the map and
-    # the worker exited with "No GGUF shards matching variant".
+    # plan_for_variant, not .get: a repo filing every variant under one shared container qualifies
+    # every key, so a stored pin or an explicit repo:Q4_K_M missed the map and the worker exited with
+    # "No GGUF shards matching variant".
     return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
 
 
@@ -662,8 +658,8 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             mode,
         )
     else:
-        # Metadata unreachable (offline / gated / private). Resume the exact shards the original attempt
-        # recorded so snapshot_download can range over the surviving .incomplete blobs.
+        # Metadata unreachable: resume the exact shards the original attempt recorded so snapshot_download
+        # can range over the surviving .incomplete blobs.
         manifest = download_manifest.read_manifest("model", repo_id, variant)
         if manifest is None or not manifest.expected_files:
             print(
@@ -707,8 +703,8 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             "hashes; starting without partial cache reuse.",
             file = sys.stderr,
         )
-    # Main quant blobs are owned by this variant (variant-scoped marker). The shared vision companion
-    # (mmproj) has its own marker and is never purged while a concurrent peer is writing it.
+    # Main quant blobs are owned by this variant; the shared mmproj companion has its own marker and is
+    # never purged while a concurrent peer is writing it.
     purged = prepare_cache_for_transport(
         "model",
         repo_id,
@@ -830,8 +826,8 @@ def _download_scoped_snapshot(
         max_workers = 1,
     )
     if info is None:
-        # With no metadata there is no manifest, so verification is a no-op, and snapshot_download RETURNS
-        # AN EXISTING SNAPSHOT FOLDER when repo_info also fails -- flipping the job to complete with no weights.
+        # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER
+        # when repo_info also fails, flipping the job to complete with no weights.
         root = Path(snapshot_path)
         absent = tuple(f for f in files if not (root / f).exists())
         if absent:
@@ -1002,9 +998,9 @@ def main() -> None:
     except SystemExit:
         raise
     except Exception as e:
-        # Surface a precise message so the UI doesn't show a generic "worker exited with code 1".
-        # huggingface_hub recommends force_download=True to recover, which our "Restart" UI maps to a
-        # fresh start by purging the partial via prepare_cache_for_transport.
+        # Surface a precise message rather than a generic "worker exited with code 1": huggingface_hub
+        # recommends force_download=True to recover, which our Restart maps to purging the partial via
+        # prepare_cache_for_transport.
         print(f"{type(e).__name__}: {e}", file = sys.stderr)
         sys.exit(1)
 

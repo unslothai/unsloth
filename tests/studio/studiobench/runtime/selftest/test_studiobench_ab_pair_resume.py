@@ -38,8 +38,8 @@ def _target(label):
     return Target(label = label, ref = label, base_url = f"http://x/{label}", seeder = None, runner = None)
 
 
-#: Each rung needs its OWN token count: `measures_by_cell` keys on `(rung_tokens, rep)`, so two
-#: rungs sharing one number collapse into one pair and a two-rung table renders as a one-rung one.
+#: Each rung needs its OWN token count: `measures_by_cell` keys on `(rung_tokens, rep)`, so two rungs
+#: sharing one number collapse into one pair and a two-rung table renders as a one-rung one.
 RUNG_TOKENS = {"1K": 1_000, "10K": 10_000, "100K": 100_000, "500K": 500_000, "1M": 1_000_000}
 
 
@@ -188,9 +188,9 @@ def _resumed_table(tmp_path, *, pair_granular: bool) -> str:
 def test_the_resumed_session_measures_both_arms_and_gets_a_table(tmp_path):
     table = _resumed_table(tmp_path, pair_granular = True)
 
-    # Both arms measured, so the pair exists and the table has a reading. One pair carries no
-    # bootstrap CI, so the verdict is INCONCLUSIVE; the contrast with the test below, where the
-    # arms never pair at all and the table says NO READING, is the thing under test.
+    # Both arms measured, so the pair exists and the table has a reading. One pair carries no bootstrap
+    # CI, so the verdict is INCONCLUSIVE; the contrast with the test below, where the arms never pair
+    # and the table says NO READING, is the thing under test.
     assert "VERDICT: INCONCLUSIVE" in table
     assert "NO READING" not in table
 
@@ -227,8 +227,8 @@ def _two_rung_resumed_table(tmp_path, *, whole_table: bool) -> str:
     if whole_table:
         done = skippable_cells(work, recorded)
     else:
-        # THE PRE-FIX RULE, inline so the contrast is the change itself: skip any pair whose every
-        # arm is already recorded, and let the rest of the table be whatever is left.
+        # THE PRE-FIX RULE, inline so the contrast is the change itself: skip any pair whose every arm is
+        # already recorded, and let the rest of the table be whatever is left.
         by_pair: dict = {}
         for _t, cell, _p in work:
             by_pair.setdefault((cell.rung, cell.rep), []).append(cell.cell_id)
@@ -265,9 +265,9 @@ def test_skipping_the_recorded_pair_publishes_a_verdict_over_the_remainder(tmp_p
     table = _two_rung_resumed_table(tmp_path, whole_table = False)
 
     assert "keystroke_p95_ms         1" in table, table
-    # The remainder is a single pair, so it can no longer be published as a direction; the bug
-    # this documents is unchanged and is the two assertions around this one: the 30% regression
-    # is gone from the table and nothing names the rung it came from.
+    # The remainder is a single pair, so it can no longer be published as a direction; the bug this
+    # documents is the two assertions around it: the 30% regression is gone from the table and nothing
+    # names the rung it came from.
     assert "VERDICT: INCONCLUSIVE" in table, table
     assert "10K" not in table
 

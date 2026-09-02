@@ -232,7 +232,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist httpx \
+            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist pytest-timeout httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
@@ -465,6 +465,27 @@ jobs:
         # the test never stubbed; this fails on every platform regardless
         # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
         # here unblocks unsloth CI until the loader fixture is fixed.
+        #
+        # A test that hangs rather than fails used to consume the whole 35 minute
+        # job budget and report nothing usable: the job ended as "cancelled", with
+        # no test name, no traceback, and every later step marked skipped. That is
+        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
+        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
+        # invocation in this step, so one setting covers the xdist run and each
+        # serial file below, instead of the same flag on six command lines.
+        #
+        # 5 minutes. The slowest honest test in the suite is about 48s locally
+        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
+        # box, measured on the one test long enough to compare, so call it 80s
+        # here. That leaves well over 3x headroom, while a genuine hang is now
+        # named and stack-dumped in 5 minutes rather than silently eating all 35.
+        #
+        # This only became a sane number once unsloth_zoo stopped rebuilding
+        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
+        # test_every_shipped_model_type_accepted alone ran past 600s, so any
+        # useful timeout would have failed a passing test.
+        env:
+          PYTEST_TIMEOUT: 300
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
           # Keep tests within each file on one worker. MLX shims contaminate sys.modules,

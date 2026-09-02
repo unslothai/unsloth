@@ -115,6 +115,7 @@ LLAMA_STATUS = {
     "installed_tag": "b10333",
     "latest_tag": "b10333-mix-e34b418",
     "update_size_bytes": 28 * 1024 * 1024,
+    "source_build": False,
     "component": "llama.cpp",
     "whisper": {
         "update_available": False,
@@ -133,6 +134,40 @@ LLAMA_STATUS = {
         "progress": None,
         "finished_at": None,
     },
+}
+LLAMA_CHANGELOG = {
+    "matched": True,
+    "installed_tag": "b10333",
+    "latest_tag": "b10333-mix-e34b418",
+    "changes": [
+        {
+            "summary": "model: add GLM-5-Next (GLM-5.3-Flash)",
+            "links": [
+                {
+                    "label": "#27754",
+                    "url": "https://github.com/ggml-org/llama.cpp/pull/27754",
+                },
+                {
+                    "label": "commit 949f7ef",
+                    "url": "https://github.com/ggml-org/llama.cpp/pull/27754/commits/949f7ef",
+                },
+            ],
+        },
+        {
+            "summary": "llama: batched readahead for lazily read gather tables",
+            "links": [
+                {
+                    "label": "unslothai/llama.cpp#137",
+                    "url": "https://github.com/unslothai/llama.cpp/pull/137",
+                }
+            ],
+        },
+        {"summary": "MTP for Qwen3.8-Flash-Next", "links": []},
+    ],
+    "total_changes": 3,
+    "truncated": False,
+    "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
+    "error": None,
 }
 # The same card, renamed: whisper.cpp is not a second banner.
 WHISPER_STATUS = dict(
@@ -717,6 +752,82 @@ def boot(page, path: str) -> None:
         raise AssertionError(f"not authenticated: landed on {landed}")
 
 
+LLAMA_CHANGELOG_GEOMETRY = """
+() => {
+  const q = (selector) => document.querySelector(selector);
+  const rect = (element) => {
+    if (!element) return null;
+    const box = element.getBoundingClientRect();
+    return {top: box.top, bottom: box.bottom, left: box.left, right: box.right,
+            width: box.width, height: box.height};
+  };
+  const banner = q('[data-testid="llama-update-banner"]');
+  const surface = banner ? banner.firstElementChild : null;
+  const list = q('[data-testid="llama-update-changelog-list"]');
+  const toggle = q('[data-testid="llama-update-changelog-toggle"]');
+  const update = q('[data-testid="llama-update-button"]');
+  const footer = update ? update.closest('div').parentElement : null;
+  return {
+    surface: rect(surface), list: rect(list), toggle: rect(toggle),
+    update: rect(update), footer: rect(footer),
+    listScrolls: list ? list.scrollHeight > list.clientHeight : null,
+  };
+}
+"""
+
+
+def exercise_llama_changelog(page, label: str) -> None:
+    toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
+    check(
+        f"{label}: the llama.cpp changelog starts collapsed",
+        toggle.count() == 1 and toggle.get_attribute("aria-expanded") == "false",
+    )
+    if toggle.count() != 1:
+        return
+    with page.expect_response("**/api/llama/update-changelog*", timeout = 10_000):
+        toggle.click()
+    listing = page.locator('[data-testid="llama-update-changelog-list"]')
+    listing.wait_for(state = "visible", timeout = 10_000)
+    text = listing.inner_text()
+    check(
+        f"{label}: expansion shows only the new carried changes",
+        "GLM-5-Next" in text
+        and "MTP for Qwen3.8-Flash-Next" in text
+        and "Add TML Inkling" not in text,
+        f"list={text!r}",
+    )
+    check(
+        f"{label}: expansion exposes its state to assistive technology",
+        toggle.get_attribute("aria-expanded") == "true",
+    )
+    pull = listing.locator('a[href="https://github.com/ggml-org/llama.cpp/pull/27754"]')
+    check(
+        f"{label}: change references are safe external links",
+        pull.count() == 1
+        and pull.get_attribute("target") == "_blank"
+        and pull.get_attribute("rel") == "noopener noreferrer",
+    )
+    geometry = page.evaluate(LLAMA_CHANGELOG_GEOMETRY)
+    surface, body, footer = geometry["surface"], geometry["list"], geometry["footer"]
+    check(
+        f"{label}: the changelog stays inside its card and above its actions",
+        surface is not None
+        and body is not None
+        and footer is not None
+        and body["left"] >= surface["left"] - 1
+        and body["right"] <= surface["right"] + 1
+        and body["bottom"] <= footer["top"] + 1,
+        f"geometry={geometry}",
+    )
+    page.screenshot(path = str(ART / f"{label.replace(' ', '-')}-llama-expanded.png"))
+    toggle.click()
+    check(
+        f"{label}: the changelog collapses without dismissing the update",
+        toggle.get_attribute("aria-expanded") == "false"
+        and page.locator('[data-testid="llama-update-banner"]').count() == 1,
+    )
+
+
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
     # OLD is already NEW on a rerun, or when an earlier suite in the same job
@@ -812,6 +923,7 @@ def main() -> int:
                     body = json.dumps(llama_payload[0]),
                 ),
             )
+            context.route("**/api/llama/update-changelog*", stub(LLAMA_CHANGELOG))
             page = context.new_page()
             for name, path in ROUTES[:1] if SPOT else ROUTES:
                 size = f"{width}x{height}"
@@ -830,6 +942,9 @@ def main() -> int:
                     toggle.click()
                     page.wait_for_timeout(1500)
                     measure(page, f"{size} {name} expanded")
+                    toggle.click()
+                if path == "/":
+                    exercise_llama_changelog(page, f"{size} {name}")
 
             # whisper.cpp renames the same card rather than adding a second one.
             llama_payload[0] = WHISPER_STATUS
@@ -864,6 +979,7 @@ def main() -> int:
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
                 ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
                 ("**/api/inference/status", CHAT_LOADED),
                 ("**/api/inference/images/status", NOTHING_DIFFUSION),
                 ("**/api/inference/video/status", NOTHING_VIDEO),
@@ -920,6 +1036,7 @@ def main() -> int:
             ("**/api/studio/update-status*", UPDATE_STATUS),
             ("**/api/studio/release-notes*", RELEASE_NOTES),
             ("**/api/llama/update-status*", LLAMA_STATUS),
+            ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
         ):
             context.route(pattern, stub(payload))
         page = context.new_page()
@@ -954,6 +1071,7 @@ def main() -> int:
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
                 ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
             ):
                 fresh_context.route(pattern, stub(payload))
             fresh_page = fresh_context.new_page()
@@ -996,6 +1114,7 @@ def main() -> int:
                     ("**/api/studio/update-status*", UPDATE_STATUS),
                     ("**/api/studio/release-notes*", RELEASE_NOTES),
                     ("**/api/llama/update-status*", LLAMA_STATUS),
+                    ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
                 ):
                     context.route(pattern, stub(payload))
                 page = context.new_page()
