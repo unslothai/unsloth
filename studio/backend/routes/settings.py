@@ -2507,6 +2507,34 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
         return False
 
 
+def _reject_private_embedding_repo(resolved: str, token: Optional[str]) -> None:
+    """A cached embedding repo is not authorization to use it.
+
+    The plan below answers from the shared Hub cache before it ever asks about
+    credentials, so naming a private sentence-transformers or GGUF repository
+    another account had downloaded produced a usable plan, and the PUT persisted
+    it so the process-wide embedder loaded those weights for this account's RAG.
+    Cache presence therefore cannot be the answer: ask whether this account could
+    reach the repository at all.
+
+    Only for a full ``owner/name`` id. A slashless alias is resolved against the
+    curated sentence-transformers namespace further down and is not a repository
+    anyone could have downloaded privately, and a path is containment's business.
+    """
+    from routes.inference import (
+        _looks_like_a_local_model_path,
+        _reject_private_hub_repo_without_an_account_token,
+    )
+
+    if not isinstance(resolved, str) or resolved.count("/") != 1:
+        return
+    if _looks_like_a_local_model_path(resolved):
+        return
+    _reject_private_hub_repo_without_an_account_token(
+        resolved, token, shared_cache_answers_offline = False,
+    )
+
+
 @_with_embedding_resolve_budget
 def _resolve_embedding_model_plan(
     resolved: str, token: Optional[str]
@@ -2516,6 +2544,7 @@ def _resolve_embedding_model_plan(
     The PUT must not persist a client assertion that the GET never validated,
     so both routes use this exact resolver.
     """
+    _reject_private_embedding_repo(resolved, token)
     # Resolve for the model being selected, not the backend still serving the
     # previous model. A model-scoped runtime fallback must not force the next
     # selection onto llama-server.

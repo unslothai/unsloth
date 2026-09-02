@@ -1258,6 +1258,14 @@ def _retire_workspace_directory(username: str) -> bool:
         forget_dataset_grants(username)
     except Exception:  # noqa: BLE001 - same
         logger.warning("Could not clear dataset grants for %s", username, exc_info = True)
+    # And the record of which repositories this account's consent scan pulled in,
+    # which is what authorizes discarding them: a namesake would otherwise be
+    # able to delete a code dependency another account's model still needs.
+    try:
+        from routes.models import forget_scan_created_remote_code
+        forget_scan_created_remote_code(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear remote-code grants for %s", username, exc_info = True)
     # Moving the files is not enough on its own: a worker still bound to this
     # subject recreates the pathname on its next lookup, and a namesake created
     # in between would then be sharing a workspace with a deleted account's job.
@@ -1428,11 +1436,16 @@ def _quiesce_workspace_jobs(username: str) -> None:
         from routes.inference import (
             forget_text_model_owner,
             resident_text_model_workspace,
+            retire_text_model_owner,
         )
 
         if resident_text_model_workspace() != username:
             return
-        forget_text_model_owner(username)
+        # Fenced first, dropped only once the weights are actually gone: both
+        # unloads below are best effort and their failure is swallowed, and a
+        # model left resident with no owner passes the containment fallback,
+        # which for a Hub repository is no containment at all.
+        retire_text_model_owner(username)
         try:
             from routes.inference import get_llama_cpp_backend
             get_llama_cpp_backend().unload_model()
@@ -1447,6 +1460,14 @@ def _quiesce_workspace_jobs(username: str) -> None:
                 backend.unload_model(active)
         except Exception:  # noqa: BLE001 - same
             logger.warning("Could not unload the resident model for %s", username, exc_info = True)
+        # Nothing resident means nothing left to fence.
+        from routes.inference import _resident_text_model_identifiers
+
+        try:
+            if not _resident_text_model_identifiers():
+                forget_text_model_owner()
+        except Exception:  # noqa: BLE001 - the fence stays if we cannot tell
+            pass
 
     def _reset_diffusion_training() -> None:
         # is_active() is false once a run reaches a terminal state, so the stop

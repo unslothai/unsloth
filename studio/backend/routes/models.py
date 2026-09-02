@@ -2806,6 +2806,20 @@ def _note_scan_created_remote_code(repo: str, subject: str) -> None:
             _SCAN_CREATED_REMOTE_CODE.pop(next(iter(_SCAN_CREATED_REMOTE_CODE)))
 
 
+def forget_scan_created_remote_code(subject: str) -> None:
+    """Drop an account's scan records, for retirement.
+
+    The grant is keyed by the reusable username, so a namesake would inherit the
+    right to discard a cached code dependency the previous account pulled in, and
+    that dependency may be what another account's approved model loads from.
+    """
+    with _SCAN_CREATED_REMOTE_CODE_LOCK:
+        for repo in [
+            repo for repo, creator in _SCAN_CREATED_REMOTE_CODE.items() if creator == subject
+        ]:
+            _SCAN_CREATED_REMOTE_CODE.pop(repo, None)
+
+
 def _reject_discarding_another_accounts_remote_code(repo: str) -> None:
     """Only clean up what this account's own scan downloaded.
 

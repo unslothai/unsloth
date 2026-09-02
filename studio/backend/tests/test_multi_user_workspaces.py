@@ -4840,3 +4840,123 @@ def test_another_accounts_dictation_model_is_not_named_in_status(monkeypatch):
         )
     finally:
         reset_workspace_subject(token)
+
+
+def test_a_failed_teardown_leaves_the_model_fenced_rather_than_unowned(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_RESIDENT_TEXT_OWNER", None, raising = False)
+    monkeypatch.setattr(
+        inference_routes, "_resident_text_model_identifiers", lambda: ["alice/private-model"]
+    )
+    monkeypatch.setattr(
+        inference_routes, "_hub_repo_is_anonymously_readable", lambda repo_id, kind: False
+    )
+
+    token = _bind("alice")
+    try:
+        inference_routes._note_text_model_loader("alice/private-model", "alice")
+    finally:
+        reset_workspace_subject(token)
+
+    # Retirement fences before it unloads, because both unloads are best effort
+    # and their failure is swallowed. An unowned Hub repository would otherwise
+    # pass the containment fallback, which for a repo id is no containment.
+    inference_routes.retire_text_model_owner("alice")
+
+    for who in ("bob", "alice"):
+        token = _bind(who)
+        try:
+            with pytest.raises(HTTPException):
+                inference_routes._reject_generation_from_a_foreign_private_model()
+        finally:
+            reset_workspace_subject(token)
+
+    # Once nothing is resident the record goes, and a later load owns it again.
+    monkeypatch.setattr(inference_routes, "_resident_text_model_identifiers", lambda: [])
+    inference_routes.forget_text_model_owner()
+    assert inference_routes._RESIDENT_TEXT_OWNER is None
+
+
+def test_a_foreign_load_in_flight_is_not_named_in_status(monkeypatch):
+    from routes import inference as inference_routes
+
+    class _Attempt:
+        def __init__(self, model_path: str, subject: str) -> None:
+            self.model_path = model_path
+            self.subject = subject
+
+    alices = _Attempt("/home/alice/workspace/secret.gguf", "alice")
+    monkeypatch.setattr(inference_routes, "_running_load_attempt", alices, raising = False)
+    monkeypatch.setattr(
+        inference_routes, "_pending_load_attempts", {"t": alices}, raising = False
+    )
+
+    # The residency check cannot see this: the model is not resident yet, and the
+    # attempt carries the repository id or the local checkpoint's basename.
+    import inspect
+
+    source = inspect.getsource(inference_routes.get_status)
+    assert "_mine(" in source and "getattr(attempt, \"subject\"" in source
+
+
+def test_remote_code_grants_do_not_outlive_the_account_that_earned_them():
+    from fastapi import HTTPException
+
+    from routes import models as models_routes
+
+    models_routes._SCAN_CREATED_REMOTE_CODE.clear()
+    token = _bind("alice")
+    try:
+        models_routes._note_scan_created_remote_code("org/code-dep", "alice")
+        models_routes._reject_discarding_another_accounts_remote_code("org/code-dep")
+    finally:
+        reset_workspace_subject(token)
+
+    # A namesake would otherwise inherit the right to delete a cached code
+    # dependency another account's approved model still loads from.
+    models_routes.forget_scan_created_remote_code("alice")
+    token = _bind("alice")
+    try:
+        with pytest.raises(HTTPException):
+            models_routes._reject_discarding_another_accounts_remote_code("org/code-dep")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_cached_private_embedding_repo_needs_more_than_being_cached(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+    from routes import settings as settings_routes
+
+    monkeypatch.setattr(
+        inference_routes,
+        "_hub_repo_is_anonymously_readable",
+        lambda repo_id, kind: repo_id != "alice/private-embeddings",
+    )
+
+    token = _bind("bob")
+    try:
+        # The plan answers from the shared cache before it asks about
+        # credentials, and the PUT persists it, so the process-wide embedder
+        # would load Alice's weights for Bob's RAG.
+        with pytest.raises(HTTPException) as exc:
+            settings_routes._reject_private_embedding_repo("alice/private-embeddings", None)
+        assert exc.value.status_code == 403
+        # Public repos are unaffected, a curated slashless alias is resolved
+        # against the sentence-transformers namespace and is not a private
+        # download, and this account's own token answers for itself.
+        settings_routes._reject_private_embedding_repo("BAAI/bge-m3", None)
+        settings_routes._reject_private_embedding_repo("bge-m3", None)
+        settings_routes._reject_private_embedding_repo("alice/private-embeddings", "hf_bobs")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        settings_routes._reject_private_embedding_repo("alice/private-embeddings", None)
+    finally:
+        reset_workspace_subject(token)

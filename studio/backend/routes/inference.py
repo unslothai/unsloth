@@ -7047,17 +7047,34 @@ def _text_model_loader(identifier: str) -> Optional[str]:
     return owner[1]
 
 
-def forget_text_model_owner(subject: Optional[str] = None) -> None:
-    """Drop the ownership record, for retirement or an unload.
+# The owner of a model whose account is gone. No account can be called this, so
+# it matches nobody and the model stays fenced off from everyone until it is
+# actually unloaded or replaced by a real load.
+RETIRED_TEXT_MODEL_OWNER = "\x00retired"
 
-    A username is reusable, so a record that outlives the account authorizes the
-    namesake against weights the previous holder loaded. Callers unload the model
-    as well; this is what stops the record itself from being inherited.
-    """
+
+def forget_text_model_owner(subject: Optional[str] = None) -> None:
+    """Drop the ownership record, for an unload that has already happened."""
     global _RESIDENT_TEXT_OWNER
     with _RESIDENT_TEXT_OWNER_LOCK:
         if subject is None or (_RESIDENT_TEXT_OWNER or ("", ""))[1] == subject:
             _RESIDENT_TEXT_OWNER = None
+
+
+def retire_text_model_owner(subject: str) -> None:
+    """Fence the resident model off from everyone, for a deleted account.
+
+    Clearing the record outright is only safe once the weights are gone. An
+    unload here is best effort and its failure is swallowed, and an unowned Hub
+    repository passes the containment fallback, so a failed teardown would have
+    handed a private model to the next caller. This keeps the fence and names an
+    owner nobody can be.
+    """
+    global _RESIDENT_TEXT_OWNER
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        current = _RESIDENT_TEXT_OWNER
+        if current is not None and current[1] == subject:
+            _RESIDENT_TEXT_OWNER = (current[0], RETIRED_TEXT_MODEL_OWNER)
 
 
 def _resolve_model_identifier_for_request(
@@ -16680,12 +16697,27 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
 
+        # This account's own attempt only. The maps are process-wide, so reporting
+        # whichever attempt happened to be first published another account's
+        # repository id or the basename of its local checkpoint, and it did so
+        # before the model was resident, which is the window the residency check
+        # above cannot see. A foreign load is simply not this caller's business.
+        _status_subject = current_workspace_subject()
+
+        def _mine(attempt) -> bool:
+            return attempt is not None and (
+                _status_subject == LEGACY_WORKSPACE_SUBJECT
+                or getattr(attempt, "subject", _status_subject) == _status_subject
+            )
+
         with _scoped_load_attempts_lock:
             _tracked_loading_id = (
-                _running_load_attempt.model_path if _running_load_attempt is not None else ""
+                _running_load_attempt.model_path if _mine(_running_load_attempt) else ""
             )
             if not _tracked_loading_id:
-                _queued = next(iter(_pending_load_attempts.values()), None)
+                _queued = next(
+                    (a for a in _pending_load_attempts.values() if _mine(a)), None
+                )
                 _tracked_loading_id = _queued.model_path if _queued is not None else ""
         # The attempt holds what the client sent, which for an on-device model is a path.
         _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
