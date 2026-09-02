@@ -4347,9 +4347,7 @@ def test_a_cached_private_dictation_model_stays_with_its_downloader(monkeypatch)
         # The load route carries no Hub credential and the sidecar reuses any
         # complete snapshot it finds, so the repository name was the whole lock.
         with pytest.raises(HTTPException) as exc:
-            inference_routes._reject_private_stt_model_from_another_account(
-                "alice/private-whisper"
-            )
+            inference_routes._reject_private_stt_model_from_another_account("alice/private-whisper")
         assert exc.value.status_code == 403
         # Public checkpoints, which is every curated id, load as before.
         inference_routes._reject_private_stt_model_from_another_account("openai/whisper-large-v3")

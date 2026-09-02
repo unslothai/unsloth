@@ -6713,7 +6713,9 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
         if repo_id is None:
             return
         _reject_private_hub_repo_without_an_account_token(
-            repo_id, None, shared_cache_answers_offline = False,
+            repo_id,
+            None,
+            shared_cache_answers_offline = False,
         )
         return
     raise HTTPException(
@@ -17767,7 +17769,9 @@ def _reject_private_stt_model_from_another_account(model: Any) -> None:
     if downloaders and current_workspace_subject() in downloaders:
         return
     _reject_private_hub_repo_without_an_account_token(
-        candidate, None, shared_cache_answers_offline = False,
+        candidate,
+        None,
+        shared_cache_answers_offline = False,
     )
 
 

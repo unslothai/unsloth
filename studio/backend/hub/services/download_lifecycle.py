@@ -1319,8 +1319,7 @@ _download_initiators_lock = threading.Lock()
 
 
 def note_download_initiator(
-    key: str,
-    registry: Optional[download_registry.DownloadRegistry] = None,
+    key: str, registry: Optional[download_registry.DownloadRegistry] = None
 ) -> None:
     """Record a workspace as one of this download's initiators.
 
