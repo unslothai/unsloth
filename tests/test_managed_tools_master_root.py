@@ -131,3 +131,93 @@ def test_the_builder_and_the_resolver_agree_on_the_same_directory(tmp_path):
     built.mkdir(parents = True)
     r = _resolve({"UNSLOTH_HOME": str(root)}, home)
     assert r["whisper"] == str(built)
+
+
+_DISCOVERY_PROBE = """
+import json, os, sys
+sys.path.insert(0, os.environ["_BACKEND"])
+from pathlib import Path
+from utils.paths.storage_roots import studio_root, unsloth_home
+from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
+
+# Replay run.py's module-level block, which is what a real server start does
+# before anything asks where llama-server is.
+resolved = studio_root().resolve()
+if resolved != (Path.home() / ".unsloth" / "studio"):
+    os.environ.setdefault("UNSLOTH_STUDIO_HOME", str(resolved))
+    managed = (unsloth_home() or resolved) / "llama.cpp"
+    os.environ.setdefault("UNSLOTH_LLAMA_CPP_PATH", str(managed))
+    mark_managed_llama_cpp_path(managed)
+
+from core.inference.llama_cpp import LlamaCppBackend
+
+print(json.dumps({
+    "exported": os.environ.get("UNSLOTH_LLAMA_CPP_PATH"),
+    "found": LlamaCppBackend._find_llama_server_binary(),
+}))
+"""
+
+
+def _install_llama_server(directory: Path) -> Path:
+    binary = directory / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True, exist_ok = True)
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    binary.chmod(0o755)
+    return binary
+
+
+def _discover(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "_BACKEND": str(BACKEND),
+    }
+    env.update(env_overrides)
+    out = subprocess.run(
+        [sys.executable, "-c", _DISCOVERY_PROBE],
+        env = env,
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_discovery_finds_the_llama_server_the_master_root_holds(tmp_path):
+    # run.py exports the managed path and marks it managed, and that marker makes
+    # discovery SKIP the env var and fall through to its own root derivation, so
+    # the two derivations have to name one directory or every GGUF model reports
+    # no llama.cpp runtime installed.
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "portable"
+    (root / "studio").mkdir(parents = True)
+    binary = _install_llama_server(root / "llama.cpp")
+
+    result = _discover({"UNSLOTH_HOME": str(root)}, home)
+
+    assert result["exported"] == str(root / "llama.cpp")
+    assert result["found"] == str(binary)
+
+
+def test_discovery_still_prefers_a_plain_custom_studio_root(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    binary = _install_llama_server(custom / "llama.cpp")
+
+    result = _discover({"UNSLOTH_STUDIO_HOME": str(custom)}, home)
+
+    assert result["found"] == str(binary)
+
+
+def test_discovery_still_finds_a_legacy_install(tmp_path):
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    binary = _install_llama_server(home / ".unsloth" / "llama.cpp")
+
+    result = _discover({}, home)
+
+    assert result["found"] == str(binary)

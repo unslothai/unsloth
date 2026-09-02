@@ -5,7 +5,9 @@
 
 import contextlib
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,6 +48,9 @@ def _clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising = False)
     # _default_cache_home reads this before ~/.cache, and CI runners set it.
     monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
+    # Same for matplotlib's config dir, whose contents decide whether MPLCONFIGDIR
+    # is ours to pin.
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
     # Empty home: a real ~/.data-designer would change what the resolver pins.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
@@ -229,3 +234,92 @@ def test_an_explicit_triton_home_keeps_its_own_cache_dir(monkeypatch, tmp_path):
 
     assert os.environ["TRITON_HOME"] == str(chosen)
     assert "TRITON_CACHE_DIR" not in os.environ
+
+
+def _matplotlib_config_dir(home: Path) -> Path:
+    # matplotlib.__init__._get_config_or_cache_dir, Linux branch. The Windows and
+    # macOS branches are exercised by _matplotlib_config_dir itself.
+    return home / ".config" / "matplotlib"
+
+
+def test_a_user_matplotlibrc_keeps_matplotlibs_own_config_dir(tmp_path):
+    # MPLCONFIGDIR moves the config dir as well as the cache, so pinning it here
+    # would drop the file silently and redraw every loss plot differently.
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_a_user_style_library_keeps_matplotlibs_own_config_dir(tmp_path):
+    styles = _matplotlib_config_dir(tmp_path / "home") / "stylelib"
+    styles.mkdir(parents = True)
+    (styles / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_an_empty_matplotlib_config_dir_is_still_pinned(tmp_path):
+    # matplotlib mkdir -p's this on every import, so treating its existence as
+    # user configuration would give up containment for nearly every install.
+    _matplotlib_config_dir(tmp_path / "home").mkdir(parents = True)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["MPLCONFIGDIR"] == str(tmp_path / "studio" / "cache" / "matplotlib")
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith(("linux", "freebsd")),
+    reason = "XDG config base is the Linux/FreeBSD branch",
+)
+def test_the_matplotlib_config_dir_follows_xdg_config_home(monkeypatch, tmp_path):
+    config = tmp_path / "xdg" / "matplotlib"
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
+    pytest.importorskip("matplotlib")
+    config = _matplotlib_config_dir(tmp_path / "home")
+    (config / "stylelib").mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    (config / "stylelib" / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    # A fresh interpreter: matplotlib caches the config dir on first read.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, matplotlib, matplotlib.style;"
+            "print(json.dumps({'rc': matplotlib.matplotlib_fname(),"
+            "'dpi': matplotlib.rcParams['figure.dpi'],"
+            "'style': 'house' in matplotlib.style.available}))",
+        ],
+        env = dict(os.environ),
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    result = json.loads(probe.stdout.strip().splitlines()[-1])
+
+    assert result["rc"] == str(config / "matplotlibrc")
+    assert result["dpi"] == 222.0
+    assert result["style"] is True
