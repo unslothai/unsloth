@@ -1333,6 +1333,41 @@ def test_dsh_rejects_an_unrelated_executable_before_connect(monkeypatch):
     assert "`/usr/bin/dsh` is not DeepSeek Harness" in result.output
 
 
+def test_dsh_resolver_searches_past_an_unrelated_earlier_path_entry(monkeypatch, tmp_path):
+    shadow_dir = tmp_path / "system-bin"
+    harness_dir = tmp_path / "user-bin"
+    shadow_dir.mkdir()
+    harness_dir.mkdir()
+    suffix = ".cmd" if os.name == "nt" else ""
+    for directory in (shadow_dir, harness_dir):
+        executable = directory / f"dsh{suffix}"
+        executable.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n")
+        if os.name != "nt":
+            executable.chmod(0o755)
+
+    monkeypatch.setenv("PATH", os.pathsep.join((str(shadow_dir), str(harness_dir))))
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path / "missing-home")
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
+    monkeypatch.setattr(
+        start,
+        "is_deepseek_harness_executable",
+        lambda executable: Path(executable).parent == harness_dir,
+    )
+    monkeypatch.setattr(
+        start,
+        "_install_agent",
+        lambda *_: pytest.fail("an existing later Harness must be used without reinstalling"),
+    )
+
+    resolved = start._resolve_or_install_agent(
+        "dsh",
+        "npm install -g @deepseek-ai/dsh",
+        start._which_with_install_dirs,
+    )
+
+    assert Path(resolved).parent == harness_dir
+
+
 def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
     installs = []
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)

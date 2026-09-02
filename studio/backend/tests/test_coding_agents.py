@@ -3,6 +3,8 @@
 
 """Tests for coding-agent CLI detection used by the API-keys settings panel."""
 
+import os
+
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
@@ -59,11 +61,31 @@ def test_rejects_distributed_shell_as_deepseek_harness():
     with (
         patch(
             "utils.coding_agents.shutil.which",
-            side_effect = lambda name: "/usr/bin/dsh" if name == "dsh" else None,
+            side_effect = lambda name, path = None: "/usr/bin/dsh" if name == "dsh" else None,
         ),
         patch("utils.coding_agents.is_deepseek_harness_executable", return_value = False),
     ):
         assert detect_installed_coding_agents() == []
+
+
+def test_detects_harness_behind_an_unrelated_earlier_path_entry(monkeypatch):
+    system_dir = os.path.abspath("system-bin")
+    harness_dir = os.path.abspath("user-bin")
+    monkeypatch.setenv("PATH", os.pathsep.join((system_dir, harness_dir)))
+
+    def which(name, path = None):
+        if name != "dsh":
+            return None
+        return os.path.join(system_dir if path is None else path, "dsh")
+
+    with (
+        patch("utils.coding_agents.shutil.which", side_effect = which),
+        patch(
+            "utils.coding_agents.is_deepseek_harness_executable",
+            side_effect = lambda executable, **_: os.path.dirname(executable) == harness_dir,
+        ),
+    ):
+        assert detect_installed_coding_agents() == ["dsh"]
 
 
 def test_detects_dsh_that_identifies_as_deepseek_harness():
@@ -101,4 +123,22 @@ def test_explicit_launch_can_probe_a_custom_dsh_wrapper(tmp_path):
             stderr = "",
         ),
     ):
+        assert is_deepseek_harness_executable(str(launcher))
+
+
+def test_explicit_probe_replaces_undecodable_help_bytes(tmp_path):
+    launcher = tmp_path / "dsh"
+    launcher.write_text("#!/bin/sh\n")
+
+    def probe(command, **kwargs):
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        return CompletedProcess(
+            command,
+            0,
+            stdout = "\ufffd dsh: boot a DeepSeek Harness profile\n",
+            stderr = "",
+        )
+
+    with patch("utils.coding_agents.subprocess.run", side_effect = probe):
         assert is_deepseek_harness_executable(str(launcher))

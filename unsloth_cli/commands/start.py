@@ -31,7 +31,10 @@ import click
 import typer
 from typer.core import TyperCommand
 
-from studio.backend.utils.coding_agents import is_deepseek_harness_executable
+from studio.backend.utils.coding_agents import (
+    deepseek_harness_executables_on_path,
+    is_deepseek_harness_executable,
+)
 from unsloth_cli._inference import (
     _USER_AGENT,
     _studio_token,
@@ -3879,6 +3882,23 @@ def _which_with_install_dirs(name: str) -> Optional[str]:
             os.environ["PATH"] = original
 
 
+def _which_deepseek_harness_with_install_dirs() -> Optional[str]:
+    """Find the first valid DeepSeek Harness even when another ``dsh`` shadows it."""
+    original = os.environ.get("PATH")
+    _augment_path_with_install_dirs()
+    try:
+        for executable in deepseek_harness_executables_on_path():
+            executable = _prefer_windows_cmd_sibling(executable)
+            if executable is not None and is_deepseek_harness_executable(executable):
+                return executable
+        return None
+    finally:
+        if original is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = original
+
+
 def _install_source(install_hint: str) -> Optional[str]:
     """The first http(s) URL an install hint fetches, or None (e.g. an npm install)."""
     match = re.search(r"https?://[^\s'\")]+", install_hint)
@@ -4032,12 +4052,19 @@ def _resolve_or_install_agent(name: str, install_hint: str, resolver) -> str:
         if name != "dsh" or is_deepseek_harness_executable(executable):
             return executable
         invalid_executable = executable
+        executable = _which_deepseek_harness_with_install_dirs()
+        if executable is not None:
+            return executable
 
     executable = _install_agent(name, install_hint)
     if executable is not None:
         if name != "dsh" or is_deepseek_harness_executable(executable):
             return executable
         invalid_executable = executable
+    if name == "dsh":
+        executable = _which_deepseek_harness_with_install_dirs()
+        if executable is not None:
+            return executable
 
     if invalid_executable is not None:
         _fail(
