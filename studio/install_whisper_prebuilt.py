@@ -789,6 +789,8 @@ def _validate_staged_server(staged_root: Path, host: HostInfo) -> None:
             [str(server), "--help"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
             env = env,
             **llama.windows_hidden_subprocess_kwargs(),
@@ -812,7 +814,12 @@ def _elf_needed(path: Path) -> set[str] | None:
     for command in commands:
         try:
             result = subprocess.run(
-                [*command, str(path)], capture_output = True, text = True, timeout = 10
+                [*command, str(path)],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
             )
         except (OSError, subprocess.SubprocessError):
             continue
