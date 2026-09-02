@@ -7,6 +7,7 @@ import struct
 
 import pytest
 
+from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
 from utils.models import gguf_metadata
 from utils.models.gguf_metadata import read_gguf_tts_audio_type
 
@@ -26,14 +27,27 @@ def _write_gguf(path, tokens):
     return str(path)
 
 
+def _snac_vocab():
+    """Orpheus's shape: the codes start where the base vocabulary ends, so the two ids
+    the serving detector detokenizes land on codes."""
+    base = [f"t{i}" for i in range(SNAC_PROBE_TOKEN_IDS[0])]
+    return [*base, *(f"<custom_token_{i}>" for i in range(10_002))]
+
+
 @pytest.fixture(autouse = True)
 def _clear_cache():
     gguf_metadata._TTS_AUDIO_TYPE_CACHE.clear()
 
 
 def test_orpheus_snac_codes_are_a_speech_model(tmp_path):
+    assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "orpheus.gguf", _snac_vocab())) == "snac"
+
+
+def test_snac_codes_the_serving_probe_would_miss_are_not_a_speech_model(tmp_path):
+    # llama.cpp asks what two fixed ids detokenize to, so codes that do not reach them
+    # are not served as SNAC. Accepting them here would evict for a target that fails.
     tokens = ["hello", "<|eot_id|>", *(f"<custom_token_{i}>" for i in range(10_002))]
-    assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "orpheus.gguf", tokens)) == "snac"
+    assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "shifted.gguf", tokens)) is None
 
 
 def test_spark_bicodec_tokens_are_a_speech_model(tmp_path):
@@ -41,9 +55,30 @@ def test_spark_bicodec_tokens_are_a_speech_model(tmp_path):
     assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "spark.gguf", tokens)) == "bicodec"
 
 
+def test_a_partial_bicodec_vocabulary_is_not_a_speech_model(tmp_path):
+    # The serving detector wants both token-zero markers, not any <|bicodec_ token.
+    tokens = ["hi", "<|bicodec_semantic_0|>"]
+    assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "half.gguf", tokens)) is None
+
+
 def test_outetts_dac_tokens_are_a_speech_model(tmp_path):
-    tokens = ["<|audio_start|>", "<|audio_end|>", "<|text_start|>", "<|text_end|>"]
+    tokens = ["<|audio_start|>", "<|audio_end|>", "<|c1_0|>", "<|c2_0|>"]
     assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "oute.gguf", tokens)) == "dac"
+
+
+def test_outetts_0_2_delimiters_without_a_codebook_are_not_a_speech_model(tmp_path):
+    # Real regression: OuteTTS 0.2 ships these four delimiters but none of DAC's codebook
+    # tokens, so llama.cpp reports it as not audio. The delimiters alone used to pass this
+    # gate, which evicted the resident speech model for a target the loader then refused.
+    tokens = ["<|audio_start|>", "<|audio_end|>", "<|text_start|>", "<|text_end|>"]
+    assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "oute02.gguf", tokens)) is None
+
+
+def test_an_audio_input_marker_outranks_codec_tokens(tmp_path):
+    # Ordering matches the serving detector: it checks the audio-in markers before the
+    # codecs, so a vocabulary carrying both is audio_vlm and must not be switched to.
+    tokens = ["<|audio|>", "<|bicodec_semantic_0|>", "<|bicodec_global_0|>"]
+    assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "both.gguf", tokens)) is None
 
 
 def test_a_chat_vocabulary_is_not_a_speech_model(tmp_path):

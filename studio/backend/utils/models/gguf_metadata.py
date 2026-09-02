@@ -613,7 +613,10 @@ def _read_gguf_string(path: str, wanted_key: str) -> Optional[str]:
     return result
 
 
-def _parse_gguf_marker_tokens(path: str) -> Optional[list[str]]:
+def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
+    """(marker tokens, whether the ids the SNAC probe detokenizes are codec codes)."""
+    from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
+
     try:
         with open(path, "rb") as f:
             head = f.read(24)
@@ -642,25 +645,30 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[list[str]]:
                 if atype != 8 or alen > 1 << 30:
                     return None
                 markers: list[str] = []
-                for _ in range(alen):
+                # The serving detector asks what these two ids detokenize to, so the
+                # vocabulary has to be read positionally, not just as a set of markers.
+                snac_probe = dict.fromkeys(SNAC_PROBE_TOKEN_IDS, False)
+                for index in range(alen):
                     slen = struct.unpack("<Q", f.read(8))[0]
                     if slen > 1 << 20:
                         return None
                     raw = f.read(slen)
+                    if index in snac_probe:
+                        snac_probe[index] = raw.startswith(b"<custom_token_")
                     if raw[:1] != b"<":
                         continue
                     try:
                         markers.append(raw.decode("utf-8"))
                     except UnicodeDecodeError:
                         continue
-                return markers
+                return markers, all(snac_probe.values())
     except (OSError, struct.error) as e:
         logger.debug(f"_parse_gguf_marker_tokens: cannot read {path}: {e}")
     return None
 
 
 def read_gguf_tts_audio_type(path: str) -> Optional[str]:
-    from utils.audio_tokens import classify_audio_token_contents, is_tts_audio_type
+    from utils.audio_tokens import classify_gguf_vocab_audio_type, is_tts_audio_type
 
     fkey = _cache_key(path)
     if fkey is None:
@@ -668,8 +676,8 @@ def read_gguf_tts_audio_type(path: str) -> Optional[str]:
     with _CACHE_LOCK:
         if fkey in _TTS_AUDIO_TYPE_CACHE:
             return _TTS_AUDIO_TYPE_CACHE[fkey]
-    markers = _parse_gguf_marker_tokens(path)
-    audio_type = classify_audio_token_contents(markers) if markers else None
+    parsed = _parse_gguf_marker_tokens(path)
+    audio_type = classify_gguf_vocab_audio_type(set(parsed[0]), parsed[1]) if parsed else None
     result = audio_type if is_tts_audio_type(audio_type) else None
     with _CACHE_LOCK:
         while len(_TTS_AUDIO_TYPE_CACHE) >= _CACHE_MAX_ENTRIES:
