@@ -1654,6 +1654,48 @@ test("text with no whitespace for hundreds of characters is still fenced", () =>
   ]);
 });
 
+test("whitespace is not treated as a grapheme boundary", () => {
+  // It is not one. A combining mark joins a preceding space and a Prepend joins a following one,
+  // so anchoring the segmentation at a space cut off the very context that decides the join. The
+  // block separator is a control character, which UAX 29 breaks on either side unconditionally, so
+  // that is the only place the walk can be picked up.
+  const index = (body: string) =>
+    buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  assert.deepEqual(findMatches(index("a \u0301"), "\u0301", 10), []);
+  assert.deepEqual(findMatches(index("\u0600 "), "\u0600", 10), []);
+});
+
+test("a long run of regional indicators keeps its parity", () => {
+  // Flags pair off by the parity of the run they sit in, and a run has no length limit, so no
+  // fixed amount of preceding context is enough to work out where the pairs fall.
+  const flags = "\u{1f1e6}".repeat(129) + "\u{1f1e8}\u{1f1e9}";
+  const index = buildTextIndex(el("DIV", [el("P", [text(flags)])]));
+  // The 129th indicator pairs with the one after it, so the last two are not a grapheme of their own.
+  assert.deepEqual(findMatches(index, "\u{1f1e8}\u{1f1e9}", 10), []);
+});
+
+test("a capped search does not segment the same block twice", () => {
+  // A capped search walks its candidates more than once, to count them and again to take the
+  // window around the viewport. Segmenting per candidate made that quadratic; the block is
+  // segmented once and remembered for as long as the index lives.
+  const body = "\uac00\ub098\ub2e4".repeat(20_000);
+  const index = buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  const anchor = () => index.text.length - 10;
+  const first = Date.now();
+  assert.equal(
+    findMatches(index, "\uac00", MAX_MATCHES + 1, anchor).length,
+    MAX_MATCHES + 1,
+  );
+  const cost = Date.now() - first;
+  const second = Date.now();
+  findMatches(index, "\uac00", MAX_MATCHES + 1, anchor);
+  // The second search reuses the segmentation, so it cannot be slower than the first was.
+  assert.ok(
+    Date.now() - second <= cost + 50,
+    `second search took ${Date.now() - second}ms against ${cost}ms`,
+  );
+});
+
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
   const dom = await readFile(
     new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),

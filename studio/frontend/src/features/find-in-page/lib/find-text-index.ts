@@ -459,10 +459,26 @@ function canonicalSource(needle: string, dotted: boolean): string {
   return out;
 }
 
-/** How far back to look for a position that is certainly a grapheme boundary. Whitespace and the
- *  block separator are both boundaries, and prose has one every few characters. */
-const ANCHOR_SCAN = 256;
-const BOUNDARY_ANCHOR = /[\s\u0000]/;
+/** Grapheme boundaries per block, built once and kept for as long as the index lives, plus where
+ *  the blocks start: finding that by searching back from each match is what made a capped search
+ *  slow, not the segmenting. */
+interface BoundaryCache {
+  starts: number[];
+  blocks: Map<number, Uint8Array>;
+}
+const boundaryCache = new WeakMap<FindTextIndex, BoundaryCache>();
+
+/** The start of the block containing `at`, by binary search over the separator positions. */
+function blockStart(starts: number[], at: number): number {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (starts[mid] <= at) low = mid;
+    else high = mid - 1;
+  }
+  return starts[low];
+}
 
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
@@ -488,23 +504,31 @@ function graphemeSegmenter() {
 /**
  * True when `[start, end)` begins and ends where a grapheme does.
  *
- * Asked of the platform rather than answered here. Six rounds of review found six ways to land
+ * Asked of the platform rather than answered here. Seven rounds of review found seven ways to land
  * inside a cluster, each a Unicode range that had not been enumerated, and there is no end to that
- * list: Hangul Jamo, then combining marks, then Prepend, then spacing marks and skin tones. The
- * segmenter already knows the whole of UAX 29 and is kept current with it.
+ * list. The segmenter already knows the whole of UAX 29 and is kept current with it.
  *
- * Only around the match, not over the whole index: a 4M character haystack is not worth segmenting
- * to place two offsets. The window starts at the nearest whitespace or block separator behind the
- * match, which are boundaries by definition, so the segmentation inside it is the real one. Where
- * no anchor is near, the match is allowed, which is what this did before any of this existed.
+ * Segmented one block at a time and remembered, not per match: a capped search walks its candidates
+ * more than once, and segmenting each of them separately took 6.3 seconds on a 1M character
+ * Hangul index. A block is segmented at most once however many matches fall in it.
+ *
+ * The block, and not a window around the match, because the walk has to start somewhere that is a
+ * boundary for certain. Whitespace is not: a combining mark joins a preceding space, a Prepend
+ * joins a following one, and a run of regional indicators pairs by its own parity however long it
+ * is. `BLOCK_SEPARATOR` is a control character, which UAX 29 breaks on either side unconditionally,
+ * so it is the one place the segmentation can be picked up cleanly.
  */
-function alignsToGraphemes(text: string, start: number, end: number): boolean {
+function alignsToGraphemes(
+  index: FindTextIndex,
+  start: number,
+  end: number,
+): boolean {
+  const text = index.text;
   // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
   // far more than looking. Nothing below U+0300 extends a grapheme: the lowest combining mark is
   // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and
-  // everything astral arrives here as a surrogate. Latin prose therefore pays one comparison.
-  // Both sides of each edge, not just the outside: a query can itself begin with a mark that joins
-  // what precedes it, or end with one that joins what follows.
+  // everything astral arrives here as a surrogate. Both sides of each edge, since the query can
+  // itself begin or end with one. Latin prose therefore pays four comparisons.
   if (
     !(start > 0 && JOINS_GRAPHEME.test(text[start - 1])) &&
     !JOINS_GRAPHEME.test(text[start]) &&
@@ -515,31 +539,36 @@ function alignsToGraphemes(text: string, start: number, end: number): boolean {
   }
   const segments = graphemeSegmenter();
   if (segments === null) return true;
-  let from = start;
-  while (from > 0 && start - from < ANCHOR_SCAN) {
-    if (BOUNDARY_ANCHOR.test(text[from - 1])) break;
-    from -= 1;
+
+  let cache = boundaryCache.get(index);
+  if (cache === undefined) {
+    const starts = [0];
+    for (
+      let at = text.indexOf(BLOCK_SEPARATOR);
+      at !== -1;
+      at = text.indexOf(BLOCK_SEPARATOR, at + 1)
+    ) {
+      starts.push(at + 1);
+    }
+    cache = { starts, blocks: new Map() };
+    boundaryCache.set(index, cache);
   }
-  // Forward only as far as the next anchor, for the same reason: what decides the boundary at the
-  // end of the match is the handful of characters after it, and in prose the next space is close.
-  let to = end;
-  while (to < text.length && to - end < ANCHOR_SCAN) {
-    if (BOUNDARY_ANCHOR.test(text[to])) break;
-    to += 1;
+  const from = blockStart(cache.starts, start);
+  const blocks = cache.blocks;
+  let marks = blocks.get(from);
+  if (marks === undefined) {
+    let to = text.indexOf(BLOCK_SEPARATOR, from);
+    if (to === -1) to = text.length;
+    marks = new Uint8Array(to - from + 1);
+    for (const { index: at } of segments.segment(text.slice(from, to))) {
+      marks[at] = 1;
+    }
+    marks[to - from] = 1;
+    blocks.set(from, marks);
   }
-  // A run with no anchor in reach is still segmented, from as far back as the scan went, rather
-  // than waved through: a log line or a URL has no whitespace for hundreds of characters, and
-  // accepting there put the hole straight back. Only the first cluster of such a window can be
-  // misread, and by `start` the segmentation has long resynchronised.
-  let sawStart = start === from;
-  let sawEnd = false;
-  for (const { index } of segments.segment(text.slice(from, to))) {
-    const at = from + index;
-    if (at === start) sawStart = true;
-    if (at === end) sawEnd = true;
-    if (at > end) break;
-  }
-  return sawStart && (sawEnd || end === to);
+  // A match that reaches past the block cannot be aligned inside it; the separator is a boundary,
+  // so anything crossing it is not one grapheme anyway.
+  return marks[start - from] === 1 && marks[end - from] === 1;
 }
 
 function escapeForRegex(text: string): string {
@@ -591,7 +620,7 @@ function eachMatch(
       if (hit === null) return;
       const end = hit.index + hit[0].length;
       // Never part way through a grapheme, whichever way the match was found.
-      if (!alignsToGraphemes(index.text, hit.index, end)) {
+      if (!alignsToGraphemes(index, hit.index, end)) {
         pattern.lastIndex = hit.index + 1;
         continue;
       }
@@ -611,7 +640,7 @@ function eachMatch(
     const at = index.text.indexOf(needle, from);
     if (at === -1) return;
     const end = at + needle.length;
-    if (!alignsToGraphemes(index.text, at, end)) {
+    if (!alignsToGraphemes(index, at, end)) {
       from = at + 1;
       continue;
     }
