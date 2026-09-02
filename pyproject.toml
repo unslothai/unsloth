@@ -1458,6 +1458,9 @@ extend-exclude = [
     "*mapper.py",
     # Vendored upstream source: reformatting it would break the digest test.
     "studio/backend/vendor/",
+    # Pinned upstream UEmbed reference: reformatting it would change the bytes
+    # whose SHA-256 the parity fixture pins.
+    "tests/python/fixtures/uembed_reference/vendor/",
 ]
 
 [tool.ruff.lint]
