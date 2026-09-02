@@ -31712,6 +31712,21 @@ class LlamaCppBackend:
                     # Already neutralized where the candidate was built, so it is
                     # appended after the pass above rather than through it.
                     stream_payload["messages"].append(_carried_partial)
+                    # The fit above priced `conversation` alone, so the partial is
+                    # room the replacement window has not been asked about. Same two
+                    # steps the continuation took when it was first committed, now
+                    # against the window the respawn actually came back with.
+                    if not _continuation_would_be_served(stream_payload["messages"], True):
+                        _refit_evicted = _evict_until_it_fits(
+                            stream_payload["messages"],
+                            None,
+                            stream_payload.get("chat_template_kwargs"),
+                            True,
+                        )
+                        if _refit_evicted is not None and _continuation_would_be_served(
+                            _refit_evicted, True
+                        ):
+                            stream_payload["messages"] = _refit_evicted
                 if truncation:
                     if _records_boundary(truncation):
                         truncation.update(

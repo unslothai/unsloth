@@ -32,6 +32,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from core.inference.context_window import _reply_floor
 from core.inference.llama_cpp import (
     _CONTINUE_TRUNCATED_ANSWER_STATUS,
     _MAX_LENGTH_CONTINUATIONS,
@@ -360,6 +361,74 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
     assert replayed["messages"][0]["role"] == "user"
     assert replayed["messages"][-1]["role"] == "assistant"
     assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][-1]["content"]
+    assert replayed["continue_final_message"] is True
+    assert replayed["add_generation_prompt"] is False
+
+
+def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
+    """The refit priced `conversation`; the partial it carries has to be priced too.
+
+    A replacement server with a smaller window can hold the refitted conversation and
+    still not hold the partial appended after it, and a retry rejected on size defeats
+    the respawn it was recovering from. The candidate goes through the same eviction the
+    continuation used when it was first committed, now against the smaller window.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+
+    def _count(messages, *_a, **_k) -> int:
+        """Two characters a token, so the partial is priced by its real size."""
+        return sum(len(str(message.get("content", ""))) for message in messages) // 2
+
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+
+    def _respawned() -> bool:
+        # Small enough to hold the refitted conversation and not the partial after it.
+        backend._effective_context_length = 1400
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    history = [
+        {"role": "user", "content": "Older question " + "x" * 400},
+        {"role": "assistant", "content": "Older answer " + "y" * 400},
+        {"role": "user", "content": "Show me the HTML inline"},
+    ]
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = history,
+            tools = [],
+            max_tool_iterations = 0,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    replayed = payloads[-1]
+    assert replayed["messages"][-1]["role"] == "assistant", "the partial still rides across"
+    # The fit priced the conversation alone at ~415 tokens and left it whole; the
+    # partial takes it past the 1400-token replacement window, so the older exchange
+    # has to go with it. Only a candidate the gate accepts may be sent.
+    assert len(replayed["messages"]) == 2, "the older exchange was not evicted for the partial"
+    assert _count(replayed["messages"]) + _reply_floor(1400) <= 1400
     assert replayed["continue_final_message"] is True
     assert replayed["add_generation_prompt"] is False
 
