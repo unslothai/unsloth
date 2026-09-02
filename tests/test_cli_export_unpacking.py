@@ -167,9 +167,7 @@ def test_cli_export_forwards_private_flag(
 
 
 def test_cli_export_forwards_hf_token_to_checkpoint_load(
-    cli_app: typer.Typer,
-    runner: CliRunner,
-    tmp_path: Path,
+    cli_app: typer.Typer, runner: CliRunner, tmp_path: Path
 ) -> None:
     """--hf-token reaches load_checkpoint, not just the Hub push."""
     ckpt = tmp_path / "ckpt"
