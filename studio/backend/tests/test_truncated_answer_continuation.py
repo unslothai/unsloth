@@ -309,14 +309,14 @@ def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
     assert "add_generation_prompt" not in payloads[0]
 
 
-def test_a_respawn_refit_during_a_continuation_drops_the_flags(monkeypatch):
-    """The refit puts back a list that ends on the USER turn; the flags must not stay.
+def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
+    """The refit puts `conversation` back, which never learned about the continuation.
 
-    `_refit_final_after_respawn` rebuilds the payload from `conversation`, which never
-    learned about the continuation -- that appended its partial to the payload alone. Left
-    set, llama-server renders the prompt with no generation prompt and the model continues
-    the user's own message instead of answering it; measured against llama.cpp b10715, a
-    turn asking "What is 2+2?" comes back as "What is 2+2?".
+    Both halves have to travel together. Left as it was, the payload keeps
+    `continue_final_message` over a list ending on the USER turn, and llama-server
+    (measured on b10715) renders that with no generation prompt at all: a turn asking
+    "What is 2+2?" comes back as "What is 2+2?". Dropping the flags instead restarts the
+    answer while `cumulative` still holds the partial, so the retry is appended to it.
     """
 
     payloads: list[dict] = []
@@ -356,9 +356,12 @@ def test_a_respawn_refit_during_a_continuation_drops_the_flags(monkeypatch):
 
     assert calls["n"] == 3, "the continuation has to be opened, die, and be retried"
     replayed = payloads[-1]
-    assert replayed["messages"][-1]["role"] == "user", "the refit put the conversation back"
-    assert "continue_final_message" not in replayed
-    assert "add_generation_prompt" not in replayed
+    # The refit rebuilt the conversation, and the partial came with it.
+    assert replayed["messages"][0]["role"] == "user"
+    assert replayed["messages"][-1]["role"] == "assistant"
+    assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][-1]["content"]
+    assert replayed["continue_final_message"] is True
+    assert replayed["add_generation_prompt"] is False
 
 
 def test_the_final_continuation_is_capped(monkeypatch):

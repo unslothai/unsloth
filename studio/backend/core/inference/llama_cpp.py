@@ -31687,17 +31687,31 @@ class LlamaCppBackend:
                 from core.inference import context_refusal  # noqa: PLC0415
 
                 context_refusal.record_fit(truncation)
+                # `conversation` never learned about an answer continuation -- that
+                # appended its partial to the PAYLOAD alone -- so putting it back
+                # unchanged would leave the flags describing a list that now ends on
+                # the user turn. Neither half of that can be dropped on its own:
+                # llama-server takes `continue_final_message` with no trailing
+                # assistant turn (measured on b10715) and renders the prompt with no
+                # generation prompt at all, so the model continues the USER's message
+                # instead of answering it; and dropping the flags instead restarts the
+                # answer while `cumulative` and `_last_emitted` still hold the partial,
+                # so the fresh reply is appended to it. The partial rides across.
+                _carried_partial = None
+                _prior_messages = stream_payload.get("messages") or []
+                if (
+                    stream_payload.get("continue_final_message")
+                    and _prior_messages
+                    and _prior_messages[-1].get("role") == "assistant"
+                ):
+                    _carried_partial = _prior_messages[-1]
                 stream_payload["messages"] = neutralize_control_markup_in_messages(
                     conversation, None, self.markup_profile
                 )
-                # `conversation` never learned about an answer continuation -- that
-                # appended its partial to the PAYLOAD -- so this refit puts a list
-                # back that ends on the user turn. The flags describing the partial
-                # have to go with it. Left set, llama-server renders the prompt with
-                # no generation prompt at all and the model continues the USER's
-                # message: asked "What is 2+2?" it replies "What is 2+2?".
-                stream_payload.pop("continue_final_message", None)
-                stream_payload.pop("add_generation_prompt", None)
+                if _carried_partial is not None:
+                    # Already neutralized where the candidate was built, so it is
+                    # appended after the pass above rather than through it.
+                    stream_payload["messages"].append(_carried_partial)
                 if truncation:
                     if _records_boundary(truncation):
                         truncation.update(
