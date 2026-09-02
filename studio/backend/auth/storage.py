@@ -570,6 +570,52 @@ def get_or_create_preview_link_secret() -> bytes:
     return secret
 
 
+_PREVIEW_INCARNATION_KEY_PREFIX = "preview_incarnation:"
+
+
+def preview_link_incarnation(subject: str, *, create: bool = True) -> str:
+    """A value identifying this account, which a recreated namesake does not share.
+
+    The signed payload named only the reusable username, so every link a deleted
+    account had shared stayed valid, and the moment a namesake produced a run at
+    the same ref those links resolved against the replacement's checkpoint. This
+    is minted per account and dropped when the account is retired, so the
+    replacement mints a different one and the old links stop verifying.
+
+    ``create = False`` for verification of an account that no longer exists:
+    minting there would hand the caller a fresh identity to verify against.
+    """
+    key = f"{_PREVIEW_INCARNATION_KEY_PREFIX}{subject}"
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_secrets WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            if not create:
+                return ""
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (key, secrets.token_hex(16)),
+            )
+            conn.commit()
+            row = conn.execute("SELECT value FROM app_secrets WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else ""
+    finally:
+        conn.close()
+
+
+def clear_preview_link_incarnation(subject: str) -> None:
+    """Retire an account's preview identity, revoking every link it had shared."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key = ?",
+            (f"{_PREVIEW_INCARNATION_KEY_PREFIX}{subject}",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def rotate_preview_link_secret() -> bytes:
     """Rotate the preview-link secret, immediately revoking every outstanding ``/p`` share link."""
     global _preview_link_secret_cache
@@ -1189,6 +1235,13 @@ def _retire_workspace_directory(username: str) -> bool:
     from storage import schema_cache
 
     schema_cache.forget_all()
+    # Shared links outlive the account too: the token names the username, so a
+    # namesake producing a run at the same ref would serve its checkpoint to
+    # whoever still held the old link.
+    try:
+        clear_preview_link_incarnation(username)
+    except Exception:  # noqa: BLE001 - a link we cannot revoke must not block a deletion
+        logger.warning("Could not revoke preview links for %s", username, exc_info = True)
     # Same reasoning one level up: process-lifetime memos keyed by the username
     # outlive the files, so a namesake would resolve its embedding model to the
     # previous holder's weights and index documents in the wrong space.

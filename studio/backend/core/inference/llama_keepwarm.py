@@ -825,11 +825,34 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
         get_auto_unload_keep_kv,
     )
 
+    def _in_owning_workspace(fn, *args):
+        """Run a settings read as the account whose model is resident.
+
+        The loop is created at startup, outside any request, so every read here
+        landed in the owner's workspace: a managed account's TTL and keep-KV
+        choice were never consulted, and the owner's TTL could unload a model
+        loaded by an account that had switched the feature off. Falls back to
+        the loop's own context when nothing is resident or its loader is
+        unknown, which is the previous behaviour.
+        """
+        try:
+            from routes.inference import resident_text_model_workspace
+            from utils.workspace_context import run_in_workspace
+
+            subject = resident_text_model_workspace()
+            if subject is not None:
+                return run_in_workspace(subject, fn, *args)
+        except Exception:  # noqa: BLE001 - a policy read must never stop the loop
+            pass
+        return fn(*args)
+
     def _user_pinned(b) -> bool:
         """Whether the setting spares this model. Re-read like the other
         settings: a KV save can outlive the user turning this on. getattr keeps
         a foreign backend (tests, MLX) on the old unload-everything path."""
-        return get_auto_unload_api_only() and getattr(b, "_loaded_by_user_action", False)
+        return _in_owning_workspace(get_auto_unload_api_only) and getattr(
+            b, "_loaded_by_user_action", False
+        )
 
     seen_model = None
     while True:
@@ -843,7 +866,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             logger.debug("media idle_unload_step failed: %s", exc)
         try:
             # Keep SQLite-backed setting reads off the event loop.
-            ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
+            ttl = await asyncio.to_thread(_in_owning_workspace, get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
             from routes.inference import get_llama_cpp_backend
@@ -867,7 +890,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
                     manifest = None
-                    if await asyncio.to_thread(get_auto_unload_keep_kv):
+                    if await asyncio.to_thread(_in_owning_workspace, get_auto_unload_keep_kv):
                         try:
                             manifest = await asyncio.to_thread(
                                 backend.save_slots_for_resume,
@@ -876,7 +899,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         except Exception as exc:
                             logger.debug("slot save before idle unload failed: %s", exc)
                     # Re-read settings: the save can outlive a settings change.
-                    ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
+                    ttl = await asyncio.to_thread(
+                        _in_owning_workspace, get_auto_unload_idle_seconds
+                    )
                     if (
                         ttl <= 0
                         or not _is_idle(ttl)
@@ -885,7 +910,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
-                    if manifest and not await asyncio.to_thread(get_auto_unload_keep_kv):
+                    if manifest and not await asyncio.to_thread(
+                        _in_owning_workspace, get_auto_unload_keep_kv
+                    ):
                         _delete_resume_files(manifest)
                         manifest = None
                     # A request may register _pending while an off-loop setting read runs.

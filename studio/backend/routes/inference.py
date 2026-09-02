@@ -7068,6 +7068,25 @@ def _resident_text_model_identifiers() -> list[str]:
     return identifiers
 
 
+def resident_text_model_workspace() -> Optional[str]:
+    """The workspace that asked for the resident text model, if one is recorded.
+
+    The idle-unload loop is created at startup, outside any request, so it read
+    the owner's TTL and keep-KV choice whatever account had actually loaded the
+    model. This is what lets it consult the policy of the account whose model it
+    is about to unload.
+    """
+    identifiers = _resident_text_model_identifiers()
+    if not identifiers:
+        return None
+    with _TEXT_MODEL_LOADERS_LOCK:
+        for identifier in identifiers:
+            loader = _TEXT_MODEL_LOADERS.get(identifier)
+            if loader is not None:
+                return loader
+    return None
+
+
 def _caller_could_have_loaded(identifier: str) -> bool:
     """Whether this account could have named that identifier itself.
 

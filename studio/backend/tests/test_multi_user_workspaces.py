@@ -4649,3 +4649,98 @@ def test_a_private_cached_dataset_is_not_readable_by_another_account(monkeypatch
         assert cache_access.caller_may_read_cached_dataset("alice/private-set") is True
     finally:
         reset_workspace_subject(token)
+
+
+def test_a_preview_link_does_not_survive_its_account(monkeypatch, tmp_path):
+    from auth import storage as auth_storage
+    from utils import preview_token
+
+    incarnations: dict[str, str] = {}
+    minted: list[str] = []
+
+    def _incarnation(subject: str, *, create: bool = True) -> str:
+        if subject not in incarnations:
+            if not create:
+                return ""
+            minted.append(subject)
+            incarnations[subject] = f"gen-{len(minted)}"
+        return incarnations[subject]
+
+    monkeypatch.setattr(auth_storage, "preview_link_incarnation", _incarnation)
+    monkeypatch.setattr(
+        preview_token, "get_or_create_preview_link_secret", lambda: b"secret", raising = False
+    )
+
+    token = _bind("alice")
+    try:
+        link = preview_token.sign_preview_ref("run-1/checkpoint-40")
+        assert preview_token.verify_preview_ref("run-1/checkpoint-40", link) is True
+    finally:
+        reset_workspace_subject(token)
+
+    # Deleting the account drops its incarnation, so the shared link stops
+    # verifying rather than waiting for a namesake to produce the same ref.
+    incarnations.pop("alice")
+    assert preview_token.verify_preview_ref("run-1/checkpoint-40", link) is False
+
+    # And a recreated namesake mints a different one, so it never inherits the
+    # old links even once its own run reaches that ref.
+    token = _bind("alice")
+    try:
+        assert preview_token.sign_preview_ref("run-1/checkpoint-40") != link
+        assert preview_token.verify_preview_ref("run-1/checkpoint-40", link) is False
+    finally:
+        reset_workspace_subject(token)
+
+    # The owner is the installation and cannot be recreated, so its links keep
+    # the original payload and stay valid across this change.
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        owner_link = preview_token.sign_preview_ref("run-2")
+        assert preview_token.verify_preview_ref("run-2", owner_link) is True
+        assert LEGACY_WORKSPACE_SUBJECT not in incarnations
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_remote_code_scan_contains_the_directory_it_reads(tmp_path, monkeypatch):
+    import inspect
+
+    from routes import models as models_routes
+
+    source = inspect.getsource(models_routes.scan_model_remote_code)
+    # The findings carry source snippets from the files it reads, so the paths
+    # pass containment before the scanner opens anything.
+    guarded, _, rest = source.partition("_reject_uncontained_local_path")
+    assert rest, "the scan no longer contains the paths it reads"
+    assert "load_scan_target" not in guarded
+    for field in ("model_name", "model_local_path", "model_snapshot_path"):
+        assert field in rest.split("hf_token_arg")[0], field
+
+
+def test_the_idle_unload_loop_asks_the_owning_workspace(monkeypatch):
+    import inspect
+
+    from core.inference import llama_keepwarm
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_TEXT_MODEL_LOADERS", {"m": "alice"}, raising = False)
+    monkeypatch.setattr(inference_routes, "_resident_text_model_identifiers", lambda: ["m"])
+    assert inference_routes.resident_text_model_workspace() == "alice"
+
+    monkeypatch.setattr(inference_routes, "_resident_text_model_identifiers", lambda: [])
+    assert inference_routes.resident_text_model_workspace() is None
+
+    # The loop is created at startup, outside any request, so every settings read
+    # in it landed in the owner's workspace whoever had loaded the model.
+    source = inspect.getsource(llama_keepwarm.idle_unload_loop)
+    for setting in (
+        "get_auto_unload_idle_seconds",
+        "get_auto_unload_keep_kv",
+        "get_auto_unload_api_only",
+    ):
+        for line in source.splitlines():
+            stripped = line.strip()
+            # The import block at the top of the loop names them too.
+            if not stripped.startswith(setting) and setting in stripped:
+                assert "_in_owning_workspace" in stripped, stripped

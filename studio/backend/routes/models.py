@@ -2589,6 +2589,13 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    # Every identifier here can name a directory the scanner then reads, and the
+    # findings carry source snippets, so without containment a managed account
+    # could read another workspace's model code through them.
+    for candidate in (model_name, model_local_path, model_snapshot_path):
+        _reject_uncontained_local_path(candidate, "scan")
     # Without this an absent body token reads as None, i.e. ambient-authorized, and the
     # scan returns source snippets from a cached private repo.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
