@@ -10458,6 +10458,16 @@ def _render_html_result(arguments: dict) -> str:
     )
 
 
+def _full_access_is_permitted() -> bool:
+    """Whether this caller may run the local code tools unsandboxed.
+
+    The installation owner only. Single-user installs have nobody else, so
+    Full access behaves exactly as it always has there.
+    """
+    from auth.storage import is_installation_owner
+    return is_installation_owner()
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -10494,6 +10504,16 @@ def execute_tool(
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    # Full access is the owner's switch, not every account's. python and terminal
+    # run as the backend OS user, so with the sandbox off an absolute path reads
+    # any file the server can reach: another workspace, or auth.db. Moving the
+    # working directory under the account's workspace is not a boundary once the
+    # path analysis and the blocklist are the things being turned off.
+    #
+    # Clamped here rather than in the routes because every loop reaches the tools
+    # through this one function, and clamped rather than refused so a managed
+    # account keeps its tools, sandboxed, instead of losing them.
+    disable_sandbox = bool(disable_sandbox) and _full_access_is_permitted()
     # Set unconditionally, so a value from an earlier call on this thread can never be
     # read by a later one. That is what makes a try/finally reset unnecessary here.
     _REQUEST_CONTEXT_TOKENS.set(context_tokens)

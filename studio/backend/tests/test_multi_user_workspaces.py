@@ -5287,3 +5287,39 @@ def test_a_fenced_request_answers_401_rather_than_500():
     source = inspect.getsource(api_errors.install_api_error_handlers)
     assert "RetiredWorkspaceError" in source
     assert "status_code = 401" in source
+
+
+def test_a_managed_account_cannot_turn_the_code_tool_sandbox_off(monkeypatch):
+    from core.inference import tools as tools_module
+
+    seen = []
+
+    def _fake_bash(command, cancel_event, timeout, session_id, **kwargs):
+        seen.append(kwargs.get("disable_sandbox"))
+        return "ok"
+
+    monkeypatch.setattr(tools_module, "_bash_exec", _fake_bash)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        # The owner keeps Full access, which is the whole single-user behaviour.
+        tools_module.execute_tool(
+            "terminal", {"command": "echo hi"}, disable_sandbox = True, session_id = "s1"
+        )
+        assert seen == [True]
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("mallory")
+    try:
+        # A managed account asking for it keeps the tool and keeps the sandbox.
+        # python and terminal run as the backend OS user, so unsandboxed they
+        # read any file the server can reach, and moving the working directory
+        # into the workspace is not a boundary once the path analysis and the
+        # blocklist are what is being switched off.
+        tools_module.execute_tool(
+            "terminal", {"command": "cat /etc/passwd"}, disable_sandbox = True, session_id = "s2"
+        )
+        assert seen == [True, False]
+    finally:
+        reset_workspace_subject(token)
