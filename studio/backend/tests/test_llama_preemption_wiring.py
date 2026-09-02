@@ -179,10 +179,14 @@ class TestTheRouteActuallyArmsIt:
         controller = get_preemption_controller("http://127.0.0.1:1/")
         snapshot = controller.snapshot()
         assert snapshot.committed == 4096, "the real charge did not reach the controller"
-        # The USABLE budget, which is deliberately under the raw cache: admission holds
-        # back the speculative drafts and a margin for estimate error.
+        # The budget is the cache llama-server was launched with. It was briefly reduced
+        # here to reserve the speculative drafts, which double-counted them: the drafts
+        # are held back by the watermark buffer, which the snapshot reports separately.
         assert snapshot.budget == inference._openai_llama_admission_budget(_backend())
-        assert 0 < snapshot.budget < 16384
+        assert snapshot.budget == 16384
+        assert 0 < snapshot.buffer < snapshot.budget, (
+            "nothing is held back, so the cache can be worked to its last cell"
+        )
 
     @pytest.mark.asyncio
     async def test_a_private_cache_per_slot_is_not_armed(self):
@@ -563,78 +567,67 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
     out `4 * 4096 = 16384` of a 16384 cache. At 100% with zero headroom the speculative
     drafts had nowhere to go, and the overrun was 24 cells.
 
-    A working preemptor cannot save a cache that was over-allocated before anyone
-    started, so the reserve belongs in the budget everything else derives from.
+    This class first asserted the reserve by subtracting it from the admission budget and
+    checking `capacity * share` left headroom. Both halves of that belong to the design
+    where a chat was confined to a share of the cache. A chat is now clamped to the whole
+    window and the cache is deliberately overcommitted, so `capacity * share` describes
+    nothing, and subtracting the reserve from the budget reserved the drafts twice over
+    while reporting a cache smaller than llama-server was launched with.
+
+    The property is unchanged and is asserted where it now lives: the watermark holds
+    back at least the drafts, so the cache is never worked right up to its last cell.
     """
 
-    def _backend(self, **kw):
+    def _buffer(self, budget, drafts, slots):
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        return preemption_buffer_tokens(budget, draft_tokens = drafts, slots = slots)
+
+    def test_the_headroom_covers_the_drafts(self):
+        # The measured case: 16384 over four slots, two draft tokens each.
+        assert self._buffer(16384, 2, 4) >= 2 * 4
+
+    def test_the_ceiling_is_below_the_cache(self):
+        budget = 16384
+        assert budget - self._buffer(budget, 2, 4) < budget, (
+            "the cache would be worked to its last cell, which is how the drafts overran"
+        )
+
+    def test_it_holds_across_cache_sizes_and_slot_counts(self):
+        for total in (2048, 4096, 16384, 65536, 262144):
+            for slots in (2, 3, 4, 8):
+                buffer = self._buffer(total, 2, slots)
+                assert buffer >= 2 * slots, f"{total}/{slots}: drafts not covered"
+                assert total - buffer < total, f"{total}/{slots}: no headroom"
+
+    def test_no_speculation_still_leaves_a_margin(self):
+        """The token figures are estimates, not tokenisations, in every case.
+
+        `estimate_messages_tokens_dense` approximates, so a cache handed out to the last
+        token only works if the arithmetic is exact, and it is not.
+        """
+        assert self._buffer(16384, 0, 4) > 0
+
+    def test_a_tiny_cache_is_reduced_not_erased(self):
+        """A buffer that swallows the budget leaves a ceiling of zero.
+
+        That reads as "no room for anyone" and would preempt every participant on every
+        call, forever, so it is capped at half.
+        """
+        for total in (256, 512, 1024):
+            buffer = self._buffer(total, 8, 8)
+            assert 0 < buffer <= total // 2, f"{total}: buffer {buffer} erases the cache"
+
+    def test_the_budget_is_the_cache_llama_server_was_launched_with(self):
+        """No hidden subtraction. The reserve is the watermark's job, in one place."""
+        import routes.inference as inference
+
         backend = _backend()
         backend.speculative_type = "draft-mtp"
         backend.spec_drafter_kind = None
         backend.requested_spec_mode = None
         backend.spec_draft_n_max = 2
-        for key, value in kw.items():
-            setattr(backend, key, value)
-        return backend
-
-    def test_capacity_times_share_leaves_headroom(self):
-        import routes.inference as inference
-
-        backend = self._backend()
-        budget = inference._openai_llama_admission_budget(backend)
-        capacity = inference._openai_llama_admission_capacity(None, backend)
-        share = budget // capacity
-        assert capacity * share < 16384, (
-            f"{capacity} chats may occupy {capacity * share} of a 16384 cache"
-        )
-
-    def test_the_headroom_covers_the_drafts(self):
-        import routes.inference as inference
-
-        backend = self._backend()
-        budget = inference._openai_llama_admission_budget(backend)
-        capacity = inference._openai_llama_admission_capacity(None, backend)
-        drafts = inference._openai_llama_speculative_draft_tokens(backend) * capacity
-        assert 16384 - (budget // capacity) * capacity >= drafts
-
-    def test_it_holds_across_cache_sizes_and_slot_counts(self):
-        import routes.inference as inference
-
-        for total in (2048, 4096, 16384, 65536, 262144):
-            for slots in (2, 3, 4, 8):
-                backend = self._backend(
-                    context_length = total,
-                    _kv_cache_context_total = total,
-                    effective_parallel_slots = slots,
-                )
-                budget = inference._openai_llama_admission_budget(backend)
-                capacity = inference._openai_llama_admission_capacity(None, backend)
-                assert capacity * (budget // capacity) < total, (
-                    f"{total}/{slots}: no headroom"
-                )
-
-    def test_no_speculation_still_leaves_the_estimate_margin(self):
-        """The token figures are estimates, not tokenisations, in every case."""
-        import routes.inference as inference
-
-        backend = self._backend(speculative_type = None, spec_draft_n_max = None)
-        budget = inference._openai_llama_admission_budget(backend)
-        assert budget < 16384
-
-    def test_a_tiny_cache_is_reduced_not_erased(self):
-        import routes.inference as inference
-
-        backend = self._backend(
-            context_length = 256, _kv_cache_context_total = 256, spec_draft_n_max = 64
-        )
-        assert inference._openai_llama_admission_budget(backend) == 128
-
-    def test_an_unknown_cache_is_still_unknown(self):
-        import routes.inference as inference
-
-        backend = self._backend(context_length = None, _kv_cache_context_total = None)
-        assert inference._openai_llama_admission_budget(backend) is None
-
+        assert inference._openai_llama_admission_budget(backend) == 16384
 
 class TestEveryChatGetsTheWholeWindow:
     """N for everyone, then evict. The design asked for from the start.

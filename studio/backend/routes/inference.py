@@ -1664,35 +1664,16 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     back yet, in which case the two agree), and None when the backend cannot say,
     which keeps slot-only admission rather than inventing a budget.
 
-    **Reduced by what the cache holds that no request is charged for.** A drafter puts up
-    to ``--spec-draft-n-max`` tokens per slot into the cache before they are accepted or
-    rejected, and they belong to no request's prompt or output. Handing out the raw total
-    meant ``capacity * share`` came to exactly 100% of the cache with zero headroom, so
-    the drafts had nowhere to go. Measured 2026-09-01 on ``-c 16384 --parallel 4``:
-    ``4 * 4096 = 16384`` admitted, 24 draft cells needed on top, and all four chats died
-    with "the model ran out of context space" even though preemption had paused and
-    resumed correctly. The overrun was 24 cells out of 16384.
-
-    Applied HERE rather than at each call site so the charge, the wire clamp and the
-    preemptor all derive from one figure and cannot disagree about how big the cache is.
+    **The whole cache, undiminished.** An earlier revision subtracted the speculative
+    draft reserve and a one per cent estimate margin here, because back then a request was
+    clamped to its fair share and ``capacity * share`` came to exactly 100% of the cache
+    with nowhere for the drafts to go. Neither premise holds now: a request is clamped to
+    the WINDOW and the cache is deliberately overcommitted, and the draft reserve lives in
+    ``preemption_buffer_tokens`` where the watermark that acts on it also lives. Keeping
+    both meant reserving the drafts twice and reporting a cache smaller than the one
+    llama-server was launched with.
     """
-    total = _openai_llama_admission_raw_total(llama_backend)
-    if not total:
-        return None
-    reserved = _openai_llama_speculative_draft_tokens(llama_backend) * max(
-        1, _openai_llama_admission_capacity(None, llama_backend)
-    )
-    # Plus a margin for the estimate itself. Every prompt figure here comes from
-    # `estimate_messages_tokens_dense`, which approximates rather than tokenises, and the
-    # observed overrun was 24 cells out of 16384: well inside the error of an estimate.
-    # Handing out a cache to the last token only works if the arithmetic is exact, and it
-    # is not. One per cent costs about 40 tokens per chat at 16384 over four slots.
-    reserved += max(0, total // 100)
-    if reserved <= 0:
-        return total
-    # Never below half: a pathological draft window on a tiny cache must shrink the
-    # budget, not erase it.
-    return max(total // 2, total - reserved)
+    return _openai_llama_admission_raw_total(llama_backend)
 
 
 def _openai_llama_admission_can_yield(llama_backend) -> bool:
