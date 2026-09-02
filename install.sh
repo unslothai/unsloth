@@ -687,6 +687,13 @@ _resolve_studio_destinations() {
             # whisper.cpp and the caches are its siblings, matching the layout
             # the runtime already builds from $HOME/.unsloth.
             UNSLOTH_ROOT="$_resolved_root"
+            # A root that already holds the venv directly IS the Studio root.
+            # The shim and studio.conf export UNSLOTH_HOME on every launch, so
+            # `unsloth studio update` re-enters this function with the root set
+            # but nothing saying the layout was flat; without this it re-derives
+            # <root>/studio and the refresh dies with "unsloth binary missing".
+            # Same rule storage_roots.studio_root() uses on the Python side.
+            [ -d "$_resolved_root/unsloth_studio" ] && _PORTABLE_FLAT=true
             if [ "$_PORTABLE_FLAT" = true ]; then
                 STUDIO_HOME="$UNSLOTH_ROOT"
             else
@@ -1745,7 +1752,15 @@ LAUNCHER_EOF
                 printf '%s\n' "export UV_CACHE_DIR='$_css_quoted_root/cache/uv'"
                 printf '%s\n' "export UV_PYTHON_INSTALL_DIR='$_css_quoted_root/cache/uv-python'"
                 printf '%s\n' "export UV_TOOL_DIR='$_css_quoted_root/cache/uv-tools'"
+                printf '%s\n' "export UV_TOOL_BIN_DIR='$_css_quoted_root/bin'"
                 printf '%s\n' "export UV_PYTHON_BIN_DIR='$_css_quoted_root/bin'"
+                # setup.sh reinstalls uv whenever `command -v uv` misses, and
+                # portable mode deliberately puts nothing on a login PATH, so it
+                # misses every time. Its destination cascade is astral's
+                # (UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, XDG_BIN_HOME, then
+                # ~/.local/bin), so without this every `unsloth studio update`
+                # drops uv and uvx into the home directory.
+                printf '%s\n' "export UV_INSTALL_DIR='$_css_quoted_root/bin'"
                 printf '%s\n' "export UV_NO_MODIFY_PATH=1"
                 printf '%s\n' "export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
                 printf '%s\n' "export CUDA_CACHE_PATH='$_css_quoted_root/cache/cuda'"
@@ -6229,7 +6244,9 @@ if [ "$_PORTABLE_MODE" = true ]; then
             "export UV_CACHE_DIR='$_shim_root/cache/uv'" \
             "export UV_PYTHON_INSTALL_DIR='$_shim_root/cache/uv-python'" \
             "export UV_TOOL_DIR='$_shim_root/cache/uv-tools'" \
+            "export UV_TOOL_BIN_DIR='$_shim_root/bin'" \
             "export UV_PYTHON_BIN_DIR='$_shim_root/bin'" \
+            "export UV_INSTALL_DIR='$_shim_root/bin'" \
             "export UV_NO_MODIFY_PATH=1" \
             "export NPM_CONFIG_CACHE='$_shim_root/cache/npm'" \
             "export CUDA_CACHE_PATH='$_shim_root/cache/cuda'" \
@@ -6238,6 +6255,22 @@ if [ "$_PORTABLE_MODE" = true ]; then
         && mv -f "$_shim_tmp" "$_shim_path" 2>/dev/null
     }; then
         substep "portable shim at $_shim_path"
+        # Converting an existing default install with --portable leaves that
+        # install's shim at ~/.local/bin/unsloth. It is a symlink to the very
+        # venv this run just rebuilt, so it still launches -- with none of the
+        # environment above, sending uv, npm and llama.cpp straight back to the
+        # home directory. It also wins on a new shell's PATH, because portable
+        # mode writes no rc line by design. Nothing outside the root is touched
+        # here (that is the promise of the mode), so say so instead. Only a
+        # symlink resolving to THIS install qualifies; another install's shim is
+        # left to the "another 'unsloth' wins on PATH" check below.
+        _legacy_shim="$HOME/.local/bin/unsloth"
+        if [ "$_legacy_shim" != "$_shim_path" ] && [ -L "$_legacy_shim" ] \
+            && [ "$_legacy_shim" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+            substep "an older shim still on PATH runs this install uncontained:" "$C_WARN"
+            substep "  $_legacy_shim" "$C_WARN"
+            substep "  remove it, or always launch $_shim_path" "$C_WARN"
+        fi
     else
         rm -f "$_shim_tmp" 2>/dev/null || true
         echo "ERROR: could not create the shim at $_shim_path." >&2
@@ -6484,7 +6517,14 @@ if [ "$_PORTABLE_MODE" = true ]; then
     substep "portable install; everything lives in:"
     substep "  $UNSLOTH_ROOT"
     substep "launch it with $_LOCAL_BIN/unsloth studio"
-    substep "remove it with rm -rf, or scripts/uninstall.sh"
+    # A bare `scripts/uninstall.sh` finds nothing here: portable mode writes
+    # studio.conf to <root>/share and never to ~/.local/share/unsloth, and it
+    # leaves ~/.local/bin alone, so the uninstaller has no way to discover the
+    # root. Printed without it, the line reports success and leaves everything
+    # on disk. The uninstaller reads UNSLOTH_HOME for exactly this.
+    _uninstall_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
+    substep "remove it with rm -rf, or:"
+    substep "  UNSLOTH_HOME='$_uninstall_root' scripts/uninstall.sh"
     substep "the desktop app and shell PATH were left untouched."
 fi
 echo ""
