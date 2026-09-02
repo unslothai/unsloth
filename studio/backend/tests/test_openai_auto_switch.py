@@ -3887,6 +3887,50 @@ def test_a_non_gguf_target_declares_its_context_in_config_json(tmp_path):
     assert inference_route._target_native_context_length(str(bare), False) is None
 
 
+def test_a_standard_codec_target_preflights_against_the_loader_default(tmp_path, monkeypatch):
+    # No override, so the switch sends LoadRequest's max_seq_length default of 0 and
+    # load_model raises it to 2048. Reading the checkpoint's declared window instead
+    # would admit a prompt the loaded model cannot hold -- Orpheus declares 131072.
+    import json
+
+    from utils import openai_auto_switch_settings as settings
+
+    (tmp_path / "config.json").write_text(json.dumps({"max_position_embeddings": 131072}))
+    monkeypatch.setattr(settings, "resolve_override_for_load", lambda *_a: (None, {}))
+    assert (
+        inference_route._target_effective_context_length(str(tmp_path), False, None, None, "snac")
+        == 2048
+    )
+    # A native-audio target keeps its detected window: that backend reads the model.
+    assert (
+        inference_route._target_effective_context_length(
+            str(tmp_path), False, None, None, "higgs_tts2"
+        )
+        == 131072
+    )
+    # A GGUF keeps its header window: llama.cpp takes the model default.
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 8192)
+    assert (
+        inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0", None, "snac")
+        == 8192
+    )
+
+
+def test_a_saved_override_still_wins_for_a_standard_codec(tmp_path, monkeypatch):
+    import json
+
+    from utils import openai_auto_switch_settings as settings
+
+    (tmp_path / "config.json").write_text(json.dumps({"max_position_embeddings": 131072}))
+    monkeypatch.setattr(
+        settings, "resolve_override_for_load", lambda *_a: ("k", {"max_seq_length": 16384})
+    )
+    assert (
+        inference_route._target_effective_context_length(str(tmp_path), False, None, None, "snac")
+        == 16384
+    )
+
+
 def test_minimax_has_no_window_to_preflight_against(monkeypatch):
     # _context_length returns 0 for MiniMax, so there is no limit a saved override or a
     # declared window could impose; refusing against one would be inventing a rule.

@@ -7132,6 +7132,15 @@ def _target_effective_context_length(
             return configured
     except Exception as exc:
         logger.debug("auto-switch: context override lookup failed for %s: %s", load_path, exc)
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    if not is_gguf and audio_type not in NATIVE_AUDIO_TYPES:
+        # No override, so the switch sends LoadRequest's max_seq_length default of 0, and
+        # InferenceBackend.load_model turns that into 2048 rather than the declared window
+        # (Unsloth crashes on 0). The checkpoint's own number is not what will be loaded:
+        # Orpheus declares 131072 and would run at 2048. llama.cpp and the native-audio
+        # backend both do take the model's default, so this applies to neither.
+        return _STANDARD_LOAD_DEFAULT_CONTEXT
     return _target_native_context_length(load_path, is_gguf, gguf_variant)
 
 
@@ -16598,6 +16607,8 @@ _TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
 _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
 # NativeAudioBackend._context_length ignores the requested window for these.
 _CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano"))
+# inference.py: load_model raises max_seq_length <= 0 to this before loading.
+_STANDARD_LOAD_DEFAULT_CONTEXT = 2048
 _MINIMAX_NEEDS_DESCRIPTION = "MiniMax Music 3 requires a music description in addition to lyrics."
 
 
