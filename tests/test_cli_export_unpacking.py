@@ -13,6 +13,11 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+# Import the CLI package before any test stubs studio.backend: unsloth_cli/__init__.py
+# reaches studio.backend.utils through commands/start.py, and the stub in
+# _install_fake_studio_backend shadows it, so whichever test ran first errored in setup.
+import unsloth_cli.commands.export  # noqa: F401
+
 
 class _FakeExportBackend:
     """Stand-in for ExportBackend: export_* return the 3-tuple, load_checkpoint stays a 2-tuple."""
