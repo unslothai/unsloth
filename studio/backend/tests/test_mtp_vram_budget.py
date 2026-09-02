@@ -682,6 +682,17 @@ class TestExtraArgsMtpDetection:
         assert "ornotself._nextn_predict_layers)" in compact
         assert "not_draft_cpu_no_embedded" in compact
 
+    def test_load_model_adds_shared_drafter_reserve_to_fit_target(self):
+        # A borrowed/shared head fails llama.cpp's standalone extra-model probe.
+        # Feed Studio's existing MTP reserve into the delegated fitter margin so
+        # the target model cannot consume the VRAM needed by the later draft load.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            "_shared_draft_reserve_mib=self._shared_drafter_fit_reserve_mib("
+            "_mtp_draft_for_budget,max(_mtp_reserve_bytes,_mtp_draft_weights),)" in compact
+        )
+        assert "_fit_target_delta_mib+=_shared_draft_reserve_mib" in compact
+
     def test_load_model_keeps_flat_reserve_for_unsized_draft_kv(self):
         # When only the drafter weights could be sized (KV unsizable), the flat
         # fraction stays on as the cushion for the still-unsized draft KV, on top

@@ -91,6 +91,7 @@ def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
 _GGUF_MAGIC = 0x46554747
 _VTYPE_STRING = 8
 _VTYPE_UINT32 = 4
+_VTYPE_BOOL = 7
 
 
 def _enc_string(s: str) -> bytes:
@@ -106,15 +107,21 @@ def _enc_kv_uint32(key: str, value: int) -> bytes:
     return _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
 
 
+def _enc_kv_bool(key: str, value: bool) -> bytes:
+    return _enc_string(key) + struct.pack("<I", _VTYPE_BOOL) + struct.pack("<?", value)
+
+
 def _write_minimal_gguf(
     path: Path,
     *,
     arch: str,
     nextn: int | None,
     extra_uint32: dict[str, int] | None = None,
+    extra_bool: dict[str, bool] | None = None,
 ) -> Path:
     """Header-only GGUF with arch + optional nextn_predict_layers."""
     extra_uint32 = dict(extra_uint32 or {})
+    extra_bool = dict(extra_bool or {})
     body = _enc_kv_string("general.architecture", arch)
     kv_count = 1
     if nextn is not None:
@@ -122,6 +129,9 @@ def _write_minimal_gguf(
         kv_count += 1
     for k, v in extra_uint32.items():
         body += _enc_kv_uint32(k, v)
+        kv_count += 1
+    for k, v in extra_bool.items():
+        body += _enc_kv_bool(k, v)
         kv_count += 1
     header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, kv_count)
     path.write_bytes(header + body)
@@ -726,6 +736,58 @@ def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn)
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
     assert backend._nextn_predict_layers == nextn
+
+
+def test_read_gguf_metadata_captures_shared_target_tensors(tmp_path):
+    arch = "qwen4exp"
+    gguf = _write_minimal_gguf(
+        tmp_path / "shared-mtp.gguf",
+        arch = arch,
+        nextn = None,
+        extra_bool = {f"{arch}.nextn_shared_target_tensors": True},
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._nextn_shared_target_tensors is True
+
+
+def test_read_gguf_metadata_resets_shared_target_tensors(tmp_path):
+    arch = "qwen4exp"
+    shared = _write_minimal_gguf(
+        tmp_path / "shared-mtp.gguf",
+        arch = arch,
+        nextn = None,
+        extra_bool = {f"{arch}.nextn_shared_target_tensors": True},
+    )
+    standalone = _write_minimal_gguf(
+        tmp_path / "standalone-mtp.gguf",
+        arch = arch,
+        nextn = 1,
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(shared))
+    backend._read_gguf_metadata(str(standalone))
+    assert backend._nextn_shared_target_tensors is False
+
+
+@pytest.mark.parametrize(
+    "shared, drafter_path, reserve_bytes, expected_mib",
+    [
+        (True, "shared.gguf", 2 * 1024 * 1024 + 1, 3),
+        (False, "standalone.gguf", 2 * 1024 * 1024 + 1, 0),
+        # CPU-offloaded drafters are removed from the GPU-budget path.
+        (True, None, 2 * 1024 * 1024 + 1, 0),
+        (True, "shared.gguf", 0, 0),
+    ],
+)
+def test_shared_drafter_fit_reserve_is_metadata_driven(
+    shared, drafter_path, reserve_bytes, expected_mib
+):
+    backend = LlamaCppBackend()
+    backend._draft_backend_for = lambda _path: _types.SimpleNamespace(
+        _nextn_shared_target_tensors = shared
+    )
+    assert backend._shared_drafter_fit_reserve_mib(drafter_path, reserve_bytes) == expected_mib
 
 
 def test_read_gguf_metadata_leaves_nextn_unset_for_non_mtp_arch(tmp_path):

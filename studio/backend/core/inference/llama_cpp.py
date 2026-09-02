@@ -6391,6 +6391,10 @@ class LlamaCppBackend:
         self._shared_kv_layers: Optional[int] = None
         # MTP head count (llama.cpp #22673); >0 enables --spec-type draft-mtp.
         self._nextn_predict_layers: Optional[int] = None
+        # Separate MTP heads can omit target-owned embeddings/output tensors and
+        # borrow them at load time. Such a head cannot be measured standalone by
+        # llama.cpp's fitter, so delegated fitting must reserve it explicitly.
+        self._nextn_shared_target_tensors = False
         self._lock = threading.Lock()
         # Wraps load_model() end-to-end so concurrent loads serialise and never
         # coexist as two llama-server processes (#5401). RLock so MTP-crash
@@ -12296,6 +12300,7 @@ class LlamaCppBackend:
                 "_nextn_predict_layers",
             ):
                 setattr(db, attr, None)
+            db._nextn_shared_target_tensors = False
             db._model_identifier = "mtp-draft"
             db._read_gguf_metadata(drafter_path)
         except Exception as e:  # unreadable drafter -> caller falls back
@@ -12303,6 +12308,25 @@ class LlamaCppBackend:
             db = None
         self._draft_backend_cache = (drafter_path, db)
         return db
+
+    def _shared_drafter_fit_reserve_mib(
+        self, drafter_path: Optional[str], reserve_bytes: int
+    ) -> int:
+        """Return the fitter margin needed for a borrowed/shared MTP head.
+
+        llama.cpp normally measures a separate drafter and includes it in the fit.
+        A head declaring ``nextn_shared_target_tensors`` is deliberately incomplete
+        on its own, however, so that probe fails before borrowed target tensors are
+        available and the fitter proceeds without pricing the drafter. Keep this
+        exception metadata-driven so ordinary self-contained drafters are not
+        double-reserved.
+        """
+        if not drafter_path or reserve_bytes <= 0:
+            return 0
+        draft_backend = self._draft_backend_for(drafter_path)
+        if not getattr(draft_backend, "_nextn_shared_target_tensors", False):
+            return 0
+        return math.ceil(reserve_bytes / (1024 * 1024))
 
     def _mtp_draft_kv_bytes(
         self,
@@ -13429,6 +13453,7 @@ class LlamaCppBackend:
         self._kda_head_dim = None
         self._shared_kv_layers = None
         self._nextn_predict_layers = None
+        self._nextn_shared_target_tensors = False
         self._architecture = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
@@ -13541,6 +13566,9 @@ class LlamaCppBackend:
                                         f"{arch}.ssm.conv_kernel": "ssm_conv_kernel",
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
+                                        f"{arch}.nextn_shared_target_tensors": (
+                                            "nextn_shared_target_tensors"
+                                        ),
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -13560,6 +13588,11 @@ class LlamaCppBackend:
                                         sliding_window_pattern_period = val_i
                                     else:
                                         setattr(self, f"_{attr}", val_i)
+                            elif vtype == 7:  # BOOL
+                                val_b = struct.unpack("<?", f.read(1))[0]
+                                attr = arch_keys.get(key)
+                                if attr:
+                                    setattr(self, f"_{attr}", val_b)
                             elif vtype == 9:  # ARRAY
                                 atype = struct.unpack("<I", f.read(4))[0]
                                 alen = struct.unpack("<Q", f.read(8))[0]
@@ -21004,6 +21037,18 @@ class LlamaCppBackend:
                         if _mtp_will_engage
                         else 0
                     )
+                    if use_fit:
+                        _shared_draft_reserve_mib = self._shared_drafter_fit_reserve_mib(
+                            _mtp_draft_for_budget,
+                            max(_mtp_reserve_bytes, _mtp_draft_weights),
+                        )
+                        if _shared_draft_reserve_mib:
+                            _fit_target_delta_mib += _shared_draft_reserve_mib
+                            logger.info(
+                                "Shared MTP head cannot be measured standalone; "
+                                "adding %d MiB to llama.cpp's fit reserve.",
+                                _shared_draft_reserve_mib,
+                            )
                     if _mtp_will_engage:
                         _mtp_note = (
                             f"MTP reserve: {_mtp_reserve_bytes / (1024**3):.2f} GB "
