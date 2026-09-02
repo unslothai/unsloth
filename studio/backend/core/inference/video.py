@@ -5713,11 +5713,9 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
-                # Deregister the cancel event BEFORE the trim below, under the lock
-                # cancel_generate takes, and re-check inside it. The trim blocks for a few
-                # hundred ms and the last is_set() check has already run, so a Stop landing in
-                # that window would otherwise be answered true while this clip is still returned
-                # and persisted. Mirrors the image backend's cancellation-lock epilogue.
+                # Deregister under cancel_generate's own lock before the trim: it blocks for a few
+                # hundred ms after the last is_set() check, so a Stop landing there would be
+                # answered true while this clip is still returned and persisted.
                 with self._lock:
                     if cancel.is_set():
                         raise RuntimeError(VIDEO_CANCELLED_MSG)
