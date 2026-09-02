@@ -252,6 +252,7 @@ _DIT_PREFIX = "model.diffusion_model."
 
 # ── checkpoint inspection ────────────────────────────────────────────────────
 
+
 def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, ...]]:
     """Tensor name -> shape from the checkpoint HEADER only (no weight data). GGUF shapes come back
     in GGML (reversed) order, so callers should membership-test, not assume a dimension position."""
@@ -285,6 +286,7 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
 
 
 # ── state-dict plumbing ──────────────────────────────────────────────────────
+
 
 def _apply_rename(state: dict[str, Any], rename: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
@@ -433,6 +435,7 @@ def ltx23_verbatim_sigmas(pipe: Any) -> Any:
 
 # ── component builders ───────────────────────────────────────────────────────
 
+
 def _build_from_config(
     model_cls: Any,
     config: dict[str, Any],
@@ -575,6 +578,7 @@ def load_ltx23_audio_vae_and_vocoder(
 
 
 # ── pipeline assembly ────────────────────────────────────────────────────────
+
 
 def load_ltx23_pipeline(
     checkpoint_path: Path | str,

@@ -396,6 +396,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
 # deliberately outside the Model Hub flow) ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
+
 def _cached_model_path(
     model_id: str,
     *,
@@ -687,6 +688,7 @@ def cancel_model_download() -> bool:
 
 # ---------------------------------------------------------------------------
 
+
 def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     """Wrap decoded float32 mono 16 kHz PCM into an in-memory 16-bit WAV."""
     import numpy as np
@@ -703,6 +705,7 @@ def _pcm_to_wav_bytes(decoded_audio) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+
 
 class GgmlSttSidecar:
     """Owns one whisper-server subprocess and proxies dictation to it."""

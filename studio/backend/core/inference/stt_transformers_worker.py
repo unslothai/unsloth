@@ -72,6 +72,7 @@ class SttWorkerSpawnError(SttWorkerError):
 
 # ---------------------------------------------------------------------------
 
+
 def _ensure_backend_on_path() -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
@@ -286,6 +287,7 @@ def run_stt_worker(
 
 
 # ---------------------------------------------------------------------------
+
 
 def _raise_worker_error(response: dict) -> None:
     from core.inference import stt_sidecar

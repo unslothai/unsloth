@@ -101,6 +101,7 @@ def uninstall_compiled_dequant() -> None:
 
 # --- convenience -------------------------------------------------------------------
 
+
 def uninstall_all() -> None:
     """Uninstall the GGUF accelerator. Idempotent; safe to call on every unload."""
     uninstall_compiled_dequant()
