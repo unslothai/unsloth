@@ -413,8 +413,16 @@ const PREPEND_PATTERN = /[\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2\u0d4e]/;
  *  what makes searching across blocks safe. */
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 /** Never begins a grapheme: Extend and ZWJ (GB9), SpacingMark (GB9a), and the trailing half of a
- *  surrogate pair, which is not a character at all. */
-const EXTENDS_LEFT_PATTERN = /[\p{Mn}\p{Me}\p{Mc}\u200d\udc00-\udfff]/u;
+ *  surrogate pair, which is not a character at all. UAX 29 derives Extend as Grapheme_Extend OR
+ *  Emoji_Modifier, and a skin tone is only the second of those: it is `Sk`, so the marks alone
+ *  left one showing as its own grapheme. */
+const EXTENDS_LEFT_PATTERN =
+  /[\p{Grapheme_Extend}\p{Emoji_Modifier}\p{Mc}\u200d]/u;
+
+/** The second half of a surrogate pair. */
+function isTrailingHalf(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}
 const REGIONAL_INDICATOR_PATTERN = /^[\u{1f1e6}-\u{1f1ff}]/u;
 
 /** L, V, T, and the precomposed syllables, which are LV when nothing trails and LVT when a Jamo
@@ -447,15 +455,20 @@ function hangulJoins(before: string, after: string | null): boolean {
  * rules are left to the engines that have a segmenter, so an Indic cluster can still be split here.
  */
 function continuesGrapheme(text: string, at: number): boolean {
-  const before = text[at - 1];
-  const after = text[at];
+  // Whole code points, not code units: a property escape asked about half a surrogate pair sees a
+  // lone surrogate and answers no, which is how a skin tone read as its own grapheme.
+  if (isTrailingHalf(text.charCodeAt(at))) return true;
+  const after = String.fromCodePoint(text.codePointAt(at) as number);
+  const before = isTrailingHalf(text.charCodeAt(at - 1))
+    ? text.slice(at - 2, at)
+    : text[at - 1];
   if (CONTROL_PATTERN.test(before) || CONTROL_PATTERN.test(after)) return false;
   if (EXTENDS_LEFT_PATTERN.test(after)) return true;
   // GB11, taken as written rather than only before a pictograph: a ZWJ never ends a grapheme.
   if (before === "\u200d" || PREPEND_PATTERN.test(before)) return true;
-  if (REGIONAL_INDICATOR_PATTERN.test(text.slice(at, at + 2))) {
+  if (REGIONAL_INDICATOR_PATTERN.test(after)) {
     // A run pairs off from its start, so it is the count behind that decides (GB12/GB13). Two code
-    // units apiece, and `after` is already known not to be a lone trailing half.
+    // units apiece.
     let run = 0;
     while (
       REGIONAL_INDICATOR_PATTERN.test(
@@ -562,11 +575,14 @@ function alignsToGraphemes(
   // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and
   // everything astral arrives here as a surrogate. Both sides of each edge, since the query can
   // itself begin or end with one. Latin prose therefore pays four comparisons.
+  //
+  // What follows a clipped end is not in `text` to be looked at, so the character that would have
+  // joined cannot be seen from here and the shortcut has to give way to `startsGrapheme`.
   if (
     !(start > 0 && JOINS_GRAPHEME.test(text[start - 1])) &&
     !JOINS_GRAPHEME.test(text[start]) &&
     !JOINS_GRAPHEME.test(text[end - 1]) &&
-    !(end < text.length && JOINS_GRAPHEME.test(text[end]))
+    !(end === text.length ? index.clipped : JOINS_GRAPHEME.test(text[end]))
   ) {
     return true;
   }

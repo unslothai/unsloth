@@ -1722,6 +1722,19 @@ test("a clipped tail cannot vouch for its own last offset", () => {
   assert.deepEqual(findMatches(whole, "가", 10), [{ start: 0, end: 1 }]);
 });
 
+test("the cheap boundary test does not shortcut past a clipped end", () => {
+  // Latin text takes four comparisons and skips the segmenter, and one of the four asks what
+  // follows the match. Nothing does, at a clipped end, so the shortcut read that as room to spare
+  // and returned an `x` whose combining mark had been left on the page.
+  const node = text(`unsloth${"x".repeat(MAX_NODE_CHARS - 8)}z\u0301`);
+  const index = buildTextIndex(el("DIV", [el("P", [node])]));
+  assert.equal(index.clipped, true);
+  assert.equal(index.text.length, MAX_NODE_CHARS);
+  assert.deepEqual(findMatches(index, "z", 10), []);
+  // Everything before the end is still found on the fast path, which is most of a document.
+  assert.deepEqual(findMatches(index, "unsloth", 10), [{ start: 0, end: 7 }]);
+});
+
 test("an engine with no segmenter still fences a grapheme", () => {
   // Firefox shipped `Intl.Segmenter` in 125 and Vite's default target reaches back to 114, so this
   // is a supported build, not a hypothetical one. In its own process: the module remembers whether
@@ -1745,8 +1758,12 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["각ᆨ", "각"],
       ["ᄀ가", "가"],
       ["؀가", "가"],
-      ["\u{1f469}‍\u{1f469}", "\u{1f469}"],
+      ["\u{1f469}\u200d\u{1f469}", "\u{1f469}"],
       ["\u{1f1e6}\u{1f1e7}", "\u{1f1e6}"],
+      // A skin tone is Extend by Emoji_Modifier, not by Grapheme_Extend: its category is Sk,
+      // so the combining marks alone left it showing as a grapheme of its own.
+      ["\u{1f44d}\u{1f3fb}", "\u{1f44d}"],
+      ["\u{1f44d}\u{1f3fb}", "\u{1f3fb}"],
     ];
     for (const [body, query] of fenced) {
       if (findMatches(index(body), query, 10).length !== 0) {
