@@ -5201,6 +5201,9 @@ _GUARD_WIRING = (
         "routes.inference::load_diffusion_model_gated",
         (
             '_reject_uncontained_local_path(request.model_path, "load")',
+            # The backend accepts a local pipeline directory as the companion
+            # base, and the credential helper returns early for a path.
+            '_reject_uncontained_local_path(request.base_repo, "load")',
             # load_pipeline normalises a missing token to None, so the Hub client
             # sends the installation's implicit login unless this is asked.
             "_reject_private_hub_repo_without_an_account_token(request.model_path",
@@ -5211,7 +5214,15 @@ _GUARD_WIRING = (
     ),
     (
         "routes.video::load_video_model_gated",
-        ('_reject_uncontained_local_path(request.model_path, "load")',),
+        (
+            '_reject_uncontained_local_path(request.model_path, "load")',
+            '_reject_uncontained_local_path(request.base_repo, "load")',
+        ),
+        (),
+    ),
+    (
+        "routes.training::_preflight_hf_dataset_request",
+        ("_reject_unauthorized_cached_dataset(dataset_id)",),
         (),
     ),
     (
@@ -5297,3 +5308,58 @@ def test_the_guard_is_wired_into_the_path_that_needs_it(target, required, forbid
         assert fragment in source, (target, fragment)
     for fragment in forbidden:
         assert fragment not in source, (target, fragment)
+
+
+def test_a_persisted_grant_survives_the_restart_that_lost_the_memo(tmp_path, monkeypatch):
+    from hub.services.datasets import cache_access
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(cache_access, "_dataset_downloaders", {}, raising = False)
+    monkeypatch.setattr(cache_access, "_pending_downloads", {}, raising = False)
+    monkeypatch.setattr(
+        cache_access, "_hub_repo_is_anonymously_readable", lambda repo, kind: None, raising = False
+    )
+    import routes.inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_hub_repo_is_anonymously_readable", lambda r, k: None)
+
+    token = _bind("dana")
+    try:
+        cache_access.note_dataset_download_attempt("job-1", "org/danas-private-data")
+        cache_access.confirm_dataset_download("job-1")
+        assert cache_access.caller_may_read_cached_dataset("org/danas-private-data")
+        # The restart. Only the in-process memo is lost, and without the written
+        # grant the account that paid for the download with its own token was
+        # refused its own cached rows, offline most of all.
+        monkeypatch.setattr(cache_access, "_dataset_downloaders", {}, raising = False)
+        assert cache_access.caller_may_read_cached_dataset("org/danas-private-data")
+    finally:
+        reset_workspace_subject(token)
+
+    # And the grant is written into that account's own database, so it is not
+    # somebody else's to read.
+    token = _bind("eve")
+    try:
+        assert not cache_access.caller_may_read_cached_dataset("org/danas-private-data")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_training_will_not_pin_a_cached_dataset_this_account_cannot_read(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import training as training_routes
+
+    monkeypatch.setattr(
+        training_routes,
+        "_reject_unauthorized_cached_dataset",
+        training_routes._reject_unauthorized_cached_dataset,
+    )
+    from hub.services.datasets import cache_access
+
+    monkeypatch.setattr(cache_access, "caller_may_read_cached_dataset", lambda repo: False)
+    with pytest.raises(HTTPException) as exc:
+        training_routes._reject_unauthorized_cached_dataset("org/someone-elses-data")
+    assert exc.value.status_code == 403
+    monkeypatch.setattr(cache_access, "caller_may_read_cached_dataset", lambda repo: True)
+    training_routes._reject_unauthorized_cached_dataset("org/mine")

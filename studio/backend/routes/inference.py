@@ -33195,6 +33195,7 @@ async def diffusion_download_plan(
     # path or repo this account may not have would be described back to it here
     # even though the load itself would refuse the identical pick.
     _reject_uncontained_local_path(request.model_path, "plan a download for")
+    _reject_uncontained_local_path(request.base_repo, "plan a download for")
     _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
     if request.base_repo:
         _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
@@ -33376,6 +33377,10 @@ async def load_diffusion_model_gated(
     # the media ones never went near it, and their validators accept any existing
     # local path, so an absolute path here deserialized another account's weights.
     _reject_uncontained_local_path(request.model_path, "load")
+    # The base repo is a separate identifier and the backend accepts a local
+    # pipeline directory for it, so the credential helper's early return for a
+    # path-shaped value has to be backed by containment here too.
+    _reject_uncontained_local_path(request.base_repo, "load")
     # And the same credential rule the video load already applies. A Hub id is
     # deliberately allowed through the containment check above, but
     # DiffusionBackend.load_pipeline normalises a missing token to None, and

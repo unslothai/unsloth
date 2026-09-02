@@ -631,6 +631,27 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
     return None
 
 
+
+def _reject_unauthorized_cached_dataset(dataset_id: str) -> None:
+    """A managed account may only train from a cached dataset it could obtain itself.
+
+    The shared Hub cache holds whatever anybody downloaded, so the same rule the
+    dataset routes apply to listing and previewing applies to training from it.
+    """
+    from hub.services.datasets.cache_access import caller_may_read_cached_dataset
+
+    if caller_may_read_cached_dataset(dataset_id):
+        return
+    raise _hf_preflight_error(
+        403,
+        "hf_dataset_not_authorized",
+        (
+            "This dataset is in the shared cache but was downloaded by another "
+            "account. Add your own Hugging Face token and download it to use it."
+        ),
+    )
+
+
 def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     dataset_id = request.hf_dataset
     if not dataset_id:
@@ -665,6 +686,10 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
             or request.dataset_snapshot_path
         )
         if cached_path is not None and pins_cache:
+            # A pin skips Hub verification, and both hints are caller-supplied, so
+            # naming another account's private dataset and its snapshot path was a
+            # way to train on rows this account never had a token for.
+            _reject_unauthorized_cached_dataset(dataset_id)
             return
 
     if hf_env_offline() or _hub_unreachable():
@@ -678,6 +703,8 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
                 ),
             )
         if cached_path is not None:
+            # Same question offline, where there is no Hub call to fall back on.
+            _reject_unauthorized_cached_dataset(dataset_id)
             return
         raise _hf_preflight_error(
             409,

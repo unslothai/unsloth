@@ -153,6 +153,7 @@ async def video_download_plan(
     # The two questions /video/load asks: all three calls below read the target,
     # so a foreign path came back described even though the load would refuse it.
     _reject_uncontained_local_path(request.model_path, "plan a download for")
+    _reject_uncontained_local_path(request.base_repo, "plan a download for")
     _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
     if request.base_repo:
         _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
@@ -278,6 +279,9 @@ async def load_video_model_gated(
     # The video validator accepts any existing local path, so without the text
     # load path's containment an absolute one loaded a private checkpoint.
     _reject_uncontained_local_path(request.model_path, "load")
+    # Same for the companion base: the video backend reads a local base repo's
+    # pipeline components, and the credential helper skips a path.
+    _reject_uncontained_local_path(request.base_repo, "load")
     # And its credential rule: from_pretrained gets whatever token the request
     # carried, so a tokenless managed load ran on the installation's login.
     _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
