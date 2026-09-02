@@ -1963,6 +1963,18 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         return None
 
 
+def _engine_instance_luid(instance_name: str) -> Optional[int]:
+    """The adapter LUID out of a ``GPU Engine`` instance name.
+
+    Same two halves ``_parse_adapter_luid`` reads, behind a ``pid_<pid>_`` prefix
+    the ``GPU Adapter Memory`` instances it was written for do not carry.
+    """
+    head = instance_name.lower().find("luid_0x")
+    if head < 0:
+        return None
+    return _parse_adapter_luid(instance_name[head:])
+
+
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
     """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes).
 
@@ -1970,17 +1982,37 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
     so ``luid`` narrows the sum to one adapter's engines. Without it every
     adapter's work counts, including the iGPU driving the display and the Basic
     Render Driver, which is the whole host's 3D load and not this card's.
+
+    Selection happens here rather than in the counter path, which PDH would also
+    have done: partial instance matches work, so a ``*luid_..._*engtype_3D*`` path
+    is not wrong. It is untestable and unguarded, which is the reason.
+
+    Untestable, because the selection would then be PDH's and no test in this repo
+    can run PDH. Mutating the path to drop ``engtype_3D``, or to union every engine
+    back in beside the LUID, both left the suite green while reintroducing the
+    reading this narrowing exists to correct.
+
+    Unguarded, because a path that returns pre-summed text makes the caller trust
+    whatever came back. ``Utilization Percentage`` is a cooked counter over an
+    ephemeral instance list and has been reported returning values that are not a
+    percentage; the earlier form passed one straight through, and a non-finite
+    sample reached the payload as ``inf``, which is not JSON a browser will parse.
+    The sum, the clamp and the sanity checks are all in Python now, where the tests
+    reach them.
+
+    ``_rocm_windows_perf_counter_vram_by_adapter`` -- which resolves the LUID being
+    matched here -- already enumerates and filters this way, so the two counters
+    stay on one mechanism.
     """
     if platform.system() != "Windows":
         return None
     try:
-        instance = "*engtype_3D*"
-        if luid is not None:
-            instance = f"*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}_*engtype_3D*"
+        # Emit "<InstanceName>|<CookedValue>" per sample, or a __NONE__ sentinel.
         ps = (
-            f"$s=(Get-Counter '\\GPU Engine({instance})\\Utilization Percentage'"
+            "$s=(Get-Counter '\\GPU Engine(*)\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){[math]::Min(($s|Measure-Object CookedValue -Sum).Sum,100)}else{-1}"
+            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
+            "else{'__NONE__'}"
         )
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -1992,8 +2024,32 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
         )
         if r.returncode != 0 or not r.stdout.strip():
             return None
-        val = float(r.stdout.strip())
-        return round(val, 1) if val >= 0 else None
+        total = 0.0
+        matched = False
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line or line == "__NONE__" or "|" not in line:
+                continue
+            instance, _, raw = line.rpartition("|")
+            instance = instance.strip()
+            # Hosts spell it engtype_3D and engtype_3d both.
+            if "engtype_3d" not in instance.lower():
+                continue
+            if luid is not None and _engine_instance_luid(instance) != luid:
+                continue
+            try:
+                value = float(raw.strip())
+            except (ValueError, TypeError):
+                continue
+            # An idle engine reports 0.0 and still counts as a reading; a sample
+            # that is NaN, infinite or negative is not one.
+            if value != value or value in (float("inf"), float("-inf")) or value < 0:
+                continue
+            total += value
+            matched = True
+        if not matched:
+            return None
+        return round(min(total, 100.0), 1)
     except Exception:
         return None
 
@@ -3297,7 +3353,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 # not, the LUID is absent and the sum stays the host's, which is
                 # what it has always been.
                 _win_util = (
-                    _rocm_windows_perf_counter_gpu_util_pct(_win_devices[0]["luid"])
+                    _rocm_windows_perf_counter_gpu_util_pct(_win_devices[0].get("luid"))
                     if len(_win_devices) == 1
                     else None
                 )
