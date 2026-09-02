@@ -3000,6 +3000,56 @@ class FastLlamaModel:
 
         # Cannot use \\ since it will cause a SyntaxWarning in Python 3.12
         # Instead use chr(92) == \\
+        # A model whose parameters span more than one CUDA device is not a
+        # configuration this training loop supports, and it fails in a way that
+        # names the wrong thing. `accelerate` shards across every visible card
+        # by default, so a user with two GPUs and no `device_map` gets the split
+        # without asking for it, is told "Num GPUs used = 2", and then dies at
+        # the first embedding lookup with
+        #
+        #   RuntimeError: Expected all tensors to be on the same device, but got
+        #   index is on cuda:0, different from other tensors on cuda:1
+        #   (when checking argument in method wrapper_CUDA__index_select)
+        #
+        # which reads as a tensor bug rather than as a placement one. That is
+        # not the only such site: this file allocates working buffers on
+        # `{DEVICE_TYPE_TORCH}:0` in several places, so aligning the embedding
+        # alone would move the error rather than remove it.
+        #
+        # Checked HERE because this is where the device set is already computed
+        # for the banner, and raising is the same answer this loop already gives
+        # for TPUs a few lines below. Reproduced on 2x Tesla T4 with
+        # `unsloth/Qwen3-0.6B` in 4bit: 232849408 parameters on cuda:0 and
+        # 155582464 on cuda:1, dying at step 0.
+        #
+        # DDP is unaffected, and that is the reason the check is on the
+        # PARAMETER devices rather than on `torch.cuda.device_count()` or on
+        # `args.world_size`: each DDP rank holds the whole model on its own
+        # single device, so the set has one element per process. This fires only
+        # on single-process model sharding, which is the case that cannot work.
+        multi_gpu_guard = """_unsloth_param_devices = sorted(
+            {str(p.device) for p in model.parameters() if p.device.type != "cpu"}
+        )
+        if len(_unsloth_param_devices) > 1 and \\
+            os.environ.get("UNSLOTH_ALLOW_MULTI_GPU", "0") != "1":
+            raise RuntimeError(
+                "Unsloth: this model is split across " +
+                str(len(_unsloth_param_devices)) + " devices (" +
+                ", ".join(_unsloth_param_devices) + "), and training a split "
+                "model is not supported - it fails at the first embedding "
+                "lookup with a message about tensor devices rather than about "
+                "placement.\\n"
+                "Load it onto ONE device instead, with either:\\n"
+                "  CUDA_VISIBLE_DEVICES=0   before starting python, or\\n"
+                '  FastLanguageModel.from_pretrained(..., device_map = {"": 0})'
+                "\\nSet UNSLOTH_ALLOW_MULTI_GPU=1 to attempt it anyway."
+            )
+        debug_info ="""
+        multi_gpu_guard = multi_gpu_guard.split("\n")
+        multi_gpu_guard = "\n".join(
+            [multi_gpu_guard[0]] + [spaces + x[8:] for x in multi_gpu_guard[1:]]
+        )
+
         debug_info = """debug_info = \\
         f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs used = {len(set(p.device for p in model.parameters()))}\\n"\\
         f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\n"\\
@@ -3015,6 +3065,13 @@ class FastLlamaModel:
         debug_info = debug_info.split("\n")
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
         inner_training_loop = inner_training_loop.replace(original_debug, debug_info)
+        # Ahead of the banner, so the run stops before announcing a device count
+        # it cannot honour.
+        inner_training_loop = inner_training_loop.replace(
+            "debug_info =",
+            multi_gpu_guard,
+            1,
+        )
 
         debug_info = """n_total_devices = total_train_batch_size // \\
             args.gradient_accumulation_steps // self._train_batch_size
