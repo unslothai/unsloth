@@ -4314,22 +4314,87 @@ def test_mlx_vlm_quantized_kv_requests_reuse_the_prompt_snapshot(monkeypatch):
     assert backend.last_generation_stats["usage"]["prompt_tokens_details"]["cached_tokens"] == 512
 
 
-def test_mlx_vlm_image_requests_prefill_without_the_store(monkeypatch):
-    calls, prompt_ids = [], {"ids": list(range(700))}
+def _fake_image(
+    pixels,
+    raw = None,
+    orientation = None,
+):
+    """A PIL-like image whose RGB conversion holds ``pixels``; a palette image's own
+    bytes are indices (``raw``) that say nothing about its colors."""
+    rgb = SimpleNamespace(mode = "RGB", size = (2, 2), tobytes = lambda: pixels)
+    return SimpleNamespace(
+        mode = "P" if raw else "RGB",
+        size = (2, 2),
+        tobytes = lambda: raw or pixels,
+        convert = lambda _mode: rgb,
+        getexif = lambda: {0x0112: orientation} if orientation else {},
+    )
+
+
+def test_mlx_vlm_image_requests_reuse_snapshots_keyed_by_the_image(monkeypatch):
+    # Placeholder rows 100-200, so the 512 boundary leaves a text-only suffix.
+    ids = list(range(1000, 1700))
+    ids[100:201] = [9] * 101
+    calls, prompt_ids = [], {"ids": ids}
     _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
     backend = _snapshot_backend(monkeypatch)
-    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
-    store = backend._vlm_snapshot_store
-    assert len(store) == 1
-
+    backend._model.config["image_token_id"] = 9
     monkeypatch.setattr(
         "core.inference.mlx_inference._render_registered_vlm_prompt", lambda *_a, **_k: "p"
     )
     image_turn = [{"role": "user", "content": [{"type": "image"}]}]
-    list(backend._generate_vlm(image_turn, object(), *_VLM_ARGS))
-    assert "prompt_cache_state" not in calls[-1] and "prefill_step_size" not in calls[-1]
-    # An image request gives the vision pass the headroom the store held.
-    assert len(store) == 0 and backend._vlm_snapshot_store is store
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    store = backend._vlm_snapshot_store
+
+    def reused(image):
+        list(backend._generate_vlm(image_turn, image, *_VLM_ARGS))
+        return calls[-1]["prompt_cache_state"].reused_tokens
+
+    # An image request keeps only the snapshot it resumes from (the vision
+    # pass gets the rest as headroom), and the same rows under a text key,
+    # under another image or under another conversation never serve it.
+    image_a = _fake_image(b"aaaa")
+    assert reused(image_a) == 0 and len(store) == 1
+    assert reused(image_a) == 512 and len(store) == 1
+    prompt_ids["ids"] = [5000] + ids[1:]
+    assert reused(image_a) == 0 and len(store) == 1
+    prompt_ids["ids"] = ids
+    assert reused(image_a) == 0 and len(store) == 1
+    assert reused(image_a) == 512
+    # The same pixels under an EXIF orientation, which some processors apply.
+    assert reused(_fake_image(b"aaaa", orientation = 6)) == 0
+    assert reused(_fake_image(b"bbbb")) == 0 and len(store) == 1
+    assert backend.last_generation_stats["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
+    # Two palette images with the same indices and different colors.
+    assert reused(_fake_image(b"red!", raw = b"idx")) == 0
+    assert reused(_fake_image(b"blue", raw = b"idx")) == 0
+    assert reused(_fake_image(b"blue", raw = b"idx")) == 512
+    # A text request drops nothing.
+    list(backend._generate_vlm(_text_turn(1), None, *_VLM_ARGS))
+    assert len(store) == 2
+
+    # No placeholder id on the config: the image's rows cannot be located, and
+    # the request releases the store as an audio request does.
+    del backend._model.config["image_token_id"]
+    list(backend._generate_vlm(image_turn, _fake_image(b"aaaa"), *_VLM_ARGS))
+    assert "prompt_cache_state" not in calls[-1] and len(store) == 0
+
+
+def test_mlx_vlm_image_requests_keep_snapshots_inside_the_image_unserved(monkeypatch):
+    ids = list(range(1000, 1700))
+    ids[300:601] = [9] * 301  # boundary 512 lies inside the placeholder span
+    calls, prompt_ids = [], {"ids": ids}
+    _install_fake_vlm_runtime(monkeypatch, calls, prompt_ids = prompt_ids)
+    backend = _snapshot_backend(monkeypatch)
+    backend._model.config["image_token_id"] = 9
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._render_registered_vlm_prompt", lambda *_a, **_k: "p"
+    )
+    image_turn = [{"role": "user", "content": [{"type": "image"}]}]
+    for _ in range(2):
+        list(backend._generate_vlm(image_turn, _fake_image(b"aaaa"), *_VLM_ARGS))
+        assert calls[-1]["prompt_cache_state"].reused_tokens == 0
+    assert len(backend._vlm_snapshot_store) == 0
 
 
 def test_mlx_vlm_stats_count_the_prefix_mlx_vlm_reused_not_the_one_offered(monkeypatch):
@@ -4368,10 +4433,7 @@ def test_mlx_vlm_diffusion_models_prefill_without_the_store(monkeypatch):
     assert backend._vlm_snapshot_store is not None and not backend._vlm_snapshot_store_unavailable
 
 
-@pytest.mark.parametrize("media", ["image", "audio"])
-def test_mlx_vlm_media_requests_release_snapshots_only_under_the_generation_lock(
-    monkeypatch, media
-):
+def test_mlx_vlm_audio_requests_release_snapshots_only_under_the_generation_lock(monkeypatch):
     import threading
 
     calls, prompt_ids = [], {"ids": list(range(700))}
@@ -4384,23 +4446,16 @@ def test_mlx_vlm_media_requests_release_snapshots_only_under_the_generation_lock
         "core.inference.mlx_inference._render_registered_vlm_prompt",
         lambda *_a, **_k: "p",
     )
-    if media == "image":
-        request = lambda: list(  # noqa: E731
-            backend._generate_vlm(
-                [{"role": "user", "content": [{"type": "image"}]}], object(), *_VLM_ARGS
-            )
+    backend.models = {"vlm": {"audio_type": "audio_vlm"}}
+    request = lambda: list(  # noqa: E731
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "hi"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            max_new_tokens = 8,
+            use_adapter = None,
         )
-    else:
-        backend.models = {"vlm": {"audio_type": "audio_vlm"}}
-        request = lambda: list(  # noqa: E731
-            backend.generate_audio_input_response(
-                messages = [{"role": "user", "content": "hi"}],
-                system_prompt = "",
-                audio_array = [0.0],
-                max_new_tokens = 8,
-                use_adapter = None,
-            )
-        )
+    )
 
     # A text turn still holds the lock: it may yet store its snapshot, so the
     # release has to wait for it rather than run ahead of it.

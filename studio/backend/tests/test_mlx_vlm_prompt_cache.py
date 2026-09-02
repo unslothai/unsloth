@@ -13,8 +13,9 @@ from core.inference.mlx_inference import (
     cache_entries_nbytes,
     cache_entries_offset,
     copy_cache_entries,
+    release_cache_entries,
+    media_prefix_end,
     shape_stable_prefix,
-    withholds_per_layer_inputs,
 )
 
 
@@ -216,14 +217,13 @@ def test_nbytes_and_offset_read_the_entries(fake_mx):
     assert cache_entries_offset([state]) is None
 
 
-def test_withholds_per_layer_inputs_for_models_that_carry_them():
-    plain = types.SimpleNamespace(model = types.SimpleNamespace())
-    assert not withholds_per_layer_inputs(plain)
-    assert withholds_per_layer_inputs(types.SimpleNamespace(hidden_size_per_layer_input = 256))
-    nested = types.SimpleNamespace(model = types.SimpleNamespace(hidden_size_per_layer_input = 256))
-    assert withholds_per_layer_inputs(nested)
-    zero = types.SimpleNamespace(model = types.SimpleNamespace(hidden_size_per_layer_input = 0))
-    assert not withholds_per_layer_inputs(zero)
+def test_media_prefix_end_is_the_row_after_the_last_media_token():
+    ids = [1, 2, 9, 9, 9, 3, 4, 9, 5, 7, 6]
+    assert media_prefix_end(ids, {9}) == 8
+    assert media_prefix_end(ids, [9, 7]) == 10
+    assert media_prefix_end(ids, ()) == 0
+    assert media_prefix_end([1, 2, 3], {9}) == 0
+    assert media_prefix_end([9], {9}) == 1
 
 
 def test_recording_forward_copies_the_cache_after_the_chosen_forward(fake_mx):
@@ -260,7 +260,7 @@ def test_recording_forward_keeps_the_answer_when_the_cache_cannot_be_copied(fake
     assert "SimpleNamespace cannot be copied" in caplog.text
 
 
-def test_session_prefills_when_a_stored_snapshot_cannot_be_served(fake_mx, monkeypatch):
+def test_session_drops_a_served_snapshot_it_cannot_copy(fake_mx, monkeypatch):
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     language_model = FakeLanguageModel()
     ids = list(range(700))
@@ -271,9 +271,11 @@ def test_session_prefills_when_a_stored_snapshot_cannot_be_served(fake_mx, monke
 
     monkeypatch.setattr(sys.modules["mlx.core"], "eval", _fail)
     with VLMPromptCacheSession(store, "m", language_model, make_cache) as session:
-        fresh = session.cache
-        assert session.find_prefix_length(ids + [1]) == 0
-        assert session.cache is fresh and session.reused_tokens == 0
+        assert session.find_prefix_length(ids + [1]) == 512
+        run_generation(language_model, ids + [1], session.cache, 512)
+        # The request keeps its reuse; the consumed snapshot leaves the store.
+        assert session.cache[0].offset == 701 and len(store) == 0
+        assert not session.finish()
 
 
 def test_session_stores_nothing_when_the_capture_failed(fake_mx):
@@ -318,15 +320,62 @@ def test_recording_forward_captures_nothing_when_no_forward_is_chosen(fake_mx):
     assert recording.record.forwards == 1
 
 
-def test_recording_forward_withholds_per_layer_inputs_and_survives_reentry(fake_mx):
+class Sliceable:
+    """A per-layer-inputs array: rows labelled by prompt position."""
+
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.shape = (1, len(self.rows), 8)
+
+    def __getitem__(self, item):
+        return Sliceable(self.rows[item[1]])
+
+
+def test_recording_forward_slices_per_layer_inputs_from_the_resume_offset(fake_mx):
     language_model = FakeLanguageModel()
-    language_model.hidden_size_per_layer_input = 256
     original_class = type(language_model)
-    for _ in range(2):
+    embeds = lambda rows: types.SimpleNamespace(shape = (1, rows, 8))
+    for resumed in (0, 512):
+        # mlx-vlm computes the array for the uncached rows only.
+        suffix = Sliceable(range(resumed, resumed + 300))
+        cache = make_cache()
+        cache[0].advance(range(resumed))
         with RecordingForward(language_model):
-            language_model([1], cache = make_cache(), per_layer_inputs = "shifted", other = 1)
+            for rows in (256, 43):
+                language_model(
+                    inputs = [0] * rows,
+                    inputs_embeds = embeds(rows),
+                    cache = cache,
+                    per_layer_inputs = suffix,
+                    other = 1,
+                )
+            # A single token: the model computes its own from the id.
+            language_model([0], inputs_embeds = embeds(1), cache = cache, per_layer_inputs = suffix)
         assert type(language_model) is original_class
-    assert language_model.seen_kwargs == [{"other": 1}, {"other": 1}]
+        seen = [kw.get("per_layer_inputs") for kw in language_model.seen_kwargs[-3:]]
+        assert seen[0].rows == list(range(resumed, resumed + 256))
+        assert seen[1].rows == list(range(resumed + 256, resumed + 299))
+        assert seen[2] is None
+    assert language_model.seen_kwargs[0]["other"] == 1
+
+    # Ids alone say how long the chunk is when no embeddings are passed.
+    with RecordingForward(language_model):
+        language_model(
+            types.SimpleNamespace(shape = (1, 43)), cache = [], per_layer_inputs = Sliceable(range(300))
+        )
+    assert language_model.seen_kwargs[-1]["per_layer_inputs"].rows == list(range(43))
+
+
+def test_recording_forward_leaves_per_layer_inputs_it_cannot_place(fake_mx):
+    language_model = FakeLanguageModel()
+    embeds = types.SimpleNamespace(shape = (1, 256, 8))
+    short = Sliceable(range(100))
+    cache = make_cache()
+    cache[0].advance(range(512))
+    with RecordingForward(language_model):
+        language_model(inputs = [0] * 256, inputs_embeds = embeds, cache = cache, per_layer_inputs = short)
+        language_model(inputs = [0] * 256, inputs_embeds = embeds, cache = [], per_layer_inputs = short)
+    assert all(kw["per_layer_inputs"] is short for kw in language_model.seen_kwargs)
 
 
 def test_recording_forward_restores_the_class_after_an_error(fake_mx):
@@ -336,6 +385,20 @@ def test_recording_forward_restores_the_class_after_an_error(fake_mx):
         with RecordingForward(language_model):
             raise RuntimeError("generation failed")
     assert type(language_model) is original_class
+
+
+def test_release_cache_entries_drops_every_array_in_place(fake_mx):
+    nested = FakeCacheList(FakeKV(), FakeState())
+    nested.advance([1, 2])
+    pair = (FakeSimpleKV(), FakeSimpleKV())
+    for entry in pair:
+        entry.advance([5])
+    entries = [nested, pair]
+    release_cache_entries(entries)
+    assert not list(snapshots._arrays(entries, sys.modules["mlx.core"]))
+    assert nested.caches[0].keys is None and nested.caches[0].offset == 2
+    assert nested.caches[1].cache == [None, None] and pair[1].cache_length == 1
+    assert not fake_mx
 
 
 def _snapshot(rows):
@@ -378,6 +441,18 @@ def test_store_refuses_a_snapshot_over_the_whole_budget(fake_mx):
     assert len(store) == 0 and store.nbytes == 0
 
 
+def test_store_retains_one_snapshot_and_drops_the_rest(fake_mx):
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    store.store("a", [1, 2], _snapshot([1, 2]))
+    store.store("b", [1, 2, 3], _snapshot([1, 2, 3]))
+    store.store("a", [1, 2, 3, 4], _snapshot([1, 2, 3, 4]))
+    store.retain(("a", (1, 2, 3, 4)))
+    assert list(store._entries) == [("a", (1, 2, 3, 4))]
+    assert store.nbytes == cache_entries_nbytes(_snapshot([1, 2, 3, 4]))
+    store.retain(None)
+    assert len(store) == 0 and store.nbytes == 0
+
+
 def test_store_replaces_a_prefix_and_caps_its_entry_count(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 10**9, max_entries = 2)
     store.store("m", [1], _snapshot([1]))
@@ -397,9 +472,12 @@ def _generate(
     *,
     honour_reuse = True,
     kwargs = None,
+    media_token_ids = (),
 ):
     """One request the way mlx-vlm drives the duck type."""
-    with VLMPromptCacheSession(store, "m", language_model, make_cache) as session:
+    with VLMPromptCacheSession(
+        store, "m", language_model, make_cache, media_token_ids = media_token_ids
+    ) as session:
         prefix = session.find_prefix_length(token_ids)
         cache = session.cache
         if not honour_reuse:
@@ -436,25 +514,31 @@ def test_session_captures_the_boundary_on_a_cold_request(fake_mx):
     assert entries[1].cache[0].rows == [511]
 
 
-def test_session_resumes_from_a_copy_and_captures_a_later_boundary(fake_mx):
+def test_session_resumes_from_the_snapshot_and_leaves_a_copy_behind(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     language_model = FakeLanguageModel()
     ids = list(range(700))
     _generate(store, language_model, ids)
     stored_entries = store.lookup("m", ids, limit = 512)[0]
+    # Decoys a copy taken from the wrong entries would leave behind.
+    store.store("m", ids[:256], _snapshot(range(9000, 9256)))
+    store.store("t", ids[:512], _snapshot(range(9000, 9512)))
 
     longer = ids + list(range(700, 800))
+    fake_mx.clear()
     session, cache, stored = _generate(store, language_model, longer)
-    assert session.reused_tokens == 512
-    assert cache is not stored_entries and cache[0] is not stored_entries[0]
-    assert stored_entries[0].offset == 512  # the store's copy never moved
+    assert session.reused_tokens == 512 and cache is stored_entries
+    kept = store.lookup("m", ids, limit = 512)[0]
+    assert kept is not stored_entries and kept[0] is not cache[0]
+    assert kept[0].offset == 512 and kept[0].keys.rows == ids[:512]  # the copy never moved
+    assert kept[0].keys in fake_mx[0]  # the copy, evaluated at the first forward
     assert cache[0].offset == 800 and cache[0].keys.rows == longer
     assert stored and store.lookup("m", longer, limit = 768)[1] == 768
 
     # The same boundary again: served, nothing new captured.
     session, _cache, stored = _generate(store, language_model, longer + [1])
     assert session.reused_tokens == 768 and not stored
-    assert len(store) == 2
+    assert len(store) == 4
 
 
 def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx):
@@ -462,6 +546,9 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx)
     language_model = FakeLanguageModel()
     ids = list(range(1100))
     _generate(store, language_model, ids)  # boundary 1024
+    original = store.lookup("m", ids, limit = 1024)[0]
+    store.store("t", ids[:512], _snapshot(range(9000, 9512)))  # a decoy
+    fake_mx.clear()
     session, _cache, stored = _generate(
         store,
         language_model,
@@ -471,7 +558,13 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx)
     # Offered 1024, ran from zero: the capture landed one chunk in, at 256.
     assert session.reused_tokens == 1024 and stored
     assert store.lookup("m", ids, limit = 256)[1] == 256
-    assert len(store) == 2
+    # The declined offer is dropped and its arrays released, not copied (the
+    # one copy evaluated is the capture): mlx-vlm keeps referencing it and
+    # would decline it again.
+    assert len(store) == 2 and store.lookup("m", ids, limit = 1024)[1] == 256
+    assert store.lookup("t", ids, limit = 512)[1] == 512
+    assert not list(snapshots._arrays(original, sys.modules["mlx.core"]))
+    assert original[0].offset == 1024 and len(fake_mx) == 1
 
 
 def test_session_drops_a_snapshot_that_is_not_on_the_grid(fake_mx):
@@ -531,12 +624,57 @@ def test_recording_forward_withholds_only_prompt_wide_position_ids(fake_mx):
     assert kept == [False, True, True, False, True]
 
 
-def test_session_withholds_per_layer_inputs_for_the_whole_request(fake_mx):
+def _media_prompt(n):
+    """A prompt whose image placeholders occupy rows 500-600."""
+    ids = list(range(1000, 1000 + n))
+    ids[500:601] = [9] * 101
+    return ids
+
+
+def test_session_serves_and_stores_only_prefixes_past_the_last_media_token(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     language_model = FakeLanguageModel()
-    language_model.hidden_size_per_layer_input = 256
-    _generate(store, language_model, list(range(300)), kwargs = {"per_layer_inputs": "x"})
-    assert language_model.seen_kwargs and all(kw == {} for kw in language_model.seen_kwargs)
+    # Boundary 512 lies inside the image: nothing to serve, nothing worth
+    # copying (no snapshot was evaluated), nothing kept.
+    session, _cache, stored = _generate(
+        store, language_model, _media_prompt(700), media_token_ids = (9,)
+    )
+    assert not stored and len(store) == 0 and session.reused_tokens == 0 and not fake_mx
+    # Boundary 768 covers it, so the suffix mlx-vlm embeds is text.
+    _session, _cache, stored = _generate(
+        store, language_model, _media_prompt(900), media_token_ids = (9,)
+    )
+    assert stored and store.lookup("m", _media_prompt(900), limit = 768)[1] == 768
+    session, _cache, _stored = _generate(
+        store, language_model, _media_prompt(1000), media_token_ids = (9,)
+    )
+    assert session.reused_tokens == 768
+    # Declined and run from zero: the capture lands at 256, inside the image,
+    # and the declined offer is dropped.
+    session, _cache, stored = _generate(
+        store, language_model, _media_prompt(1100), honour_reuse = False, media_token_ids = (9,)
+    )
+    assert session.reused_tokens == 768 and not stored and len(store) == 0
+
+
+def test_media_session_keeps_only_the_snapshot_it_serves(fake_mx):
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    language_model = FakeLanguageModel()
+    prompt = _media_prompt(1000)
+    _generate(store, language_model, prompt, media_token_ids = (9,))
+    store.store("t", prompt[:768], _snapshot(prompt[:768]))
+    store.store("m", [5] + prompt[1:768], _snapshot(range(768)))
+    session = lambda **kw: VLMPromptCacheSession(
+        store, "m", language_model, make_cache, media_token_ids = (9,), **kw
+    )
+    # A text request leaves the store alone.
+    assert session().find_prefix_length(prompt) == 768 and len(store) == 3
+    # A media request keeps what serves it; another conversation, another
+    # image, and a boundary still inside the image leave nothing allocated.
+    assert session(releases_unserved = True).find_prefix_length(prompt) == 768
+    assert list(store._entries) == [("m", tuple(prompt[:768]))]
+    assert session(releases_unserved = True).find_prefix_length(_media_prompt(700)) == 0
+    assert len(store) == 0 and store.nbytes == 0
 
 
 def test_snapshot_module_imports_mlx_only_when_copying(monkeypatch):

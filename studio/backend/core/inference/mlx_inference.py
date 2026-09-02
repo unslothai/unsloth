@@ -6,6 +6,7 @@ instead of torch/transformers for model loading and generation.
 """
 
 import copy
+import hashlib
 import os
 import re
 import sys
@@ -108,6 +109,26 @@ def _arrays(value, mx):
             yield from _arrays(item, mx)
 
 
+def _release_value(value, mx):
+    if isinstance(value, mx.array):
+        return None
+    if isinstance(value, list):
+        value[:] = [_release_value(item, mx) for item in value]
+    elif isinstance(value, tuple):
+        return tuple(_release_value(item, mx) for item in value)
+    elif _is_cache(value):
+        for name, item in list(vars(value).items()):
+            setattr(value, name, _release_value(item, mx))
+    return value
+
+
+def release_cache_entries(entries):
+    """Drop every array the entries hold, in place, for a holder that keeps
+    referencing the entries themselves."""
+    import mlx.core as mx
+    entries[:] = [_release_value(entry, mx) for entry in entries]
+
+
 def copy_cache_entries(entries):
     """Independent copies of cache entries, evaluated so they own their data.
 
@@ -152,29 +173,61 @@ def cache_entries_offset(entries):
     return None
 
 
-def withholds_per_layer_inputs(language_model):
-    """Whether generation must not hand this model precomputed per-layer inputs.
+def media_prefix_end(token_ids, media_token_ids):
+    """Rows up to and including the last media placeholder token, 0 if none.
 
-    gemma4 E2B/E4B and gemma3n feed each layer an embedding of the token ids.
-    mlx-vlm computes those once for the uncached suffix, and the language model
-    then slices them at its absolute cache offset, so a resumed request reads
-    them shifted. Given none, it computes them per chunk from the chunk's own
-    ids, which is bitwise identical and aligned by construction.
+    mlx-vlm resumes a cache only when the prefix holds every media token, so
+    the rows the suffix embeds are text; a shorter prefix is never served.
     """
-    for candidate in (language_model, getattr(language_model, "model", None)):
-        if candidate is not None and getattr(candidate, "hidden_size_per_layer_input", 0):
-            return True
-    return False
+    media = {int(token) for token in media_token_ids}
+    if not media:
+        return 0
+    for index in range(len(token_ids) - 1, -1, -1):
+        if int(token_ids[index]) in media:
+            return index + 1
+    return 0
+
+
+def _chunk_rows(args, kwargs):
+    for chunk in (kwargs.get("inputs_embeds"), kwargs.get("inputs"), args[0] if args else None):
+        shape = getattr(chunk, "shape", None)
+        if shape and len(shape) > 1:
+            return shape[1]
+    return 0
+
+
+def _place_per_layer_inputs(kwargs, rows, start):
+    """Hand this forward the rows of ``per_layer_inputs`` that are its own.
+
+    gemma4 E2B/E4B and gemma3n take an embedding per layer that mlx-vlm
+    computes once for the whole uncached prompt (media placeholders mapped to
+    a fixed id) and passes to every forward. The language model slices it at
+    its absolute cache offset, which is right for a cold prompt and shifted
+    for a resumed one, whose array starts at the resume offset; so a chunk is
+    sliced here relative to that offset. A single-token forward gets none and
+    computes its own from the token id, as the reference model does: left the
+    array, the model would read some prompt row for a generated token, and
+    which row depends on the array's length, so cold and warm would differ.
+    """
+    inputs = kwargs.get("per_layer_inputs")
+    shape = getattr(inputs, "shape", None)
+    if not shape:
+        return
+    if rows == 1:
+        kwargs.pop("per_layer_inputs")
+    elif rows > 1 and shape[1] != rows and 0 <= start and start + rows <= shape[1]:
+        kwargs["per_layer_inputs"] = inputs[:, start : start + rows]
 
 
 class _ForwardRecord:
-    __slots__ = ("forwards", "capture_at", "snapshot", "withhold_per_layer_inputs")
+    __slots__ = ("forwards", "capture_at", "snapshot", "resume_offset", "on_resume")
 
-    def __init__(self, withhold_per_layer_inputs):
+    def __init__(self):
         self.forwards = 0
         self.capture_at = 0
         self.snapshot = None
-        self.withhold_per_layer_inputs = withhold_per_layer_inputs
+        self.resume_offset = None
+        self.on_resume = None
 
 
 _RECORDING_CLASSES = {}
@@ -209,11 +262,20 @@ def _recording_class(base):
         # A plain attribute: nn.Module stores dicts and lists in its module
         # tree, so the record must not be one.
         record = self.__dict__.get("_studio_forward_record")
-        if record is not None and record.withhold_per_layer_inputs:
-            kwargs.pop("per_layer_inputs", None)
-        if record is not None and _prompt_wide_position_ids(args, kwargs):
-            kwargs.pop("position_ids")
         cache = kwargs.get("cache")
+        if record is not None:
+            offset = cache_entries_offset(cache) if cache is not None else None
+            if record.resume_offset is None:
+                # Where dispatch actually resumed, which may be zero when it
+                # declined the offered prefix.
+                record.resume_offset = offset or 0
+                if record.on_resume is not None:
+                    record.on_resume(record.resume_offset)
+            if _prompt_wide_position_ids(args, kwargs):
+                kwargs.pop("position_ids")
+            _place_per_layer_inputs(
+                kwargs, _chunk_rows(args, kwargs), (offset or 0) - record.resume_offset
+            )
         # Copied as the next forward begins, not as the boundary forward
         # returns: generate_step still converts the cache between the two
         # (KV quantization once past its start), and the snapshot has to hold
@@ -245,7 +307,7 @@ class RecordingForward:
 
     def __init__(self, language_model):
         self._language_model = language_model
-        self.record = _ForwardRecord(withholds_per_layer_inputs(language_model))
+        self.record = _ForwardRecord()
         self._base = None
 
     def __enter__(self):
@@ -319,6 +381,11 @@ class VLMPromptSnapshotStore:
         if dropped is not None:
             self.nbytes -= dropped[1]
 
+    def retain(self, item):
+        """Drop every snapshot but ``item``, or all of them when it is None."""
+        for other in [other for other in self._entries if other != item]:
+            self.discard(other)
+
     def clear(self):
         self._entries.clear()
         self.nbytes = 0
@@ -330,17 +397,32 @@ class VLMPromptCacheSession:
     ``cache`` starts as the fresh entries the request should also pass as
     ``prompt_cache``. mlx-vlm calls ``find_prefix_length`` with the prompt's
     ids before generating; that is where the snapshot to resume from is chosen,
-    ``cache`` is swapped to a copy of it, and the capture forward is set. After
-    the generation, ``finish`` stores what was captured.
+    ``cache`` is swapped to it, and the capture forward is set. The copy that
+    keeps the store's snapshot immune to the generation is taken at the first
+    forward, once mlx-vlm has resumed from it. After
+    the generation, ``finish`` stores what was captured. With
+    ``releases_unserved`` the lookup also drops every snapshot that does not
+    serve this request, the headroom a media pass needs.
     """
 
-    def __init__(self, store, key, language_model, make_cache):
+    def __init__(
+        self,
+        store,
+        key,
+        language_model,
+        make_cache,
+        media_token_ids = (),
+        releases_unserved = False,
+    ):
         self._store = store
         self._key = key
+        self._media_token_ids = tuple(media_token_ids)
+        self._releases_unserved = releases_unserved
         self._forward = RecordingForward(language_model)
         self.cache = make_cache()
         self.reused_tokens = 0
         self._token_ids = None
+        self._media_end = 0
 
     def __enter__(self):
         self._forward.__enter__()
@@ -354,19 +436,55 @@ class VLMPromptCacheSession:
         token_ids = list(token_ids)
         self._token_ids = token_ids
         boundary = shape_stable_prefix(len(token_ids))
+        self._media_end = media_prefix_end(token_ids, self._media_token_ids)
+        record = self._forward.record
+        if boundary < self._media_end:
+            # A boundary inside the media span serves nothing and stores
+            # nothing: the prompt has to grow past it first.
+            self._keep(None)
+            return 0
         entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
         if entries is not None:
-            # A copy that cannot be made costs this request its reuse, never
-            # its answer.
-            try:
-                self.cache = copy_cache_entries(entries)
-            except Exception as exc:
-                logger.info("MLX VLM prompt cache: snapshot not served (%s)", exc)
-                prefix_len = 0
-        record = self._forward.record
+            # Served as is: the copy is taken at the first forward, once
+            # mlx-vlm has resumed from these entries, and not at all when it
+            # declines the offer.
+            self.cache = entries
+            record.on_resume = self._detach_served
+        self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
         record.capture_at = (boundary - prefix_len) // VLM_PROMPT_CACHE_PREFILL_STEP
         self.reused_tokens = prefix_len
         return prefix_len
+
+    def _keep(self, item):
+        # At lookup, before any media pass: a request mlx-vlm prefills from
+        # zero starts one at the first forward.
+        if self._releases_unserved:
+            self._store.retain(item)
+
+    def _detach_served(self, offset):
+        prefix_ids = self._token_ids[: self.reused_tokens]
+        if offset != self.reused_tokens:
+            # Declined: mlx-vlm prefills from its fresh cache, media pass
+            # included, while still referencing the served entries. Their
+            # arrays go now, before that pass is evaluated, and the snapshot
+            # is not kept, since it would be declined again.
+            self._store.discard((self._key, tuple(prefix_ids)))
+            try:
+                release_cache_entries(self.cache)
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: declined snapshot not released (%s)", exc)
+            return
+        # Resumed from the served entries, this generation is about to advance
+        # them: the store keeps a copy taken now, the request the original.
+        try:
+            copy = copy_cache_entries(self.cache)
+        except Exception as exc:
+            # A copy that cannot be made costs the next turn its reuse, never
+            # this answer.
+            logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
+            self._store.discard((self._key, tuple(prefix_ids)))
+            return
+        self._store.store(self._key, prefix_ids, copy)
 
     def update(self, _token_ids, _cache):
         """mlx-vlm's after-generation hook; storing happens in ``finish`` instead,
@@ -382,7 +500,12 @@ class VLMPromptCacheSession:
         # landed on an earlier boundary and holds that shorter prefix.
         held = cache_entries_offset(snapshot)
         step = VLM_PROMPT_CACHE_PREFILL_STEP
-        if not held or held % step or held > shape_stable_prefix(len(self._token_ids)):
+        if (
+            not held
+            or held % step
+            or held < self._media_end
+            or held > shape_stable_prefix(len(self._token_ids))
+        ):
             logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
             return False
         return self._store.store(self._key, self._token_ids[:held], snapshot)
@@ -1907,24 +2030,60 @@ class MLXInferenceBackend:
         logger.info("MLX VLM prompt cache: %.2f GB budget", max_bytes / 1e9)
         return self._vlm_snapshot_store
 
-    def _vlm_prompt_cache_session(self, adapter_state):
-        """A session for one text-only request, or None to prefill as before."""
+    @staticmethod
+    def _vlm_media_token_ids(config):
+        """The placeholder ids mlx-vlm's dispatcher reads off the same config."""
+        ids = set()
+        for attr in ("image_token_id", "image_token_index", "video_token_id", "video_token_index"):
+            value = config.get(attr) if isinstance(config, dict) else getattr(config, attr, None)
+            if value is not None:
+                ids.add(int(value))
+        return ids
+
+    @staticmethod
+    def _vlm_image_digest(images):
+        digest = hashlib.sha256()
+        for image in images:
+            # What the tower sees: mlx-vlm converts to RGB, so palette indices
+            # or an alpha channel must not decide the key; some of its
+            # processors apply the EXIF orientation, so that must.
+            rgb = image.convert("RGB")
+            digest.update(f"{rgb.size}:{image.getexif().get(0x0112, 1)}:".encode())
+            digest.update(rgb.tobytes())
+        return digest.hexdigest()[:16]
+
+    def _vlm_prompt_cache_session(
+        self,
+        adapter_state,
+        images = None,
+    ):
+        """A session for one text or image request, or None to prefill as before."""
         store = self._vlm_prompt_cache_store()
         if store is None or self._vlm_is_diffusion_model(self._model):
             # Diffusion generation never consults the prefix hook.
+            return None
+        media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
+        if images and not media_ids:
+            # Without the placeholder ids nothing can tell where the image's
+            # rows end, and neither can the dispatcher's own media check.
             return None
         try:
             from mlx_vlm.models.cache import make_prompt_cache
 
             language_model = getattr(self._model, "language_model", self._model)
             window = self._kv_cache_window
-            # Base-vs-LoRA compare must not serve one side's KV to the other.
+            # Base-vs-LoRA compare must not serve one side's KV to the other,
+            # and two images that tokenize alike must not share rows.
             key = f"{self.active_model_name}|{adapter_state!r}"
+            if images:
+                key += f"|{self._vlm_image_digest(images)}"
             return VLMPromptCacheSession(
                 store,
                 key,
                 language_model,
                 lambda: make_prompt_cache(language_model, max_kv_size = window),
+                media_token_ids = media_ids,
+                releases_unserved = bool(images),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -3062,11 +3221,7 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        # The store keys text-only prompts; an image request gets its headroom
-        # instead.
-        session = None
-        if not images:
-            session = self._vlm_prompt_cache_session(_adapter_state)
+        session = self._vlm_prompt_cache_session(_adapter_state, images)
         if session is not None:
             vlm_kwargs["prompt_cache"] = session.cache
             vlm_kwargs["prompt_cache_state"] = session
@@ -3086,9 +3241,9 @@ class MLXInferenceBackend:
                 _temporary_mlx_adapter_state(self._model, _adapter_state),
                 session_scope,
             ):
-                if images:
-                    # Under the lock, or a text turn still finishing could
-                    # refill the store before this request runs.
+                if images and session is None:
+                    # The vision pass gets the headroom; under the lock, so a text turn
+                    # still finishing cannot refill the store behind it.
                     self._release_vlm_snapshots()
                 final_response = None
                 try:
@@ -3236,9 +3391,7 @@ class MLXInferenceBackend:
         # Hold the adapter state for the whole stream, as text and vision do,
         # so Base-vs-LoRA compare doesn't run the adapter on both sides.
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
-            # Media: nothing held serves this request, and the tower gets the
-            # headroom. Under the lock, or a text turn still finishing could
-            # refill the store before this request runs.
+            # As on the image path: the tower gets the headroom, under the lock.
             self._release_vlm_snapshots()
             final_response = None
             try:
