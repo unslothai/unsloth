@@ -642,6 +642,15 @@ function Install-UnslothStudio {
         # and the host's real one is broken. The next run sweeps the old ones.
     }
 
+    # Refuse the POSIX-only portable options rather than half-applying them.
+    # Message is shared by the flags and by the environment check below it.
+    function Deny-PortableMode([string] $Which) {
+        Write-StudioLine "ERROR: $Which is not supported on Windows yet." -ForegroundColor Red
+        Write-StudioLine "       Portable mode (install.sh --portable / --root) is POSIX-only for now." -ForegroundColor Yellow
+        Write-StudioLine "       Use UNSLOTH_STUDIO_HOME to choose the install location on Windows." -ForegroundColor Yellow
+        return "$Which is not supported on Windows yet."
+    }
+
     # ── Parse flags ──
     $StudioLocalInstall = $false
     $PackageName = "unsloth"
@@ -660,6 +669,13 @@ function Install-UnslothStudio {
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
+            # Portable mode is POSIX-only for now. Accepting these silently
+            # would be worse than refusing: the backend DOES honour UNSLOTH_HOME
+            # (storage_roots.py), so the install would land in
+            # %USERPROFILE%\.unsloth\studio while Studio resolved <root>\studio
+            # and found nothing there.
+            "--portable" { return (Exit-InstallFailure (Deny-PortableMode "--portable")) }
+            "--root"     { return (Exit-InstallFailure (Deny-PortableMode "--root")) }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -677,6 +693,18 @@ function Install-UnslothStudio {
                 $WithLlamaCppDir = $argList[$i]
             }
         }
+    }
+
+    # The environment form matters more than the flags: `irm ... | iex` takes no
+    # arguments, so UNSLOTH_HOME is how a piped install would ask for portable
+    # mode, and it needs no flag to be set. Left unhandled it produces the exact
+    # split described above, so stop here instead.
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        return (Exit-InstallFailure (Deny-PortableMode "UNSLOTH_HOME"))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_PORTABLE) -and
+        $env:UNSLOTH_PORTABLE.Trim() -notin @("0", "false", "False")) {
+        return (Exit-InstallFailure (Deny-PortableMode "UNSLOTH_PORTABLE"))
     }
 
     # Env-var equivalent for web installs; an explicit flag still wins.
