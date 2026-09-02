@@ -1012,6 +1012,36 @@ def test_a_node_the_visible_ordinals_do_not_own_declines(win_rocm, monkeypatch):
     assert aggregate is None
 
 
+def test_a_node_count_that_matches_the_wrong_nodes_is_not_ownership(win_rocm, monkeypatch):
+    """One ordinal owning node 0 of a linked adapter, whose own sample is missing
+    while the node it does NOT own still reports. One counter against one owned
+    node, so the counts agree and only the identities disagree. Taking that as
+    ownership would hand the LUID to the engine query and sum the other node's
+    work as this card's."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch([TWIN_CARDS[0]], free_equals_total = True))
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0b01)))
+    dev_meta = [
+        {
+            "visible_ordinal": 0,
+            "name": TWIN_CARDS[0][0],
+            "gfx": "gfx1100",
+            "total_bytes": TWIN_CARDS[0][1],
+            "dedicated_bytes": TWIN_CARDS[0][1],
+        }
+    ]
+
+    hidden_only = [("luid_0x00000000_0x0000aaaa_phys_1", 5 * GB)]
+    _, _, whole_adapter = hw._match_adapter_used_by_hip_luid(hidden_only, dev_meta)
+    assert whole_adapter == [None]
+
+    # The node it does own, reporting: the decline above is the identity check
+    # and not the join giving up on linked adapters altogether.
+    its_own = [("luid_0x00000000_0x0000aaaa_phys_0", 5 * GB)]
+    _, _, whole_adapter = hw._match_adapter_used_by_hip_luid(its_own, dev_meta)
+    assert whole_adapter == [0xAAAA]
+
+
 def test_hip_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
     dev_meta = [
         {

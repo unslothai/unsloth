@@ -2417,7 +2417,15 @@ def _match_adapter_used_by_hip_luid(
         total_used += used
         if len(positions) == 1:
             assigned[positions[0]] = used
-            whole_adapter[positions[0]] = luid
+            # Equal counts say how many nodes this ordinal owns, never which, and
+            # a visible node whose sample is missing alongside a hidden node whose
+            # sample is present counts the same. The mask names them (bit i is
+            # node i), so where it does the observed phys_N set has to BE those
+            # or the LUID covers a node this device does not own. A zero mask
+            # names nothing and keeps the count check alone.
+            named = {i for i in range(32) if identities[positions[0]][1] >> i & 1}
+            if not named or named == physes_by_luid.get(luid, set()):
+                whole_adapter[positions[0]] = luid
     return assigned, total_used, whole_adapter
 
 
