@@ -45,6 +45,12 @@ import threading
 import time
 from pathlib import Path
 
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    apply_token_to_child_env,
+    is_anonymous,
+)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
@@ -291,6 +297,9 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "locateanything",
     "diffusion-gemma",
     "diffusiongemma",
+    "higgs-tts-2",
+    "higgs-audio-v2",
+    "higgs-audio-v3-tts",
 )
 
 # Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
@@ -311,12 +320,16 @@ _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "Gemma4ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
     "LocateAnythingForConditionalGeneration",
+    "HiggsAudioV2ForConditionalGeneration",
+    "HiggsMultimodalQwen3ForConditionalGeneration",
 }
 _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "diffusion_gemma",
     "gemma4",
     "kimi_k3",
     "locateanything",
+    "higgs_audio_v2",
+    "higgs_multimodal_qwen3",
 }
 
 # Architecture classes / model_type values requiring transformers 5.3.0 (via config.json).
@@ -370,7 +383,7 @@ TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57
 # TRANSFORMERS_550_VERSION / TRANSFORMERS_530_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
-# Pre-installed directories — created by setup.sh / setup.ps1.
+# Pre-installed directories - created by setup.sh / setup.ps1.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 
 _VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")
@@ -658,11 +671,16 @@ def _resolve_base_model(model_name: str) -> str:
     return model_name
 
 
-def _token_cache_key(model_name: str, hf_token: str | None) -> tuple[str, str | None]:
+def _token_cache_key(model_name: str, hf_token: HfTokenArg) -> tuple[str, str | None]:
     """Cache key that keeps authenticated and unauthenticated reads separate, so an
-    unauthenticated miss on a gated/private repo never poisons a later authed lookup."""
+    unauthenticated miss on a gated/private repo never poisons a later authed lookup.
+
+    Forced-anonymous is its own credential, so it takes its own slot too.
+    """
     import hashlib
 
+    if is_anonymous(hf_token):
+        return (model_name, ANONYMOUS_CACHE_IDENTITY)
     tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
     return (model_name, tok)
 
@@ -883,10 +901,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     authenticated read. The HF hub cache is consulted only offline or after a failed
     network fetch, so an online read never serves stale metadata.
     """
-    import hashlib
-
-    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
-    cache_key = (model_name, tok)
+    cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_json_cache:
         return _config_json_cache[cache_key]
 
@@ -906,9 +921,19 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     if _safe_is_dir(Path(model_name)):
         return None
 
+    # Every route to the hub cache below reads it without authorizing, so a caller denied
+    # the ambient credential is refused them all: keying the memo apart is not enough when
+    # the value it memoizes came off disk in the first place.
+    if is_anonymous(hf_token):
+        cache_denied = True
+    else:
+        cache_denied = False
+
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
         # never the miss, so a later online read still fetches the config.
+        if cache_denied:
+            return None
         cfg = _config_json_from_hf_cache(model_name)
         if cfg is not None:
             _config_json_cache[cache_key] = cfg
@@ -933,11 +958,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
             return None
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        return _config_json_from_hf_cache(model_name)
+        return None if cache_denied else _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
         # Transient: serve the hub cache uncached so the next call retries the network.
-        return _config_json_from_hf_cache(model_name)
+        return None if cache_denied else _config_json_from_hf_cache(model_name)
 
 
 def _config_json_is_definitive(model_name: str, hf_token: str | None = None) -> bool:
@@ -1497,11 +1522,8 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     (auth/network/offline/spawn) so the caller fails safe and does not cache.
     """
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-    if hf_token:
-        env["HF_TOKEN"] = hf_token
-        # The probe relies on the implicit HF_TOKEN env; clear any inherited
-        # HF_HUB_DISABLE_IMPLICIT_TOKEN=1 so a gated repo authenticates instead of 401ing.
-        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+    # The probe reads the implicit HF_TOKEN env, so grant or scrub here, not via argv.
+    apply_token_to_child_env(env, hf_token)
     if _env_offline():
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
@@ -3146,7 +3168,7 @@ def ensure_transformers_version(model_name: str) -> None:
         # Different 5.x -> need to switch (e.g. 5.3.0 loaded but need 5.10.x).
         in_memory_major = int(in_memory.split(".")[0])
         if in_memory_major == target_major and venv_dir is None:
-            # Both are default (4.x) — close enough.
+            # Both are default (4.x) - close enough.
             logger.info(
                 "transformers %s already loaded — correct for '%s'",
                 in_memory,

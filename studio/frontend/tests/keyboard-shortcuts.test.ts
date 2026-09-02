@@ -347,7 +347,11 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     root,
-    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: !isAuthFlowRoute && !chatOnlyMeasured,/,
+    /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
+  );
+  assert.match(
+    root,
+    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
   );
   // Video has its own predicate rather than the chat-only one: /video checks
   // auth and nothing else, so the chord would land on the unsupported-hardware
@@ -358,7 +362,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     root,
-    /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: !isAuthFlowRoute && !videoDisabled,/,
+    /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: routeShortcutEnabled && !videoDisabled,/,
   );
   const sidebar = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
@@ -1372,7 +1376,7 @@ test("the new-chat chords stay out of the auth flow", async () => {
     const at = root.indexOf(`"${id}"`);
     assert.ok(at !== -1, `${id} is registered`);
     const call = root.slice(at, root.indexOf("\n  );", at) + 5);
-    assert.match(call, /enabled: !isAuthFlowRoute/, `${id} is gated`);
+    assert.match(call, /enabled: routeShortcutEnabled/, `${id} is gated`);
   }
 });
 
@@ -1387,7 +1391,7 @@ test("switching back to Chat lands on the view the user left", async () => {
   assert.ok(at !== -1, "switchToChat is registered");
   const call = root.slice(at, root.indexOf("\n  );", at) + 5);
   assert.match(call, /navigate\(\{ to: "\/chat", search: chatSearch \}\)/);
-  assert.match(call, /enabled: !isAuthFlowRoute/);
+  assert.match(call, /enabled: routeShortcutEnabled/);
   // The other workspaces keep the bare helper; only chat carries a search.
   assert.match(root, /useShortcut\("switchToImages", goTo\("\/images"\)/);
   // location.search is the raw URL's, not the matched route's, so a seeded

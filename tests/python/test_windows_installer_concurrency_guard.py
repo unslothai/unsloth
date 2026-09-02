@@ -23,6 +23,7 @@ PROCESS_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs"
 PREFLIGHT_MANAGED_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "preflight" / "managed.rs"
 DESKTOP_AUTH_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
 UPDATE_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs"
+MAIN_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "main.rs"
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
@@ -918,10 +919,10 @@ def test_tauri_runtime_uses_the_same_gate_before_backend_spawn():
     start = process_source.index("pub fn start_backend(")
     guard = process_source.index("acquire_studio_runtime_launch_guard()?", start)
     resolve = process_source.index("resolve_backend_binary()", guard)
-    handoff = process_source.index("STUDIO_RUNTIME_GATE_HANDOFF_ENV", resolve)
-    spawn = process_source.index("cmd.spawn()", handoff)
+    acquire = process_source.index("STUDIO_RUNTIME_GATE_ACQUIRE_ENV", resolve)
+    spawn = process_source.index("cmd.spawn()", acquire)
     store = process_source.index("proc.owned = Some(", spawn)
-    assert guard < resolve < handoff < spawn < store
+    assert guard < resolve < acquire < spawn < store
 
 
 def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
@@ -952,28 +953,47 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     provision_wait = desktop_auth_source.index("child.wait_with_output()", provision_spawn)
     assert provision_guard < provision_spawn < provision_wait
 
+    # run_child owns the whole child lifetime.
+    update_child_fn = update_source.index("let run_child = || {")
+    update_spawn = update_source.index("spawn_update(&bin, &state", update_child_fn)
+    update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
+    # a live update inherits the parent gate through its whole lifetime.
     update_call = update_source.index(
-        "let result = crate::process::with_studio_runtime_launch_guard"
+        "crate::process::with_studio_runtime_launch_guard(",
+        update_wait,
     )
+    exemption = update_source.index("fn mutates_live_environment(&self) -> bool {")
+    assert (
+        "!matches!(self, UpdateKind::Staged { .. })" in update_source[exemption : exemption + 200]
+    )
+    update_scan_gate = update_source.index("if kind.mutates_live_environment() {", update_wait)
     update_scan = update_source.index(
         "ensure_managed_environment_is_idle(&bin)",
-        update_call,
+        update_scan_gate,
     )
-    update_spawn = update_source.index("spawn_update(&bin, &state)", update_scan)
-    update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
-    update_guard_release = update_source.index("\n    });", update_wait)
-    assert update_call < update_scan < update_spawn < update_wait < update_guard_release
+    update_gated_child = update_source.index("run_child()", update_scan)
+    update_guard_release = update_source.index("\n        })", update_gated_child)
+    assert update_child_fn < update_spawn < update_wait < update_scan_gate
+    assert update_scan_gate < update_call < update_scan
+    assert update_scan < update_gated_child < update_guard_release
+
+    # a staged child acquires the gate itself so app death cannot release it early.
+    configure_gate = update_source.index("fn configure_runtime_gate_environment(")
+    staged_branch = update_source.index("cmd.env_remove(", configure_gate)
+    stage_run = update_source.index("} else {\n        run_child()", update_call)
+    assert configure_gate < staged_branch < update_child_fn < stage_run
 
 
-def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
+def test_runtime_gate_handoff_covers_managed_children():
     process_source = PROCESS_RS.read_text(encoding = "utf-8")
     install_source = INSTALL_PS1.read_text(encoding = "utf-8")
     studio_source = STUDIO_COMMAND.read_text(encoding = "utf-8")
 
     start = process_source.index("pub fn start_backend(")
-    handoff = process_source.index('cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1")', start)
-    spawn = process_source.index("cmd.spawn()", handoff)
-    assert handoff < spawn
+    clear_handoff = process_source.index("cmd.env_remove(STUDIO_RUNTIME_GATE_HANDOFF_ENV)", start)
+    acquire = process_source.index('cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1")', clear_handoff)
+    spawn = process_source.index("cmd.spawn()", acquire)
+    assert clear_handoff < acquire < spawn
 
     prompt = install_source.index("Start Unsloth Studio now?")
     save = install_source.index("$_runtimeGateHandoff =", prompt)
@@ -1008,9 +1028,47 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
         studio_source.count(
             "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
         )
-        == 4
+        == 5
+    )
+    assert (
+        studio_source.count(
+            "runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()"
+        )
+        == 1
     )
     assert studio_source.count("inherited = runtime_gate_handoff") >= 5
+
+
+def test_a_reopened_app_cannot_replace_or_discard_an_externally_owned_stage():
+    update_source = UPDATE_RS.read_text(encoding = "utf-8")
+    commands_source = COMMANDS_RS.read_text(encoding = "utf-8")
+    main_source = MAIN_RS.read_text(encoding = "utf-8")
+
+    owner_check = update_source.index("pub(crate) fn staged_update_is_owned_elsewhere()")
+    gate_probe = update_source.index("with_studio_runtime_launch_guard", owner_check)
+    owner_helper = update_source.index("fn staged_update_is_owned_elsewhere_at(", gate_probe)
+    stage_probe = update_source.index("crate::staged_update::STAGE_DIR", owner_helper)
+    status = update_source.index("pub(crate) fn is_staged_update_running")
+    status_uses_owner = update_source.index("staged_update_is_owned_elsewhere()", status)
+    assert status < status_uses_owner < owner_check < gate_probe < owner_helper < stage_probe
+
+    start = commands_source.index("pub async fn start_staged_update(")
+    start_guard = commands_source.index("is_staged_update_running", start)
+    start_spawn = commands_source.index("update::run_staged_update", start_guard)
+    cancel = commands_source.index("pub fn cancel_staged_update(", start_spawn)
+    cancel_stop = commands_source.index("update::stop_update", cancel)
+    cancel_guard = commands_source.index("with_studio_runtime_launch_guard", cancel_stop)
+    cancel_remove = commands_source.index("staged_update::discard", cancel_guard)
+    discard = commands_source.index("pub fn discard_staged_update(")
+    discard_guard = commands_source.index("with_studio_runtime_launch_guard", discard)
+    discard_remove = commands_source.index("staged_update::discard", discard_guard)
+    assert start < start_guard < start_spawn < cancel < cancel_stop < cancel_guard < cancel_remove
+    assert cancel_remove < discard < discard_guard < discard_remove
+
+    setup = main_source.index(".setup(|app| {")
+    reconcile_gate = main_source.index("with_studio_runtime_launch_guard", setup)
+    reconcile = main_source.index("staged_update::reconcile_at_launch", reconcile_gate)
+    assert setup < reconcile_gate < reconcile
 
 
 def test_tauri_start_install_rejects_backend_conflicts_before_spawn():

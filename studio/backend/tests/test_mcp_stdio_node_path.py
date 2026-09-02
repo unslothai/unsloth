@@ -9,6 +9,7 @@ Run from studio/backend:  python -m pytest tests/test_mcp_stdio_node_path.py -q
 import os
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -104,9 +105,23 @@ def test_stdio_env_is_none_without_managed_node_or_vars(tmp_path, monkeypatch):
     assert mcp_client._stdio_env(None) is None
 
 
+@pytest.mark.parametrize(
+    "environment",
+    [
+        pytest.param({"BAD\x00NAME": "value"}, id = "nul-name"),
+        pytest.param({"NAME": "bad\x00value"}, id = "nul-value"),
+        pytest.param({"BAD=NAME": "value"}, id = "equals-name"),
+    ],
+)
+def test_stdio_env_rejects_invalid_legacy_values(environment):
+    with pytest.raises(ValueError):
+        mcp_client._stdio_env(environment, "python")
+
+
 def test_client_passes_node_path_to_transport(managed_node, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     monkeypatch.setenv("PATH", "/usr/bin")
+    _make_executable(managed_node, "npx")
     client = mcp_client._client("npx -y @modelcontextprotocol/server-filesystem /tmp", None)
     assert client.transport.env["PATH"].split(os.pathsep)[0] == str(managed_node)
 
@@ -115,23 +130,39 @@ def _make_executable(bin_dir, name):
     """A stub the platform's own PATH lookup will accept (.cmd via PATHEXT on Windows)."""
     path = bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
     path.write_text("")
-    if os.name != "nt":
+    if os.name == "nt" and name in ("npm", "npx"):
+        (bin_dir / "node.exe").write_text("")
+        cli = bin_dir / "node_modules" / "npm" / "bin" / f"{name}-cli.js"
+        cli.parent.mkdir(parents = True, exist_ok = True)
+        cli.write_text("")
+    elif os.name != "nt":
         path.chmod(0o755)
     return path
+
+
+def _expected_node_launcher_argv(launcher, arguments):
+    if os.name != "nt":
+        return [str(launcher), *arguments]
+    bin_dir = launcher.parent
+    cli = bin_dir / "node_modules" / "npm" / "bin" / f"{launcher.stem}-cli.js"
+    return [str(bin_dir / "node.exe"), str(cli), *arguments]
 
 
 def test_stdio_argv_resolves_managed_npx(managed_node):
     npx = _make_executable(managed_node, "npx")
     env = mcp_client._stdio_env(None)
     argv = mcp_client._stdio_argv(["npx", "-y", "pkg"], env)
-    assert os.path.samefile(argv[0], npx)
-    assert argv[1:] == ["-y", "pkg"]
+    assert argv == _expected_node_launcher_argv(npx, ["-y", "pkg"])
 
 
 def test_stdio_argv_keeps_unresolvable_command(managed_node):
-    argv = mcp_client._stdio_argv(
-        ["definitely-not-on-path-9304", "-y"], mcp_client._stdio_env(None)
-    )
+    parts = ["definitely-not-on-path-9304", "-y"]
+    env = mcp_client._stdio_env(None)
+    if os.name == "nt":
+        with pytest.raises(ValueError, match = "configured PATH"):
+            mcp_client._stdio_argv(parts, env)
+        return
+    argv = mcp_client._stdio_argv(parts, env)
     assert argv == ["definitely-not-on-path-9304", "-y"]
 
 
@@ -143,7 +174,101 @@ def test_stdio_argv_prefers_child_path_over_parent(managed_node, monkeypatch, tm
     monkeypatch.setenv("PATH", str(bare))
     assert shutil.which("npx") is None
     argv = mcp_client._stdio_argv(["npx"], mcp_client._stdio_env(None))
-    assert os.path.samefile(argv[0], npx)
+    assert argv == _expected_node_launcher_argv(npx, [])
+
+
+@pytest.mark.parametrize("launcher", ["npm", "npx"])
+def test_windows_stdio_argv_bypasses_batch_launcher(launcher, monkeypatch, tmp_path):
+    bin_dir = tmp_path / "node"
+    cli = bin_dir / "node_modules" / "npm" / "bin" / f"{launcher}-cli.js"
+    cli.parent.mkdir(parents = True)
+    cli.write_text("")
+    node = bin_dir / "node.exe"
+    node.write_text("")
+    batch = bin_dir / f"{launcher}.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        mcp_client.shutil,
+        "which",
+        lambda command, path = None: str(batch) if command == launcher else str(node),
+    )
+    arguments = ["%TOKEN%", "a&b", "x|y", 'say "hello"', "a b", ""]
+
+    argv = mcp_client._stdio_argv([launcher, *arguments], {"PATH": str(bin_dir)})
+
+    assert argv == [str(node), str(cli), *arguments]
+
+
+def test_windows_stdio_argv_rejects_batch_when_cli_is_unknown(monkeypatch, tmp_path):
+    batch = tmp_path / "custom" / "npx.cmd"
+    batch.parent.mkdir()
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+
+    with pytest.raises(ValueError, match = "npm CLI script"):
+        mcp_client._stdio_argv(["npx", "package"], {"PATH": str(tmp_path)})
+
+
+@pytest.mark.parametrize("argument", ["%TOKEN%", "a&b", "x|y", 'say "hello"', "(group)"])
+def test_windows_stdio_argv_rejects_unsafe_batch_arguments(argument, monkeypatch, tmp_path):
+    batch = tmp_path / "mcp-server-example.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+
+    with pytest.raises(ValueError, match = "cannot safely preserve these MCP command arguments"):
+        mcp_client._stdio_argv(
+            ["mcp-server-example", argument],
+            {"PATH": str(tmp_path)},
+        )
+
+
+def test_windows_stdio_argv_keeps_safe_batch_arguments(monkeypatch, tmp_path):
+    batch = tmp_path / "mcp-server-example.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+    arguments = [
+        "--port",
+        "3000",
+        r"C:\Users\me\data",
+        r"C:\Program Files (x86)\mcp data",
+        "a & b",
+        "",
+    ]
+
+    assert mcp_client._stdio_argv(["mcp-server-example", *arguments], {"PATH": str(tmp_path)}) == [
+        str(batch),
+        *arguments,
+    ]
+
+
+def test_windows_stdio_argv_keeps_argument_free_batch(monkeypatch, tmp_path):
+    batch = tmp_path / "mcp-server-example.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+
+    assert mcp_client._stdio_argv(["mcp-server-example"], {"PATH": str(tmp_path)}) == [str(batch)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "requires an installed Windows Node runtime")
+@pytest.mark.parametrize("launcher", ["npm", "npx"])
+def test_windows_installed_node_launcher_avoids_cmd_shell(launcher):
+    resolved = shutil.which(launcher)
+    if resolved is None:
+        pytest.skip(f"{launcher} is not installed")
+    assert Path(resolved).suffix.lower() in (".cmd", ".bat")
+    arguments = ["%TOKEN%", "a&b", "x|y", 'say "hello"', "a b", ""]
+
+    argv = mcp_client._stdio_argv([launcher, *arguments], {"PATH": os.environ.get("PATH", "")})
+
+    assert Path(argv[0]).name.lower() == "node.exe"
+    assert Path(argv[1]).name.lower() == f"{launcher}-cli.js"
+    assert Path(argv[1]).is_file()
+    assert argv[2:] == arguments
 
 
 def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_path):
@@ -153,7 +278,10 @@ def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_p
     monkeypatch.setenv("PATH", str(bare))
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     client = mcp_client._client("npx -y @modelcontextprotocol/server-filesystem /tmp", None)
-    assert os.path.samefile(client.transport.command, npx)
+    expected = _expected_node_launcher_argv(
+        npx, ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    )
+    assert [client.transport.command, *client.transport.args] == expected
 
 
 def test_runtime_free_dir_resolves_nothing(runtime_free_dir):
@@ -218,7 +346,11 @@ def test_explicit_empty_path_blocks_host_lookup(managed_node, monkeypatch, tmp_p
     _make_executable(host, "hostcmd")
     monkeypatch.setenv("PATH", str(host))
     assert shutil.which("hostcmd") is not None
-    assert mcp_client._stdio_argv(["hostcmd"], {"PATH": ""}) == ["hostcmd"]
+    if os.name == "nt":
+        with pytest.raises(ValueError, match = "configured PATH"):
+            mcp_client._stdio_argv(["hostcmd"], {"PATH": ""})
+    else:
+        assert mcp_client._stdio_argv(["hostcmd"], {"PATH": ""}) == ["hostcmd"]
 
 
 def test_explicit_empty_path_still_allows_absolute_command(managed_node):
@@ -414,8 +546,9 @@ def test_windows_npx_sibling_runtime_is_the_one_validated(
     checked = []
     _patch_floors(
         monkeypatch,
-        lambda executable, path = None: checked.append(str(executable))
-        or not str(executable).startswith(str(old)),
+        lambda executable, path = None: (
+            checked.append(str(executable)) or not str(executable).startswith(str(old))
+        ),
     )
     configured = f"{good}{os.pathsep}{old}"
     result = node_runtime.path_with_managed_node(configured)
@@ -462,7 +595,8 @@ def test_windows_lowercase_empty_path_is_still_a_sandbox(managed_node, monkeypat
 
 
 def test_windows_lowercase_path_blocks_host_lookup(managed_node, windows_env):
-    assert mcp_client._stdio_argv(["npx"], {"Path": ""}) == ["npx"]
+    with pytest.raises(ValueError, match = "configured PATH"):
+        mcp_client._stdio_argv(["npx"], {"Path": ""})
 
 
 def test_posix_treats_path_and_lowercase_path_as_distinct(managed_node, monkeypatch, posix_env):

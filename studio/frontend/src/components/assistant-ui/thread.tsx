@@ -59,7 +59,7 @@ import {
   promptQueueActiveItemChanged,
   reorderPromptQueueItems,
   pasteClipboardFiles,
-  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
@@ -164,13 +164,15 @@ import {
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "@/features/chat/utils/prompt-queue-events";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   PLUS_MENU_ORDER,
   CONVERSATION_MARKDOWN_LABEL,
-  PROMPT_QUEUE_RUN_FAILED_EVENT,
-  PROMPT_QUEUE_STOP_EVENT,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -289,12 +291,13 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
   CornerDownRightIcon,
-  GitBranchIcon,
   FastForwardIcon,
+  GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
   Loader2Icon,
@@ -2397,17 +2400,17 @@ const Composer: FC<{
       );
       plainPasteAtRef.current = 0;
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
-      if (extractYoutubeVideoId(pastedText)) {
-        setYoutubeLink(pastedText.trim());
-      }
+      const pastedYoutubeUrl = extractYoutubeVideoUrlFromClipboard(
+        event.clipboardData,
+      );
       // Bulk text pastes attach as a file instead of filling the input, except
       // in image-edit mode, whose submit path takes an inline instruction only.
       const input = event.currentTarget;
+      const { selectionStart, selectionEnd, value } = input;
       // An attachment is serialised after all inline text, so only a paste that
       // was already heading to the end can become one. Mid-text pastes stay
       // inline, where the order the user typed them in survives.
       const pasteGoesLast = input.selectionEnd === input.value.length;
-      const { selectionStart, selectionEnd, value } = input;
       // Swallowing the paste also swallowed the replacement the browser would
       // have made. Only once the attachment is in, and only if the composer is
       // still the one that was pasted into, or a failed paste eats the text.
@@ -2446,6 +2449,30 @@ const Composer: FC<{
             description: "The clipboard item is unsupported, unreadable, or exceeds its size limit.",
           }),
       );
+      if (event.defaultPrevented) return;
+      if (pastedYoutubeUrl) {
+        setYoutubeLink(pastedYoutubeUrl);
+        if (!pastedText.includes(pastedYoutubeUrl)) {
+          event.preventDefault();
+          const youtubePasteText =
+            pastedText.length === 0
+              ? pastedYoutubeUrl
+              : `${pastedText}${pastedText.endsWith("\n") ? "" : "\n"}${pastedYoutubeUrl}`;
+          const caret = selectionStart + youtubePasteText.length;
+          aui
+            .composer()
+            .setText(
+              value.slice(0, selectionStart) +
+                youtubePasteText +
+                value.slice(selectionEnd),
+            );
+          requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+          if (justSentRef.current?.draftKey === draftKeyRef.current) {
+            justSentRef.current = null;
+          }
+          return;
+        }
+      }
       // A paste is a gesture, so it retires the guard and re-pasting the sent
       // prompt goes through. Last, and only when the browser will really insert
       // the text: a payload carrying files is preventDefaulted above, so
@@ -5129,22 +5156,6 @@ function useImeComposerInputHandlers({
 }
 
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 // svgrepo.com lightbulb (filled, with base).
 const BulbIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -5292,7 +5303,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
               </span>
             ) : null}
-            <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent

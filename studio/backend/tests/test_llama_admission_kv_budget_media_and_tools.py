@@ -365,18 +365,50 @@ class TestMediaIsCharged:
             assert cost > 2000, f"{field} was charged {cost}, i.e. nothing for the media"
 
 
-class TestTheToolLoopReservesTheWholeCache:
-    def test_a_server_side_loop_without_client_tools_reserves_the_budget(self):
-        """enable_tools / mcp_enabled / CLI policy open the loop with no `tools` array."""
+class TestTheToolLoopOpensAtAnEqualShare:
+    """#9392 reserved the WHOLE cache for any tool loop, making every tool chat run alone
+    (any lit pill sets enable_tools). The loop now opens at an equal share and re-costs
+    per round (llama_cpp.generate_chat_completion_with_tools -> on_conversation_grew ->
+    LlamaAdmissionLease.recost), the alternative #9392 named and skipped.
+    """
+
+    def test_a_server_side_loop_without_client_tools_is_still_a_tool_loop(self):
+        """enable_tools / mcp_enabled / CLI policy open the loop with no `tools` array.
+
+        The amount changed, not the recognition: keying on payload.tools would still
+        undercharge Unsloth's own tool traffic.
+        """
         payload = _Payload(
             messages = [{"role": "user", "content": "search my notes"}],
             enable_tools = True,
             max_tokens = 128,
         )
         assert getattr(payload, "tools", None) is None
-        assert (
-            _openai_llama_admission_tokens(payload, budget = 4096, capacity = 4, tool_loop = True) == 4096
+        cost = _openai_llama_admission_tokens(payload, budget = 4096, capacity = 4, tool_loop = True)
+        assert cost == 1024, cost
+
+    def test_four_tool_chats_fit_the_cache_at_once(self):
+        """Four equal shares are exactly the budget, so four tool chats are admitted
+        together instead of one at a time."""
+        payload = _Payload(
+            messages = [{"role": "user", "content": "search my notes"}],
+            enable_tools = True,
+            max_tokens = 128,
         )
+        cost = _openai_llama_admission_tokens(payload, budget = 262144, capacity = 4, tool_loop = True)
+        assert cost * 4 <= 262144
+
+    def test_a_tool_loop_bigger_than_its_share_is_charged_what_it_is(self):
+        """The share is a floor, not a cap: a run already sending more than a quarter of
+        the cache is charged for it, not admitted alongside three others."""
+        payload = _Payload(
+            messages = [{"role": "user", "content": "x " * 4000}],
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        cost = _openai_llama_admission_tokens(payload, budget = 4096, capacity = 4, tool_loop = True)
+        assert cost > 1024, cost
+        assert cost <= 4096
 
     def test_a_passthrough_forwarding_tools_is_charged_its_own_round(self):
         """One HTTP call is one generation there: the client drives the rounds."""
@@ -425,3 +457,136 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
     def test_a_backend_that_cannot_say_keeps_slot_only_admission(self):
         from routes.inference import _openai_llama_admission_budget
         assert _openai_llama_admission_budget(_Payload()) is None
+
+
+class TestARoundIsCostedTheSameWayTheReservationWas:
+    """The re-cost REPLACES the opening reservation, so it has to count the same things.
+
+    ``_openai_llama_admission_recost`` fires at the top of every round including round
+    zero, before a tool loop has grown at all. Counting fewer terms than the reservation
+    therefore shrinks a correctly sized lease and hands the difference to the next
+    arrival as room llama-server is already using -- the multi-slot ``Context size has
+    been exceeded`` this accounting exists to prevent.
+    """
+
+    class _Backend:
+        base_url = "http://llama"
+        effective_parallel_slots = 4
+        _kv_cache_context_total = 4096
+        context_length = 4096
+        _mmproj_projector_type = None
+        _extra_args = None
+
+    class _Reservation:
+        def __init__(self, lease):
+            self._lease = lease
+
+        def lease_nowait(self):
+            return self._lease
+
+    def _round_zero(self, payload, *, output_tokens):
+        """Open a tool lease from ``payload``, then re-cost it before it has grown."""
+        import asyncio
+
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
+        from routes.inference import (
+            _openai_llama_admission_recost,
+            _openai_llama_admission_tokens,
+        )
+
+        async def _run():
+            queue = LlamaAdmissionQueue("test")
+            opened = _openai_llama_admission_tokens(
+                payload, budget = 4096, capacity = 4, tool_loop = True
+            )
+            reservation = queue.reserve(
+                capacity = 4,
+                config = LlamaAdmissionConfig(),
+                tokens = opened,
+                budget = 4096,
+            )
+            lease = reservation.lease_nowait()
+            assert lease is not None
+            _openai_llama_admission_recost(
+                self._Reservation(lease),
+                payload.messages,
+                request = None,
+                llama_backend = self._Backend(),
+                payload = payload,
+                output_tokens = output_tokens,
+            )
+            return opened, queue.snapshot().committed, queue
+
+        return asyncio.run(_run())
+
+    def test_round_zero_does_not_give_away_a_vision_prompt_s_image_allowance(self):
+        """Image parts compact to "[image]" for the text estimate, so the real mtmd cost
+        can only come from the compaction count. Discarding it re-costs a vision tool run
+        DOWNWARD by the whole allowance on its first round."""
+        payload = _Payload(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is in this picture?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
+                        },
+                    ],
+                }
+            ],
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        opened, committed, _ = self._round_zero(payload, output_tokens = 128)
+        # One image alone is 4224 against this 4096 budget, so the reservation clamps to
+        # the whole cache: four times the 1024 share the re-cost used to drop it to.
+        assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS > 4096 and opened == 4096, opened
+        assert committed == opened, (
+            f"round zero shrank a correct lease from {opened} to {committed}, "
+            f"giving away {opened - committed} tokens of resident image KV"
+        )
+
+    def test_round_zero_keeps_an_uncapped_loop_s_output_allowance(self):
+        """No max_tokens and no max_completion_tokens.
+
+        The invariant: the round-zero re-cost must not SHRINK the opening lease, because it
+        fires before the conversation has grown, so anything given back is room
+        llama-server is already using. The allowance SIZE is a separate question and it
+        changed, so this asserts the two sides agree rather than asserting a number.
+        """
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+            _effective_openai_max_tokens,
+        )
+
+        payload = _Payload(
+            messages = [{"role": "user", "content": "summarise the news"}],
+            enable_tools = True,
+        )
+        assert _effective_openai_max_tokens(payload) is None
+        opened, committed, _queue = self._round_zero(
+            payload, output_tokens = _effective_openai_max_tokens(payload)
+        )
+        assert opened < 4096, f"an uncapped loop still opens on the whole {4096} cache ({opened})"
+        assert opened <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64, opened
+        assert (
+            committed == opened
+        ), f"round zero shrank an uncapped loop from {opened} to {committed}"
+
+    def test_round_zero_keeps_a_top_level_system_prompt(self):
+        """Anthropic keeps `system` and `tools` out of `messages` entirely, so for that
+        route this is most of the prompt."""
+        payload = _Payload(
+            messages = [{"role": "user", "content": "hi"}],
+            system = "You are a careful assistant that cites its sources. " * 200,
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        opened, committed, _ = self._round_zero(payload, output_tokens = 128)
+        assert opened > 1024, f"the system text should push this past the share: {opened}"
+        assert committed == opened, (
+            f"round zero shrank the lease from {opened} to {committed}, dropping the "
+            f"non-message prompt the reservation charged"
+        )

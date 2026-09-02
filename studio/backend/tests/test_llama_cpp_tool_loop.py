@@ -177,6 +177,64 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert samples[-1]["predicted_per_second"] == 200
 
 
+def test_plain_fixed_seed_disables_slot_prompt_cache_reuse(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "seeded"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "repeat this"}],
+            seed = 3407,
+        )
+    )
+
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+
+
+def test_the_uint32_random_seed_sentinel_also_keeps_cache_reuse(monkeypatch):
+    """llama.h defines LLAMA_DEFAULT_SEED as 0xFFFFFFFF read as uint32, so 4294967295 is the same "pick one at random" as -1 and must keep prompt-cache reuse."""
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "random"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "vary this"}],
+            seed = 0xFFFFFFFF,
+        )
+    )
+
+    assert payloads[0]["seed"] == 0xFFFFFFFF
+    assert "cache_prompt" not in payloads[0]
+
+
+def test_plain_random_seed_sentinel_keeps_slot_prompt_cache_reuse(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "random"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "vary this"}],
+            seed = -1,
+        )
+    )
+
+    assert payloads[0]["seed"] == -1
+    assert "cache_prompt" not in payloads[0]
+
+
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
     stream = [
         _progress(processed = 512, cached = 0, time_ms = 64),
@@ -3970,6 +4028,190 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
+def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
+    """Unpriced media must not disable compaction that the text alone requires."""
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return sum(len(str(message.get("content", ""))) for message in candidate)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "latest"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "AAAA", "format": "wav"},
+            },
+        ],
+    }
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 40},
+                {"role": "assistant", "content": "a" * 40},
+                audio_turn,
+            ],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 20,
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [event for event in events if event.get("type") == "context_truncated"]
+    assert counted
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in counted
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert [notice["dropped_messages"] for notice in notices] == [2]
+    assert payloads[0]["messages"] == [audio_turn]
+
+
+def test_tool_loop_secondary_counts_strip_media_but_payloads_keep_it(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            _structured_tool_call("python", {"code": "print('ok')"}, "call_python"),
+            [_sse({"content": "Done."}), _done()],
+        ],
+        payloads,
+    )
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return 1000
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_args, **_kwargs: "ok",
+    )
+    audio_data = "A" * 100_000
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "x" * 12_000},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": audio_data, "format": "wav"},
+            },
+        ],
+    }
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [audio_turn],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 512,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(counted) >= 3
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in counted
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert len(payloads) == 2
+    assert payloads[0]["messages"][0] == audio_turn
+    assert payloads[1]["messages"][0] == audio_turn
+    assert payloads[1]["messages"][0]["content"][1]["input_audio"]["data"] == audio_data
+
+
+@pytest.mark.parametrize("with_tools", [False, True])
+def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, with_tools):
+    from core.inference import llama_cpp
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+    recall_recounts: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        total = 0
+        for message in candidate:
+            content = message.get("content", "")
+            if isinstance(content, str):
+                total += len(content)
+            else:
+                total += sum(len(part.get("text", "")) for part in content)
+        return total
+
+    def fake_archive(conversation, _before, **kwargs):
+        before_count = len(counted)
+        kwargs["count_tokens"](conversation)
+        assert len(counted) == before_count + 1
+        recall_recounts.append(counted[-1])
+        return {
+            "conversation": conversation,
+            "events": [],
+            "counts": {},
+            "recalled": False,
+            "anchored": [],
+        }
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "latest"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            },
+        ],
+    }
+    kwargs = {
+        "messages": [
+            {"role": "user", "content": "u" * 40},
+            {"role": "assistant", "content": "a" * 40},
+            audio_turn,
+        ],
+        "max_tokens": 20,
+        "context_overflow": "truncate_oldest",
+        "thread_id": "media-recall",
+    }
+
+    if with_tools:
+        list(
+            backend.generate_chat_completion_with_tools(
+                **kwargs,
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = 1,
+            )
+        )
+    else:
+        list(backend.generate_chat_completion(**kwargs))
+
+    assert recall_recounts
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in recall_recounts
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert payloads[0]["messages"][-1] == audio_turn
+
+
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
     """A rescued respawn refit archives its evictions and emits metadata."""
     import httpx
@@ -6725,3 +6967,61 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
     assert answered <= announced, f"results with no visible call: {answered - announced}"
     # And the compaction still happened: the body is not replayed.
     assert _BIG_BODY not in json.dumps(sent)
+
+
+def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
+    """The last request of a tool run is the biggest, and it skips the top of the loop.
+
+    ``on_conversation_grew`` is KV admission's only view of a growing tool loop and fires
+    at the TOP of a round. The iteration cap breaks out mid-round instead, after the
+    assistant turn and its tool result are appended, and goes straight to the synthesized
+    final answer. Without a re-cost there the largest prompt of the run is the one the
+    pool never hears about, and llama.cpp answers the overcommit by killing every
+    decoding slot at once.
+    """
+    first_stream = _structured_tool_call("web_search", {"query": "kernel"}, "call_search")
+    final_stream = [_sse({"content": "6.10."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        # Long enough that skipping it is a real under-count, not a rounding error.
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10. " * 400,
+    )
+
+    seen: list[list[dict]] = []
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Search for the kernel version."}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            # One round, so the loop breaks on the cap mid-round rather than at the top.
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            on_conversation_grew = lambda conversation: seen.append(copy.deepcopy(conversation)),
+        )
+    )
+
+    assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
+    final_messages = payloads[-1]["messages"]
+    assert any(
+        message.get("role") == "tool" for message in final_messages
+    ), "the final pass should carry the tool result this test is about"
+    assert seen, "the callback never ran"
+    last_seen = seen[-1]
+    assert any(message.get("role") == "tool" for message in last_seen), (
+        "the last re-cost ran before the tool result was appended, so the final pass "
+        "was sent under stale KV accounting"
+    )
+    assert len(last_seen) == len(final_messages), (
+        f"the final pass sends {len(final_messages)} messages but the pool was last told "
+        f"about {len(last_seen)}"
+    )
