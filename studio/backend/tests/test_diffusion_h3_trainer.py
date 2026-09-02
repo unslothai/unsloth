@@ -1394,9 +1394,13 @@ def test_a_local_modular_h3_pipeline_is_an_acceptable_training_base(tmp_path):
             {
                 "_class_name": "ModularPipeline",
                 "_blocks_class_name": "HunyuanVideo15PipelineBlocks",
+                "transformer": ["diffusers", "MiniMaxH3Transformer3DModel"],
             }
         )
     )
+    (modular / "transformer").mkdir()
+    (modular / "transformer" / "config.json").write_text("{}")
+    (modular / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
 
     _assert_trusted_base_model(str(modular), allow_modular = True)
     # Off by default: a conventional DiffusionPipeline load still needs the conventional index.

@@ -1271,6 +1271,11 @@ def _local_weight_index_is_complete(component: Path, index: Path) -> bool:
         if not shards:
             return False
         for shard in shards:
+            # Weight maps are POSIX-relative even on Windows. Reject alternate separators and
+            # drive prefixes before converting to the host Path, or ``..\\outside`` / ``C:`` can
+            # escape the component only on the platform where the pipeline is eventually loaded.
+            if "\\" in shard or ":" in shard:
+                return False
             relative = PurePosixPath(shard)
             if relative.is_absolute() or ".." in relative.parts:
                 return False

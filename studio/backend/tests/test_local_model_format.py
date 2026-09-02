@@ -529,6 +529,9 @@ def test_local_pipeline_completeness_checks_configs_and_every_indexed_shard(tmp_
     _touch(component / "weights-00001-of-00001.safetensors")
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
 
+    index.write_text(json.dumps({"weight_map": {"layer": "..\\outside.safetensors"}}))
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+
 
 def test_local_pipeline_completeness_accepts_a_standard_weight_variant(tmp_path):
     from core.inference.diffusion_families import local_pipeline_components_are_complete

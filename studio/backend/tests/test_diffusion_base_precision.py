@@ -745,6 +745,9 @@ def test_assert_trusted_base_model_rejects_local_non_pipeline(tmp_path):
     (bad / "model_index.json").write_text(
         '{"_class_name":"DiffusionPipeline","transformer":["diffusers","Transformer2DModel"]}'
     )
+    (bad / "transformer").mkdir()
+    (bad / "transformer" / "config.json").write_text("{}")
+    (bad / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     common._assert_trusted_base_model(str(bad))  # no raise
     # An untrusted remote base is still rejected by the trust gate.
     with pytest.raises(ValueError, match = "untrusted"):

@@ -8730,6 +8730,11 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
             }
         )
     )
+    (pipeline / "transformer").mkdir()
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
+        _safetensors_bytes()
+    )
     info = SimpleNamespace(id = str(pipeline), path = str(pipeline))
     assert resolver.local_servable_model(info) is None
 

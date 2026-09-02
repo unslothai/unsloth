@@ -2034,6 +2034,7 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
             }
         )
     )
+    (snapshot / "transformer" / "config.json").write_text("{}")
     (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     (diffusion.repo_path / "refs").mkdir()
     (diffusion.repo_path / "refs" / "main").write_text("revision")
