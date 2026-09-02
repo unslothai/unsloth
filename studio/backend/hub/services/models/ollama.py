@@ -66,8 +66,21 @@ _OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
+# Layers the load drops without changing what it returns. `image.draft` only feeds
+# speculative decoding, which is output-equivalent by construction, so losing it costs
+# speed and nothing else; `image.embed` has been deprecated since ollama 0.1.2 and
+# ollama's own load ignores it too.
+_OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.ollama.image.draft",
+        "application/vnd.ollama.image.embed",
+    }
+)
+
 _OLLAMA_ADMITTED_LAYER_MEDIA_TYPES = (
-    _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES | _OLLAMA_METADATA_LAYER_MEDIA_TYPES
+    _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES
+    | _OLLAMA_METADATA_LAYER_MEDIA_TYPES
+    | _OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES
 )
 
 _OLLAMA_MATERIALIZE_LOCKS: dict[str, threading.Lock] = {}

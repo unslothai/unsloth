@@ -554,6 +554,12 @@ _UNSUPPORTED_RUNTIME_LAYERS = (
     "application/vnd.ollama.image.future-runtime",
 )
 
+# Carried by a real manifest but dropped by the load without changing its output.
+_IGNORABLE_LAYERS = (
+    "application/vnd.ollama.image.draft",
+    "application/vnd.ollama.image.embed",
+)
+
 
 def _rich_manifest_ref(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
     from hub.services.models import ollama
@@ -600,6 +606,22 @@ def test_a_normally_pulled_model_resolves_for_a_load(tmp_path, monkeypatch):
         LoadRequest(model_path = ref), operation = "load-model"
     )
     assert resolved.endswith(".gguf")
+
+
+@pytest.mark.parametrize("ignorable", _IGNORABLE_LAYERS)
+def test_an_ignorable_layer_does_not_hide_the_primary_model(tmp_path, monkeypatch, ignorable):
+    # Neither layer stops llama.cpp loading the model layer beside it, so neither is a
+    # reason to withhold the row: a draft model only accelerates speculative decoding,
+    # and ollama has ignored the embed layer since 0.1.2.
+    from hub.services.models import ollama
+
+    root = tmp_path / f"ollama-{ignorable.rpartition('.')[2]}"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS + (ignorable,))
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    rows = ollama.scan_ollama_dir(root)
+    assert len(rows) == 1
+    assert ollama.is_ollama_manifest_ref(rows[0].load_id)
 
 
 @pytest.mark.parametrize("unsupported", _UNSUPPORTED_RUNTIME_LAYERS)
