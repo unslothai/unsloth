@@ -130,17 +130,17 @@ export interface FindTextIndex {
   /** Sorted by `start`, gapped wherever a separator was written. */
   segments: TextSegment[];
   truncated: boolean;
-  /** Whether the walk stopped part way through a text node, so the last offset in `text` is not
-   *  known to be the end of anything. `truncated` is wider: it is also set when a node was cut in
-   *  the middle of the document, which leaves the end intact. */
-  clipped: boolean;
+  /** Offsets where the walk left something out, so nothing here can say whether a grapheme
+   *  carries on across them. A cut in the middle of the document leaves two, on each side of the
+   *  separator standing in for what was dropped; one at the end of the walk leaves one. */
+  unsafe: ReadonlySet<number>;
 }
 
 export const EMPTY_TEXT_INDEX: FindTextIndex = {
   text: "",
   segments: [],
   truncated: false,
-  clipped: false,
+  unsafe: new Set(),
 };
 
 /** The only code point whose `toLowerCase` grows. Mapped to the Turkic fold, a bare `i`, since one
@@ -271,8 +271,10 @@ export function buildTextIndex(
   const segments: TextSegment[] = [];
   let length = 0;
   let truncated = false;
-  /** Whether the last text emitted was cut short. See `startsGrapheme`. */
-  let clipped = false;
+  /** See `FindTextIndex.unsafe`. */
+  const unsafe = new Set<number>();
+  /** Whether the separator now due stands for dropped text rather than a block boundary. */
+  let pendingClip = false;
   /** The ceiling, the only thing that stops the walk. */
   let full = false;
   let ceiling =
@@ -310,7 +312,7 @@ export function buildTextIndex(
           truncated = true;
           // A separator was already due before this text, so what is being left out is behind a
           // break and cannot join what the index ends on: that end is still a boundary.
-          clipped = !pendingSeparator;
+          if (!pendingSeparator) unsafe.add(length);
           full = true;
           return;
         }
@@ -321,13 +323,17 @@ export function buildTextIndex(
             parts.push(BLOCK_SEPARATOR);
             length += 1;
             separated = true;
+            // The far side of a separator that stands for dropped text is no safer than the near
+            // side: this node begins where something was cut, and may carry on from it.
+            if (pendingClip) unsafe.add(length);
           }
+          pendingClip = false;
         }
         // A share, not all: one huge node given the rest leaves out everything after it.
         const take = Math.min(ceiling - length, MAX_NODE_CHARS);
         if (take <= 0) {
           truncated = true;
-          clipped = !separated;
+          if (!separated) unsafe.add(length);
           full = true;
           return;
         }
@@ -336,10 +342,11 @@ export function buildTextIndex(
         segments.push({ node, start: length, length: raw.length, preserved });
         length += raw.length;
         // What was dropped must leave a boundary, or a match across the seam paints over the gap.
-        clipped = raw.length < data.length;
-        if (clipped) {
+        if (raw.length < data.length) {
           truncated = true;
+          unsafe.add(length);
           pendingSeparator = true;
+          pendingClip = true;
         }
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike, preserved);
@@ -359,7 +366,7 @@ export function buildTextIndex(
     visit(extra, false);
   }
   // Folded once over the joined document: a fold is context-sensitive and cannot go node at a time.
-  return { text: foldText(parts.join("")), segments, truncated, clipped };
+  return { text: foldText(parts.join("")), segments, truncated, unsafe };
 }
 
 /** Null when the query cannot match: empty, or carrying the separator (only a paste can). */
@@ -422,8 +429,33 @@ const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
  *  surrogate pair, which is not a character at all. UAX 29 derives Extend as Grapheme_Extend OR
  *  Emoji_Modifier, and a skin tone is only the second of those: it is `Sk`, so the marks alone
  *  left one showing as its own grapheme. */
+const EXTEND_PATTERN = /[\p{Grapheme_Extend}\p{Emoji_Modifier}]/u;
 const EXTENDS_LEFT_PATTERN =
   /[\p{Grapheme_Extend}\p{Emoji_Modifier}\p{Mc}\u200d]/u;
+
+/** The viramas that join the consonant after them to the one before (GB9c). Not derivable from a
+ *  property escape, which has no `InCB`, so this is the set the segmenter itself joins on: every
+ *  `ccc=9` code point for which a consonant, that virama and a consonant make one cluster. */
+const LINKER_PATTERN =
+  /[\u{94d}\u{9cd}\u{acd}\u{b4d}\u{c4d}\u{d4d}\u{e3a}\u{eba}\u{1039}\u{17d2}\u{1a60}\u{1b44}\u{1bab}\u{a9c0}\u{aaf6}\u{10a3f}\u{11133}\u{1193e}\u{11a47}\u{11a99}\u{11f42}]/u;
+
+/** The code point ending at `end`, and where it starts. */
+function pointBefore(text: string, end: number): [string, number] {
+  const start = end - (isTrailingHalf(text.charCodeAt(end - 1)) ? 2 : 1);
+  return [text.slice(start, end), start];
+}
+
+/** Walk back over extenders from `end` and say whether `found` matches what they sit on: GB11 wants
+ *  a pictograph on the far side of the ZWJ, GB9c a linker on the far side of the marks. */
+function reachesBack(text: string, end: number, found: RegExp): boolean {
+  for (let at = end; at > 0; ) {
+    const [point, start] = pointBefore(text, at);
+    if (found.test(point)) return true;
+    if (!EXTEND_PATTERN.test(point)) return false;
+    at = start;
+  }
+  return false;
+}
 
 /** The second half of a surrogate pair. */
 function isTrailingHalf(unit: number): boolean {
@@ -471,10 +503,18 @@ function continuesGrapheme(text: string, at: number): boolean {
     : text[at - 1];
   if (CONTROL_PATTERN.test(before) || CONTROL_PATTERN.test(after)) return false;
   if (EXTENDS_LEFT_PATTERN.test(after)) return true;
-  // GB11 proper: a ZWJ joins only to a pictograph, so an emoji sequence holds together while a ZWJ
-  // used as an Indic joiner still ends where the segmenter ends it.
-  if (before === "\u200d") return PICTOGRAPHIC_PATTERN.test(after);
+  // GB11 proper, both sides: a ZWJ joins a pictograph to a pictograph, so an emoji sequence holds
+  // together while a ZWJ merely following a letter still ends its cluster.
+  if (before === "\u200d") {
+    return (
+      PICTOGRAPHIC_PATTERN.test(after) &&
+      reachesBack(text, at - 1, PICTOGRAPHIC_PATTERN)
+    );
+  }
   if (PREPEND_PATTERN.test(before)) return true;
+  // GB9c, as far as it can be told without the consonant sets: a linker behind, whatever it is that
+  // follows. Wrong only by declining a boundary, never by cutting a cluster.
+  if (reachesBack(text, at, LINKER_PATTERN)) return true;
   if (REGIONAL_INDICATOR_PATTERN.test(after)) {
     // A run pairs off from its start, so it is the count behind that decides (GB12/GB13). Two code
     // units apiece.
@@ -579,19 +619,19 @@ function alignsToGraphemes(
   end: number,
 ): boolean {
   const text = index.text;
+  const cut =
+    index.unsafe.size > 0 && (index.unsafe.has(start) || index.unsafe.has(end));
   // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
   // far more than looking. Nothing below U+0300 extends a grapheme: the lowest combining mark is
   // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and
   // everything astral arrives here as a surrogate. Both sides of each edge, since the query can
   // itself begin or end with one. Latin prose therefore pays four comparisons.
-  //
-  // What follows a clipped end is not in `text` to be looked at, so the character that would have
-  // joined cannot be seen from here and the shortcut has to give way to `startsGrapheme`.
   if (
+    !cut &&
     !(start > 0 && JOINS_GRAPHEME.test(text[start - 1])) &&
     !JOINS_GRAPHEME.test(text[start]) &&
     !JOINS_GRAPHEME.test(text[end - 1]) &&
-    !(end === text.length ? index.clipped : JOINS_GRAPHEME.test(text[end]))
+    !(end < text.length && JOINS_GRAPHEME.test(text[end]))
   ) {
     return true;
   }
@@ -601,11 +641,15 @@ function alignsToGraphemes(
 /** True when a grapheme starts at `at`. */
 function startsGrapheme(index: FindTextIndex, at: number): boolean {
   const text = index.text;
-  if (at === 0) return true;
-  // The end of the index is a boundary only when it is the end of the text. Where the walk stopped
-  // short, what it left out is still on the page and may well join what the match ends on, so a
-  // clipped tail cannot vouch for its own last offset.
-  if (at === text.length) return !index.clipped;
+  if (index.unsafe.has(at)) {
+    // Where the walk stopped, what it left out is still on the page and anything at all can be
+    // extended by what follows it, so this end cannot be vouched for.
+    if (at === text.length || text[at] === BLOCK_SEPARATOR) return false;
+    // The far side of such a cut is answerable, though: nothing below U+0300 can continue a
+    // grapheme, so a character there starts one whatever was dropped in front of it.
+    return !JOINS_GRAPHEME.test(text[at]);
+  }
+  if (at === 0 || at === text.length) return true;
   const platform = graphemeSegmenter();
   if (platform === null) return !continuesGrapheme(text, at);
   let segments = segmentsCache.get(index);

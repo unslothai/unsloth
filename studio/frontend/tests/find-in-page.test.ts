@@ -1713,12 +1713,12 @@ test("a clipped tail cannot vouch for its own last offset", () => {
   // index now ends on, so a match on the bare vowel form would paint over half a character.
   const node = text(`${"a".repeat(MAX_NODE_CHARS - 1)}각`);
   const index = buildTextIndex(el("DIV", [el("P", [node])]));
-  assert.equal(index.clipped, true);
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
   assert.equal(index.text.length, MAX_NODE_CHARS);
   assert.deepEqual(findMatches(index, "가", 10), []);
   // An index that ends because the document does keeps its last offset.
   const whole = buildTextIndex(el("DIV", [el("P", [text("가")])]));
-  assert.equal(whole.clipped, false);
+  assert.equal(whole.unsafe.size, 0);
   assert.deepEqual(findMatches(whole, "가", 10), [{ start: 0, end: 1 }]);
 });
 
@@ -1728,7 +1728,7 @@ test("the cheap boundary test does not shortcut past a clipped end", () => {
   // and returned an `x` whose combining mark had been left on the page.
   const node = text(`unsloth${"x".repeat(MAX_NODE_CHARS - 8)}z\u0301`);
   const index = buildTextIndex(el("DIV", [el("P", [node])]));
-  assert.equal(index.clipped, true);
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
   assert.equal(index.text.length, MAX_NODE_CHARS);
   assert.deepEqual(findMatches(index, "z", 10), []);
   // Everything before the end is still found on the fast path, which is most of a document.
@@ -1754,10 +1754,50 @@ test("a full ceiling behind a block boundary still ends on a boundary", () => {
   );
   assert.equal(index.text.length, MAX_INDEX_CHARS);
   assert.equal(index.truncated, true);
-  assert.equal(index.clipped, false);
+  assert.equal(index.unsafe.size, 0);
   assert.deepEqual(findMatches(index, "q", 10), [
     { start: MAX_INDEX_CHARS - 1, end: MAX_INDEX_CHARS },
   ]);
+});
+
+test("a cut in the middle of the document is unsafe on both sides", () => {
+  // The separator written where a node was cut is not the boundary it looks like. What was dropped
+  // is still on the page between the two, so it can carry on from the text before the separator and
+  // into the text after it. A single flag for the end of the walk forgot the cut as soon as
+  // anything else was indexed.
+  // Spelt out, not as a precomposed syllable: the cut has to fall between the vowel form and the
+  // Jamo that closes it, which is the whole point of the case.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"a".repeat(MAX_NODE_CHARS - 1)}\uac00\u11a8`),
+        text("tail"),
+      ]),
+    ]),
+  );
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  assert.equal(index.text[MAX_NODE_CHARS - 1], "\uac00");
+  assert.deepEqual(findMatches(index, "\uac00", 10), []);
+  // The far side is still answerable for anything that cannot continue a grapheme, or every node
+  // after a cut would lose its first character.
+  assert.equal(findMatches(index, "tail", 10).length, 1);
+});
+
+test("a node cut exactly at the ceiling stays unsafe once past it", () => {
+  const nodes = Array.from(
+    { length: MAX_INDEX_CHARS / MAX_NODE_CHARS - 1 },
+    () => text("x".repeat(MAX_NODE_CHARS)),
+  );
+  nodes.push(
+    text(`${"a".repeat(MAX_NODE_CHARS)}\u0301`),
+    text("never reached"),
+  );
+  const index = buildTextIndex(el("DIV", [el("P", nodes)]));
+  assert.equal(index.text.length, MAX_INDEX_CHARS);
+  assert.deepEqual([...index.unsafe], [MAX_INDEX_CHARS]);
+  for (const match of findMatches(index, "aaa", MAX_MATCHES)) {
+    assert.notEqual(match.end, MAX_INDEX_CHARS);
+  }
 });
 
 test("an engine with no segmenter still fences a grapheme", () => {
@@ -1789,6 +1829,8 @@ test("an engine with no segmenter still fences a grapheme", () => {
       // so the combining marks alone left it showing as a grapheme of its own.
       ["\u{1f44d}\u{1f3fb}", "\u{1f44d}"],
       ["\u{1f44d}\u{1f3fb}", "\u{1f3fb}"],
+      // GB9c: a virama joins the consonant after it to the one before.
+      ["क्त", "त"],
     ];
     for (const [body, query] of fenced) {
       if (findMatches(index(body), query, 10).length !== 0) {
@@ -1804,6 +1846,8 @@ test("an engine with no segmenter still fences a grapheme", () => {
       // A ZWJ joins only to a pictograph (GB11). Used as an Indic joiner it ends its cluster,
       // and treating every ZWJ as joining left this unfindable.
       ["a\\u200db", "a\\u200d"],
+      // GB11 wants a pictograph on both sides of the ZWJ, so this one ends its cluster.
+      ["a\\u200d\\u{1f600}", "\\u{1f600}"],
     ];
     for (const [body, query] of found) {
       if (findMatches(index(body), query, 10).length !== 1) {
@@ -1817,6 +1861,26 @@ test("an engine with no segmenter still fences a grapheme", () => {
     { encoding: "utf8" },
   );
   assert.equal(run.status, 0, run.stderr);
+});
+
+test("nothing below U+0300 can join a grapheme, which is what the fast path rests on", () => {
+  // Latin prose skips the segmenter on four comparisons, and every one of them assumes no character
+  // below U+0300 can extend a grapheme or be extended into one. The far side of a cut leans on the
+  // same fact. Asserted over every code point rather than argued from the blocks they sit in.
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const joiners: string[] = [];
+  for (let code = 1; code < 0x300; code += 1) {
+    // CR, LF and the other line breaks are their own cluster and never in an index unsplit.
+    if (code >= 0x0a && code <= 0x0d) continue;
+    const point = String.fromCodePoint(code);
+    if (
+      [...segmenter.segment(`${point}a`)].length === 1 ||
+      [...segmenter.segment(`a${point}`)].length === 1
+    ) {
+      joiners.push(code.toString(16));
+    }
+  }
+  assert.deepEqual(joiners, []);
 });
 
 test("the segmenter fallback never misaligns, checked against the platform", () => {
