@@ -133,6 +133,7 @@ import {
 import {
   diffusionPipelineStagingEntries,
   diffusionPipelineLoadTarget,
+  diffusionPipelineTargetIsOnDevice,
 } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -3128,7 +3129,7 @@ export function ImagesPage({
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
       if (
-        pipelineTarget.source !== "local" &&
+        !diffusionPipelineTargetIsOnDevice(pipelineTarget) &&
         !id.toLowerCase().startsWith("unsloth/")
       ) {
         toast.error("Only unsloth or on-device image models can be loaded here");

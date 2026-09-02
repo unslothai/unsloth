@@ -2189,6 +2189,38 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         backend.validate_load_request(str(tmp_path), family_override = "qwen-image")
 
 
+def test_validate_accepts_config_only_local_base_for_whole_pipeline_single_file(
+    fake_runtime, tmp_path
+):
+    backend = DiffusionBackend()
+    checkpoint = tmp_path / "model.safetensors"
+    checkpoint.write_bytes(b"checkpoint")
+    base = tmp_path / "sdxl-config"
+    unet = base / "unet"
+    unet.mkdir(parents = True)
+    (unet / "config.json").write_text("{}")
+    (base / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "StableDiffusionXLPipeline",
+                "unet": ["diffusers", "UNet2DConditionModel"],
+            }
+        )
+    )
+
+    fam = backend.validate_load_request(
+        str(tmp_path),
+        gguf_filename = checkpoint.name,
+        model_kind = "single_file",
+        base_repo = str(base),
+        family_override = "sdxl",
+    )
+    assert fam.single_file_is_pipeline is True
+
+    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
+        backend.validate_load_request(str(base), family_override = "sdxl")
+
+
 def test_validate_rejects_a_malformed_local_pipeline_manifest(fake_runtime, tmp_path):
     backend = DiffusionBackend()
     (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")

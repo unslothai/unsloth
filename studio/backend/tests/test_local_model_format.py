@@ -651,6 +651,73 @@ def test_local_pipeline_completeness_treats_unknown_components_as_weight_bearing
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
 
 
+def test_local_pipeline_completeness_honors_modular_external_component_sources(tmp_path):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "external-modular"
+    pipeline.mkdir()
+
+    def manifest(source, subfolder = "tokenizer"):
+        (pipeline / "modular_model_index.json").write_text(
+            json.dumps(
+                {
+                    "_class_name": "ModularPipeline",
+                    "_blocks_class_name": "CustomBlocks",
+                    "tokenizer": [
+                        "transformers",
+                        "Qwen2Tokenizer",
+                        {
+                            "pretrained_model_name_or_path": source,
+                            "subfolder": subfolder,
+                        },
+                    ],
+                }
+            )
+        )
+
+    manifest("Org/components")
+    assert local_pipeline_components_are_complete(pipeline, "modular_model_index.json") is True
+
+    manifest("./missing")
+    assert local_pipeline_components_are_complete(pipeline, "modular_model_index.json") is False
+
+    source = tmp_path / "component-source"
+    tokenizer = source / "tokenizer"
+    tokenizer.mkdir(parents = True)
+    (tokenizer / "tokenizer_config.json").write_text("{}")
+    (tokenizer / "tokenizer.json").write_text("{}")
+    manifest(str(source))
+    assert local_pipeline_components_are_complete(pipeline, "modular_model_index.json") is True
+
+    manifest(str(source), "../outside")
+    assert local_pipeline_components_are_complete(pipeline, "modular_model_index.json") is False
+
+
+def test_local_pipeline_completeness_can_validate_model_configuration_without_weights(tmp_path):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "config-only"
+    component = pipeline / "unet"
+    component.mkdir(parents = True)
+    (component / "config.json").write_text("{}")
+    (pipeline / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "StableDiffusionXLPipeline",
+                "unet": ["diffusers", "UNet2DConditionModel"],
+            }
+        )
+    )
+
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+    assert (
+        local_pipeline_components_are_complete(
+            pipeline, "model_index.json", config_only_model_components = True
+        )
+        is True
+    )
+
+
 def test_hub_inventory_distinguishes_modular_pipeline_roots(tmp_path):
     from hub.services.models.common import (
         _classify_local_path,

@@ -624,6 +624,7 @@ def _assert_local_base_is_pipeline(
     *,
     allow_modular: bool = False,
     excluded_components: Sequence[str] = (),
+    config_only_model_components: bool = False,
 ) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
@@ -644,7 +645,10 @@ def _assert_local_base_is_pipeline(
 
     ``excluded_components`` are constructor components supplied by the caller rather than loaded
     from the base. This keeps transformer-only checkpoint companions space-efficient without
-    weakening the completeness rule for a selected full pipeline."""
+    weakening the completeness rule for a selected full pipeline.
+
+    ``config_only_model_components`` is for whole-pipeline single-file checkpoints whose weights
+    come from the checkpoint while the companion base supplies their component configs."""
     base = (base_repo or "").strip()
     if not base:
         return
@@ -659,7 +663,12 @@ def _assert_local_base_is_pipeline(
     if allow_modular:
         indexes.append("modular_model_index.json")
     if not root.is_dir() or not any(
-        local_pipeline_components_are_complete(root, name, excluded_components = excluded_components)
+        local_pipeline_components_are_complete(
+            root,
+            name,
+            excluded_components = excluded_components,
+            config_only_model_components = config_only_model_components,
+        )
         for name in indexes
     ):
         raise ValueError(
@@ -1905,7 +1914,11 @@ class DiffusionBackend:
             if kind == "gguf" or (kind == "single_file" and not fam.single_file_is_pipeline)
             else ()
         )
-        _assert_local_base_is_pipeline(base_repo, excluded_components = overridden_components)
+        _assert_local_base_is_pipeline(
+            base_repo,
+            excluded_components = overridden_components,
+            config_only_model_components = kind == "single_file" and fam.single_file_is_pipeline,
+        )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
         path_shaped = (

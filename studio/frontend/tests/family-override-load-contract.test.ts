@@ -6,8 +6,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  diffusionPipelineStagingEntries,
   diffusionPipelineLoadTarget,
+  diffusionPipelineStagingEntries,
+  diffusionPipelineTargetIsOnDevice,
 } from "../src/lib/diffusion-pipeline-load-target.ts";
 
 function source(path: string): string {
@@ -33,7 +34,9 @@ for (const [name, page] of [
 test("image defaults use explicit and resolved family keys for opaque paths", () => {
   const text = source("../src/features/images/images-page.tsx");
   assert.ok(
-    text.includes("defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride))"),
+    text.includes(
+      "defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride))",
+    ),
   );
   assert.ok(
     text.includes(
@@ -49,7 +52,9 @@ test("image defaults use explicit and resolved family keys for opaque paths", ()
 test("video defaults use the explicit family for opaque paths", () => {
   const text = source("../src/features/video/video-page.tsx");
   assert.ok(
-    text.includes("defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride))"),
+    text.includes(
+      "defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride))",
+    ),
   );
   assert.ok(
     text.includes(
@@ -57,7 +62,9 @@ test("video defaults use the explicit family for opaque paths", () => {
     ),
   );
   assert.ok(text.includes("applyVideoModelDefaults(id, nextFamilyOverride)"));
-  assert.ok(text.includes('loadGgufRepoPick(wanted, routedLabel, "hub", null, "auto")'));
+  assert.ok(
+    text.includes('loadGgufRepoPick(wanted, routedLabel, "hub", null, "auto")'),
+  );
   assert.ok(
     text.includes("MODEL_DEFAULTS.some((entry) => id.includes(entry.match))"),
   );
@@ -98,16 +105,21 @@ test("pinned pipeline paths retain their Hub selector identity across remounts",
 });
 
 test("a pinned Hub pipeline keeps Hub planning separate from its physical load target", () => {
-  assert.deepEqual(
-    diffusionPipelineLoadTarget("MiniMaxAI/MiniMax-H3", {
-      source: "hub",
-      loadId: "/cache/snapshots/deadbeef",
-    }),
-    {
-      repoId: "/cache/snapshots/deadbeef",
-      displayRepoId: "MiniMaxAI/MiniMax-H3",
-      source: "hub",
-    },
+  const pinned = diffusionPipelineLoadTarget("MiniMaxAI/MiniMax-H3", {
+    source: "hub",
+    loadId: "/cache/snapshots/deadbeef",
+  });
+  assert.deepEqual(pinned, {
+    repoId: "/cache/snapshots/deadbeef",
+    displayRepoId: "MiniMaxAI/MiniMax-H3",
+    source: "hub",
+  });
+  assert.equal(diffusionPipelineTargetIsOnDevice(pinned), true);
+  assert.equal(
+    diffusionPipelineTargetIsOnDevice(
+      diffusionPipelineLoadTarget("community/opaque", { source: "hub" }),
+    ),
+    false,
   );
   assert.deepEqual(
     diffusionPipelineStagingEntries(
@@ -142,6 +154,10 @@ test("a pinned Hub pipeline keeps Hub planning separate from its physical load t
     assert.ok(text.includes('setFamilyOverride("auto")'), file);
     assert.ok(text.includes("repoId,"), file);
     assert.ok(text.includes("diffusionPipelineStagingEntries("), file);
+    assert.ok(
+      text.includes("diffusionPipelineTargetIsOnDevice(pipelineTarget)"),
+      file,
+    );
     assert.ok(text.includes("stage(entriesToStage)"), file);
   }
 });

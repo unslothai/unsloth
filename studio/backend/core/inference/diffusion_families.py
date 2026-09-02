@@ -1356,11 +1356,72 @@ def _local_metadata_component_is_complete(component: Path, class_name: str) -> O
     return None
 
 
+def _local_pipeline_component_is_complete(
+    component: Path, class_name: str, *, config_only_model_components: bool
+) -> bool:
+    try:
+        if not component.is_dir():
+            return False
+        metadata_complete = _local_metadata_component_is_complete(component, class_name)
+        if metadata_complete is not None:
+            return metadata_complete
+        if not _local_json_object_is_valid(
+            component / "config.json", max_bytes = _MAX_PIPELINE_MANIFEST_BYTES
+        ):
+            return False
+        return config_only_model_components or _local_model_component_is_complete(component)
+    except OSError:
+        return False
+
+
+def _external_pipeline_component_is_complete(
+    base: Path, class_name: str, source_spec: object, *, config_only_model_components: bool
+) -> Optional[bool]:
+    """Completeness at a modular component's explicit source, or ``None`` for no source.
+
+    A Hub id is a loadable external contract but cannot be inspected without network access, so
+    it is accepted here just as a remote pipeline id is. Explicit local sources are checked at
+    their actual subfolder; missing path-shaped sources and escaping subfolders fail closed.
+    """
+    if not isinstance(source_spec, dict):
+        return None
+    source = source_spec.get("pretrained_model_name_or_path") or source_spec.get("repo")
+    if not isinstance(source, str) or not source.strip():
+        return None
+    source = source.strip()
+    subfolder = source_spec.get("subfolder")
+    if subfolder is not None and not isinstance(subfolder, str):
+        return False
+    relative = PurePosixPath((subfolder or "").strip())
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or "\\" in str(subfolder or "")
+        or ":" in str(subfolder or "")
+    ):
+        return False
+    try:
+        raw_source = Path(source).expanduser()
+        rooted_source = raw_source if raw_source.is_absolute() else base / raw_source
+        if rooted_source.exists():
+            component = rooted_source / Path(*relative.parts) if relative.parts else rooted_source
+            return _local_pipeline_component_is_complete(
+                component,
+                class_name,
+                config_only_model_components = config_only_model_components,
+            )
+    except OSError:
+        return False
+    path_shaped = source.startswith(("/", "\\", "~", ".")) or "\\" in source or ":" in source
+    return False if path_shaped else True
+
+
 def local_pipeline_components_are_complete(
     root: Path | str,
     filename: str,
     *,
     excluded_components: Sequence[str] = (),
+    config_only_model_components: bool = False,
 ) -> bool:
     """Whether every component declared by a local pipeline can be opened from that root.
 
@@ -1369,7 +1430,11 @@ def local_pipeline_components_are_complete(
     media preflights use this same conservative, import-free check so no row can be advertised and
     then evict the resident model before failing in ``from_pretrained``. A companion base may
     exclude the denoiser component supplied by a separately selected GGUF/safetensors checkpoint;
-    every remaining declared component is still checked, and at least one must remain.
+    every remaining declared component is still checked, and at least one must remain. Modular
+    manifests may explicitly source a component from another local root or Hub repository.
+
+    ``config_only_model_components`` permits model weights to come from a whole-pipeline
+    single-file checkpoint while keeping component and metadata configs strict.
 
     Saved modular pipelines also declare their components alongside ``_blocks_class_name``. A
     block-only file is not enough evidence that the local snapshot is hydrated, so it is rejected
@@ -1379,7 +1444,7 @@ def local_pipeline_components_are_complete(
     if payload is None or not local_pipeline_manifest_is_valid(root, filename):
         return False
     base = Path(root).expanduser()
-    declared: list[tuple[str, str, str]] = []
+    declared: list[tuple[str, str, object]] = []
     for name, spec in payload.items():
         if (
             not isinstance(name, str)
@@ -1395,25 +1460,32 @@ def local_pipeline_components_are_complete(
         if name in {"", ".", ".."} or Path(name).name != name or "/" in name or "\\" in name:
             return False
         if name not in excluded_components:
-            declared.append((name, str(spec[0]), str(spec[1])))
+            source_spec = (
+                spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
+            )
+            declared.append((name, str(spec[1]), source_spec))
 
     if not declared:
         return False
 
     try:
-        for name, _library, class_name in declared:
+        for name, class_name, source_spec in declared:
+            external_complete = _external_pipeline_component_is_complete(
+                base,
+                class_name,
+                source_spec,
+                config_only_model_components = config_only_model_components,
+            )
+            if external_complete is not None:
+                if not external_complete:
+                    return False
+                continue
             component = base / name
-            if not component.is_dir():
-                return False
-            metadata_complete = _local_metadata_component_is_complete(component, class_name)
-            if metadata_complete is None:
-                if not _local_json_object_is_valid(
-                    component / "config.json", max_bytes = _MAX_PIPELINE_MANIFEST_BYTES
-                ):
-                    return False
-                if not _local_model_component_is_complete(component):
-                    return False
-            elif not metadata_complete:
+            if not _local_pipeline_component_is_complete(
+                component,
+                class_name,
+                config_only_model_components = config_only_model_components,
+            ):
                 return False
     except OSError:
         return False

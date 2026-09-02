@@ -31,6 +31,19 @@ export function diffusionPipelineLoadTarget(
   return { repoId: model, displayRepoId: model, source: meta.source };
 }
 
+/** Whether the eventual load target is already on this host.
+ *
+ * A cached Hub row deliberately retains Hub provenance for companion planning, so its source is
+ * not `local`; the pinned physical identity is what makes the eventual pipeline load on-device.
+ */
+export function diffusionPipelineTargetIsOnDevice(target: {
+  repoId: string;
+  displayRepoId: string;
+  source: DiffusionPickSource;
+}): boolean {
+  return target.source === "local" || target.repoId !== target.displayRepoId;
+}
+
 /** Keep selected-model staging from replacing an inspected immutable snapshot.
  *
  * Planning uses the logical Hub id so it can discover external pre-quantized components and
@@ -40,11 +53,7 @@ export function diffusionPipelineLoadTarget(
  */
 export function diffusionPipelineStagingEntries<
   T extends { checkpoint?: boolean },
->(
-  pinnedRepoId: string,
-  planRepoId: string,
-  entries: readonly T[],
-): T[] {
+>(pinnedRepoId: string, planRepoId: string, entries: readonly T[]): T[] {
   return pinnedRepoId === planRepoId
     ? [...entries]
     : entries.filter((entry) => entry.checkpoint !== true);

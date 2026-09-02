@@ -134,6 +134,7 @@ import {
 import {
   diffusionPipelineStagingEntries,
   diffusionPipelineLoadTarget,
+  diffusionPipelineTargetIsOnDevice,
 } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -3068,7 +3069,7 @@ function VideoGenerator({
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the family bases, or on-device paths.
       if (
-        pipelineTarget.source !== "local" &&
+        !diffusionPipelineTargetIsOnDevice(pipelineTarget) &&
         !id.toLowerCase().startsWith("unsloth/")
       ) {
         toast.error("Only unsloth or on-device video models can be loaded here");
