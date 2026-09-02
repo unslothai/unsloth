@@ -308,22 +308,26 @@ export function buildTextIndex(
         // `slice(0, negative)` takes all but the last character of the next node.
         if (length >= ceiling) {
           truncated = true;
-          clipped = true;
+          // A separator was already due before this text, so what is being left out is behind a
+          // break and cannot join what the index ends on: that end is still a boundary.
+          clipped = !pendingSeparator;
           full = true;
           return;
         }
+        let separated = false;
         if (pendingSeparator) {
           pendingSeparator = false;
           if (length > 0) {
             parts.push(BLOCK_SEPARATOR);
             length += 1;
+            separated = true;
           }
         }
         // A share, not all: one huge node given the rest leaves out everything after it.
         const take = Math.min(ceiling - length, MAX_NODE_CHARS);
         if (take <= 0) {
           truncated = true;
-          clipped = true;
+          clipped = !separated;
           full = true;
           return;
         }
@@ -407,8 +411,10 @@ const HANGUL_TRAILING_PATTERN = /[\u11a8-\u11ff\ud7cb-\ud7fb]/;
 /** A leading Jamo, and the vowel that makes it a syllable. */
 const HANGUL_LEADING_PATTERN = /[\u1100-\u115f\ua960-\ua97c]/;
 const HANGUL_VOWEL_PATTERN = /[\u1160-\u11a7\ud7b0-\ud7c6]/;
-/** Characters that join to whatever follows them (UAX 29 Prepend). */
-const PREPEND_PATTERN = /[\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2\u0d4e]/;
+/** Characters that join to whatever follows them (UAX 29 Prepend). All 27 of them, most of which
+ *  are supplementary: the BMP half alone let a match begin inside an Indic or Kaithi cluster. */
+const PREPEND_PATTERN =
+  /[\u{600}-\u{605}\u{6dd}\u{70f}\u{890}\u{891}\u{8e2}\u{d4e}\u{110bd}\u{110cd}\u{111c2}\u{111c3}\u{113d1}\u{1193f}\u{11941}\u{11a84}-\u{11a89}\u{11d46}\u{11f02}]/u;
 /** Breaks on both sides of itself, whatever that is (GB4/GB5). `BLOCK_SEPARATOR` is one, which is
  *  what makes searching across blocks safe. */
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
@@ -424,6 +430,7 @@ function isTrailingHalf(unit: number): boolean {
   return unit >= 0xdc00 && unit <= 0xdfff;
 }
 const REGIONAL_INDICATOR_PATTERN = /^[\u{1f1e6}-\u{1f1ff}]/u;
+const PICTOGRAPHIC_PATTERN = /\p{Extended_Pictographic}/u;
 
 /** L, V, T, and the precomposed syllables, which are LV when nothing trails and LVT when a Jamo
  *  does. Hangul fills 28 code points a syllable, the first of them the bare LV. */
@@ -464,8 +471,10 @@ function continuesGrapheme(text: string, at: number): boolean {
     : text[at - 1];
   if (CONTROL_PATTERN.test(before) || CONTROL_PATTERN.test(after)) return false;
   if (EXTENDS_LEFT_PATTERN.test(after)) return true;
-  // GB11, taken as written rather than only before a pictograph: a ZWJ never ends a grapheme.
-  if (before === "\u200d" || PREPEND_PATTERN.test(before)) return true;
+  // GB11 proper: a ZWJ joins only to a pictograph, so an emoji sequence holds together while a ZWJ
+  // used as an Indic joiner still ends where the segmenter ends it.
+  if (before === "\u200d") return PICTOGRAPHIC_PATTERN.test(after);
+  if (PREPEND_PATTERN.test(before)) return true;
   if (REGIONAL_INDICATOR_PATTERN.test(after)) {
     // A run pairs off from its start, so it is the count behind that decides (GB12/GB13). Two code
     // units apiece.

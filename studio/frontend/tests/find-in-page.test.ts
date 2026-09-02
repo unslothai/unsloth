@@ -1735,6 +1735,31 @@ test("the cheap boundary test does not shortcut past a clipped end", () => {
   assert.deepEqual(findMatches(index, "unsloth", 10), [{ start: 0, end: 7 }]);
 });
 
+test("a full ceiling behind a block boundary still ends on a boundary", () => {
+  // Stopping because the index is full is not the same as stopping in the middle of a node. When a
+  // separator was already due, what is left out is behind a break and cannot reach back, so the
+  // last character indexed is still whole and still searchable. Treating the two the same threw
+  // away the last character of a full index.
+  const nodes = Array.from(
+    { length: MAX_INDEX_CHARS / MAX_NODE_CHARS },
+    (_unused, at) =>
+      text(
+        at === MAX_INDEX_CHARS / MAX_NODE_CHARS - 1
+          ? `${"y".repeat(MAX_NODE_CHARS - 1)}Q`
+          : "x".repeat(MAX_NODE_CHARS),
+      ),
+  );
+  const index = buildTextIndex(
+    el("DIV", [el("P", nodes), el("P", [text("left out")])]),
+  );
+  assert.equal(index.text.length, MAX_INDEX_CHARS);
+  assert.equal(index.truncated, true);
+  assert.equal(index.clipped, false);
+  assert.deepEqual(findMatches(index, "q", 10), [
+    { start: MAX_INDEX_CHARS - 1, end: MAX_INDEX_CHARS },
+  ]);
+});
+
 test("an engine with no segmenter still fences a grapheme", () => {
   // Firefox shipped `Intl.Segmenter` in 125 and Vite's default target reaches back to 114, so this
   // is a supported build, not a hypothetical one. In its own process: the module remembers whether
@@ -1776,6 +1801,9 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["\u{1f1e6}\u{1f1e7}\u{1f1e8}\u{1f1e9}", "\u{1f1e8}\u{1f1e9}"],
       ["가 ᆨ", "가 "],
       ["hello", "ell"],
+      // A ZWJ joins only to a pictograph (GB11). Used as an Indic joiner it ends its cluster,
+      // and treating every ZWJ as joining left this unfindable.
+      ["a\\u200db", "a\\u200d"],
     ];
     for (const [body, query] of found) {
       if (findMatches(index(body), query, 10).length !== 1) {
@@ -1787,6 +1815,92 @@ test("an engine with no segmenter still fences a grapheme", () => {
     process.execPath,
     ["--experimental-strip-types", "--input-type=module", "--eval", probe],
     { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+});
+
+test("the segmenter fallback never misaligns, checked against the platform", () => {
+  // The case list above is the cases that were once wrong. This is the property behind them, held
+  // against `Intl.Segmenter` over a corpus built from every shape that has caused trouble: no match
+  // the fallback returns may begin or end anywhere the platform would not break. It is allowed to
+  // find less than the platform does, never to cut a grapheme, and it found this file's whole
+  // Prepend set missing before anyone else did.
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const at = (code: number) => String.fromCodePoint(code);
+  const pieces = [
+    "a",
+    "z",
+    "가",
+    "각",
+    "ᄀ",
+    "ᅡ",
+    "ᆨ",
+    "é",
+    "i̇",
+    "क्ष",
+    "กั",
+    "ൎക",
+    "؀",
+    at(0x1193f),
+    at(0x1f469),
+    at(0x1f44d),
+    at(0x1f3fb),
+    "‍",
+    "‌",
+    "️",
+    at(0x1f1e6),
+    at(0x1f1e7),
+    " ",
+    "́",
+    "ा",
+  ];
+  // A fixed sequence, so a failure is the same failure tomorrow.
+  let seed = 20200;
+  let body = "";
+  for (let i = 0; i < 2500; i += 1) {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    body += pieces[seed % pieces.length];
+  }
+  const marks = new Uint8Array(body.length + 1);
+  for (const { index } of segmenter.segment(body)) marks[index] = 1;
+  marks[body.length] = 1;
+  const clusters = [...segmenter.segment(body)].map((piece) => piece.segment);
+  const queries = [...new Set(clusters)].slice(0, 80);
+
+  const probe = `
+    delete Intl.Segmenter;
+    const { readFileSync } = await import("node:fs");
+    const { buildTextIndex, findMatches } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const { body, marks, queries } = JSON.parse(readFileSync(0, "utf8"));
+    const el = (tagName, childNodes) => ({
+      nodeType: 1, tagName, childNodes, getAttribute: () => null,
+    });
+    const index = buildTextIndex(el("DIV", [el("P", [{ nodeType: 3, data: body }])]));
+    let matches = 0;
+    for (const query of queries) {
+      for (const hit of findMatches(index, query, 5000)) {
+        matches += 1;
+        if (marks[hit.start] !== 1 || marks[hit.end] !== 1) {
+          throw new Error(
+            "misaligned " + escape(query) + " at " + hit.start + ".." + hit.end,
+          );
+        }
+      }
+    }
+    if (matches < 1000) throw new Error("only " + matches + " matches, corpus is not exercising it");
+  `;
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({ body, marks: Array.from(marks), queries }),
+    },
   );
   assert.equal(run.status, 0, run.stderr);
 });
