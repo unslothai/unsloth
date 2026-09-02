@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ACCOUNT_CHANGED_EVENT } from "../../../lib/account-transition.ts";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
@@ -89,3 +90,20 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     },
   ),
 );
+
+// The persisted key is cleared when a different account signs in, but the store
+// is already hydrated: without this the next account's first deletion runs under
+// the previous account's choices, which here means deleting sandbox files with
+// no confirmation.
+if (typeof window !== "undefined") {
+  window.addEventListener(ACCOUNT_CHANGED_EVENT, () => {
+    useChatPreferencesStore.setState({
+      confirmDeleteChats: true,
+      alwaysDeleteChatFiles: false,
+      showModelDisclaimer: false,
+      showResponseModel: false,
+      collapseThinkingByDefault: false,
+      collapseToolActivityByDefault: true,
+    });
+  });
+}

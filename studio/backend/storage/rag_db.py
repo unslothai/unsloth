@@ -47,6 +47,12 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
+_schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 # The dylib is either there or it is not, and the UI polls the KB list on a timer, so
 # one warning per process says everything the repeat lines would. Same shape as the
 # per-job throttle in hub/services/snapshot_progress.py.
@@ -309,6 +315,7 @@ def get_connection() -> sqlite3.Connection:
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
     db_path = rag_db_path()
+    db_key = str(db_path.resolve(strict = False))
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -328,11 +335,17 @@ def get_connection() -> sqlite3.Connection:
     # whatever a broken database does next. A monotonic flip, so no lock.
     _extension_loaded = True
 
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
     if not _schema_ready:
+        _schema_ready_paths.clear()
+    if db_key not in _schema_ready_paths:
         with _schema_lock:
-            if not _schema_ready:
+            if db_key not in _schema_ready_paths:
                 try:
                     _ensure_schema(conn)
+                    schema_cache.mark_ready(_schema_ready_paths, db_key, cache_generation)
                     _schema_ready = True
                 except Exception:
                     conn.close()
@@ -415,6 +428,39 @@ def _delete_document_chunks(conn, document_id: str) -> None:
         if has_vec:
             conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
     conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+
+
+def live_ingestion_or_sync_jobs() -> bool:
+    """Whether this workspace has an ingestion or folder sync still leased.
+
+    rag.db is per workspace, so the caller binds the subject and this answers for
+    that account. A leased job means a worker is still writing under the
+    account's own pathnames, which is what account deletion has to wait for.
+    """
+    from core.rag import job_leases
+
+    conn = get_connection()
+    try:
+        # The same ISO clock the leases are written and compared with; an epoch
+        # value would compare as a string and never match.
+        now = datetime.now(timezone.utc).isoformat()
+        row = conn.execute(
+            "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id "
+            "WHERE j.status IN ('pending','running') AND l.expires_at>? LIMIT 1",
+            (job_leases.INGESTION, now),
+        ).fetchone()
+        if row is not None:
+            return True
+        row = conn.execute(
+            "SELECT 1 FROM linked_folder_sync_jobs j JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id "
+            "WHERE j.status IN ('pending','running') AND l.expires_at>? LIMIT 1",
+            (job_leases.FOLDER_SYNC, now),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:

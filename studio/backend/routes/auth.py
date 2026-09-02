@@ -10,6 +10,7 @@ import importlib.util
 import ipaddress
 import os
 import shlex
+import sqlite3
 import sys
 import threading
 import time
@@ -23,10 +24,14 @@ from models.auth import (
     AuthLoginRequest,
     AuthStatusResponse,
     ChangePasswordRequest,
+    CreateManagedUserRequest,
+    CreatedManagedUserResponse,
     CreateApiKeyRequest,
     CreateApiKeyResponse,
     DesktopInitialPasswordRequest,
     DesktopLoginRequest,
+    CurrentUserResponse,
+    ManagedUserListResponse,
     RefreshTokenRequest,
 )
 from models.users import Token
@@ -43,6 +48,16 @@ from auth.authentication import (
 )
 
 router = APIRouter()
+
+
+def require_admin(current_subject: str = Depends(get_current_subject)) -> str:
+    """Require the installation owner role for account-management endpoints."""
+    if not storage.is_admin(current_subject):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Administrator access required",
+        )
+    return current_subject
 
 
 def _require_a_credential_of_its_own(what: str):
@@ -458,6 +473,106 @@ def auth_status() -> AuthStatusResponse:
     )
 
 
+@router.get("/me", response_model = CurrentUserResponse)
+def current_user(
+    # Reachable DURING a forced change, unlike the rest of the API. It answers only
+    # "who am I", which the holder of the token already knows, and it is where a
+    # signed-in client learns that its own change is still outstanding.
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+) -> CurrentUserResponse:
+    return CurrentUserResponse(
+        username = current_subject,
+        is_admin = storage.is_admin(current_subject),
+        must_change_password = storage.requires_password_change(current_subject),
+    )
+
+
+@router.get("/users", response_model = ManagedUserListResponse)
+def list_managed_users(
+    _admin: str = Depends(require_admin),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing accounts")),
+) -> ManagedUserListResponse:
+    return ManagedUserListResponse(users = storage.list_users())
+
+
+@router.post(
+    "/users",
+    response_model = CreatedManagedUserResponse,
+    status_code = status.HTTP_201_CREATED,
+)
+def create_managed_user(
+    payload: CreateManagedUserRequest,
+    _admin: str = Depends(require_admin),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing accounts")),
+) -> CreatedManagedUserResponse:
+    try:
+        setup = storage.create_managed_user(payload.username)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = f"Username {payload.username} already exists",
+        ) from exc
+    except ValueError as exc:
+        # A name whose deleted account still holds locked files. The message says
+        # what to close and that a retry will work, which a 500 would throw away.
+        raise HTTPException(status_code = status.HTTP_409_CONFLICT, detail = str(exc)) from exc
+    return CreatedManagedUserResponse(
+        username = payload.username,
+        is_admin = False,
+        must_change_password = True,
+        setup_code = setup["setup_code"],
+        setup_code_expires_at = setup["setup_code_expires_at"],
+        setup_code_expired = False,
+    )
+
+
+@router.post(
+    "/users/{username}/setup-code",
+    response_model = CreatedManagedUserResponse,
+)
+def regenerate_managed_user_setup_code(
+    username: str,
+    _admin: str = Depends(require_admin),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing accounts")),
+) -> CreatedManagedUserResponse:
+    try:
+        setup = storage.regenerate_managed_user_setup_code(username)
+    except KeyError as exc:
+        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND, detail = "User not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code = status.HTTP_409_CONFLICT, detail = str(exc)) from exc
+    return CreatedManagedUserResponse(
+        username = username,
+        is_admin = False,
+        must_change_password = True,
+        setup_code = setup["setup_code"],
+        setup_code_expires_at = setup["setup_code_expires_at"],
+        setup_code_expired = False,
+    )
+
+
+@router.delete("/users/{username}", status_code = status.HTTP_204_NO_CONTENT)
+def delete_managed_user(
+    username: str,
+    current_admin: str = Depends(require_admin),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing accounts")),
+) -> Response:
+    if username == current_admin:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "You cannot delete the account you are using",
+        )
+    try:
+        deleted = storage.delete_managed_user(username)
+    except ValueError as exc:
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND, detail = "User not found")
+    return Response(status_code = status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
@@ -485,6 +600,16 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     salt, pwd_hash, jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
+        _record_login_failure(key)
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
+        )
+
+    # Setup codes are normal first-login passwords, but unlike permanent
+    # passwords they expire. Bind the check to the exact hash verified above so
+    # a concurrent regeneration cannot accidentally authenticate the old code.
+    if not storage.setup_code_login_allowed(payload.username, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import sys
 import time
 import threading
@@ -375,6 +376,12 @@ def finalize_worker_exit(
     if state == "complete":
         hf_cache_scan.invalidate_hf_cache_scans()
         registry.set_job(key, "complete")
+        if repo_type == "dataset":
+            # The worker authenticated and finished, so the account that asked
+            # for this job has now demonstrated it can reach the repository, and
+            # may read the copy in the shared cache.
+            from hub.services.datasets import cache_access
+            cache_access.confirm_dataset_download(key)
         # Where /v1 learns a new model exists: its resolver answers from a cached scan
         # with no watcher, so it would report the model absent and serve whatever is
         # resident. Models only: noting a dataset id as a local model would refuse a
@@ -1304,6 +1311,105 @@ def launch_worker(
     return registry.get_job(key).state
 
 
+# Job key -> the workspaces that started that download. The registry is
+# install-wide and keyed by repository on purpose (the bytes serve everyone), but
+# that made a cancel reachable by anybody who could name the repo.
+# A SET per key: a second account asking for the same repo adopts the running
+# job, so recording only the latest starter took the first one's cancel right.
+_download_initiators: dict[str, set[str]] = {}
+_download_initiators_lock = threading.Lock()
+
+
+def note_download_initiator(key: str, *, replaces_previous_job: bool = False) -> None:
+    """Record a workspace as one of this download's initiators.
+
+    A key names a repository, so it outlives the job, and adding unconditionally
+    carried yesterday's downloaders into today's job. ``replaces_previous_job``
+    is the caller saying the set belongs to the last one; asking the registry
+    cannot work, since claim() publishes the replacement before this runs.
+    """
+    from utils.workspace_context import current_workspace_subject
+    with _download_initiators_lock:
+        if replaces_previous_job:
+            _download_initiators.pop(key, None)
+        _download_initiators.setdefault(key, set()).add(current_workspace_subject())
+
+
+def forget_workspace_initiators(subject: str) -> None:
+    """Drop a retired account from every initiator set: a download is not a
+    workspace job, so the quiescing never saw it, and the sets key on the
+    reusable username."""
+    with _download_initiators_lock:
+        for key in list(_download_initiators):
+            holders = _download_initiators.get(key)
+            if not holders:
+                continue
+            holders.discard(subject)
+            if not holders:
+                _download_initiators.pop(key, None)
+
+
+def workspace_downloaded_repo(repo_id: str) -> bool:
+    """Whether the current workspace initiated a download of this repository.
+    Matches the repository half of the key. Used where the Hub is unreachable and
+    cache presence would otherwise be the only answer."""
+    from utils.workspace_context import current_workspace_subject
+
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        return False
+    wanted = repo_id.strip().lower()
+    subject = current_workspace_subject()
+    with _download_initiators_lock:
+        for key, holders in _download_initiators.items():
+            if subject not in holders:
+                continue
+            head = key.split(":", 1)[0].strip().lower()
+            if head == wanted:
+                return True
+    return False
+
+
+def forget_download_initiator(key: str) -> None:
+    """Drop a key's initiators outright, for a caller that knows the job is gone."""
+    with _download_initiators_lock:
+        _download_initiators.pop(key, None)
+
+
+def require_download_cancel_permission(
+    key: str, registry: Optional[download_registry.DownloadRegistry] = None
+) -> None:
+    """Only the account that started a download, or the owner, may cancel it.
+
+    An unknown key stays cancellable, since a download from before a restart has
+    no initiator and refusing would strand it. A key the registry reports LIVE is
+    the exception: claim() publishes the job a moment before the caller records
+    itself, and a cancel aimed at that window killed somebody else's transfer.
+    """
+    from auth.storage import is_installation_owner
+    from utils.workspace_context import current_workspace_subject
+
+    if is_installation_owner():
+        return
+    with _download_initiators_lock:
+        initiators = _download_initiators.get(key)
+    if not initiators:
+        if registry is not None and registry.adoptable(key):
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code = 409,
+                detail = "This download is still starting. Try again in a moment.",
+            )
+        return
+    if current_workspace_subject() in initiators:
+        return
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code = 403,
+        detail = "Another account started this download.",
+    )
+
+
 def cancel_worker(
     registry: download_registry.DownloadRegistry,
     key: str,
@@ -1372,11 +1478,37 @@ def idle_status(
     return (state.state, state.error, generation)
 
 
+def download_is_visible_to_caller(key: str) -> bool:
+    """Whether this caller may be told a download exists at all.
+
+    The registry is install-wide, so an unfiltered activity list handed any
+    account the repository id, variant, scoped filenames, transport and
+    generation of whatever anyone else was pulling, including a private or gated
+    repo. The initiator set already exists for the cancel check; this is the same
+    question asked before the metadata is published rather than after.
+
+    A job with no recorded initiator is hidden from a managed account and shown to
+    the owner. That is the opposite of the cancel rule on purpose: leaving an
+    unattributable job cancellable avoids stranding it, while publishing one
+    cannot be undone.
+    """
+    from auth.storage import is_installation_owner
+    from utils.workspace_context import current_workspace_subject
+
+    if is_installation_owner():
+        return True
+    with _download_initiators_lock:
+        initiators = _download_initiators.get(key)
+    return bool(initiators) and current_workspace_subject() in initiators
+
+
 def active_download_refs(
     registry: download_registry.DownloadRegistry, repo_id: Optional[str], *, with_variant: bool
 ) -> list[ActiveDownload]:
     downloads: list[ActiveDownload] = []
     for ref in registry.active_job_refs(repo_id):
+        if not download_is_visible_to_caller(ref.key):
+            continue
         metadata = ref.metadata
         if with_variant:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]

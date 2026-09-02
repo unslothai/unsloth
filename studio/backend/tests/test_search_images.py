@@ -52,7 +52,7 @@ RAW_IMAGES = [
 
 @pytest.fixture(autouse = True)
 def _isolated_state(monkeypatch, tmp_path):
-    monkeypatch.setattr(search_images, "_registry", {})
+    search_images.reset_registry_for_tests()
     monkeypatch.setattr(search_images, "_inflight", {})
     monkeypatch.setattr(search_images, "_cleared_unservable", set())
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
@@ -486,7 +486,7 @@ def test_clear_all_chats_invalidates_an_image_lookup_already_in_a_thread(monkeyp
 
     result = asyncio.run(race_clear_against_lookup())
     assert search_images.SEARCH_IMAGES_SENTINEL not in result
-    assert search_images._registry == {}
+    assert search_images.state_for_tests().registry == {}
     assert list(tmp_path.glob("*.json")) == []
 
 
@@ -522,7 +522,7 @@ def test_clear_all_chats_invalidates_the_plain_query_image_sweep(monkeypatch, tm
         return await task
 
     assert asyncio.run(race_clear_against_sweep()) == ""
-    assert search_images._registry == {}
+    assert search_images.state_for_tests().registry == {}
     assert list(tmp_path.glob("*.json")) == []
 
     # No clear racing it: the same sweep still returns its images, so the guard is
@@ -546,9 +546,11 @@ def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path
         # to move _full_clear_generation as well, because that -- not the bare generation --
         # is what a clear-everything raises to abort every in-flight fetch. Bumping only the
         # generation simulates a clear that spared this id, which is a different test.
-        search_images._registry.clear()
-        search_images._cache_generation += 1
-        search_images._full_clear_generation = search_images._cache_generation
+        search_images.state_for_tests().registry.clear()
+        search_images.state_for_tests().cache_generation += 1
+        search_images.state_for_tests().full_clear_generation = (
+            search_images.state_for_tests().cache_generation
+        )
         for stale in tmp_path.glob("*"):
             stale.unlink()
         return found
@@ -569,7 +571,7 @@ def test_an_id_still_resolves_after_a_restart_that_never_cached_it(monkeypatch, 
     assert (tmp_path / f"{entry['id']}.json").is_file()
     assert not (tmp_path / f"{entry['id']}.jpg").exists(), "never materialized"
 
-    search_images._registry.clear()  # the restart
+    search_images.state_for_tests().registry.clear()  # the restart
     monkeypatch.setattr(
         tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
     )
@@ -584,7 +586,7 @@ def test_an_id_still_resolves_after_a_restart_that_never_cached_it(monkeypatch, 
 
 def test_persisted_metadata_is_re_checked_on_the_way_back_in(monkeypatch, tmp_path):
     entry = search_images.register_images(RAW_IMAGES)[0]
-    search_images._registry.clear()
+    search_images.state_for_tests().registry.clear()
     # A host that is no longer public must not be fetched just because it once was.
     (tmp_path / f"{entry['id']}.json").write_text(
         json.dumps({"thumbnail": "http://127.0.0.1/secret.png", "source": "http://127.0.0.1/x"})
@@ -786,7 +788,7 @@ def test_thumbnail_bytes_reencodes_and_caches(monkeypatch, tmp_path):
         tools.urllib.request, "build_opener", lambda *a, **k: pytest.fail("refetched")
     )
     assert search_images.thumbnail_bytes(entry["id"]) == data
-    search_images._registry.clear()
+    search_images.state_for_tests().registry.clear()
     assert search_images.thumbnail_bytes(entry["id"]) == data
     assert search_images.thumbnail_bytes("../" + entry["id"]) is None
 
@@ -926,7 +928,7 @@ def test_one_locked_thumbnail_does_not_strand_the_rest_of_the_clear(monkeypatch,
 
     left = {path.name for path in tmp_path.iterdir()}
     assert left == {stuck.name}, f"only the locked file may survive, found {sorted(left)}"
-    assert search_images._registry == {}
+    assert search_images.state_for_tests().registry == {}
     for entry in entries:
         if entry["id"] == entries[1]["id"]:
             continue
@@ -1079,7 +1081,9 @@ def test_an_unreadable_cache_dir_snapshots_as_clear_everything(monkeypatch, tmp_
     assert snapshot is None, "an incomplete snapshot must not bound the reap"
 
     search_images.clear_cache(snapshot)
-    assert search_images._registry == {}, "a clear that could not snapshot must still clear"
+    assert (
+        search_images.state_for_tests().registry == {}
+    ), "a clear that could not snapshot must still clear"
     assert search_images.lookup_image(entries[0]["id"]) is None
 
 
@@ -1098,16 +1102,20 @@ def test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared(monkeyp
     # as something for the clear to reap. Straight into the registry: what matters is that
     # it is NOT the id being fetched.
     doomed_id = "0123456789ab"
-    search_images._registry[doomed_id] = dict(search_images._registry[spared["id"]])
+    search_images.state_for_tests().registry[doomed_id] = dict(
+        search_images.state_for_tests().registry[spared["id"]]
+    )
     real_lookup = search_images._lookup_locked
 
     def clearing_lookup(image_id):
         found = real_lookup(image_id)
         # A selective clear landing mid-fetch, reaping the OTHER image. Inline because the
         # caller already holds _registry_lock; the bookkeeping matches clear_cache's.
-        search_images._registry.pop(doomed_id, None)
-        search_images._cache_generation += 1
-        search_images._reaped_at[doomed_id] = search_images._cache_generation
+        search_images.state_for_tests().registry.pop(doomed_id, None)
+        search_images.state_for_tests().cache_generation += 1
+        search_images.state_for_tests().reaped_at[doomed_id] = (
+            search_images.state_for_tests().cache_generation
+        )
         return found
 
     monkeypatch.setattr(search_images, "_lookup_locked", clearing_lookup)
@@ -1129,9 +1137,11 @@ def test_a_selective_clear_still_aborts_the_fetch_for_an_image_it_reaped(monkeyp
 
     def clearing_lookup(image_id):
         found = real_lookup(image_id)
-        search_images._registry.pop(doomed["id"], None)
-        search_images._cache_generation += 1
-        search_images._reaped_at[doomed["id"]] = search_images._cache_generation
+        search_images.state_for_tests().registry.pop(doomed["id"], None)
+        search_images.state_for_tests().cache_generation += 1
+        search_images.state_for_tests().reaped_at[doomed["id"]] = (
+            search_images.state_for_tests().cache_generation
+        )
         for stale in tmp_path.glob("*"):
             stale.unlink()
         return found
@@ -1158,9 +1168,7 @@ def test_an_overflowing_reap_record_drops_the_oldest_not_everything(monkeypatch,
     actually overflows, which is the only moment the two strategies differ.
     """
     monkeypatch.setattr(search_images, "_REAPED_AT_MAX", 4)
-    monkeypatch.setattr(search_images, "_reaped_at", {})
-    monkeypatch.setattr(search_images, "_reaped_floor_generation", 0)
-    monkeypatch.setattr(search_images, "_full_clear_generation", 0)
+    search_images.reset_registry_for_tests()
 
     # Two clears that fit, then one that does not.
     search_images.clear_cache({"000000000000", "000000000001"})
@@ -1168,9 +1176,12 @@ def test_an_overflowing_reap_record_drops_the_oldest_not_everything(monkeypatch,
     in_flight_generation = search_images.cache_generation()
     search_images.clear_cache({"000002000000", "000002000001"})
 
-    assert search_images._reaped_at, "records must survive the overflow; clearing them was the bug"
     assert (
-        search_images._reaped_at.get("000002000000") == search_images.cache_generation()
+        search_images.state_for_tests().reaped_at
+    ), "records must survive the overflow; clearing them was the bug"
+    assert (
+        search_images.state_for_tests().reaped_at.get("000002000000")
+        == search_images.cache_generation()
     ), "the reap that overflowed is exactly the one that must still be remembered"
 
     with search_images._registry_lock:
@@ -1184,13 +1195,12 @@ def test_an_overflowing_reap_record_drops_the_oldest_not_everything(monkeypatch,
 def test_the_overflow_floor_still_refuses_a_fetch_older_than_every_record(monkeypatch):
     """The one case the floor gives up on, kept honest: older than anything still held."""
     monkeypatch.setattr(search_images, "_REAPED_AT_MAX", 4)
-    monkeypatch.setattr(search_images, "_reaped_at", {})
-    monkeypatch.setattr(search_images, "_reaped_floor_generation", 0)
+    search_images.reset_registry_for_tests()
 
     for round_index in range(4):
         search_images.clear_cache({f"{round_index:06d}{index:06d}" for index in range(2)})
 
-    floor = search_images._reaped_floor_generation
+    floor = search_images.state_for_tests().reaped_floor_generation
     assert floor > 0, "the cap has to have forced a floor for this to mean anything"
     with search_images._registry_lock:
         assert search_images._reaped_since_locked("ffffffffffff", floor - 1) is True

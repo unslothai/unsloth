@@ -35,10 +35,10 @@ from utils.models.model_config import _token_fingerprint as capability_fingerpri
 from utils.transformers_version import _token_cache_key
 
 
-def _models_client(via_api_key: bool) -> TestClient:
+def _models_client(via_api_key: bool, subject: str = "unsloth") -> TestClient:
     app = FastAPI()
     app.include_router(models_routes.router, prefix = "/api/models")
-    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    app.dependency_overrides[get_current_subject] = lambda: subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
     return TestClient(app, raise_server_exceptions = False)
 
@@ -159,8 +159,16 @@ def test_an_explicit_token_replaces_the_ambient_one_in_the_child():
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
 
 
-@pytest.mark.parametrize("via_api_key", [True, False])
-def test_capability_routes_answer_both_callers_without_a_server_error(monkeypatch, via_api_key):
+# The subject axis as well as the caller axis: the ambient token is the
+# installation owner's own credential, so a managed account does not reach it
+# either, and the sentinel is what says so.
+@pytest.mark.parametrize(
+    "via_api_key, subject",
+    [(True, "unsloth"), (False, "unsloth"), (True, "alice"), (False, "alice")],
+)
+def test_capability_routes_answer_both_callers_without_a_server_error(
+    monkeypatch, via_api_key, subject
+):
     """The blocker this file was written for: /check-vision 500ed for an API-key caller."""
     seen = {}
 
@@ -173,13 +181,14 @@ def test_capability_routes_answer_both_callers_without_a_server_error(monkeypatc
         return False
 
     monkeypatch.setattr(models_routes, "is_vision_model", _fake_is_vision_model)
-    response = _models_client(via_api_key).get(
+    response = _models_client(via_api_key, subject).get(
         "/api/models/check-vision/org/some-model",
         headers = {"Authorization": "Bearer token"},
     )
 
     assert response.status_code == 200, response.text
-    assert seen["hf_token"] is (False if via_api_key else None)
+    owner_ui_session = not via_api_key and subject == "unsloth"
+    assert seen["hf_token"] is (None if owner_ui_session else False)
 
 
 @pytest.mark.parametrize(
@@ -205,8 +214,13 @@ def test_gguf_variants_token_precedence_survives_the_conversion(header, query, e
         assert resolved == expected
 
 
-def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
-    """A UI session on an ambient-token install keeps gated seed inspection."""
+@pytest.mark.parametrize("subject", ["unsloth", "alice"])
+def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch, subject):
+    """The OWNER's UI session on an ambient-token install keeps gated seed inspection.
+
+    A managed account does not: the process token is not that account's to spend,
+    which is the same rule the hub download routes apply.
+    """
     from routes.data_recipe import seed as seed_routes
 
     seen = {}
@@ -220,7 +234,7 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
     for via_api_key in (True, False):
         app = FastAPI()
         app.include_router(seed_routes.router, prefix = "/api/data-recipe")
-        app.dependency_overrides[get_current_subject] = lambda: "alice"
+        app.dependency_overrides[get_current_subject] = lambda: subject
         app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
         client = TestClient(app, raise_server_exceptions = False)
 
@@ -229,9 +243,10 @@ def test_seed_inspection_derives_its_policy_from_the_caller(monkeypatch):
             json = {"dataset_name": "org/private-seed"},
             headers = {"Authorization": "Bearer token"},
         )
+        owner_ui_session = not via_api_key and subject == "unsloth"
         assert seen["token"] is (
-            False if via_api_key else None
-        ), "hardcoding allow_ambient_token=False takes the fallback away from the UI too"
+            None if owner_ui_session else False
+        ), "hardcoding allow_ambient_token=False takes the fallback away from the owner's UI too"
 
 
 def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):

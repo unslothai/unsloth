@@ -70,7 +70,7 @@ def test_signed_dataset_drop_is_copied_to_upload_storage(monkeypatch, tmp_path):
     source = tmp_path / "train.jsonl"
     source.write_text('{"text":"hello"}\n', encoding = "utf-8")
     upload_root = tmp_path / "uploads"
-    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", upload_root)
+    monkeypatch.setattr(local, "dataset_uploads_root", lambda: upload_root)
 
     response = local._native_upload_dataset_response(_sign(source))
 
@@ -84,7 +84,7 @@ def test_signed_dataset_drop_is_copied_to_upload_storage(monkeypatch, tmp_path):
 def test_async_dataset_drop_offloads_native_copy(monkeypatch, tmp_path):
     source = tmp_path / "train.jsonl"
     source.write_text('{"text":"hello"}\n', encoding = "utf-8")
-    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(local, "dataset_uploads_root", lambda: tmp_path / "uploads")
     offloaded = []
 
     async def run_offloaded(function, *args):
@@ -108,7 +108,7 @@ def test_dataset_drop_rejects_grants_for_other_purposes(
 ):
     source = tmp_path / "train.csv"
     source.write_text("text\nhello\n", encoding = "utf-8")
-    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(local, "dataset_uploads_root", lambda: tmp_path / "uploads")
 
     with pytest.raises(HTTPException) as excinfo:
         local._native_upload_dataset_response(
@@ -121,7 +121,7 @@ def test_dataset_drop_rejects_grants_for_other_purposes(
 def test_dataset_drop_rejects_unsupported_extensions(monkeypatch, tmp_path):
     source = tmp_path / "payload.exe"
     source.write_bytes(b"MZ")
-    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(local, "dataset_uploads_root", lambda: tmp_path / "uploads")
 
     with pytest.raises(HTTPException) as excinfo:
         local._native_upload_dataset_response(_sign(source))

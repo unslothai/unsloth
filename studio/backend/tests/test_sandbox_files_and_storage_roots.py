@@ -2697,10 +2697,16 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
     cancelled = []
     from state import active_generations
 
-    monkeypatch.setattr(active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1)
+    # Scoped to the deleting account: the thread id is client-chosen, so an
+    # unscoped cancel would stop the same id in every other workspace.
+    monkeypatch.setattr(
+        active_generations,
+        "cancel_thread",
+        lambda tid, subject = None: cancelled.append((tid, subject)) or 1,
+    )
 
     chat_history._cancel_active_generations(["__LOCALID_gone111", "__LOCALID_gone222"])
-    assert cancelled == ["__LOCALID_gone111", "__LOCALID_gone222"]
+    assert cancelled == [("__LOCALID_gone111", "unsloth"), ("__LOCALID_gone222", "unsloth")]
 
     import inspect
 

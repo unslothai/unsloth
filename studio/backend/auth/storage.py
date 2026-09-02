@@ -8,15 +8,18 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 import ipaddress
+import logging
 import os
 import secrets
 import sqlite3
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterator, Optional, Tuple
 
 from utils.paths import auth_db_path, ensure_dir
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
@@ -25,12 +28,24 @@ DEFAULT_ADMIN_USERNAME = "unsloth"
 # and the terminal prompt both enforce it. Keep the unsloth_cli mirror in sync.
 MIN_PASSWORD_LENGTH = 8
 
+# Managed-account setup codes are high-entropy initial passwords. They are
+# intentionally short-lived because an owner may need to send one out of band.
+SETUP_CODE_TTL_MINUTES = 60
+_SETUP_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
 # Plaintext bootstrap password file beside auth.db, deleted on first password
 # change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
 # In-process cache to avoid re-reading the file on every HTML serve.
 _bootstrap_password: Optional[str] = None
+
+# Shown when a deleted account's files could not be moved aside, so its name is
+# still reserved. States the remedy, because a retry normally succeeds.
+_RETIRED_USERNAME_MESSAGE = (
+    "That username still has files from the deleted account that could not be "
+    "released. Close anything using them and try again."
+)
 
 
 def _bootstrap_file_bytes(password: str) -> bytes:
@@ -300,7 +315,9 @@ def get_connection() -> sqlite3.Connection:
             password_salt TEXT NOT NULL,
             password_hash TEXT NOT NULL,
             jwt_secret TEXT NOT NULL,
-            must_change_password INTEGER NOT NULL DEFAULT 0
+            must_change_password INTEGER NOT NULL DEFAULT 0,
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            setup_code_expires_at TEXT
         );
         """
     )
@@ -343,11 +360,32 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    # A username whose workspace files could not be renamed away on delete. It
+    # stays unusable until they are, so a namesake cannot inherit them.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS retired_usernames (
+            username   TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
+    if "is_admin" not in columns:
+        conn.execute("ALTER TABLE auth_user ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        # The seeded legacy account is the installation owner. Upgrade it in
+        # the migration transaction; doing this on every read would turn all
+        # auth lookups into SQLite writers.
+        conn.execute(
+            "UPDATE auth_user SET is_admin = 1 WHERE username = ?",
+            (DEFAULT_ADMIN_USERNAME,),
+        )
+    if "setup_code_expires_at" not in columns:
+        conn.execute("ALTER TABLE auth_user ADD COLUMN setup_code_expires_at TEXT")
     refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
@@ -532,6 +570,50 @@ def get_or_create_preview_link_secret() -> bytes:
     return secret
 
 
+_PREVIEW_INCARNATION_KEY_PREFIX = "preview_incarnation:"
+
+
+def preview_link_incarnation(subject: str, *, create: bool = True) -> str:
+    """A value identifying this account, which a recreated namesake does not share.
+
+    The signed payload named only the reusable username, so a deleted account's
+    links resolved against its replacement's checkpoints. Dropped on retirement,
+    so the replacement mints a different one.
+
+    ``create = False`` when verifying an account that no longer exists: minting
+    there hands the caller a fresh identity to verify against.
+    """
+    key = f"{_PREVIEW_INCARNATION_KEY_PREFIX}{subject}"
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_secrets WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            if not create:
+                return ""
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (key, secrets.token_hex(16)),
+            )
+            conn.commit()
+            row = conn.execute("SELECT value FROM app_secrets WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else ""
+    finally:
+        conn.close()
+
+
+def clear_preview_link_incarnation(subject: str) -> None:
+    """Retire an account's preview identity, revoking every link it had shared."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key = ?",
+            (f"{_PREVIEW_INCARNATION_KEY_PREFIX}{subject}",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def rotate_preview_link_secret() -> bytes:
     """Rotate the preview-link secret, immediately revoking every outstanding ``/p`` share link."""
     global _preview_link_secret_cache
@@ -620,31 +702,62 @@ def create_initial_user(
     jwt_secret: str,
     *,
     must_change_password: bool = False,
+    is_admin: bool = False,
+    setup_code_expires_at: Optional[str] = None,
+    reject_if_retired: bool = False,
 ) -> None:
     """
     Create the initial admin user in the database.
 
     Raises sqlite3.IntegrityError if username already exists.
+
+    ``reject_if_retired`` reads the tombstone inside this insert's own write
+    transaction. Checking first and inserting second can have the read answered
+    from the pre-delete snapshot, so the replacement briefly shares a directory
+    with the account it replaces; BEGIN IMMEDIATE puts this behind the delete.
     """
     from .hashing import hash_password
 
     salt, pwd_hash = hash_password(password)
     conn = get_connection()
     try:
-        conn.execute(
-            """
-            INSERT INTO auth_user (
-                username,
-                password_salt,
-                password_hash,
-                jwt_secret,
-                must_change_password
+        if reject_if_retired:
+            conn.execute("BEGIN IMMEDIATE")
+            reserved = conn.execute(
+                "SELECT 1 FROM retired_usernames WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if reserved is not None:
+                conn.rollback()
+                raise ValueError(_RETIRED_USERNAME_MESSAGE)
+        try:
+            conn.execute(
+                """
+                INSERT INTO auth_user (
+                    username,
+                    password_salt,
+                    password_hash,
+                    jwt_secret,
+                    must_change_password,
+                    is_admin,
+                    setup_code_expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    username,
+                    salt,
+                    pwd_hash,
+                    jwt_secret,
+                    int(must_change_password),
+                    int(is_admin),
+                    setup_code_expires_at,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (username, salt, pwd_hash, jwt_secret, int(must_change_password)),
-        )
-        conn.commit()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     finally:
         conn.close()
 
@@ -661,6 +774,749 @@ def delete_user(username: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def is_installation_owner(subject: str | None = None) -> bool:
+    """Whether this account administers the install, for capability decisions.
+
+    The seeded owner short-circuits without touching auth.db, so the single-user
+    path cannot be demoted by a half-applied is_admin migration. Fails CLOSED,
+    so an unreachable auth.db withholds a capability rather than granting one.
+    """
+    from utils.workspace_context import (
+        LEGACY_WORKSPACE_SUBJECT,
+        current_workspace_subject,
+    )
+
+    resolved = subject or current_workspace_subject()
+    if resolved == LEGACY_WORKSPACE_SUBJECT or resolved == DEFAULT_ADMIN_USERNAME:
+        return True
+    try:
+        return bool(is_admin(resolved))
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.warning("Could not check admin status for %s", resolved, exc_info = True)
+        return False
+
+
+def subject_may_reach_private_hosts(subject: str | None = None) -> bool:
+    """Whether this account may point the backend at a loopback or LAN address.
+
+    The owner may, since a local Ollama or vLLM endpoint is the ordinary reason
+    to run Unsloth. A managed account may not: it cannot reach those services
+    from its browser, so naming one turns the backend into a probe of that
+    network. Single-user installs have only the owner.
+    """
+    return is_installation_owner(subject)
+
+
+def is_admin(username: str) -> bool:
+    """Return whether ``username`` may manage installation accounts."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT is_admin FROM auth_user WHERE username = ?",
+            (username,),
+        ).fetchone()
+        return bool(row and row["is_admin"])
+    finally:
+        conn.close()
+
+
+def list_users() -> list[dict]:
+    """List public account metadata; password and signing data never leave storage."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT username, must_change_password, is_admin, setup_code_expires_at
+            FROM auth_user
+            ORDER BY is_admin DESC, username COLLATE NOCASE
+            """
+        ).fetchall()
+        return [
+            {
+                "username": row["username"],
+                "must_change_password": bool(row["must_change_password"]),
+                "is_admin": bool(row["is_admin"]),
+                "setup_code_expires_at": row["setup_code_expires_at"],
+                "setup_code_expired": _setup_code_expired(row["setup_code_expires_at"]),
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def _new_setup_code() -> str:
+    """Return an 80-bit, human-readable setup code without ambiguous glyphs."""
+    raw = "".join(secrets.choice(_SETUP_CODE_ALPHABET) for _ in range(16))
+    return "-".join(raw[index : index + 4] for index in range(0, len(raw), 4))
+
+
+def _new_setup_code_expiry() -> str:
+    return (datetime.now(timezone.utc) + timedelta(minutes = SETUP_CODE_TTL_MINUTES)).isoformat()
+
+
+def _setup_code_expired(expires_at: Optional[str]) -> bool:
+    if expires_at is None:
+        return False
+    try:
+        return datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        # Fail closed if a managed credential's expiry was corrupted.
+        return True
+
+
+def create_managed_user(username: str) -> dict:
+    """Create a standard account and return its one-time-visible initial password."""
+    # Retries the retirement as a side effect: the usual blocker is a file handle
+    # that has since been released, and clearing it here lets the create proceed.
+    if username_is_retired(username):
+        raise ValueError(_RETIRED_USERNAME_MESSAGE)
+    setup_code = _new_setup_code()
+    expires_at = _new_setup_code_expiry()
+    create_initial_user(
+        username = username,
+        password = setup_code,
+        jwt_secret = secrets.token_urlsafe(64),
+        must_change_password = True,
+        is_admin = False,
+        setup_code_expires_at = expires_at,
+        reject_if_retired = True,
+    )
+    return {"setup_code": setup_code, "setup_code_expires_at": expires_at}
+
+
+def regenerate_managed_user_setup_code(username: str) -> dict:
+    """Replace a pending managed account's setup code and revoke its sessions."""
+    from .hashing import hash_password
+
+    setup_code = _new_setup_code()
+    expires_at = _new_setup_code_expiry()
+    salt, pwd_hash = hash_password(setup_code)
+    jwt_secret = secrets.token_urlsafe(64)
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT is_admin, must_change_password FROM auth_user WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            raise KeyError(username)
+        if bool(row["is_admin"]):
+            conn.rollback()
+            raise ValueError("Administrator setup codes cannot be regenerated")
+        if not bool(row["must_change_password"]):
+            conn.rollback()
+            raise RuntimeError("Account setup is already complete")
+        conn.execute(
+            """
+            UPDATE auth_user
+            SET password_salt = ?, password_hash = ?, jwt_secret = ?,
+                setup_code_expires_at = ?, must_change_password = 1
+            WHERE username = ?
+            """,
+            (salt, pwd_hash, jwt_secret, expires_at, username),
+        )
+        conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        conn.commit()
+        return {"setup_code": setup_code, "setup_code_expires_at": expires_at}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def setup_code_login_allowed(username: str, password_hash: str) -> bool:
+    """Check expiry against the exact credential hash that login verified."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT setup_code_expires_at
+            FROM auth_user
+            WHERE username = ? AND password_hash = ?
+            """,
+            (username, password_hash),
+        ).fetchone()
+        return row is not None and not _setup_code_expired(row["setup_code_expires_at"])
+    finally:
+        conn.close()
+
+
+def _resolve_subject_owned_roots(username: str) -> tuple[list, bool]:
+    """``(roots, complete)`` for every directory whose path derives from ``username``.
+
+    The workspace tree, the projects tree (a separate Documents root), the tool
+    sandbox tree and the scoped temporary root each key on
+    workspace_key(username), so retiring only the first still hands a recycled
+    name the rest.
+
+    ``complete`` is False when a root could not be resolved at all, which is not
+    "there was nothing to move": the caller must treat it as a failed retirement
+    rather than renaming what it found and releasing the name.
+    """
+    from pathlib import Path
+
+    from utils.paths.storage_roots import project_workspaces_root, studio_root, tmp_root
+    from utils.workspace_context import run_in_workspace, workspace_key
+
+    def _scoped() -> list:
+        from core.inference.tools import sandbox_root
+
+        # tmp_root keys on workspace_key like the rest, and unstructured seed
+        # processing leaves plaintext parquet chunks under it.
+        return [project_workspaces_root(), Path(sandbox_root()), tmp_root()]
+
+    roots = [studio_root() / "workspaces" / workspace_key(username)]
+    try:
+        roots += run_in_workspace(username, _scoped)
+    except Exception:
+        logger.warning("Could not resolve every workspace root for %s", username)
+        return roots, False
+    return roots, True
+
+
+def _subject_owned_roots(username: str) -> list:
+    """The roots alone, for callers that do not act on an incomplete list."""
+    return _resolve_subject_owned_roots(username)[0]
+
+
+def _clear_username_tombstone(username: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM retired_usernames WHERE username = ?", (username,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def username_is_retired(username: str) -> bool:
+    """Whether ``username`` still has files a recreated account would inherit.
+
+    Retried rather than permanent: the usual cause is a Windows handle held by a
+    worker that has since exited, so a later attempt normally clears it.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM retired_usernames WHERE username = ?",
+            (username,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    if _retire_workspace_directory(username):
+        _clear_username_tombstone(username)
+        return False
+    return True
+
+
+# Probed only where the process already imported one: a module never imported
+# cannot hold a render, and importing here would pull the diffusion stack into a
+# deletion, where a failed optional import holds the name reserved for good.
+_MEDIA_ENGINES = (
+    ("core.inference.diffusion", "get_diffusion_backend"),
+    ("core.inference.sd_cpp_backend", "get_sd_cpp_backend"),
+    ("core.inference.video", "get_video_backend"),
+)
+
+
+def _loaded_media_backends() -> list:
+    """Media backends already live in this process."""
+    import sys
+
+    backends = []
+    for module_name, accessor in _MEDIA_ENGINES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        getter = getattr(module, accessor, None)
+        if getter is None:
+            continue
+        backends.append(getter())
+    return backends
+
+
+# The engines report idle as "ready" or None and failed as "error"; any other
+# phase names a stage of a load still running.
+_MEDIA_LOAD_IDLE_PHASES = (None, "ready", "error")
+
+
+def _media_load_active(backend, username: str) -> bool:
+    """Whether ``backend`` is loading a model for this account right now.
+
+    A load is not a render, and it holds the account's identity the same way: the
+    loading state carries the subject, and the payload names the repo or local
+    directory it is pulling. A username released while one is in flight lets a
+    recreated namesake match that subject and drive the load through the ordinary
+    progress and unload paths.
+    """
+    probe = getattr(backend, "load_progress", None)
+    if not callable(probe):
+        return False
+    return probe(subject = username).get("phase") not in _MEDIA_LOAD_IDLE_PHASES
+
+
+# Fields a media backend reports a loaded model under. A repo id is install-wide
+# and shared by design; only a filesystem path can name one account's private
+# weights.
+_MEDIA_STATUS_PATH_FIELDS = ("repo_id", "base_repo", "model_path", "local_path", "resolved")
+
+
+def _status_names_a_path_under(status: dict, root: str) -> bool:
+    """Whether any model field in ``status`` resolves inside ``root``."""
+    import os
+
+    for field in _MEDIA_STATUS_PATH_FIELDS:
+        value = status.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            real = os.path.realpath(os.path.expanduser(value.strip()))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if real == root or real.startswith(root + os.sep):
+            return True
+    return False
+
+
+def _workspace_jobs_active(username: str) -> bool:
+    """Whether anything is still running under this account's workspace.
+
+    Quiescing signals, it does not wait, and a worker still unwinding recreates
+    the pathname on its next lookup. So the tombstone is held until nothing is
+    running, and the create path's existing retry releases it.
+
+    Fails CLOSED: guessing wrong costs one reserved name, against a live worker
+    writing into somebody else's files.
+    """
+
+    def _training_active() -> bool:
+        from core.training.training import get_training_backend
+        backend = get_training_backend()
+        return bool(backend.is_training_active() and backend.owns_workspace(username))
+
+    def _diffusion_active() -> bool:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        service = get_diffusion_training_service()
+        return bool(service.is_active() and service.owns_workspace(username))
+
+    def _export_active() -> bool:
+        from core.export import get_export_backend
+        orchestrator = get_export_backend()
+        return bool(orchestrator.is_export_active() and orchestrator.owns_workspace(username))
+
+    def _generations_active() -> bool:
+        from state import active_generations
+        return bool(active_generations.active_thread_ids(username))
+
+    def _media_renders_active() -> bool:
+        return any(
+            backend.generate_progress(subject = username).get("active")
+            or _media_load_active(backend, username)
+            for backend in _loaded_media_backends()
+        )
+
+    def _recipe_job_active() -> bool:
+        from core.data_recipe.jobs.manager import get_job_manager
+        manager = get_job_manager()
+        return bool(manager.is_active() and manager.owns_workspace(username))
+
+    def _mcp_sessions_cached() -> bool:
+        from core.inference.mcp_client import workspace_has_cached_sessions
+        return bool(workspace_has_cached_sessions(username))
+
+    def _research_runs_active() -> bool:
+        # A supervisor between model calls holds no visible lease, but its row is
+        # non-terminal and the run reopens this account's databases.
+        from storage import research_runs_db
+        return bool(research_runs_db.unfinished_run_ids())
+
+    def _rag_workers_active() -> bool:
+        # Workspace-bound threads whose next rag_db_path() recreates the directory.
+        from core.rag import folder_sync
+        from storage import rag_db
+
+        if folder_sync.workspace_sync_worker_active(username):
+            return True
+        try:
+            if not rag_db.rag_available():
+                return False
+        except Exception:  # noqa: BLE001 - an unreadable rag.db answers nothing
+            return True
+        return bool(rag_db.live_ingestion_or_sync_jobs())
+
+    from utils.workspace_context import run_in_workspace
+
+    for what, probe in (
+        ("training", _training_active),
+        ("diffusion training", _diffusion_active),
+        ("export", _export_active),
+        ("chat generations", _generations_active),
+        ("media renders", _media_renders_active),
+        ("data recipe job", _recipe_job_active),
+        ("cached MCP sessions", _mcp_sessions_cached),
+        ("research runs", _research_runs_active),
+        ("RAG workers", _rag_workers_active),
+    ):
+        try:
+            if run_in_workspace(username, probe):
+                logger.info("Holding %s reserved: %s still running", username, what)
+                return True
+        except Exception:  # noqa: BLE001 - unanswerable means busy; see the docstring
+            logger.warning("Could not check %s for %s", what, username, exc_info = True)
+            return True
+    return False
+
+
+def _retire_workspace_directory(username: str) -> bool:
+    """Move a deleted account's directories aside so a recreated name cannot
+    inherit them: the keys are a pure function of the username. Renamed rather
+    than deleted, so they stay recoverable by hand."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    directories, retired_all = _resolve_subject_owned_roots(username)
+    # Before the rename: Windows refuses to rename a directory holding an open
+    # file, and the WAL keeper holds studio.db open for the life of the process.
+    try:
+        from storage.studio_db import close_wal_keeper_for
+        from utils.paths.storage_roots import studio_db_path
+        from utils.workspace_context import run_in_workspace
+
+        close_wal_keeper_for(run_in_workspace(username, studio_db_path))
+    except Exception:  # noqa: BLE001 - a keeper we cannot name is one we cannot close
+        logger.warning("Could not release the studio.db keeper for %s", username, exc_info = True)
+    for directory in directories:
+        try:
+            if not directory.is_dir():
+                continue
+            retired = directory.with_name(f"{directory.name}-deleted-{stamp}")
+            suffix = 1
+            while retired.exists():
+                retired = directory.with_name(f"{directory.name}-deleted-{stamp}-{suffix}")
+                suffix += 1
+            directory.rename(retired)
+        except OSError:
+            # Never let a locked file block the account revocation itself; the
+            # caller tombstones the name instead so nobody inherits the files.
+            logger.warning("Could not retire %s for %s", directory, username)
+            retired_all = False
+    # The ready-path caches key on the pathname a namesake reuses, so its fresh
+    # database would be served without a schema.
+    from storage import schema_cache
+
+    schema_cache.forget_all()
+    # The preview token names the username, so a namesake's run at the same ref
+    # would answer the old links.
+    try:
+        clear_preview_link_incarnation(username)
+    except Exception:  # noqa: BLE001 - a link we cannot revoke must not block a deletion
+        logger.warning("Could not revoke preview links for %s", username, exc_info = True)
+    # Process-lifetime memos keyed by the username outlive the files, so a
+    # namesake would index into the previous holder's embedding space.
+    try:
+        from utils.embedding_model_settings import forget_workspace as forget_embedding_memos
+        forget_embedding_memos(username)
+    except Exception:  # noqa: BLE001 - a cache we cannot reach must not block a deletion
+        logger.warning("Could not clear embedding memos for %s", username, exc_info = True)
+    # Private-dataset grants key on the same reusable username.
+    try:
+        from hub.services.datasets.cache_access import forget_workspace as forget_dataset_grants
+        forget_dataset_grants(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear dataset grants for %s", username, exc_info = True)
+    # The scan records authorize discarding remote code, so a namesake could
+    # delete a dependency another account's model still needs.
+    try:
+        from routes.models import forget_scan_created_remote_code
+        forget_scan_created_remote_code(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear remote-code grants for %s", username, exc_info = True)
+    # Downloads are not workspace jobs, so the sweep never saw them, and their
+    # initiator sets name the account.
+    try:
+        from hub.services.download_lifecycle import forget_workspace_initiators
+        forget_workspace_initiators(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear download initiators for %s", username, exc_info = True)
+    try:
+        from routes.inference import forget_stt_model_downloader
+        forget_stt_model_downloader(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear dictation grants for %s", username, exc_info = True)
+    # The video route's own job map, which the sweep did not reach.
+    try:
+        from routes.video import forget_workspace_jobs
+        forget_workspace_jobs(username)
+    except Exception:  # noqa: BLE001 - same
+        logger.warning("Could not clear video jobs for %s", username, exc_info = True)
+    # Moving the files is not enough: a worker still bound to this subject
+    # recreates the pathname on its next lookup.
+    return retired_all and not _workspace_jobs_active(username)
+
+
+def _quiesce_workspace_jobs(username: str) -> None:
+    """Stop the jobs this account owns, before its files are moved aside.
+
+    A spawned worker outlives the row that authorised it, and the ownership
+    guards then hide it from the owner while the deleted account can no longer
+    sign in to stop it: a multi-hour GPU job would burn the card until restart.
+
+    Best effort and never fatal, since the alternative is an account the owner
+    cannot remove at all. Each stop is guarded by the subsystem's ownership
+    predicate AND its "is something running" check, so an unclaimed singleton is
+    never mistaken for this account's.
+    """
+
+    def _stop_training() -> None:
+        from core.training.training import get_training_backend
+        backend = get_training_backend()
+        if backend.is_training_active() and backend.owns_workspace(username):
+            backend.stop_training(save = False)
+
+    def _stop_diffusion_training() -> None:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        service = get_diffusion_training_service()
+        if service.is_active() and service.owns_workspace(username):
+            service.stop(save = False)
+
+    def _stop_export() -> None:
+        from core.export import get_export_backend
+        orchestrator = get_export_backend()
+        if orchestrator.is_export_active() and orchestrator.owns_workspace(username):
+            orchestrator.cancel_export()
+
+    def _stop_generations() -> None:
+        from state import active_generations
+        for thread_id in active_generations.active_thread_ids(username):
+            active_generations.cancel_thread(thread_id, subject = username)
+
+    def _stop_media_renders() -> None:
+        # The galleries resolve the workspace root when the render FINISHES, so a
+        # running one writes into whoever takes the name next. A load counts too
+        # and cancel_generate does not reach it, hence the engine's own path.
+        for backend in _loaded_media_backends():
+            if backend.generate_progress(subject = username).get("active"):
+                backend.cancel_generate(subject = username)
+            if _media_load_active(backend, username):
+                backend.unload(subject = username)
+
+    def _close_mcp_sessions() -> None:
+        # The session key holds the reusable username, so a namesake created
+        # inside the idle TTL could check the session out and inherit its state.
+        from core.inference.mcp_client import close_mcp_sessions
+        close_mcp_sessions()
+
+    def _stop_research_runs() -> None:
+        # Through the run row, not the in-memory event: the row is what both the
+        # supervisor and a restart consult.
+        from storage import research_runs_db
+        for run_id in research_runs_db.unfinished_run_ids():
+            try:
+                research_runs_db.request_cancel(run_id)
+            except KeyError:
+                continue
+
+    def _stop_rag_workers() -> None:
+        # Only this account's: stop_auto_sync() is a process shutdown. A running
+        # ingestion finishes, and the probe holds the tombstone until it does.
+        from core.rag import folder_sync
+        folder_sync.stop_workspace_auto_sync(username)
+
+    def _shutdown_idle_export_worker() -> None:
+        # is_export_active() is false once a checkpoint has loaded, so the cancel
+        # left it resident for a namesake that passes owns_workspace().
+        from core.export import get_export_backend
+
+        orchestrator = get_export_backend()
+        if not orchestrator.owns_workspace(username):
+            return
+        if orchestrator.is_export_active():
+            return
+        if orchestrator.is_worker_alive() or orchestrator.current_checkpoint:
+            orchestrator._shutdown_subprocess()
+        orchestrator.current_checkpoint = None
+        orchestrator.is_vision = False
+        orchestrator.is_peft = False
+        with orchestrator._workspace_guard():
+            orchestrator._workspace_subject = None
+
+    def _reset_training() -> None:
+        # A terminal run is not active, so nothing above stopped it, and the
+        # singleton kept the subject beside what a namesake then read back.
+        from core.training.training import get_training_backend
+        backend = get_training_backend()
+        if backend.owns_workspace(username):
+            backend.reset_retained_state(username)
+
+    def _reset_recipe_state() -> None:
+        # cancel() on a terminal job clears neither _job nor the subject, so
+        # /jobs/current handed a namesake the old job and its rows.
+        from core.data_recipe.jobs.manager import get_job_manager
+        get_job_manager().reset_retained_state(username)
+
+    def _forget_terminal_video() -> None:
+        # A completed record holds the whole recipe, and reports inactive, so the
+        # cancel left it for whoever takes the name next.
+        from core.inference.video import get_video_backend
+        get_video_backend().forget_terminal_video(subject = username)
+
+    def _clear_api_monitor() -> None:
+        # Fifty entries of prompts and replies, authorized only by the subject string.
+        from core.inference.api_monitor import api_monitor
+        api_monitor.clear(subject = username)
+
+    def _unload_private_resident_media() -> None:
+        # A namesake derives the same workspace root, so an idle pipeline loaded
+        # from the old one reads as theirs.
+        from utils.paths.storage_roots import workspace_root
+        try:
+            private_root = str(run_in_workspace(username, workspace_root).resolve())
+        except (OSError, RuntimeError, ValueError):
+            return
+        for backend in _loaded_media_backends():
+            try:
+                status = backend.status()
+            except Exception:  # noqa: BLE001 - an engine that cannot answer is left alone
+                continue
+            if not isinstance(status, dict) or not status.get("loaded"):
+                continue
+            if not _status_names_a_path_under(status, private_root):
+                continue
+            backend.unload()
+
+    def _unload_private_resident_text() -> None:
+        # Process-wide backends plus a username-keyed ownership record, so a
+        # namesake inherits both. Dropping the record alone leaves the weights.
+        from routes.inference import (
+            forget_text_model_owner,
+            resident_text_model_workspace,
+            retire_text_model_owner,
+        )
+
+        if resident_text_model_workspace() != username:
+            return
+        # Fenced first, dropped only once the weights are gone: the unloads are
+        # best effort, and an unowned model passes the containment fallback.
+        retire_text_model_owner(username)
+        try:
+            from routes.inference import get_llama_cpp_backend
+            get_llama_cpp_backend().unload_model()
+        except Exception:  # noqa: BLE001 - an engine that cannot answer is left alone
+            logger.warning("Could not unload the resident GGUF for %s", username, exc_info = True)
+        try:
+            from routes.inference import _peek_inference_backend
+
+            backend = _peek_inference_backend()
+            active = getattr(backend, "active_model_name", None) if backend is not None else None
+            if backend is not None and active:
+                backend.unload_model(active)
+        except Exception:  # noqa: BLE001 - same
+            logger.warning("Could not unload the resident model for %s", username, exc_info = True)
+        # Nothing resident means nothing left to fence.
+        from routes.inference import _resident_text_model_identifiers
+
+        try:
+            if not _resident_text_model_identifiers():
+                forget_text_model_owner()
+        except Exception:  # noqa: BLE001 - the fence stays if we cannot tell
+            pass
+
+    def _reset_diffusion_training() -> None:
+        # is_active() is false for a terminal run, so the stop skipped it and the
+        # singleton kept the subject beside the paths /diffusion/status returns.
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        service = get_diffusion_training_service()
+        if service.owns_workspace(username):
+            service.reset_retained_state(username)
+
+    def _stop_recipe_job() -> None:
+        # The worker keeps the artifact root it was given, so it can recreate the
+        # retired pathname.
+        from core.data_recipe.jobs.manager import get_job_manager
+
+        manager = get_job_manager()
+        if not manager.owns_workspace(username):
+            return
+        job_id = manager.get_current_job_id()
+        if job_id is not None:
+            manager.cancel(job_id)
+
+    from utils.workspace_context import run_in_workspace
+
+    for what, stop in (
+        ("training", _stop_training),
+        ("diffusion training", _stop_diffusion_training),
+        ("export", _stop_export),
+        ("chat generations", _stop_generations),
+        ("media renders", _stop_media_renders),
+        ("data recipe job", _stop_recipe_job),
+        ("research runs", _stop_research_runs),
+        ("RAG folder sync worker", _stop_rag_workers),
+        ("cached MCP sessions", _close_mcp_sessions),
+        # Below: state that OUTLIVES the work. Nothing above stops it, because by
+        # then there is nothing left to stop.
+        ("retained diffusion training state", _reset_diffusion_training),
+        ("retained training state", _reset_training),
+        ("idle export worker", _shutdown_idle_export_worker),
+        ("retained recipe job", _reset_recipe_state),
+        ("completed video record", _forget_terminal_video),
+        ("API monitor entries", _clear_api_monitor),
+        ("private resident media models", _unload_private_resident_media),
+        ("private resident text models", _unload_private_resident_text),
+    ):
+        try:
+            run_in_workspace(username, stop)
+        except Exception:  # noqa: BLE001 - see the docstring; never fatal
+            logger.warning("Could not stop %s for %s", what, username, exc_info = True)
+
+
+def delete_managed_user(username: str) -> bool:
+    """Revoke and delete a non-admin account, retiring its workspace files."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT is_admin FROM auth_user WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return False
+        if bool(row["is_admin"]):
+            conn.rollback()
+            raise ValueError("Administrator accounts cannot be deleted")
+        conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
+        conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
+        # Same transaction as the delete: both must never be absent at once, or a
+        # racing create binds to a workspace this call is about to rename.
+        conn.execute(
+            "INSERT OR IGNORE INTO retired_usernames (username, created_at) VALUES (?, ?)",
+            (username, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    # Before the sweep, which only sees work that has already started: a request
+    # admitted a moment ago is invisible to it.
+    from utils.workspace_context import note_workspace_retired
+
+    note_workspace_retired(username)
+    # After the credentials are gone and before the rename below.
+    _quiesce_workspace_jobs(username)
+    # Cleared only once every root is out of the way; a failure leaves the name
+    # reserved and the next create retries the retirement.
+    if _retire_workspace_directory(username):
+        _clear_username_tombstone(username)
+    return True
 
 
 def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:
@@ -757,6 +1613,7 @@ def ensure_default_admin() -> bool:
             password = bootstrap_pw,
             jwt_secret = secrets.token_urlsafe(64),
             must_change_password = True,
+            is_admin = True,
         )
         return True
     except sqlite3.IntegrityError:
@@ -784,7 +1641,7 @@ def update_password(
     ``expect_password_hash`` makes the write conditional on the credential the
     caller verified still being current, so a request that checked the old
     password cannot overwrite a reset that landed while it was in flight.
-    Returns False when the credential moved underneath it.
+    Returns None when the credential moved underneath it.
 
     ``preserve_desktop_secret`` keeps the local desktop credential valid. It is
     for a caller that already authenticated as the desktop app: revoking the
@@ -795,13 +1652,24 @@ def update_password(
 
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
+    # app_secrets is install-wide and holds the OWNER's desktop credential, so a
+    # managed account's password change must not revoke it. Name as well as flag:
+    # an install seeded before the is_admin column still owns it. Read before the
+    # write transaction opens, so the lookup never contends with the UPDATE below
+    # on its own connection.
+    owns_install_secrets = username == DEFAULT_ADMIN_USERNAME or is_admin(username)
+
     conn = get_connection()
     try:
+        # setup_code_expires_at is cleared with the write: a managed account that
+        # swaps its one-time setup code for a real password must not keep an
+        # expiring credential alongside it.
         if expect_password_hash is None:
             cursor = conn.execute(
                 """
                 UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                SET password_salt = ?, password_hash = ?, jwt_secret = ?,
+                    must_change_password = 0, setup_code_expires_at = NULL
                 WHERE username = ?
                 """,
                 (salt, pwd_hash, jwt_secret, username),
@@ -810,7 +1678,8 @@ def update_password(
             cursor = conn.execute(
                 """
                 UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                SET password_salt = ?, password_hash = ?, jwt_secret = ?,
+                    must_change_password = 0, setup_code_expires_at = NULL
                 WHERE username = ? AND password_hash = ?
                 """,
                 (salt, pwd_hash, jwt_secret, username, expect_password_hash),
@@ -820,7 +1689,7 @@ def update_password(
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
-            if not preserve_desktop_secret:
+            if not preserve_desktop_secret and owns_install_secrets:
                 clear_desktop_secret()
             return jwt_secret
         return None

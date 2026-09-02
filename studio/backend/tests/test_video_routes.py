@@ -156,7 +156,10 @@ class _FakeBackend(video_module.VideoBackend):
             "defaults": _defaults(),
         }
 
-    def load_progress(self):
+    def load_progress(self, subject = None):
+        # Scoped: the payload names the repo being pulled, which for a private
+        # local path is the loading account's own directory.
+        assert subject == "unsloth"
         return {
             "phase": "ready" if self.loaded else None,
             "downloaded_bytes": 0,
@@ -192,7 +195,10 @@ class _FakeBackend(video_module.VideoBackend):
             "guidance": 4.0 if kwargs.get("guidance") is None else kwargs.get("guidance"),
         }
 
-    def unload(self):
+    def unload(self, subject = None):
+        # subject: the route scopes teardown to the caller's workspace, so it
+        # cannot end a generation another account started. Both real engines
+        # take it.
         self.loaded = False
         return _unloaded_status()
 

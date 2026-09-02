@@ -11,7 +11,8 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { refreshSession } from "../api";
+import { noteAuthSessionReplaced, refreshSession } from "../api";
+import { notifyAccountAuthenticated } from "../../../lib/account-transition.ts";
 import {
   deadlineFromStatus,
   formatCountdown,
@@ -41,6 +42,7 @@ type AuthMode = "login" | "change-password";
 
 type AuthStatusResponse = {
   initialized: boolean;
+  default_username: string;
   requires_password_change: boolean;
   bootstrap_deadline_seconds?: number | null;
 };
@@ -78,20 +80,23 @@ type AuthFormProps = {
   mode: AuthMode;
 };
 
-const HIDDEN_LOGIN_USERNAME = "unsloth";
-
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
-  const username = HIDDEN_LOGIN_USERNAME;
+  const [username, setUsername] = useState(
+    () => window.__UNSLOTH_BOOTSTRAP__?.username ?? "",
+  );
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
   const [initialized, setInitialized] = useState<boolean | null>(null);
+  // Who the server says owns this installation, so the pre-accounts browser data
+  // is attributed to them rather than to whoever signs in first.
+  const [installationOwner, setInstallationOwner] = useState<string | null>(null);
   const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
@@ -119,7 +124,22 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         const result = (await response.json()) as AuthStatusResponse;
         if (!canceled) {
           setInitialized(result.initialized);
-          setRequiresPasswordChange(result.requires_password_change);
+          setInstallationOwner(result.default_username ?? null);
+          setUsername((current) => current || result.default_username);
+          const accountRequiresPasswordChange =
+            hasAuthToken() && mustChangePassword();
+          // requires_password_change is the OWNER's, and this page is reached by
+          // every account. Only the seeded first boot may act on it, which is
+          // the one case the credential to complete it is on the page: without
+          // that guard an owner reset shut every managed account out of /login
+          // until the owner had finished, since the form blocked and redirected
+          // before a username could even be typed.
+          const ownerBootstrapPending =
+            result.requires_password_change &&
+            Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
+          const effectivePasswordChange =
+            ownerBootstrapPending || accountRequiresPasswordChange;
+          setRequiresPasswordChange(effectivePasswordChange);
           // One clock sample for both: nowMs is otherwise still the mount time
           // until the first tick, which adds the request duration to the figure
           // and renders a 0 from the server as "shuts down in 0 seconds".
@@ -129,30 +149,41 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             deadlineFromStatus(result.bootstrap_deadline_seconds, sampledNow),
           );
 
-          // Server truth wins; keep localStorage in sync both ways.
-          if (result.requires_password_change !== mustChangePassword()) {
-            setMustChangePassword(result.requires_password_change);
+          // Server truth wins; keep localStorage in sync both ways. Only from
+          // the seeded boot, for the same reason: this flag describes whoever
+          // holds the session, and the owner's is not theirs to inherit.
+          if (ownerBootstrapPending && !mustChangePassword()) {
+            setMustChangePassword(true);
           }
 
           // Redirect between login / change-password per server state
-          if (mode === "login" && result.requires_password_change) {
+          if (mode === "login" && ownerBootstrapPending) {
             navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "change-password" && !result.requires_password_change) {
+          if (mode === "change-password" && !effectivePasswordChange) {
             navigate({ to: "/login" });
             return;
           }
 
           // On login, skip to the app if a valid session exists and no
           // password change is required.
-          if (isLoginMode && !result.requires_password_change) {
+          if (isLoginMode && !ownerBootstrapPending) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
               if (refreshed) {
                 if (!canceled) setStatusLoading(false);
                 navigate({ to: getPostAuthRoute() });
                 return;
+              }
+              // The failed refresh cleared local storage, but the flag was read
+              // before it ran. Recompute, or a revoked session leaves the login
+              // form disabled with nothing left to recompute it and the user
+              // cannot enter their replacement setup code without a reload.
+              if (!canceled) {
+                setRequiresPasswordChange(
+                  ownerBootstrapPending || mustChangePassword(),
+                );
               }
             }
             if (hasAuthToken()) {
@@ -176,7 +207,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     return () => {
       canceled = true;
     };
-  }, [navigate]);
+  }, [isLoginMode, mode, navigate]);
 
   useEffect(() => {
     if (statusLoading || reloadReadySent.current) return;
@@ -193,7 +224,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
     }
     loadBootstrap();
-  }, []);
+  }, [isLoginMode, password]);
 
   const blockedByState =
     initialized === false ||
@@ -326,6 +357,20 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       } else {
         setMustChangePassword(token.must_change_password);
       }
+      // Before the new session mounts: this browser's localStorage is origin-wide,
+      // so an account that is not the one that left it there would otherwise read
+      // the previous account's drafts, dictation history and provider metadata,
+      // and have its legacy chats, chat settings and Hugging Face token migrated
+      // into its own workspace.
+      if (
+        notifyAccountAuthenticated(
+          isLoginMode ? username : (username || ""),
+          installationOwner,
+        )
+      ) {
+        // A request still waiting on a 401 belongs to the account that sent it.
+        noteAuthSessionReplaced();
+      }
       storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
@@ -374,34 +419,51 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       )}
       <form className="space-y-5" onSubmit={handleSubmit}>
         {isLoginMode && (
-          <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
-            <div className="relative">
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="username">Username</Label>
               <Input
-                id="password"
-                type={showPassword ? "text" : "password"}
-                className="pr-10"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                minLength={8}
+                id="username"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value.toLowerCase())}
+                minLength={3}
+                maxLength={64}
+                pattern="[a-z0-9][a-z0-9._-]*"
+                spellCheck={false}
                 required
               />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
-                onClick={() => setShowPassword((prev) => !prev)}
-              >
-                {showPassword ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </Button>
             </div>
-          </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  className="pr-10"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  minLength={8}
+                  required
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+          </>
         )}
 
         {!isLoginMode && (

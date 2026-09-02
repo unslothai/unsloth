@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import os
 import threading
+
+from utils.workspace_context import current_workspace_subject
 import time
 from typing import Any, Optional
 
@@ -44,22 +46,25 @@ VRAM_FRACTION_DECIMALS = 3
 # Read on the load path, so memo briefly to spare SQLite, as model_memory_settings.
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
-_cache: dict[str, tuple[float, Any]] = {}
+# Keyed by (workspace, setting): studio.db is per account, so a name-only key
+# serves one account's value to the next for the length of the TTL.
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 # Bumped on every write: a read that began before it must not cache its stale
 # value, or the new budget would appear to revert for the rest of the TTL.
-_generation: dict[str, int] = {}
+_generation: dict[tuple[str, str], int] = {}
 
 # Retries converge; the bound only stops a write storm spinning here forever.
 _MAX_REREADS = 3
 
 
 def _cached_setting(key: str) -> Any:
+    scoped = (current_workspace_subject(), key)
     for _attempt in range(_MAX_REREADS):
         with _cache_lock:
-            hit = _cache.get(key)
+            hit = _cache.get(scoped)
             if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
                 return hit[1]
-            generation = _generation.get(key, 0)
+            generation = _generation.get(scoped, 0)
         try:
             from storage.studio_db import get_app_setting
             stored = get_app_setting(key, None)
@@ -67,17 +72,18 @@ def _cached_setting(key: str) -> Any:
             # An unreadable DB must not fail a load; fall back to the default.
             return None
         with _cache_lock:
-            if _generation.get(key, 0) == generation:
-                _cache[key] = (time.monotonic(), stored)
+            if _generation.get(scoped, 0) == generation:
+                _cache[scoped] = (time.monotonic(), stored)
                 return stored
         # A write landed mid-read, so `stored` predates it and must not be cached.
     return stored
 
 
 def _invalidate(key: str) -> None:
+    scoped = (current_workspace_subject(), key)
     with _cache_lock:
-        _cache.pop(key, None)
-        _generation[key] = _generation.get(key, 0) + 1
+        _cache.pop(scoped, None)
+        _generation[scoped] = _generation.get(scoped, 0) + 1
 
 
 def coerce_fraction(value: Any) -> Optional[float]:

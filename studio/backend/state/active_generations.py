@@ -23,6 +23,8 @@ import time
 import uuid
 from typing import Any, Optional
 
+from utils.workspace_context import current_workspace_subject
+
 # handle id -> entry. Keyed by handle, not thread_id: a tool continuation can register
 # before the previous leg unregisters, and one key would drop the other.
 _ACTIVE: dict[str, dict[str, Any]] = {}
@@ -41,6 +43,7 @@ class ActiveGeneration:
         "cancel_event",
         "model",
         "kind",
+        "subject",
         "_handle",
         "_borrowed",
     )
@@ -59,6 +62,9 @@ class ActiveGeneration:
         self.cancel_event = cancel_event
         self.model = model or None
         self.kind = kind
+        # Bound at registration: the cancel and snapshot routes are per account,
+        # and a handle with no owner is cancellable by anyone who can read it.
+        self.subject = current_workspace_subject()
         self._handle: Optional[str] = None
         self._borrowed = False
 
@@ -86,6 +92,7 @@ class ActiveGeneration:
                 "run_id": self.run_id,
                 "model": self.model,
                 "kind": self.kind,
+                "subject": self.subject,
                 "started_at": time.time(),
                 "event": self.cancel_event,
             }
@@ -102,10 +109,14 @@ class ActiveGeneration:
         return False
 
 
-def snapshot() -> list[dict[str, Any]]:
-    """In-flight generations, newest last. Drops the Event: this is a response."""
+def snapshot(subject: Optional[str] = None) -> list[dict[str, Any]]:
+    """In-flight generations, newest last. Drops the Event: this is a response.
+
+    ``subject`` limits the result to one workspace; None keeps the install-wide
+    view the VRAM and lifecycle counters need.
+    """
     with _LOCK:
-        entries = list(_ACTIVE.values())
+        entries = [e for e in _ACTIVE.values() if subject is None or e.get("subject") == subject]
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -120,35 +131,49 @@ def snapshot() -> list[dict[str, Any]]:
     ]
 
 
-def active_thread_ids() -> list[str]:
+def active_thread_ids(subject: Optional[str] = None) -> list[str]:
     """Distinct conversation ids with a generation in flight, in start order.
 
     A first turn that races persistence has no thread id yet: count() sees it,
-    this cannot name it.
+    this cannot name it. ``subject`` limits the naming to one workspace.
     """
     seen: list[str] = []
-    for e in snapshot():
+    for e in snapshot(subject):
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)
     return seen
 
 
-def count() -> int:
-    """Number of generations currently in flight."""
+def count(subject: Optional[str] = None) -> int:
+    """Number of generations currently in flight.
+
+    ``subject`` limits the count to one workspace; None keeps the install-wide
+    view the VRAM and lifecycle counters need. The difference between the two is
+    how many belong to somebody else.
+    """
     with _LOCK:
-        return len(_ACTIVE)
+        if subject is None:
+            return len(_ACTIVE)
+        return sum(1 for e in _ACTIVE.values() if e.get("subject") == subject)
 
 
-def cancel_all() -> int:
+def cancel_all(subject: Optional[str] = None) -> int:
     """Signal every in-flight generation to stop. Returns how many were signalled.
 
     Only sets the cancel events; each stream tears itself down. Entries are
     removed by their own __exit__, so one mid-cleanup is neither lost nor double
     counted.
+
+    ``subject`` restricts the sweep to one workspace. None stays install-wide,
+    which is what the sidecar swap needs: it replaces the runtime underneath
+    every stream, so leaving another account's running would be worse than
+    stopping it.
     """
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values()]
+        events = [
+            e["event"] for e in _ACTIVE.values() if subject is None or e.get("subject") == subject
+        ]
     for ev in events:
         try:
             ev.set()
@@ -157,12 +182,20 @@ def cancel_all() -> int:
     return len(events)
 
 
-def cancel_thread(thread_id: str) -> int:
-    """Signal only the generations belonging to ``thread_id``."""
+def cancel_thread(thread_id: str, subject: Optional[str] = None) -> int:
+    """Signal only the generations belonging to ``thread_id``.
+
+    ``subject`` restricts the cancel to one workspace, so a conversation id
+    guessed or observed by another account cannot stop this one.
+    """
     if not thread_id:
         return 0
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values() if e["thread_id"] == thread_id]
+        events = [
+            e["event"]
+            for e in _ACTIVE.values()
+            if e["thread_id"] == thread_id and (subject is None or e.get("subject") == subject)
+        ]
     for ev in events:
         try:
             ev.set()
@@ -171,12 +204,16 @@ def cancel_thread(thread_id: str) -> int:
     return len(events)
 
 
-def cancel_run(run_id: str) -> int:
+def cancel_run(run_id: str, subject: Optional[str] = None) -> int:
     """Signal only the generation registered for a durable Studio run."""
     if not run_id:
         return 0
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values() if e["run_id"] == run_id]
+        events = [
+            e["event"]
+            for e in _ACTIVE.values()
+            if e["run_id"] == run_id and (subject is None or e.get("subject") == subject)
+        ]
     for ev in events:
         try:
             ev.set()

@@ -28,8 +28,41 @@ from .constants import (
 from .parse import apply_update, coerce_event, parse_log_message
 from .types import Job
 from loggers import get_logger
+from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
 
 logger = get_logger(__name__)
+
+# Keys a Data Designer seed source reads a local file from.
+_RECIPE_PATH_KEYS = ("path", "paths")
+
+
+def _reject_uncontained_recipe_paths(recipe: Any) -> None:
+    """Refuse a recipe naming a local file outside the caller's own roots.
+
+    The recipe is forwarded to the worker unchanged and its seed sources open
+    whatever ``path``/``paths`` they carry; binding the worker scopes its OUTPUT
+    only. Walked recursively rather than matched against the seed-source schema,
+    which is third-party and can grow a source in any release. A value naming
+    nothing on disk is left alone, so an ordinary "path" field is unaffected.
+    """
+    from routes.inference import _reject_uncontained_local_path
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _RECIPE_PATH_KEYS:
+                    if isinstance(value, str):
+                        _reject_uncontained_local_path(value, "build datasets from")
+                    elif isinstance(value, (list, tuple)):
+                        for item in value:
+                            if isinstance(item, str):
+                                _reject_uncontained_local_path(item, "build datasets from")
+                _walk(value)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                _walk(item)
+
+    _walk(recipe)
 
 
 _CTX = mp.get_context("spawn")
@@ -124,6 +157,73 @@ class JobManager:
         self._subs: list[queue.Queue] = []
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
+        self._workspace_subject: str | None = None
+        # The last FINISHED job per workspace. One subprocess and one _job, so the
+        # next account to start a run erased the previous one's completed job and
+        # made an artifact still on disk unpublishable.
+        self._finished_jobs: dict[str, Job] = {}
+
+    def _retain_finished_job_locked(self) -> None:
+        """Keep the outgoing job for its own workspace before _job is replaced."""
+        outgoing = self._job
+        if outgoing is None:
+            return
+        subject = self._workspace_subject or LEGACY_WORKSPACE_SUBJECT
+        self._finished_jobs[subject] = outgoing
+
+    def _visible_job_locked(self, job_id: str | None = None) -> "Job | None":
+        """The job this workspace may read: the live one when it owns it, else its
+        retained finished one. Read paths only, since a retained job has no worker
+        and no event stream."""
+        if self._workspace_owned_locked() and self._job is not None:
+            if job_id is None or self._job.job_id == job_id:
+                return self._job
+        retained = self._finished_jobs.get(current_workspace_subject())
+        if retained is None:
+            return None
+        if job_id is not None and retained.job_id != job_id:
+            return None
+        return retained
+
+    def reset_retained_state(self, subject: str) -> None:
+        """Forget everything this account left behind, for a deleted account.
+
+        cancel() on a terminal job clears neither _job nor the subject and the
+        probe then reads idle, so the name was released while the finished run
+        was still resolvable to a namesake. Refuses while the worker is alive.
+        """
+        with self._lock:
+            if self._proc is not None and self._proc.is_alive():
+                return
+            self._finished_jobs.pop(subject, None)
+            if self._workspace_subject not in (None, subject):
+                return
+            self._job = None
+            self._workspace_subject = None
+            self._events.clear()
+            self._subs.clear()
+            self._seq = 0
+
+    def _workspace_owned_locked(self) -> bool:
+        return getattr(self, "_workspace_subject", None) in {
+            None,
+            current_workspace_subject(),
+        }
+
+    def owns_workspace(self, subject: str | None = None) -> bool:
+        """Whether the visible job belongs to this authenticated workspace."""
+        expected = subject or current_workspace_subject()
+        with self._lock:
+            return getattr(self, "_workspace_subject", None) in {None, expected}
+
+    def is_active(self) -> bool:
+        """Whether a worker for the visible job can still write. The process, not the
+        status field: a job that stopped reporting can still hold its artifact
+        root open."""
+        with self._lock:
+            if not self._workspace_owned_locked() or self._job is None:
+                return False
+            return bool(self._proc is not None and self._proc.is_alive())
 
     def start(
         self,
@@ -150,48 +250,94 @@ class JobManager:
         if llm_column_count <= 0:
             llm_column_count = 1
 
+        # Before the lock and before anything is replaced: the artifact root
+        # confines writes only, and refusing after the claim destroyed the
+        # previous account's finished job.
+        _reject_uncontained_recipe_paths(recipe)
+
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("job already running")
 
             job_id = uuid.uuid4().hex
-            self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
-            self._job.progress_columns_total = llm_column_count
-            self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
-            self._job.internal_api_key_id = internal_api_key_id
-            self._events.clear()
-            self._seq = 0
+            # Before the replacement, so the previous account keeps its finished
+            # run rather than losing it to whoever starts next.
+            self._retain_finished_job_locked()
+            # Captured so a failure before a live child hands the previous account
+            # its job back.
+            previous_workspace_subject = self._workspace_subject
+            previous_job = self._job
+            previous_events = list(self._events)
+            previous_seq = self._seq
+            spawned = False
+            try:
+                self._workspace_subject = current_workspace_subject()
+                self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
+                self._job.progress_columns_total = llm_column_count
+                self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
+                self._job.internal_api_key_id = internal_api_key_id
+                self._events.clear()
+                # Dropped with the events: a stream opened for the previous job stays
+                # in _subs after that job ends, and this singleton is shared, so the
+                # next account's events and logs would be broadcast down it. subscribe()
+                # already refuses a new stream from another workspace.
+                self._subs.clear()
+                self._seq = 0
 
-            run_payload = dict(run)
-            run_payload["_job_id"] = job_id
-            from utils.native_path_leases import (
-                native_path_secret_removed_for_child_start,
-                run_without_native_path_secret,
-            )
-            from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
+                run_payload = dict(run)
+                run_payload["_job_id"] = job_id
+                # spawn starts a fresh interpreter, so request ContextVars do not
+                # cross the process boundary. Pass the authenticated workspace's
+                # concrete artifact root instead of falling back to the owner path.
+                from utils.paths import recipe_datasets_root
 
-            cache_env = get_hf_cache_paths().child_env({})
-
-            with (
-                child_environment_for_spawn(cache_env),
-                native_path_secret_removed_for_child_start(),
-            ):
-                mp_q = _CTX.Queue()
-                proc = _CTX.Process(
-                    target = run_without_native_path_secret,
-                    args = ("core.data_recipe.jobs.worker", "run_job_process", cache_env),
-                    kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
-                    daemon = True,
+                run_payload["_artifact_root"] = str(recipe_datasets_root())
+                from utils.native_path_leases import (
+                    native_path_secret_removed_for_child_start,
+                    run_without_native_path_secret,
                 )
-                proc.start()
-                from utils.process_lifetime import adopt_pid
+                from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+                cache_env = get_hf_cache_paths().child_env({})
+                # Same suppression the trainers apply: this child is spawned, so it
+                # copies the live parent environment. Defence in depth behind the
+                # route's refusal of api_key_env, which is what actually stops a
+                # managed account naming an arbitrary variable to read.
+                from core.training.training import _ambient_credentials_suppressed_for
 
-            self._mp_q = mp_q
-            self._proc = proc
-            self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
-            self._pump_thread.start()
+                cache_env.update(_ambient_credentials_suppressed_for(self._workspace_subject))
+
+                with (
+                    child_environment_for_spawn(cache_env),
+                    native_path_secret_removed_for_child_start(),
+                ):
+                    mp_q = _CTX.Queue()
+                    proc = _CTX.Process(
+                        target = run_without_native_path_secret,
+                        args = ("core.data_recipe.jobs.worker", "run_job_process", cache_env),
+                        kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                        daemon = True,
+                    )
+                    proc.start()
+                    from utils.process_lifetime import adopt_pid
+
+                    adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+
+                self._mp_q = mp_q
+                self._proc = proc
+                self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
+                self._pump_thread.start()
+                spawned = True
+            finally:
+                if not spawned:
+                    # Nothing is running, so this caller replaced a job for
+                    # nothing. Give the previous account its job, its events
+                    # and its ownership back.
+                    self._workspace_subject = previous_workspace_subject
+                    self._job = previous_job
+                    self._events.clear()
+                    self._events.extend(previous_events)
+                    self._seq = previous_seq
 
             self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
             return job_id
@@ -199,7 +345,11 @@ class JobManager:
     def cancel(self, job_id: str) -> bool:
         """Hard stop. We terminate the subprocess. Quick + reliable."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                not self._workspace_owned_locked()
+                or self._job is None
+                or self._job.job_id != job_id
+            ):
                 return False
             if self._proc is None or not self._proc.is_alive():
                 return True
@@ -214,9 +364,9 @@ class JobManager:
     def get_status(self, job_id: str) -> dict | None:
         """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            job = self._visible_job_locked(job_id)
+            if job is None:
                 return None
-            job = self._job
             return {
                 "job_id": job.job_id,
                 "status": job.status,
@@ -282,14 +432,14 @@ class JobManager:
     def get_current_job_id(self) -> str | None:
         """Return current job_id (or None)."""
         with self._lock:
-            return None if self._job is None else self._job.job_id
+            job = self._visible_job_locked()
+            return job.job_id if job is not None else None
 
     def get_analysis(self, job_id: str) -> dict | None:
         """Final profiling output (only after job completes)."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
-                return None
-            return self._job.analysis
+            job = self._visible_job_locked(job_id)
+            return job.analysis if job is not None else None
 
     def get_dataset(
         self,
@@ -300,11 +450,12 @@ class JobManager:
     ) -> dict[str, Any] | None:
         """Load dataset page (offset + limit) and include total rows."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            job = self._visible_job_locked(job_id)
+            if job is None:
                 return None
-            in_memory_dataset = self._job.dataset
-            artifact_path = self._job.artifact_path
-            job_status = self._job.status
+            in_memory_dataset = job.dataset
+            artifact_path = job.artifact_path
+            job_status = job.status
 
         if in_memory_dataset is not None:
             total = len(in_memory_dataset)
@@ -398,7 +549,11 @@ class JobManager:
     ) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                not self._workspace_owned_locked()
+                or self._job is None
+                or self._job.job_id != job_id
+            ):
                 return None
             q: queue.Queue = queue.Queue(maxsize = 2000)
             self._subs.append(q)

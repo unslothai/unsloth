@@ -273,8 +273,14 @@ async def test_sweep_settles_a_stopped_run_as_cancelled(clock):
 @pytest.mark.asyncio
 async def test_sweep_cancels_the_wedged_producer(clock, capture):
     cancelled = []
+    # The sweep names the workspace as well as the id, since run ids are client
+    # supplied and the same one can be live in another account.
     app = SimpleNamespace(
-        state = SimpleNamespace(chat_generation_supervisor = SimpleNamespace(cancel = cancelled.append))
+        state = SimpleNamespace(
+            chat_generation_supervisor = SimpleNamespace(
+                cancel = lambda run_id, subject = None: cancelled.append(run_id)
+            )
+        )
     )
     _running_run()
     clock.advance_ms(11 * _MINUTE_MS)
@@ -286,7 +292,7 @@ async def test_sweep_cancels_the_wedged_producer(clock, capture):
 
 @pytest.mark.asyncio
 async def test_a_failing_producer_cancel_does_not_abort_the_sweep(clock, capture):
-    def boom(_run_id):
+    def boom(_run_id, _subject = None):
         raise RuntimeError("no such run")
 
     app = SimpleNamespace(

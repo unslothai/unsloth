@@ -102,7 +102,10 @@ class _FakeBackend:
             "memory_mode": kwargs.get("memory_mode") or "auto",
         }
 
-    def load_progress(self):
+    def load_progress(self, subject = None):
+        # Scoped: the payload names the repo being pulled, which for a private
+        # local path is the loading account's own directory.
+        assert subject == "unsloth"
         return {
             "phase": "ready" if self.loaded else None,
             "bytes_downloaded": 0,
@@ -146,11 +149,13 @@ class _FakeBackend:
             ),
         }
 
-    def generate_progress(self):
+    def generate_progress(self, subject = None):
         # Idle by default; the persist-window override lives in the route, not here.
+        # subject: the route scopes the poll to the caller's workspace, and both
+        # real engines take it.
         return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
 
-    def cancel_generate(self):
+    def cancel_generate(self, subject = None):
         # Both real engines return False when nothing is in flight; the fake tracks the same event.
         cancel = self.active_generate_cancel
         if cancel is None:
@@ -158,7 +163,10 @@ class _FakeBackend:
         cancel.set()
         return True
 
-    def unload(self):
+    def unload(self, subject = None):
+        # subject: the route scopes teardown to the caller's workspace, so it
+        # cannot end a generation another account started. Both real engines
+        # take it.
         self.loaded = False
         return _unloaded_status()
 
@@ -321,7 +329,7 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     real_save = gallery_module.save
 
     def _probe_save(image, meta):
-        seen["during"] = inf._diffusion_persist_active
+        seen["during"] = sum(inf._diffusion_persist_active.values())
         return real_save(image, meta)
 
     monkeypatch.setattr(gallery_module, "save", _probe_save)
@@ -330,7 +338,7 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     assert gen.status_code == 200
     # Active while the record was being persisted, and back to idle once the route returned.
     assert seen["during"] >= 1
-    assert inf._diffusion_persist_active == 0
+    assert inf._diffusion_persist_active == {}
     assert client.get("/api/inference/images/generate-progress").json()["active"] is False
 
 
@@ -356,13 +364,17 @@ def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypat
 
     # Simulate a concurrent load having re-loaded: unload leaves the engine resident.
     backend.loaded = True
-    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": True})
+    monkeypatch.setattr(
+        backend, "unload", lambda subject = None: {**_unloaded_status(), "loaded": True}
+    )
     r = client.post("/api/inference/images/unload")
     assert r.status_code == 200
     assert gpu_arbiter.current_owner() == gpu_arbiter.DIFFUSION  # ownership retained
 
     # The normal case (nothing resident after unload) still releases ownership.
-    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": False})
+    monkeypatch.setattr(
+        backend, "unload", lambda subject = None: {**_unloaded_status(), "loaded": False}
+    )
     backend.loaded = False
     r = client.post("/api/inference/images/unload")
     assert r.status_code == 200
@@ -407,7 +419,9 @@ def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
 
     backend.loaded = False
     backend.loading = ("unsloth/z-image-turbo",)
-    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": False})
+    monkeypatch.setattr(
+        backend, "unload", lambda subject = None: {**_unloaded_status(), "loaded": False}
+    )
     r = client.post("/api/inference/images/unload")
     assert r.status_code == 200
     assert gpu_arbiter.current_owner() == gpu_arbiter.DIFFUSION  # ownership retained for the load

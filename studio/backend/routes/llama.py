@@ -26,7 +26,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, require_install_admin
 from loggers import get_logger
 from utils.llama_cpp_update import (
     get_backend_status,
@@ -161,7 +161,7 @@ async def llama_update_status(
 
 @router.post("/update", response_model = LlamaUpdateActionResponse)
 async def llama_update(
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(require_install_admin),
 ) -> LlamaUpdateActionResponse:
     action = await asyncio.to_thread(start_update)
     return LlamaUpdateActionResponse(**action)
@@ -240,7 +240,7 @@ async def llama_backend_status(
 
 @router.post("/backend", response_model = LlamaUpdateActionResponse)
 async def llama_backend_switch(
-    request: LlamaBackendRequest, current_subject: str = Depends(get_current_subject)
+    request: LlamaBackendRequest, current_subject: str = Depends(require_install_admin)
 ) -> LlamaUpdateActionResponse:
     """Install the llama.cpp build for another backend and record the choice.
 

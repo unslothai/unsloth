@@ -9,7 +9,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    get_current_subject,
+    require_install_admin,
+)
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.datasets import (
     AiAssistMappingRequest,
@@ -75,7 +79,10 @@ def get_local_dataset_options(
 async def delete_cached_dataset(
     repo_id: str = Body(..., embed = True),
     cache_path: Optional[str] = Body(None, embed = True),
-    current_subject: str = Depends(get_current_subject),
+    # Owner only, for the same reason as the cached-model delete: the dataset
+    # cache is installation-wide, and a gated dataset may be restorable by only
+    # the account that first fetched it.
+    current_subject: str = Depends(require_install_admin),
 ):
     return await cache_inventory.delete_cached_dataset_response(repo_id, cache_path)
 

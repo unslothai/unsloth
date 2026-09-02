@@ -28,6 +28,12 @@ from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
+_schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 _UNSET = object()
 
 
@@ -89,14 +95,21 @@ def get_connection() -> sqlite3.Connection:
     """Open studio.db with WAL mode, create table once per process."""
     global _schema_ready
     db_path = studio_db_path()
+    db_key = str(db_path.resolve(strict = False))
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
     if not _schema_ready:
+        _schema_ready_paths.clear()
+    if db_key not in _schema_ready_paths:
         with _schema_lock:
-            if not _schema_ready:
+            if db_key not in _schema_ready_paths:
                 try:
                     _ensure_schema(conn)
+                    schema_cache.mark_ready(_schema_ready_paths, db_key, cache_generation)
                     _schema_ready = True
                 except Exception:
                     conn.close()

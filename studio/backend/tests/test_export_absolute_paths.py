@@ -98,9 +98,11 @@ def _install_lightweight_backend_stubs(monkeypatch):
     auth_pkg = types.ModuleType("auth")
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: None
-    # routes/models.py imports this alongside get_current_subject; a stub missing it
+    # routes/models.py imports these alongside get_current_subject; a stub missing one
     # fails the import with "unknown location", which reads like a path problem.
     auth_mod.allow_ambient_hf_token = lambda: True
+    # The cached-model delete and reveal are owner only, so it imports this too.
+    auth_mod.require_install_admin = lambda: None
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 

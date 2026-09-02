@@ -49,6 +49,15 @@ from urllib.parse import quote as _urlquote
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
+from utils import signed_media_links
+from utils.workspace_context import (
+    ForeignWorkspaceActiveError,
+    LEGACY_WORKSPACE_SUBJECT,
+    current_workspace_subject,
+    reset_workspace_subject,
+    set_workspace_subject,
+)
+from auth.authentication import require_install_admin
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import HfTokenArg
@@ -3966,6 +3975,12 @@ _PENDING_CANCELS: dict[str, float] = {}
 _PENDING_CANCEL_TTL_S = 30.0
 
 
+def _scoped_cancel_key(key):
+    """Workspace-prefixed: cancel keys are client-chosen, so two accounts can
+    present the same one."""
+    return f"{current_workspace_subject()}\x00{key}" if key else key
+
+
 def _prune_pending(now: float) -> None:
     for k in [k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S]:
         _PENDING_CANCELS.pop(k, None)
@@ -3989,7 +4004,7 @@ class _TrackedCancel:
         kind = "chat",
     ):
         self.event = event
-        self.keys = tuple(k for k in keys if k)
+        self.keys = tuple(_scoped_cancel_key(k) for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
@@ -4048,7 +4063,7 @@ def _cancel_by_keys(keys) -> int:
     with _CANCEL_LOCK:
         _prune_pending(time.monotonic())
         for k in keys:
-            bucket = _CANCEL_REGISTRY.get(k)
+            bucket = _CANCEL_REGISTRY.get(_scoped_cancel_key(k))
             if bucket:
                 events.update(bucket)
     for ev in events:
@@ -4063,11 +4078,12 @@ def _cancel_by_cancel_id_or_stash(cancel_id: str) -> int:
     events: set[threading.Event] = set()
     with _CANCEL_LOCK:
         _prune_pending(now)
-        bucket = _CANCEL_REGISTRY.get(cancel_id)
+        scoped = _scoped_cancel_key(cancel_id)
+        bucket = _CANCEL_REGISTRY.get(scoped)
         if bucket:
             events.update(bucket)
         else:
-            _PENDING_CANCELS[cancel_id] = now
+            _PENDING_CANCELS[scoped] = now
     for ev in events:
         ev.set()
     return len(events)
@@ -6658,12 +6674,511 @@ async def _lease_ollama_model_ref(
     return lease.path
 
 
+def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
+    """A managed account may only name a local path inside its own roots: without
+    a lease the path reaches the loader verbatim. Hub ids are not paths."""
+    if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
+        return
+    if not isinstance(model_path, str) or not model_path.strip():
+        return
+    candidate = model_path.strip()
+    try:
+        if not Path(os.path.expanduser(candidate)).exists():
+            return
+    except OSError:
+        return
+    from routes.models import _is_sizable_local_path, is_advertised_shared_model_path
+
+    # Before the data-root test below: a cache snapshot sits under cache_root(),
+    # so returning there skipped the one question a snapshot path has to be asked.
+    repo_id = _hub_repo_id_for_cache_path(candidate)
+    if repo_id is not None:
+        _reject_private_hub_repo_without_an_account_token(
+            repo_id,
+            None,
+            shared_cache_answers_offline = False,
+        )
+        return
+    if _is_sizable_local_path(candidate):
+        return
+    # ./models, the HF caches and the LM Studio dirs are scanned for everybody, so
+    # a model the catalog listed from one has to be loadable from it.
+    if is_advertised_shared_model_path(candidate):
+        # The cache question is asked above, so by here the path names no repository.
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"This account can only {operation} models inside its own workspace "
+            "or the shared model cache."
+        ),
+    )
+
+
+def _hub_repo_id_for_cache_path(candidate: str) -> Optional[str]:
+    """The repo a ``<cache>/models--Org--Name/snapshots/<sha>/...`` path holds, or None."""
+    from hub.utils.inventory_scan import _hf_repo_identity
+
+    try:
+        parts = Path(os.path.realpath(os.path.expanduser(candidate))).parts
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for part in parts:
+        identity = _hf_repo_identity(part)
+        if identity is not None and identity[0] == "model":
+            return identity[1]
+    return None
+
+
+# One anonymous metadata call per (repo, kind) per process. Public repos dominate,
+# so this is almost always a hit after the first pick.
+_ANONYMOUS_HUB_ACCESS: dict[tuple[str, str], bool] = {}
+_ANONYMOUS_HUB_ACCESS_LOCK = threading.Lock()
+
+
+def _hub_repo_is_anonymously_readable(repo_id: str, repo_type: str) -> Optional[bool]:
+    """True public, False private or gated, None unanswerable (offline, rate limit).
+
+    token = False, not None: None would find the implicit login being measured.
+    """
+    key = (repo_id, repo_type)
+    with _ANONYMOUS_HUB_ACCESS_LOCK:
+        cached = _ANONYMOUS_HUB_ACCESS.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token = False)
+        if repo_type == "model":
+            api.model_info(repo_id, files_metadata = False)
+        else:
+            api.repo_info(repo_id, repo_type = repo_type)
+        answer = True
+    except Exception as exc:  # noqa: BLE001 - classified below
+        from hub.utils.hf_errors import hf_error_status
+        status = hf_error_status(exc)
+        if status in (401, 403, 404):
+            # 404 too: the Hub reports a repo an anonymous caller cannot see as missing.
+            answer = False
+        else:
+            return None
+    with _ANONYMOUS_HUB_ACCESS_LOCK:
+        _ANONYMOUS_HUB_ACCESS[key] = answer
+    return answer
+
+
+def _reject_private_hub_repo_without_an_account_token(
+    model_path: Any,
+    hf_token: Any,
+    *,
+    repo_type: str = "model",
+    shared_cache_answers_offline: bool = True,
+) -> None:
+    """A managed account may not reach a non-public repo on the server's credential.
+
+    With no request token the Hub client falls back to the implicit HF_TOKEN or
+    CLI login, which are the owner's. Asked as "would an anonymous caller get
+    this?", so public repos load unchanged. Unanswerable falls back to the
+    install-wide cache, except for callers whose question is ABOUT a cached
+    snapshot: they pass shared_cache_answers_offline = False, since the cache
+    cannot be both the doubt and the answer.
+    """
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner():
+        return
+    if isinstance(hf_token, str) and hf_token.strip():
+        return
+    if not isinstance(model_path, str) or not model_path.strip():
+        return
+    candidate = model_path.strip()
+    if _looks_like_a_local_model_path(candidate):
+        # Containment, not credentials, governs a path; _reject_uncontained_local_path owns it.
+        return
+    readable = _hub_repo_is_anonymously_readable(candidate, repo_type)
+    if readable:
+        return
+    if readable is None and shared_cache_answers_offline:
+        # Cache presence alone is what exposed the weights, so pair it with this
+        # account having asked for the repo.
+        from hub.services.download_lifecycle import workspace_downloaded_repo
+        if workspace_downloaded_repo(candidate) and _repo_is_in_the_shared_cache(
+            candidate, repo_type
+        ):
+            return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "This repository is not public, so loading it needs your own Hugging "
+            "Face token. Add one in Settings and try again."
+        ),
+    )
+
+
+def _repo_is_in_the_shared_cache(repo_id: str, repo_type: str) -> bool:
+    """Whether a snapshot of this repo is already in the install-wide Hub cache."""
+    try:
+        from huggingface_hub import scan_cache_dir
+        from utils.hf_cache_settings import active_hf_hub_cache
+        for repo in scan_cache_dir(active_hf_hub_cache()).repos:
+            if repo.repo_id == repo_id and repo.repo_type == repo_type:
+                return True
+    except Exception:  # noqa: BLE001 - an unreadable cache answers nothing
+        return False
+    return False
+
+
+def _looks_like_a_local_model_path(candidate: str) -> bool:
+    """Whether this identifier is a filesystem path rather than a Hub repo id.
+
+    Shape alone, no filesystem access, so the answer survives a rename under a
+    resident model. A Hub id is ``owner/name``: one slash, not rooted.
+    """
+    if not candidate:
+        return False
+    if candidate.startswith("~") or os.path.isabs(candidate):
+        return True
+    if "\\" in candidate:
+        # A Windows separator, which a Hub id never contains.
+        return True
+    if candidate.startswith("./") or candidate.startswith("../"):
+        return True
+    # A Hub id is one slash deep; anything deeper is a path, not a repo.
+    return candidate.count("/") > 1
+
+
+def _reject_foreign_private_resident_model(status: Any, media: str) -> None:
+    """Refuse generation on a model another account loaded from a private path.
+
+    One media engine serves the install by design, so a Hub model stays resident
+    for whoever asks next; a model loaded from an account's own roots is not
+    that, and containment at load time does nothing once it is resident.
+
+    Decided against the CALLER's roots, testing the shared cache first and on its
+    own: the legacy owner's workspace_root() contains cache_root(), so a plain
+    containment test would make every shared model private to them. A Hub id is
+    told from a path by SHAPE, because deletion renames the workspace and an
+    existence test then called the retired path a Hub id.
+    """
+    if not _resident_model_is_foreign_private(status):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            f"The resident {media} model was loaded from another account's files. "
+            "Load your own model first."
+        ),
+    )
+
+
+def _reject_private_generation_time_repo(
+    identifier: Any,
+    what: str,
+    hf_token: Any = None,
+) -> None:
+    """A repo named at generation time is fetched on the LOADER's credential.
+
+    LoRA and ControlNet ids arrive per request and resolve inside the engine with
+    the resident state.hf_token, so a second account could have the first's token
+    fetch a private adapter. The generation route carries no token of its own;
+    the load route passes its request's, which is what bakes its adapters in.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        return
+    candidate = identifier.strip()
+    # A catalog id can be a local stem rather than a repo; containment governs
+    # those, and the per-account catalog roots already answer it.
+    if _looks_like_a_local_model_path(candidate):
+        _reject_uncontained_local_path(candidate, f"use a {what} from")
+        return
+    _reject_private_hub_repo_without_an_account_token(candidate, hf_token)
+
+
+# Everything in a status payload that can name, or spell out the path to, a model
+# somebody else loaded privately.
+_PRIVATE_STATUS_FIELDS = ("repo_id", "base_repo", "resolved", "local_path")
+
+
+def _redact_foreign_private_resident_model(status: Any) -> Any:
+    """Blank a status describing a model another account loaded privately.
+
+    The generation guard refuses the run, but the status routes handed the same
+    caller the model's identity and its absolute workspace path anyway, which is
+    the thing worth hiding even from someone who cannot use it. Reported idle
+    rather than refused, matching what load_progress does and what these routes
+    already return when nothing is loaded.
+    """
+    if not isinstance(status, dict) or not _resident_model_is_foreign_private(status):
+        return status
+    redacted = dict(status)
+    redacted["loaded"] = False
+    for key in _PRIVATE_STATUS_FIELDS:
+        if key in redacted:
+            redacted[key] = None
+    return redacted
+
+
+def _resident_model_is_foreign_private(status: Any) -> bool:
+    """Whether the resident model belongs to another account's private files."""
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner():
+        # The owner may load a model from anywhere on the host, which is what
+        # _reject_uncontained_local_path already allows them at load time, so an
+        # arbitrary path outside the Unsloth roots is theirs by construction.
+        # Treating it as foreign here would break the ordinary single-user case
+        # of loading weights from somewhere else on disk.
+        return False
+    repo_id = (status or {}).get("repo_id")
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        return False
+    candidate = repo_id.strip()
+    if not _looks_like_a_local_model_path(candidate):
+        try:
+            # Shape did not settle it, so ask the filesystem as a fallback. This
+            # only ever widens what counts as local, never narrows it, which is
+            # why the rename case above is handled by shape and not by this.
+            if not Path(os.path.expanduser(candidate)).exists():
+                # A Hub repo id, not a path: shared by design.
+                return False
+        except OSError:
+            return False
+
+    from routes.models import _is_sizable_local_path
+    from utils.paths.storage_roots import cache_root
+
+    def _lexical(value: str) -> str:
+        return os.path.normpath(os.path.abspath(os.path.expanduser(value)))
+
+    try:
+        resolved = _lexical(candidate)
+        shared = _lexical(str(cache_root()))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved == shared or resolved.startswith(shared + os.sep):
+        return False
+    if _is_sizable_local_path(candidate):
+        # Inside this caller's own roots, so it is this caller's model.
+        return False
+    return True
+
+
+def _reject_remote_code_from_a_managed_account(trust_remote_code: Any) -> None:
+    """Only the installation owner may run a repository's own Python.
+
+    trust_remote_code executes code the model repository ships, as the backend's
+    OS user, before any of this feature's isolation applies: that code can read
+    and write every account's workspace and anything else the process can reach.
+    Path containment does not help, because the repo id is not a path.
+
+    So it stays with whoever administers the install. A managed account that
+    needs such a model asks the owner to load it, which is also who decides
+    whether the repository is worth trusting in the first place.
+    """
+    if not trust_remote_code:
+        return
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return
+    from auth.storage import is_admin
+
+    if is_admin(subject):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Only the installation owner can load a model that runs its own code. "
+            "Ask them to load it, or pick a model that does not need trusted remote code."
+        ),
+    )
+
+
+# (identifier, workspace) for the text model this process was last asked to load.
+# The text backends are process-wide and hold one model between them, so without
+# this the account that follows a private load inherits the weights: it cannot
+# browse or load that path itself, but generation served whatever was resident.
+#
+# One slot, not a history: a bounded map is evictable, and anything an attacker
+# can evict is an authorization answer they can change. It is replaced by the
+# next load and never grows, so there is nothing to push out.
+_RESIDENT_TEXT_OWNER: Optional[tuple[str, str]] = None
+_RESIDENT_TEXT_OWNER_LOCK = threading.Lock()
+# Only these ask for a model to become resident. /validate and /estimate-memory
+# resolve an identifier too, and recording those let any caller name the slot.
+_LOAD_OPERATIONS = frozenset({"load-model"})
+
+
+def _note_text_model_loader(identifier: str, subject: str) -> None:
+    global _RESIDENT_TEXT_OWNER
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        _RESIDENT_TEXT_OWNER = (identifier, subject)
+
+
+def _text_model_loader(identifier: str) -> Optional[str]:
+    """Who asked for this identifier, if it is the one this process last loaded."""
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        owner = _RESIDENT_TEXT_OWNER
+    if owner is None or owner[0] != identifier:
+        return None
+    return owner[1]
+
+
+# The owner of a model whose account is gone. No account can be called this, so
+# it matches nobody and the model stays fenced off from everyone until it is
+# actually unloaded or replaced by a real load.
+RETIRED_TEXT_MODEL_OWNER = "\x00retired"
+
+
+def forget_text_model_owner(subject: Optional[str] = None) -> None:
+    """Drop the ownership record, for an unload that has already happened."""
+    global _RESIDENT_TEXT_OWNER
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        if subject is None or (_RESIDENT_TEXT_OWNER or ("", ""))[1] == subject:
+            _RESIDENT_TEXT_OWNER = None
+
+
+def retire_text_model_owner(subject: str) -> None:
+    """Fence the resident model off from everyone, for a deleted account.
+
+    Clearing the record is only safe once the weights are gone: the unload here
+    is best effort, and an unowned Hub repo passes the containment fallback. So
+    name an owner nobody can be instead.
+    """
+    global _RESIDENT_TEXT_OWNER
+    with _RESIDENT_TEXT_OWNER_LOCK:
+        current = _RESIDENT_TEXT_OWNER
+        if current is not None and current[1] == subject:
+            _RESIDENT_TEXT_OWNER = (current[0], RETIRED_TEXT_MODEL_OWNER)
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest,
     *,
     operation: str,
     resolved_ollama_path: Optional[str] = None,
 ) -> tuple[str, str, bool]:
+    """Resolve the identifier, and record who asked, for the residency check."""
+    resolved = _resolve_model_identifier_for_request_impl(
+        request,
+        operation = operation,
+        resolved_ollama_path = resolved_ollama_path,
+    )
+    identifier = resolved[0]
+    if operation in _LOAD_OPERATIONS and isinstance(identifier, str) and identifier.strip():
+        _note_text_model_loader(identifier.strip(), current_workspace_subject())
+    return resolved
+
+
+def _running_load_attempt_is_mine() -> bool:
+    """Whether the load in flight, if any, was started by this account. True when
+    nothing is loading, so the unload falls through to the resident-model paths."""
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return True
+    with _scoped_load_attempts_lock:
+        attempt = _running_load_attempt
+    if attempt is None:
+        return True
+    return getattr(attempt, "subject", subject) == subject
+
+
+def _resident_text_model_identifiers() -> list[str]:
+    """What the two shared text backends currently hold, however it was named."""
+    identifiers: list[str] = []
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_active", False):
+        for attribute in ("gguf_path", "hf_repo", "model_identifier"):
+            value = getattr(llama_backend, attribute, None)
+            if isinstance(value, str) and value.strip():
+                identifiers.append(value.strip())
+    # Peek, not the constructing getter: no orchestrator means nothing is resident.
+    backend = _peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
+    if isinstance(active, str) and active.strip():
+        identifiers.append(active.strip())
+    return identifiers
+
+
+def resident_text_model_workspace() -> Optional[str]:
+    """The workspace that asked for the resident text model, if recorded.
+
+    The idle-unload loop is created at startup, outside any request, so without
+    this it read the owner's TTL whoever had loaded the model.
+    """
+    for identifier in _resident_text_model_identifiers():
+        loader = _text_model_loader(identifier)
+        if loader is not None:
+            return loader
+    return None
+
+
+def _caller_could_have_loaded(identifier: str) -> bool:
+    """Whether this account could have named that identifier itself.
+
+    Both halves of the load path's question, so the two cannot drift: a contained
+    path, and a repo this account can reach. Containment alone let every private
+    repo through, since a repo id is not a path.
+    """
+    try:
+        _reject_uncontained_local_path(identifier, "use")
+        _reject_private_hub_repo_without_an_account_token(
+            identifier,
+            None,
+            shared_cache_answers_offline = False,
+        )
+    except HTTPException:
+        return False
+    return True
+
+
+def resident_text_model_is_foreign() -> bool:
+    """Whether the resident text model is one this account could not have loaded.
+    True with no recorded loader too, which is what the load path would say."""
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return False
+    identifiers = _resident_text_model_identifiers()
+    if not identifiers:
+        return False
+    loaders = {name: _text_model_loader(name) for name in identifiers}
+    for identifier in identifiers:
+        if loaders.get(identifier) == subject:
+            return False
+    for identifier in identifiers:
+        # Accessibility first, loader identity only when that fails: refusing a
+        # public model because somebody else got there first was a 409 for nothing.
+        if _caller_could_have_loaded(identifier):
+            continue
+        from auth.storage import is_installation_owner
+        return not is_installation_owner()
+    return False
+
+
+def _reject_generation_from_a_foreign_private_model() -> None:
+    """Refuse to serve a model this account could not have loaded itself.
+
+    Both text backends are process-wide, so asking the shared endpoint for a
+    completion reached a checkpoint the caller could not browse or load. Refused
+    rather than switched: the resident model is somebody's live session.
+    """
+    if not resident_text_model_is_foreign():
+        return
+    raise HTTPException(
+        status_code = 409,
+        detail = ("The loaded model belongs to another account. Load your own model and try again."),
+    )
+
+
+def _resolve_model_identifier_for_request_impl(
+    request: LoadRequest | ValidateModelRequest,
+    *,
+    operation: str,
+    resolved_ollama_path: Optional[str] = None,
+) -> tuple[str, str, bool]:
+    # Before the path work, and regardless of how the model is named: a Hub repo id
+    # is not a path, so containment never sees it.
+    _reject_remote_code_from_a_managed_account(getattr(request, "trust_remote_code", False))
     if is_ollama_manifest_ref(request.model_path):
         # The read-only inventory scan hands the picker an opaque manifest
         # reference; the load path owns the filesystem write that turns it into
@@ -6679,6 +7194,12 @@ def _resolve_model_identifier_for_request(
                 ) from exc
         return resolved_ollama_path, Path(resolved_ollama_path).name, False
     if not request.native_path_lease:
+        _reject_uncontained_local_path(request.model_path, operation)
+        # The credential half: containment says nothing about a Hub id, and a
+        # tokenless managed load reaches the Hub on the installation's login.
+        _reject_private_hub_repo_without_an_account_token(
+            request.model_path, getattr(request, "hf_token", None)
+        )
         return request.model_path, request.model_path, False
     try:
         grant = verify_native_path_lease(
@@ -7633,10 +8154,26 @@ def _classify_and_probe_residency(
     return is_gguf, _resolves_to_resident(load_path, llama_only = llama_only, exact_only = not is_gguf)
 
 
+def _catalog_models_here() -> tuple:
+    """The cached /v1/models scan, but only if this workspace produced it.
+
+    One cache serves the whole process and records whose scan filled it. Readers
+    that skipped that check saw another account's private scan-folder paths,
+    which both changed their answer and, through that, told them a model they
+    cannot reach exists.
+    """
+    # .get, not [..]: this runs inside a caller that swallows exceptions, so a
+    # cache dict missing the key would silently answer "no catalog" forever
+    # instead of failing loudly.
+    if _CATALOG_CACHE.get("subject") != current_workspace_subject():
+        return ()
+    return tuple(_CATALOG_CACHE["models"] or ())
+
+
 def _innermost_indexed_owner(path: str) -> Optional[str]:
     """Longest catalog-listed model path containing *path*, or None if none does."""
     best = None
-    for info in _CATALOG_CACHE["models"] or ():
+    for info in _catalog_models_here():
         listed = getattr(info, "path", None)
         if not listed:
             continue
@@ -12574,6 +13111,7 @@ def _raise_or_cancel_active_generations(
     force: bool,
     action: str,
     cancel: bool = True,
+    caller_scoped: bool = False,
 ) -> int:
     """Gate a model swap on the chats currently generating.
 
@@ -12588,11 +13126,21 @@ def _raise_or_cancel_active_generations(
     before teardown: cancelling is destructive and unrecoverable, so it must not
     run ahead of preflight checks that can still reject the load (see
     _load_model_impl).
+
+    ``caller_scoped`` is set by the request-driven swaps, where force_cancel_active
+    is a user asking to stop their own chats. Naming another account's chats back
+    to them was already refused, but the cancel itself was install-wide, so
+    retrying with the flag stopped every account's streams anyway. Under it, a
+    foreign generation refuses instead, and the sweep reaches only the caller's.
+    The sidecar swap leaves it False on purpose: that replaces the runtime under
+    every stream, so leaving somebody else's running is worse than stopping it.
     """
     if not active_generations.count():
         return 0
     if not force:
-        thread_ids = active_generations.active_thread_ids()
+        # The count stays install-wide because the swap really would stop them all,
+        # but only the caller's own conversations are named back to them.
+        thread_ids = active_generations.active_thread_ids(current_workspace_subject())
         running = active_generations.count()
         raise HTTPException(
             status_code = 409,
@@ -12608,10 +13156,31 @@ def _raise_or_cancel_active_generations(
                 "thread_ids": thread_ids,
             },
         )
+    subject = current_workspace_subject() if caller_scoped else None
+    if subject is not None:
+        foreign = active_generations.count() - active_generations.count(subject)
+        if foreign:
+            # force_cancel_active means "stop MY chats", and there is no answer
+            # here that stops only those and still frees the model, so refuse.
+            # The count is install-wide because the swap really would stop them
+            # all; no thread ids, since they are not this caller's to see.
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "foreign_active_generations",
+                    "message": (
+                        f"{action} would stop {foreign} chat"
+                        f"{'s' if foreign != 1 else ''} running in another account. "
+                        "Wait for them to finish."
+                    ),
+                    "running": foreign,
+                    "thread_ids": [],
+                },
+            )
     if not cancel:
         # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
         return 0
-    cancelled = active_generations.cancel_all()
+    cancelled = active_generations.cancel_all(subject)
     if cancelled:
         logger.info(
             "model_swap_cancelled_active_generations",
@@ -12667,7 +13236,12 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
     await _drain(time.monotonic() + budget * 4 / 5, discount_registered = False)
 
 
-async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> None:
+async def _drain_and_recancel_before_teardown(
+    *,
+    force: bool,
+    action: str,
+    caller_scoped: bool = True,
+) -> None:
     """Wait out inference the registry cannot see, then stop anything new.
 
     A request that passed the keep-warm middleware but has not reached its
@@ -12685,7 +13259,9 @@ async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> No
         timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
     )
     if force:
-        _raise_or_cancel_active_generations(force = True, action = action)
+        # Same scope as the cancel this is re-running, so the second sweep cannot
+        # reach further than the first one was allowed to.
+        _raise_or_cancel_active_generations(force = True, action = action, caller_scoped = caller_scoped)
 
 
 _UNRESOLVED_BACKEND_STATE = object()
@@ -12805,7 +13381,9 @@ async def get_active_generations(
     slot count actually in use, which the VRAM fit may have cut below the
     requested --parallel; chats beyond it queue rather than fail.
     """
-    entries = active_generations.snapshot()
+    # Caller's workspace only: the entries carry conversation and run ids that the
+    # cancel routes accept, so an install-wide snapshot hands them to every account.
+    entries = active_generations.snapshot(current_workspace_subject())
     # A tracker's model can be a native local path (the legacy stream records active_model_name
     # verbatim); redact here, the one place that serialises it.
     for _entry in entries:
@@ -12819,7 +13397,7 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(),
+        "thread_ids": active_generations.active_thread_ids(current_workspace_subject()),
         "parallel_slots": max(1, int(slots)),
     }
 
@@ -13083,6 +13661,7 @@ async def load_model_gated(
                     force = request.force_cancel_active,
                     action = "Loading a model",
                     cancel = cancel,
+                    caller_scoped = True,
                 ),
             )
         # Record provenance only once the model is resident, and here rather than
@@ -14947,7 +15526,7 @@ async def check_transformers_upgrade_route(
     "/install-latest-transformers", response_model = InstallLatestTransformersResponse
 )
 async def install_latest_transformers_route(
-    request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
+    request: InstallLatestTransformersRequest, current_subject: str = Depends(require_install_admin)
 ):
     """
     Consented install of the latest transformers release into the persistent
@@ -15505,6 +16084,16 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             finally:
                 attempt.cancel_complete.set()
 
+        # Both "stop loading" fast paths below cancel a load in flight, and they run
+        # ahead of the scoped generation check, so an unforced unload naming the same
+        # model was enough to kill another account's multi-gigabyte load repeatedly.
+        # The attempt already records who started it, so ask.
+        if not _running_load_attempt_is_mine():
+            raise HTTPException(
+                status_code = 409,
+                detail = "Another account is loading a model. Wait for it to finish.",
+            )
+
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
         # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
@@ -15557,6 +16146,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 force = request.force_cancel_active,
                 action = "Unloading the model",
                 cancel = False,
+                caller_scoped = True,
             )
 
         # Serialize with /load under the same lifecycle gate: the Unsloth unload now runs
@@ -15572,6 +16162,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                     force = request.force_cancel_active,
                     action = "Unloading the model",
                     cancel = False,
+                    caller_scoped = True,
                 )
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
@@ -15590,7 +16181,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # chats. A manual unload is a deliberate user action, so it cancels mid-stream
                 # requests rather than deferring to them the way the automatic idle loop does.
                 _raise_or_cancel_active_generations(
-                    force = request.force_cancel_active, action = "Unloading the model"
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    caller_scoped = True,
                 )
                 # Let what we just cancelled unwind first, like /load: tearing the server down under
                 # streams told to stop but not yet finished turned a clean end into a dropped
@@ -15617,7 +16210,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             if _unload_evicts_standard_backend(backend, request.model_path):
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
-                    force = request.force_cancel_active, action = "Unloading the model"
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    caller_scoped = True,
                 )
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
@@ -15783,6 +16378,7 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
+    _reject_generation_from_a_foreign_private_model()
     # Enforce the preview-swap reject FIRST, before reading any backend state. If a public
     # preview loaded a different checkpoint while this native Unsloth request waited on the
     # keep-warm gate, the middleware flagged the scope; the loaded-model and image-capability
@@ -16096,17 +16692,44 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
 
+        # This account's own attempt only. The maps are process-wide, so reporting
+        # whichever attempt happened to be first published another account's
+        # repository id or the basename of its local checkpoint, and it did so
+        # before the model was resident, which is the window the residency check
+        # above cannot see. A foreign load is simply not this caller's business.
+        _status_subject = current_workspace_subject()
+
+        def _mine(attempt) -> bool:
+            return attempt is not None and (
+                _status_subject == LEGACY_WORKSPACE_SUBJECT
+                or getattr(attempt, "subject", _status_subject) == _status_subject
+            )
+
         with _scoped_load_attempts_lock:
             _tracked_loading_id = (
-                _running_load_attempt.model_path if _running_load_attempt is not None else ""
+                _running_load_attempt.model_path if _mine(_running_load_attempt) else ""
             )
             if not _tracked_loading_id:
-                _queued = next(iter(_pending_load_attempts.values()), None)
+                _queued = next((a for a in _pending_load_attempts.values() if _mine(a)), None)
                 _tracked_loading_id = _queued.model_path if _queued is not None else ""
         # The attempt holds what the client sent, which for an on-device model is a path.
         _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
         _loading = [_tracked_loading_id] if _tracked_loading_id else []
         backend = _peek_inference_backend()
+
+        # Another account's private checkpoint is not this account's status: the
+        # identifier is its absolute workspace path, and the rest of the payload
+        # is its configuration and chat template. Reported as nothing loaded,
+        # which is what this account can act on anyway, keeping its own pending
+        # load and the installation-wide llama.cpp version fields.
+        if resident_text_model_is_foreign():
+            return InferenceStatusResponse(
+                loading = _loading,
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
+            )
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
@@ -17110,7 +17733,9 @@ def _prepare_runtime_fallback_checkpoint(
     if stt_sidecar.is_model_downloaded(model):
         return
     try:
+        _note_stt_download_initiator("transformers")
         stt_sidecar.start_model_download(model, hf_token)
+        _note_stt_model_downloader(model)
     except Exception as exc:  # noqa: BLE001 - preparation is best effort, never fatal
         # Another dictation model already downloading is the common case, and the caller
         # is about to report "not downloaded" anyway.
@@ -17180,12 +17805,19 @@ async def stt_status(
     transformers_downloaded = [
         model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
     ]
-    if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
+    if (
+        model
+        and model not in STT_MODELS
+        and not _stt_model_is_foreign(model)
+        and stt_sidecar.is_model_downloaded(model)
+    ):
         transformers_downloaded.append(model)
     return JSONResponse(
         content = {
             "available": is_available(),
-            "loaded_model": sidecar.loaded_model,
+            # Curated ids are public and unchanged; a custom private repository
+            # another account loaded reads as nothing loaded.
+            "loaded_model": _redacted_stt_model(sidecar.loaded_model),
             "loading": sidecar.is_loading(),
             "device": sidecar.device,
             "keep_alive_seconds": sidecar.keep_alive_seconds,
@@ -17195,14 +17827,14 @@ async def stt_status(
             # either generically. Top-level fields above kept for old clients.
             "transformers": {
                 "available": is_available(),
-                "loaded_model": sidecar.loaded_model,
+                "loaded_model": _redacted_stt_model(sidecar.loaded_model),
                 "loading": sidecar.is_loading(),
                 "device": sidecar.device,
                 "keep_alive_seconds": sidecar.keep_alive_seconds,
                 "default_model": DEFAULT_STT_MODEL,
                 "models": list(STT_MODELS.keys()),
                 "downloaded_models": transformers_downloaded,
-                "download": stt_sidecar.download_status(),
+                "download": _redacted_stt_download_status(stt_sidecar.download_status()),
             },
             # llama.cpp (mtmd) engine: non-Whisper ASR models.
             "mtmd": {
@@ -17261,6 +17893,12 @@ async def stt_download(
 
     engine = _resolve_serving_stt_engine(payload.engine)
     module = _stt_download_module(engine)
+    # Claimed before the transfer starts, on the request's own thread, so the cancel
+    # route can tell this account's download from another's, and released again if
+    # nothing ends up running under it.
+    claimed = _claim_stt_download(engine, module)
+    claimant = current_workspace_subject()
+    started = False
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
@@ -17278,11 +17916,156 @@ async def stt_download(
             )
         else:
             await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
+        started = True
+        _note_stt_model_downloader(payload.model)
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
+    finally:
+        if claimed and not started:
+            _release_stt_download_claim(engine, claimant)
     return JSONResponse(content = module.download_status())
+
+
+# The dictation download is one installation-wide transfer into the shared cache,
+# so the registry that owns it has no per-account key. The account that started
+# one is recorded here instead, keyed by engine, so a cancel can be authorized.
+_STT_DOWNLOAD_INITIATORS: dict[str, str] = {}
+_STT_DOWNLOAD_INITIATORS_LOCK = threading.Lock()
+
+
+# Dictation model id -> the accounts that have downloaded it on this installation.
+# The snapshot lands in the install-wide cache and /audio/stt/load carries no Hub
+# credential, so this is what tells a private repo's own downloader apart from an
+# account that merely learned its name.
+_STT_MODEL_DOWNLOADERS: dict[str, set[str]] = {}
+
+
+def forget_stt_model_downloader(subject: str) -> None:
+    """Drop a retired account from every dictation-model downloader set.
+
+    Keyed by the reusable username, so a namesake inherited the right to load a
+    private snapshot the previous holder's token had fetched into the cache.
+    """
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        for model in list(_STT_MODEL_DOWNLOADERS):
+            holders = _STT_MODEL_DOWNLOADERS.get(model)
+            if not holders:
+                continue
+            holders.discard(subject)
+            if not holders:
+                _STT_MODEL_DOWNLOADERS.pop(model, None)
+        for engine, initiator in list(_STT_DOWNLOAD_INITIATORS.items()):
+            if initiator == subject:
+                _STT_DOWNLOAD_INITIATORS.pop(engine, None)
+
+
+def _note_stt_model_downloader(model: Any) -> None:
+    if not isinstance(model, str) or not model.strip():
+        return
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        _STT_MODEL_DOWNLOADERS.setdefault(model.strip(), set()).add(current_workspace_subject())
+
+
+def _reject_private_stt_model_from_another_account(model: Any) -> None:
+    """A cached private dictation repo stays with the account that fetched it.
+
+    WhisperSttSidecar reuses any complete snapshot it finds in the shared cache,
+    and this route asks for no token, so naming Alice's private Whisper
+    repository was enough for Bob to run her weights. An account that downloaded
+    the repo here keeps its own access; everyone else has to be able to read it
+    anonymously. Curated ids are public, so they answer readable and pass.
+    """
+    if not isinstance(model, str) or not model.strip():
+        return
+    candidate = model.strip()
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        downloaders = _STT_MODEL_DOWNLOADERS.get(candidate)
+    if downloaders and current_workspace_subject() in downloaders:
+        return
+    _reject_private_hub_repo_without_an_account_token(
+        candidate,
+        None,
+        shared_cache_answers_offline = False,
+    )
+
+
+def _stt_model_is_foreign(model: Any) -> bool:
+    """Whether this dictation model is one this account could not have obtained."""
+    try:
+        _reject_private_stt_model_from_another_account(model)
+    except HTTPException:
+        return True
+    return False
+
+
+def _redacted_stt_model(model: Any) -> Any:
+    """The model id, or None when it belongs to another account. The sidecars are
+    installation-wide, so status reported whatever private repo was loaded."""
+    return None if _stt_model_is_foreign(model) else model
+
+
+def _redacted_stt_download_status(status: Any) -> Any:
+    """A download status with another account's repository name removed."""
+    if not isinstance(status, dict):
+        return status
+    for field in ("model", "cancelled_model"):
+        if _stt_model_is_foreign(status.get(field)):
+            status = {**status, field: None}
+    return status
+
+
+def _claim_stt_download(engine: str, module) -> bool:
+    """Take ownership of the engine's download slot if no transfer holds it.
+
+    One slot per engine, so a running transfer keeps its owner and this returns
+    False; recording unconditionally handed it to whoever asked last, who could
+    then cancel it. The status read is under the lock: it is the test.
+    """
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        try:
+            in_flight = bool(module.download_status().get("downloading"))
+        except Exception:  # noqa: BLE001 - an unreadable status must not block a download
+            in_flight = False
+        if in_flight and _STT_DOWNLOAD_INITIATORS.get(engine) is not None:
+            return False
+        _STT_DOWNLOAD_INITIATORS[engine] = current_workspace_subject()
+        return True
+
+
+def _release_stt_download_claim(engine: str, subject: str) -> None:
+    """Give the slot back when the start it was taken for never happened: a stale
+    owner would take the cancel authority for whatever runs next."""
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        if _STT_DOWNLOAD_INITIATORS.get(engine) == subject:
+            _STT_DOWNLOAD_INITIATORS.pop(engine, None)
+
+
+def _note_stt_download_initiator(engine: str) -> None:
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        _STT_DOWNLOAD_INITIATORS.setdefault(engine, current_workspace_subject())
+
+
+def _require_stt_download_cancel_permission(engine: str) -> None:
+    """Only the account that started this download, or the owner, may stop it.
+
+    The payload is optional and defaults to the shared downloader, so a caller
+    needed no job id at all to kill somebody else's transfer. An unrecorded
+    download stays cancellable, as on the hub path: refusing strands it.
+    """
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner():
+        return
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        initiator = _STT_DOWNLOAD_INITIATORS.get(engine)
+    if initiator is None or initiator == current_workspace_subject():
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = "Another account started this dictation model download.",
+    )
 
 
 @studio_router.post("/audio/stt/download/cancel")
@@ -17297,6 +18080,7 @@ async def stt_download_cancel(
     from core.inference import stt_ggml_sidecar, stt_sidecar
 
     engine = _resolve_serving_stt_engine(payload.engine if payload else None)
+    _require_stt_download_cancel_permission(engine)
     module = _stt_download_module(engine)
     cancelled = await asyncio.to_thread(module.cancel_model_download)
     # This request's result last: download_status() carries its own historical
@@ -17323,6 +18107,7 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    _reject_private_stt_model_from_another_account(payload.model)
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         payload.engine,
@@ -17457,6 +18242,10 @@ async def _transcribe_audio_result(
         raise HTTPException(status_code = 400, detail = "Audio is empty.")
     if len(raw) > _MAX_AUDIO_RAW_BYTES:
         raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    # Every transcription route reaches this, and each one can load the model it
+    # names, so the ownership check belongs here rather than only on the explicit
+    # /audio/stt/load route it was first written for.
+    _reject_private_stt_model_from_another_account(model)
 
     serving_engine = _resolve_serving_stt_engine(engine)
     await asyncio.to_thread(
@@ -18775,7 +19564,9 @@ async def _proxy_to_external_provider(
             include_api_key = bool(studio_tool_payloads),
         )
         cancel_event = threading.Event()
-        cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+        cancel_keys = tuple(
+            _scoped_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
+        )
 
         async def _codex_stream():
             current_access_token = access_token
@@ -18843,7 +19634,11 @@ async def _proxy_to_external_provider(
                 _prune_pending(now)
                 for key in cancel_keys:
                     _CANCEL_REGISTRY.setdefault(key, set()).add(cancel_event)
-                if payload.cancel_id and _PENDING_CANCELS.pop(payload.cancel_id, None) is not None:
+                if (
+                    payload.cancel_id
+                    and _PENDING_CANCELS.pop(_scoped_cancel_key(payload.cancel_id), None)
+                    is not None
+                ):
                     should_cancel = True
             if should_cancel:
                 cancel_event.set()
@@ -19085,6 +19880,9 @@ async def _proxy_to_external_provider(
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
     cancel_event = threading.Event()
+    # Raw, like every other _TrackedCancel caller: its constructor scopes them.
+    # Scoping here too stored subject\0subject\0id while /cancel looks up
+    # subject\0id, so Stop could not reach these tool calls at all.
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
     async def _watch_disconnect() -> None:
@@ -19634,6 +20432,9 @@ async def produce_openai_chat_completions(
                 detail = "Video input is only supported on a local GGUF model with video support.",
             )
         return await _proxy_to_external_provider(payload, request, current_subject)
+
+    # Past the provider branch this request runs on whatever is resident here.
+    _reject_generation_from_a_foreign_private_model()
 
     # Reject a malformed function tool here: it would otherwise reach
     # llama-server and surface as an opaque 500 "Failed to parse tools".
@@ -23709,8 +24510,19 @@ async def reveal_sandbox_dir(
 
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
+
+    Owner only. The window opens on the machine the backend runs on, not the
+    caller's, so for a browser-managed account it is somebody else's screen, and
+    repeating the call keeps opening windows there.
     """
-    await _authenticate_header_or_query(request, token)
+    subject = await _authenticate_header_or_query(request, token)
+    from auth.storage import is_installation_owner
+
+    if not is_installation_owner(subject):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the installation owner can open folders on the server.",
+        )
 
     from starlette.concurrency import run_in_threadpool
 
@@ -23946,9 +24758,13 @@ def _openai_model_objects() -> list[dict]:
 
 # Brief cache for the local-model filesystem scan so repeated /v1/models calls
 # don't rescan the HF cache and models dirs on every request.
-_CATALOG_CACHE: dict = {"at": 0.0, "models": []}
+# Keyed by workspace: the scan includes scan-folder models, which are private
+# per account, so one global entry serves them to whoever asks next.
+_CATALOG_CACHE: dict = {"subject": None, "at": 0.0, "models": []}
 # Ids the last catalog scan listed, rebuilt only when that scan is replaced.
-_ADVERTISED_CACHE: dict = {"at": None, "paths": {}}
+# Derived from _CATALOG_CACHE, so it carries the same subject: the stamp alone
+# would let one account reuse a table built from another account's scan.
+_ADVERTISED_CACHE: dict = {"at": None, "subject": None, "paths": {}}
 
 
 def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
@@ -23980,14 +24796,18 @@ def _advertised_local_path(model: str) -> Optional[str]:
     advertised a local model the resolver index has not picked up yet, which is
     evidence the name means something other than the resident one.
     """
-    if _ADVERTISED_CACHE["at"] != _CATALOG_CACHE["at"]:
+    subject = current_workspace_subject()
+    if (
+        _ADVERTISED_CACHE.get("at") != _CATALOG_CACHE.get("at")
+        or _ADVERTISED_CACHE.get("subject") != subject
+    ):
         paths = {}
-        for info in _CATALOG_CACHE["models"] or ():
+        for info in _catalog_models_here():
             cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
             path = getattr(info, "path", None)
             if cid and path:
                 paths.setdefault(cid.strip().lower(), path)
-        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
+        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], subject = subject, paths = paths)
     return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
 
 
@@ -24267,6 +25087,15 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
     return objects
 
 
+def _catalog_is_fresh(subject: str, now: float) -> bool:
+    """Cached entry is usable only for the workspace that produced it."""
+    return bool(
+        _CATALOG_CACHE["at"]
+        and _CATALOG_CACHE["subject"] == subject
+        and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S
+    )
+
+
 async def _cached_local_catalog() -> list:
     """Locally available models (models dir + HF caches + LM Studio + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
@@ -24278,12 +25107,13 @@ async def _cached_local_catalog() -> list:
     into a single scan instead of one per request."""
     # Validity is keyed on "at" (set only after a scan), not on list contents, so
     # an empty/errored scan is still cached instead of rescanning on every poll.
+    subject = current_workspace_subject()
     now = time.monotonic()
-    if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+    if _catalog_is_fresh(subject, now):
         return _CATALOG_CACHE["models"]
     async with _catalog_lock():
         now = time.monotonic()
-        if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+        if _catalog_is_fresh(subject, now):
             return _CATALOG_CACHE["models"]
         try:
             from routes.models import collect_local_models
@@ -24295,6 +25125,7 @@ async def _cached_local_catalog() -> list:
             _CATALOG_CACHE["models"] = []
         # Stamp after the scan, not the pre-scan "now": a scan slower than the TTL
         # would otherwise leave the cache already expired, so every waiter rescans.
+        _CATALOG_CACHE["subject"] = subject
         _CATALOG_CACHE["at"] = time.monotonic()
     return _CATALOG_CACHE["models"]
 
@@ -24632,6 +25463,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     Proxies to the running llama-server's ``/v1/completions``. Only available
     when a GGUF model is loaded.
     """
+    # This endpoint has no provider branch: it always answers from the resident model.
+    _reject_generation_from_a_foreign_private_model()
     llama_backend = get_llama_cpp_backend()
 
     # Reject a request with no prompt before any automatic load so an invalid request never
@@ -24691,6 +25524,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
     # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
     _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
@@ -24995,6 +25832,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
     # upstream response would strand a preview-owned checkpoint as Unsloth-owned.
 
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
@@ -25974,6 +26815,10 @@ async def _responses_stream(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
     body["stream_options"] = {"include_usage": True}
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     # The stream's own disconnect event, shared with the cancel/active-generation registries:
     # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
@@ -29735,6 +30580,10 @@ async def _passthrough_retry_url(llama_backend, exc):
     if respawn is None or not await asyncio.to_thread(respawn):
         return None
     logger.warning("llama-server was unreachable; respawned it and retrying the passthrough")
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     return f"{llama_backend.base_url}/v1/chat/completions"
 
 
@@ -29767,6 +30616,10 @@ async def _anthropic_passthrough_stream(
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_passthrough_payload(
         openai_messages,
@@ -30075,6 +30928,10 @@ async def _anthropic_passthrough_non_streaming(
     without disturbing unrelated calls, which left this path registered with the
     swap gate but deaf to the event it registered.
     """
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_passthrough_payload(
         openai_messages,
@@ -31016,6 +31873,10 @@ async def _openai_passthrough_stream_admitted(
     deliberately not re-parsed locally, unlike the ``/completion`` paths.
     """
     _tracker = tracker
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
@@ -31968,6 +32829,10 @@ async def _openai_passthrough_non_streaming_upstream(
     response ``id``, ``finish_reason`` (including ``"tool_calls"``), structured
     ``tool_calls``, and accurate ``usage`` token counts.
     """
+    # Every route that reaches the resident model goes through a url built
+    # here, so this is where admission belongs rather than in the
+    # handlers that happened to be listed first.
+    _reject_generation_from_a_foreign_private_model()
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     body = await _build_openai_passthrough_body_async(
@@ -32325,6 +33190,15 @@ async def diffusion_download_plan(
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
+    # The same two questions /images/load asks, and for the same reason: the
+    # validator reads the target's checkpoint names and pipeline config, so a
+    # path or repo this account may not have would be described back to it here
+    # even though the load itself would refuse the identical pick.
+    _reject_uncontained_local_path(request.model_path, "plan a download for")
+    _reject_uncontained_local_path(request.base_repo, "plan a download for")
+    _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
     backend = get_diffusion_backend()
     try:
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
@@ -32499,6 +33373,26 @@ async def load_diffusion_model_gated(
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
+    # The text load path gets this through _resolve_model_identifier_for_request;
+    # the media ones never went near it, and their validators accept any existing
+    # local path, so an absolute path here deserialized another account's weights.
+    _reject_uncontained_local_path(request.model_path, "load")
+    # The base repo is a separate identifier and the backend accepts a local
+    # pipeline directory for it, so the credential helper's early return for a
+    # path-shaped value has to be backed by containment here too.
+    _reject_uncontained_local_path(request.base_repo, "load")
+    # And the same credential rule the video load already applies. A Hub id is
+    # deliberately allowed through the containment check above, but
+    # DiffusionBackend.load_pipeline normalises a missing token to None, and
+    # huggingface_hub then sends the installation's implicit login, so a managed
+    # account naming one of the owner's private repos downloaded and ran it.
+    _reject_private_hub_repo_without_an_account_token(request.model_path, request.hf_token)
+    if request.base_repo:
+        # Fetched the same way, under a separate identifier.
+        _reject_private_hub_repo_without_an_account_token(request.base_repo, request.hf_token)
+    # Adapters baked in at load time are fetched on the same credential.
+    for _lora in request.loras or ():
+        _reject_private_generation_time_repo(_lora.id, "LoRA", request.hf_token)
     backend = get_diffusion_backend()
     try:
         # Resolve the load kind once (gguf / single_file / pipeline) so validation, engine selection and the load agree. A bad kind raises here, so a 400.
@@ -32693,8 +33587,27 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
-# Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
-_diffusion_persist_active = 0
+# Per workspace, count of finished generations still writing their PNG/gallery records;
+# generate-progress reports active while this account is above 0. Kept per account
+# because the progress poll is per account: a single counter made one account's slow
+# batch persist show up as an active generation in every other account's image UI,
+# defeating the subject filter the poll applies just above it. Mutated only on the
+# event loop, so no lock.
+_diffusion_persist_active: dict[str, int] = {}
+
+
+def _begin_image_persist(subject: str) -> None:
+    _diffusion_persist_active[subject] = _diffusion_persist_active.get(subject, 0) + 1
+
+
+def _end_image_persist(subject: str) -> None:
+    remaining = _diffusion_persist_active.get(subject, 0) - 1
+    if remaining > 0:
+        _diffusion_persist_active[subject] = remaining
+    else:
+        # Popped rather than left at zero, so generation_in_flight() below stays a
+        # plain emptiness check and the map cannot grow one entry per account seen.
+        _diffusion_persist_active.pop(subject, None)
 
 
 def generation_in_flight() -> bool:
@@ -32704,8 +33617,11 @@ def generation_in_flight() -> bool:
     the gallery records the response is built from. generate-progress already treats that
     window as active; liveness has to agree, or the watchdog sees an idle backend and spends
     its short budget on a request that is still running.
+
+    Deliberately ANY account: this guards the process, which one account's persist
+    keeps busy for everybody.
     """
-    return _diffusion_persist_active > 0
+    return bool(_diffusion_persist_active)
 
 
 _GENERATE_FAILURE_FALLBACK = "Image generation failed."
@@ -32749,9 +33665,33 @@ async def generate_diffusion_image(
     )
 
     backend = get_active_diffusion_engine()
+    # Names no model, so it runs whatever is resident: load-time containment
+    # cannot answer for this.
+    authorised_status = backend.status()
+    _reject_foreign_private_resident_model(authorised_status, "image")
+    # These arrive per request and download on the resident pipeline's token.
+    for _lora in request.loras or ():
+        _reject_private_generation_time_repo(_lora.id, "LoRA")
+    if request.controlnet:
+        _reject_private_generation_time_repo(request.controlnet.id, "ControlNet")
+    # Pinned to the model that check just authorised. A private load committing
+    # between the check and the generation slot would otherwise be adopted by this
+    # request, which never named a model at all; the slot compares this identity
+    # under its own lock and refuses a replacement instead.
+    from core.inference.diffusion_families import (
+        DiffusionModelReplacedError as _DiffusionModelReplacedError,
+    )
+    from core.inference.diffusion_families import load_identity as _load_identity
+
+    authorised_load = _load_identity(
+        authorised_status.get("repo_id"),
+        authorised_status.get("base_repo"),
+        authorised_status.get("family"),
+    )
     try:
         result = await asyncio.to_thread(
             backend.generate,
+            expected_load = authorised_load,
             prompt = request.prompt,
             negative_prompt = request.negative_prompt,
             width = request.width,
@@ -32780,6 +33720,13 @@ async def generate_diffusion_image(
                 if request.controlnet
                 else None
             ),
+        )
+    except _DiffusionModelReplacedError:
+        # The model changed under this request between the authorisation check and
+        # the slot. Answered as a conflict rather than silently running on it.
+        raise HTTPException(
+            status_code = 409,
+            detail = "The loaded image model changed while this request was starting. Try again.",
         )
     except ValueError as exc:
         # Bad client input (undecodable image/mask, or an unsupported workflow): a 400 with the reason, not a generic 500.
@@ -32873,15 +33820,15 @@ async def generate_diffusion_image(
         return records
 
     # Hold generate-progress "active" across the persist so a reload mount probe cannot refresh the gallery before these records exist.
-    global _diffusion_persist_active
-    _diffusion_persist_active += 1
+    persist_subject = current_workspace_subject()
+    _begin_image_persist(persist_subject)
     try:
         records = await asyncio.to_thread(_persist)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
-        _diffusion_persist_active -= 1
+        _end_image_persist(persist_subject)
 
     return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
 
@@ -33151,7 +34098,14 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
-    status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
+    # Scoped: unload signals the same cancellation event the cancel route does, so
+    # without the subject this stayed a way for any account to end another's run.
+    try:
+        status_dict = await asyncio.to_thread(
+            get_active_diffusion_engine().unload, current_workspace_subject()
+        )
+    except ForeignWorkspaceActiveError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()
@@ -33166,7 +34120,11 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import active_status
-    return DiffusionStatusResponse(**active_status())
+
+    # Refusing the generation is not enough on its own: this payload names the
+    # model and spells out its absolute path, which is the part worth hiding from
+    # a caller who is not allowed to use it.
+    return DiffusionStatusResponse(**_redact_foreign_private_resident_model(active_status()))
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)
@@ -33182,16 +34140,21 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
 async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    return DiffusionLoadProgressResponse(**get_active_diffusion_engine().load_progress())
+    return DiffusionLoadProgressResponse(
+        **get_active_diffusion_engine().load_progress(current_workspace_subject())
+    )
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-    progress = get_active_diffusion_engine().generate_progress()
+    # Scoped: one engine serves every account, so an unscoped poll reports another
+    # account's step count and ETA, and the UI would show a run this caller cannot
+    # have started.
+    progress = get_active_diffusion_engine().generate_progress(current_workspace_subject())
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
-    if _diffusion_persist_active > 0 and not progress["active"]:
+    if _diffusion_persist_active.get(current_workspace_subject(), 0) > 0 and not progress["active"]:
         progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
 
@@ -33208,8 +34171,15 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     generation that already finished."""
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
+    # run_in_executor does NOT copy the context, so the subject is read here and
+    # passed rather than left for the worker to resolve to the default.
+    subject = current_workspace_subject()
     cancelled = await asyncio.get_running_loop().run_in_executor(
-        _CANCEL_EXECUTOR, get_active_diffusion_engine().cancel_generate
+        _CANCEL_EXECUTOR,
+        functools.partial(
+            get_active_diffusion_engine().cancel_generate,
+            subject,
+        ),
     )
     return {"cancelled": cancelled}
 
@@ -33252,30 +34222,12 @@ _IMAGE_LINK_SECRET = _secrets.token_bytes(32)
 
 
 def _sign_image_id(image_id: str) -> str:
-    exp = int(time.time()) + _IMAGE_LINK_TTL
-    payload = f"{image_id}.{exp}"
-    sig = _hmac.new(_IMAGE_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
-    return f"{payload}.{sig}"
+    return signed_media_links.sign(_IMAGE_LINK_SECRET, image_id, _IMAGE_LINK_TTL)
 
 
 def _verify_image_link_token(token: str) -> Optional[str]:
-    """The image id a valid, unexpired token names, else None. Gallery ids are
-    ``[A-Za-z0-9_-]`` so the two dots always split id / expiry / signature."""
-    try:
-        image_id, exp_s, sig = token.rsplit(".", 2)
-    except ValueError:
-        return None
-    expected = _hmac.new(
-        _IMAGE_LINK_SECRET, f"{image_id}.{exp_s}".encode(), _hashlib.sha256
-    ).hexdigest()
-    if not _hmac.compare_digest(sig, expected):
-        return None
-    try:
-        if int(exp_s) < int(time.time()):
-            return None
-    except ValueError:
-        return None
-    return image_id
+    """The image id a valid, unexpired token names, else None."""
+    return signed_media_links.verify(_IMAGE_LINK_SECRET, token)[0]
 
 
 def _absolute_image_url(request: Request, image_id: str) -> str:
@@ -33295,9 +34247,16 @@ async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
     authenticated route, and the token names the single image it may serve."""
     from core.inference import image_gallery
 
-    if _verify_image_link_token(token) != image_id:
+    signed_id, subject = signed_media_links.verify(_IMAGE_LINK_SECRET, token)
+    if signed_id != image_id:
         raise HTTPException(status_code = 401, detail = "Invalid or expired image link.")
-    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    # The route takes no bearer, so without this the gallery resolves the owner's
+    # directory and every managed account gets a 404 for its own image.
+    _token = set_workspace_subject(subject)
+    try:
+        path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    finally:
+        reset_workspace_subject(_token)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
     data = await asyncio.to_thread(path.read_bytes)
@@ -33393,6 +34352,7 @@ async def _generate_openai_images(
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
+    _reject_foreign_private_resident_model(backend.status(), "image")
     from core.inference.diffusion_memory import ImageActivationShortfallError
     from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
@@ -33402,6 +34362,10 @@ async def _generate_openai_images(
     result = None
     for attempt in range(2):
         status = backend.status()
+        # Re-run on every attempt, not once before the loop: the retry pins itself
+        # to a status read AFTER the replacement, so a private load that landed in
+        # between would otherwise be adopted by this request.
+        _reject_foreign_private_resident_model(status, "image")
         if not status.get("loaded"):
             # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
@@ -33515,14 +34479,14 @@ async def _generate_openai_images(
 
     # Same counter as /images/generate: the request is still in flight until these records
     # exist, and liveness reads the counter to say so.
-    global _diffusion_persist_active
-    _diffusion_persist_active += 1
+    persist_subject = current_workspace_subject()
+    _begin_image_persist(persist_subject)
     try:
         data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
-        _diffusion_persist_active -= 1
+        _end_image_persist(persist_subject)
 
     return ImageGenerationResponse(created = created, data = data)

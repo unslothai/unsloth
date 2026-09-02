@@ -34,8 +34,14 @@ DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
-LOCAL_DATASETS_ROOT = recipe_datasets_root()
-DATASET_UPLOAD_DIR = dataset_uploads_root()
+
+
+def _local_datasets_root() -> Path:
+    return recipe_datasets_root()
+
+
+def _dataset_upload_dir() -> Path:
+    return dataset_uploads_root()
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -130,11 +136,12 @@ def _display_uploaded_dataset_name(path: Path) -> str:
 
 
 def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
-    if not LOCAL_DATASETS_ROOT.exists():
+    root = _local_datasets_root()
+    if not root.exists():
         return []
 
     items: list[LocalDatasetItem] = []
-    for entry in LOCAL_DATASETS_ROOT.iterdir():
+    for entry in root.iterdir():
         if not entry.is_dir() or not entry.name.startswith("recipe_"):
             continue
         parquet_dir = entry / "parquet-files"
@@ -167,11 +174,12 @@ def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
 
 
 def _build_uploaded_dataset_items() -> list[LocalDatasetItem]:
-    if not DATASET_UPLOAD_DIR.exists():
+    root = _dataset_upload_dir()
+    if not root.exists():
         return []
 
     items: list[LocalDatasetItem] = []
-    for path in DATASET_UPLOAD_DIR.iterdir():
+    for path in root.iterdir():
         if not path.is_file() or path.suffix.lower() not in LOCAL_UPLOAD_EXTS:
             continue
         if is_appledouble_metadata(path):
@@ -310,10 +318,10 @@ def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
     limit_mb = get_upload_limit_mb()
     max_bytes = upload_limit_bytes(limit_mb)
     max_label = upload_limit_label(limit_mb)
-    ensure_dir(DATASET_UPLOAD_DIR)
+    upload_dir = ensure_dir(_dataset_upload_dir())
     stem = Path(filename).stem
     stored_name = f"{uuid.uuid4().hex}_{stem}{ext}"
-    return filename, DATASET_UPLOAD_DIR / stored_name, max_bytes, max_label
+    return filename, upload_dir / stored_name, max_bytes, max_label
 
 
 def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResponse:

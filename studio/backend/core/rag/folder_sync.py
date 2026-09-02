@@ -21,6 +21,11 @@ from pathlib import Path, PurePosixPath
 
 from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    current_workspace_subject,
+    workspace_thread,
+)
 
 from . import config, ingestion, job_leases, store
 from utils.paths.path_utils import is_appledouble_metadata
@@ -32,7 +37,9 @@ _stop = threading.Event()
 _thread: threading.Thread | None = None
 _thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
-_worker_lock = threading.Lock()
+_workspace_workers: dict[str, tuple[threading.Thread, threading.Event, threading.Event]] = {}
+_worker_lock = threading.Lock()  # legacy-account compatibility and singleton guard
+_workspace_worker_locks: dict[str, threading.Lock] = {}
 _worker_state = threading.local()
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
@@ -872,8 +879,30 @@ def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
         )
         conn.commit()
         _prune_terminal_jobs(conn)
-    _wake.set()
+    # The legacy account has a startup worker. Managed workspaces are started
+    # lazily as well, so a newly-created account does not need a server restart
+    # before its first linked-folder job can run.
+    #
+    # Idempotent for a healthy worker: start_auto_sync returns False without
+    # spawning when this workspace's thread is alive and unstopped. Keeping it
+    # unconditional is what lets a legacy sync self-heal when the lifespan
+    # worker never started (rag unavailable at boot, post-warm stood down) or
+    # died, which are the cases where the row would otherwise sit pending
+    # until the next restart.
+    start_auto_sync()
+    _wake_current_workspace()
     return job_id
+
+
+def _wake_current_workspace() -> None:
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        _wake.set()
+        return
+    with _thread_lock:
+        worker = _workspace_workers.get(subject)
+    if worker is not None:
+        worker[2].set()
 
 
 def _prune_terminal_jobs(conn) -> None:
@@ -1601,7 +1630,7 @@ def _queue_successor(job_id: str) -> None:
     finally:
         conn.close()
     if queued:
-        _wake.set()
+        _wake_current_workspace()
 
 
 def reconcile_folder(job_id: str) -> None:
@@ -1705,11 +1734,23 @@ def _next_job() -> tuple[str, str] | None:
     return _claim_job(row["id"]) if row else None
 
 
-def _worker(stop_event: threading.Event | None = None, project_exists = None) -> None:
+def _worker(
+    stop_event: threading.Event | None = None,
+    project_exists = None,
+    wake_event: threading.Event | None = None,
+    worker_subject: str | None = None,
+) -> None:
     global _thread, _thread_stop
     stop_event = stop_event or _stop
+    wake_event = wake_event or _wake
+    worker_subject = worker_subject or current_workspace_subject()
+    if worker_subject == LEGACY_WORKSPACE_SUBJECT:
+        worker_lock = _worker_lock
+    else:
+        with _thread_lock:
+            worker_lock = _workspace_worker_locks.setdefault(worker_subject, threading.Lock())
     try:
-        with _worker_lock:
+        with worker_lock:
             _worker_state.stop_event = stop_event
             while not stop_event.is_set():
                 try:
@@ -1738,8 +1779,8 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                         logger.exception("linked-folder job %s failed unexpectedly", job_id)
                         _fail_job(job_id, exc)
                     continue
-                _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
-                _wake.clear()
+                wake_event.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
+                wake_event.clear()
                 if not stop_event.is_set():
                     try:
                         if project_exists is not None:
@@ -1750,9 +1791,14 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
     finally:
         _worker_state.stop_event = None
         with _thread_lock:
-            if _thread is threading.current_thread():
-                _thread = None
-                _thread_stop = None
+            if worker_subject == LEGACY_WORKSPACE_SUBJECT:
+                if _thread is threading.current_thread():
+                    _thread = None
+                    _thread_stop = None
+            else:
+                active = _workspace_workers.get(worker_subject)
+                if active is not None and active[0] is threading.current_thread():
+                    _workspace_workers.pop(worker_subject, None)
 
 
 def _recover_startup_state() -> None:
@@ -1814,6 +1860,7 @@ def start_auto_sync(
     project_exists = None,
 ) -> bool:
     global _thread, _thread_stop
+    subject = current_workspace_subject()
     try:
         if not rag_db.rag_available():
             return False
@@ -1821,6 +1868,33 @@ def start_auto_sync(
         # The worker retries initialization, so transient database contention must
         # not turn a one-shot startup preflight into a process-lifetime outage.
         pass
+    if subject != LEGACY_WORKSPACE_SUBJECT:
+
+        def launch_workspace() -> bool:
+            with _thread_lock:
+                active = _workspace_workers.get(subject)
+                if active is not None and active[0].is_alive():
+                    return False
+                stop_event = threading.Event()
+                wake_event = threading.Event()
+                worker = workspace_thread(
+                    target = _worker,
+                    subject = subject,
+                    args = (stop_event, project_exists, wake_event, subject),
+                    daemon = True,
+                    name = f"rag-folder-sync-{subject}",
+                )
+                _workspace_workers[subject] = (worker, stop_event, wake_event)
+                worker.start()
+                return True
+
+        if admission_lock is None:
+            return launch_workspace()
+        with admission_lock:
+            if admit is not None and not admit():
+                return False
+            return launch_workspace()
+
     with _thread_lock:
         retired = _thread if _thread is not None and _thread.is_alive() else None
         if retired is not None and not _stop.is_set():
@@ -1834,8 +1908,9 @@ def start_auto_sync(
             stop_event = threading.Event()
             _stop.clear()
             _thread_stop = stop_event
-            _thread = threading.Thread(
+            _thread = workspace_thread(
                 target = _worker,
+                subject = subject,
                 args = (stop_event, project_exists),
                 daemon = True,
                 name = "rag-folder-sync",
@@ -1851,6 +1926,35 @@ def start_auto_sync(
         return launch()
 
 
+def workspace_sync_worker_active(subject: str) -> bool:
+    """Whether a linked-folder sync worker is running for ``subject``."""
+    with _thread_lock:
+        active = _workspace_workers.get(subject)
+    return bool(active is not None and active[0].is_alive())
+
+
+def stop_workspace_auto_sync(subject: str, timeout: float = 2.0) -> None:
+    """Stop one workspace's sync worker, leaving every other account's running.
+
+    Account deletion needs this: the worker is bound to the deleted subject, so
+    its next rag_db_path() recreates the username-derived directory that was just
+    renamed, and a namesake registering the name would share it. stop_auto_sync
+    stops every workspace's, which is a process shutdown, not an account delete.
+    """
+    with _thread_lock:
+        managed = _workspace_workers.get(subject)
+    if managed is None:
+        return
+    worker, stop_event, wake_event = managed
+    stop_event.set()
+    wake_event.set()
+    worker.join(timeout = timeout)
+    if not worker.is_alive():
+        with _thread_lock:
+            if _workspace_workers.get(subject) is managed:
+                _workspace_workers.pop(subject, None)
+
+
 def stop_auto_sync(timeout: float = 2.0) -> None:
     _stop.set()
     _wake.set()
@@ -1861,3 +1965,10 @@ def stop_auto_sync(timeout: float = 2.0) -> None:
         stop_event.set()
     if thread is not None:
         thread.join(timeout = timeout)
+    with _thread_lock:
+        managed = tuple(_workspace_workers.values())
+    for _worker_thread, managed_stop, managed_wake in managed:
+        managed_stop.set()
+        managed_wake.set()
+    for worker_thread, _managed_stop, _managed_wake in managed:
+        worker_thread.join(timeout = timeout)

@@ -174,6 +174,37 @@ def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatc
     assert calls == ["native_path_secret", "native_tls", "trainer"]
 
 
+def test_diffusion_child_binds_workspace_before_trainer_runs(monkeypatch):
+    import sys
+    import types
+    import core.training.diffusion_training_service as service
+    from utils.workspace_context import (
+        current_workspace_subject,
+        reset_workspace_subject,
+        set_workspace_subject,
+    )
+
+    observed = []
+    monkeypatch.setattr("utils.native_tls.activate_native_tls", lambda: None)
+    trainer = types.ModuleType("core.training.diffusion_lora_trainer")
+    trainer.run_diffusion_training_process = lambda **kwargs: observed.append(
+        current_workspace_subject()
+    )
+    monkeypatch.setitem(sys.modules, "core.training.diffusion_lora_trainer", trainer)
+
+    outer = set_workspace_subject("unsloth")
+    try:
+        service._run_diffusion_child(
+            event_queue = "events",
+            stop_queue = "stop",
+            config = {"subject": "alice"},
+        )
+    finally:
+        reset_workspace_subject(outer)
+
+    assert observed == ["alice"]
+
+
 _CFG = {"base_model": "b", "data_dir": "d", "output_dir": "/tmp/out", "train_steps": 2}
 
 
@@ -482,6 +513,7 @@ def test_route_start_ok(client):
     assert r.status_code == 200, r.text
     assert r.json() == {"job_id": "job-123", "status": "running"}
     assert client._fake.started_with["base_model"] == "stabilityai/sdxl-turbo"
+    assert client._fake.started_with["subject"] == "test-user"
     # Paths were resolved to absolute Unsloth-contained locations before spawn.
     from pathlib import Path
 
@@ -2289,6 +2321,57 @@ def test_run_record_persisted_on_complete(_isolated_runs_dir):
     # Secrets never land on disk.
     assert "hf_token" not in rec["config"]
     assert rec["config"]["model_family"] == "z-image"
+
+
+def test_run_record_pump_stays_in_starting_workspace(monkeypatch, tmp_path):
+    import core.training.diffusion_training_service as dts
+    from utils.workspace_context import current_workspace_subject
+
+    observed_subjects = []
+
+    def workspace_runs_dir():
+        subject = current_workspace_subject()
+        observed_subjects.append(subject)
+        path = tmp_path / subject / "runs" / "diffusion"
+        path.mkdir(parents = True, exist_ok = True)
+        return path
+
+    monkeypatch.setattr(dts, "_runs_dir", workspace_runs_dir)
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    job_id = svc.start({**_CFG, "model_family": "z-image", "subject": "alice"})
+    _wait_status(svc, "completed")
+    time.sleep(0.1)
+
+    record_path = tmp_path / "alice" / "runs" / "diffusion" / f"{job_id}.json"
+    assert record_path.is_file()
+    assert set(observed_subjects) == {"alice"}
+    assert "subject" not in json.loads(record_path.read_text())["config"]
+
+
+def test_active_diffusion_job_is_hidden_and_cannot_be_stopped_by_another_workspace():
+    from utils.workspace_context import reset_workspace_subject, set_workspace_subject
+
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _stoppable_target)
+    alice = set_workspace_subject("alice")
+    try:
+        svc.start({**_CFG, "model_family": "z-image", "subject": "alice"})
+        _wait_status(svc, "running")
+    finally:
+        reset_workspace_subject(alice)
+
+    bob = set_workspace_subject("bob")
+    try:
+        assert svc.status()["status"] == "idle"
+        assert svc.stop() is False
+    finally:
+        reset_workspace_subject(bob)
+
+    alice = set_workspace_subject("alice")
+    try:
+        assert svc.stop() is True
+        _wait_status(svc, "stopped")
+    finally:
+        reset_workspace_subject(alice)
 
 
 def test_run_record_no_save_stop_marks_unsaved(_isolated_runs_dir):

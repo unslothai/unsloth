@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
+from utils.workspace_context import set_workspace_subject
 
 from .storage import (
     API_KEY_PREFIX,
@@ -17,6 +18,8 @@ from .storage import (
     credential_generation,
     get_jwt_secret,
     get_user_and_secret,
+    is_admin,
+    is_installation_owner,
     load_jwt_secret,
     save_refresh_token,
     validate_api_key_with_credential,
@@ -321,7 +324,25 @@ async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depend
         credentials,
         allow_password_change = False,
     )
+    # Each ASGI request owns its context; Starlette propagates it into sync
+    # route threadpools and child tasks. Storage roots therefore follow the
+    # verified token subject, never an untrusted request field.
+    set_workspace_subject(subject)
     return subject
+
+
+async def require_install_admin(current_subject: str = Depends(get_current_subject)) -> str:
+    """Require the installation owner for effects the whole install shares.
+
+    Process control, runtime installs and shared caches are not per account, so
+    an ordinary managed account must not reach them.
+    """
+    if not is_admin(current_subject):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Only the installation owner can do this.",
+        )
+    return current_subject
 
 
 async def get_current_credential(
@@ -332,10 +353,12 @@ async def get_current_credential(
     For routes that persist a new credential and must not do so on behalf of one
     a concurrent reset has revoked.
     """
-    return await _get_current_credential(
+    subject, generation = await _get_current_credential(
         credentials,
         allow_password_change = False,
     )
+    set_workspace_subject(subject)
+    return subject, generation
 
 
 async def authenticated_via_api_key(
@@ -387,12 +410,19 @@ async def authenticated_without_credential(
     return admitted_without_credential(credentials)
 
 
-def require_ui_session_for_local_commands(via_api_key: bool) -> None:
-    """Refuse an sk-unsloth API key that asks to define a local (stdio) MCP command.
+def require_ui_session_for_local_commands(via_api_key: bool, subject: str | None = None) -> None:
+    """Refuse anyone but the owner's UI session a local (stdio) MCP command.
 
     stdio MCP runs a command on this host as the backend user, outside the
-    python/terminal sandbox, so only a UI session may choose what runs. API keys
-    keep http(s) MCP, and stdio servers the owner already configured.
+    python/terminal sandbox, so whoever chooses what runs can read and write
+    every account's workspace and anything else the process can reach. That is
+    installation administration, not a per-account setting.
+
+    The API-key half of this is older: keys keep http(s) MCP, and stdio servers
+    the owner already configured. The owner half is what managed accounts need,
+    since "a UI session" stopped meaning "the owner" once other accounts could
+    sign in. Path containment cannot help here, because the command is an
+    executable name rather than a path into a workspace.
     """
     if via_api_key:
         raise HTTPException(
@@ -400,17 +430,34 @@ def require_ui_session_for_local_commands(via_api_key: bool) -> None:
             detail = "Local (stdio) MCP servers can only be configured from the Unsloth UI, "
             "not with an API key. Use an http:// or https:// MCP server instead.",
         )
+    if not is_installation_owner(subject):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Only the installation owner can configure local (stdio) MCP servers, "
+            "because they run as the server's OS user. Use an http:// or https:// "
+            "MCP server instead.",
+        )
 
 
-async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
+async def allow_ambient_hf_token(
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    current_subject: str = Depends(get_current_subject),
+) -> bool:
     """Whether a download this caller starts may fall back to the backend's own HF_TOKEN.
 
-    A UI session already gets the saved token from Settings, so the ambient one grants it
-    nothing new. ``require_ui_session`` refuses an sk-unsloth API key that same token, so it
-    must not reach private repos by naming one in a download instead; it sends its own token
-    in ``X-Unsloth-HF-Token``.
+    ``require_ui_session`` refuses an sk-unsloth API key the saved Settings token, so it must
+    not reach private repos by naming one in a download instead; it sends its own token in
+    ``X-Unsloth-HF-Token``.
+
+    The owner only. The old rule was "any UI session", which was sound while the saved
+    Settings token belonged to the one account there was: borrowing the process token granted
+    a UI session nothing it did not already hold. Saved credentials are per workspace now, so
+    a managed account holds its OWN token and the process one is the owner's. Left as it was,
+    naming a private or gated repo in a download spent the owner's credential and pulled that
+    repo into the shared cache. Public repos need no token and are unaffected, and an account
+    that has its own token still uses it.
     """
-    return not via_api_key
+    return not via_api_key and is_installation_owner(current_subject)
 
 
 async def authenticated_via_desktop_jwt(

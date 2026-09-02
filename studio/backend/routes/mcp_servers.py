@@ -102,6 +102,36 @@ def _normalize_stdio_command(url: str) -> str:
     return normalized
 
 
+def _reject_private_target_for_managed_accounts(parsed) -> None:
+    """A managed account may not point the backend at a loopback or LAN MCP server.
+
+    Refresh and chat execution connect to this URL from the backend host, so an
+    address the account cannot reach from its own browser becomes a probe, and
+    then a caller, of whatever else is on that network. The owner keeps private
+    targets: a locally hosted MCP server is an ordinary setup, and single-user
+    installs only ever have the owner.
+
+    Reuses the provider validator's resolver-backed check so both surfaces agree
+    on what counts as non-public, including DNS aliases of a private address.
+    """
+    from auth.storage import subject_may_reach_private_hosts
+
+    if subject_may_reach_private_hosts():
+        return
+    from core.inference.providers import _reject_non_public
+
+    hostname = (parsed.hostname or "").rstrip(".")
+    if not hostname:
+        raise HTTPException(status_code = 400, detail = "url is missing a host")
+    try:
+        _reject_non_public(hostname, parsed.port, parsed.scheme.lower())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 403,
+            detail = (f"This account can only add MCP servers on public addresses. ({exc})"),
+        ) from exc
+
+
 def _validate_url(url: str) -> str:
     raw = url or ""
     trimmed = raw.strip()
@@ -123,6 +153,7 @@ def _validate_url(url: str) -> str:
         raise HTTPException(status_code = 400, detail = detail)
     if not parsed.netloc:
         raise HTTPException(status_code = 400, detail = "url is missing a host")
+    _reject_private_target_for_managed_accounts(parsed)
     return trimmed
 
 

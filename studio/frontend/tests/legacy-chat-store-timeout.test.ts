@@ -50,6 +50,11 @@ function loadStorage(options: {
       import.meta.url,
     ),
     {
+      "../../../lib/account-transition.ts": {
+        // This browser has only ever had one account in these tests, so the
+        // legacy rows are its own.
+        legacyBrowserDataBelongsToCurrentAccount: () => true,
+      },
       "../api/chat-api": {
         buildBackendChatExport: async () => ({ threads: [], messages: [] }),
         ChatThreadDeletedError: class extends Error {},

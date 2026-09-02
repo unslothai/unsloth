@@ -186,6 +186,7 @@ export const zhCN = {
     tabs: {
       general: "通用",
       profile: "个人资料",
+      accounts: "账户",
       appearance: "外观",
       resources: "系统",
       chat: "聊天",

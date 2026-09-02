@@ -91,23 +91,44 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
-async function redirectToAuth(): Promise<void> {
+/**
+ * ``ownRequirement`` means the server just told THIS account to change its
+ * password, so no lookup is needed and none is made. Without it the caller has
+ * no session left and /status, which describes the installation owner, is the
+ * only thing there is to go on.
+ */
+async function redirectToAuth(ownRequirement = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
 
   let target = "/login";
-  try {
-    const res = await fetch(apiUrl("/api/auth/status"));
-    if (res.ok) {
-      const data = (await res.json()) as { requires_password_change: boolean };
-      // Server truth wins; keep localStorage in sync both ways.
-      if (data.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(data.requires_password_change);
+  if (ownRequirement) {
+    setMustChangePassword(true);
+    target = "/change-password";
+  } else {
+    try {
+      const res = await fetch(apiUrl("/api/auth/status"));
+      if (res.ok) {
+        const data = (await res.json()) as { requires_password_change: boolean };
+        // /status is installation-owner bootstrap state, not the current
+        // account's state, so it is only adopted once this session is gone.
+        // Adopted while a managed account still held a token, the owner's
+        // recovery pinned that account to /change-password even after it had
+        // changed its own password, until the owner finished.
+        if (
+          data.requires_password_change &&
+          !mustChangePassword() &&
+          !getAuthToken()
+        ) {
+          setMustChangePassword(true);
+        }
+        if (data.requires_password_change || mustChangePassword()) {
+          target = "/change-password";
+        }
       }
-      if (data.requires_password_change) target = "/change-password";
+    } catch {
+      // Fall through to /login on error
     }
-  } catch {
-    // Fall through to /login on error
   }
 
   if (window.location.pathname === target) {
@@ -227,6 +248,16 @@ export async function authFetch(
   options?: AuthFetchOptions,
 ): Promise<Response> {
   const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
+  // The session this request belongs to. A 401 can arrive after the account has
+  // changed, and every recovery path below resends the original method, URL and
+  // body: without this the retry carried Alice's write into Bob's workspace on
+  // Bob's token. The logoutGeneration check inside refreshSession only covers a
+  // refresh that was already running, not a request that outlived its session.
+  // Compared on the epoch alone: a refresh rotates the stored token within the
+  // same session, and two requests in flight together legitimately see each
+  // other's rotation, so the token is not the identity of the session.
+  const startGeneration = logoutGeneration;
+  const sessionUnchanged = () => startGeneration === logoutGeneration;
   const headers = new Headers(init?.headers);
   addBrowserTimezoneHeaders(headers);
   const accessToken = getAuthToken();
@@ -260,10 +291,13 @@ export async function authFetch(
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
   if (response.status !== 401) return response;
+  // Answered for a session that is gone. Hand the 401 back rather than
+  // authenticate it as whoever holds the browser now.
+  if (!sessionUnchanged()) return response;
 
   const refreshToken = getRefreshToken();
   const refreshed = await refreshSession();
@@ -294,10 +328,11 @@ export async function authFetch(
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
 
+  if (!sessionUnchanged()) return response;
   if (!getAuthToken()) clearAuthTokens();
   return retryWithCurrentToken(
     resolvedInput,
@@ -320,6 +355,17 @@ async function postLogout(
   } catch {
     return null;
   }
+}
+
+/**
+ * End the current auth session for the purposes of in-flight requests.
+ *
+ * Called when a different account signs in without a logout in between: a
+ * request already waiting on a 401 belongs to the session that started it, and
+ * without a bump here its retry would be authenticated as the new account.
+ */
+export function noteAuthSessionReplaced(): void {
+  logoutGeneration += 1;
 }
 
 export async function logout(): Promise<void> {

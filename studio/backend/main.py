@@ -336,7 +336,7 @@ from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
 from auth import storage
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, require_install_admin
 from utils.hardware import (
     start_background_detection,
     get_device,
@@ -566,6 +566,12 @@ def _post_warm_retired(generation: Optional[int]) -> bool:
     return True
 
 
+def _known_workspace_subjects() -> list[str]:
+    """Existing account workspaces, always including the legacy owner layout."""
+    from utils.workspace_context import known_workspace_subjects
+    return known_workspace_subjects()
+
+
 def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
     # A real lifespan worker carries a generation; direct calls without one are tests.
     if generation is None:
@@ -573,11 +579,24 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
     try:
         from core.rag.folder_sync import start_auto_sync
         from storage.studio_db import get_chat_project
-        start_auto_sync(
-            admission_lock = _post_warm_lock,
-            admit = lambda: _post_warm_generation == generation,
-            project_exists = lambda project_id: get_chat_project(project_id) is not None,
-        )
+        from utils.workspace_context import run_in_workspace
+
+        for subject in _known_workspace_subjects():
+            # Per subject: one unreadable rag.db must not cost every later account
+            # its worker, and the owner starts no worker lazily to recover.
+            try:
+                run_in_workspace(
+                    subject,
+                    start_auto_sync,
+                    admission_lock = _post_warm_lock,
+                    admit = lambda: _post_warm_generation == generation,
+                    project_exists = lambda project_id: get_chat_project(project_id) is not None,
+                )
+            except Exception as exc:
+                import structlog as _structlog
+                _structlog.get_logger(__name__).warning(
+                    "linked-folder auto-sync failed at startup for %s: %s", subject, exc
+                )
     except Exception as exc:
         import structlog as _structlog
         _structlog.get_logger(__name__).warning(
@@ -683,22 +702,34 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
 
     # Reap workers/runs orphaned by a previous crash before new work starts.
-    try:
-        from storage.studio_db import cleanup_orphaned_runs
-        cleanup_orphaned_runs()
-    except Exception as exc:
-        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+    from utils.workspace_context import run_in_workspace
 
-    try:
-        from storage.chat_generation_runs_db import reconcile_orphaned_runs
-        reconciled_chat_runs = reconcile_orphaned_runs()
-        if reconciled_chat_runs:
+    for _subject in _known_workspace_subjects():
+        try:
+            from storage.studio_db import cleanup_orphaned_runs
+            run_in_workspace(_subject, cleanup_orphaned_runs)
+        except Exception as exc:
             _lifespan_log.warning(
-                "Marked %s interrupted chat generation run(s) failed after restart.",
-                reconciled_chat_runs,
+                "cleanup_orphaned_runs failed at startup for %s: %s",
+                _subject,
+                exc,
             )
-    except Exception as exc:
-        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+        try:
+            from storage.chat_generation_runs_db import reconcile_orphaned_runs
+            reconciled_chat_runs = run_in_workspace(_subject, reconcile_orphaned_runs)
+            if reconciled_chat_runs:
+                _lifespan_log.warning(
+                    "Marked %s interrupted chat generation run(s) failed after restart for %s.",
+                    reconciled_chat_runs,
+                    _subject,
+                )
+        except Exception as exc:
+            _lifespan_log.warning(
+                "chat generation orphan reconciliation failed for %s: %s",
+                _subject,
+                exc,
+            )
 
     try:
         # The boot pass above only settles runs orphaned by the previous process. A run
@@ -729,11 +760,16 @@ async def lifespan(app: FastAPI):
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
 
-    try:
-        from storage.rag_db import reconcile_orphaned_ingestion_jobs
-        reconcile_orphaned_ingestion_jobs()
-    except Exception as exc:
-        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
+    for _subject in _known_workspace_subjects():
+        try:
+            from storage.rag_db import reconcile_orphaned_ingestion_jobs
+            run_in_workspace(_subject, reconcile_orphaned_ingestion_jobs)
+        except Exception as exc:
+            _lifespan_log.warning(
+                "reconcile_orphaned_ingestion_jobs failed at startup for %s: %s",
+                _subject,
+                exc,
+            )
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
@@ -1957,7 +1993,7 @@ def studio_download_transport_capabilities(
 
 
 @app.post("/api/shutdown")
-async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
+async def shutdown_server(request: Request, current_subject: str = Depends(require_install_admin)):
     """Gracefully shut down the Unsloth Studio server.
 
     Called by the frontend quit dialog so users can stop the server from the UI

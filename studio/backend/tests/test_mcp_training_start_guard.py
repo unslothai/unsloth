@@ -300,7 +300,10 @@ def test_a_cancelled_start_request_id_replays_and_keeps_its_tombstone(monkeypatc
 
     # Wind the tombstone to the brink of its TTL: without a refresh the next retry
     # would find nothing and start the job.
-    backend._start_cancel_tombstones["agent-cancelled"] = (time.monotonic() + 0.5, cancelled)
+    backend._start_cancel_tombstones[backend._start_key("agent-cancelled")] = (
+        time.monotonic() + 0.5,
+        cancelled,
+    )
 
     response = asyncio.run(_call(route, _config(start_request_id = "agent-cancelled")))
 
@@ -308,7 +311,7 @@ def test_a_cancelled_start_request_id_replays_and_keeps_its_tombstone(monkeypatc
     assert response.error_code == training_module._START_CANCELLED_ERROR_CODE
     assert "inference request is in progress" not in str(response.message)
 
-    expires_at, _ = backend._start_cancel_tombstones["agent-cancelled"]
+    expires_at, _ = backend._start_cancel_tombstones[backend._start_key("agent-cancelled")]
     assert expires_at > time.monotonic() + (training_module._START_CANCEL_TOMBSTONE_TTL_S / 2)
 
 

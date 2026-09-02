@@ -307,6 +307,11 @@ async def download_model_response(
         # one verdict: only this key's own in-flight job can be joined, and a
         # cross-variant conflict or in-progress delete joined nothing.
         adoptable = _registry.adoptable(key)
+        if adoptable:
+            # The adopter is an initiator too, so the account that asked for this
+            # download sees it in its own activity list. It joins the running
+            # job's initiators rather than replacing them.
+            download_lifecycle.note_download_initiator(key)
         return {
             "job_key": key,
             "state": claim_state,
@@ -320,6 +325,10 @@ async def download_model_response(
             # still cancels into a restart-only partial.
             "cancel_transport": _registry.job_cancel_transport(key),
         }
+    # Immediately after the claim, not just before the launch: claim() publishes
+    # the job as running, and a cancel arriving before this saw no initiator and
+    # was authorized to stop it.
+    download_lifecycle.note_download_initiator(key, replaces_previous_job = True)
     download_manifest.clear_cancel_marker(
         "model",
         repo_id,
@@ -384,6 +393,10 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
+
+    # Only the account that started it, or the owner: the registry is keyed by
+    # repository alone, so naming one was enough to abort somebody else's pull.
+    download_lifecycle.require_download_cancel_permission(key, _registry)
 
     state = download_lifecycle.cancel_worker(
         _registry,

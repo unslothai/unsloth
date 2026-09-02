@@ -75,6 +75,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.storage import is_installation_owner
 
 from utils.utils import (
     canonical_model_repo_id,
@@ -262,6 +263,20 @@ def _run_active(backend) -> bool:
     return backend.is_training_active() and not _run_finished(backend)
 
 
+def _training_workspace_owned(backend, subject: str) -> bool:
+    check = getattr(backend, "owns_workspace", None)
+    return bool(check(subject)) if callable(check) else True
+
+
+def _idle_training_status() -> TrainingStatus:
+    return TrainingStatus(
+        job_id = "",
+        phase = "idle",
+        is_training_running = False,
+        message = "Ready to train",
+    )
+
+
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
     """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
     validated = []
@@ -398,6 +413,28 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
     return all(len(parts) == family[3] for family, parts in families.items())
 
 
+def _reject_remote_code_from_a_managed_account(trust_remote_code) -> None:
+    """Only the installation owner may run a repository's own Python.
+
+    The rule /inference/load applies. Containment cannot help, since a repo id is
+    not a path, and neither can the consent scan, which the caller approves. The
+    worker runs as the same OS user, so that code reaches every account's files.
+    """
+    from routes.inference import _reject_remote_code_from_a_managed_account as _reject
+    _reject(trust_remote_code)
+
+
+def _reject_uncontained_training_path(model_path: Optional[str]) -> None:
+    """A managed account may only train from weights inside its own roots.
+
+    The field reaches the worker verbatim, so an absolute path reads any file the
+    backend can. Worse than a load, because the adapter is derived from those
+    weights and outlives the run. Hub ids are not paths and are untouched.
+    """
+    from routes.inference import _reject_uncontained_local_path
+    _reject_uncontained_local_path(model_path, "train from")
+
+
 def _trainable_local_roots(path: Path, model_name: Optional[str] = None) -> list[Path]:
     """The snapshot root plus any subdirectory a load reads from.
 
@@ -443,6 +480,56 @@ def _has_trainable_local_weights(path: Path, model_name: Optional[str] = None) -
 
 def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
+
+
+def _reject_wandb_without_an_account_token(enable_wandb: Any, wandb_token: Any) -> None:
+    """A managed account logging to W&B must bring its own key.
+
+    The worker only overwrites WANDB_API_KEY when the request carried a token, so
+    an owner key in the environment is inherited and uploads under the owner's
+    identity. Refused here as well as blanked in the child, so the account is
+    told up front rather than failing inside wandb.init().
+    """
+    if not enable_wandb:
+        return
+    if isinstance(wandb_token, str) and wandb_token.strip():
+        return
+    if is_installation_owner():
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Weights and Biases logging needs your own API key. Add one in "
+            "Settings, or turn the logging off."
+        ),
+    )
+
+
+def _reject_ambient_s3_for_a_managed_account(s3_config: Any) -> None:
+    """A managed account reading a dataset from S3 must bring its own keys.
+
+    use_iam_role takes boto3's default chain, which on EC2 is the installation's
+    role, so any bucket it can read became the caller's dataset. Same rule as the
+    ambient Hugging Face and W&B credentials. Refused here rather than in the
+    worker, before anything is reserved or spawned.
+    """
+    if s3_config is None:
+        return
+    if is_installation_owner():
+        return
+    config = s3_config.model_dump() if hasattr(s3_config, "model_dump") else dict(s3_config)
+    access_key_id = (config.get("access_key_id") or "").strip()
+    secret_access_key = (config.get("secret_access_key") or "").strip()
+    if access_key_id and secret_access_key and not config.get("use_iam_role"):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Loading a dataset from S3 needs your own access key and secret. "
+            "This account cannot use the server's IAM role or ambient AWS "
+            "credentials."
+        ),
+    )
 
 
 def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
@@ -544,6 +631,26 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
     return None
 
 
+def _reject_unauthorized_cached_dataset(dataset_id: str) -> None:
+    """A managed account may only train from a cached dataset it could obtain itself.
+
+    The shared Hub cache holds whatever anybody downloaded, so the same rule the
+    dataset routes apply to listing and previewing applies to training from it.
+    """
+    from hub.services.datasets.cache_access import caller_may_read_cached_dataset
+
+    if caller_may_read_cached_dataset(dataset_id):
+        return
+    raise _hf_preflight_error(
+        403,
+        "hf_dataset_not_authorized",
+        (
+            "This dataset is in the shared cache but was downloaded by another "
+            "account. Add your own Hugging Face token and download it to use it."
+        ),
+    )
+
+
 def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     dataset_id = request.hf_dataset
     if not dataset_id:
@@ -578,6 +685,10 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
             or request.dataset_snapshot_path
         )
         if cached_path is not None and pins_cache:
+            # A pin skips Hub verification, and both hints are caller-supplied, so
+            # naming another account's private dataset and its snapshot path was a
+            # way to train on rows this account never had a token for.
+            _reject_unauthorized_cached_dataset(dataset_id)
             return
 
     if hf_env_offline() or _hub_unreachable():
@@ -591,6 +702,8 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
                 ),
             )
         if cached_path is not None:
+            # Same question offline, where there is no Hub call to fall back on.
+            _reject_unauthorized_cached_dataset(dataset_id)
             return
         raise _hf_preflight_error(
             409,
@@ -734,10 +847,15 @@ def _reject_untrainable_model_request(
                 if request.model_local_path == request.model_name
                 else normalize_path(request.model_local_path)
             )
+        # Scoping the subprocess scopes what it WRITES; the weights it reads are
+        # still whatever path arrived, and the adapter is derived from them.
+        _reject_uncontained_training_path(model_name)
+        _reject_uncontained_training_path(model_local_path)
     else:
         model_local_path = (
             normalize_path(request.model_local_path) if request.model_local_path else None
         )
+        _reject_uncontained_training_path(model_local_path)
         from hub.utils.hf_cache_state import (
             latest_snapshot_from_cache_path,
             with_load_subdirs,
@@ -791,7 +909,9 @@ def _reject_untrainable_model_request(
                 )
             remote_format = _remote_untrainable_model_format(
                 request.model_name,
-                request.hf_token or None,
+                # False, not None: None falls back to the process token or cached
+                # login, which is the owner's. The owner keeps the fallback.
+                request.hf_token or (None if is_installation_owner() else False),
             )
         except HTTPException as error:
             metadata_error = error
@@ -1070,6 +1190,8 @@ async def get_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
+    # By the record, not the backend owner: ownership transfers only at
+    # start_training(), so polling a pending start would 404 forever.
     record = backend.get_start_request(start_request_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Training start request not found")
@@ -1098,6 +1220,8 @@ async def acknowledge_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
+    if backend.get_start_request(start_request_id) is None:
+        raise HTTPException(status_code = 404, detail = "Training start request not found")
     if not backend.acknowledge_start_request(start_request_id):
         raise HTTPException(
             status_code = 409,
@@ -1120,6 +1244,8 @@ async def cancel_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
+    if backend.get_start_request(start_request_id) is None:
+        raise HTTPException(status_code = 404, detail = "Training start request not found")
     try:
         outcome, record = await asyncio.to_thread(
             backend.cancel_start_request,
@@ -1150,6 +1276,42 @@ def _background_video_generation_active() -> bool:
         return False
 
 
+def _foreign_media_render_active(subject: str) -> Optional[str]:
+    """The engines' own refusal message when a render in ANOTHER account is live.
+
+    Asks the diffusion and video backends the same question their unload asks,
+    without tearing anything down. Returns None when nothing foreign is running,
+    which includes every single-account install, where one subject owns both.
+    A backend that cannot answer is treated as idle: a probe that fails must not
+    become a way to block training.
+    """
+    from utils.workspace_context import ForeignWorkspaceActiveError
+
+    def _diffusion():
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        return get_active_diffusion_engine()
+
+    def _video():
+        from core.inference.video import get_video_backend
+        return get_video_backend()
+
+    for get_backend in (_diffusion, _video):
+        try:
+            backend = get_backend()
+        except Exception:  # noqa: BLE001 - an engine that will not construct holds nothing
+            continue
+        probe = getattr(backend, "_refuse_foreign_teardown", None)
+        if not callable(probe):
+            continue
+        try:
+            probe(subject)
+        except ForeignWorkspaceActiveError as exc:
+            return str(exc)
+        except Exception:  # noqa: BLE001 - see the docstring
+            continue
+    return None
+
+
 @router.post("/start", responses = _TRAINING_START_ERROR_RESPONSES)
 async def start_training(
     request: TrainingStartRequest,
@@ -1167,7 +1329,66 @@ async def start_training(
     start_task: Optional[asyncio.Task[bool]] = None
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
+        # Before anything is reserved or torn down. The worker runs as the same OS
+        # user, so repository code it loads reaches every account's files.
+        _reject_remote_code_from_a_managed_account(request.trust_remote_code)
+        _reject_wandb_without_an_account_token(
+            request.enable_wandb, getattr(request, "wandb_token", None)
+        )
+        _reject_ambient_s3_for_a_managed_account(request.s3_config)
         backend = get_training_backend()
+        if await asyncio.to_thread(backend.is_training_active) and not _training_workspace_owned(
+            backend, current_subject
+        ):
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = (
+                    "Training resources are currently in use by another account. "
+                    "Wait for that run to finish before starting a new one."
+                ),
+                error = "Training resources busy",
+            )
+
+        # The before_spawn hook tears the export subprocess down to free VRAM, and it
+        # calls the private _shutdown_subprocess directly, so it bypasses the export
+        # orchestrator's own workspace guard. Refuse rather than kill: an export can
+        # be hours of work, and the owner's own export is still torn down as before.
+        from core.export import get_export_backend
+
+        export_backend = get_export_backend()
+        export_owns = getattr(export_backend, "owns_workspace", None)
+        export_active = getattr(export_backend, "is_export_active", None)
+        if (
+            callable(export_owns)
+            and callable(export_active)
+            and await asyncio.to_thread(export_active)
+            and not export_owns(current_subject)
+        ):
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = (
+                    "An export is running in another account and training would stop it. "
+                    "Wait for that export to finish before starting a run."
+                ),
+            )
+        # Same rule, one hook further down. _free_vram_for_training calls
+        # diffusion.unload() and video.unload() with no subject, which is the
+        # engine's own path and deliberately tears down whatever is running, so a
+        # valid training start cancelled another account's in-flight render. Ask
+        # the engines' own refusal first and decline rather than kill; the owner's
+        # own render is still torn down as before.
+        foreign_render = await asyncio.to_thread(_foreign_media_render_active, current_subject)
+        if foreign_render:
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = (
+                    f"{foreign_render} Training would stop it, so wait for it to "
+                    "finish before starting a run."
+                ),
+            )
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
             # A retry of an id that already resolved replays its stored outcome even when the
@@ -1777,6 +1998,10 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            return TrainingStopResponse(
+                status = "idle", message = "No training job is currently running"
+            )
         outcome = await asyncio.to_thread(
             _stop_training_if_active,
             backend,
@@ -1818,6 +2043,8 @@ async def reset_training(
     """Reset training state so the user can return to configuration."""
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            return {"status": "ok"}
         result = await asyncio.to_thread(
             backend.reset_training_state,
             expected_job_id = body.expected_job_id if body is not None else None,
@@ -2001,6 +2228,8 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
     """
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            return _idle_training_status()
         for _ in range(3):
             identity_before = _training_status_identity(backend)
             is_active = await asyncio.to_thread(_run_active, backend)
@@ -2032,6 +2261,8 @@ async def get_training_metrics(
     """
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            raise HTTPException(status_code = 404, detail = "Training job not found")
         job_id = getattr(backend, "current_job_id", "") or ""
         if getattr(backend, "_new_job_spawn_id", None) is not None or (
             expected_job_id is not None and expected_job_id != job_id
@@ -2095,6 +2326,10 @@ async def stream_training_progress(
       - Named `event:` types (progress, heartbeat, complete, error).
       - Reads `Last-Event-ID` on reconnect to replay missed steps.
     """
+    backend_for_workspace = get_training_backend()
+    if not _training_workspace_owned(backend_for_workspace, current_subject):
+        raise HTTPException(status_code = 404, detail = "Training job not found")
+
     last_event_id = request.headers.get("last-event-id")
     resume_from_step: Optional[int] = None
     if last_event_id is not None:
@@ -2750,6 +2985,7 @@ async def start_diffusion_training(
 
     # Resolve + contain the dataset and output paths BEFORE spawning: the trainer subprocess would otherwise resolve them relative to its own cwd.
     config = body.model_dump()
+    config["subject"] = current_subject
     try:
         from utils.paths import outputs_root, resolve_output_dir
 
@@ -2874,6 +3110,12 @@ async def start_diffusion_training(
         _assert_trusted_base_model,
     )
 
+    # The dataset, output and conditioning-cache paths are contained above; the base
+    # model was not, so a managed caller could name another account's checkpoint and
+    # train an adapter off it. Same containment inference applies to a local load.
+    _reject_uncontained_training_path(config.get("base_model"))
+    _reject_uncontained_training_path(normalized_cfg.fetch_base_model)
+
     try:
         # Same answer the trainer's own call reaches. A local MiniMax-H3 pipeline is a modular
         # directory (modular_model_index.json, no model_index.json); without this the gate here
@@ -2901,6 +3143,15 @@ async def start_diffusion_training(
     # only at service.start(), so a concurrent upload/delete could mutate the dataset meanwhile.
     reserved = False
     try:
+        owns_workspace = getattr(service, "owns_workspace", None)
+        if service.is_active() and callable(owns_workspace) and not owns_workspace(current_subject):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Training resources are currently in use by another account. "
+                    "Wait for that run to finish before starting a new one."
+                ),
+            )
         service.reserve()
         reserved = True
         # Fail closed on clips BEFORE that discovery, which cannot see them: clip-only it

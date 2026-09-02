@@ -925,7 +925,14 @@ def validate_provider_base_url(base_url: str) -> str:
     if _metadata_host(hostname) or _resolves_to_metadata(hostname, port, scheme):
         raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
 
-    if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":
+    from auth.storage import subject_may_reach_private_hosts
+
+    # The env flag is the operator's blanket opt-in and still applies to
+    # everybody. Beyond it, a managed account never gets a private target: it
+    # cannot reach one from its browser, so naming it here would make the
+    # backend probe a service on the account's behalf that the isolation
+    # boundary is meant to keep away from it.
+    if os.environ.get(_BLOCK_PRIVATE_ENV) == "1" or not subject_may_reach_private_hosts():
         _reject_non_public(hostname, port, scheme)
 
     return raw.rstrip("/")

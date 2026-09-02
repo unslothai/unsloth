@@ -4,6 +4,7 @@
 import { redirect } from "@tanstack/react-router";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
+  authFetch,
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
@@ -24,15 +25,7 @@ interface AuthStatus {
 }
 
 const AUTH_STATUS_TTL_MS = 30_000;
-let authStatusCheckedAt = 0;
 let authStatusRequest: Promise<AuthStatus> | null = null;
-
-function hasFreshAuthStatus(): boolean {
-  return (
-    authStatusCheckedAt !== 0 &&
-    Date.now() - authStatusCheckedAt < AUTH_STATUS_TTL_MS
-  );
-}
 
 async function fetchAuthStatus(): Promise<AuthStatus> {
   if (authStatusRequest) return authStatusRequest;
@@ -47,10 +40,18 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
         };
       }
       const status = (await res.json()) as AuthStatus;
-      authStatusCheckedAt = Date.now();
-      // Server truth wins; keep localStorage in sync both ways.
-      if (status.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(status.requires_password_change);
+      // /status describes the seeded installation owner, while the local flag
+      // can describe any authenticated managed account. A false owner status
+      // must not clear another account's forced-change route, and a true one
+      // must not impose the owner's recovery on every signed-in managed session:
+      // that traps them on /change-password until the owner finishes, and the
+      // next refresh re-sets the flag even after they change their own password.
+      if (
+        status.requires_password_change &&
+        !mustChangePassword() &&
+        !hasAuthToken()
+      ) {
+        setMustChangePassword(true);
       }
       return status;
     } catch {
@@ -63,6 +64,39 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
     authStatusRequest = null;
   });
   authStatusRequest = request;
+  return request;
+}
+
+let accountStatusCheckedAt = 0;
+let accountStatusRequest: Promise<boolean> | null = null;
+
+function hasFreshAccountStatus(): boolean {
+  return (
+    accountStatusCheckedAt !== 0 &&
+    Date.now() - accountStatusCheckedAt < AUTH_STATUS_TTL_MS
+  );
+}
+
+/** Whether THIS signed-in account still owes a password change. */
+async function fetchAccountMustChangePassword(): Promise<boolean> {
+  if (accountStatusRequest) return accountStatusRequest;
+
+  const request = (async () => {
+    try {
+      const res = await authFetch("/api/auth/me");
+      if (!res.ok) return mustChangePassword();
+      const me = (await res.json()) as { must_change_password?: boolean };
+      accountStatusCheckedAt = Date.now();
+      const required = me.must_change_password === true;
+      if (required !== mustChangePassword()) setMustChangePassword(required);
+      return required;
+    } catch {
+      return mustChangePassword();
+    }
+  })().finally(() => {
+    accountStatusRequest = null;
+  });
+  accountStatusRequest = request;
   return request;
 }
 
@@ -79,9 +113,12 @@ export async function requireAuth(): Promise<void> {
   if (await hasActiveSession()) {
     // Reconcile periodically so local-only routes cannot outlive a server-side
     // password-change requirement, while nearby route switches stay local.
-    if (mustChangePassword() || !hasFreshAuthStatus()) {
-      const { requires_password_change } = await fetchAuthStatus();
-      if (requires_password_change || mustChangePassword()) {
+    // Against /me, not /status: /status is unauthenticated and describes the
+    // installation owner, so while the owner is in recovery it would send every
+    // other signed-in account to /change-password, and keep sending them there
+    // after they had changed their own password, until the owner finished.
+    if (mustChangePassword() || !hasFreshAccountStatus()) {
+      if (await fetchAccountMustChangePassword()) {
         authRedirect("/change-password");
       }
     }
@@ -100,8 +137,8 @@ export async function requireGuest(): Promise<void> {
     throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
-  // Reconcile localStorage before routing.
-  await fetchAuthStatus();
+  // Reconcile localStorage before routing, from this account's own state.
+  await fetchAccountMustChangePassword();
   throw redirect({ to: getPostAuthRoute() });
 }
 
@@ -110,10 +147,14 @@ export async function requirePasswordChangeFlow(): Promise<void> {
     throw redirect({ to: "/chat" });
   }
 
-  const status = await fetchAuthStatus();
-  if (status.requires_password_change || mustChangePassword()) return;
   if (await hasActiveSession()) {
+    // Signed in: only this account's own requirement keeps it on this page. The
+    // owner being in recovery is not a reason to hold anybody else here.
+    if (await fetchAccountMustChangePassword()) return;
     throw redirect({ to: getPostAuthRoute() });
   }
+
+  const status = await fetchAuthStatus();
+  if (status.requires_password_change || mustChangePassword()) return;
   authRedirect(status.initialized ? "/login" : "/change-password");
 }

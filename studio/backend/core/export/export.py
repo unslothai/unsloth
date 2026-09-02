@@ -32,7 +32,6 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
     ensure_dir,
-    outputs_root,
     resolve_export_write_dir,
     resolve_output_dir,
 )
@@ -451,7 +450,7 @@ class ExportBackend:
             return False
 
     def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
+        self, outputs_dir: Optional[str] = None
     ) -> List[Tuple[str, List[Tuple[str, str]]]]:
         """
         Scan outputs folder for training runs and their checkpoints.

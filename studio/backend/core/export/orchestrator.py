@@ -22,7 +22,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
-from utils.paths import outputs_root
 
 logger = get_logger(__name__)
 
@@ -47,6 +46,7 @@ class ExportOrchestrator:
         self._resp_queue: Any = None
         # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
+        self._workspace_lock = threading.RLock()
 
         # Local state mirrors (updated from subprocess responses).
         self.current_checkpoint: Optional[str] = None
@@ -76,6 +76,7 @@ class ExportOrchestrator:
         self._op_seq: int = 0
         self._active_op_kind: Optional[str] = None
         self._last_op: Optional[Dict[str, Any]] = None
+        self._workspace_subject: Optional[str] = None
 
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
@@ -181,31 +182,48 @@ class ExportOrchestrator:
 
         Returns True if a live subprocess was terminated, False if none ran.
         """
-        self._cancel_requested = True
-        proc = self._proc
-        if proc is None or not proc.is_alive():
-            return False
-        logger.info(
-            "Export cancel requested: terminating export subprocess (pid=%s)",
-            proc.pid,
-        )
-        try:
-            proc.terminate()
-            proc.join(timeout = 5)
-        except Exception:
-            pass
-        if proc.is_alive():
-            logger.warning("Export subprocess survived terminate, killing")
+        with self._workspace_guard():
+            if not self.owns_workspace():
+                return False
+            self._cancel_requested = True
+            proc = self._proc
+            if proc is None or not proc.is_alive():
+                return False
+            logger.info(
+                "Export cancel requested: terminating export subprocess (pid=%s)",
+                proc.pid,
+            )
             try:
-                proc.kill()
-                proc.join(timeout = 3)
+                proc.terminate()
+                proc.join(timeout = 5)
             except Exception:
                 pass
-        return True
+            if proc.is_alive():
+                logger.warning("Export subprocess survived terminate, killing")
+                try:
+                    proc.kill()
+                    proc.join(timeout = 3)
+                except Exception:
+                    pass
+            return True
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
     # ------------------------------------------------------------------
+
+    def _workspace_guard(self) -> threading.RLock:
+        """Return the ownership lock, lazily for lightweight legacy test doubles."""
+        lock = getattr(self, "_workspace_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._workspace_lock = lock
+        return lock
+
+    def owns_workspace(self, subject: Optional[str] = None) -> bool:
+        from utils.workspace_context import current_workspace_subject
+        requested = subject or current_workspace_subject()
+        with self._workspace_guard():
+            return getattr(self, "_workspace_subject", None) in (None, requested)
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
@@ -233,6 +251,20 @@ class ExportOrchestrator:
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
         cache_env = get_hf_cache_paths().child_env({})
+        # The export child is spawned, so it copies the live parent environment.
+        # A managed account may name a remote checkpoint without a token of its
+        # own; the containment guard passes it because it is not a local path, and
+        # the worker would then open an owner-private repo with the server's
+        # HF_TOKEN or cached login and write the converted weights into the
+        # caller's workspace. Same suppression the training and recipe workers
+        # apply, so the three agree on whose credential a child may spend.
+        from core.training.training import _ambient_credentials_suppressed_for
+
+        cache_env.update(
+            _ambient_credentials_suppressed_for(
+                config.get("subject") or getattr(self, "_workspace_subject", None)
+            )
+        )
 
         with (
             child_environment_for_spawn(cache_env),
@@ -444,7 +476,24 @@ class ExportOrchestrator:
             "hf_token": hf_token,
         }
 
-        with self._lock:
+        with self._lock, self._workspace_guard():
+            workspace_subject = subject
+            if workspace_subject is None:
+                from utils.workspace_context import current_workspace_subject
+                workspace_subject = current_workspace_subject()
+            if self._export_active and not self.owns_workspace(workspace_subject):
+                return False, "Export resources are currently in use by another account."
+            # Captured before the claim. The sidecar recheck below refuses, and a
+            # worker that survives _shutdown_subprocess leaves the previous
+            # account's loaded checkpoint resident; both used to return with the
+            # ownership already transferred, so the caller who started nothing
+            # could export from weights that are not theirs.
+            # getattr, like owns_workspace: the lightweight test doubles that
+            # construct this class with __new__ never set the attribute.
+            previous_workspace_subject = getattr(self, "_workspace_subject", None)
+            claimed = False
+            self._workspace_subject = workspace_subject
+            sub_config["subject"] = workspace_subject
             # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
             self._cancel_requested = False
@@ -452,6 +501,8 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message = False, ""
             try:
+                # From here the claim is undone by the finally below unless a
+                # worker really is running as this subject.
                 # Handshake with the sidecar install route: _export_active is set above, so either this
                 # recheck refuses BEFORE tearing down the old worker (keeping the loaded checkpoint), or
                 # the install sees is_export_active() and 409s. The spawn-time recheck stays as a last resort.
@@ -503,6 +554,9 @@ class ExportOrchestrator:
 
                 if resp.get("success"):
                     self.current_checkpoint = resp.get("checkpoint")
+                    # A worker is up and loaded as this subject: the claim is now
+                    # the truth, so the rollback below must not undo it.
+                    claimed = True
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
@@ -517,6 +571,12 @@ class ExportOrchestrator:
                     op_success, op_message = False, error
                     return False, error
             finally:
+                if not claimed:
+                    # No worker is running as this subject, so the claim above was
+                    # never earned. Hand ownership back rather than leaving the
+                    # previous account's still-resident checkpoint exportable by
+                    # whoever failed to replace it.
+                    self._workspace_subject = previous_workspace_subject
                 self._record_op_finished(op_success, op_message, None)
                 self._active_op_kind = None
                 self._export_active = False
@@ -624,6 +684,8 @@ class ExportOrchestrator:
         dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
         with self._lock:
+            if not self.owns_workspace():
+                return False, "No checkpoint is loaded for this account.", None
             if not self._ensure_subprocess_alive():
                 return (
                     False,
@@ -675,6 +737,8 @@ class ExportOrchestrator:
     def cleanup_memory(self) -> bool:
         """Cleanup export-related models from memory."""
         with self._lock:
+            if not self.owns_workspace():
+                return False
             if not self._ensure_subprocess_alive():
                 self.current_checkpoint = None
                 self.is_vision = False
@@ -704,7 +768,7 @@ class ExportOrchestrator:
                 self._active_op_kind = None
                 self._export_active = False
 
-    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
+    def scan_checkpoints(self, outputs_dir: Optional[str] = None) -> List[Tuple[str, list]]:
         """Scan for checkpoints — runs locally, no ML imports."""
         from utils.models.checkpoints import scan_checkpoints
         return scan_checkpoints(outputs_dir = outputs_dir)

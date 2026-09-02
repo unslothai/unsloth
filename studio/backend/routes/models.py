@@ -192,7 +192,11 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    get_current_subject,
+    require_install_admin,
+)
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
 from utils.utils import anonymous_and_offline
@@ -1378,8 +1382,8 @@ async def list_local_models(
     if _safe_is_dir(hf_default):
         allowed_roots.append(hf_default)
     try:
-        from utils.paths import studio_root, outputs_root
-        allowed_roots.extend([studio_root(), outputs_root()])
+        from utils.paths import outputs_root, workspace_root
+        allowed_roots.extend([workspace_root(), outputs_root()])
     except Exception:
         pass
 
@@ -1707,16 +1711,42 @@ def _looks_like_model_dir(directory: Path) -> bool:
     return False
 
 
+def _hub_cache_entry_is_hidden_from_this_account(resolved_child: str) -> bool:
+    """Whether a Hub cache directory must not be listed to this caller.
+
+    The cache roots stay in the allowlist, since a shared model has to remain
+    loadable through it. What that does not license is reading off the NAMES:
+    ``models--owner--private-repo`` names the repo and the snapshot path. Asked
+    with the load path's own guard, so the two cannot disagree.
+    """
+    from routes.inference import (
+        _hub_repo_id_for_cache_path,
+        _reject_private_hub_repo_without_an_account_token,
+    )
+
+    repo_id = _hub_repo_id_for_cache_path(resolved_child)
+    if repo_id is None:
+        return False
+    try:
+        _reject_private_hub_repo_without_an_account_token(
+            repo_id,
+            None,
+            shared_cache_answers_offline = False,
+        )
+    except HTTPException:
+        return True
+    return False
+
+
 def _build_browse_allowlist(
     media_roots: Optional[list[Path]] = None, drive_roots: Optional[list[Path]] = None
 ) -> list[Path]:
     """Return the root directories the folder browser may walk.
 
     The same list seeds the sidebar suggestion chips, so chip targets are
-    always reachable. Roots: HOME, resolved HF cache dirs, Unsloth's
-    outputs/exports/studio root, registered scan folders, and well-known
-    local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
-    it resolves to a real directory.
+    always reachable. The owner keeps host HOME/removable-drive access. Managed
+    accounts receive only their private workspace plus shared model/cache roots.
+    Each root is added only if it resolves to a real directory.
 
     *media_roots* / *drive_roots* let the caller pass already-probed
     removable-media and Windows drive roots so they aren't scanned again (a
@@ -1730,7 +1760,10 @@ def _build_browse_allowlist(
     from utils.paths import external_media
     from storage.studio_db import list_scan_folders
 
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
     candidates: list[Path] = []
+    owner_workspace = current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT
 
     def _add(p: Optional[Path]) -> None:
         if p is None:
@@ -1742,7 +1775,8 @@ def _build_browse_allowlist(
         if _safe_is_dir(resolved):
             candidates.append(resolved)
 
-    _add(Path.home())
+    if owner_workspace:
+        _add(Path.home())
     if media_roots is None:
         media_roots = [
             *external_media.linux_run_media_mount_roots(),
@@ -1750,10 +1784,11 @@ def _build_browse_allowlist(
         ]
     if drive_roots is None:
         drive_roots = external_media.windows_drive_roots()
-    for p in media_roots:
-        _add(p)
-    for p in drive_roots:
-        _add(p)
+    if owner_workspace:
+        for p in media_roots:
+            _add(p)
+        for p in drive_roots:
+            _add(p)
     _add(_resolve_hf_cache_dir())
     try:
         _add(hf_default_cache_dir())
@@ -1768,9 +1803,13 @@ def _build_browse_allowlist(
             exports_root,
             outputs_root,
             studio_root,
+            workspace_root,
         )
 
-        _add(studio_root())
+        private_root = studio_root() if owner_workspace else workspace_root()
+        if not owner_workspace:
+            private_root.mkdir(parents = True, exist_ok = True)
+        _add(private_root)
         _add(outputs_root())
         _add(exports_root())
     except Exception as exc:  # noqa: BLE001 -- best-effort
@@ -1779,7 +1818,15 @@ def _build_browse_allowlist(
         for folder in list_scan_folders():
             p = folder.get("path")
             if p:
-                _add(Path(p))
+                candidate = Path(p)
+                if owner_workspace:
+                    _add(candidate)
+                else:
+                    try:
+                        candidate.resolve().relative_to(workspace_root().resolve())
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    _add(candidate)
     except Exception as exc:  # noqa: BLE001 -- best-effort
         logger.debug("browse-folders: could not load scan folders: %s", exc)
     try:
@@ -1844,7 +1891,15 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
 def _normalize_browse_request_path(path: Optional[str]) -> str:
     """Normalize the browse request path lexically, without touching the FS."""
     if path is None or not path.strip():
-        return os.path.normpath(str(Path.home()))
+        from utils.paths import workspace_root
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+        default_root = (
+            Path.home()
+            if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT
+            else workspace_root()
+        )
+        return os.path.normpath(str(default_root))
 
     expanded = os.path.expanduser(path.strip())
     if not os.path.isabs(expanded):
@@ -1947,7 +2002,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                     detail = (
                         "Path is not in the browseable allowlist. Register it via "
                         "POST /api/models/scan-folders first, or pick a directory "
-                        "under your home folder."
+                        "inside your available workspace or model folders."
                     ),
                 )
             if contains_sensitive_path_component(str(resolved_child)):
@@ -1985,7 +2040,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
         detail = (
             "Path is not in the browseable allowlist. Register it via "
             "POST /api/models/scan-folders first, or pick a directory "
-            "under your home folder."
+            "inside your available workspace or model folders."
         ),
     )
 
@@ -1998,8 +2053,8 @@ def browse_folders(
     path: Optional[str] = Query(
         None,
         description = (
-            "Directory to list. If omitted, defaults to the current user's "
-            "home directory. Tilde (`~`) and relative paths are expanded. "
+            "Directory to list. If omitted, defaults to the owner's home directory "
+            "or a managed account's private workspace. Tilde (`~`) and relative paths are expanded. "
             "Must resolve inside the allowlist of browseable roots (HOME, "
             "HF cache, Unsloth dirs, registered scan folders, well-known "
             "model dirs)."
@@ -2095,6 +2150,8 @@ def browse_folders(
                 resolved_child = str(child)
             if is_denied_system_path(resolved_child):
                 continue
+            if _hub_cache_entry_is_hidden_from_this_account(resolved_child):
+                continue
             entries.append(
                 BrowseEntry(
                     name = name,
@@ -2143,6 +2200,10 @@ def browse_folders(
         # Drop a denied system dir (e.g. a stale scan-folder row) so it never becomes a chip that
         # 403s on click. Drive roots stay: only their system subdirectories are denied.
         if is_denied_system_path(resolved):
+            return
+        # Home and the drive roots are added unconditionally, so a managed account
+        # saw the host layout as chips that 403 on click.
+        if not _is_path_inside_allowlist(Path(resolved), allowed_roots):
             return
         if _safe_is_dir(resolved):
             seen_sug.add(resolved)
@@ -2396,6 +2457,12 @@ async def get_model_config(
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    from routes.inference import _reject_uncontained_local_path
+
+    # Both reach the filesystem: the read reports another workspace's checkpoint
+    # metadata, and a miss is itself a probe.
+    for candidate in (model_name, local_path):
+        _reject_uncontained_local_path(candidate, "inspect")
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token,
@@ -2556,6 +2623,12 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    # Each can name a directory the scanner reads, and the findings carry source
+    # snippets.
+    for candidate in (model_name, model_local_path, model_snapshot_path):
+        _reject_uncontained_local_path(candidate, "scan")
     # Without this an absent body token reads as None, i.e. ambient-authorized, and the
     # scan returns source snippets from a cached private repo.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
@@ -2674,6 +2747,7 @@ async def scan_model_remote_code(
                 )
                 if not already:
                     scan_created_repos.append(repo)
+                    _note_scan_created_remote_code(repo, current_subject)
             except Exception:
                 pass
 
@@ -2748,6 +2822,59 @@ async def scan_model_remote_code(
         )
 
 
+# Repository -> the workspace whose consent scan pulled it into the shared cache.
+# Without it the discard route could not tell a caller cleaning up after itself
+# from one deleting a dependency another account's model needs offline.
+_SCAN_CREATED_REMOTE_CODE: dict[str, str] = {}
+_SCAN_CREATED_REMOTE_CODE_LOCK = threading.Lock()
+_SCAN_CREATED_REMOTE_CODE_MAX = 256
+
+
+def _note_scan_created_remote_code(repo: str, subject: str) -> None:
+    # First claim wins: both accounts find an uncached repo absent, and the later
+    # claim let the second's decline delete code the first was still approving.
+    with _SCAN_CREATED_REMOTE_CODE_LOCK:
+        if repo in _SCAN_CREATED_REMOTE_CODE:
+            return
+        _SCAN_CREATED_REMOTE_CODE[repo] = subject
+        while len(_SCAN_CREATED_REMOTE_CODE) > _SCAN_CREATED_REMOTE_CODE_MAX:
+            _SCAN_CREATED_REMOTE_CODE.pop(next(iter(_SCAN_CREATED_REMOTE_CODE)))
+
+
+def forget_scan_created_remote_code(subject: str) -> None:
+    """Drop an account's scan records, for retirement: the grant is keyed by the
+    reusable username, so a namesake inherits the right to discard a dependency
+    another account's approved model loads from."""
+    with _SCAN_CREATED_REMOTE_CODE_LOCK:
+        for repo in [
+            repo for repo, creator in _SCAN_CREATED_REMOTE_CODE.items() if creator == subject
+        ]:
+            _SCAN_CREATED_REMOTE_CODE.pop(repo, None)
+
+
+def _reject_discarding_another_accounts_remote_code(repo: str) -> None:
+    """Only clean up what this account's own scan downloaded.
+
+    The cache is installation-wide, so a repo held as somebody else's auto_map
+    dependency was deletable by anyone who could name it. The loaded-model checks
+    below compare against the resident model, which is a different repository.
+    """
+    from auth.storage import is_installation_owner
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT or is_installation_owner():
+        return
+    with _SCAN_CREATED_REMOTE_CODE_LOCK:
+        creator = _SCAN_CREATED_REMOTE_CODE.get(repo)
+    if creator == subject:
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = "Only the account whose scan downloaded this repository can discard it.",
+    )
+
+
 @router.post("/discard-remote-code")
 async def discard_remote_code_download(
     model_name: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
@@ -2765,6 +2892,7 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "local"}
     if not _is_valid_repo_id(model_name):
         return {"deleted": False, "reason": "invalid"}
+    _reject_discarding_another_accounts_remote_code(model_name)
 
     # Never delete a model that is loaded for inference.
     try:
@@ -2884,11 +3012,11 @@ def _audio_type_of_checkpoint(
 
 @router.get("/loras")
 async def scan_loras(
-    outputs_dir: str = Query(
-        default = str(outputs_root()), description = "Directory to scan for LoRA adapters"
+    outputs_dir: Optional[str] = Query(
+        default = None, description = "Directory to scan for LoRA adapters"
     ),
-    exports_dir: str = Query(
-        default = str(exports_root()), description = "Directory to scan for exported models"
+    exports_dir: Optional[str] = Query(
+        default = None, description = "Directory to scan for exported models"
     ),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
@@ -3482,6 +3610,11 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
     This endpoint wraps the backend get_base_model_from_lora function.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    # Read straight from this path, so without the load path's containment a
+    # sibling workspace's adapter returned its private base model id.
+    _reject_uncontained_local_path(lora_path, "inspect")
     try:
         base_model = get_base_model_from_lora(lora_path)
 
@@ -3521,6 +3654,9 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(model_name, "inspect")
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token,
@@ -3567,6 +3703,9 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(model_name, "inspect")
     hf_token = hf_token_arg(
         _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
         allow_ambient_token = allow_ambient_token,
@@ -4511,6 +4650,12 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
+    from routes.inference import _reject_uncontained_local_path
+
+    # Both identifiers reach the local branch, which walks the directory and
+    # reports its GGUF filenames, sizes, quantizations and vision metadata.
+    for candidate in (repo_id, local_path):
+        _reject_uncontained_local_path(candidate, "inspect")
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
@@ -5391,9 +5536,15 @@ async def delete_cached_model(
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(require_install_admin),
 ):
-    """Compatibility route backed by the shared multi-cache deletion service."""
+    """Compatibility route backed by the shared multi-cache deletion service.
+
+    Owner only. The model cache stayed installation-wide by design, so a delete
+    here discards whatever any account downloaded: gigabytes belonging to someone
+    else, possibly from a gated repo only they can fetch again. Reading the shared
+    cache is fine and stays open; destroying it is not per account.
+    """
     from hub.services.models import deletion
     return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 
@@ -5510,7 +5661,11 @@ async def get_cached_model_path(
 async def reveal_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
-    current_subject: str = Depends(get_current_subject),
+    # The owner's: this opens Explorer, Finder or xdg-open on the machine the
+    # backend runs on, which a browser-only account has no business reaching, and
+    # repeating the call keeps opening windows there. Same dependency the shared
+    # cache deletes use, for the same reason: the effect is install-wide.
+    current_subject: str = Depends(require_install_admin),
 ):
     """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
     from utils.paths.path_utils import reveal_in_file_manager
@@ -5529,8 +5684,8 @@ async def reveal_cached_model(
 
 @router.get("/checkpoints", response_model = CheckpointListResponse)
 async def list_checkpoints(
-    outputs_dir: str = Query(
-        default = str(outputs_root()),
+    outputs_dir: Optional[str] = Query(
+        default = None,
         description = "Directory to scan for checkpoints",
     ),
     current_subject: str = Depends(get_current_subject),
@@ -5576,6 +5731,54 @@ async def list_checkpoints(
 _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
+def advertised_shared_model_roots() -> list[str]:
+    """Resolved roots the local-model catalog scans for EVERY account.
+
+    ``collect_local_models`` walks ./models, the Hugging Face caches and the LM
+    Studio directories whoever is asking, so a managed account is offered models
+    that live there. Model weights and the Hub cache are install-wide by design in
+    this layout, so a load from one of these is not a read of another account's
+    private files; it is the model the picker just listed. Kept next to the scan
+    it mirrors, so the two cannot drift into offering what a load then refuses.
+    """
+    sources = _compat_local_inventory_sources()
+    candidates: list[Path] = [
+        Path("./models"),
+        sources.hf_cache_dir,
+        sources.legacy_hf,
+        sources.hf_default,
+        *sources.known_hf_caches,
+        *sources.lm_dirs,
+    ]
+    roots: list[str] = []
+    for candidate in candidates:
+        try:
+            resolved = os.path.realpath(str(candidate))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def is_advertised_shared_model_path(model: str) -> bool:
+    """Whether ``model`` lives under a root the catalog offers to every account.
+
+    Symlink-resolved before the comparison, the same way _is_sizable_local_path
+    does it, so a link planted inside a shared root cannot point at a private one.
+    """
+    if not isinstance(model, str) or not model.strip():
+        return False
+    try:
+        real = os.path.realpath(os.path.expanduser(model.strip()))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for root in advertised_shared_model_roots():
+        if real == root or real.startswith(root + os.sep):
+            return True
+    return False
+
+
 def _is_sizable_local_path(model: str) -> bool:
     """True only for local paths under an Unsloth data root.
 
@@ -5584,14 +5787,14 @@ def _is_sizable_local_path(model: str) -> bool:
     inside a root can't point the sizer outside it. A user-controlled path thus
     can't trigger a scan of an arbitrary dir.
     """
-    from utils.paths import outputs_root, exports_root, studio_root
+    from utils.paths import exports_root, outputs_root, workspace_root
     from utils.paths.storage_roots import cache_root
 
     def _lexical(p: str) -> str:
         # Lexical only (no filesystem read); normpath collapses '..'.
         return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
 
-    raw_roots = [studio_root(), outputs_root(), exports_root(), cache_root()]
+    raw_roots = [workspace_root(), outputs_root(), exports_root(), cache_root()]
     roots = []
     for root in raw_roots:
         try:

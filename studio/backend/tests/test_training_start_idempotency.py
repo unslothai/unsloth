@@ -138,7 +138,7 @@ def test_cancel_tombstone_capacity_fails_without_eviction(monkeypatch):
 def test_expired_cancel_tombstone_releases_request_id():
     backend = TrainingBackend()
     _, record = backend.cancel_start_request("request-expired")
-    backend._start_cancel_tombstones["request-expired"] = (0.0, record)
+    backend._start_cancel_tombstones[backend._start_key("request-expired")] = (0.0, record)
 
     reservation, pending = backend.reserve_start_request("request-expired", "job-new")
 
@@ -823,9 +823,11 @@ def test_cancel_start_route_returns_the_scoped_rejection():
         error_code = "training_start_cancelled",
     )
     backend = SimpleNamespace(
+        # The route authorizes from the record, not from backend ownership.
+        get_start_request = lambda start_request_id: record,
         cancel_start_request = lambda start_request_id: (
             calls.append(start_request_id) or ("cancelled", record)
-        )
+        ),
     )
 
     with (
@@ -854,7 +856,10 @@ def test_cancel_start_route_reports_tombstone_capacity():
             "Too many training start cancellations are pending"
         )
 
-    backend = SimpleNamespace(cancel_start_request = reject_cancel)
+    backend = SimpleNamespace(
+        get_start_request = lambda start_request_id: SimpleNamespace(),
+        cancel_start_request = reject_cancel,
+    )
     with (
         patch.object(route, "get_training_backend", return_value = backend),
         patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
@@ -1038,7 +1043,7 @@ def test_owner_cancel_at_capacity_keeps_other_live_cancellations():
     outcome, _ = backend.cancel_start_request("owner")
 
     assert outcome == "cancelled"
-    assert "victim-race" in backend._start_cancel_tombstones
+    assert backend._start_key("victim-race") in backend._start_cancel_tombstones
     # The delayed start for the cancelled id must not spawn.
     assert backend.reserve_start_request("victim-race", "job-victim")[0] == "existing"
     # Unregistered ids keep hitting the hard cap.

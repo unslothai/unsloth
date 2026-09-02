@@ -89,6 +89,11 @@ from core.inference.sd_cpp_engine import (
 from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    ForeignWorkspaceActiveError,
+    current_workspace_subject,
+)
 
 logger = get_logger(__name__)
 
@@ -966,6 +971,11 @@ class _SdLoading:
     expected_bytes: int = 0
     downloaded_bytes: int = 0
     error: Optional[str] = None
+    # The account that started this load. A load is as much "somebody else is
+    # using the card" as a generation is, and the teardown guards only looked at
+    # the generation: with _gen still None the authenticated unload route ended
+    # another account's multi-gigabyte pull.
+    subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
 @dataclass
@@ -976,6 +986,9 @@ class _SdGen:
     step: int = 0
     first_step_at: float = 0.0
     eta_seconds: Optional[float] = None
+    # Whose generation this is. One process-wide engine serves every account, so
+    # without it any account can poll or cancel whoever happens to be running.
+    subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -1326,6 +1339,7 @@ class SdCppDiffusionBackend:
             self._loading = _SdLoading(
                 repo_id = repo_id,
                 base_repo = base,
+                subject = current_workspace_subject(),
                 asset_repos = tuple(
                     dict.fromkeys(
                         r
@@ -2126,8 +2140,17 @@ class SdCppDiffusionBackend:
                         pass
         return paths
 
-    def load_progress(self) -> dict[str, Any]:
+    def load_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Phase + downloaded/total bytes for the in-flight load.
+
+        ``subject`` hides a load another account started: the payload names the
+        repo it is pulling, which for a private local path is that account's own
+        directory. None keeps the unfiltered view the engine's own probes need.
+        """
         loading = self._loading
+        if loading is not None and subject is not None and loading.subject != subject:
+            # Answered as "nothing loading", the same shape an idle engine gives.
+            return _progress("ready" if self._state is not None else None)
         if loading is not None and loading.error:
             return _progress("error", error = loading.error)
         if loading is None:
@@ -2264,7 +2287,7 @@ class SdCppDiffusionBackend:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
                 self._active_generate_cancel = cancel
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
-                self._gen = _SdGen(total_steps = int(steps))
+                self._gen = _SdGen(total_steps = int(steps), subject = current_workspace_subject())
             try:
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
@@ -2664,8 +2687,12 @@ class SdCppDiffusionBackend:
                     gen.first_step_at = now
                 gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
 
-    def generate_progress(self) -> dict[str, Any]:
+    def generate_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """``subject`` reports idle for another account's generation; None keeps
+        the unfiltered view the engine's own probes need."""
         gen = self._gen
+        if gen is not None and subject is not None and gen.subject != subject:
+            gen = None
         if gen is None or gen.total_steps <= 0:
             return {
                 "active": False,
@@ -2682,13 +2709,20 @@ class SdCppDiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
-    def cancel_generate(self) -> bool:
+    def cancel_generate(self, subject: Optional[str] = None) -> bool:
         """Signal the in-flight generation to stop, matching DiffusionBackend.cancel_generate.
+
+        ``subject`` refuses a cancel aimed at another account's run, answered as
+        "nothing was running" for the same reason the progress poll reports idle.
+        None is the teardown path, which must stop whatever is running.
 
         The native engine is stricter than best-effort: the runner polls this event and kills
         the sd-cli process tree, so the stop lands within the poll interval rather than at the
         next step boundary. Returns False when nothing is running."""
         with self._lock:
+            gen = self._gen
+            if subject is not None and gen is not None and gen.subject != subject:
+                return False
             cancel = self._active_generate_cancel
             if cancel is None:
                 return False
@@ -2697,7 +2731,20 @@ class SdCppDiffusionBackend:
 
     # ── Unload / status ──────────────────────────────────────────────────────
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Free the model, cancelling whatever is running. See DiffusionBackend.unload."""
+        if subject is not None:
+            with self._lock:
+                gen = self._gen
+                if gen is not None and gen.subject != subject:
+                    raise ForeignWorkspaceActiveError(
+                        "Another account is generating an image right now."
+                    )
+                loading = self._loading
+                if loading is not None and loading.error is None and loading.subject != subject:
+                    raise ForeignWorkspaceActiveError(
+                        "Another account is loading an image model right now."
+                    )
         with self._lock:
             # Under the lock: begin_load rebinds this attribute, so an unlocked read could set an event the current load no longer watches.
             self._cancel_event.set()

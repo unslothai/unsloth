@@ -36,6 +36,12 @@ _NONCE_BYTES = 12
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
+_schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 
 
 def _associated_data(credential_kind: str, scope_id: str) -> bytes:
@@ -65,6 +71,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 def get_connection() -> sqlite3.Connection:
     global _schema_ready
     db_path = studio_db_path()
+    db_key = str(db_path.resolve(strict = False))
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path), timeout = 5.0)
     conn.row_factory = sqlite3.Row
@@ -73,11 +80,17 @@ def get_connection() -> sqlite3.Connection:
         os.chmod(db_path, 0o600)
     except OSError:
         pass
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
     if not _schema_ready:
+        _schema_ready_paths.clear()
+    if db_key not in _schema_ready_paths:
         with _schema_lock:
-            if not _schema_ready:
+            if db_key not in _schema_ready_paths:
                 try:
                     _ensure_schema(conn)
+                    schema_cache.mark_ready(_schema_ready_paths, db_key, cache_generation)
                     _schema_ready = True
                 except Exception:
                     conn.close()

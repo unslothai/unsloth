@@ -783,11 +783,24 @@ def test_wal_keeper_keeps_short_lived_writers_out_of_the_main_database(db):
     assert _digest(db) != unkept
 
 
-def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path, monkeypatch):
-    """Inheriting a keeper left by an earlier lifespan holds a database this process has
-    stopped using, reporting success while keeping nothing for the current one."""
+def _keeper(path):
+    """The keeper held for one database, or None.
+
+    Keepers are per database now: studio_db_path() is per workspace, so a single
+    process-wide keeper attached to the owner's file left every managed account's
+    writes checkpointing on close.
+    """
+    return studio_db._wal_keepers.get(str(Path(path).resolve()))
+
+
+def test_a_second_database_gets_its_own_keeper(db, tmp_path, monkeypatch):
+    """Each workspace database keeps its own WAL open, and neither displaces the other.
+
+    A single keeper held whichever database was current when the lifespan ran, which
+    is the owner's, so every managed account went back to checkpointing on close."""
     assert studio_db.open_wal_keeper() is True
-    stale = studio_db._wal_keeper
+    first = _keeper(db)
+    assert first is not None
 
     second = tmp_path / "second" / "studio.db"
     second.parent.mkdir()
@@ -795,20 +808,58 @@ def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
     assert studio_db.open_wal_keeper() is True
-    assert studio_db._wal_keeper is not stale
+    assert _keeper(second) is not None
+    assert _keeper(second) is not first
+    # The first database is still kept, not released to make room.
+    assert _keeper(db) is first
     _short_lived_write(second, "kept")
     assert Path(f"{second}-wal").is_file()
 
     studio_db.close_wal_keeper()
-    assert studio_db._wal_keeper is None
+    assert studio_db._wal_keepers == {}
     assert not Path(f"{second}-wal").exists()
     studio_db.close_wal_keeper()
+
+
+def test_a_workspace_database_is_kept_without_a_second_lifespan(db, tmp_path, monkeypatch):
+    """An account created after startup gets a keeper on its first write.
+
+    The lifespan runs outside any request, so the only database it can name is the
+    owner's; a managed account's is opened for the first time mid-request."""
+    assert studio_db.open_wal_keeper() is True
+
+    managed = tmp_path / "workspaces" / "alice-0123456789ab" / "studio.db"
+    managed.parent.mkdir(parents = True)
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: managed)
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    # No second open_wal_keeper(): just ordinary use of that workspace.
+    _short_lived_write(managed, "kept")
+    assert _keeper(managed) is not None
+    assert Path(f"{managed}-wal").is_file()
+
+    studio_db.close_wal_keeper()
+    assert not Path(f"{managed}-wal").exists()
+
+
+def test_no_keeper_is_engaged_before_the_lifespan_asks(db, tmp_path, monkeypatch):
+    """Opening a connection must not leave one behind that nothing asked for."""
+    studio_db.close_wal_keeper()
+
+    managed = tmp_path / "workspaces" / "bob-0123456789ab" / "studio.db"
+    managed.parent.mkdir(parents = True)
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: managed)
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    _short_lived_write(managed, "unkept")
+    assert _keeper(managed) is None
+    assert not Path(f"{managed}-wal").exists()
 
 
 def test_the_replaced_keeper_is_not_left_open(db):
     """Replacing must release the old connection, not merely drop the reference."""
     assert studio_db.open_wal_keeper() is True
-    stale = studio_db._wal_keeper
+    stale = _keeper(db)
     assert studio_db.open_wal_keeper() is True
 
     with pytest.raises(sqlite3.ProgrammingError, match = "closed database"):
@@ -821,11 +872,11 @@ def test_a_keeper_left_by_a_dead_thread_is_replaced(db):
     opened = threading.Thread(target = studio_db.open_wal_keeper)
     opened.start()
     opened.join()
-    stale = studio_db._wal_keeper
+    stale = _keeper(db)
     assert stale is not None
 
     assert studio_db.open_wal_keeper() is True
-    assert studio_db._wal_keeper is not stale
+    assert _keeper(db) is not stale
     _short_lived_write(db, "kept")
     assert Path(f"{db}-wal").is_file()
 
@@ -842,7 +893,7 @@ def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
 
     with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
         assert studio_db.open_wal_keeper() is False
-    assert studio_db._wal_keeper is None
+    assert _keeper(db) is None
     assert "not WAL" in caplog.text
 
 
@@ -856,7 +907,13 @@ def test_the_lifespan_holds_the_keeper_across_every_writer():
 
     source = inspect.getsource(main.lifespan)
     served = source.index("yield")
-    assert source.index("open_wal_keeper()") < source.index("cleanup_orphaned_runs()") < served
+    # The cleanup is dispatched per workspace, so the call is `run_in_workspace(
+    # _subject, cleanup_orphaned_runs)` and the bare-name-plus-parens form is gone.
+    assert (
+        source.index("open_wal_keeper()")
+        < source.index("run_in_workspace(_subject, cleanup_orphaned_runs)")
+        < served
+    )
     assert (
         served < source.index("await run_lifespan_shutdown(") < source.index("close_wal_keeper()")
     )

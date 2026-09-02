@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
+    "test:e2e:multi-user": "playwright test e2e/multi-user-workspaces.spec.ts",
     "bundle:check": "node --experimental-strip-types scripts/check-bundle-budget.ts",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
@@ -110,6 +111,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "1.55.0",
     "@types/canvas-confetti": "^1.9.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.5.2",

@@ -16,6 +16,7 @@ import re
 import threading
 
 from storage import rag_db
+from utils.workspace_context import workspace_thread
 
 from . import captioner, chunking, config, embeddings, job_leases, parsers, store
 
@@ -478,7 +479,7 @@ def start_ingestion(
         if not background:
             _run(*args)
             return document_id, job_id
-        worker = threading.Thread(
+        worker = workspace_thread(
             target = _run,
             # effective_model (not the raw model_name) pins the embedder for the
             # whole job: a Settings change mid-ingestion must not switch tokenizer

@@ -525,6 +525,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     """
     import queue as _queue
 
+    subject = config.get("subject")
+    if isinstance(subject, str) and subject:
+        from utils.workspace_context import set_workspace_subject
+        set_workspace_subject(subject)
+
     # Install fd-level stdout/stderr capture FIRST so every subsequent print and
     # every child process inherits the redirected fds (powers the live log stream).
     _setup_log_capture(resp_queue)

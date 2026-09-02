@@ -29,6 +29,7 @@ from storage.api_usage_db import (
     release_api_usage_writer,
 )
 from storage.profile_stats_db import compute_profile_stats, invalidate_profile_stats_cache
+from utils.workspace_context import reset_workspace_subject, set_workspace_subject
 
 
 @pytest.fixture
@@ -249,6 +250,7 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
 
 def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(stats_db):
     # Initialize the additive schema before taking the writer lock.
+    workspace_token = set_workspace_subject("alice")
     lock_conn = studio_db.get_connection()
     callback_lease = None
     writer_lease = acquire_api_usage_writer()
@@ -300,6 +302,7 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         if callback_lease is not None:
             monitor.release_terminal_callback(callback_lease)
         release_api_usage_writer(writer_lease)
+        reset_workspace_subject(workspace_token)
 
 
 def test_writer_stop_drains_accepted_receipts_and_rejects_late_submit():

@@ -32,7 +32,7 @@ class FakeUploadFile:
 
 @pytest.fixture(autouse = True)
 def isolate_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(datasets_route.local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(datasets_route.local, "dataset_uploads_root", lambda: tmp_path)
     monkeypatch.setattr(datasets_route.local, "get_upload_limit_mb", lambda: 1)
     return tmp_path
 

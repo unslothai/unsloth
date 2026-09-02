@@ -31,7 +31,7 @@ from hub.utils.paths import (
     ollama_model_dirs,
     outputs_root,
     path_is_same_or_child,
-    studio_root,
+    workspace_root,
 )
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
@@ -929,7 +929,7 @@ async def _scan_local_models_response(
         allowed_roots.append(legacy_hf)
     if _safe_is_dir(hf_default):
         allowed_roots.append(hf_default)
-    allowed_roots.extend([studio_root(), outputs_root()])
+    allowed_roots.extend([workspace_root(), outputs_root()])
 
     try:
         models_root = _resolve_allowed_models_dir(models_dir, allowed_roots)

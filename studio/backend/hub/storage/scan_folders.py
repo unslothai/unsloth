@@ -21,10 +21,17 @@ from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
 )
+from utils.paths.storage_roots import workspace_root
 
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
+_schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -85,10 +92,17 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     global _schema_ready
-    if _schema_ready:
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
+    if not _schema_ready:
+        _schema_ready_paths.clear()
+    database_row = conn.execute("PRAGMA database_list").fetchone()
+    database_key = str(database_row[2]) if database_row else ""
+    if database_key in _schema_ready_paths:
         return
     with _schema_lock:
-        if _schema_ready:
+        if database_key in _schema_ready_paths:
             return
         collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
         conn.execute(
@@ -101,6 +115,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             """
         )
         conn.commit()
+        schema_cache.mark_ready(_schema_ready_paths, database_key, cache_generation)
         _schema_ready = True
 
 
@@ -111,7 +126,18 @@ def list_scan_folders() -> list[dict]:
         rows = conn.execute(
             "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        folders = [dict(row) for row in rows]
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+        if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
+            return folders
+        private_root = os.path.normcase(os.path.realpath(str(workspace_root())))
+        return [
+            folder
+            for folder in folders
+            if (resolved := os.path.normcase(os.path.realpath(str(folder["path"])))) == private_root
+            or resolved.startswith(private_root + os.sep)
+        ]
     finally:
         conn.close()
 
@@ -132,6 +158,14 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
+
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+    if current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT:
+        private_root = os.path.normcase(os.path.realpath(str(workspace_root())))
+        candidate = os.path.normcase(normalized)
+        if candidate != private_root and not candidate.startswith(private_root + os.sep):
+            raise ValueError("Managed accounts can only register folders inside their workspace")
 
     is_win = platform.system() == "Windows"
     check = os.path.normcase(normalized) if is_win else normalized

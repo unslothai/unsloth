@@ -311,7 +311,9 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     # cached: same id -> same model + same pipe, no reload.
     p2 = b._controlnet_pipe(st, resolved, threading.Event())
     assert p2 is p1
-    assert b._cn_models["flux-union-pro"] is p1.controlnet
+    # Keyed by id AND resolved path: controlnets_dir() is per account, so two
+    # accounts' local models share a catalog id while naming different weights.
+    assert b._cn_models[DiffusionBackend._controlnet_cache_key(resolved)] is p1.controlnet
 
 
 def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):

@@ -25,6 +25,7 @@ from auth.authentication import (
     authenticated_via_api_key,
     get_current_credential,
     get_current_subject,
+    require_install_admin,
 )
 from auth.storage import rotate_preview_link_secret
 
@@ -1064,14 +1065,19 @@ def _llama_cpp_path_response() -> LlamaCppPathResponse:
 
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def get_hugging_face_cache(
-    current_subject: str = Depends(get_current_subject),
+    # Owner only, like the write beside it: the response is absolute cache paths
+    # and the variable behind them, which may sit under the owner's home.
+    current_subject: str = Depends(require_install_admin),
 ) -> HuggingFaceCacheResponse:
     return _hugging_face_cache_response()
 
 
 @router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def update_hugging_face_cache(
-    payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
+    # Owner only: the cache is install-wide and the path is unconstrained, so a
+    # managed account could point downloads at another workspace.
+    payload: HuggingFaceCachePayload,
+    current_subject: str = Depends(require_install_admin),
 ) -> HuggingFaceCacheResponse:
     try:
         set_hf_cache_home(payload.cache_home)
@@ -1090,7 +1096,9 @@ def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> L
 @router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
 def update_llama_cpp_path(
     payload: LlamaCppPathPayload,
-    current_subject: str = Depends(get_current_subject),
+    # Owner only: this picks the executable the shared inference backend launches,
+    # and a managed account's workspace is writable by that account.
+    current_subject: str = Depends(require_install_admin),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> LlamaCppPathResponse:
     # Only the interactive Unsloth UI may change this executable setting.
@@ -1118,7 +1126,7 @@ def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> Upl
 
 @router.put("/upload-limit", response_model = UploadLimitResponse)
 def update_upload_limit(
-    payload: UploadLimitPayload, current_subject: str = Depends(get_current_subject)
+    payload: UploadLimitPayload, current_subject: str = Depends(require_install_admin)
 ) -> UploadLimitResponse:
     try:
         limit_mb = set_upload_limit_mb(payload.max_upload_size_mb)
@@ -1142,8 +1150,11 @@ def get_helper_precache(
 
 @router.put("/helper-precache", response_model = HelperPrecacheResponse)
 def update_helper_precache(
-    payload: HelperPrecachePayload, current_subject: str = Depends(get_current_subject)
+    payload: HelperPrecachePayload, current_subject: str = Depends(require_install_admin)
 ) -> HelperPrecacheResponse:
+    """Owner only. This gates work the server does once at startup, for the whole
+    install, so it is not a per-account preference; the GET reports the same
+    install-wide value to everybody."""
     try:
         enabled = set_helper_precache_enabled(payload.enabled)
     except ValueError as exc:
@@ -1925,12 +1936,41 @@ def _any_embedder_is_loaded() -> bool:
 
 def _ambient_hf_token() -> Optional[str]:
     """The HF token the loader would use (HF_TOKEN env or the cached login), so a gated
-    repo is scanned rather than failing open. None if unavailable."""
+    repo is scanned rather than failing open. None if unavailable.
+
+    Owner-only: that credential belongs to the installation, and lending it to a
+    managed account is what ``_hub_token_for_subject`` exists to prevent. Callers
+    should go through that helper rather than this one."""
+    from auth.storage import is_installation_owner
+
+    if not is_installation_owner():
+        return None
     try:
         from huggingface_hub import get_token
         return get_token()
     except Exception:
         return None
+
+
+def _hub_token_for_subject(supplied: Optional[str]):
+    """The token this request's Hub calls may use.
+
+    A supplied token is the caller's own and always wins. Without one, only the
+    installation owner falls back to the ambient credential; a managed account
+    resolves anonymously. The anonymous answer is ``False``, not ``None``:
+    huggingface_hub treats ``None`` as "look for an implicit login", so passing
+    it would still spend the owner's cached token on a repo the caller named.
+    Without this, naming an owner-private repo here enumerated its files and
+    pulled its config into the shared cache under the owner's identity.
+    """
+    from auth.storage import is_installation_owner
+
+    token = (supplied or "").strip() or None
+    if token:
+        return token
+    if not is_installation_owner():
+        return False
+    return _ambient_hf_token() or False
 
 
 def _model_names_gguf_repo(model: str) -> bool:
@@ -2469,6 +2509,36 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
         return False
 
 
+def _reject_private_embedding_repo(resolved: str, token: Optional[str]) -> None:
+    """A cached embedding repo is not authorization to use it.
+
+    The plan below answers from the shared Hub cache before it ever asks about
+    credentials, so naming a private sentence-transformers or GGUF repository
+    another account had downloaded produced a usable plan, and the PUT persisted
+    it so the process-wide embedder loaded those weights for this account's RAG.
+    Cache presence therefore cannot be the answer: ask whether this account could
+    reach the repository at all.
+
+    Only for a full ``owner/name`` id. A slashless alias is resolved against the
+    curated sentence-transformers namespace further down and is not a repository
+    anyone could have downloaded privately, and a path is containment's business.
+    """
+    from routes.inference import (
+        _looks_like_a_local_model_path,
+        _reject_private_hub_repo_without_an_account_token,
+    )
+
+    if not isinstance(resolved, str) or resolved.count("/") != 1:
+        return
+    if _looks_like_a_local_model_path(resolved):
+        return
+    _reject_private_hub_repo_without_an_account_token(
+        resolved,
+        token,
+        shared_cache_answers_offline = False,
+    )
+
+
 @_with_embedding_resolve_budget
 def _resolve_embedding_model_plan(
     resolved: str, token: Optional[str]
@@ -2478,6 +2548,7 @@ def _resolve_embedding_model_plan(
     The PUT must not persist a client assertion that the GET never validated,
     so both routes use this exact resolver.
     """
+    _reject_private_embedding_repo(resolved, token)
     # Resolve for the model being selected, not the backend still serving the
     # previous model. A model-scoped runtime fallback must not force the next
     # selection onto llama-server.
@@ -2655,8 +2726,14 @@ def resolve_embedding_model(
             event = "settings.resolve_embedding_model_failed",
             log = logger,
         ) from exc
-    token = (hf_token or "").strip() or None
-    return _resolve_embedding_model_plan(resolved, token)
+    # Same containment the PUT applies. This resolves too: it probes for
+    # checkpoints under the name it is given, so an absolute path was a recursive
+    # read of another account's workspace whose answer told a complete
+    # SentenceTransformer or GGUF model apart from anything else there.
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(resolved, "use embedding models from")
+    return _resolve_embedding_model_plan(resolved, _hub_token_for_subject(hf_token))
 
 
 @router.put("/embedding-model", response_model = EmbeddingModelResponse)
@@ -2681,6 +2758,13 @@ def update_embedding_model(
             event = "settings.update_embedding_model_failed",
             log = logger,
         ) from exc
+    # Caching this per workspace stopped one account's choice reaching another's
+    # RAG; it did not stop the choice itself naming a path. An existing absolute
+    # directory is accepted here and later deserialized by SentenceTransformer or
+    # the llama embedding backend, so the same containment inference applies.
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(model, "use embedding models from")
     hf_token = (payload.hf_token or "").strip() or None
     from utils.utils import hf_env_offline
 
@@ -2689,7 +2773,11 @@ def update_embedding_model(
     local_only_load = hf_env_offline()
     # Resolve again server-side. The client fields are only an optimistic echo
     # of GET /resolve; neither a repository nor a backend is trusted on its word.
-    plan = _resolve_embedding_model_plan(model, hf_token)
+    # Whose credential this resolution may spend, decided once and reused by the
+    # scan below so the repo we verify and the repo we resolved are looked up as
+    # the same identity.
+    resolve_token = _hub_token_for_subject(hf_token)
+    plan = _resolve_embedding_model_plan(model, resolve_token)
     requested_repo = (payload.gguf_repo or "").strip() or None
     if payload.backend is not None and payload.backend != plan.backend:
         raise HTTPException(
@@ -2732,7 +2820,10 @@ def update_embedding_model(
 
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
-        scan_token = hf_token or _ambient_hf_token()
+        # Owner-only, and explicitly anonymous otherwise: the fallback is the
+        # installation's credential, and a managed account naming an owner-private
+        # repo would have spent it to enumerate and cache that repo's files.
+        scan_token = resolve_token
         # Offline: subdir probes would hit the network and hang; the offline gate walks the
         # whole cached snapshot, so no load-subdir hints are needed.
         if local_only_load:
@@ -2776,7 +2867,7 @@ def update_embedding_model(
         # GGUF is available (below) rather than the ST embedding-metadata gate,
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = destination_is_llama and rag_config._names_gguf(model)
-        if not gguf_named and not is_embedding_model(verify_target, hf_token = hf_token):
+        if not gguf_named and not is_embedding_model(verify_target, hf_token = resolve_token):
             # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
             # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
             # metadata. If already cached and loadable, accept it rather than raising a 409 that
@@ -2872,9 +2963,17 @@ class PreviewLinkRotateResponse(BaseModel):
 
 @router.post("/preview-links/rotate", response_model = PreviewLinkRotateResponse)
 def rotate_preview_links(
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(require_install_admin),
 ) -> PreviewLinkRotateResponse:
-    """Rotate the preview-link signing secret, revoking every previously shared `/p` link."""
+    """Rotate the preview-link signing secret, revoking every previously shared `/p` link.
+
+    Owner only. The payload carries a workspace subject, but every account signs
+    with one installation-wide secret, so rotating it revokes the owner's links
+    and every other account's along with the caller's own. That is an
+    install-wide effect, and it belongs with the other install-wide controls
+    rather than behind plain authentication. A managed account revoking only its
+    own links would need a per-workspace signing secret, which this does not add.
+    """
     rotate_preview_link_secret()
     logger.info("settings.preview_links_rotated subject=%s", current_subject)
     return PreviewLinkRotateResponse(rotated = True)
@@ -2933,6 +3032,18 @@ def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) 
         raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
 
 
+def _require_install_admin(current_subject: str = Depends(get_current_subject)) -> str:
+    """Protect controls that change exposure for the whole Studio process."""
+    from auth import storage
+
+    if not storage.is_admin(current_subject):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the installation owner can change server access.",
+        )
+    return current_subject
+
+
 def _remote_access_response(request: Request) -> RemoteAccessResponse:
     return RemoteAccessResponse(**remote_access_status(request.app.state))
 
@@ -2940,7 +3051,7 @@ def _remote_access_response(request: Request) -> RemoteAccessResponse:
 @router.get("/remote-access", response_model = RemoteAccessResponse)
 def get_remote_access(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     return _remote_access_response(request)
@@ -2949,7 +3060,7 @@ def get_remote_access(
 @router.post("/remote-access/start", response_model = RemoteAccessResponse)
 def start_remote_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     try:
@@ -2963,7 +3074,7 @@ def start_remote_access_route(
 @router.post("/remote-access/stop", response_model = RemoteAccessResponse)
 def stop_remote_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     try:
@@ -2987,7 +3098,7 @@ def stop_remote_access_route(
 def update_remote_access_auto_start(
     request: Request,
     payload: RemoteAccessAutoStartPayload,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     if bool(getattr(request.app.state, "remote_access_is_colab", False)):
@@ -3037,7 +3148,7 @@ def _lan_access_response(request: Request) -> LanAccessResponse:
 @router.get("/lan-access", response_model = LanAccessResponse)
 def get_lan_access(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     return _lan_access_response(request)
@@ -3046,7 +3157,7 @@ def get_lan_access(
 @router.post("/lan-access/start", response_model = LanAccessResponse)
 def start_lan_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     try:
@@ -3060,7 +3171,7 @@ def start_lan_access_route(
 @router.post("/lan-access/stop", response_model = LanAccessResponse)
 def stop_lan_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     try:
@@ -3075,7 +3186,7 @@ def stop_lan_access_route(
 def update_lan_access_auto_start(
     request: Request,
     payload: LanAccessAutoStartPayload,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     if bool(getattr(request.app.state, "lan_access_is_colab", False)):
@@ -3093,7 +3204,11 @@ def update_lan_access_auto_start(
 def update_lan_access_port(
     request: Request,
     payload: LanAccessPortPayload,
-    current_subject: str = Depends(get_current_subject),
+    # Owner only, like every sibling here: the listener is installation-wide, so
+    # a managed account setting its port cleared the shared bind failure the
+    # owner needs to diagnose, and wrote the choice into its own workspace rather
+    # than the configuration the listener actually starts from.
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     try:
@@ -3188,7 +3303,7 @@ def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
 @router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
 def get_keyless_api_access(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session_for_keyless),
 ) -> KeylessApiAccessResponse:
     return _keyless_api_access_response(request)
@@ -3198,7 +3313,7 @@ def get_keyless_api_access(
 def update_keyless_api_access(
     request: Request,
     payload: KeylessApiAccessPayload,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session_for_keyless),
 ) -> KeylessApiAccessResponse:
     """Choose which routes are served without an API key, and whether tools come too."""
@@ -3595,7 +3710,9 @@ class DebugLogResponse(BaseModel):
 
 @router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
-    current_subject: str = Depends(get_current_subject),
+    # Owner only: the log files are process-wide and carry other accounts' prompt
+    # prefixes and host paths.
+    current_subject: str = Depends(require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogSourcesResponse:
     """Every log file the viewer may read, newest first within each family.
@@ -3618,7 +3735,7 @@ def get_debug_log(
     source: Optional[str] = None,
     cursor: Optional[str] = None,
     lines: int = 1000,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogResponse:
     """The tail of one log, then only what was appended after `cursor`.

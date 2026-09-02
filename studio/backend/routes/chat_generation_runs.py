@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
 import sqlite3
@@ -328,8 +329,11 @@ async def chat_generation_events(
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
             return
         while True:
+            # ctx.run, else the pool thread loses the workspace and waits on the
+            # owner's studio.db while the snapshot below reads the caller's.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
+                contextvars.copy_context().run,
                 db.wait_for_events,
                 run_id,
                 cursor,

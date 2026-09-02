@@ -22,6 +22,7 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
+from utils.workspace_context import current_workspace_subject, workspace_thread
 
 logger = get_logger(__name__)
 
@@ -32,6 +33,9 @@ class _LocalGgufEntry:
     load_path: str  # concrete on-disk dir/file passed to /load so it never downloads
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
     is_gguf: bool = True  # False routes the load to the inference orchestrator
+    # Entries discovered through a user's configured scan folders must never be
+    # served to a different account. Built-in/cache roots remain shared.
+    workspace_subject: str | None = None
 
 
 _CACHE_TTL_S = 5.0
@@ -40,6 +44,7 @@ _CACHE_TTL_S = 5.0
 # tuple instead of a second global, and keeps it time-bounded like any other.
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+_scan_subject: str | None = None
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
 # Repos that finished downloading but are not in the published index yet: nothing
@@ -104,7 +109,12 @@ def _resolve_load_dir(p):
     return p
 
 
-def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+def _local_gguf_entry(
+    loader_id: str,
+    info,
+    *,
+    workspace_subject: str | None = None,
+) -> Optional[_LocalGgufEntry]:
     """Build an entry only when GGUF quants are on disk (not Transformers/
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
@@ -126,7 +136,12 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             # free (list_local_gguf_variants drops mmproj quants).
             if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
-            return _LocalGgufEntry(loader_id, str(p), ())
+            return _LocalGgufEntry(
+                loader_id,
+                str(p),
+                (),
+                workspace_subject = workspace_subject,
+            )
         load_dir = _resolve_load_dir(p)
         variants, _ = list_local_gguf_variants(str(load_dir))
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
@@ -147,7 +162,12 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         best = preferred_quant(unqualified or quants)
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
-        return _LocalGgufEntry(loader_id, str(load_dir), quants)
+        return _LocalGgufEntry(
+            loader_id,
+            str(load_dir),
+            quants,
+            workspace_subject = workspace_subject,
+        )
     except Exception:
         return None
 
@@ -303,7 +323,12 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     return _is_generative_chat_config(config)
 
 
-def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+def _local_weights_entry(
+    loader_id: str,
+    info,
+    *,
+    workspace_subject: str | None = None,
+) -> Optional[_LocalGgufEntry]:
     """Build an entry for a local non-GGUF checkpoint (safetensors, MLX) the
     inference orchestrator can serve, else None.
 
@@ -330,14 +355,35 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
-        return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
+        return _LocalGgufEntry(
+            loader_id,
+            str(load_dir),
+            (),
+            is_gguf = False,
+            workspace_subject = workspace_subject,
+        )
     except Exception:
         return None
 
 
-def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+def _local_servable_entry(
+    loader_id: str,
+    info,
+    *,
+    workspace_subject: str | None = None,
+) -> Optional[_LocalGgufEntry]:
     """Entry for whichever backend can serve *info* from disk, GGUF first."""
-    return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
+    if workspace_subject is None:
+        return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
+    return _local_gguf_entry(
+        loader_id,
+        info,
+        workspace_subject = workspace_subject,
+    ) or _local_weights_entry(
+        loader_id,
+        info,
+        workspace_subject = workspace_subject,
+    )
 
 
 def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
@@ -434,9 +480,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
 
     # Each source is guarded on its own so one bad root (a permission error, a
     # malformed cache) drops only that source, not the whole index.
-    found: list = []
+    found: list[tuple[object, str | None]] = []
     try:
-        found += _scan_models_dir(Path("./models").resolve())
+        found += [(info, None) for info in _scan_models_dir(Path("./models").resolve())]
     except Exception as exc:
         logger.debug("auto-switch: ./models scan failed: %s", exc)
     try:
@@ -446,18 +492,19 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             legacy_hf_cache_dir(),
             hf_default_cache_dir(),
         ):
-            found += _scan_hf_once(hf_dir)
+            found += [(info, None) for info in _scan_hf_once(hf_dir)]
     except Exception as exc:
         logger.debug("auto-switch: HF cache scan failed: %s", exc)
     try:
         for lm_dir in lmstudio_model_dirs():
-            found += _scan_lmstudio_dir(lm_dir)
+            found += [(info, None) for info in _scan_lmstudio_dir(lm_dir)]
     except Exception as exc:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
 
         custom_found = []
+        private_subject = current_workspace_subject()
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
@@ -466,10 +513,10 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
-        found += suppress_grouped_gguf_file_rows(custom_found)
+        found += [(info, private_subject) for info in suppress_grouped_gguf_file_rows(custom_found)]
     except Exception as exc:
         logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
-    for info in found:
+    for info, workspace_subject in found:
         raw_id = getattr(info, "id", None)
         if not raw_id:
             continue
@@ -483,7 +530,15 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)
-        entry = _local_servable_entry(loader_id, info)
+        entry = (
+            _local_servable_entry(loader_id, info)
+            if workspace_subject is None
+            else _local_servable_entry(
+                loader_id,
+                info,
+                workspace_subject = workspace_subject,
+            )
+        )
         if entry is None:
             continue
         # Index every alias (including the path) so a client can resolve by any of
@@ -499,12 +554,21 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         # Other revisions of the same repo resolve to their own weights, so a pin on
         # one keeps working after Hugging Face writes a newer snapshot.
         if entry.is_gguf:
-            for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):
+            for name, sibling_entry in _sibling_revision_entries(
+                raw_id,
+                loader_id,
+                workspace_subject = workspace_subject,
+            ):
                 index.setdefault(name.strip().lower(), sibling_entry)
     return index
 
 
-def _sibling_revision_entries(raw_id: str, loader_id: str):
+def _sibling_revision_entries(
+    raw_id: str,
+    loader_id: str,
+    *,
+    workspace_subject: str | None = None,
+):
     """Yield ``(revision_name, entry)`` for the repo's OTHER cached revisions.
 
     An inactive-cache repo carries its snapshot path as the id, and /v1/models
@@ -542,7 +606,11 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
     for sibling in siblings:
         if not snapshot_variants_all_complete(str(sibling)):
             continue
-        entry = _local_gguf_entry(loader_id, SimpleNamespace(path = str(sibling)))
+        entry = _local_gguf_entry(
+            loader_id,
+            SimpleNamespace(path = str(sibling)),
+            workspace_subject = workspace_subject,
+        )
         if entry is not None:
             yield sibling.name, entry
 
@@ -614,7 +682,7 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
-    global _scan
+    global _scan, _scan_subject
     # Build under the lock so concurrent callers with an expired cache don't all
     # run the (multi-dir) scan at once; the rest wait and reuse the fresh result.
     with _lock:
@@ -622,13 +690,15 @@ def _index() -> dict[str, _LocalGgufEntry]:
         ts, cached = _scan
         # ``ts > 0``: monotonic() counts from boot, so under a TTL of uptime an
         # invalidated stamp reads as recent and would serve what was just revoked.
-        if ts > 0.0 and now - ts < _CACHE_TTL_S:
+        subject = current_workspace_subject()
+        if ts > 0.0 and now - ts < _CACHE_TTL_S and _scan_subject in {None, subject}:
             return cached
         fresh = _build_index()
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on
         # an install with many local models can itself exceed the TTL, which would
         # store the cache already expired and make every request rebuild the index.
         _scan = (time.monotonic(), fresh)
+        _scan_subject = subject
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
         return fresh
@@ -654,6 +724,8 @@ def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Opt
     while the trust state is being evaluated.
     """
     snapshot = _scan
+    if _scan_subject not in {None, current_workspace_subject()}:
+        return None
     resolved = _resolve_from_index(requested, snapshot[1])
     if resolved is None or _scan is not snapshot:
         return None
@@ -671,7 +743,12 @@ def warm_index_soon() -> None:
     """
     global _warming, _warm_pending
     stamp = _scan[0]
-    if stamp > 0.0 and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
+    subject = current_workspace_subject()
+    if (
+        stamp > 0.0
+        and _scan_subject in {None, subject}
+        and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY)
+    ):
         return
     with _warm_lock:
         if _warming:
@@ -703,7 +780,12 @@ def warm_index_soon() -> None:
                 with _warm_lock:
                     _warming = _warm_pending = False
 
-    threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+    workspace_thread(
+        target = _run,
+        subject = subject,
+        name = "local-model-index-warm",
+        daemon = True,
+    ).start()
 
 
 def resolve_local_gguf(
@@ -741,7 +823,7 @@ def _resolve_from_index(
     """Resolve *requested* against one immutable published index mapping."""
     try:
         entry = index.get(requested.lower())
-        if entry is not None:
+        if entry is not None and _entry_visible(entry):
             variant = entry.variants[0] if entry.variants else None
             return entry.load_path, variant, entry.loader_id
 
@@ -749,7 +831,7 @@ def _resolve_from_index(
         if not sep:
             return None
         entry = index.get(base.strip().lower())
-        if entry is None:
+        if entry is None or not _entry_visible(entry):
             return None
         wanted = variant.strip().lower()
         for v in entry.variants:
@@ -792,6 +874,10 @@ def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = No
     return entry.is_gguf if entry is not None else True
 
 
+def _entry_visible(entry: _LocalGgufEntry) -> bool:
+    return entry.workspace_subject in {None, current_workspace_subject()}
+
+
 MISS_MODEL_NOT_FOUND = "model_not_found"
 MISS_VARIANT_NOT_FOUND = "variant_not_found"
 
@@ -817,6 +903,6 @@ def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
         entry = _index().get(base.strip().lower())
     except Exception:
         return MISS_MODEL_NOT_FOUND, ()
-    if entry is None or not entry.variants:
+    if entry is None or not _entry_visible(entry) or not entry.variants:
         return MISS_MODEL_NOT_FOUND, ()
     return MISS_VARIANT_NOT_FOUND, entry.variants

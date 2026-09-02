@@ -21,11 +21,9 @@ import type {
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
-import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
-import { LanAccessSection } from "../components/lan-access-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
-import { RemoteAccessSection } from "../components/remote-access-section";
+import { OwnerServerAccessSections } from "../components/owner-server-access-sections";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
@@ -181,12 +179,8 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
-      <KeylessApiAccessSection onSettingsChange={setKeyless} />
-
       {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
-      <RemoteAccessSection />
-
-      <LanAccessSection />
+      <OwnerServerAccessSections onSettingsChange={setKeyless} />
 
       <ModelAutoSwitchSection />
 

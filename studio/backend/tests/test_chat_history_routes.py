@@ -898,7 +898,7 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     monkeypatch.setattr(studio_db, "_schema_ready", False)
-    monkeypatch.setattr(search_images, "_registry", {})
+    search_images.reset_registry_for_tests()
     monkeypatch.setattr(search_images, "_cleared_unservable", set())
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
@@ -1128,7 +1128,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     monkeypatch.setattr(studio_db, "_schema_ready", False)
-    monkeypatch.setattr(search_images, "_registry", {})
+    search_images.reset_registry_for_tests()
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
 
@@ -1159,7 +1159,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
         result = await real_run_in_threadpool(func, *args, **kwargs)
         hops["n"] += 1
         if hops["n"] == 1:
-            search_images._registry[late_image_id] = {
+            search_images.state_for_tests().registry[late_image_id] = {
                 "thumbnail": "https://example.invalid/x.jpg",
                 "source": "https://example.invalid/",
                 "created": 0.0,
@@ -1220,12 +1220,12 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     monkeypatch.setattr(studio_db, "_schema_ready", False)
-    monkeypatch.setattr(search_images, "_registry", {})
+    search_images.reset_registry_for_tests()
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
 
     doomed_image_id = "aaaabbbbcccc"
-    search_images._registry[doomed_image_id] = {
+    search_images.state_for_tests().registry[doomed_image_id] = {
         "thumbnail": "https://example.invalid/x.jpg",
         "source": "https://example.invalid/",
         "created": 0.0,
@@ -1269,7 +1269,7 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
     # A chat started after the crash, whose images the replay must NOT take.
     studio_db.upsert_chat_thread(_clear_thread_row("after-crash"))
     later_image_id = "ddddeeeeffff"
-    search_images._registry[later_image_id] = {
+    search_images.state_for_tests().registry[later_image_id] = {
         "thumbnail": "https://example.invalid/y.jpg",
         "source": "https://example.invalid/",
         "created": 0.0,
@@ -1298,7 +1298,7 @@ def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     monkeypatch.setattr(studio_db, "_schema_ready", False)
-    monkeypatch.setattr(search_images, "_registry", {})
+    search_images.reset_registry_for_tests()
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
 

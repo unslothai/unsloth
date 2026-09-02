@@ -9,7 +9,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    get_current_subject,
+    require_install_admin,
+)
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
@@ -96,6 +100,12 @@ async def get_gguf_variants(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
+    # Before any filesystem probe: local_path is caller-supplied and reaches
+    # list_local_gguf_variants, so without this a managed account could point it
+    # at another account's model directory and read back the filenames,
+    # quantizations, sizes and vision metadata it found there.
+    from routes.inference import _reject_uncontained_local_path
+    _reject_uncontained_local_path(local_path, "list GGUF variants for")
     return await gguf_variants.get_gguf_variants_response(
         repo_id,
         prefer_local_cache = prefer_local_cache,
@@ -250,7 +260,9 @@ async def delete_cached_model(
     # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
     only_if_orphan: bool = Body(False),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
-    current_subject: str = Depends(get_current_subject),
+    # Owner only: the model cache is installation-wide, so this discards whatever
+    # any account downloaded. See routes/models.delete_cached_model.
+    current_subject: str = Depends(require_install_admin),
 ):
     return await deletion.delete_cached_model_response(
         repo_id, variant, hf_token, cache_path, only_if_orphan

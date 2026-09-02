@@ -35,7 +35,9 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.rag import config, folder_sync, ingestion, retrieval, store
 from storage import rag_db
+from utils import signed_media_links
 from utils.paths import ensure_dir, rag_uploads_root
+from utils.workspace_context import reset_workspace_subject, set_workspace_subject
 
 logger = logging.getLogger(__name__)
 
@@ -969,28 +971,11 @@ _CONTENT_TYPES = {
 
 
 def _sign_document(document_id: str) -> str:
-    exp = int(time.time()) + _PREVIEW_TTL
-    payload = f"{document_id}.{exp}"
-    sig = hmac.new(_PREVIEW_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return f"{payload}.{sig}"
+    return signed_media_links.sign(_PREVIEW_SECRET, document_id, _PREVIEW_TTL)
 
 
 def _verify_document_token(token: str) -> str | None:
-    try:
-        document_id, exp_s, sig = token.rsplit(".", 2)
-    except ValueError:
-        return None
-    expected = hmac.new(
-        _PREVIEW_SECRET, f"{document_id}.{exp_s}".encode(), hashlib.sha256
-    ).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        if int(exp_s) < int(time.time()):
-            return None
-    except ValueError:
-        return None
-    return document_id
+    return signed_media_links.verify(_PREVIEW_SECRET, token)[0]
 
 
 @router.get("/documents/{document_id}/preview-target")
@@ -1066,23 +1051,29 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     requests work."""
     # Token first: this is the one endpoint with no bearer, and _require_rag() now opens
     # a connection on its first call, which is not work an unverified token should buy.
-    signed_id = _verify_document_token(token)
+    signed_id, subject = signed_media_links.verify(_PREVIEW_SECRET, token)
     if signed_id != document_id:
         raise HTTPException(status_code = 401, detail = "Invalid or expired token")
-    _require_rag()
-    conn = _rag_connection()
+    # rag.db and the uploads root are per account and this route takes no bearer,
+    # so without rebinding it queries the owner's database and 404s the caller.
+    _token = set_workspace_subject(subject)
     try:
-        doc = store.get_visible_document(conn, document_id)
-        if doc is not None:
-            _require_document_owner(conn, doc)
+        _require_rag()
+        conn = _rag_connection()
+        try:
+            doc = store.get_visible_document(conn, document_id)
+            if doc is not None:
+                _require_document_owner(conn, doc)
+        finally:
+            conn.close()
+        stored_path = (doc or {}).get("stored_path")
+        if not doc or not stored_path or not os.path.isfile(stored_path):
+            raise HTTPException(status_code = 404, detail = "Document file not found")
+        # Confine to the uploads root (defense in depth).
+        if not _is_managed_preview_path(stored_path):
+            raise HTTPException(status_code = 403, detail = "Forbidden")
     finally:
-        conn.close()
-    stored_path = (doc or {}).get("stored_path")
-    if not doc or not stored_path or not os.path.isfile(stored_path):
-        raise HTTPException(status_code = 404, detail = "Document file not found")
-    # Confine to the uploads root (defense in depth).
-    if not _is_managed_preview_path(stored_path):
-        raise HTTPException(status_code = 403, detail = "Forbidden")
+        reset_workspace_subject(_token)
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
         stored_path,

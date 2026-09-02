@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 from pathlib import Path
 from urllib.parse import quote
@@ -15,7 +16,6 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from loggers import get_logger
 
 from auth.authentication import authenticated_without_credential, get_current_subject
-from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import (
     disable_openai_auto_switch_for_request,
@@ -27,7 +27,12 @@ from utils.client_ip import client_ip
 from utils.models.checkpoints import list_preview_targets, resolve_preview_checkpoint
 from utils.preview_rate_limit import check_rate_limit
 from utils.preview_sharing_settings import get_preview_sharing_enabled
-from utils.preview_token import sign_preview_ref, verify_preview_ref
+from utils.preview_token import preview_token_subject, sign_preview_ref, verify_preview_ref
+from utils.workspace_context import (
+    current_workspace_subject,
+    reset_workspace_subject,
+    set_workspace_subject,
+)
 
 logger = get_logger(__name__)
 
@@ -51,12 +56,36 @@ def _extract_token(request: Request) -> str | None:
     return None
 
 
-def _verify_or_404(run: str, checkpoint: str | None, request: Request) -> None:
+def _verify_or_404(run: str, checkpoint: str | None, request: Request) -> str:
+    """Check the capability and return the workspace it names.
+
+    These routes take no bearer, so without rebinding, the sharing setting and the
+    outputs root both resolve to the owner's and a managed account's own link 404s.
+    """
     ref = run if not checkpoint else f"{run}/{checkpoint}"
-    if not verify_preview_ref(ref, _extract_token(request)):
+    token = _extract_token(request)
+    if not verify_preview_ref(ref, token):
         raise HTTPException(status_code = 404, detail = "Not found")
-    if not get_preview_sharing_enabled():
+    subject = preview_token_subject(token)
+    _bound = set_workspace_subject(subject)
+    try:
+        sharing_on = get_preview_sharing_enabled()
+    finally:
+        reset_workspace_subject(_bound)
+    if not sharing_on:
         raise HTTPException(status_code = 404, detail = "Not found")
+    return subject
+
+
+@contextlib.contextmanager
+def _preview_workspace(run: str, checkpoint: str | None, request: Request):
+    """Verify the capability, then serve the rest of the request in its workspace."""
+    subject = _verify_or_404(run, checkpoint, request)
+    bound = set_workspace_subject(subject)
+    try:
+        yield
+    finally:
+        reset_workspace_subject(bound)
 
 
 def _enforce_rate_limit(request: Request) -> None:
@@ -156,11 +185,15 @@ async def _serve_chat(
         # The in-process coroutine, not the /load route: the route's padding returns a
         # StreamingResponse while the checkpoint is still loading, so the chat below
         # would run against the previous model (or none).
-        await load_model_for_preview(
-            LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME
-        )
+        # The link's own subject, not the owner. _preview_workspace already bound
+        # it for the filesystem, but these two take it as an explicit argument and
+        # the chat one records the prompt in the process-global API monitor. Left
+        # as the owner, a managed account's preview prompts were filed under the
+        # owner's name, readable by them and not by the account that owns them.
+        subject = current_workspace_subject()
+        await load_model_for_preview(LoadRequest(model_path = str(path)), request, subject)
         with tools_force_disabled():
-            response = await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)
+            response = await openai_chat_completions(payload, request, subject)
         if isinstance(response, StreamingResponse):
             response.body_iterator = _unlock_after(response.body_iterator)
             keep_locked = True
@@ -197,18 +230,18 @@ async def list_previews(
 
 @router.post("/{run}/v1/chat/completions")
 async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request: Request):
-    _verify_or_404(run, None, request)
-    _enforce_rate_limit(request)
-    return await _serve_chat(run, None, payload, request)
+    with _preview_workspace(run, None, request):
+        _enforce_rate_limit(request)
+        return await _serve_chat(run, None, payload, request)
 
 
 @router.post("/{run}/{checkpoint}/v1/chat/completions")
 async def preview_chat_checkpoint(
     run: str, checkpoint: str, payload: ChatCompletionRequest, request: Request
 ):
-    _verify_or_404(run, checkpoint, request)
-    _enforce_rate_limit(request)
-    return await _serve_chat(run, checkpoint, payload, request)
+    with _preview_workspace(run, checkpoint, request):
+        _enforce_rate_limit(request)
+        return await _serve_chat(run, checkpoint, payload, request)
 
 
 def _models_response(run: str, checkpoint: str | None):
@@ -231,14 +264,14 @@ def _models_response(run: str, checkpoint: str | None):
 # token-gated but not rate-limited; only the GPU-backed chat path is throttled.
 @router.get("/{run}/v1/models")
 async def preview_models_latest(run: str, request: Request):
-    _verify_or_404(run, None, request)
-    return _models_response(run, None)
+    with _preview_workspace(run, None, request):
+        return _models_response(run, None)
 
 
 @router.get("/{run}/{checkpoint}/v1/models")
 async def preview_models_checkpoint(run: str, checkpoint: str, request: Request):
-    _verify_or_404(run, checkpoint, request)
-    return _models_response(run, checkpoint)
+    with _preview_workspace(run, checkpoint, request):
+        return _models_response(run, checkpoint)
 
 
 # Serve logo/fonts here too: the SPA static mount is absent in --api-only (Tauri).
@@ -287,11 +320,11 @@ def _preview_page(run: str, checkpoint: str | None) -> HTMLResponse:
 
 @router.get("/{run}", response_class = HTMLResponse)
 async def preview_page_latest(run: str, request: Request):
-    _verify_or_404(run, None, request)
-    return _preview_page(run, None)
+    with _preview_workspace(run, None, request):
+        return _preview_page(run, None)
 
 
 @router.get("/{run}/{checkpoint}", response_class = HTMLResponse)
 async def preview_page_checkpoint(run: str, checkpoint: str, request: Request):
-    _verify_or_404(run, checkpoint, request)
-    return _preview_page(run, checkpoint)
+    with _preview_workspace(run, checkpoint, request):
+        return _preview_page(run, checkpoint)

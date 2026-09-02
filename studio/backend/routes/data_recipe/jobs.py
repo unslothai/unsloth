@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
 
@@ -18,7 +19,7 @@ from auth.authentication import (
     get_current_credential,
     require_ui_session_for_local_commands,
 )
-from auth.storage import CredentialRotated
+from auth.storage import CredentialRotated, is_installation_owner
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -36,6 +37,7 @@ from models.data_recipe import (
     RecipePayload,
 )
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
+from utils.paths import recipe_datasets_root
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -273,10 +275,79 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
+def reject_env_credentials_in_recipe(recipe: Any) -> None:
+    """Guard every provider collection a recipe carries, wherever it enters.
+    Called from the job and validate entry points, not _inject_local_providers,
+    which returns early for an external-only recipe and never sees
+    mcp_providers."""
+    if not isinstance(recipe, dict):
+        return
+    for key in ("model_providers", "mcp_providers"):
+        collection = recipe.get(key)
+        if isinstance(collection, list):
+            _reject_env_credentials_from_a_managed_account(collection)
+            _reject_private_destinations_from_a_managed_account(collection)
+
+
+def _reject_private_destinations_from_a_managed_account(providers: list) -> None:
+    """A recipe may not aim the worker at a loopback or LAN service.
+
+    These endpoints reach Data Designer verbatim and it connects to them from the
+    backend host, during validation as well as the run, which is the same request
+    the saved providers and MCP servers already refuse. Reuses the provider
+    validator, so the surfaces cannot drift on what counts as private.
+    """
+    if is_installation_owner():
+        return
+    from core.inference.providers import validate_provider_base_url
+
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        if provider.get("is_local") is True:
+            # _inject_local_providers overwrites the endpoint of these with this
+            # server's own /v1, so whatever arrived here is never connected to.
+            continue
+        endpoint = provider.get("endpoint")
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            continue
+        try:
+            validate_provider_base_url(endpoint)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code = 403,
+                detail = (f"This account can only use recipe providers on public addresses. ({exc})"),
+            ) from exc
+
+
+def _reject_env_credentials_from_a_managed_account(providers: list) -> None:
+    """Only the owner may have a recipe read a provider key out of the environment.
+
+    ``api_key_env`` is os.getenv in the spawned worker, and the variable name and
+    the endpoint both come from the request: that is handing a secret over, not
+    spending it. The owner keeps it, since the environment is theirs.
+    """
+    if is_installation_owner():
+        return
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        named = provider.get("api_key_env")
+        if isinstance(named, str) and named.strip():
+            raise HTTPException(
+                status_code = 403,
+                detail = (
+                    "This account cannot read provider keys from the server's "
+                    "environment. Enter the API key directly instead."
+                ),
+            )
+
+
 def _inject_local_providers(
     recipe: dict[str, Any],
     request: Request,
     expect_gen: Optional[str] = None,
+    username: str = "unsloth",
 ) -> Optional[int]:
     """Mutate recipe in-place: point is_local providers at this server and mint
     a short-lived internal sk-unsloth-* key for workflow auth.
@@ -329,7 +400,7 @@ def _inject_local_providers(
         # the caller revokes it when the job terminates.
         expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
-            username = "unsloth",
+            username = username,
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
@@ -433,8 +504,17 @@ def create_job(
                 log = logger,
             ) from exc
 
+    # Before anything builds providers from it, and before the local-injection
+    # helper's early returns can skip it.
+    reject_env_credentials_in_recipe(recipe)
+
     try:
-        internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+        internal_api_key_id = _inject_local_providers(
+            recipe,
+            request,
+            expect_gen = credential[1],
+            username = credential[0],
+        )
     except CredentialRotated as exc:
         # A reset-password landed after this request authenticated; the workflow key
         # is refused, so answer like any other revoked credential rather than 500.
@@ -493,6 +573,15 @@ def _revoke_internal_api_key_safe(key_id: int) -> None:
         storage.revoke_internal_api_key(key_id)
     except Exception:
         pass
+
+
+def _workspace_artifact_path(raw_path: str) -> str:
+    """Resolve a recipe artifact without crossing the caller's workspace."""
+    root = recipe_datasets_root().resolve()
+    candidate = Path(raw_path).expanduser().resolve()
+    if not candidate.is_relative_to(root):
+        raise HTTPException(status_code = 404, detail = "dataset not found")
+    return str(candidate)
 
 
 @router.get("/jobs/{job_id}/status")
@@ -585,6 +674,19 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
         raise HTTPException(
             status_code = 400,
             detail = "This execution does not have publishable dataset artifacts.",
+        )
+    artifact_path = _workspace_artifact_path(artifact_path)
+
+    if not (hf_token or "").strip() and not is_installation_owner():
+        # publish_recipe_dataset passes token=None into the Hub client, which means
+        # ambient: the owner's login. This path never goes near the download
+        # lifecycle, so the fallback made owner-only there does not cover it.
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Publishing to Hugging Face needs your own access token. Add one "
+                "in Settings and try again."
+            ),
         )
 
     try:

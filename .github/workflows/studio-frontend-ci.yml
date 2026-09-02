@@ -15,6 +15,7 @@ on:
   pull_request:
     paths:
       - 'studio/frontend/**'
+      - 'studio/backend/tests/multi_user_e2e_server.py'
       - 'scripts/check_frontend_dep_removal.py'
       - 'tests/studio/test_frontend_dep_removal.py'
 
@@ -228,7 +229,9 @@ jobs:
         id: pw
         working-directory: ${{ github.workspace }}
         run: |
-          python3 -m pip install 'playwright>=1.45,<2' pytest
+          # Keep the Python harnesses and the checked-in @playwright/test package on
+          # one browser revision so the new production-route scenario reuses this cache.
+          python3 -m pip install 'playwright==1.55.0' pytest
           echo "version=$(python3 -c 'from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
 
       # Keys deliberately IDENTICAL to the chromium-only shards in
@@ -375,6 +378,42 @@ jobs:
             tests/studio/test_heavy_thread_gap_contract.py \
             tests/studio/test_code_block_flicker_contract.py -q
 
+      - name: Install the lightweight multi-user backend dependencies
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install \
+            'fastapi==0.141.1' 'uvicorn==0.52.1' 'pydantic==2.13.4' \
+            'pyjwt==2.13.0' 'cryptography>=42' python-multipart httpx structlog
+
+      - name: Playwright multi-user workspace isolation
+        working-directory: ${{ github.workspace }}
+        env:
+          STUDIO_E2E_ADMIN_PASSWORD: owner-e2e-password
+          STUDIO_E2E_URL: http://127.0.0.1:8767
+          STUDIO_EVIDENCE_DIR: ${{ github.workspace }}/logs/playwright-multi-user
+          PLAYWRIGHT_OUTPUT_DIR: ${{ github.workspace }}/logs/playwright-multi-user-results
+          UNSLOTH_STUDIO_HOME: ${{ runner.temp }}/unsloth-multi-user-e2e
+          PYTHONPATH: ${{ github.workspace }}/studio/backend
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          python3 studio/backend/tests/multi_user_e2e_server.py \
+            > logs/multi-user-backend.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8767/api/auth/status >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat logs/multi-user-backend.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8767/api/auth/status >/dev/null
+          npm --prefix studio/frontend run test:e2e:multi-user
+
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
         env:
@@ -476,6 +515,7 @@ jobs:
           # Include the settings and dismissal probe reports as well as playwright-* logs.
           path: |
             logs/playwright-*
+            logs/multi-user-backend.log
             logs/settings_tabs_report.json
             logs/settings_tabs_blocked_report.json
             logs/pw/

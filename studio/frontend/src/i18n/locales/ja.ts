@@ -190,6 +190,7 @@ export const ja = {
     tabs: {
       general: "一般",
       profile: "プロフィール",
+      accounts: "アカウント",
       appearance: "外観",
       resources: "システム",
       chat: "チャット",

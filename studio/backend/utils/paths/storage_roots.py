@@ -14,6 +14,12 @@ import tempfile
 
 from loggers import get_logger
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    assert_workspace_binding_current,
+    current_workspace_subject,
+    workspace_key,
+)
 
 logger = get_logger(__name__)
 
@@ -68,6 +74,26 @@ def cache_root() -> Path:
     return studio_root() / "cache"
 
 
+def workspace_root() -> Path:
+    """Private persistent root for the authenticated Studio account.
+
+    The original ``unsloth`` account deliberately retains the historical
+    install-root layout so enabling multiple accounts never hides or migrates
+    an existing single-user installation. Additional accounts are isolated
+    below ``workspaces/``.
+    """
+    # Every per-account root is built from this one, so it is where a request
+    # that outlived its account stops. Deletion quiesces what is running, which
+    # cannot see a request admitted a moment earlier and paused before it
+    # started any work; without this that request resumes and recreates the
+    # directory the retirement just renamed away.
+    assert_workspace_binding_current()
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return studio_root()
+    return studio_root() / "workspaces" / workspace_key(subject)
+
+
 def llama_slot_cache_root() -> Path:
     """Dir llama-server saves/restores slot KV state in across idle unloads."""
     return cache_root() / "llama-slots"
@@ -79,7 +105,7 @@ def studio_bin_root() -> Path:
 
 
 def assets_root() -> Path:
-    return studio_root() / "assets"
+    return workspace_root() / "assets"
 
 
 def datasets_root() -> Path:
@@ -95,11 +121,11 @@ def recipe_datasets_root() -> Path:
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return workspace_root() / "outputs"
 
 
 def exports_root() -> Path:
-    return studio_root() / "exports"
+    return workspace_root() / "exports"
 
 
 def auth_root() -> Path:
@@ -111,12 +137,12 @@ def auth_db_path() -> Path:
 
 
 def studio_db_path() -> Path:
-    return studio_root() / "studio.db"
+    return workspace_root() / "studio.db"
 
 
 def rag_root() -> Path:
     """Root directory for retrieval-augmented-generation state (db + uploads)."""
-    return studio_root() / "rag"
+    return workspace_root() / "rag"
 
 
 def rag_db_path() -> Path:
@@ -195,12 +221,21 @@ def documents_root() -> Path:
 def project_workspaces_root() -> Path:
     override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
     if override:
-        return Path(override).expanduser()
-    return documents_root() / "Unsloth Studio" / "Projects"
+        root = Path(override).expanduser()
+    else:
+        root = documents_root() / "Unsloth Studio"
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return root / "Projects" if not override else root
+    return root / "Users" / workspace_key(subject) / "Projects"
 
 
 def tmp_root() -> Path:
-    return Path(tempfile.gettempdir()) / "unsloth-studio"
+    root = Path(tempfile.gettempdir()) / "unsloth-studio"
+    subject = current_workspace_subject()
+    if subject == LEGACY_WORKSPACE_SUBJECT:
+        return root
+    return root / "workspaces" / workspace_key(subject)
 
 
 def seed_uploads_root() -> Path:
@@ -220,7 +255,7 @@ def oxc_validator_tmp_root() -> Path:
 
 
 def tensorboard_root() -> Path:
-    return studio_root() / "runs"
+    return workspace_root() / "runs"
 
 
 def ensure_dir(path: Path) -> Path:
@@ -534,12 +569,16 @@ def resolve_export_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_write_dir(path_value: str | None = None) -> Path:
-    """Resolve an export save directory — accepts absolute paths.
+    """Resolve an export save directory. Absolute paths are owner-only.
 
-    Unlike :func:`resolve_export_dir`, this function passes absolute
-    paths through as-is so users can target a different drive when
-    their Unsloth install lives on a constrained system volume
-    (see :gh-issue:`6082`). Used only by the export write path.
+    Unlike :func:`resolve_export_dir`, this passes absolute paths through as-is
+    so the owner can target a different drive when their install lives on a
+    constrained system volume (see :gh-issue:`6082`). Used only by the export
+    write path.
+
+    A managed account is held to its own exports root instead. Left open, that
+    escape hatch is a write primitive into any directory the backend can reach,
+    including another account's workspace and the owner's outputs.
     """
     if not path_value or not str(path_value).strip():
         return exports_root()
@@ -550,7 +589,22 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
     if _is_absolute_user_path(path):
-        return path
+        if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
+            return path
+        # The Export folder browser hands back an absolute path even when the
+        # user picked a directory inside their own workspace, so refusing on
+        # shape alone refused the ordinary case. Ask where it actually lands:
+        # resolved, so a symlink inside the export root cannot point out of it.
+        root = exports_root()
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root.resolve())
+        except (OSError, RuntimeError, ValueError):
+            raise ValueError(
+                "Managed accounts can only export inside their own workspace, "
+                f"not to an absolute path: {raw!r}"
+            ) from None
+        return resolved
     return resolve_under_root(
         path_value,
         root = exports_root(),

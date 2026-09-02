@@ -188,6 +188,7 @@ export const ko = {
     tabs: {
       general: "일반",
       profile: "프로필",
+      accounts: "계정",
       appearance: "모양",
       resources: "시스템",
       chat: "채팅",

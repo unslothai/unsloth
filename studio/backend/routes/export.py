@@ -86,6 +86,20 @@ async def load_checkpoint(
     a clear error instead of tearing down the user's other running workloads.
     """
     try:
+        # Same rule as /inference/load and the training start: the export worker
+        # runs as the same OS user, and the consent scan is not an isolation
+        # boundary, because the caller approves the fingerprint it reports.
+        from routes.inference import (
+            _reject_remote_code_from_a_managed_account,
+            _reject_uncontained_local_path,
+        )
+
+        _reject_remote_code_from_a_managed_account(request.trust_remote_code)
+        # And the path itself: load_checkpoint opens and deserializes whatever it
+        # is given, so an absolute path was a read of another account's private
+        # checkpoint, exportable and pushable from there. Before ownership is
+        # assigned and before the worker spawns.
+        _reject_uncontained_local_path(request.checkpoint_path, "export")
         await _ensure_export_supported()
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
@@ -125,6 +139,12 @@ async def cleanup_export_memory(current_subject: str = Depends(get_current_subje
     """Cleanup export-related models from memory (ExportBackend.cleanup_memory)."""
     try:
         backend = get_export_backend()
+        owns_workspace = getattr(backend, "owns_workspace", None)
+        if callable(owns_workspace) and not owns_workspace(current_subject):
+            return ExportOperationResponse(
+                success = True,
+                message = "No export resources are loaded for this account",
+            )
         success = await asyncio.to_thread(backend.cleanup_memory)
 
         if not success:
@@ -156,6 +176,12 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
     """
     try:
         backend = get_export_backend()
+        owns_workspace = getattr(backend, "owns_workspace", None)
+        if callable(owns_workspace) and not owns_workspace(current_subject):
+            return ExportOperationResponse(
+                success = True,
+                message = "No active export to cancel",
+            )
         cancelled = await asyncio.to_thread(backend.cancel_export)
         return ExportOperationResponse(
             success = True,
@@ -174,6 +200,9 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
     try:
         backend = get_export_backend()
+        owns_workspace = getattr(backend, "owns_workspace", None)
+        if callable(owns_workspace) and not owns_workspace(current_subject):
+            return ExportStatusResponse()
         last_op = backend.get_last_op()
         # Relativise the recovered output path the same way the per-op POST response
         # does, so the success banner shows an identical path on either route.
@@ -223,6 +252,9 @@ async def get_export_logs(
     """
     try:
         backend = get_export_backend()
+        owns_workspace = getattr(backend, "owns_workspace", None)
+        if callable(owns_workspace) and not owns_workspace(current_subject):
+            return {"entries": [], "cursor": 0, "active": False}
         # No cursor on the first poll of a run: start from the run-start snapshot
         # so the client gets every line since the run began (matches the SSE
         # default), not the entire historical ring buffer.
@@ -536,6 +568,9 @@ async def stream_export_logs(
     browser can resume via `Last-Event-ID` on reconnect.
     """
     backend = get_export_backend()
+    owns_workspace = getattr(backend, "owns_workspace", None)
+    if callable(owns_workspace) and not owns_workspace(current_subject):
+        raise HTTPException(status_code = 404, detail = "No active export for this account")
 
     # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect,
     # else the run-start snapshot so the client sees every line since the run
@@ -562,6 +597,13 @@ async def stream_export_logs(
         try:
             while True:
                 if await request.is_disconnected():
+                    return
+                # Re-checked every pass, not just at open: the log buffer is shared,
+                # so if another account starts an export during this stream's idle
+                # window the buffer is cleared and refilled with their output and
+                # this already-authorized loop would go on yielding it.
+                if callable(owns_workspace) and not owns_workspace(current_subject):
+                    yield _format_sse("{}", event = "complete", event_id = cursor)
                     return
 
                 entries, new_cursor = backend.get_logs_since(cursor)

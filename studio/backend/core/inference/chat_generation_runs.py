@@ -259,38 +259,72 @@ class ChatGenerationLeaseSweeper:
     async def sweep_once(self) -> list[str]:
         if not self.enabled:
             return []
-        settled = await _sweep_in_daemon_thread(
-            db.reconcile_runs,
-            error = _LEASE_ERROR,
-            stale_after_ms = int(self._timeout * 1000),
+        # Once per workspace: reconcile_runs opens the CALLER's studio.db, and this
+        # task runs outside any request, so sweeping once would only ever repair the
+        # owner's runs and leave a managed account's wedged run holding its slot.
+        from utils.workspace_context import (
+            LEGACY_WORKSPACE_SUBJECT,
+            known_workspace_subjects,
+            run_in_workspace,
         )
+
+        try:
+            subjects = await asyncio.to_thread(known_workspace_subjects)
+        except Exception:
+            subjects = [LEGACY_WORKSPACE_SUBJECT]
+        settled: list[str] = []
+        settled_pairs: list[tuple[str, str]] = []
+        for subject in subjects:
+            try:
+                workspace_settled = await _sweep_in_daemon_thread(
+                    run_in_workspace,
+                    subject,
+                    db.reconcile_runs,
+                    error = _LEASE_ERROR,
+                    stale_after_ms = int(self._timeout * 1000),
+                )
+                settled += workspace_settled
+                settled_pairs += [(subject, run_id) for run_id in workspace_settled]
+            except Exception as exc:
+                logger.warning(
+                    "chat_generation_lease_sweep_workspace_failed",
+                    subject = subject,
+                    error = repr(exc),
+                )
         if not settled:
             return []
         supervisor = getattr(getattr(self.app, "state", None), "chat_generation_supervisor", None)
-        for run_id in settled:
+        for subject, run_id in settled_pairs:
             logger.warning(
                 "chat_generation_run_lease_expired",
                 run_id = run_id,
+                subject = subject,
                 idle_s = round(self._timeout, 1),
             )
             if supervisor is None:
                 continue
             # The row is settled, but a producer wedged inside the engine is still
-            # holding its slot and activity reservation; cancel unwinds it.
+            # holding its slot and activity reservation; cancel unwinds it. Named
+            # with the workspace, since the id alone can belong to another account.
             try:
-                supervisor.cancel(run_id)
+                supervisor.cancel(run_id, subject)
             except Exception as exc:
                 logger.warning(
                     "chat_generation_lease_cancel_failed", run_id = run_id, error = repr(exc)
                 )
                 continue
             asyncio.create_task(
-                self._force_cancel_after_grace(supervisor, run_id),
+                self._force_cancel_after_grace(supervisor, run_id, subject),
                 name = f"chat-generation-lease-force-cancel:{run_id}",
             )
         return settled
 
-    async def _force_cancel_after_grace(self, supervisor: Any, run_id: str) -> None:
+    async def _force_cancel_after_grace(
+        self,
+        supervisor: Any,
+        run_id: str,
+        subject: str | None = None,
+    ) -> None:
         """Escalate from the cooperative cancel to cancelling the producer task.
 
         supervisor.cancel() only sets a threading.Event, which a producer blocked inside
@@ -299,8 +333,18 @@ class ChatGenerationLeaseSweeper:
         already inside the engine, and the warning says so rather than implying otherwise.
         """
         await asyncio.sleep(self._FORCE_CANCEL_GRACE_S)
-        task = getattr(supervisor, "_tasks", {}).get(run_id)
+        # Keyed by workspace: another account can hold the same client-supplied id,
+        # and cancelling its task here would be the very confusion this grace exists
+        # to avoid.
+        key_of = getattr(supervisor, "_key", None)
+        key = key_of(run_id, subject) if callable(key_of) else run_id
+        task = getattr(supervisor, "_tasks", {}).get(key)
         if task is None or task.done():
+            return
+        # Re-checked after the grace: the id could have been re-registered by
+        # another workspace while this waited.
+        owns = getattr(supervisor, "owns_run", None)
+        if subject is not None and callable(owns) and not owns(run_id, subject):
             return
         logger.warning(
             "chat_generation_run_force_cancelled",
@@ -429,12 +473,22 @@ def _renew_interval_seconds() -> float:
 class ChatGenerationSupervisor:
     def __init__(self, app: Any) -> None:
         self.app = app
-        self._tasks: dict[str, asyncio.Task] = {}
-        self._cancel_events: dict[str, threading.Event] = {}
-        self._active_registrations: dict[str, active_generations.ActiveGeneration] = {}
-        self._activities: dict[str, InferenceActivityReservation] = {}
-        self._shutdown_runs: set[str] = set()
+        # Keyed by (workspace, run id): ids are client-supplied, so keyed on the id
+        # alone the second account's start() found the first's entry and returned,
+        # and a later cancel signalled the first account's producer.
+        self._tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._cancel_events: dict[tuple[str, str], threading.Event] = {}
+        self._active_registrations: dict[tuple[str, str], active_generations.ActiveGeneration] = {}
+        self._subjects: dict[tuple[str, str], str] = {}
+        self._activities: dict[tuple[str, str], InferenceActivityReservation] = {}
+        self._shutdown_runs: set[tuple[str, str]] = set()
         self._stopping = False
+
+    @staticmethod
+    def _key(run_id: str, subject: str | None = None) -> tuple[str, str]:
+        """The map key for a client-supplied run id in a given workspace."""
+        from utils.workspace_context import current_workspace_subject
+        return (subject or current_workspace_subject(), run_id)
 
     def _ensure_reservation(
         self,
@@ -445,7 +499,8 @@ class ChatGenerationSupervisor:
     ) -> bool:
         if self._stopping:
             return False
-        cancel_event = self._cancel_events.get(run_id)
+        key = self._key(run_id)
+        cancel_event = self._cancel_events.get(key)
         if cancel_event is not None:
             # Enrich an early run-only reservation with authoritative identity.
             with active_generations.ActiveGeneration(
@@ -466,9 +521,10 @@ class ChatGenerationSupervisor:
             model = model,
         )
         registration.__enter__()
-        self._cancel_events[run_id] = cancel_event
-        self._activities[run_id] = activity
-        self._active_registrations[run_id] = registration
+        self._cancel_events[key] = cancel_event
+        self._activities[key] = activity
+        self._active_registrations[key] = registration
+        self._subjects[key] = registration.subject
         return True
 
     def start(
@@ -478,56 +534,96 @@ class ChatGenerationSupervisor:
         thread_id: str | None = None,
         model: str | None = None,
     ) -> None:
+        key = self._key(run_id)
         if (
             self._stopping
-            or run_id in self._tasks
+            or key in self._tasks
             or not self._ensure_reservation(run_id, thread_id = thread_id, model = model)
         ):
             return
-        cancel_event = self._cancel_events[run_id]
-        activity = self._activities[run_id]
+        cancel_event = self._cancel_events[key]
+        activity = self._activities[key]
         try:
             task = asyncio.create_task(
                 self._produce(run_id, cancel_event, activity),
                 name = f"chat-generation-{run_id}",
             )
         except BaseException:
-            self._cleanup_registration(run_id)
+            self._cleanup_registration(key)
             raise
-        self._tasks[run_id] = task
-        task.add_done_callback(lambda completed, rid = run_id: self._task_done(rid, completed))
+        self._tasks[key] = task
+        task.add_done_callback(lambda completed, k = key: self._task_done(k, completed))
 
-    def _cleanup_registration(self, run_id: str) -> None:
-        self._cancel_events.pop(run_id, None)
-        activity = self._activities.pop(run_id, None)
+    def _cleanup_registration(self, key: tuple[str, str]) -> None:
+        self._cancel_events.pop(key, None)
+        activity = self._activities.pop(key, None)
         if activity is not None:
             activity.finish()
-        registration = self._active_registrations.pop(run_id, None)
+        registration = self._active_registrations.pop(key, None)
         if registration is not None:
             registration.__exit__(None, None, None)
+        self._subjects.pop(key, None)
 
-    def _task_done(self, run_id: str, task: asyncio.Task) -> None:
-        self._tasks.pop(run_id, None)
-        self._cleanup_registration(run_id)
-        self._shutdown_runs.discard(run_id)
+    def _task_done(self, key: tuple[str, str], task: asyncio.Task) -> None:
+        self._tasks.pop(key, None)
+        self._cleanup_registration(key)
+        self._shutdown_runs.discard(key)
         if task.cancelled():
             return
         try:
             task.result()
         except Exception as exc:
-            logger.error("Durable chat generation %s crashed: %s", run_id, exc)
+            logger.error("Durable chat generation %s crashed: %s", key[1], exc)
 
-    def cancel(self, run_id: str) -> None:
-        cancel_event = self._cancel_events.get(run_id)
+    def owns_run(self, run_id: str, subject: str) -> bool:
+        """Whether ``subject`` owns the live registration for this run id."""
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT
+
+        if self._key(run_id, subject) in self._subjects:
+            return True
+        if any(registered == run_id for _subject, registered in self._subjects):
+            # Registered, but to somebody else.
+            return False
+        # Unknown here at all: a run from before a restart, say. The owner keeps
+        # the pre-existing default so those stay cancellable.
+        return subject == LEGACY_WORKSPACE_SUBJECT
+
+    def cancel(
+        self,
+        run_id: str,
+        subject: str | None = None,
+    ) -> None:
+        """Cancel a run. With ``subject``, only if that workspace owns it.
+
+        The downstream registries are workspace-scoped now, so the body runs in
+        the owning workspace as well as being gated on it.
+        """
+        if subject is not None:
+            if not self.owns_run(run_id, subject):
+                return
+            from utils.workspace_context import run_in_workspace
+
+            run_in_workspace(subject, self._cancel_locally, run_id)
+            return
+        self._cancel_locally(run_id)
+
+    def _cancel_locally(self, run_id: str) -> None:
+        from utils.workspace_context import current_workspace_subject
+
+        key = self._key(run_id)
+        cancel_event = self._cancel_events.get(key)
         if cancel_event is not None:
             cancel_event.set()
         else:
-            task = self._tasks.get(run_id)
+            task = self._tasks.get(key)
             if task is not None and not task.done():
                 # Defensive compatibility for a task registered by a caller
                 # other than start(); production tasks always own an event.
                 task.cancel()
-        active_generations.cancel_run(run_id)
+        # Scoped: run ids are client-supplied, so an unscoped cancel_run signals
+        # every workspace holding a registration under the same id. Every caller
+        # of this method already runs in the workspace that owns the run.
+        active_generations.cancel_run(run_id, subject = current_workspace_subject())
         # The inference cancel registry closes the narrow gap where registration is imminent
         # but this supervisor has not yet observed it.
         from routes.inference import _cancel_by_cancel_id_or_stash
@@ -541,10 +637,14 @@ class ChatGenerationSupervisor:
         sweeper = getattr(getattr(self.app, "state", None), "chat_generation_lease_sweeper", None)
         if sweeper is not None:
             await sweeper.stop()
+        from utils.workspace_context import run_in_workspace
+
         tasks = list(self._tasks.items())
-        self._shutdown_runs.update(run_id for run_id, _task in tasks)
-        for run_id, _task in tasks:
-            self.cancel(run_id)
+        self._shutdown_runs.update(key for key, _task in tasks)
+        for (subject, run_id), _task in tasks:
+            # In the owning workspace: _cancel_locally reaches registries that are
+            # themselves per account, and shutdown runs on the loop's own context.
+            run_in_workspace(subject, self._cancel_locally, run_id)
         if not tasks:
             return
         # asyncio.wait, not wait_for(gather(...)): on timeout wait_for cancels the inner
@@ -552,7 +652,7 @@ class ChatGenerationSupervisor:
         # an engine draining its subprocess inside the generator's aclose -- makes the
         # wait itself unbounded, and takes the whole uvicorn shutdown down with it. wait
         # returns the pending set instead and leaves those tasks alone.
-        pending = {task for _run_id, task in tasks}
+        pending = {task for _key, task in tasks}
         _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_GRACE_SECONDS)
         if not pending:
             return
@@ -560,7 +660,7 @@ class ChatGenerationSupervisor:
             task.cancel()
         _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_CANCEL_SECONDS)
         if pending:
-            stuck = [run_id for run_id, task in tasks if task in pending]
+            stuck = [run_id for (_subject, run_id), task in tasks if task in pending]
             # Abandoned, not leaked: the run is already fenced and reconcile_orphaned_runs
             # settles it on the next boot. Process exit reclaims the rest.
             logger.warning(
@@ -618,6 +718,9 @@ class ChatGenerationSupervisor:
         cancel_event: threading.Event | None = None,
         activity: InferenceActivityReservation | None = None,
     ) -> None:
+        # create_task copies the context, so this resolves to the workspace that
+        # called start(), which is the one whose shutdown set covers this run.
+        shutdown_key = self._key(run_id)
         cancel_event = cancel_event or threading.Event()
         if activity is None:
             activity = InferenceActivityReservation()
@@ -636,7 +739,7 @@ class ChatGenerationSupervisor:
                 return
             run, owner, worker_token = worker_run
             if cancel_event.is_set():
-                shutting_down = run_id in self._shutdown_runs
+                shutting_down = shutdown_key in self._shutdown_runs
                 await asyncio.to_thread(
                     db.finish_run,
                     run_id,
@@ -651,7 +754,7 @@ class ChatGenerationSupervisor:
             async with self._lease_heartbeat(run_id):
                 await activity.start(cancel_event)
                 if cancel_event.is_set():
-                    shutting_down = run_id in self._shutdown_runs
+                    shutting_down = shutdown_key in self._shutdown_runs
                     await asyncio.to_thread(
                         db.finish_run,
                         run_id,
@@ -777,7 +880,7 @@ class ChatGenerationSupervisor:
             current = await asyncio.to_thread(db.get_run, run_id)
             if current is None:
                 return
-            if run_id in self._shutdown_runs:
+            if shutdown_key in self._shutdown_runs:
                 status = "failed"
                 finish_reason = "interrupted"
                 error = "Studio shut down during generation"
@@ -808,7 +911,7 @@ class ChatGenerationSupervisor:
             pending = []
         except asyncio.CancelledError:
             if worker_token is not None:
-                shutting_down = run_id in self._shutdown_runs
+                shutting_down = shutdown_key in self._shutdown_runs
                 cancelled = cancel_event.is_set() and not shutting_down
                 await asyncio.to_thread(
                     db.finish_run,
@@ -823,7 +926,7 @@ class ChatGenerationSupervisor:
             raise
         except Exception as exc:
             if worker_token is not None:
-                shutting_down = run_id in self._shutdown_runs
+                shutting_down = shutdown_key in self._shutdown_runs
                 cancelled = cancel_event.is_set() and not shutting_down
                 await asyncio.to_thread(
                     db.finish_run,

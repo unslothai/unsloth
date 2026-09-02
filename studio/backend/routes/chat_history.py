@@ -35,6 +35,7 @@ from core.inference.llama_server_args import (
 from loggers import get_logger
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
+from utils.workspace_context import current_workspace_subject
 from storage.studio_db import (
     ChatMessageConflictError,
     ChatMessageProtectedError,
@@ -801,7 +802,9 @@ def _cancel_active_generations(thread_ids: list[str]) -> None:
         return
     for thread_id in thread_ids:
         try:
-            active_generations.cancel_thread(thread_id)
+            # Scoped: the thread id is client-chosen, and an unscoped cancel
+            # would stop the same id in every other account.
+            active_generations.cancel_thread(thread_id, current_workspace_subject())
         except Exception:  # noqa: BLE001
             continue
 
@@ -819,7 +822,7 @@ def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
                 from routes.inference import _cancel_by_cancel_id_or_stash
                 from state import active_generations
 
-                active_generations.cancel_run(run_id)
+                active_generations.cancel_run(run_id, current_workspace_subject())
                 _cancel_by_cancel_id_or_stash(run_id)
         except Exception:  # noqa: BLE001 - deletion must still complete
             logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)

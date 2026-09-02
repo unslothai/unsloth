@@ -52,6 +52,11 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+    subject = config.get("subject")
+    if isinstance(subject, str) and subject:
+        from utils.workspace_context import set_workspace_subject
+        set_workspace_subject(subject)
+
     # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside
     # the secret scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
@@ -106,9 +111,9 @@ def _llm_training_active() -> bool:
 # ── persisted run history ──────────────────────────────────────────────────────
 # Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs) for the Train tab's history. JSON, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
 def _runs_dir() -> Path:
-    from utils.paths.storage_roots import studio_root
+    from utils.paths.storage_roots import workspace_root
 
-    d = studio_root() / "runs" / "diffusion"
+    d = workspace_root() / "runs" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
 
@@ -434,7 +439,11 @@ class DiffusionTrainingService:
         # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards refuse a concurrent load. Cleared by unreserve().
         self._reserved = False
         # Dataset mutations in flight. A start refuses while any is open and a mutation refuses once a start is reserved, both under _lock, so neither slips through the other's check-then-act window.
-        self._dataset_mutations = 0
+        # Per workspace. The dataset roots are per account, so one account's
+        # import or caption pass says nothing about whether another's images are
+        # stable; counted together, a long mutation in any workspace refused
+        # every other account's training start for its whole duration.
+        self._dataset_mutations: dict[str, int] = {}
         # "Stop without saving" for the CURRENT job, remembered in the parent. The trainer
         # reports it on its completion event, but a child that is killed or OOMs after the
         # request never emits one -- and the unexpected-exit path then recorded a resumable
@@ -461,6 +470,7 @@ class DiffusionTrainingService:
         self._state: dict[str, Any] = _idle_state()
         # The active job's start config, scrubbed of secrets, kept for the run record.
         self._config: dict[str, Any] = {}
+        self._active_workspace_subject: str | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def is_active(self) -> bool:
@@ -468,6 +478,32 @@ class DiffusionTrainingService:
             if self._reserved:
                 return True
             return self._proc is not None and self._proc.is_alive()
+
+    def owns_workspace(self, subject: str | None = None) -> bool:
+        from utils.workspace_context import current_workspace_subject
+        requested = subject or current_workspace_subject()
+        with self._lock:
+            return self._active_workspace_subject in (None, requested)
+
+    def reset_retained_state(self, subject: str) -> None:
+        """Drop a finished run's state and its ownership, for a deleted account.
+
+        A terminal run is not active, so the delete path's stop had nothing to
+        stop, and the singleton went on holding the subject beside the whole
+        finished run: job id, metric history, model identity and the private
+        output and checkpoint paths. A recreated namesake matched the retained
+        subject and read it straight back out of status().
+
+        Refuses while a run is live, so this can never be a way to drop another
+        account's in-flight state; the delete path stops the run first.
+        """
+        with self._lock:
+            if self._active_workspace_subject not in (None, subject):
+                return
+            if self._reserved or (self._proc is not None and self._proc.is_alive()):
+                return
+            self._state = _idle_state()
+            self._active_workspace_subject = None
 
     def reserve(self) -> None:
         """Mark a diffusion-training start as in flight so the image/video load guards (which
@@ -484,7 +520,9 @@ class DiffusionTrainingService:
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise RuntimeError("A diffusion training job is already running.")
-            if self._dataset_mutations:
+            from utils.workspace_context import current_workspace_subject
+
+            if self._dataset_mutations.get(current_workspace_subject()):
                 raise DatasetMutationInFlight(
                     "The training images are being changed right now. Wait for that to finish, "
                     "then start the run."
@@ -523,18 +561,33 @@ class DiffusionTrainingService:
         a mutation is open, so neither waits on the other (a start must never block on a
         minutes-long dataset import).
         """
+        from utils.workspace_context import current_workspace_subject
+
         with self._lock:
-            if self._reserved or (self._proc is not None and self._proc.is_alive()):
+            active = self._reserved or (self._proc is not None and self._proc.is_alive())
+            # Only the run's own workspace is interlocked. The dataset roots are per
+            # account, so another account's images cannot change what this run reads,
+            # and blocking them would disable dataset preparation for hours.
+            owner = self._active_workspace_subject
+            mine = owner is None or owner == current_workspace_subject()
+            if active and mine:
                 raise TrainingActiveError(
                     "Training images cannot be changed while diffusion training is active. "
                     "Stop the run before uploading, importing, editing captions, or deleting images."
                 )
-            self._dataset_mutations += 1
+            mutating = current_workspace_subject()
+            self._dataset_mutations[mutating] = self._dataset_mutations.get(mutating, 0) + 1
         try:
             yield
         finally:
             with self._lock:
-                self._dataset_mutations = max(0, self._dataset_mutations - 1)
+                remaining = self._dataset_mutations.get(mutating, 0) - 1
+                if remaining > 0:
+                    self._dataset_mutations[mutating] = remaining
+                else:
+                    # Popped rather than left at zero so the map cannot grow one
+                    # entry per account the process has ever seen.
+                    self._dataset_mutations.pop(mutating, None)
 
     @contextlib.contextmanager
     def gpu_load_admission(self):
@@ -576,6 +629,9 @@ class DiffusionTrainingService:
         from .diffusion_train_common import train_recipe_overrides
 
         normalized_cfg = _config_from_dict(config).normalized()
+        from utils.workspace_context import current_workspace_subject
+
+        workspace_subject = str(config.get("subject") or current_workspace_subject())
 
         # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
@@ -591,26 +647,56 @@ class DiffusionTrainingService:
                 raise RuntimeError("A diffusion training job is already running.")
 
             job_id = uuid.uuid4().hex
-            self._discard_requested = False
-            self._own_checkpoints = []
-            self._child_cleared_own = False
-            self._stop_signalled = False
-            event_queue = self._ctx.Queue()
-            self._stop_queue = self._ctx.Queue()
-            self._proc = self._ctx.Process(
-                target = self._target,
-                kwargs = {
-                    "event_queue": event_queue,
-                    "stop_queue": self._stop_queue,
-                    "config": config,
-                },
-                daemon = True,
-            )
-            # Keep the lease secret out of the child's env, as other orchestrators do.
-            from utils.native_path_leases import native_path_secret_removed_for_child_start
+            # Captured before the claim. Queue and process construction, the
+            # environment setup and start() itself can all raise after it, and the
+            # route only releases its reservation, so without the rollback below the
+            # previous owner's terminal state became readable by the account that
+            # failed to start, while they themselves saw an idle service.
+            previous_workspace_subject = self._active_workspace_subject
+            previous_state = self._state
+            self._active_workspace_subject = workspace_subject
+            spawned = False
+            try:
+                self._discard_requested = False
+                self._own_checkpoints = []
+                self._child_cleared_own = False
+                self._stop_signalled = False
+                event_queue = self._ctx.Queue()
+                self._stop_queue = self._ctx.Queue()
+                self._proc = self._ctx.Process(
+                    target = self._target,
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": self._stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                # Keep the lease secret out of the child's env, as other orchestrators do.
+                from utils.native_path_leases import native_path_secret_removed_for_child_start
 
-            with native_path_secret_removed_for_child_start():
-                self._proc.start()
+                # And the owner's Hub and W&B credentials, for the same reason the LLM
+                # trainer does: this child is spawned, so it copies the live parent
+                # environment, and the trainers pass token=cfg.hf_token straight into
+                # from_pretrained, where None means "use whatever is ambient".
+                from utils.hf_cache_settings import child_environment_for_spawn
+
+                from .training import _ambient_credentials_suppressed_for
+
+                with (
+                    child_environment_for_spawn(
+                        _ambient_credentials_suppressed_for(workspace_subject)
+                    ),
+                    native_path_secret_removed_for_child_start(),
+                ):
+                    self._proc.start()
+                spawned = True
+            finally:
+                if not spawned:
+                    # Nothing started, so the claim was never earned.
+                    self._proc = None
+                    self._active_workspace_subject = previous_workspace_subject
+                    self._state = previous_state
             try:
                 from utils.process_lifetime import adopt_pid
                 adopt_pid(self._proc.pid)  # bind to parent lifetime (no zombie on exit)
@@ -640,10 +726,17 @@ class DiffusionTrainingService:
             # trainer applies the same table in the child, which the record is not written from,
             # so without this Previous runs described a recipe (cropping, flipping, min-SNR
             # weighting) that no step of the run ever used.
-            self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
+            self._config = {
+                k: v for k, v in dict(config).items() if k not in {"hf_token", "subject"}
+            }
             self._config.update(train_recipe_overrides(normalized_cfg))
-            self._pump = threading.Thread(
-                target = self._pump_loop, args = (event_queue, self._proc), daemon = True
+            from utils.workspace_context import workspace_thread
+
+            self._pump = workspace_thread(
+                target = self._pump_loop,
+                subject = workspace_subject,
+                args = (event_queue, self._proc),
+                daemon = True,
             )
             self._pump.start()
             return job_id
@@ -653,7 +746,12 @@ class DiffusionTrainingService:
         a partial adapter (``save=True``, the default) or discards the run (``save=False``,
         matching the LLM trainer's cancel). Returns True if a stop was signalled, False if
         nothing was running."""
+        from utils.workspace_context import current_workspace_subject
+
+        requested = current_workspace_subject()
         with self._lock:
+            if self._active_workspace_subject not in (None, requested):
+                return False
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
             if self._stop_signalled:
@@ -683,7 +781,11 @@ class DiffusionTrainingService:
             return True
 
     def status(self) -> dict[str, Any]:
+        from utils.workspace_context import current_workspace_subject
+        requested = current_workspace_subject()
         with self._lock:
+            if self._active_workspace_subject not in (None, requested):
+                return _idle_state()
             snap = dict(self._state)
             # Keep ``active`` honest even if the process died between events.
             snap["active"] = self._proc is not None and self._proc.is_alive()

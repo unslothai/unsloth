@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from loggers import get_logger
+from utils.workspace_context import current_workspace_subject
 
 logger = get_logger(__name__)
 
@@ -31,7 +32,9 @@ VIDEO_TASK = "text-to-video"
 # the scan walks several roots and reads gguf headers, and this runs per request
 _INDEX_TTL_S = 5.0
 _index_lock = threading.Lock()
-_index: dict[str, tuple[float, dict[str, "MediaModelPick"]]] = {}
+# Keyed by (workspace, task): the scan reaches the caller's private workspace_root(),
+# so a task-only key serves one account's private weights to the next for the TTL.
+_index: dict[tuple[str, str], tuple[float, dict[str, "MediaModelPick"]]] = {}
 
 # the video family whose partitions are a load-time choice rather than a property of the files
 _H3_FAMILY = "minimax-h3"
@@ -336,14 +339,15 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
 
 def _cached_index(task: str) -> dict[str, MediaModelPick]:
     now = time.monotonic()
+    scoped = (current_workspace_subject(), task)
     with _index_lock:
-        hit = _index.get(task)
+        hit = _index.get(scoped)
         if hit is not None and now - hit[0] < _INDEX_TTL_S:
             return hit[1]
     built = _mark_ambiguous_builds(_build_index(task))
     with _index_lock:
         # stamped after the scan, so one slower than the ttl is not already expired
-        _index[task] = (time.monotonic(), built)
+        _index[scoped] = (time.monotonic(), built)
     return built
 
 

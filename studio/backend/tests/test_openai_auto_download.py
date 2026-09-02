@@ -19,6 +19,7 @@ from core.inference import llama_keepwarm
 from core.inference import openai_auto_download as auto_dl
 from core.inference.local_model_resolver import warm_index_soon as _real_warm_index_soon
 from utils import openai_auto_switch_settings as settings
+from utils.workspace_context import current_workspace_subject
 
 
 class _Sibling:
@@ -1650,9 +1651,17 @@ def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeyp
     monkeypatch.setattr(
         inference_route,
         "_CATALOG_CACHE",
-        {"at": 1.0, "models": [_CatalogInfo("org/Other", "/srv/models/org--Other")]},
+        # subject: the cache records whose scan filled it, and the readers
+        # refuse a catalog another workspace produced.
+        {
+            "at": 1.0,
+            "subject": current_workspace_subject(),
+            "models": [_CatalogInfo("org/Other", "/srv/models/org--Other")],
+        },
     )
-    monkeypatch.setattr(inference_route, "_ADVERTISED_CACHE", {"at": None, "paths": {}})
+    monkeypatch.setattr(
+        inference_route, "_ADVERTISED_CACHE", {"at": None, "subject": None, "paths": {}}
+    )
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -1680,9 +1689,17 @@ def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatc
     monkeypatch.setattr(
         inference_route,
         "_CATALOG_CACHE",
-        {"at": 2.0, "models": [_CatalogInfo("publisher/Qwen3", "/srv/models")]},
+        # subject: the cache records whose scan filled it, and the readers
+        # refuse a catalog another workspace produced.
+        {
+            "at": 2.0,
+            "subject": current_workspace_subject(),
+            "models": [_CatalogInfo("publisher/Qwen3", "/srv/models")],
+        },
     )
-    monkeypatch.setattr(inference_route, "_ADVERTISED_CACHE", {"at": None, "paths": {}})
+    monkeypatch.setattr(
+        inference_route, "_ADVERTISED_CACHE", {"at": None, "subject": None, "paths": {}}
+    )
     loaded = _Loaded("/srv/models/Qwen3-Q4.gguf", "Q4_K_M")
     loaded.gguf_path = "/srv/models/Qwen3-Q4.gguf"
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)

@@ -37,6 +37,11 @@ from utils.native_path_leases import (
 )
 from utils.paths import is_local_path, outputs_root
 from utils.utils import canonical_model_repo_id
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    current_workspace_subject,
+    workspace_thread,
+)
 
 logger = get_logger(__name__)
 
@@ -78,6 +83,9 @@ class TrainingStartRequestRecord:
     message: str
     error: Optional[str] = None
     error_code: Optional[str] = None
+    # The account that reserved the id. Clients choose it, so two accounts can
+    # send the same one and a replay would hand over the other's outcome.
+    subject: str = ""
 
 
 class TrainingStartCancellationCapacityError(RuntimeError):
@@ -866,12 +874,12 @@ class _MLXTrainerAdapter:
             status_message = "Initializing MLX training...",
         )
 
-        self.training_thread = threading.Thread(
+        self.training_thread = workspace_thread(
             target = self._run_training_thread,
             args = (config, event_queue, stop_queue),
             daemon = True,
         )
-        self._pump_thread = threading.Thread(
+        self._pump_thread = workspace_thread(
             target = self._pump_events,
             args = (event_queue, self.training_thread),
             daemon = True,
@@ -1075,6 +1083,79 @@ def create_mlx_trainer_adapter(*args, **kwargs):
     return _MLXTrainerAdapter(*args, **kwargs)
 
 
+# The env keys huggingface_hub reads a token from, plus the switch that stops it
+# reaching for the machine's cached login when none of them is set.
+_HF_TOKEN_ENV_KEYS = (
+    "HF_TOKEN",
+    "HF_HUB_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
+    "HUGGINGFACEHUB_API_TOKEN",
+)
+
+
+# W&B authenticates from the environment too, and a run started with the owner's
+# key uploads under the owner's identity.
+_WANDB_TOKEN_ENV_KEYS = ("WANDB_API_KEY",)
+# The bundled GitHub seed plugin falls back to these by design, and a recipe run
+# with the owner's token reads the owner's private repositories into the caller's
+# dataset.
+_GITHUB_TOKEN_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN")
+# boto3 resolves a client built without explicit keys through its default chain,
+# which on a host with ambient AWS credentials or an EC2 / container role is the
+# installation's own identity.
+_AWS_TOKEN_ENV_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+)
+
+
+def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
+    """Env overrides that stop a managed account's worker using the owner's tokens.
+
+    The child is spawned, so it copies the live parent environment: an owner
+    HF_TOKEN or cached hub login would let a managed account train on a private
+    repo, an inherited WANDB_API_KEY uploads under the owner's identity, and
+    GH_TOKEN turns the owner's private repositories into the caller's dataset.
+    AWS goes the same way, including the instance-metadata provider, since
+    use_iam_role deliberately takes boto3's default chain.
+
+    Blanked rather than removed because spawn takes no env argument: applied to
+    the parent for the duration of the start and restored after, and
+    huggingface_hub reads an empty value as no token.
+
+    A shared credentials file belongs to the same OS user and cannot be removed
+    through the environment, so the route refusal is the boundary for that one.
+    The owner gets an empty dict, and an account with its own token is
+    unaffected: that one travels in the config.
+    """
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner(subject):
+        return {}
+    suppressed = {
+        key: ""
+        for key in (
+            _HF_TOKEN_ENV_KEYS
+            + _WANDB_TOKEN_ENV_KEYS
+            + _GITHUB_TOKEN_ENV_KEYS
+            + _AWS_TOKEN_ENV_KEYS
+        )
+    }
+    suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    # Blanking the variables does not stop IMDS; this is boto3's "do not ask"
+    # setting, which a client built from explicit keys never consults anyway.
+    suppressed["AWS_EC2_METADATA_DISABLED"] = "true"
+    return suppressed
+
+
 class TrainingBackend:
     """
     Training orchestration backend — subprocess-based.
@@ -1129,15 +1210,27 @@ class TrainingBackend:
         self.current_theme: str = "light"
 
         self.current_job_id: Optional[str] = None
-        self.current_start_request_id: Optional[str] = None
-        self._start_requests: dict[str, TrainingStartRequestRecord] = {}
-        self._start_cancel_tombstones: dict[str, tuple[float, TrainingStartRequestRecord]] = {}
-        self._start_cancel_tombstone_reservations: dict[str, int] = {}
-        self._pending_start_request_id: Optional[str] = None
-        self._status_start_request_id: Optional[str] = None
+        # The active run's registry key; current_start_request_id is a view onto
+        # it, so a stale id cannot read as another account's owner.
+        self._current_start_key: Optional[tuple[str, str]] = None
+        # Keyed by (workspace, start request id): the id is client-chosen, so two
+        # accounts can present the same one. The interlock below stays
+        # install-wide, because it guards one GPU rather than bookkeeping.
+        self._start_requests: dict[tuple[str, str], TrainingStartRequestRecord] = {}
+        self._start_cancel_tombstones: dict[
+            tuple[str, str], tuple[float, TrainingStartRequestRecord]
+        ] = {}
+        self._start_cancel_tombstone_reservations: dict[tuple[str, str], int] = {}
+        self._pending_start_key: Optional[tuple[str, str]] = None
+        self._status_start_key: Optional[tuple[str, str]] = None
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
+        # Raw threads do not inherit ContextVars, so every job-owned pump is
+        # pinned to the account that started the job. None until a run claims it:
+        # the singleton is built lazily, so snapshotting here would pin it to
+        # whoever touched it first and 404 everybody else.
+        self._active_workspace_subject: Optional[str] = None
 
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
@@ -1157,23 +1250,89 @@ class TrainingBackend:
 
     # --- Public API (called by routes/training.py) ---
 
+    def owns_workspace(self, subject: str) -> bool:
+        """Whether the retained job/status state belongs to ``subject``. Unclaimed
+        state belongs to nobody, so every account may see it; from the first
+        claim the check is strict."""
+        with self._lock:
+            return self._active_workspace_subject in (None, subject)
+
+    def reset_retained_state(self, subject: str) -> None:
+        """Drop a finished run's state and its ownership, for a deleted account.
+
+        is_training_active() is false once a run is terminal, so the delete path's
+        stop had nothing to stop and the singleton went on holding the subject
+        beside the run's job identity, metrics and status. A recreated namesake
+        passes owns_workspace() on the reused username and reads it back from
+        /status and /metrics.
+
+        Refuses while a worker is alive, so this can never discard another
+        account's live run; the delete path stops the run first.
+        """
+        with self._lock:
+            if self._active_workspace_subject not in (None, subject):
+                return
+            proc = self._proc
+            if self._spawn_in_progress or (proc is not None and proc.is_alive()):
+                return
+        # Outside the lock: reset_training_state takes it itself.
+        self.reset_training_state()
+        with self._lock:
+            self._active_workspace_subject = None
+            self._current_start_key = None
+
+    @property
+    def current_start_request_id(self) -> Optional[str]:
+        """The active run's start request id, without its workspace."""
+        return None if self._current_start_key is None else self._current_start_key[1]
+
+    @current_start_request_id.setter
+    def current_start_request_id(self, value: Optional[str]) -> None:
+        # Binds to the assigning workspace. The one caller that must NOT rebind,
+        # the spawn-failure rollback, restores _current_start_key directly.
+        self._current_start_key = None if value is None else self._start_key(value)
+
+    @staticmethod
+    def _record_for_caller(
+        record: Optional[TrainingStartRequestRecord],
+    ) -> Optional[TrainingStartRequestRecord]:
+        """A record only if it belongs to the calling workspace.
+
+        Redundant now that the registries are keyed by workspace, and kept as the
+        second half of the belt: a record reached by any other route (a snapshot,
+        a legacy "" subject from before this field) is still checked.
+        """
+        if record is None:
+            return None
+        owner = record.subject or LEGACY_WORKSPACE_SUBJECT
+        return record if owner == current_workspace_subject() else None
+
+    @staticmethod
+    def _start_key(start_request_id: str, subject: Optional[str] = None) -> tuple[str, str]:
+        """Registry key for a client-chosen start request id."""
+        return (subject or current_workspace_subject(), start_request_id)
+
     def reserve_start_request(
         self, start_request_id: str, job_id: str
     ) -> tuple[str, TrainingStartRequestRecord]:
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._start_requests.get(start_request_id)
+            existing = self._record_for_caller(self._start_requests.get(key))
             if existing is not None:
                 return "existing", existing
-            cancelled = self._start_cancel_tombstones.get(start_request_id)
-            if cancelled is not None:
+            cancelled = self._start_cancel_tombstones.get(key)
+            if cancelled is not None and self._record_for_caller(cancelled[1]) is not None:
                 record = cancelled[1]
-                self._start_cancel_tombstones[start_request_id] = (
+                self._start_cancel_tombstones[key] = (
                     time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                     record,
                 )
                 return "existing", record
-            if self._pending_start_request_id is not None:
+            # Install-wide on purpose: the interlock protects the one GPU, so a
+            # second account's start waits behind the first exactly as a second
+            # start by the same account does.
+            if self._pending_start_key is not None:
                 record = TrainingStartRequestRecord(
                     start_request_id = start_request_id,
                     job_id = job_id,
@@ -1183,8 +1342,9 @@ class TrainingBackend:
                         "Wait for it to finish before starting a new one."
                     ),
                     error = "Training start already pending",
+                    subject = current_workspace_subject(),
                 )
-                self._start_requests[start_request_id] = record
+                self._start_requests[key] = record
                 self._prune_start_requests_locked()
                 return "conflict", record
 
@@ -1193,10 +1353,11 @@ class TrainingBackend:
                 job_id = job_id,
                 state = "pending",
                 message = "Training start is being validated",
+                subject = current_workspace_subject(),
             )
-            self._start_requests[start_request_id] = record
-            self._pending_start_request_id = start_request_id
-            self._status_start_request_id = start_request_id
+            self._start_requests[key] = record
+            self._pending_start_key = key
+            self._status_start_key = key
             self._prune_start_requests_locked()
             return "reserved", record
 
@@ -1206,16 +1367,17 @@ class TrainingBackend:
         Returns the record a retry would replay (live or cancellation-tombstoned), refreshing
         the tombstone TTL as the reserve path does so a retry keeps a cancellation alive, or
         None when the id is unknown and the caller is free to reserve it."""
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._start_requests.get(start_request_id)
+            existing = self._record_for_caller(self._start_requests.get(key))
             if existing is not None:
                 return existing
-            cancelled = self._start_cancel_tombstones.get(start_request_id)
-            if cancelled is None:
+            cancelled = self._start_cancel_tombstones.get(key)
+            if cancelled is None or self._record_for_caller(cancelled[1]) is None:
                 return None
             record = cancelled[1]
-            self._start_cancel_tombstones[start_request_id] = (
+            self._start_cancel_tombstones[key] = (
                 time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                 record,
             )
@@ -1232,8 +1394,9 @@ class TrainingBackend:
     ) -> Optional[TrainingStartRequestRecord]:
         if state not in {"accepted", "rejected"}:
             raise ValueError(f"Invalid training start request state: {state}")
+        key = self._start_key(start_request_id)
         with self._lock:
-            existing = self._start_requests.get(start_request_id)
+            existing = self._start_requests.get(key)
             if existing is None:
                 return None
             if existing.state != "pending":
@@ -1245,9 +1408,9 @@ class TrainingBackend:
                 error = error,
                 error_code = error_code,
             )
-            self._start_requests[start_request_id] = record
-            if self._pending_start_request_id == start_request_id:
-                self._pending_start_request_id = None
+            self._start_requests[key] = record
+            if self._pending_start_key == key:
+                self._pending_start_key = None
             return record
 
     def cancel_start_request(
@@ -1256,19 +1419,20 @@ class TrainingBackend:
         from .lifecycle import training_lifecycle_guard
 
         reserved_cancel_tombstone = False
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._start_requests.get(start_request_id)
+            existing = self._start_requests.get(key)
             if existing is None:
-                cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                cancelled_tombstone = self._start_cancel_tombstones.get(key)
                 if cancelled_tombstone is not None:
                     record = cancelled_tombstone[1]
-                    self._start_cancel_tombstones[start_request_id] = (
+                    self._start_cancel_tombstones[key] = (
                         time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                         record,
                     )
                     return "cancelled", record
-                self._reserve_start_cancel_tombstone_locked(start_request_id)
+                self._reserve_start_cancel_tombstone_locked(key)
                 cancelled = TrainingStartRequestRecord(
                     start_request_id = start_request_id,
                     job_id = "",
@@ -1276,32 +1440,34 @@ class TrainingBackend:
                     message = "Training start was cancelled",
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
+                    # Without this the record reads as the legacy owner's, and the
+                    # account that just cancelled could not see its own tombstone.
+                    subject = key[0],
                 )
-                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
+                self._commit_start_cancel_tombstone_locked(key, cancelled)
                 return "cancelled", cancelled
 
-            owns_current = (
-                self.current_start_request_id == start_request_id
-                and self.current_job_id == existing.job_id
-            )
+            # By key, not by id: another account presenting the same id must not
+            # read as the owner of the run.
+            owns_current = self._current_start_key == key and self.current_job_id == existing.job_id
             if existing.state == "rejected" and (
                 not owns_current or existing.error_code == _START_CANCELLED_ERROR_CODE
             ):
                 if existing.error_code == _START_CANCELLED_ERROR_CODE:
                     self._reserve_start_cancel_tombstone_locked(
-                        start_request_id,
+                        key,
                         reclaim_capacity = True,
                     )
-                    self._start_requests.pop(start_request_id, None)
-                    self._commit_start_cancel_tombstone_locked(start_request_id, existing)
-                if self._status_start_request_id == start_request_id:
-                    self._status_start_request_id = None
+                    self._start_requests.pop(key, None)
+                    self._commit_start_cancel_tombstone_locked(key, existing)
+                if self._status_start_key == key:
+                    self._status_start_key = None
                 return "cancelled", existing
 
             if existing.state == "pending" and not owns_current:
                 # Not the active run, so it does not get the owner's over-cap slot: start
                 # plus cancel could otherwise be repeated to grow the table without bound.
-                self._reserve_start_cancel_tombstone_locked(start_request_id)
+                self._reserve_start_cancel_tombstone_locked(key)
                 cancelled = replace(
                     existing,
                     state = "rejected",
@@ -1309,46 +1475,45 @@ class TrainingBackend:
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
                 )
-                self._start_requests.pop(start_request_id, None)
-                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
-                if self._pending_start_request_id == start_request_id:
-                    self._pending_start_request_id = None
-                if self._status_start_request_id == start_request_id:
-                    self._status_start_request_id = None
+                self._start_requests.pop(key, None)
+                self._commit_start_cancel_tombstone_locked(key, cancelled)
+                if self._pending_start_key == key:
+                    self._pending_start_key = None
+                if self._status_start_key == key:
+                    self._status_start_key = None
                 return "cancelled", cancelled
 
             reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
-                start_request_id,
+                key,
                 reclaim_capacity = owns_current,
             )
 
         try:
             with training_lifecycle_guard():
                 with self._lock:
-                    cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                    cancelled_tombstone = self._start_cancel_tombstones.get(key)
                     if cancelled_tombstone is not None:
                         record = cancelled_tombstone[1]
-                        self._start_cancel_tombstones[start_request_id] = (
+                        self._start_cancel_tombstones[key] = (
                             time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                             record,
                         )
                         return "cancelled", record
-                    latest = self._start_requests.get(start_request_id)
+                    latest = self._start_requests.get(key)
                     if latest is None:
                         return "superseded", existing
                     existing = latest
                     owns_current = (
-                        self.current_start_request_id == start_request_id
-                        and self.current_job_id == existing.job_id
+                        self._current_start_key == key and self.current_job_id == existing.job_id
                     )
                     if not reserved_cancel_tombstone:
                         reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
-                            start_request_id,
+                            key,
                             reclaim_capacity = owns_current,
                         )
                     if existing.error_code == _START_CANCELLED_ERROR_CODE:
-                        if self._status_start_request_id == start_request_id:
-                            self._status_start_request_id = None
+                        if self._status_start_key == key:
+                            self._status_start_key = None
                         return "cancelled", existing
                     if not owns_current or self._run_finished_locked():
                         return "superseded", existing
@@ -1363,21 +1528,18 @@ class TrainingBackend:
                 return "superseded", existing
 
             with self._lock:
-                cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                cancelled_tombstone = self._start_cancel_tombstones.get(key)
                 if cancelled_tombstone is not None:
                     record = cancelled_tombstone[1]
-                    self._start_cancel_tombstones[start_request_id] = (
+                    self._start_cancel_tombstones[key] = (
                         time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                         record,
                     )
                     return "cancelled", record
-                latest = self._start_requests.get(start_request_id)
+                latest = self._start_requests.get(key)
                 if latest is None:
                     return "superseded", existing
-                if (
-                    self.current_start_request_id != start_request_id
-                    or self.current_job_id != expected_job_id
-                ):
+                if self._current_start_key != key or self.current_job_id != expected_job_id:
                     return "superseded", latest
                 cancelled = replace(
                     latest,
@@ -1386,53 +1548,60 @@ class TrainingBackend:
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
                 )
-                self._start_requests.pop(start_request_id, None)
-                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
+                self._start_requests.pop(key, None)
+                self._commit_start_cancel_tombstone_locked(key, cancelled)
                 reserved_cancel_tombstone = False
                 self.current_start_request_id = None
-                if self._pending_start_request_id == start_request_id:
-                    self._pending_start_request_id = None
-                if self._status_start_request_id == start_request_id:
-                    self._status_start_request_id = None
+                if self._pending_start_key == key:
+                    self._pending_start_key = None
+                if self._status_start_key == key:
+                    self._status_start_key = None
                 return "cancelled", cancelled
         finally:
             if reserved_cancel_tombstone:
                 with self._lock:
-                    self._release_start_cancel_tombstone_locked(start_request_id)
+                    self._release_start_cancel_tombstone_locked(key)
 
     def _start_request_allows_spawn_locked(
         self, start_request_id: Optional[str], job_id: str
     ) -> bool:
         if start_request_id is None:
             return True
-        record = self._start_requests.get(start_request_id)
+        record = self._start_requests.get(self._start_key(start_request_id))
         return bool(record is not None and record.state == "pending" and record.job_id == job_id)
 
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
+        """The caller's own record for this id, or None.
+
+        Scoped by the record rather than by who owns the backend: ownership only
+        transfers at start_training(), so between reserving and starting, the
+        account that reserved this id would otherwise be told it does not exist.
+        """
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            record = self._start_requests.get(start_request_id)
+            record = self._record_for_caller(self._start_requests.get(key))
             if record is not None:
                 return record
-            cancelled = self._start_cancel_tombstones.get(start_request_id)
-            return cancelled[1] if cancelled is not None else None
+            cancelled = self._start_cancel_tombstones.get(key)
+            return self._record_for_caller(cancelled[1]) if cancelled is not None else None
 
     def status_start_request(self) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
-            if self._status_start_request_id is None:
+            if self._status_start_key is None:
                 return None
-            return self._start_requests.get(self._status_start_request_id)
+            return self._record_for_caller(self._start_requests.get(self._status_start_key))
 
     def training_status_identity(self) -> TrainingStatusIdentitySnapshot:
         with self._lock:
             current_start_request = (
-                self._start_requests.get(self.current_start_request_id)
-                if self.current_start_request_id is not None
+                self._start_requests.get(self._current_start_key)
+                if self._current_start_key is not None
                 else None
             )
             status_start_request = (
-                self._start_requests.get(self._status_start_request_id)
-                if self._status_start_request_id is not None
+                self._start_requests.get(self._status_start_key)
+                if self._status_start_key is not None
                 else None
             )
             return TrainingStatusIdentitySnapshot(
@@ -1461,35 +1630,36 @@ class TrainingBackend:
                         self._new_job_spawn_id = None
 
     def acknowledge_start_request(self, start_request_id: str) -> bool:
+        key = self._start_key(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            record = self._start_requests.get(start_request_id)
-            if record is None and start_request_id in self._start_cancel_tombstones:
+            record = self._start_requests.get(key)
+            if record is None and key in self._start_cancel_tombstones:
                 return True
             if record is None or record.state == "pending":
                 return False
-            if self._status_start_request_id == start_request_id:
-                self._status_start_request_id = None
+            if self._status_start_key == key:
+                self._status_start_key = None
             return True
 
     def _prune_start_cancel_tombstones_locked(self) -> None:
         now = time.monotonic()
-        for request_id, (expires_at, _) in tuple(self._start_cancel_tombstones.items()):
+        for tombstone_key, (expires_at, _) in tuple(self._start_cancel_tombstones.items()):
             if expires_at <= now:
-                del self._start_cancel_tombstones[request_id]
+                del self._start_cancel_tombstones[tombstone_key]
 
     def _reserve_start_cancel_tombstone_locked(
         self,
-        start_request_id: str,
+        key: tuple[str, str],
         *,
         reclaim_capacity: bool = False,
     ) -> bool:
         self._prune_start_cancel_tombstones_locked()
-        if start_request_id in self._start_cancel_tombstones:
+        if key in self._start_cancel_tombstones:
             return False
-        reservation_count = self._start_cancel_tombstone_reservations.get(start_request_id, 0)
+        reservation_count = self._start_cancel_tombstone_reservations.get(key, 0)
         if reservation_count:
-            self._start_cancel_tombstone_reservations[start_request_id] = reservation_count + 1
+            self._start_cancel_tombstone_reservations[key] = reservation_count + 1
             return True
         if (
             len(self._start_cancel_tombstones) + len(self._start_cancel_tombstone_reservations)
@@ -1503,35 +1673,35 @@ class TrainingBackend:
             # live cancellation and let its delayed /start spawn the job we just cancelled.
             # Overshoot instead: only the owner of the active start reaches this, and there
             # is at most one of those, so the table stays bounded.
-        self._start_cancel_tombstone_reservations[start_request_id] = 1
+        self._start_cancel_tombstone_reservations[key] = 1
         return True
 
     def _commit_start_cancel_tombstone_locked(
-        self, start_request_id: str, record: TrainingStartRequestRecord
+        self, key: tuple[str, str], record: TrainingStartRequestRecord
     ) -> None:
-        self._start_cancel_tombstone_reservations.pop(start_request_id, None)
-        self._start_cancel_tombstones[start_request_id] = (
+        self._start_cancel_tombstone_reservations.pop(key, None)
+        self._start_cancel_tombstones[key] = (
             time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
             record,
         )
 
-    def _release_start_cancel_tombstone_locked(self, start_request_id: str) -> None:
-        reservation_count = self._start_cancel_tombstone_reservations.get(start_request_id, 0)
+    def _release_start_cancel_tombstone_locked(self, key: tuple[str, str]) -> None:
+        reservation_count = self._start_cancel_tombstone_reservations.get(key, 0)
         if reservation_count <= 1:
-            self._start_cancel_tombstone_reservations.pop(start_request_id, None)
+            self._start_cancel_tombstone_reservations.pop(key, None)
         else:
-            self._start_cancel_tombstone_reservations[start_request_id] = reservation_count - 1
+            self._start_cancel_tombstone_reservations[key] = reservation_count - 1
 
     def _prune_start_requests_locked(self) -> None:
         overflow = len(self._start_requests) - _MAX_TRACKED_START_REQUESTS
         if overflow <= 0:
             return
-        for request_id, record in tuple(self._start_requests.items()):
+        for request_key, record in tuple(self._start_requests.items()):
             if overflow <= 0:
                 break
-            if record.state == "pending" or request_id == self.current_start_request_id:
+            if record.state == "pending" or request_key == self._current_start_key:
                 continue
-            del self._start_requests[request_id]
+            del self._start_requests[request_key]
             overflow -= 1
 
     def start_training(
@@ -1571,7 +1741,38 @@ class TrainingBackend:
                     **kwargs,
                 )
 
-    def _start_training_with_lifecycle_reserved(
+    def _start_training_with_lifecycle_reserved(self, *args, **kwargs) -> bool:
+        """Publish ownership only for a start that actually reaches a live worker.
+
+        The claim below has to happen early, because everything between it and
+        the spawn reads _active_workspace_subject: the credential suppression
+        handed to the child, and the workspace binding of the threads it starts.
+        But the pump join, the config build, the provenance and sidecar checks,
+        the GPU selection and the spawn itself can all fail or refuse after it,
+        and every one of those used to leave the new subject in place. The
+        previous owner lost their completed status and metrics at that moment,
+        and the caller who never started anything could read them.
+
+        So the claim stays where it is and is undone here instead, on every exit
+        that did not produce a running process. Skipped when a process is alive,
+        since then the claim is the truth.
+        """
+        with self._lock:
+            previous_subject = self._active_workspace_subject
+            previous_start_key = self._current_start_key
+        started = False
+        try:
+            started = self._start_training_with_lifecycle_reserved_impl(*args, **kwargs)
+            return started
+        finally:
+            if not started:
+                with self._lock:
+                    proc = self._proc
+                    if proc is None or not proc.is_alive():
+                        self._active_workspace_subject = previous_subject
+                        self._current_start_key = previous_start_key
+
+    def _start_training_with_lifecycle_reserved_impl(
         self,
         job_id: str,
         *,
@@ -1605,6 +1806,9 @@ class TrainingBackend:
             ):
                 logger.warning("Training subprocess already running")
                 return False
+            self._active_workspace_subject = str(
+                kwargs.get("subject") or current_workspace_subject()
+            )
 
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
@@ -1708,6 +1912,7 @@ class TrainingBackend:
             from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
             cache_env = get_hf_cache_paths().child_env({})
+            cache_env.update(_ambient_credentials_suppressed_for(self._active_workspace_subject))
 
             try:
                 with (
@@ -1730,7 +1935,7 @@ class TrainingBackend:
                     from utils.process_lifetime import adopt_pid
 
                     previous_job_id = None
-                    previous_start_request_id = None
+                    previous_start_key = None
                     with self._lock:
                         if not self._start_request_allows_spawn_locked(
                             start_request_id,
@@ -1742,7 +1947,7 @@ class TrainingBackend:
                             )
                             return False
                         previous_job_id = self.current_job_id
-                        previous_start_request_id = self.current_start_request_id
+                        previous_start_key = self._current_start_key
                         proc.start()
                         self.current_job_id = job_id
                         self.current_start_request_id = start_request_id
@@ -1767,18 +1972,19 @@ class TrainingBackend:
                                     and self.current_start_request_id == start_request_id
                                 ):
                                     self.current_job_id = previous_job_id
-                                    self.current_start_request_id = previous_start_request_id
+                                    self._current_start_key = previous_start_key
                                 if start_request_id is not None:
-                                    record = self._start_requests.get(start_request_id)
+                                    key = self._start_key(start_request_id)
+                                    record = self._start_requests.get(key)
                                     if record is not None and record.state == "pending":
-                                        self._start_requests[start_request_id] = replace(
+                                        self._start_requests[key] = replace(
                                             record,
                                             state = "rejected",
                                             message = "Failed to start training subprocess",
                                             error = "Failed to adopt training subprocess",
                                         )
-                                        if self._pending_start_request_id == start_request_id:
-                                            self._pending_start_request_id = None
+                                        if self._pending_start_key == key:
+                                            self._pending_start_key = None
                         return False
             except Exception:
                 logger.error("Failed to start training subprocess", exc_info = True)
@@ -1839,7 +2045,11 @@ class TrainingBackend:
                 return False
 
             # Assign handles and start the pump under the lock, else a poll sees a live _proc with no pump.
-            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            new_pump = workspace_thread(
+                target = self._pump_loop,
+                subject = self._active_workspace_subject,
+                daemon = True,
+            )
             with self._lock:
                 self._pump_running = False
                 self._event_queue = event_queue
@@ -1993,7 +2203,7 @@ class TrainingBackend:
                 self.grad_norm_history.clear()
                 self.grad_norm_step_history.clear()
                 self._needs_xet_respawn = False
-                self._status_start_request_id = None
+                self._status_start_key = None
             return "reset"
 
     def _start_stop_watchdog(
@@ -2020,8 +2230,9 @@ class TrainingBackend:
                 and self._stop_watchdog_proc is proc
             ):
                 return
-            watchdog = threading.Thread(
+            watchdog = workspace_thread(
                 target = self._stop_watchdog_loop,
+                subject = self._active_workspace_subject,
                 args = (proc, cancel, self.current_job_id),
                 kwargs = {"grace_s": grace_s, "terminal_seen": terminal_seen},
                 name = f"stop-watchdog-{self.current_job_id or 'unknown'}",
@@ -2360,10 +2571,16 @@ class TrainingBackend:
             config = {**config, "disable_xet": True}
             logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
 
+            # Carries the ambient-credential suppression the first spawn applied;
+            # the fallback below rebuilds it, so a respawn cannot quietly restore
+            # the owner's token to a managed account's worker.
             cache_env = getattr(self, "_last_hf_cache_env", None)
             if not cache_env:
                 from utils.hf_cache_settings import get_hf_cache_paths
                 cache_env = get_hf_cache_paths().child_env({})
+                cache_env.update(
+                    _ambient_credentials_suppressed_for(self._active_workspace_subject)
+                )
             from utils.hf_cache_settings import child_environment_for_spawn
             from utils.transformers_version import sidecar_swap_in_progress
 
@@ -2452,7 +2669,11 @@ class TrainingBackend:
                 logger.info(
                     "Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid
                 )
-                new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+                new_pump = workspace_thread(
+                    target = self._pump_loop,
+                    subject = self._active_workspace_subject,
+                    daemon = True,
+                )
                 with self._lock:
                     self._in_model_load = False
                     self._event_queue = event_queue
@@ -2488,7 +2709,11 @@ class TrainingBackend:
                 "Training event pump thread died while the worker is still running; "
                 "restarting it so progress updates resume."
             )
-            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            new_pump = workspace_thread(
+                target = self._pump_loop,
+                subject = self._active_workspace_subject,
+                daemon = True,
+            )
             self._pump_thread = new_pump
             # Start under the lock so a concurrent _ensure_pump_alive can't spawn yet another pump.
             new_pump.start()

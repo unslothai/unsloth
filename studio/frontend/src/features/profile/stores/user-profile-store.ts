@@ -4,6 +4,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { ACCOUNT_CHANGED_EVENT } from "../../../lib/account-transition.ts";
+
 export type AvatarShape = "circle" | "rounded";
 export const PROFILE_TEXT_MAX_LENGTH = 200;
 
@@ -37,3 +39,20 @@ export const useUserProfileStore = create<UserProfileState>()(
     { name: "unsloth_user_profile" },
   ),
 );
+
+// The persisted key is cleared when a different account signs in, but this store
+// is already hydrated and a same-window removeItem fires no storage event, so
+// without this the personalization sync still read the previous account's name,
+// nickname and avatar and saved them into the new account's record as migration
+// input.
+if (typeof window !== "undefined") {
+  window.addEventListener(ACCOUNT_CHANGED_EVENT, () => {
+    useUserProfileStore.setState({
+      displayName: "",
+      nickname: "",
+      avatarDataUrl: null,
+      avatarShape: "circle",
+      showGreetingSloth: true,
+    });
+  });
+}

@@ -51,6 +51,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.stats.currentStreak",
     "settings.profile.stats.longestStreak",
   ],
+  accounts: [],
   appearance: [
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",

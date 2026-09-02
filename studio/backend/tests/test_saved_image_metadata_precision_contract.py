@@ -563,7 +563,7 @@ def test_the_patch_modules_are_not_left_cached_against_the_fakes():
 
 @pytest.fixture
 def tmp_gallery(monkeypatch, tmp_path):
-    monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
+    monkeypatch.setattr(gallery, "workspace_root", lambda: tmp_path)
     return tmp_path
 
 

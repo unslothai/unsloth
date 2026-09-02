@@ -27,6 +27,7 @@ from utils.paths import (
     ensure_dir,
     project_workspaces_root,
     studio_db_path,
+    workspace_root,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
 from utils.paths.scan_folder_health import is_readable_dir
@@ -100,6 +101,12 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
+_schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
@@ -1242,6 +1249,7 @@ def get_connection(
     """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
     global _schema_ready
     db_path = studio_db_path()
+    db_key = str(db_path.resolve(strict = False))
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(
         str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
@@ -1249,34 +1257,58 @@ def get_connection(
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
     if not _schema_ready:
+        _schema_ready_paths.clear()
+    if db_key not in _schema_ready_paths:
         with _schema_lock:
-            if not _schema_ready:
+            if db_key not in _schema_ready_paths:
                 try:
                     _ensure_schema(conn)
                     conn.commit()
+                    schema_cache.mark_ready(_schema_ready_paths, db_key, cache_generation)
                     _schema_ready = True
                 except Exception:
                     conn.close()
                     raise
     _apply_wal_synchronous(conn)
+    _ensure_wal_keeper(db_key)
     return conn
 
 
 # Every accessor here opens and closes its own connection, so a writer is routinely the last
 # WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
 # durable chat stream's flush cadence that is several rewrites a second (#9934).
-_wal_keeper: sqlite3.Connection | None = None
-_wal_keeper_lock = threading.Lock()
+#
+# One keeper per DATABASE: studio_db_path() is per workspace, so a single keeper on the owner's
+# file left every managed account checkpointing on every close. Keyed by resolved path and
+# engaged lazily, so an account created after startup gets one on its first write.
+_wal_keepers: dict[str, sqlite3.Connection] = {}
+_wal_keeper_lock = threading.RLock()
+# Databases whose journal mode is not WAL. Recorded so the probe below is not repeated on
+# every connection for a filesystem that will never support it.
+_wal_keeper_declined: set[str] = set()
+# Re-entrancy: _engage_wal_keeper opens a connection, which lands back here.
+_wal_keeper_opening: set[str] = set()
+# Keepers are a server-lifetime policy, not a side effect of touching the database. Off until
+# the lifespan opens one, so a test or a script that opens a connection does not leave a
+# connection behind it never asked for.
+_wal_keepers_enabled = False
 
 
-def open_wal_keeper() -> bool:
-    """Hold this database's WAL open for the process. Returns whether a keeper is engaged."""
-    # Replace rather than inherit: a keeper from an earlier lifespan can belong to another
-    # database or a dead thread, and reusing it would keep nothing for the current one.
-    close_wal_keeper()
-    global _wal_keeper
+def _current_db_key() -> str:
+    return str(studio_db_path().resolve(strict = False))
+
+
+def _engage_wal_keeper(db_key: str) -> bool:
+    """Open and record a keeper for one database. Returns whether one is now held."""
     with _wal_keeper_lock:
+        if db_key in _wal_keeper_declined or db_key in _wal_keeper_opening:
+            return False
+        _wal_keeper_opening.add(db_key)
+    try:
         # Only ever runs the pragma below, on this thread. check_same_thread is off so a
         # keeper stranded by an earlier lifespan can still be closed from this one.
         conn = get_connection(check_same_thread = False)
@@ -1292,22 +1324,80 @@ def open_wal_keeper() -> bool:
         if not isinstance(mode, str) or mode.lower() != "wal":
             conn.close()
             logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
+            with _wal_keeper_lock:
+                _wal_keeper_declined.add(db_key)
             return False
-        _wal_keeper = conn
-        return True
+        with _wal_keeper_lock:
+            previous = _wal_keepers.pop(db_key, None)
+            _wal_keepers[db_key] = conn
+    finally:
+        with _wal_keeper_lock:
+            _wal_keeper_opening.discard(db_key)
+    _close_keeper_connection(previous)
+    return True
 
 
-def close_wal_keeper() -> None:
-    """Release the keeper; last-close checkpointing resumes."""
-    global _wal_keeper
+def _ensure_wal_keeper(db_key: str) -> None:
+    """Engage a keeper for ``db_key`` if the process is keeping WALs open at all."""
+    if not _wal_keepers_enabled:
+        return
     with _wal_keeper_lock:
-        conn, _wal_keeper = _wal_keeper, None
+        if db_key in _wal_keepers or db_key in _wal_keeper_declined:
+            return
+        if db_key in _wal_keeper_opening:
+            return
+    _engage_wal_keeper(db_key)
+
+
+def _close_keeper_connection(conn: "sqlite3.Connection | None") -> None:
     if conn is None:
         return
     try:
         conn.close()
     except Exception as exc:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
+
+
+def close_wal_keeper_for(db_path) -> None:
+    """Release the keeper for ONE database, by path. Windows refuses to rename a
+    directory holding an open file, so a keeper on a deleted account's studio.db
+    tombstones the username for the life of the process."""
+    try:
+        db_key = str(Path(db_path).resolve(strict = False))
+    except (OSError, RuntimeError, ValueError):
+        return
+    with _wal_keeper_lock:
+        conn = _wal_keepers.pop(db_key, None)
+        _wal_keeper_declined.discard(db_key)
+    _close_keeper_connection(conn)
+
+
+def open_wal_keeper() -> bool:
+    """Hold this database's WAL open for the process; returns whether one is engaged.
+    Also turns keepers on for every other workspace database opened from here,
+    since the lifespan runs outside a request and can only name the owner's."""
+    global _wal_keepers_enabled
+    db_key = _current_db_key()
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = True
+        # Replace rather than inherit: a keeper from an earlier lifespan can belong to a
+        # dead thread, and reusing it would keep nothing for the current one.
+        _wal_keeper_declined.discard(db_key)
+        stale = _wal_keepers.pop(db_key, None)
+    _close_keeper_connection(stale)
+    return _engage_wal_keeper(db_key)
+
+
+def close_wal_keeper() -> None:
+    """Release every keeper; last-close checkpointing resumes."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = False
+        conns = list(_wal_keepers.values())
+        _wal_keepers.clear()
+        _wal_keeper_declined.clear()
+    for conn in conns:
+        _close_keeper_connection(conn)
 
 
 def create_run(
@@ -1795,7 +1885,18 @@ def list_scan_folders() -> list[dict]:
         rows = conn.execute(
             "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        folders = [dict(row) for row in rows]
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+        if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
+            return folders
+        private_root = os.path.normcase(os.path.realpath(str(workspace_root())))
+        return [
+            folder
+            for folder in folders
+            if (resolved := os.path.normcase(os.path.realpath(str(folder["path"])))) == private_root
+            or resolved.startswith(private_root + os.sep)
+        ]
     finally:
         conn.close()
 
@@ -1818,6 +1919,14 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
+
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+    if current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT:
+        private_root = os.path.normcase(os.path.realpath(str(workspace_root())))
+        candidate = os.path.normcase(normalized)
+        if candidate != private_root and not candidate.startswith(private_root + os.sep):
+            raise ValueError("Managed accounts can only register folders inside their workspace")
 
     # Windows: normcase for the denylist check but store original casing (e.g. C:\Models).
     is_win = platform.system() == "Windows"
@@ -4445,6 +4554,23 @@ def get_app_setting(key: str, fallback = None):
         return _json_loads(row["value_json"], fallback)
     finally:
         conn.close()
+
+
+def get_install_setting(key: str, fallback = None):
+    """An installation-wide setting, always read from the owner's database.
+
+    A few settings are gated as install-wide (the HF cache home, the llama.cpp
+    binary) but app_settings lives in the caller's studio.db, so read per account
+    a managed user silently falls back to the default and redownloads elsewhere.
+    """
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
+    return run_in_workspace(LEGACY_WORKSPACE_SUBJECT, get_app_setting, key, fallback)
+
+
+def upsert_install_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Write installation-wide settings to the owner's database. See above."""
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
+    return run_in_workspace(LEGACY_WORKSPACE_SUBJECT, upsert_app_settings, settings)
 
 
 def get_app_settings(keys: list[str]) -> dict[str, Any]:

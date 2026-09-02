@@ -25,6 +25,7 @@ from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 from loggers import get_logger
+from utils.workspace_context import current_workspace_subject
 
 logger = get_logger(__name__)
 
@@ -41,6 +42,7 @@ FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
+_oauth_token_store_lock = threading.Lock()
 
 
 def is_stdio(address: str) -> bool:
@@ -243,19 +245,28 @@ def parse_server_headers(server: dict) -> Optional[dict]:
 
 def _oauth_store():
     global _oauth_token_store
-    if _oauth_token_store is None:
-        from key_value.aio._utils.sanitization import AlwaysHashStrategy
-        from key_value.aio.stores.filetree import FileTreeStore
-        from utils.paths.storage_roots import ensure_dir, studio_root
+    from key_value.aio._utils.sanitization import AlwaysHashStrategy
+    from key_value.aio.stores.filetree import FileTreeStore
+    from utils.paths.storage_roots import ensure_dir, workspace_root
 
-        # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
-        # would treat the "://" as nested directories.
-        _oauth_token_store = FileTreeStore(
-            data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
-            key_sanitization_strategy = AlwaysHashStrategy(),
-            collection_sanitization_strategy = AlwaysHashStrategy(),
-        )
-    return _oauth_token_store
+    directory = ensure_dir(workspace_root() / "mcp-oauth-tokens")
+    key = os.path.normcase(os.path.realpath(str(directory)))
+    with _oauth_token_store_lock:
+        # Keep the historical single-cache variable so tests and hot reloads can
+        # clear it, but key it by workspace. A caller retains the returned store,
+        # so another account replacing this cache cannot redirect an in-flight OAuth flow.
+        if _oauth_token_store is None or _oauth_token_store[0] != key:
+            # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
+            # would treat the "://" as nested directories.
+            _oauth_token_store = (
+                key,
+                FileTreeStore(
+                    data_directory = directory,
+                    key_sanitization_strategy = AlwaysHashStrategy(),
+                    collection_sanitization_strategy = AlwaysHashStrategy(),
+                ),
+            )
+        return _oauth_token_store[1]
 
 
 async def clear_oauth_tokens_async(url: str) -> None:
@@ -416,6 +427,35 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     return [executable, *parts[1:]]
 
 
+def _revalidate_http_destination(url: str) -> None:
+    """Re-apply the private-address policy when a connection is actually opened.
+
+    The routes check at row-write time, which a hostname the account controls can
+    outlive by rebinding afterwards.
+
+    PARTIAL: this closes the rebind between saving and using, not the window
+    between this lookup and the socket. Closing that needs the resolved address
+    pinned into the connection while Host and TLS SNI keep the original name,
+    which means a custom httpx transport through FastMCP's httpx_client_factory.
+    """
+    from urllib.parse import urlparse
+
+    from auth.storage import subject_may_reach_private_hosts
+
+    if subject_may_reach_private_hosts():
+        return
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").rstrip(".")
+    if not hostname:
+        return
+    from core.inference.providers import _reject_non_public
+
+    try:
+        _reject_non_public(hostname, parsed.port, (parsed.scheme or "https").lower())
+    except ValueError as exc:
+        raise PermissionError(f"This account cannot reach that MCP address: {exc}") from exc
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -427,6 +467,13 @@ def _client(
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
         if not stdio_mcp_enabled():
             raise PermissionError("stdio MCP servers are disabled on this host")
+        # Never for a managed account, whatever row asked: the routes refuse to
+        # save one, but an older row must not become a process as the server's
+        # OS user for an account that cannot administer the install.
+        from auth.storage import is_installation_owner
+
+        if not is_installation_owner():
+            raise PermissionError("Only the installation owner can run local (stdio) MCP servers")
         from fastmcp.client.transports import StdioTransport
 
         parts = parse_stdio_command(url)
@@ -444,6 +491,8 @@ def _client(
                 keep_alive = False,
             )
         )
+
+    _revalidate_http_destination(url)
 
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
@@ -862,6 +911,9 @@ _mcp_cleanup_worker: Optional[threading.Thread] = None
 # stale. Bump a generation on every close so that connect discards its
 # session instead of publishing it. Guarded by _mcp_sessions_lock.
 _mcp_close_all_gen = 0
+# "close everything in one workspace", kept apart from the shutdown counter above
+# so one account's bulk close cannot reject another account's live connection.
+_mcp_subject_close_gen: dict[str, int] = {}
 _mcp_url_close_gen: dict[str, int] = {}
 _mcp_cfg_close_gen: dict[tuple, int] = {}
 _mcp_connects_in_flight = 0
@@ -873,27 +925,38 @@ def _headers_key(headers: Optional[dict]) -> tuple:
     return tuple(sorted((headers or {}).items()))
 
 
-def _url_close_key(url: str) -> str:
+def _url_close_key(url: str, subject: Optional[str] = None) -> str:
     # Commands/URLs (token args, embedded credentials) and env values can hold
     # secrets and these maps are never pruned; key by digest so closed/edited
-    # configs don't retain them in memory forever.
-    return hashlib.sha256(url.encode()).hexdigest()
+    # configs don't retain them in memory forever. Scoped by workspace so editing
+    # one account's row does not invalidate another's identical command.
+    return hashlib.sha256(repr((subject or current_workspace_subject(), url)).encode()).hexdigest()
 
 
-def _cfg_close_key(url: str, headers: Optional[dict]) -> str:
-    return hashlib.sha256(repr((url, _headers_key(headers))).encode()).hexdigest()
+def _cfg_close_key(
+    url: str,
+    headers: Optional[dict],
+    subject: Optional[str] = None,
+) -> str:
+    return hashlib.sha256(
+        repr((subject or current_workspace_subject(), url, _headers_key(headers))).encode()
+    ).hexdigest()
 
 
-def _mcp_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
+def _mcp_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int, int]:
+    subject = current_workspace_subject()
     return (
         _mcp_close_all_gen,
-        _mcp_url_close_gen.get(_url_close_key(url), 0),
-        _mcp_cfg_close_gen.get(_cfg_close_key(url, headers), 0),
+        _mcp_subject_close_gen.get(subject, 0),
+        _mcp_url_close_gen.get(_url_close_key(url, subject), 0),
+        _mcp_cfg_close_gen.get(_cfg_close_key(url, headers, subject), 0),
     )
 
 
 def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tuple:
-    return (url, _headers_key(headers), scope or "")
+    # Workspace last: scope carries client-chosen ids, so two accounts could
+    # share a live stdio child. Appended, since close_stdio_sessions matches k[0]/k[1].
+    return (url, _headers_key(headers), scope or "", current_workspace_subject())
 
 
 def _checkout_session(key: tuple) -> tuple[Optional[_McpSession], float]:
@@ -1016,14 +1079,16 @@ def _get_session(
                     closed_while_connecting = _mcp_close_generation(url, headers) != generation
                     if not closed_while_connecting:
                         session.in_flight = 1
-                        evicted = _evict_lru_locked()  # bound the cache (LRU idle)
+                        # Named so the cap is not a way to reach into another
+                        # workspace: this insert's own account pays first.
+                        evicted = _evict_lru_locked(key[3] if len(key) > 3 else None)
                         _mcp_sessions[key] = session
                         if not _mcp_reaper_started:
                             _mcp_reaper_started = True
                             threading.Thread(
                                 target = _session_reaper, name = "mcp-session-reaper", daemon = True
                             ).start()
-                            atexit.register(close_mcp_sessions)
+                            atexit.register(_close_sessions_at_exit)
                 for victim in evicted:
                     logger.info("Evicting LRU idle MCP session: %s", _session_log_id(victim.url))
                 if evicted:
@@ -1060,7 +1125,7 @@ def _release_session(session: _McpSession, defer_close: bool = False) -> None:
             ]
             if not idle:
                 break
-            _, oldest = min(idle, key = lambda item: item[0])
+            _, oldest = min(_eviction_candidates_locked(idle), key = lambda item: item[0])
             victims.append(_mcp_sessions.pop(oldest))
             _discard_key_lock(oldest)
     if close_now and defer_close:
@@ -1099,7 +1164,27 @@ def _drop_session(key: tuple, session: _McpSession) -> None:
     _retire_session(session)
 
 
-def _evict_lru_locked() -> list:
+def _eviction_candidates_locked(idle: list, subject: Optional[str] = None) -> list:
+    """Which idle sessions may be taken, out of ``idle``, preferring greedy ones.
+
+    The cap is install-wide, so plain LRU let one account close another's idle
+    browser or REPL session. A workspace over an equal share pays for its own
+    growth first; falling back to global LRU means a full cache rather than one
+    account crowding out another. ``subject`` is counted as if already inserted.
+    """
+    counts: dict = {}
+    for cached_key in _mcp_sessions:
+        holder = cached_key[3] if len(cached_key) > 3 else ""
+        counts[holder] = counts.get(holder, 0) + 1
+    if subject is not None:
+        counts[subject] = counts.get(subject, 0) + 1
+    share = max(1, _MAX_SESSIONS // max(1, len(counts)))
+    over = {holder for holder, held in counts.items() if held > share}
+    preferred = [item for item in idle if (item[1][3] if len(item[1]) > 3 else "") in over]
+    return preferred or idle
+
+
+def _evict_lru_locked(subject: Optional[str] = None) -> list:
     """Caller holds _mcp_sessions_lock. Evict least-recently-used *idle*
     sessions until the cache is under the cap. Returns the evicted sessions so
     the caller can close them OUTSIDE the lock. If every session is busy the
@@ -1109,30 +1194,60 @@ def _evict_lru_locked() -> list:
         idle = [(s.last_used, k) for k, s in _mcp_sessions.items() if s.in_flight == 0]
         if not idle:
             break
-        _, oldest = min(idle, key = lambda item: item[0])
+        _, oldest = min(_eviction_candidates_locked(idle, subject), key = lambda item: item[0])
         victims.append(_mcp_sessions.pop(oldest))
         _discard_key_lock(oldest)
     return victims
 
 
-def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> None:
+def workspace_has_cached_sessions(subject: Optional[str] = None) -> bool:
+    """Whether any cached session is still keyed to ``subject``. Read for deletion:
+    the key holds the reusable username, so a namesake could check one out."""
+    from utils.workspace_context import current_workspace_subject
+
+    expected = subject or current_workspace_subject()
+    with _mcp_sessions_lock:
+        return any(key[3] == expected for key in _mcp_sessions)
+
+
+def close_mcp_sessions(
+    url: Optional[str] = None,
+    headers = _ANY_HEADERS,
+    *,
+    all_workspaces: bool = False,
+) -> None:
+    """Close cached sessions: all of them (``url`` None), every env for one
+    address (``headers`` omitted), or one server config (url + headers). Two
+    server rows can share an address with different envs; editing one must not
+    kill the other's live state, so the routes pass the edited row's env.
+
+    Confined to the calling workspace for the same reason. ``all_workspaces`` is
+    the process-shutdown path.
+    """
     global _mcp_close_all_gen
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
+    subject = current_workspace_subject()
     with _mcp_sessions_lock:
         keys = [
-            k for k in _mcp_sessions if (url is None or k[0] == url) and (hk is None or k[1] == hk)
+            k
+            for k in _mcp_sessions
+            if (url is None or k[0] == url)
+            and (hk is None or k[1] == hk)
+            and (all_workspaces or k[3] == subject)
         ]
         sessions = [_mcp_sessions.pop(k) for k in keys]
         for key in keys:
             _discard_key_lock(key)
         if sessions or _mcp_connects_in_flight:
-            if url is None:
+            if url is None and all_workspaces:
                 _mcp_close_all_gen += 1
+            elif url is None:
+                _mcp_subject_close_gen[subject] = _mcp_subject_close_gen.get(subject, 0) + 1
             elif hk is None:
-                uk = _url_close_key(url)
+                uk = _url_close_key(url, subject)
                 _mcp_url_close_gen[uk] = _mcp_url_close_gen.get(uk, 0) + 1
             else:
-                cfg = _cfg_close_key(url, headers)
+                cfg = _cfg_close_key(url, headers, subject)
                 _mcp_cfg_close_gen[cfg] = _mcp_cfg_close_gen.get(cfg, 0) + 1
     pending, worker = _drain_cleanup_queue()
     _close_all(sessions + pending)
@@ -1142,6 +1257,13 @@ def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> Non
         # atexit) that the teardown has happened. The worker stops as soon as the
         # queue is empty, so this waits for that one close and no longer.
         worker.join(_SESSION_CLOSE_TIMEOUT + 5.0)
+
+
+def _close_sessions_at_exit() -> None:
+    """Process teardown: every account's sessions, not only the exiting thread's.
+    atexit runs on the main thread, so the confined default would leave every
+    managed account's stdio child running."""
+    close_mcp_sessions(all_workspaces = True)
 
 
 def _close_all(sessions: list) -> None:

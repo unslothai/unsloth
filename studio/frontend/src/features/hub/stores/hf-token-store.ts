@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { legacyBrowserDataBelongsToCurrentAccount } from "../../../lib/account-transition.ts";
 import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
 import { reconcileLegacyHfToken } from "../../credentials/reconciliation.ts";
 
@@ -30,7 +31,10 @@ export function normalizeHfToken(raw: string): string {
 }
 
 function loadLegacyToken(): string {
-
+  // A token left in origin-wide storage belongs to whoever put it there. The
+  // migration copies it into the signing-in account's workspace permanently,
+  // which for a different account hands over that person's private repositories.
+  if (!legacyBrowserDataBelongsToCurrentAccount()) return stagedLegacyToken;
   if (!canUseStorage()) return stagedLegacyToken;
   try {
     const direct = window.localStorage.getItem(HF_TOKEN_KEY);

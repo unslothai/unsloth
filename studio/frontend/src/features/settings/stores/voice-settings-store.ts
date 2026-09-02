@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ACCOUNT_CHANGED_EVENT } from "../../../lib/account-transition.ts";
 import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
@@ -529,4 +530,13 @@ export function applyDictationDictionary(
 /** Record a finished dictation so it can be recovered from settings. */
 export function recordRecentDictation(text: string, chatId?: string): void {
   useVoiceSettingsStore.getState().addRecentDictation(text, chatId);
+}
+
+// The persisted key is cleared when a different account signs in, but the store
+// is already hydrated in this tab: without this the previous account's
+// transcripts and dictionary stay readable from Settings until a reload.
+if (typeof window !== "undefined") {
+  window.addEventListener(ACCOUNT_CHANGED_EVENT, () => {
+    useVoiceSettingsStore.setState({ recentDictations: [], dictionary: [] });
+  });
 }

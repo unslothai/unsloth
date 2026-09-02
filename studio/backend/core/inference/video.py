@@ -36,6 +36,13 @@ import inspect
 import os
 import tempfile
 import threading
+
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    ForeignWorkspaceActiveError,
+    current_workspace_subject,
+    run_in_workspace,
+)
 import time
 import types
 from dataclasses import dataclass
@@ -580,6 +587,11 @@ class _VideoLoadingState:
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3
     # GGUF and component repos). Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
+    # The account that started this load. A load is as much "somebody else is
+    # using the card" as a generation is, and the teardown guards only looked at
+    # the generation: with _gen still None the authenticated unload route ended
+    # another account's multi-gigabyte pull.
+    subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
 def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
@@ -1062,6 +1074,10 @@ class VideoBackend:
         self._generate_job_token: Optional[object] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run.
         self._gen_video_id: Optional[str] = None
+        # Whose run this is. One backend serves every account, so without it any
+        # account's poll sees the current clip's progress and any account's cancel
+        # ends it.
+        self._gen_subject: str = LEGACY_WORKSPACE_SUBJECT
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """The device target for ``ordinal``, pinned onto the calling thread.
@@ -1396,6 +1412,7 @@ class VideoBackend:
                 repo_id = repo_id,
                 base_repo = fam.base_repo,
                 asset_repos = claimed_assets,
+                subject = current_workspace_subject(),
             )
 
         threading.Thread(
@@ -3379,9 +3396,16 @@ class VideoBackend:
         except Exception:  # noqa: BLE001 -- cache scan is best-effort
             return 0
 
-    def load_progress(self) -> dict[str, Any]:
-        """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
+    def load_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Phase + downloaded/total bytes for the in-flight load (cache-scan based).
+
+        ``subject`` hides another account's load, whose payload names the repo or
+        private path it is pulling. None is the engine's own unfiltered view.
+        """
         loading = self._loading
+        if loading is not None and subject is not None and loading.subject != subject:
+            # Answered as "nothing loading", the same shape an idle engine gives.
+            return _progress("ready" if self._state is not None else None)
         if loading is not None and loading.error:
             return _progress("error", error = loading.error)
         if loading is None:
@@ -5174,6 +5198,7 @@ class VideoBackend:
                 # Register before the worker starts so cancellation covers the spawn window.
                 self._active_generate_cancel = cancel
                 self._gen_video_id = video_id
+                self._gen_subject = current_workspace_subject()
                 self._gen = {
                     "active": True,
                     "phase": "queued",
@@ -5185,7 +5210,15 @@ class VideoBackend:
         worker = threading.Thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs:
             # those kwargs are also a valid generate() call, and callers replay them as one.
-            target = functools.partial(self._run_generate, job_token = job_token, video_id = video_id),
+            # run_in_workspace: _run_generate persists through video_gallery.save(), which is
+            # per account, and a bare thread would write the owner's gallery instead.
+            target = functools.partial(
+                run_in_workspace,
+                current_workspace_subject(),
+                self._run_generate,
+                job_token = job_token,
+                video_id = video_id,
+            ),
             kwargs = dict(
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -6254,8 +6287,12 @@ class VideoBackend:
             except OSError:
                 pass
 
-    def generate_progress(self) -> dict[str, Any]:
+    def generate_progress(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """``subject`` reports idle for another account's run; None keeps the
+        unfiltered view the backend's own probes need."""
         with self._lock:
+            if subject is not None and self._gen_subject != subject:
+                return {"active": False, "total_steps": 0, "fraction": 0.0}
             gen = dict(self._gen)
             # generate() swaps in a bare {"active": False} before the worker records the terminal dict; report active across that gap.
             if self._generate_job_active:
@@ -6270,7 +6307,11 @@ class VideoBackend:
         gen["fraction"] = min(1.0, step / total) if total > 0 else 0.0
         return gen
 
-    def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
+    def forget_terminal_video(
+        self,
+        video_id: Optional[str] = None,
+        subject: Optional[str] = None,
+    ) -> bool:
         """Drop the completed terminal record when its clip leaves the gallery.
 
         ``generate_progress()`` keeps the last completed job until the next one starts, and the
@@ -6283,6 +6324,12 @@ class VideoBackend:
             gen = self._gen
             if self._generate_job_active or not isinstance(gen, dict):
                 return False
+            # ``subject`` limits this to one account's record. Account deletion
+            # passes it: a completed record holds the whole recipe, prompt,
+            # negative prompt, model and settings, and a recreated namesake passed
+            # the subject check and read it from /video/generate-progress.
+            if subject is not None and self._gen_subject != subject:
+                return False
             if gen.get("phase") != "completed":
                 return False
             held = str((gen.get("video") or {}).get("id") or "")
@@ -6291,9 +6338,19 @@ class VideoBackend:
             self._gen = {"active": False}
             return True
 
-    def cancel_generate(self, expected_video_id: Optional[str] = None) -> bool:
-        """Signal the in-flight generation to stop at its next step callback."""
+    def cancel_generate(
+        self,
+        expected_video_id: Optional[str] = None,
+        subject: Optional[str] = None,
+    ) -> bool:
+        """Signal the in-flight generation to stop at its next step callback.
+
+        ``subject`` refuses a cancel aimed at another account's run, answered as
+        "nothing was running" for the same reason its progress reports idle. None
+        is the teardown path, which must stop whatever is running."""
         with self._lock:
+            if subject is not None and self._gen_subject != subject:
+                return False
             if expected_video_id is not None and self._gen_video_id != expected_video_id:
                 return False
             cancel = self._active_generate_cancel
@@ -6318,7 +6375,35 @@ class VideoBackend:
             del state
             clear_gpu_cache()
 
-    def unload(self) -> dict[str, Any]:
+    def _refuse_foreign_teardown(self, subject: Optional[str]) -> None:
+        """Raise if tearing down now would end another account's render or load.
+
+        Split out of unload so a caller about to trigger the engine's own
+        subject-less teardown can ask first, rather than discovering it by
+        cancelling somebody's clip. Mirrors the diffusion helper of this name.
+        """
+        if subject is None:
+            return
+        with self._lock:
+            if self._generate_job_active and self._gen_subject != subject:
+                raise ForeignWorkspaceActiveError(
+                    "Another account is generating a video right now."
+                )
+            loading = self._loading
+            if loading is not None and loading.error is None and loading.subject != subject:
+                raise ForeignWorkspaceActiveError(
+                    "Another account is loading a video model right now."
+                )
+
+    def unload(self, subject: Optional[str] = None) -> dict[str, Any]:
+        """Free the pipeline, cancelling whatever is running.
+
+        ``subject`` refuses a teardown that would end another account's live
+        generation; None is the engine's own path (arbiter, superseding load,
+        exit). Scoping cancel_generate alone was not enough, since unload signals
+        the same event.
+        """
+        self._refuse_foreign_teardown(subject)
         with self._lock:
             self._load_token += 1
             self._cancel_event.set()

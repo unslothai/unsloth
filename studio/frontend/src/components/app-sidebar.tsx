@@ -200,7 +200,7 @@ import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
-import { clearAuthTokens, logout } from "@/features/auth";
+import { authFetch, clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
   deleteTrainingRun,
@@ -1029,6 +1029,23 @@ export function AppSidebar() {
   const showTrainingRecents =
     !chatOnly && trainingRecentsRoute && runItems.length > 0;
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
+  const [accountUsername, setAccountUsername] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void authFetch("/api/auth/me")
+      .then(async (response) => {
+        if (!response.ok) return;
+        const account = (await response.json()) as { username?: string };
+        if (!cancelled && account.username) setAccountUsername(account.username);
+      })
+      .catch(() => {
+        // The rest of the sidebar remains usable if identity lookup races logout.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const { projects } = useChatProjects();
   const activeProjectId = isChatRoute
@@ -4428,7 +4445,12 @@ export function AppSidebar() {
                       pr on the button reserves room for the settings cog */}
                   <div className="flex min-w-0 flex-1 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-ui-13p5 tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
-                    <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">Unsloth</span>
+                    <span
+                      className="truncate text-ui-11p5 tracking-nav text-muted-foreground"
+                      data-testid="current-account-username"
+                    >
+                      {accountUsername ? `@${accountUsername}` : "Unsloth"}
+                    </span>
                   </div>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>

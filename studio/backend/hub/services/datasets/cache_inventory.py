@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.services import resolve_destructive_repo_ids
-from hub.services.datasets import downloads, local_options
+from hub.services.datasets import cache_access, downloads, local_options
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.dataset_cache import (
@@ -531,6 +531,11 @@ def _scan_hf_dataset_caches() -> list[dict]:
             try:
                 # str(...) guards against the library switching repo_type to an Enum.
                 if str(repo_info.repo_type) != "dataset":
+                    continue
+                # The cache is installation-wide, so listing it published the
+                # repository id and cache path of a private dataset another
+                # account downloaded, which is all the local-read routes need.
+                if not cache_access.caller_may_read_cached_dataset(repo_info.repo_id):
                     continue
                 total_size = int(getattr(repo_info, "size_on_disk", 0) or 0)
                 if total_size == 0:

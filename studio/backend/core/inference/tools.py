@@ -80,6 +80,12 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 
 from loggers import get_logger
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    current_workspace_subject,
+    run_in_workspace,
+    workspace_thread,
+)
 
 logger = get_logger(__name__)
 
@@ -7321,14 +7327,42 @@ _removing_sessions: "set[str]" = set()
 _sessions_free = threading.Condition(_active_sessions_lock)
 
 
+# Unit separator: cannot occur in a username or a session id, and unlike NUL it
+# is not already inside _ANON_KEY, so the subject splits back off unambiguously.
+_SESSION_KEY_SEP = "\x1f"
+
+
 def _session_key(session_id: "str | None") -> str:
-    """Lifecycle key for a session id.
+    """Lifecycle key for a session id, private to the calling workspace.
 
     Case-folded: two ids differing only in case are one directory on Windows and
     on a default macOS volume, and keying them apart let a delete land while the
     other chat was running a tool in there.
+
+    Workspace-prefixed because the sandbox directories are per account while the
+    id is client-chosen: without it one account's delete waits on, and then runs
+    against, another account's live tool call.
     """
-    return (session_id or _ANON_KEY).casefold()
+    subject = current_workspace_subject()
+    return f"{subject}{_SESSION_KEY_SEP}{(session_id or _ANON_KEY).casefold()}"
+
+
+def _workdir_key(session_id: "str | None") -> str:
+    """Cache key for a session's sandbox directory, private to this workspace.
+
+    Case-PRESERVING, unlike :func:`_session_key`: the directory name is derived
+    from the exact id, so ``Foo`` and ``foo`` are two entries here even where the
+    filesystem gives them one directory, and the ownership marker is what settles
+    that collision. The workspace prefix is the part that matters, because the
+    sandbox roots are per account while the id is client-chosen.
+    """
+    subject = current_workspace_subject()
+    return f"{subject}{_SESSION_KEY_SEP}{session_id or _ANON_KEY}"
+
+
+def _subject_of_session_key(key: str) -> str:
+    """The workspace a lifecycle key belongs to."""
+    return key.split(_SESSION_KEY_SEP, 1)[0]
 
 
 @contextlib.contextmanager
@@ -7359,13 +7393,18 @@ def _session_in_flight(session_id: "str | None"):
             # Outside the lock: deciding whether the tree holds files can take
             # seconds, and no other chat could start a call meanwhile. This
             # session stays closed, so nothing starts in the directory removed.
-            try:
+            def _drain() -> None:
                 for pending_id, pending_files in pending.items():
                     if _thread_exists(pending_id, unknown = True):
                         # Recreated while that call ran: this delete belongs to
                         # the chat that went, the folder is the new one's now.
                         continue
                     _remove_session_sandbox_locked(pending_id, pending_files)
+
+            try:
+                # In the workspace that queued the delete, not whichever account
+                # happened to be running the call that drains it.
+                run_in_workspace(_subject_of_session_key(key), _drain)
             finally:
                 with _sessions_free:
                     _removing_sessions.discard(key)
@@ -7398,8 +7437,8 @@ def _orphan_records_dir() -> str:
     from anything else.
     """
     try:
-        from utils.paths.storage_roots import studio_root
-        return os.path.join(str(studio_root()), "orphaned-projects")
+        from utils.paths.storage_roots import workspace_root
+        return os.path.join(str(workspace_root()), "orphaned-projects")
     except Exception:
         # Only if the studio home cannot be resolved at all: beside the sandbox
         # root, whose parent an administrator may have made read-only.
@@ -7644,7 +7683,9 @@ def finish_workspace_delete_when_idle(
         wait_for_sessions_idle([session], timeout = timeout)
         collect_orphaned_project_workspaces()
 
-    thread = threading.Thread(
+    # workspace_thread: the collection resolves sandbox_root() and the orphan
+    # records, which are per account, and a raw thread would sweep the owner's.
+    thread = workspace_thread(
         target = _wait_and_collect,
         name = "workspace-delete",
         daemon = True,
@@ -8113,16 +8154,29 @@ def _legacy_sandbox_root() -> str:
 def sandbox_root() -> str:
     """Root of the per-session tool sandboxes.
 
-    Under the studio home, so UNSLOTH_STUDIO_HOME keeps everything in one place
-    instead of leaving a stray ~/studio_sandbox. Falls back to the legacy path
-    only if the studio root cannot be resolved.
+    Under the authenticated workspace, so managed accounts cannot see or reuse
+    another account's tool files. The owner keeps the historical
+    ``UNSLOTH_STUDIO_HOME/sandbox`` path. Falls back to the legacy path only if
+    the workspace root cannot be resolved.
     """
     override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
     if override:
-        return os.path.expanduser(override)
+        root = os.path.expanduser(override)
+        try:
+            from utils.workspace_context import (
+                LEGACY_WORKSPACE_SUBJECT,
+                current_workspace_subject,
+                workspace_key,
+            )
+            subject = current_workspace_subject()
+            if subject != LEGACY_WORKSPACE_SUBJECT:
+                return os.path.join(root, "workspaces", workspace_key(subject))
+        except Exception:
+            pass
+        return root
     try:
-        from utils.paths.storage_roots import studio_root
-        return os.path.join(str(studio_root()), "sandbox")
+        from utils.paths.storage_roots import workspace_root
+        return os.path.join(str(workspace_root()), "sandbox")
     except Exception:
         return _legacy_sandbox_root()
 
@@ -8252,8 +8306,17 @@ def _legacy_session_dir(session_id: str) -> "str | None":
 
 
 def _migrate_one_legacy_session(root: str, name: str) -> None:
-    """Bring one session up from the legacy root, without waiting for the rest."""
+    """Bring one session up from the legacy root, without waiting for the rest.
+
+    Owner only. The legacy root is the single pre-upgrade sandbox, so it holds
+    the owner's sessions and nobody else's; moving a name out of it into a
+    managed account's root would hand that account the owner's files and take
+    them from the owner at the same time. Session ids reach here from the
+    caller, so the name to ask for is not a secret either.
+    """
     if _legacy_sandbox_migrated:
+        return
+    if current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT:
         return
     source = os.path.join(_legacy_sandbox_root(), name)
     if os.path.islink(source) or not os.path.isdir(source):
@@ -8474,7 +8537,11 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
-    key = session_id or _ANON_KEY
+    # Workspace-qualified: the sandbox roots are per account while the session id
+    # is client-chosen, so keyed by the id alone two accounts opening the same id
+    # concurrently both miss, both build a path under their own root, and the
+    # second write decides what the first one gets back.
+    key = _workdir_key(session_id)
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
@@ -8554,6 +8621,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             except OSError:
                 pass
         _workdirs[key] = workdir
+        # The local path, not a re-read: a concurrent resolve for the same key
+        # would otherwise hand this caller the directory the other one just
+        # stored.
+        return workdir
     return _workdirs[key]
 
 
@@ -8572,7 +8643,7 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         if project:
             return project
     root = sandbox_root()
-    cached = _workdirs.get(session_id or _ANON_KEY)
+    cached = _workdirs.get(_workdir_key(session_id))
     if (
         cached
         and not os.path.islink(cached)
@@ -8627,7 +8698,13 @@ def migrate_legacy_sandbox_in_background() -> "threading.Thread":
 
     def _run() -> None:
         try:
-            _migrate_legacy_sandbox(sandbox_root())
+            # Explicitly the owner's root, not this thread's. A bare thread does
+            # not inherit the workspace so it already resolved that way, but the
+            # destination of a whole-tree move should not rest on that.
+            run_in_workspace(
+                LEGACY_WORKSPACE_SUBJECT,
+                lambda: _migrate_legacy_sandbox(sandbox_root()),
+            )
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             logger.debug("legacy sandbox migration failed", exc_info = True)
 
@@ -8899,7 +8976,7 @@ def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
     routes find it too rather than leaving the files stranded until some later
     call happens to repair it.
     """
-    cached = _workdirs.get(session_id)
+    cached = _workdirs.get(_workdir_key(session_id))
     if not cached or cached not in _claimed_here:
         return None
     if os.path.islink(cached) or not os.path.isdir(cached):
@@ -8988,7 +9065,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # and `Foo` are one directory: without the marker the name is the only
         # evidence, and it names the other chat.
         return False
-    _workdirs.pop(session_id, None)
+    _workdirs.pop(_workdir_key(session_id), None)
     # Resolved BEFORE anything is removed: the record is named by the real path of the
     # spill directory, which cannot be derived once the tree is gone. Without this every
     # deleted chat that ever truncated output leaves one small file behind for good.
@@ -10381,6 +10458,16 @@ def _render_html_result(arguments: dict) -> str:
     )
 
 
+def _full_access_is_permitted() -> bool:
+    """Whether this caller may run the local code tools unsandboxed.
+
+    The installation owner only. Single-user installs have nobody else, so
+    Full access behaves exactly as it always has there.
+    """
+    from auth.storage import is_installation_owner
+    return is_installation_owner()
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -10417,6 +10504,16 @@ def execute_tool(
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    # Full access is the owner's switch, not every account's. python and terminal
+    # run as the backend OS user, so with the sandbox off an absolute path reads
+    # any file the server can reach: another workspace, or auth.db. Moving the
+    # working directory under the account's workspace is not a boundary once the
+    # path analysis and the blocklist are the things being turned off.
+    #
+    # Clamped here rather than in the routes because every loop reaches the tools
+    # through this one function, and clamped rather than refused so a managed
+    # account keeps its tools, sandboxed, instead of losing them.
+    disable_sandbox = bool(disable_sandbox) and _full_access_is_permitted()
     # Set unconditionally, so a value from an earlier call on this thread can never be
     # read by a later one. That is what makes a try/finally reset unnecessary here.
     _REQUEST_CONTEXT_TOKENS.set(context_tokens)
@@ -10835,7 +10932,11 @@ def _search_knowledge_base_with_budget(
             release_slot()
 
     try:
-        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
+        workspace_thread(
+            target = search,
+            name = "rag-tool-search",
+            daemon = True,
+        ).start()
     except Exception:
         release_slot()
         raise
@@ -14856,8 +14957,8 @@ def _spill_records_dir() -> str:
     beside the other records this file already keeps outside the sandboxes.
     """
     try:
-        from utils.paths.storage_roots import studio_root  # noqa: PLC0415
-        return os.path.join(str(studio_root()), "tool-output-records")
+        from utils.paths.storage_roots import workspace_root  # noqa: PLC0415
+        return os.path.join(str(workspace_root()), "tool-output-records")
     except Exception:
         return os.path.join(
             os.path.dirname(os.path.realpath(sandbox_root())), "tool-output-records"

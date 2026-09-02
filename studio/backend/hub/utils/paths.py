@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import re
 import sys
-import tempfile
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -21,6 +20,7 @@ from utils.paths.path_utils import wsl_automount_root
 # One policy, defined in utils.paths.storage_roots. The copy that used to live here
 # drifted: a BOM'd settings.json was honoured by one side and dropped by the other (#9748).
 from utils.paths.storage_roots import (
+    workspace_root,
     lmstudio_model_dirs,
     ollama_model_dirs,
     well_known_model_dirs,
@@ -71,7 +71,7 @@ def cache_root() -> Path:
 
 
 def assets_root() -> Path:
-    return studio_root() / "assets"
+    return workspace_root() / "assets"
 
 
 def datasets_root() -> Path:
@@ -87,15 +87,16 @@ def recipe_datasets_root() -> Path:
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return workspace_root() / "outputs"
 
 
 def exports_root() -> Path:
-    return studio_root() / "exports"
+    return workspace_root() / "exports"
 
 
 def tmp_root() -> Path:
-    return Path(tempfile.gettempdir()) / "unsloth-studio"
+    from utils.paths.storage_roots import tmp_root as shared_tmp_root
+    return shared_tmp_root()
 
 
 def ensure_dir(path: Path) -> Path:
