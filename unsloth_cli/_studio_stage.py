@@ -72,7 +72,13 @@ def _copy_command(source: Path, destination: Path) -> Optional[list[str]]:
 def clone_tree(source: Path, destination: Path) -> None:
     command = _copy_command(source, destination)
     if command is not None:
-        result = subprocess.run(command, capture_output = True, text = True)
+        result = subprocess.run(
+            command,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+        )
         if result.returncode == 0:
             return
         shutil.rmtree(destination, ignore_errors = True)
@@ -136,6 +142,8 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.Co
         env = env,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = PROBE_TIMEOUT_SECONDS,
     )
 
