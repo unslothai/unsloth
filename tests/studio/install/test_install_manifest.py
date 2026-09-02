@@ -270,6 +270,7 @@ def test_platform_gated_lines_are_skipped_when_the_marker_does_not_apply(tmp_pat
 
 def test_missing_requirements_matches_on_distribution_not_import_name(tmp_path):
     # studio.txt lists PyJWT / python-docx / pymupdf, whose import names are jwt / docx / fitz, so matching on imports
+    # would look missing.
     req = tmp_path / "studio.txt"
     req.write_text("pytest\n", encoding = "utf-8")
     assert im.missing_requirements(req) == []
@@ -370,7 +371,8 @@ def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_ro
 
 
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
-    # The --local dev path: an edited studio.txt must re-run the dependency pass, not sit behind setup.sh's "up to
+    # The --local dev path: an edited studio.txt must re-run the dependency pass, not sit behind setup.sh's "up to date"
+    # fast path.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     (req_root / "studio.txt").write_text("pytest\nrich\n", encoding = "utf-8")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
@@ -413,6 +415,7 @@ def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_ro
 
 def test_recorded_no_torch_tolerates_a_hand_edited_manifest(install_root, req_root):
     # Manifests written before the key existed must keep verifying, and must report None rather than False so callers
+    # fall back to their own detection instead of silently switching an install out of no-torch mode.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     path = install_root / im.MANIFEST_NAME
     payload = json.loads(path.read_text(encoding = "utf-8"))

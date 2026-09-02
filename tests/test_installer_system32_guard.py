@@ -181,7 +181,7 @@ _PS_STUBS = (
     'function step { param($Label, $Value, $Color) Write-Host "STEP:$Label|$Value" }\n'
     'function substep { param($Message, $Color) Write-Host "SUBSTEP:$Message" }\n'
     'function Exit-InstallFailure { param($Message, $Code = 1) Write-Host "FAILED:$Message"; exit 42 }\n'
-    # install.ps1 prints through its UTF-8 stdout sink;
+    # install.ps1 prints through its UTF-8 stdout sink; the harness only needs the text.
     "function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }\n"
     "$InSystemDir = $true\n"
 )
@@ -583,7 +583,8 @@ _RELOCATED = r"C:\Users\me\.unsloth"
         ["unsloth", "studio", "--api-only"],
         ["unsloth", "studio", "provision-desktop-auth"],
         ["unsloth", "studio", "desktop-capabilities", "--json"],
-        # The command that upgrades a desktop too old to set the marker;
+        # The command that upgrades a desktop too old to set the marker; without it such a user gets a working backend
+        # and no way to update from the tray.
         ["unsloth", "studio", "update"],
         ["unsloth", "studio", "--help"],
     ],
@@ -773,7 +774,8 @@ def test_cli_guard_fails_closed_when_every_home_is_a_system_directory():
     assert colour == "red"
     assert chdir_calls == []
     assert message is not None
-    # This one is read in the desktop's logs, not a terminal, so it must not tell
+    # This one is read in the desktop's logs, not a terminal, so it must not tell the reader to cd somewhere or claim
+    # they used "Run as administrator".
     assert "Run as administrator" not in message
 
 
@@ -1161,6 +1163,7 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         "",
         r".\plugins",
         # setuptools registers this for an editable namespace install and its own path hook accepts it by exact string;
+        # it names no directory.
         "__editable__.unsloth-2026.8.15.finder.__path_hook__",
         # A relative archive: importable, so it moves with the process.
         "modules.zip",
@@ -1203,6 +1206,7 @@ def test_cli_guard_writes_back_only_an_expansion_the_reader_agrees_with():
             "LOCALAPPDATA": r"C:\Users\me\AppData\Local",
             "HF_HUB_CACHE": r"%LOCALAPPDATA%\hub",
             # One pass leaves another reference, but it already names a drive, so it means the same folder from
+            # anywhere.
             "HF_ASSETS_CACHE": r"C:\cache\%UNSET%\assets",
         },
         environ_out = environ_out,

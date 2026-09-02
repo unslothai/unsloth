@@ -166,7 +166,7 @@ def test_vllm_worker_lora_manager_class(tag: str):
     """vllm.lora.worker_manager.WorkerLoRAManager -- unsloth-zoo subclasses it; signature drives old_init vs new_init."""
     src = _fetch_text("vllm-project/vllm", tag, "vllm/lora/worker_manager.py")
     if src is None:
-        # Some vLLM versions split this;
+        # Some vLLM versions split this; check fallback locations.
         alt = _fetch_text("vllm-project/vllm", tag, "vllm/v1/worker/lora_model_runner_mixin.py")
         if alt and ("WorkerLoRAManager" in alt or "LoRAModelRunnerMixin" in alt):
             return

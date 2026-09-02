@@ -45,6 +45,7 @@ def _load_pid_alive(platform: str, fake_run = None):
 
 
 # `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would let os.kill(pid, 0) come back one
+# function along and still pass.
 @pytest.mark.parametrize("func", ["stop", "_signal_stop"])
 def test_stop_does_not_use_bare_oskill_liveness_probe(func):
     """The signalling path must not call os.kill(pid, 0) -- WinError 87 on Windows."""
@@ -72,7 +73,7 @@ def test_stop_does_not_use_bare_oskill_liveness_probe(func):
 def test_pid_alive_helper_is_defined_and_used_by_stop():
     assert "def _pid_alive(" in _SOURCE, "_pid_alive helper missing"
     assert "_pid_alive(pid)" in _func_source("stop"), "stop() must use _pid_alive"
-    # The kill itself moved into _signal_stop;
+    # The kill itself moved into _signal_stop; keep both ends of the path pinned.
     assert "def _signal_stop(" in _SOURCE, "_signal_stop helper missing"
     assert "taskkill" in _func_source("_signal_stop")
     # The helper must special-case Windows via tasklist (os.kill(pid,0) is invalid there).

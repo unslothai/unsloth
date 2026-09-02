@@ -475,7 +475,10 @@ async ([steps, stepPx, settleMs]) => {
 }
 """
 
-# A wheel gesture of fixed length traverses a fixed number of pixels, so it is comparable across sizes -- and
+# A wheel gesture of fixed length traverses a fixed number of pixels, so it is comparable across sizes -- and, measured,
+# it turns out to be nearly free at any size, because the layout was already done at mount. That is a real answer, but
+# it is only half of "scrolling". The other half is the jump: dragging the scrollbar or hitting Home moves the viewport
+# to a region the compositor has nothing for, which is what a user does when they go looking for an earlier answer.
 JUMP_JS = """
 async (settleMs) => {
   const api = window.__heavyThread;
@@ -749,6 +752,8 @@ def long_task_summary(page) -> dict[str, float | None]:
     """CHROMIUM-ONLY. `supported` is the point: without it, an engine with no Long Tasks API
     reports zero jank in exactly the same shape as an engine that had none."""
     # PerformanceObserver callbacks are delivered on a later task, so the entry for the long task at the tail of an
+    # action is not in the array yet. Yield once before reading, or the worst entry is silently dropped -- flakily, and
+    # most often at large sizes where that tail task is longest.
     got = page.evaluate(
         """async () => {
             await new Promise((r) => setTimeout(r, 0));
@@ -927,10 +932,12 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
         for key in sorted(numeric_keys):
             merged[key] = median([r.get(key) for r in rows])
         # Values that are not numbers are proofs the action really happened, not timings, so the last repetition's is
+        # kept verbatim rather than aggregated.
         for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
         # The headline value from each repetition, unaggregated, so a median can be checked against the spread it came
+        # from rather than taken on trust.
         merged["per_repetition"] = [r.get(HEADLINE[action][0]) for r in rows]
         out[action] = merged
     return out
@@ -983,12 +990,15 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Radix unmounts collapsed content, so a thread of closed tool cards carries no result panes at all.
         result["tool_triggers_expanded"] = page.evaluate("() => window.__heavyThread.expandTools()")
         # Single-selector gates. counts() walks every element in the document, so polling it per frame makes seeding
+        # superlinear in the thing being seeded.
         page.wait_for_function(
             EXPANDED_PANES_GATE_JS,
             arg = max(1, result["tool_triggers_expanded"]),
             timeout = SEED_TIMEOUT_MS,
         )
         # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting code blocks gates
+        # nothing. Wait for the token count to stop moving instead: unfinished highlighting would otherwise land in the
+        # keystroke window, the first action measured.
         wait_for_highlighting_settled(page, SEED_TIMEOUT_MS)
         result["counts"] = page.evaluate("window.__heavyThread.counts()")
         result["viewport"] = page.evaluate("window.__heavyThread.viewportMetrics()")
@@ -1050,13 +1060,15 @@ def run() -> dict:
             launcher = getattr(p, engine)
             kwargs = {"headless": os.environ.get("SMOKE_HEADLESS", "1") == "1"}
             # Chromium-only flags. Passing them to Firefox or WebKit is not "ignored", it is a launch failure, which
+            # would read as "this engine is unavailable".
             if engine == "chromium":
                 kwargs["args"] = chromium_launch_args()
             browser = launcher.launch(**kwargs)
             results["by_engine"][engine] = {"version": browser.version, "by_size": {}}
             context = browser.new_context(viewport = {"width": 1440, "height": 900})
             context.add_init_script(RECORDER_INIT)
-            # Anchored at the origin so it cannot swallow vite's own module URLs, which live
+            # Anchored at the origin so it cannot swallow vite's own module URLs, which live under src/features/**/api/
+            # and would otherwise match a bare "/api/" pattern.
             context.route(
                 re.compile(rf"^{re.escape(BASE)}/api/"),
                 lambda route: route.fulfill(
@@ -1261,8 +1273,10 @@ def _wall_floor(action: str):
     return _floor_from(action, "paint_waits") if override is None else override
 
 
-# Growth axes: the whole point of the harness is that these rise with content.
-# The third field is HOW MANY double-rAF waits the metric is clocked across;
+# Growth axes: the whole point of the harness is that these rise with content. The third field is HOW MANY double-rAF
+# waits the metric is clocked across; each one carries its own ~33ms vsync floor, and left in, that floor compresses
+# every ratio towards 1 and lets a real regression sit under the threshold. `menu open+close ms` is the sum of two
+# independently floored timings, so it carries two.
 GROWTH_AXES = tuple(
     [(f"{a} longest stall ms", _action(a, "longest_stall_ms"), 0) for a in ACTIONS]
     + [(f"{a} worst frame ms", _action(a, "worst_frame_ms"), 0) for a in ACTIONS]
@@ -1289,6 +1303,8 @@ GROWTH_AXES = tuple(
         ("jump painted ms", _action("jump", "paintedMs"), 1),
         ("jump settle ms", _action("jump", "settleMs"), _floor_from("jump", "paint_waits")),
         # Also NOT paint_waits: MENU_JS awaits no paint at all, and its two floors come from settle() reading the
+        # pre-MutationObserver state on entry, once for open and once for close. The window count is zero here and would
+        # remove a floor that is really there.
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
         # `paintWaits`: see REOPEN_OBSERVATION_FLOOR above. Leaving it at 0 is still wrong, that
@@ -1297,6 +1313,7 @@ GROWTH_AXES = tuple(
     ]
 )
 # A ratio at or below this from the smallest size to the largest means the axis did not respond to twelve times the
+# content. That is not a flat curve, it is an axis that is not measuring the thing being varied.
 DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5"))
 # cannot be formed against zero, so DISCRIMINATION_RATIO does not apply to these axes at all and
 # What a counter that starts at zero has to REACH before its rise counts as an answer.
@@ -1317,9 +1334,10 @@ def resolve_floor(floored, row: dict) -> float:
     not JSON serializable`, which failed every complete run AFTER all the measurements were taken.
     Nothing in the unit tests caught it because none of them serialise the report.
     """
-    # NOT int().
-    # `summarise` takes a median across repetitions, so an even-repetition run whose repetitions paid 1 and 2 waits
-    # reports 1.5, and truncating that to 1 left half a vsync floor in the wall-clock axis and published a distorted
+    # NOT int(). `summarise` takes a median across repetitions, so an even-repetition run whose repetitions paid 1 and 2
+    # waits reports 1.5, and truncating that to 1 left half a vsync floor in the wall-clock axis and published a
+    # distorted ratio. The documented two-repetition configurations are exactly the ones that produce halves. A float
+    # serialises fine.
     value = floored(row) if callable(floored) else floored
     return value if isinstance(value, (int, float)) else 0
 
@@ -1364,6 +1382,7 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
         for name, pick, floored in GROWTH_AXES:
             small, large = growth(cells, pick, floored, results["sizes"])
             # Resolved here, once, so what lands in the JSON is the count that was actually subtracted at each end
+            # rather than the thing that computes it.
             floor_counts = [
                 resolve_floor(floored, cells.get(str(size), {}))
                 for size in (results["sizes"][0], results["sizes"][-1])
@@ -1429,9 +1448,11 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 }
                 continue
             ratio = round(large / small, 2)
-            # The noise floor applies to a counter whatever its baseline.
-            # A dropped-frame count going 1 -> 2 is a ratio of 2.0 and cleared DISCRIMINATION_RATIO, and since
-            # harness_failures accepts any single discriminating axis, that one incidental frame could carry the CI
+            # The noise floor applies to a counter whatever its baseline. A dropped-frame count going 1 -> 2 is a ratio
+            # of 2.0 and cleared DISCRIMINATION_RATIO, and since harness_failures accepts any single discriminating
+            # axis, that one incidental frame could carry the CI smoke while every latency axis was flat. A ratio is
+            # only meaningful once there are enough events for the ratio to be about the content rather than about one
+            # frame either way.
             noisy_counter = name in COUNTER_AXES and large < ZERO_BASED_MIN_RISE
             per_axis[name] = {
                 "small": small,
@@ -1542,6 +1563,8 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             counts = row["counts"]
             plan = row["plan"]
             # A request reaching the server is a round trip to another process inside a region being timed, once per
+            # message. A warning storm is the same cost via the console channel. Both scale with content, so both would
+            # forge the curve.
             if row["stray_api_requests"]:
                 urls = row.get("stray_api_urls") or []
                 named = ", ".join(urls) if urls else "(urls not recorded)"
@@ -1694,6 +1717,8 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     )
 
         # A modal menu puts the body on the modal layer and a non-modal one does not, and the two cost wildly different
+        # amounts. Either is a legitimate tree, but a run that mixes them across sizes is comparing columns measured on
+        # different mechanisms.
         layers = {
             results["by_engine"][engine]["by_size"][str(size)]
             .get("actions", {})

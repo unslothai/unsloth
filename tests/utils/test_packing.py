@@ -249,7 +249,7 @@ def test_seq_idx_from_cu_seqlens_handles_trailing_pad():
 
 
 def test_hybrid_varlen_metadata_prefers_packed_seq_lengths():
-    # A competing position_ids would segment [0, 3, 6];
+    # A competing position_ids would segment [0, 3, 6]; packed_seq_lengths must win.
     kwargs = {
         "input_ids": torch.zeros(1, 6, dtype = torch.long),
         "packed_seq_lengths": torch.tensor([2, 1, 3], dtype = torch.int32),
@@ -1331,7 +1331,8 @@ def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
 
 
 def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
-    # A passed collator must still be named as the cause; the env-var fallback is only for
+    # A passed collator must still be named as the cause; the env-var fallback is only for the case where nothing else
+    # blocks packing.
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -1454,6 +1455,7 @@ def _make_stub_causal_lm(
         model = model,
         lm_head = lm_head,
         # Mistral's `elif self.training:` mask branch is only reached without xformers, so omitting this passes locally
+        # but AttributeErrors on CI.
         training = True,
         config = SimpleNamespace(
             output_attentions = False,
@@ -1501,7 +1503,7 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     )
 
     got = seen["labels"].reshape(-1).tolist()
-    # slot 3 (first token of doc 2) is dropped;
+    # slot 3 (first token of doc 2) is dropped; slot 0 is the harmless redirect.
     assert got == [-100, 1, 2, -100, 4, 5, 6, 7], got
     assert labels.reshape(-1).tolist() == list(range(seq))
 

@@ -174,7 +174,8 @@ def _api_payload(path: str, query: dict[str, list[str]], *, full_footprint: bool
                 checkpoint_bytes = CHECKPOINT_BYTES,
             )
         return base
-    # Nonessential background probes are allowed to settle to an empty object;
+    # Nonessential background probes are allowed to settle to an empty object; the test fails on browser exceptions or a
+    # missing selector row below.
     return {}
 
 

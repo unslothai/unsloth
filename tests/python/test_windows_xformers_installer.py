@@ -78,9 +78,10 @@ SELECTION_CASES = [
     ("2.9.0+cu126", "0.0.33.post1"),
     ("2.8.0+cu129", "0.0.32.post2"),
     ("2.7.1+cu128", "0.0.31.post1"),
-    # 0.0.30 predates the abi3 switch and has no cp313 wheel;
+    # 0.0.30 predates the abi3 switch and has no cp313 wheel; the row is deliberately gone.
     ("2.7.0+cu128", ""),
     # No cu130 build of xFormers exists for torch 2.8 or earlier, and no cu118 / cu124 win_amd64 build exists at all --
+    # refuse rather than serve a neighbour.
     ("2.8.0+cu130", ""),
     ("2.9.0+cu118", ""),
     ("2.10.0+cu124", ""),
@@ -89,7 +90,8 @@ SELECTION_CASES = [
     # whose notes state such builds are "compatible with any later version".
     ("2.11.0+cu130", "0.0.35"),
     ("2.13.0+cu128", "0.0.35"),
-    # And so does every release above the floor that the table cannot list, because they
+    # And so does every release above the floor that the table cannot list, because they are published after this script
+    # ships. Refusing them left supported builds with no xFormers at all.
     ("2.10.1+cu130", "0.0.35"),
     ("2.11.1+cu128", "0.0.35"),
     ("2.12.4+cu126", "0.0.35"),
@@ -231,7 +233,8 @@ def test_installer_never_installs_an_unpinned_xformers():
     source = _source()
     for match in re.finditer(r'"xformers[^"]*"', source):
         spec = match.group(0)
-        # A wheel FILENAME is not a spec: it names one exact file and cannot resolve to
+        # A wheel FILENAME is not a spec: it names one exact file and cannot resolve to anything else, which is the
+        # whole point of preferring it.
         if spec.endswith('.whl"'):
             continue
         assert spec == '"xformers==$_xfVersion"', f"unpinned xFormers spec in install.ps1: {spec}"
@@ -319,7 +322,8 @@ def test_the_already_installed_check_uses_the_wheels_own_build_target():
         "Write-Output \"[$(Get-XformersExpectedTorchBuild -Version '0.0.34' "
         "-TorchVersion '2.10.0+cu128' -CudaTag 'cu128')]\"\n"
     )
-    # The stable-ABI wheel reports the floor release;
+    # The stable-ABI wheel reports the floor release; an exact-era wheel reports the torch it was pinned to, which is
+    # the resident one.
     assert out.splitlines() == ["[2.10.0+cu130]", "[2.10.0+cu128]"]
 
 

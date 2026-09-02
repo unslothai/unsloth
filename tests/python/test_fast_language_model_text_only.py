@@ -63,6 +63,7 @@ def _param_default(method, name):
 
 def _load_text_only_namespace():
     # Exec the _utils text-only helpers into one namespace (no unsloth import), in dependency order so cross-references
+    # resolve.
     source = _source(UTILS_PATH)
     import transformers
     from packaging.version import Version
@@ -121,7 +122,7 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastLanguageModel", "from_pretrained")
 
-    # text_only defaults False (opt-in);
+    # text_only defaults False (opt-in); both FastModel delegations forward it.
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 

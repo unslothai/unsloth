@@ -296,6 +296,7 @@ def run_config(
         "transformer_cache": spec.get("transformer_cache"),
         "transformer_quant": spec.get("transformer_quant"),
         # On MiniMax-H3 the conditioner precision is a backend default, so "the released bfloat16 encoder" is a spec
+        # value rather than the absence of one.
         "text_encoder_quant": spec.get("text_encoder_quant"),
     }
     t0 = time.monotonic()

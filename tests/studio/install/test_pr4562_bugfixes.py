@@ -1023,7 +1023,7 @@ class TestMacOSMetalBuildLogic:
         mock_bin = tmp_path / "mock_bin"
         mock_bin.mkdir()
         calls_file = tmp_path / "cmake_calls.log"
-        # cmake mock: configure always succeeds;
+        # cmake mock: configure always succeeds; first --build fails, rest succeed.
         cmake_script = mock_bin / "cmake"
         cmake_script.write_text(
             textwrap.dedent(f"""\

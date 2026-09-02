@@ -114,7 +114,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     loop_body = _poll_loop_body(wait_run)
     assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
     assert ".status" in loop_body and ".conclusion" in loop_body, wait_run
-    # Not finished yet is "keep waiting";
+    # Not finished yet is "keep waiting"; finished but not `success` is a refusal.
     assert re.search(r'!=\s*"completed"', loop_body), wait_run
     assert re.search(r'!=\s*"success"', loop_body), wait_run
     # A loop that never sleeps is a spin, and one that never breaks never ends.
@@ -124,6 +124,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index("Publish release assets")
     # And it has to clear before the assets are pulled, or the download races the legs and publish-release dies on
+    # artifacts that do not exist yet.
     download = next(
         index
         for index, step in enumerate(publish["steps"])
@@ -262,7 +263,8 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
     # Completeness is judged over the four public downloads, in whichever naming scheme the release was built with.
-    # tests/security/test_desktop_updater_pointer.py executes the classification;
+    # tests/security/test_desktop_updater_pointer.py executes the classification; these only pin that all three steps
+    # share it.
     for step_name in (
         "Check for desktop bundles",
         "Validate updater metadata",
@@ -272,7 +274,8 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
         for suffix in ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe"):
             assert suffix in run, (step_name, suffix)
         assert "Unsloth-Desktop" in run, step_name
-        # Every release published before the rename carries the version in each filename;
+        # Every release published before the rename carries the version in each filename; refusing those would make the
+        # workflow unusable on all of them.
         assert "version" in run, step_name
 
     for name in (

@@ -424,6 +424,9 @@ say({ openMs: done.openMs, closeMs: done.closeMs, total: done.open_close_ms });
 
 def test_opening_the_menu_costs_a_whole_double_raf_even_when_it_is_free() -> None:
     # settle() reads `open` before the MutationObserver callback that would have updated it has been delivered, so its
+    # first true comparison is on the far side of an __nextPaint(). Nothing is wrong with that -- it is what makes the
+    # number a wall-clock one -- but it means the metric carries a floor, and the floor has to be subtracted before a
+    # ratio.
     got = run_node(MENU_BODY, MENU_SOURCES)
     assert got["openMs"] >= 32, got
 

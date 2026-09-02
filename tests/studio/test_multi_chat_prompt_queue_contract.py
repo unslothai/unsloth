@@ -188,6 +188,7 @@ def test_composer_only_queues_behind_the_current_chat():
     )
     assert "startHydratedPromptQueue(" in queue_composer_text
     # Read into a local first: the send guard arms on the untrimmed value too, since that is what a late DOM write
+    # carries.
     assert "const cleared = aui.composer().getState().text" in queue_composer_text
     assert "cleared.trim() !== queuedPrompt" in queue_composer_text
     assert "promptQueueStartPendingRef.current" in THREAD

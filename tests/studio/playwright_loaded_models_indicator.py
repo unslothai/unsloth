@@ -158,6 +158,7 @@ class Runtime:
         self.status_reads = 0
         self.unloads: list[str] = []
         # Routes deliberately left unanswered, kept so teardown can settle them instead of cancelling them out from
+        # under the handler.
         self.parked: list = []
 
 
@@ -166,7 +167,7 @@ def install_routes(context, state: Runtime) -> None:
         def handler(route):
             state.status_reads += 1
             if key in state.hang:
-                # Accept the connection and never answer: the read must time
+                # Accept the connection and never answer: the read must time out rather than wedge the card forever.
                 state.parked.append(route)
                 return
             route.fulfill(
@@ -225,6 +226,7 @@ def rows(page) -> list[str]:
 
 def card_text(page) -> str:
     # Bounded and absence-tolerant rather than count()-then-read, which has the same race as rows() when the card is
+    # mid-change.
     try:
         return page.locator(CARD).locator("xpath=ancestor::div[3]").first.inner_text(timeout = 5000)
     except Exception:
@@ -255,6 +257,7 @@ def boot(
     page.reload(wait_until = "domcontentloaded")
     page.wait_for_timeout(SETTLE_MS // 2)
     # The card is deliberately hidden on /login, so an auth slip would make every "no card" check pass for the wrong
+    # reason.
     path = page.evaluate("location.pathname")
     if path.startswith(("/login", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {path}")
@@ -587,6 +590,7 @@ def run(page, state: Runtime) -> None:
     # The expanded grip and the collapsed pill share one drag sentinel, but only the pill has a click to consume it.
     # Drag by the grip, collapse, then click the pill ONCE: without the sentinel being dropped when a click-less handle
     # finishes its drag, that first click reads someone else's drag and refuses to expand, so the user has to click
+    # twice. No reload in between, since a reload would clear the in-memory flag and hide the bug.
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     grip = page.locator(HANDLE).first.bounding_box()
@@ -703,7 +707,7 @@ def run(page, state: Runtime) -> None:
         state.status_reads <= 1,
         f"{state.status_reads} status reads while off",
     )
-    # What the old default wrote when it was turned down;
+    # What the old default wrote when it was turned down; still off.
     boot(page, state, seed = {SHOW_KEY: "false"}, show = False)
     check("an older explicit false still hides the card", page.locator(CARD).count() == 0)
 

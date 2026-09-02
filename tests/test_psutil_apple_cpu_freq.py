@@ -117,7 +117,7 @@ class TestFreqRangeFromEntries:
         )
 
     def test_renumbered_tables_still_found(self):
-        # M5 renumbered the indexes;
+        # M5 renumbered the indexes; classification is by peak, not by index.
         entries = [{"voltage-states13-sram": _M4_PERF_TABLE}]
         assert IF._apple_cpu_freq_range_from_ioreg_entries(entries) == (1050.0, 4512.0)
 
@@ -277,7 +277,8 @@ class TestPatchApplication:
             psutil.cpu_freq()
 
     def test_percpu_exception_is_covered_too(self, monkeypatch, fake_m4):
-        # macOS has no per-core clock, so psutil's own percpu answer there is a one-element list;
+        # macOS has no per-core clock, so psutil's own percpu answer there is a one-element list; the stand-in keeps
+        # that shape for both call forms.
         import psutil
 
         def boom(percpu = False):
@@ -407,6 +408,7 @@ class TestOnRealAppleSilicon:
             sample = reader()
         except Exception as exception:
             # psutil declined and the tables were unreadable too, so the wrapper correctly re-raised rather than
+            # inventing a number.
             pytest.skip(f"no CPU clock available on this host ({exception})")
         if sample is None:
             pytest.skip("psutil reports the clock as undeterminable on this host")

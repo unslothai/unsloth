@@ -486,6 +486,7 @@ def real_collator_classes():
     except Exception as exc:  # noqa: BLE001 - skip on any import failure
         pytest.skip(f"full unsloth import unavailable: {exc!r}")
     # On Apple Silicon MLX, unsloth.trainer is a shim and this name is a placeholder whose __call__ raises, not the zoo
+    # subclass under test.
     if not issubclass(UnslothVisionDataCollator, ZooBase):
         pytest.skip("MLX placeholder collator, not the torch subclass")
     return UnslothVisionDataCollator, ZooBase
@@ -596,6 +597,7 @@ def test_vision_collator_thread_safety(real_collator_classes, monkeypatch):
                 park = True
         if park:
             # Hold the window open: unsynchronised code lets every follower read the temporary None and skip formatting
+            # entirely.
             leader_parked.set()
             release_leader.wait(10)
         return examples

@@ -94,6 +94,7 @@ if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
 """
     # The whole verdict is the single RESULT line this script prints, so a pwsh that aborts at startup would read as a
+    # screen that reached the opposite conclusion.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -120,7 +121,8 @@ def test_nothing_found_stays_nothing(tmp_path):
 
 
 def test_an_unreadable_interpreter_is_not_treated_as_bad(tmp_path):
-    # A probe that cannot run is not evidence of a bad version, and refusing it
+    # A probe that cannot run is not evidence of a bad version, and refusing it would send a working machine down the
+    # install path for no reason.
     missing = tmp_path / "does-not-exist"
     skip_block, screen_block = _blocks()
     script = f"""
@@ -256,7 +258,8 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    # The caller scrapes the resolver's chosen minor out of stdout;
+    # The caller scrapes the resolver's chosen minor out of stdout; a crashed pwsh leaves nothing to scrape and would
+    # fail as if Find-CompatiblePython went silent.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,

@@ -380,6 +380,7 @@ def test_finally_cleanup_on_normal_completion():
 
 def test_finally_cleanup_on_mid_stream_exception():
     # OSError mid-stream: the exact case where pre-fix `background=BackgroundTask(...)` was skipped and leaked the
+    # registry entry.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     ev = threading.Event()
@@ -392,7 +393,7 @@ def test_finally_cleanup_on_mid_stream_exception():
 
 
 def test_finally_cleanup_on_aclose():
-    # Starlette calls aclose() on client disconnect;
+    # Starlette calls aclose() on client disconnect; the finally block must run.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     ev = threading.Event()
@@ -535,6 +536,7 @@ def test_streaming_generators_check_cancel_event_in_loop():
 
 def test_audio_input_stream_offloads_blocking_next_to_thread():
     # Guards against regressing to `for chunk_text in audio_input_generate():`, which blocks the event loop per whisper
+    # chunk and stalls POST /api/inference/cancel.
     audio = None
     for fn in ast.walk(_TREE):
         if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "audio_input_stream":
@@ -692,6 +694,7 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
             # Accumulate: an existence claim, and the cleanup sits in a nested try whose own finally only unregisters
+            # the swap-gate entry.
             found_finally_cleanup = found_finally_cleanup or (
                 "not completed" in final_src
                 and "not cancel_event.is_set()" in final_src
@@ -717,6 +720,7 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
 
 def test_stream_chunks_cancel_branch_resets_backend_state():
     # The cancel branch must call backend.reset_generation_state() to flush GPU/KV-cache state, else cancel-via-POST
+    # leaves the subprocess dirty.
     fn = None
     top = None
     for n in ast.walk(_TREE):
@@ -904,6 +908,7 @@ def test_generate_stream_stays_responsive_under_blocking_next():
 
 def test_audio_stream_stays_responsive_under_blocking_next():
     # Assert the pre-fix `for chunk in audio_input_generate()` pattern blocks the event loop, then confirm the post-fix
+    # pattern exits promptly.
     cancel_event = threading.Event()
 
     def _audio_gen():

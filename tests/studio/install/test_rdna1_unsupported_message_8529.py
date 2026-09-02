@@ -539,6 +539,7 @@ class TestAdviceIsNotEmittedForRdna1:
     ):
         src = _normalised(path)
         # The "was found" guard: without it a renamed branch makes both finds -1 and -1 < -1 is False, so the ordering
+        # claim would pass vacuously.
         assert unsupported_marker in src, f"{path.name}: unsupported arm not found"
         assert unknown_marker in src, f"{path.name}: arch-unknown arm not found"
         assert src.index(unsupported_marker) < src.index(unknown_marker)

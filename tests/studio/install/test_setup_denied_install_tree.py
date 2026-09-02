@@ -78,7 +78,7 @@ def test_every_denial_route_reports_instead_of_proceeding():
     # The junction path replaces this destination, so it needs its own stop.
     assert "$destState = Get-PathState -Path $LlamaCppDir" in SETUP_PS1
     assert '$destState -eq "Denied"' in SETUP_PS1
-    # Denied counts as surviving removal;
+    # Denied counts as surviving removal; collapsing it would junction over it.
     assert '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' in SETUP_PS1
     # Each route above is pinned by name, so a swap cannot hide under the floor.
     # Floor, not an exact count:
@@ -124,7 +124,8 @@ def test_ownership_guard_distinguishes_denied_from_unowned():
         in guard
     )
     assert '$markerState -eq "Denied"' in guard
-    # The old wording blamed ownership, which is unknowable while the tree is unreadable;
+    # The old wording blamed ownership, which is unknowable while the tree is unreadable; it must stay for the
+    # genuinely-unowned case only.
     assert "is not marked as an Unsloth-owned $Label" in guard
     # Both stops stay gated, so default-home installs behave exactly as before.
     assert guard.count("$StudioHomeIsCustom -and") >= 3

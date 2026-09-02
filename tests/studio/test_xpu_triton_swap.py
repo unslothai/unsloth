@@ -47,6 +47,7 @@ def _load_real_index_env_scrub():
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
         # _install_env_for_cmd calls both of these, and they resolve from this namespace at CALL time, so omitting
+        # either only shows up as a NameError once a test actually invokes the scrub.
         ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
@@ -82,13 +83,14 @@ def _load(
 
     mod = types.ModuleType("_stack_under_test")
     src = STACK.read_text(encoding = "utf-8")
-    # Only these helpers are needed;
+    # Only these helpers are needed; importing the whole module would run the installer.
     start = src.index("def _installed_torch_version_label() -> str:")
     end = src.index("def _ensure_cpu_torch() -> None:")
     body = src[start:end]
     assert "_ensure_xpu_triton" in body, "extraction lost the swap"
     assert "_ensure_venv_pip" in body, "extraction lost the pip bootstrap"
-    # The WARN assertions need the stub wired to the name the slice actually calls;
+    # The WARN assertions need the stub wired to the name the slice actually calls; a rename would leave them silently
+    # dead.
     assert "_safe_print(" in body, "extraction lost the print helper the WARN stub hooks"
 
     import glob as _glob
@@ -158,6 +160,7 @@ def _load(
 
     def fake_pip_install(label, *args, **kw):
         # The real one exits the process via run(), which is what keeps the completion manifest unwritten, so the stub
+        # raises SystemExit rather than returning.
         log.append("INSTALL")
         if not install_ok:
             raise SystemExit(1)
@@ -191,6 +194,7 @@ def _load(
         "pip_install": fake_pip_install,
         "_red": lambda s: s,
         # _safe_print, not print: the slice calls it by name, so stubbing "print" would leave _safe_print undefined at
+        # exec time.
         "_safe_print": (
             lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None
         ),
@@ -236,7 +240,8 @@ class TestXpuTritonSwap:
             has_pip = False,
             ensurepip_works = False,
         )
-        # ensurepip failed, so it tries a real pip install;
+        # ensurepip failed, so it tries a real pip install; that fails too, and the swap must warn rather than uninstall
+        # with nothing to install from.
         assert "BOOTSTRAP" in log
         assert "UNINSTALL" not in log
 
@@ -332,6 +337,7 @@ class TestTheInstalledWheelIsThePin:
     @pytest.mark.parametrize("label", ["2.9.1+cu128", "2.9.1+rocm6.4", "2.9.1", "", None])
     def test_no_pin_and_no_xpu_wheel_does_nothing(self, monkeypatch, tmp_path, label):
         # No pin and no +xpu torch is an ordinary CUDA/ROCm/CPU venv, where generic triton is correct and removing it
+        # would break torch.compile.
         assert (
             _run(
                 monkeypatch,
@@ -464,7 +470,8 @@ class TestPlatformGuards:
         assert log == []
 
     def test_windows_defers_to_setup_ps1_when_setup_ps1_ran(self, monkeypatch, tmp_path):
-        # setup.ps1 performs the same swap after this file exits, and publishes the handover variable immediately
+        # setup.ps1 performs the same swap after this file exits, and publishes the handover variable immediately before
+        # invoking it.
         monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "xpu")
         mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = True
@@ -473,6 +480,8 @@ class TestPlatformGuards:
 
     def test_a_direct_windows_run_does_the_swap_itself(self, monkeypatch, tmp_path):
         # Bare `python install_python_stack.py` on Windows has no setup.ps1 postlude, so the core install leaves
+        # triton-windows over torch's XPU triton. The absent handover variable is the signal that nobody else will fix
+        # it.
         monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising = False)
         mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = True
@@ -514,6 +523,7 @@ def test_the_swap_runs_after_every_torch_migration():
     for calls in blocks:
         assert calls[-1] == "_ensure_xpu_triton", calls
     # Step 13w's migration is _ensure_expected_torch_flavor, which the walk above does not collect (its result is
+    # branched on, not discarded), so it is asserted on source.
     migrating = [c for c in blocks if "_ensure_cuda_torch" in c]
     assert len(migrating) == 2, blocks
     for calls in migrating:
@@ -534,7 +544,8 @@ def test_the_swap_runs_after_every_torch_migration():
 
 
 def test_install_sh_does_not_carry_a_second_copy():
-    # It used to. install.sh runs setup.sh, which runs this module, so a copy there is redundant and a place for the
+    # It used to. install.sh runs setup.sh, which runs this module, so a copy there is redundant and a place for the two
+    # to drift apart.
     assert "replace generic Triton" not in (REPO / "install.sh").read_text(encoding = "utf-8")
 
 
@@ -557,7 +568,8 @@ class TestCpuRepairSeesAnXpuWheel:
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_cpu_torch() -> None:")
         seg = src[start : src.index("\n\ndef ", start)]
-        # Read the predicate from the module source, so an edit to it is what this test sees rather than a copy that
+        # Read the predicate from the module source, so an edit to it is what this test sees rather than a copy that can
+        # drift.
         marker = "_is_gpu_build = ("
         begin = seg.index(marker) + len(marker)
         depth, end = 1, begin
@@ -647,7 +659,8 @@ class TestCpuPinSurvivesAWedgedImport:
         ],
     )
     def test_gpu_label_classification(self, label, want):
-        # The CPU/untagged rows matter most: a slow but healthy CPU-only host must not
+        # The CPU/untagged rows matter most: a slow but healthy CPU-only host must not force-reinstall torch on every
+        # update.
         assert self._fn("_is_gpu_torch_label")(label) is want
 
     def test_timeout_falls_through_to_the_repair(self):
@@ -656,7 +669,7 @@ class TestCpuPinSurvivesAWedgedImport:
         body = src[start : src.index("\n\ndef ", start)]
         stalled = body.index("if not _ran:")
         guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", stalled)
-        # A merely slow CPU-only host returns;
+        # A merely slow CPU-only host returns; a GPU label on disk falls through...
         assert "return" in body[guard : guard + 200]
         # needs the pin enforced is the one host that never gets it.
         # ...and the repair below must accept the probe-less path, or the one host that needs the pin enforced is the

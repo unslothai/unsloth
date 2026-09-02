@@ -126,7 +126,7 @@ def test_stale_torchao_becomes_false(peft_env):
 
 
 def test_the_module_that_actually_calls_it_is_patched(peft_env):
-    # dispatch_torchao holds its own reference;
+    # dispatch_torchao holds its own reference; patching import_utils alone would leave the real call site raising.
     _, consumer = peft_env(_raiser(STALE))
     FIX()
     assert consumer.is_torchao_available() is False
@@ -157,6 +157,7 @@ def test_an_unrelated_import_error_still_raises(peft_env):
     "message",
     [
         # Half-installed torchao: says "torchao", is not a version complaint, and calling it "unavailable" would hide a
+        # broken install.
         "No module named 'torchao.quantization'",
         "cannot import name 'quantize_' from 'torchao'",
         # An extension built against a different torch/CUDA.

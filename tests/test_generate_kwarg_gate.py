@@ -34,7 +34,7 @@ class PrepHasKwargs_ForwardHasKey:
 
 
 class PrepNoKwargs_ForwardHasKey:
-    # no **kwargs -> forward not unioned;
+    # no **kwargs -> forward not unioned; key only in forward -> REJECTED (gpt-oss shape).
     def prepare_inputs_for_generation(
         self,
         input_ids,

@@ -28,8 +28,8 @@ import random
 from typing import Any
 
 
-# cuBLAS needs a fixed workspace for reproducible GEMM reductions.
-# CUDA reads this when the handle is created, on first use after `import torch`;
+# cuBLAS needs a fixed workspace for reproducible GEMM reductions. CUDA reads this when the handle is created, on first
+# use after `import torch`; setting it later is silently ignored.
 CUBLAS_WORKSPACE_CONFIG = ":4096:8"
 
 
@@ -40,7 +40,8 @@ def enable_full_determinism() -> None:
     """
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG
     os.environ["PYTHONHASHSEED"] = "0"
-    # A tokenizers worker pool interleaves dataset .map ordering nondeterministically on some versions, and this
+    # A tokenizers worker pool interleaves dataset .map ordering nondeterministically on some versions, and this dataset
+    # is tiny anyway.
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 

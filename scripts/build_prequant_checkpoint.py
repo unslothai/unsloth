@@ -145,6 +145,7 @@ def main(argv = None) -> int:
         return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
     # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a second rather than
+    # after the quantise and the multi-gigabyte save.
     upload_dest = None
     if args.upload_repo:
         try:
@@ -166,9 +167,9 @@ def main(argv = None) -> int:
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
     # Mirror the runtime exclusions: int8 skips the M=1 modulation projections (torch._int_mm needs M>16) plus
-    # per-family ones;
+    # per-family ones; family=None bakes linears the runtime rejects.
     exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
-    # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears;
+    # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears; nvfp4 handles fp32. Mirrors the runtime gate.
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
@@ -231,6 +232,7 @@ def main(argv = None) -> int:
     metadata.update(rotation)
     ckpt = {
         # v2 when a rotation is baked in, so an Unsloth predating the online half refuses the file rather than running
+        # the rotated weights against unrotated activations.
         "format": prequant_format_for(metadata),
         "metadata": metadata,
         "state_dict": state_dict,

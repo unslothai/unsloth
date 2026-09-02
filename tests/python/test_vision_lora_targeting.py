@@ -224,6 +224,7 @@ def test_tying_leaves_the_output_module_for_peft_to_reconstruct():
     assert _drop_tied_output_module(tied, both, True) == ["embed_tokens"]
     assert _drop_tied_output_module(tied, both, False) == both
     # An untied model has no counterpart for PEFT to rebuild, so dropping lm_head there would leave the head the caller
+    # asked to train frozen.
     assert _drop_tied_output_module(untied, both, True) == both
     # Only a real pair is split:
     assert _drop_tied_output_module(tied, ["embed_tokens", "score"], True) == [

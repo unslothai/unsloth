@@ -56,7 +56,8 @@ def _chunk(text, kit = None):
 
 
 def test_chunk_data_keeps_single_chunk_document():
-    # A short document fits in one chunk (n_chunks == 1) and must still produce
+    # A short document fits in one chunk (n_chunks == 1) and must still produce one output file rather than silently
+    # vanishing.
     out, contents = _chunk("word " * 50)
     assert len(out) == 1, f"single-chunk doc should yield 1 file, got {len(out)}"
     assert contents[0] != "", "the chunk file must contain the document text"

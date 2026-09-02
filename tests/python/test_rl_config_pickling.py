@@ -56,6 +56,7 @@ def test_patched_config_answers_to_the_trl_name(patched):
 
 def test_pristine_config_instance_still_pickles(patched, tmp_path):
     # An instance built before Unsloth patched TRL, or handed back by TRL's own TrainingArguments -> SFTConfig
+    # conversion, belongs to the pristine class.
     pristine = patched.__mro__[1]
     assert not pristine.__name__.startswith("Unsloth")
 
@@ -145,7 +146,8 @@ def test_training_arguments_conversion_keeps_unsloth_fields(patched, tmp_path):
     source = inspect.getsource(generated._UnslothSFTTrainer.__init__)
     if "dict_args" not in source:
         pytest.skip("this TRL release does not convert TrainingArguments inline")
-    # The conversion must not name the bare TRL class: that global was imported
+    # The conversion must not name the bare TRL class: that global was imported before the patching and so still points
+    # at the pristine class.
     assert "args = UnslothSFTConfig(**dict_args)" in source, source[:2000]
 
     training_arguments = TrainingArguments(

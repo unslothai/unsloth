@@ -56,8 +56,8 @@ from _playwright_robust import (  # noqa: E402
 BASE = os.environ["BASE_URL"]
 NEW = os.environ.get("STUDIO_NEW_PW", "ModelCfg-NEW-2026!")
 # Attach mode: log into an already-provisioned Unsloth with an existing password instead of the first-boot
-# change-password dance.
-# CI leaves STUDIO_LOGIN_PW unset to exercise the real change-password flow;
+# change-password dance. CI leaves STUDIO_LOGIN_PW unset to exercise the real change-password flow; local runs can set
+# it to skip re-provisioning.
 LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
 LOGIN_USER = os.environ.get("STUDIO_LOGIN_USER", "unsloth")
 GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
@@ -307,6 +307,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     if LOGIN_PW:
         # Attach mode: log in via the API and seed the token before navigation, skipping the first-boot change-password
+        # dance.
         step("setup: API login + token seed (attach to running Unsloth)")
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
@@ -316,7 +317,8 @@ with sync_playwright() as p:
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
     else:
         step("setup: change-password")
-        # 3-attempt retry: the form can re-render mid-fill on slow runners and detach the password fields;
+        # 3-attempt retry: the form can re-render mid-fill on slow runners and detach the password fields; each retry
+        # re-navigates with a fresh page.
         form_err: Exception | None = None
         for _form_attempt in range(3):
             # Parse the key rather than substring-searching its serialised form:
@@ -528,6 +530,7 @@ with sync_playwright() as p:
     SOLE_QUANT_SETTLE_MS = 30_000
 
     # Long enough for the probe, short enough that naming a quant that is not there does not spend the whole settle
+    # window before falling back to the repo.
     QUANT_GEAR_MS = 2_000
 
     def row_gear(
@@ -564,7 +567,7 @@ with sync_playwright() as p:
             if select_on_device_row(popover, hint) is None:
                 return None
             if not popover.is_visible():
-                # The probe landed mid-click, so the row selected the model;
+                # The probe landed mid-click, so the row selected the model; reopen for the gear that is now there.
                 popover = open_picker()
                 if reveal_on_device_row(popover, hint) is None:
                     return None
@@ -575,6 +578,7 @@ with sync_playwright() as p:
             return None
         gear.click()
         # Gate on the page itself rather than a sleep, so a slow mount is waited out and a failed open is not mistaken
+        # for a missing Context Length input below.
         for _ in range(20):
             if config_is_open(popover):
                 page.wait_for_timeout(CONFIG_SETTLE_MS)
@@ -608,6 +612,7 @@ with sync_playwright() as p:
     tabs = ["Recommended", "On Device", "Connected"]
     hidden_ok = True
     # This step asserts an absence, so it passes for free if the picker renders no rows at all -- which is exactly the
+    # state a broken picker is in. Prove it is populated first, or "hidden" means nothing.
     od_tab = page.get_by_role("tab", name = "On Device").first
     if _count(od_tab):
         od_tab.click()
@@ -713,7 +718,8 @@ with sync_playwright() as p:
                 if got_req:
                     info(f"OK persist(request): /api/inference/load max_seq_length={DISTINCT_CTX}")
                 else:
-                    # The UI may debounce the load;
+                    # The UI may debounce the load; localStorage is the primary proof, so only warn if the request was
+                    # missed.
                     runtime_warn(
                         "no /api/inference/load carried "
                         f"max_seq_length={DISTINCT_CTX}; posts={load_posts!r}"
@@ -964,10 +970,11 @@ with sync_playwright() as p:
         that can put a value in this key, which is what the step is about.
         """
         # MODEL AND QUANT NORMALISED SEPARATELY, which is what `entries_for_model` already does to these same two
-        # values.
-        # Folding the whole `<model>:<quant>` string as one identity only works while the model half folds too:
+        # values. Folding the whole `<model>:<quant>` string as one identity only works while the model half folds too:
         # `normalizeModelIdentity` deliberately keeps a plain POSIX path's case, so with a local-path GGUF_REPO the row
         # `/models/Foo.gguf:UD-Q4_K_XL` normalises to itself and never matched the lowercased `...:ud-q4_k_xl` this was
+        # comparing against. The stale row then survived the cleanup and the migration check went on to measure server
+        # precedence instead.
         want_model = _normalize_model_identity(GGUF_REPO)
         want_quant = GGUF_VARIANT.strip().lower()
 
@@ -1045,6 +1052,7 @@ with sync_playwright() as p:
             )
         elif left:
             # Not fatal on its own: say so rather than let the migration assertion below report the leftover row as the
+            # migration losing a value.
             runtime_warn(
                 f"server override rows for the model under test survived removal: {left}; "
                 "the migration check below may be measuring server precedence instead"
@@ -1132,8 +1140,8 @@ with sync_playwright() as p:
         shoot("09-after-migration")
         close_picker()
 
-        # Idempotency: a second reload with a DIFFERENT legacy entry must not re-run
-        # the migration (the persistent flag blocks it), so the new key must not leak
+        # Idempotency: a second reload with a DIFFERENT legacy entry must not re-run the migration (the persistent flag
+        # blocks it), so the new key must not leak in, nothing duplicates, and the migrated value is untouched.
         if migrated_ctx:
             probe_key = "unsloth/__idem_probe__::Q4_K_M"
             # Same document-start seeding as the first half, and for the same reason: this one deliberately leaves

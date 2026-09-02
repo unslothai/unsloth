@@ -87,15 +87,17 @@ class PwshInterpreterCrash(AssertionError):
 def _crash_reason(proc: subprocess.CompletedProcess) -> str | None:
     """Why this run produced no verdict, or None if it produced one."""
     if proc.returncode < 0:
-        # Popen reports "killed by signal N" as -N.
-        # .NET's stack-overflow failfast is SIGABRT;
-        # a SIGSEGV or a SIGKILL from the OOM killer would land here too, and all three mean the same thing to us: the
+        # Popen reports "killed by signal N" as -N. .NET's stack-overflow failfast is SIGABRT; a SIGSEGV or a SIGKILL
+        # from the OOM killer would land here too, and all three mean the same thing to us: the script did not run to
+        # its end.
         try:
             name = signal.Signals(-proc.returncode).name
         except ValueError:
             name = f"signal {-proc.returncode}"
         return f"killed by {name}"
-    # Only inspectable when the caller captured the streams;
+    # Only inspectable when the caller captured the streams; a call site that streams to the console gets the signal
+    # check alone, which is the case that actually bit CI. The byte-level tests capture without `text = True`, so the
+    # banner is searched for in whichever form the caller asked for rather than assuming str.
     captured = [stream for stream in (proc.stdout, proc.stderr) if stream]
     if any(isinstance(stream, bytes) for stream in captured):
         streams = b"".join(

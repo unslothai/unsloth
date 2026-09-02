@@ -17,7 +17,7 @@ KEYLESS_ELIGIBILITY_TS = SETTINGS / "components/keyless-example-eligibility.ts"
 
 
 def test_examples_name_a_model_the_server_can_serve():
-    # A hardcoded repo id made copied curls 404;
+    # A hardcoded repo id made copied curls 404; read the servable ids from /v1/models.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'from "../api/openai-models"' in src
     assert "function useExampleModelName(keylessOnly: boolean): string" in src
@@ -58,6 +58,7 @@ def test_catalog_refresh_follows_the_loaded_model():
     assert "}, [checkpoint, ggufVariant]);" in hook
     assert "needsCatalog" not in hook
     # A finishing download moves no store state, so the fetch retries on a timer too, and residency only slows that
+    # timer rather than stopping it.
     assert "CATALOG_RETRY_MS" in hook and "CATALOG_IDLE_MS" in hook
     assert "window.clearTimeout(timeoutId)" in hook
     assert "const CATALOG_RETRY_MS = 15000;" in src
@@ -65,7 +66,8 @@ def test_catalog_refresh_follows_the_loaded_model():
 
 
 def test_a_stored_checkpoint_needs_catalog_evidence():
-    # A dep list missing these never re-ran, so a finished load left the first fetch's
+    # A dep list missing these never re-ran, so a finished load left the first fetch's name. Nor may it be gated on
+    # having no checkpoint: the store keeps one across an idle unload, which changes nothing React can see.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
@@ -76,6 +78,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
 
 def test_idle_unload_does_not_guess_the_stashed_checkpoint():
     # The store keeps a checkpoint across an idle unload and across a deletion, so preferring it on the switch setting
+    # alone named a model /v1/models had proved absent, and the snippets 404d instead of falling back.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "idleReload" not in hook
@@ -108,7 +111,7 @@ def test_the_pinned_quant_comes_from_the_catalog():
 def test_usage_examples_has_no_duplicate_auto_switch_control():
     # ModelAutoSwitchSection renders this setting just below and shares no state with it.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    # Reading the setting is fine;
+    # Reading the setting is fine; writing it here is what would be a second control.
     assert "updateOpenAIAutoSwitchSettings" not in src
     assert "SWITCH_NOTE" not in src
     assert "Switch model by request" not in src
@@ -168,9 +171,10 @@ def test_api_monitor_renders_download_rows():
 
 def test_monitor_can_unload_the_loaded_model():
     # The backend moves an entry to the front as it finishes, so the page pauses the poll to hold the whole list still
+    # while a payload is read.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
     assert "unloadActiveModel" in src
-    # Always rendered so the manual release stays discoverable;
+    # Always rendered so the manual release stays discoverable; disabled, not hidden.
     assert "disabled={unloading || !data?.active_model}" in src
     assert "{data?.active_model ? (" not in src
     # /unload matches on the internal id, omitted here (a host path), so read it from status.

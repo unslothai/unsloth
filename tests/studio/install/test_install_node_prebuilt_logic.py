@@ -634,7 +634,8 @@ def test_install_prebuilt_unpinned_refusal_does_not_keep_existing(
 
 
 def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch, capsys):
-    # Regression: an unpinned refusal must fail closed even with a usable install on disk;
+    # Regression: an unpinned refusal must fail closed even with a usable install on disk; the keep-existing fallback is
+    # for transient failures only.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "old", sha256 = "old")
@@ -668,6 +669,7 @@ def test_resolve_expected_sha256_rejects_malformed_pins():
 
 def test_install_prebuilt_optin_takes_remote_shasums_path(tmp_path: Path, monkeypatch):
     # main() must surface the refusal as EXIT_FALLBACK (setup treats it as a failed install with guidance), not as a
+    # success masked by the keep-existing path.
     install_dir = tmp_path / "node"
     asset = "node-v26.3.1-linux-x64.tar.gz"
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
@@ -741,7 +743,8 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
     host = _host("linux", "x64")
     version = M.pinned_default_version(M.load_pins())
     asset = M.node_asset_name(version, host)
-    # Codex P2: an unpinned version already on disk must still fail closed without the
+    # Codex P2: an unpinned version already on disk must still fail closed without the opt-in, not be kept by the
+    # version-only short-circuit.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = "0" * 64)

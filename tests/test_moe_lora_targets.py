@@ -78,7 +78,8 @@ def test_single_leaf_regex_targets_only_that_projection():
 
 
 def test_auto_regex_mlp_tag_block_discovers_moe_on_fused_models():
-    # get_peft_regex on a fused-expert model lists only attention Linears as leaves;
+    # get_peft_regex on a fused-expert model lists only attention Linears as leaves; the mlp tag block is the remaining
+    # signal of MLP finetune intent.
     from unsloth.models._utils import get_moe_target_parameters
     both_auto = (
         r"(?:\bmodel\.layers\.[\d]{1,}\."

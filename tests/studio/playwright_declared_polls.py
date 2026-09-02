@@ -135,10 +135,9 @@ def main() -> int:
     )
 
     seen: Counter[str] = Counter()
-    # Counts are attributed to the current dwell, never summed across the walk.
-    # Visiting five sections fetches a per-view endpoint five times, which is indistinguishable from a 30s timer if you
-    # only look at the total.
-    # A timer repeats WITHIN one dwell;
+    # Counts are attributed to the current dwell, never summed across the walk. Visiting five sections fetches a
+    # per-view endpoint five times, which is indistinguishable from a 30s timer if you only look at the total. A timer
+    # repeats WITHIN one dwell; a per-view fetch fires once and stops. The per-dwell maximum is the honest signal.
     dwell_counts: Counter[str] = Counter()
     per_dwell_max: Counter[str] = Counter()
     counting = False
@@ -170,6 +169,7 @@ def main() -> int:
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
 
         # Boot traffic is one-shot by nature and would otherwise be indistinguishable from a slow poll over a short
+        # window. Let it drain before counting anything.
         page.wait_for_timeout(int(SETTLE_S * 1000))
         counting = True
 
@@ -232,7 +232,9 @@ def main() -> int:
     # Declared-but-unobserved is NOT a failure.
     unobserved = sorted(declared - set(polled))
     if unobserved:
-        # Too thin to mean anything: the listener never attached, the walk never left one
+        # Too thin to mean anything: the listener never attached, the walk never left one screen, or the window was too
+        # short. A clean sheet from a run like that is not a pass, it is an absence of evidence, so say so instead of
+        # reporting green.
         info(
             f"note: {len(unobserved)} declared polls not seen while idle "
             f"(expected for pane-scoped and busy-only polls)"

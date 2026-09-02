@@ -39,7 +39,8 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_extra")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
-# The Voice-picker media-access crash is specific to headless Chromium on macos-14;
+# The Voice-picker media-access crash is specific to headless Chromium on macos-14; only there is a renderer crash
+# downgraded to a warning. Linux/Windows keep hard crash coverage.
 MACOS_RUNNER = os.environ.get("RUNNER_OS", "").lower() == "macos" or sys.platform == "darwin"
 # Longer turn timeout: gemma-3-270m CPU inference is 3-5x slower on macos-14 runners.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
@@ -128,6 +129,7 @@ with sync_playwright() as p:
     # Set while the wheel step owns the picker, so an aborted Hub request can be attributed.
     wheel_step_active = [False]
     # Hub requests still in flight, by start time, so a wait that runs out while the frontend's own search timeout is
+    # still running can wait for its abort instead of guessing.
     hf_inflight: dict[object, float] = {}
 
     def _is_hub_url(url: str) -> bool:
@@ -163,6 +165,9 @@ with sync_playwright() as p:
                 return
             failure = req.failure or ""
             # net::ERR_ABORTED is how a blackholed request ends, at the frontend's own 15s search timeout, and equally
+            # how a superseded query or an unmounting picker ends. It only says "unreachable" while the wheel step holds
+            # the picker open on a single query, where nothing else can be cancelling anything. Every other failure is a
+            # transport error and counts wherever it happens.
             if "ERR_ABORTED" in failure and not wheel_step_active[0]:
                 return
             _note_hf_unreachable(f"request failed: {failure}")
@@ -203,7 +208,7 @@ with sync_playwright() as p:
     page.set_default_timeout(60_000)
     page_errors = []
 
-    # Filter known-benign React errors (slow-CI timing artefacts);
+    # Filter known-benign React errors (slow-CI timing artefacts); base list in _playwright_robust.
     def _on_pageerror(e):
         msg = str(e)
         if is_benign_page_error(msg):
@@ -268,7 +273,7 @@ with sync_playwright() as p:
                 flush = True,
             )
             if _form_attempt < 2:
-                # ERR_NO_BUFFER_SPACE needs the OS to recover socket buffers;
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket buffers; back off 5s then 15s.
                 if "ERR_NO_BUFFER_SPACE" in str(e):
                     backoff_s = 5 if _form_attempt == 0 else 15
                     print(
@@ -457,7 +462,7 @@ with sync_playwright() as p:
                 shoot("03-compare-after-A")
 
                 cmp_composer.fill("Reply with: B")
-                # Prefer Enter: onKeyDown maps plain Enter to send();
+                # Prefer Enter: onKeyDown maps plain Enter to send(); the Send button's aria-label came late.
                 cmp_composer.press("Enter")
                 # Expect 2 new assistant bubbles (one per pane).
                 # downgrade to runtime_warn but keep the structural assertions.
@@ -499,7 +504,7 @@ with sync_playwright() as p:
             templates.first.click()
             page.wait_for_timeout(2000)
             shoot("06-recipe-opened")
-            # The recipe-studio canvas uses React-Flow;
+            # The recipe-studio canvas uses React-Flow; look for the renderer.
             canvas = page.locator(
                 ".react-flow__renderer, .react-flow, [data-testid*='react-flow']"
             ).first
@@ -530,7 +535,7 @@ with sync_playwright() as p:
             soft_fail("[data-tour='export-cta'] not found in /export")
         else:
             info("OK [data-tour='export-cta'] visible")
-        # HF-token field is lazy-loaded behind a disclosure;
+        # HF-token field is lazy-loaded behind a disclosure; poll for ~8s and log at info (non-blocking).
         hf_token = None
         for _try in range(8):
             page.wait_for_timeout(1000)
@@ -600,7 +605,7 @@ with sync_playwright() as p:
         soft_fail("Settings dialog didn't open with Cmd/Ctrl-,")
     else:
         shoot("09-settings-open")
-        # Each tab is a button named by its visible text;
+        # Each tab is a button named by its visible text; availability depends on chat_only mode.
         candidate_tabs = (
             "General",
             "Profile",
@@ -733,7 +738,8 @@ with sync_playwright() as p:
                                 timeout = rows_ms,
                             )
                     except Exception as row_err:
-                        # A dead renderer must reach the crash handler below, exactly as in the wheel wait;
+                        # A dead renderer must reach the crash handler below, exactly as in the wheel wait; swallowed
+                        # here it becomes a hard "did not wheel-scroll".
                         if page_crashed(page, row_err):
                             raise
                         if not (cleared_search or hf_unreachable or HF_OFFLINE):
@@ -777,7 +783,8 @@ with sync_playwright() as p:
                     try:
                         page.wait_for_function(scrolled_js, timeout = 2_000)
                     except Exception as wheel_err:
-                        # A dead renderer must still reach the crash handler below, not be
+                        # A dead renderer must still reach the crash handler below, not be retried until the deadline
+                        # and reported as a scroll failure.
                         if page_crashed(page, wheel_err):
                             raise
                         continue
@@ -786,6 +793,7 @@ with sync_playwright() as p:
                     info("OK Voice model picker mouse wheel changed scrollTop")
                 else:
                     # Geometry in the message: the next failure says whether the list was short, empty or
+                    # scrollable-but-unscrolled without a second CI run.
                     try:
                         geom = robust_evaluate(
                             page,
@@ -820,7 +828,8 @@ with sync_playwright() as p:
                     fail(f"Voice model picker did not wheel-scroll: {exc!r}")
             finally:
                 wheel_step_active[0] = False
-        # When the crash closed the context/browser, recover_or_replace_page hands back the closed page;
+        # When the crash closed the context/browser, recover_or_replace_page hands back the closed page; skip the
+        # cosmetic teardown rather than re-raise TargetClosedError on it.
         if not page.is_closed():
             shoot("10-settings-tabs-visited")
             page.keyboard.press("Escape")

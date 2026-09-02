@@ -413,7 +413,7 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
         tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
         where = path.relative_to(REPO_ROOT)
         known_typing_names = typing_names(tree)
-        # The future import defers annotations only;
+        # The future import defers annotations only; an assigned value still runs.
         deferred = has_future_annotations(tree)
         in_unsloth = PACKAGE_ROOT in path.parents
         annotation_sources = [] if (deferred or not in_unsloth) else evaluated_annotations(tree)

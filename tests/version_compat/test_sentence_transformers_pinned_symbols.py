@@ -12,7 +12,7 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# ST is unpinned in pyproject.toml;
+# ST is unpinned in pyproject.toml; track the last few minors plus main.
 ST_TAGS = [
     "v5.0.0",
     "v5.1.2",

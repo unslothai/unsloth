@@ -74,6 +74,8 @@ def test_non_mlx_exports_public_trainer_api_when_available():
         unsloth = importlib.import_module("unsloth")
     except ImportError as exc:
         # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo, bitsandbytes/triton, and _gpu_init can
+        # re-raise missing deps as ImportError). Skip when any of it is unavailable rather than failing collection on
+        # CPU/ROCm/XPU review hosts.
         pytest.skip(f"non-MLX import dependency unavailable: {exc}")
     if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
         pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")

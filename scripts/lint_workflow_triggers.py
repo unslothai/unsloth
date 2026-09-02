@@ -82,7 +82,7 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-# Accept only a plain invocation of this script;
+# Accept only a plain invocation of this script; fail closed on wrappers.
 _PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
 # Allow only flags that preserve script execution.
 _SAFE_OPTS = ("-u", "-E", "-s", "-S", "-B", "-O", "-OO", "-q")

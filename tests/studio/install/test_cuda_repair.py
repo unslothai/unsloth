@@ -137,6 +137,7 @@ def _run_cuda_repair(
         return None
 
     # The torch classification is memoized for the life of an install run, so each scenario has to start from a clean
+    # slate.
     stack_mod._invalidate_torch_runtime_probe()
 
     with (
@@ -186,7 +187,8 @@ class TestCudaRepairFires:
         assert mock_pip.call_args.kwargs["constrain"] is False
 
     def test_rocm_in_version_string_triggers_repair(self):
-        # AMD SDK / Radeon wheels may encode rocm in __version__ without torch.version.hip;
+        # AMD SDK / Radeon wheels may encode rocm in __version__ without torch.version.hip; the probe prints "hip" for
+        # both.
         mock_pip = _run_cuda_repair(torch_state = "hip")
         assert mock_pip.call_count == 1
 
@@ -241,7 +243,8 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_broken_probe_with_cuda_url_pin_repairs(self):
-        # An untagged CUDA build (no +cuXXX tag -> empty installed cu) can't be confirmed
+        # An untagged CUDA build (no +cuXXX tag -> empty installed cu) can't be confirmed to match the pin, so the pin
+        # is enforced with a reinstall.
         mock_pip = _run_cuda_repair(
             torch_state = "cpu",
             torch_rc = 1,
@@ -447,6 +450,7 @@ class TestCudaIndexResolution:
 
 
 # PyTorch 2.11's cu128/cu130 start at sm_75, and their CUDA 13 runtime also costs a pre-Turing GPU its llama.cpp GGUF
+# bundle, so such hosts get cu126 (#7765).
 
 
 # pre-Turing GPU its llama.cpp GGUF bundle, so such hosts get cu126 (#7765).
@@ -627,8 +631,8 @@ class TestPreTuringWheelFamily:
         assert stack_mod._cuda_family_sm_range("cu128", "2.8.0")[0] == 70
         assert stack_mod._cuda_family_sm_range("cu128", "2.10.0")[0] == 70
         # An untagged build still reports torch.version.cuda, so _family falls back to the runtime value and the
-        # architecture policy applies.
-        # The "family unknown, leave it alone" branch needs BOTH the tag and torch.version.cuda empty, which reads as a
+        # architecture policy applies. The "family unknown, leave it alone" branch needs BOTH the tag and
+        # torch.version.cuda empty, which reads as a CPU build, so an untagged CUDA build is always classifiable.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu128|2.7.1",
             cuda_version = "13.0",
@@ -638,7 +642,8 @@ class TestPreTuringWheelFamily:
         assert "cu126" in _index_url(mock_pip)
 
     def test_untagged_pypi_wheel_is_classified_by_its_cuda_runtime(self):
-        # PyPI forbids local versions, so a torch from PyPI has no +cuXXX tag;
+        # PyPI forbids local versions, so a torch from PyPI has no +cuXXX tag; torch.version.cuda is the only clue that
+        # it is a CUDA 13 build.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda||2.11.0|cu130",
             cuda_version = "13.0",
@@ -656,6 +661,7 @@ class TestPreTuringWheelFamily:
 
     def test_repair_is_skipped_when_it_would_reinstall_the_same_family(self):
         # aarch64 has no CUDA family below sm_80, so the cap declines and the replacement would be the condemned wheel
+        # itself, once per update forever.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -680,7 +686,7 @@ class TestPreTuringWheelFamily:
         assert _sms("7.0\n", returncode = 1) is None
 
 
-# The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the
+# The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the only flavor repair.
 _ensure_expected_torch_flavor = stack_mod._ensure_expected_torch_flavor
 _UNSET = object()
 

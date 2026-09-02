@@ -786,6 +786,7 @@ def test_workflow_changes_require_code_owner_review():
         ("workflows/", ".github/workflows/lint.yml", True),
         ("**/workflows/", ".github/workflows/lint.yml", True),
         # An internal slash anchors at the root, gitignore style, so this names a top-level workflows/ and not the one
+        # under .github/.
         ("workflows/lint.yml", ".github/workflows/lint.yml", False),
         ("workflows/lint.yml", "workflows/lint.yml", True),
         ("/unsloth/", ".github/workflows/lint.yml", False),

@@ -56,7 +56,8 @@ def info(m: str) -> None:
     print(f"[pm-reflow] {m}", flush = True)
 
 
-# Re-open, scroll the reader up, grow one row ABOVE them by a known amount while the window is still open, and watch
+# Re-open, scroll the reader up, grow one row ABOVE them by a known amount while the window is still open, and watch the
+# row they are looking at.
 RUN_JS = """
 async ([growPx, settleMs]) => {
   const api = window.__heavyThread;

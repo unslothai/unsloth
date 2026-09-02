@@ -111,7 +111,7 @@ def _fake_vllm(
     ids = ["core_C", "sibling_C_stable_libtorch"],
 )
 def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
-    # A CUDA-major mismatch breaks every ext;
+    # A CUDA-major mismatch breaks every ext; whichever one loads first must trip detection.
     present = {"vllm._C", "vllm._C_stable_libtorch"}
     with _fake_vllm(present = present, broken = {broken_ext}) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
@@ -135,6 +135,7 @@ def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
 )
 def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
     # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda), which the old
+    # libcudart/libcublas/libnvrtc allow-list let slip through.
     with _fake_vllm(present = {"vllm._C"}, broken = {"vllm._C"}, error = error) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 

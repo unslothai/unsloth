@@ -63,7 +63,7 @@ def capture(monkeypatch):
     fake_module.DownloadStallError = type("DownloadStallError", (RuntimeError,), {})
     monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_fallback", fake_module)
 
-    # Neutralize the model_info network call by default;
+    # Neutralize the model_info network call by default; tests exercising format selection install their own.
     import huggingface_hub
 
     class _NoNetworkApi:
@@ -351,7 +351,7 @@ def test_st_native_loads_map_hf_cache_dir_to_cache_folder():
         assert "'cache_dir'" in ast.dump(
             kw.value
         ), "a native SentenceTransformer cache_folder must map the explicit HF cache_dir first"
-    # for_inference feeds cache_folder via st_kwargs;
+    # for_inference feeds cache_folder via st_kwargs; both native branches map cache_dir -> cache_folder.
     normalized = "".join(src.split())
     assert (
         'st_kwargs["cache_folder"]=' in normalized
@@ -904,7 +904,7 @@ def test_st_native_sentence_transformer_calls_forward_cache_folder():
         ):
             continue
         kw_names = {kw.arg for kw in n.keywords}
-        # A modules-based build downloads nothing;
+        # A modules-based build downloads nothing; only a repo-name load reads the cache.
         if "modules" in kw_names:
             continue
         weight_loading_calls.append(n)

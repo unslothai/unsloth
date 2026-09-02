@@ -45,6 +45,7 @@ if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
 # Unsloth refuses to import without a torch accelerator, so the GPU-less runner needs the same spoof the sibling CPU
+# canaries use. Must precede any unsloth import, which is why it sits at module scope rather than in a fixture.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402

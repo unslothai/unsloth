@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 SOURCE_DATE_EPOCH = 0
-# Zip stores DOS time which starts at 1980;
+# Zip stores DOS time which starts at 1980; map epoch to 1980-01-01.
 _ZIP_DOS_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 HERE = Path(__file__).resolve().parent

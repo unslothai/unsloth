@@ -345,6 +345,9 @@ def _relative_import_targets(src):
                 if node.module:
                     targets.append((node.level, node.module))
                     # `from .sub import core` imports `pkg.sub.core` when `core` is a module, whether or not
+                    # `sub/__init__.py` re-exports it, and queueing only `sub` read the shim and none of the
+                    # transformers imports in the file that actually has them. A name that turns out to be a symbol is
+                    # simply a fetch that finds nothing, which the caller already skips.
                     targets.extend(
                         (node.level, f"{node.module}.{alias.name}")
                         for alias in node.names
@@ -414,6 +417,8 @@ def _transformers_imports(src):
                 out.setdefault(node.module, set()).update(a.name for a in node.names)
                 continue
             # `import transformers.x` raises the same startup ModuleNotFoundError as the `from` form, and skipping it
+            # let a newly required submodule break the converter with this check still green. It binds no symbols, so
+            # the module is recorded with an empty set.
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.startswith("transformers"):
@@ -487,6 +492,7 @@ def test_only_imports_that_run_at_module_load_are_collected():
         "transformers.optional": {"MaybeThere"},
         "transformers.fallback": {"Instead"},
         # A module-level class body runs the moment the class is defined, so an import in one can break the very import
+        # this backfill absorbs. A class inside a function does not.
         "transformers.classbody": {"AtClassCreation"},
     }
 
@@ -670,6 +676,8 @@ def test_an_unrecoverable_conversion_map_fails_on_use(caplog):
         copied["qwen3_moe"]
 
     # But peft reaches _convert_peft_config_moe for ANY model type with a checkpoint conversion mapping, and for a
+    # non-MoE one None IS the right answer: the function returns without a MoE rewrite, exactly as it would with the
+    # real map. Raising there would break ordinary adapter loads to guard a case they are not in.
     assert copied.get("llama", None) is None
     assert copied.get("gemma3", "fallback") == "fallback"
     with pytest.raises(KeyError):

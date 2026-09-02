@@ -223,9 +223,9 @@ class TestRealRequirementsFiltering:
             pytest.skip("extras-no-deps.txt not found in repo")
         self._created = []
         yield
-        # Only what this test made.
-        # These land in the REAL requirements directory, and the previous version deleted everything that appeared since
-        # its own snapshot, so under pytest-xdist one test's teardown removed a file another worker was still reading
+        # Only what this test made. These land in the REAL requirements directory, and the previous version deleted
+        # everything that appeared since its own snapshot, so under pytest-xdist one test's teardown removed a file
+        # another worker was still reading and that test failed with FileNotFoundError.
         for path in self._created:
             Path(path).unlink(missing_ok = True)
 
@@ -619,7 +619,8 @@ class TestInstallPythonStackSubprocessMock:
             f"the installer harness wrote {real_root}, which every worker in this run "
             "shares; give install_manifest.venv_root a contained root instead"
         )
-        # Non-vacuous: the writes must have landed somewhere, or an install that returned early and wrote nothing at
+        # Non-vacuous: the writes must have landed somewhere, or an install that returned early and wrote nothing at all
+        # would pass this too.
         contained = ips.install_manifest.venv_root()
         assert contained != real_root, "venv_root was never contained"
         assert (contained / ips.install_manifest.MANIFEST_NAME).is_file(), (

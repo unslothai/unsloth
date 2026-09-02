@@ -126,7 +126,8 @@ def test_the_injected_snippet_is_valid_python():
 @pytest.mark.parametrize(
     "precision,has_bf16,expect_enabled",
     [
-        # The T4/V100 case, where the bug bites. accelerate never asks for bf16
+        # The T4/V100 case, where the bug bites. accelerate never asks for bf16 on this hardware, so that pairing is not
+        # a case.
         ("no", False, False),
         ("fp16", False, True),
         (None, False, True),

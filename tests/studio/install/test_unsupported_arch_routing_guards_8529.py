@@ -79,8 +79,7 @@ _UNSUPPORTED_ARCH_INPUTS = (
 )
 
 # Arches that MUST route, so that "no index" cannot pass for the right answer when the table has been renamed, emptied
-# or parsed wrong.
-# gfx1030 is RDNA 2 (RX 6800 XT) and gfx1100 is RDNA 3 (RX 7900 XTX);
+# or parsed wrong. gfx1030 is RDNA 2 (RX 6800 XT) and gfx1100 is RDNA 3 (RX 7900 XTX); both ship AMD wheels today.
 _ROUTABLE_ARCHES = [("gfx1030", "gfx103X-all"), ("gfx1100", "gfx110X-all")]
 
 
@@ -106,7 +105,8 @@ class TestPythonIndexResolversAreAskedDirectly:
     @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCH_INPUTS)
     @pytest.mark.parametrize("is_windows", [False, True], ids = ["linux", "windows"])
     def test_no_unsupported_arch_gets_an_index_url(self, arch, is_windows):
-        # IS_WINDOWS is read inside _amd_arch_index_url, so both platform arms are reachable from this host;
+        # IS_WINDOWS is read inside _amd_arch_index_url, so both platform arms are reachable from this host; the Windows
+        # arm is the one #8529 was filed from.
         with patch.object(stack_mod, "IS_WINDOWS", is_windows):
             url = stack_mod._amd_arch_index_url(arch)
         assert url is None, f"{arch} was routed to {url!r}; it must fall through to CPU torch"
@@ -250,6 +250,7 @@ def _run_sh_get_torch_index_url(arch: str, rocm_tag: str = "") -> "tuple[str, st
     )
     env = dict(os.environ)
     # The two pins short-circuit the whole selector, and a mirror override would rewrite the base out from under the
+    # assertions.
     for _v in (
         "UNSLOTH_TORCH_INDEX_URL",
         "UNSLOTH_TORCH_INDEX_FAMILY",
@@ -478,6 +479,7 @@ class TestPowerShellRoutingTables:
             f"so the routing this file checks is not the routing the installer performs"
         )
         # Positive control: the map is still consulted below the declaration, so the region searched above is the one a
+        # late addition would have to live in.
         assert (
             "$archFamilyMap.ContainsKey" in rest
         ), f"{path.name}: nothing reads $archFamilyMap any more (renamed or removed?)"

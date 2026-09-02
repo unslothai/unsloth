@@ -167,7 +167,8 @@ class TestMissingKey:
         assert "Skipped: no API key" in summary.read_text()
         out = capsys.readouterr().out
         assert "skipping the scan" in out
-        # The message spells VT_API_KEY out literally to avoid a CodeQL false positive, so pin that it still matches
+        # The message spells VT_API_KEY out literally to avoid a CodeQL false positive, so pin that it still matches the
+        # constant.
         assert vt.API_KEY_ENV in out
 
     def test_whitespace_only_key_is_treated_as_missing(self, tmp_path, monkeypatch):
@@ -700,6 +701,7 @@ class TestNoCompletedAnalysis:
 
     def test_a_completed_analysis_is_trusted_without_engine_counts(self):
         # The upload path polls until status == "completed", so a stats dict is authoritative there even if the counts
+        # are all zero.
         report = self._report(({"malicious": 0}, {}), completed = True)
         assert report.stats is not None
         assert report.source == "known to VirusTotal (no upload)"
@@ -950,6 +952,8 @@ class TestWorkflowOrdering:
 
     def test_the_scan_scans_the_bundles_that_were_published(self):
         # The job has no build outputs of its own, so it re-downloads the very artifacts the build matrix uploaded and
+        # publish-release shipped. A pattern that matched nothing would scan an empty directory and still report
+        # success.
         build = self._workflow()["jobs"]["build"]
         upload_names = {
             step.get("with", {}).get("name")
@@ -987,6 +991,7 @@ class TestWorkflowOrdering:
         ], (argv, download["with"]["path"])
 
         # And that shared pattern has to match what the matrix actually uploads, or both jobs would agree on a set that
+        # does not exist.
         template = "desktop-release-${{ matrix.artifact }}"
         for entry in build["strategy"]["matrix"]["include"]:
             artifact = template.replace("${{ matrix.artifact }}", entry["artifact"])
@@ -1006,13 +1011,15 @@ class TestWorkflowOrdering:
 
     def test_nothing_slow_sits_between_validation_and_the_upload(self):
         # The v{version} release already exists and is published, so the window worth minimising is now between
+        # validating its state and the assets landing on it. Nothing slow may be inserted between the two; the scan used
+        # to sit there and is why the window existed at all.
         names = self._publish_steps()
         validate = names.index("Validate versioned release state")
         assert names[validate + 1] == "Generate versioned updater metadata"
         assert names[validate + 2] == "Publish release assets"
 
     def test_release_notes_are_written_unconditionally(self):
-        # Validation writes the notes;
+        # Validation writes the notes; the metadata step consumes that same file before the assets land on the release.
         steps = self._publish_step_map()
         assert "desktop-release-notes.md" in steps["Validate versioned release state"]["run"]
         metadata = steps["Generate versioned updater metadata"]["run"]
@@ -1035,7 +1042,7 @@ class TestWorkflowOrdering:
         assert by_name["Validate versioned release state"]["id"] == "versioned_release_state"
         assert "Create versioned release" not in by_name
 
-        # Validation runs on every dispatch;
+        # Validation runs on every dispatch; only a non-draft run touches the release.
         for name in ("Publish release assets", "Publish versioned updater metadata"):
             assert by_name[name]["if"] == "${{ !inputs.draft }}"
 
@@ -1093,6 +1100,7 @@ class TestWorkflowOrdering:
         assert names.index(checkout["name"]) < names.index("VirusTotal scan")
 
         # And if it ever does not, the scan step says so loudly and exits 1 rather than reporting a clean sweep of
+        # nothing.
         guard = self._scan_step_map()["VirusTotal scan"]["run"]
         assert "if [ ! -f scripts/virustotal_scan.py ]; then" in guard
         assert "exit 1" in guard.split("if [ ! -f scripts/virustotal_scan.py ]; then", 1)[1]
@@ -1111,6 +1119,8 @@ class TestWorkflowOrdering:
 
     def test_the_summary_heading_holds_for_a_validation_only_run_too(self):
         # `inputs.draft` defaults to true, and every uploading step is gated on it, so the ordinary dispatch validates
+        # and publishes nothing. A heading calling this a post-publish scan would tell a release operator the opposite
+        # of what happened, so the wording has to cover both.
         workflow = self._workflow()
         draft = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]["draft"]
         assert draft["default"] is True

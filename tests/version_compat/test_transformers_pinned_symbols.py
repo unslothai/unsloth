@@ -34,7 +34,8 @@ TRANSFORMERS_TAGS = [
     "v5.10.0",
     "v5.10.1",
     "v5.10.2",
-    # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4);
+    # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4); there is no v5.10.4 tag and no 5.10.3 on
+    # PyPI, so fetch by the tag name.
     "v5.10.3",
     "v5.11.0",
     "v5.12.0",
@@ -87,7 +88,7 @@ def test_trainer_training_step_grad_accum_pattern(tag: str):
         "self.accelerator.backward(loss",
     )
     missing = [s for s in needed if s not in src]
-    # Hard-fail only when ALL substrings missing;
+    # Hard-fail only when ALL substrings missing; partial drift is informational.
     if len(missing) == len(needed):
         pytest.fail(
             f"{tag}: Trainer.training_step has none of the grad-accum "

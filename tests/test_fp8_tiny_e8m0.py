@@ -101,7 +101,8 @@ def test_e8m0_scale_preserves_non_default_block_size_attr():
     scale.block_size = block
     X = torch.randn(4, n, device = dev, dtype = torch.bfloat16, requires_grad = True)
 
-    # With [128, 128] this raises "not compatible with block size";
+    # With [128, 128] this raises "not compatible with block size"; success proves the [64, 64] attribute survived the
+    # e8m0 -> float32 upcast.
     out = FP8BlockQuantLinear.apply(X, weight, scale)
     assert torch.isfinite(out).all()
 

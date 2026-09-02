@@ -594,7 +594,7 @@ def _run(script: str) -> dict:
     return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
-# The status response that hydrates a resident GGUF;
+# The status response that hydrates a resident GGUF; neither field survives a reload.
 LOADED_MODEL = """
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
@@ -1151,9 +1151,11 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
 @pytest.mark.parametrize(
     ("running", "grew", "expected_total"),
     [
-        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it
+        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it ran when the thread was
+        # idle, so only the publish guard is left to drop the total.
         (True, True, None),
         # Stopped before the count returned, so runningByThreadId is already false and the usage snapshot is still
+        # equal: only the content makes the branch look different.
         (False, True, None),
         (False, False, 62),
     ],

@@ -35,6 +35,7 @@ WORKFLOWS = REPO / ".github" / "workflows"
 ENV_VAR = "UNSLOTH_ALLOW_HOST_OFFLOAD"
 
 # The mac GGUF phases were absorbed into the Mac UI job, which is why this is not the file the docstring above was
+# written against. The opt-out moved with them, to that job's env, and is still the only place in the repo it appears.
 MAC_GGUF = "studio-mac-ui-smoke.yml"
 OTHER_GGUF = ["studio-inference-smoke.yml", "studio-windows-inference-smoke.yml"]
 

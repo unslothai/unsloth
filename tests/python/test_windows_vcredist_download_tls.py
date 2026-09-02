@@ -29,7 +29,9 @@ def _download_block() -> str:
 
 
 def test_the_download_is_verified_as_microsoft_signed_before_it_runs():
-    # No pwsh needed: Get-AuthenticodeSignature is Windows-only, so the ordering of the three steps in the real block
+    # No pwsh needed: Get-AuthenticodeSignature is Windows-only, so the ordering of the three steps in the real block is
+    # the thing to hold still. A verification placed after Start-Process, or one that only checks Status, would still
+    # "pass" on a swapped binary.
     block = _download_block()
     download = block.index("Invoke-WebRequest")
     verify = block.index("Get-AuthenticodeSignature", download)

@@ -807,9 +807,10 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
     which is why this asserts the sum rather than the group names.
     """
     yaml = pytest.importorskip("yaml")
-    # Read the cap out of gate.py's SOURCE rather than importing it.
-    # Both .github/scripts/kaggle_studio_ci and .github/scripts/kaggle_t4_ci ship a module called `report`, so putting
-    # either on sys.path here decides which one `import report` resolves to for every test that runs afterwards in the
+    # Read the cap out of gate.py's SOURCE rather than importing it. Both .github/scripts/kaggle_studio_ci and
+    # .github/scripts/kaggle_t4_ci ship a module called `report`, so putting either on sys.path here decides which one
+    # `import report` resolves to for every test that runs afterwards in the same process. An earlier draft of this test
+    # did exactly that and took nine unrelated summary tests down with it.
     gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
         encoding = "utf-8"
     )
@@ -911,6 +912,9 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
 
     # The Unsloth block states the notebook leg's reserve in PROSE, so the number lives in two files and one of them is
+    # not executable. Raising the notebook reserve without touching that sentence leaves the Unsloth budget arguing from
+    # a figure that is no longer true, which is exactly how the "cheap leg yields first" priority gets documented
+    # backwards. Assert the sentence agrees.
     assert "reserve-hours is 10 rather than the notebook leg's 20" in studio
 
     # Both budget blocks must name the other leg.
@@ -938,6 +942,7 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
     assert studio_spend > notebook_spend
     assert studio_spend + notebook_spend <= 50.0
     # And with margin, because the ceiling is enforced by a quota read that only sees the account AFTER the hours are
+    # gone.
     assert studio_spend + notebook_spend <= 40.0
 
 
@@ -1341,7 +1346,7 @@ def test_a_failed_llama_cpp_install_does_not_stop_the_run():
         "a llama.cpp install failure now aborts the run, so a box that cannot "
         "install the bundle reports nothing about inference, training or the UI"
     )
-    # And it must happen before the server, so the export route never sees a
+    # And it must happen before the server, so the export route never sees a llama.cpp appear underneath it.
     assert body.index("self.install_llama_cpp()") < body.index("self.start_server()")
 
 
@@ -1787,7 +1792,7 @@ def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
         executable = sys.executable,
     )
     try:
-        # Only the discovery mechanism is exercised here;
+        # Only the discovery mechanism is exercised here; the name match is what the real llama-server supplies.
         assert isinstance(module.llama_server_pids(), list)
     finally:
         proc.kill()

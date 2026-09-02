@@ -38,7 +38,7 @@ def _load_module(name, filepath):
     return mod
 
 
-# Projector has no unsloth dependencies;
+# Projector has no unsloth dependencies; load it first.
 _projector_mod = _load_module(
     "unsloth.optimizers.q_galore_projector",
     os.path.join(_optimizers_dir, "q_galore_projector.py"),

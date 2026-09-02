@@ -40,11 +40,13 @@ LORA_RANK = 8
 NUM_GENERATIONS = 2
 MAX_PROMPT_LENGTH = 64
 MAX_COMPLETION_LENGTH = 16
-# >1 so the updated LoRA adapter is re-synced into vLLM on every step, not just loaded once;
+# >1 so the updated LoRA adapter is re-synced into vLLM on every step, not just loaded once; that repeat sync is the
+# path that regressed.
 MAX_STEPS = 3
 GPU_MEMORY_UTILIZATION = 0.3
 COMPILATION_CONFIG = 0
 # Pins torch's global RNG (via the Trainer's set_seed), which the colocated vLLM sampler draws from, so the rollout and
+# every metric below is reproducible.
 SEED = 42
 
 # Loose sanity bounds, not fitted values:
@@ -144,10 +146,12 @@ def test_fast_inference():
     assert math.isfinite(trainer_stats.training_loss), "training loss is not finite"
 
     # Without these, a rollout that silently produced nothing, or an update that diverged to NaN, would still pass the
+    # wiring assertions above.
     steps = [log for log in trainer.state.log_history if "loss" in log]
     assert len(steps) == MAX_STEPS, f"expected {MAX_STEPS} logged steps, got {len(steps)}"
 
     # Every reward is a completion's character count, so this bounds reward and its spread without hard-coding
+    # model-specific values.
     max_reward = MAX_COMPLETION_LENGTH * MAX_CHARS_PER_TOKEN
 
     for i, step in enumerate(steps, start = 1):
@@ -164,6 +168,7 @@ def test_fast_inference():
         assert grad_norm is not None, f"step {i}: no grad_norm logged"
         assert math.isfinite(grad_norm), f"step {i}: grad_norm not finite ({grad_norm})"
         # Sign check only: a step can legitimately be near zero (0.004 observed), so any tighter lower bound would be
+        # flaky.
         assert 0.0 < grad_norm < MAX_GRAD_NORM, f"step {i}: grad_norm {grad_norm}"
         assert length is not None, f"step {i}: no completion length logged"
         assert 0.0 < length <= MAX_COMPLETION_LENGTH, f"step {i}: empty rollout ({length})"

@@ -265,6 +265,7 @@ def classify(pkg: str, file: str, content: str) -> str | None:
     if is_script and re.search(rf"@import\(\s*['\"]{esc}{sub}['\"]\s*\)", content):
         return "jsdoc_import"
     # Bare quoted-string fallback (config plugin lists, vite aliases, tsconfig paths, biome plugin arrays, shadcn
+    # registries).
     if not JS_LIKE_EXT.search(file):
         return None
     # pkg must be followed by `'`, `"`, or `/` so `foo` doesn't match `foobar`.
@@ -530,7 +531,7 @@ def tsconfig_compiler_types_refs() -> set[str]:
             continue
         try:
             text = path.read_text()
-            # tsconfig allows comments;
+            # tsconfig allows comments; strip simple line comments.
             text = re.sub(r"//[^\n]*", "", text)
             data = json.loads(text)
         except (OSError, json.JSONDecodeError):
@@ -691,6 +692,7 @@ def find_usage(pkg: str) -> list[Hit]:
         kind = classify(pkg, file, content)
         if not kind:
             # Multi-line window (25 lines each side) so Prettier's one-import-per-line formatting still pairs `import`
+            # with `from`.
             lines = _read_file(file)
             lo = max(0, lineno - 26)
             hi = min(len(lines), lineno + 25)
@@ -860,7 +862,8 @@ def main() -> int:
     head_names = all_decl_names(head_pkg)
     removed = sorted(base_names - head_names)
 
-    # Hygiene checks compute up front so they run on both the removal-present and removal-empty paths (so --strict
+    # Hygiene checks compute up front so they run on both the removal-present and removal-empty paths (so --strict fails
+    # on hygiene-only issues).
     sync_warns = lockfile_root_sync(head_pkg, head_lock)
     types_warns = types_orphan_warnings(head_pkg)
     missing_imports = find_imports_without_decl(head_pkg)
@@ -922,6 +925,7 @@ def main() -> int:
 
     reachable_paths = reachable_from_head(head_pkg, head_lock) if head_lock else set()
     # bin -> package map from the head lockfile, layering base-lockfile entries for removed packages so scripts.biome
+    # still flags when @biomejs/biome is dropped (head lockfile no longer maps it).
     bin_to_pkg = build_bin_to_pkg(head_lock) if head_lock else {}
     base_bin_to_pkg = build_bin_to_pkg(base_lock) if base_lock else {}
     removed_set = set(removed)

@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 
 # CPU-only: no torch.compile / dynamo (it reaches into the CUDA accelerator), no Unsloth kernel compile, no mixed
+# precision. Must be set before torch/unsloth.
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
@@ -35,7 +36,8 @@ from pathlib import Path
 import pytest
 
 
-# torch is needed for everything below (daily-fresh-fetch collects this dir with only pytest installed);
+# torch is needed for everything below (daily-fresh-fetch collects this dir with only pytest installed); skip the whole
+# module cleanly when it is absent.
 if importlib.util.find_spec("torch") is None:
     pytest.skip(
         "torch not installed; fake CPU train needs the real runtime", allow_module_level = True
@@ -52,6 +54,9 @@ import torch  # noqa: E402
 
 
 # The generated GRPO trainer hard-decorates hot functions with @torch.compile, which dynamo processes even under the
+# disable env vars, reaching into torch.accelerator (real CUDA) on a GPU-less box. Make torch.compile an eager
+# passthrough before unsloth generates/imports the trainer -- same logic, no dynamo. (An eager CPU run is exactly what
+# we want here.)
 def _eager_compile(
     model = None,
     *args,
@@ -81,6 +86,7 @@ def _fake_cpu_gpu(mp):
     mp.setattr(torch, "compile", _eager_compile)
 
     # Belt-and-suspenders: if any @torch.compile still routes through dynamo, let it fall back to eager instead of
+    # crashing, and stop its stream-capture probe from reaching torch.accelerator -> real CUDA on a GPU-less box.
     try:
         # Aliased: a bare `import torch._dynamo` would rebind `torch` as a local.
         import torch._dynamo as _dynamo
@@ -142,7 +148,8 @@ def _fake_cpu_gpu(mp):
     except Exception:
         pass
 
-    # A broken libmlx.so in the shared site-packages crashes transformers' Mac-only is_mlx_array probe on Linux;
+    # A broken libmlx.so in the shared site-packages crashes transformers' Mac-only is_mlx_array probe on Linux; disable
+    # it.
     try:
         import transformers.utils.generic as _g
         mp.setattr(_g, "_is_mlx_available", False, raising = False)
@@ -190,7 +197,7 @@ def _guard_finite_logits(model):
         logits = getattr(output, "logits", None)
         if logits is None:
             return output
-        # nan_to_num maps nan -> 0 and the infinities to large finite values;
+        # nan_to_num maps nan -> 0 and the infinities to large finite values; clamp then bounds everything to [-30, 30].
         output.logits = torch.nan_to_num(logits).clamp(-30.0, 30.0)
         return output
 
@@ -268,6 +275,8 @@ def test_grpo_trains_on_cpu(tmp_path):
     assert GRPOTrainer.__name__ == "UnslothGRPOTrainer", "GRPO patch did not apply"
     model, tok = _load_plain()
     # GRPO is the only canary that autoregressively samples completions, so it is the only one that can hit the
+    # non-finite-logits multinomial crash. Install the guard here (not in _load_plain) so the SFT/DPO canaries keep
+    # asserting against the model's true, unclamped outputs.
     _guard_finite_logits(model)
     ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
     cfg = GRPOConfig(

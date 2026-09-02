@@ -147,6 +147,7 @@ def test_cache_position_only_used_as_fallback_for_position_ids():
             continue
         value_names = _names_in(node.value)
         # Direct use of cache_position, or the local alias `cp` the current implementation builds from it inside the
+        # fallback branch.
         derives_from_cache_position = any("cache_position" in n for n in value_names) or bool(
             value_names & {"cp"}
         )

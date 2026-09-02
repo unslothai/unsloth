@@ -15,9 +15,9 @@ from contextlib import contextmanager
 
 import pytest
 
-# Skip rather than error where torch is absent.
-# Only `nn.Embedding` / `nn.Linear` / `torch.device` are wanted here, no GPU, but a bare module-level import turns a
-# machine without torch into a collection error, which aborts the whole pytest session instead of leaving one skipped
+# Skip rather than error where torch is absent. Only `nn.Embedding` / `nn.Linear` / `torch.device` are wanted here, no
+# GPU, but a bare module-level import turns a machine without torch into a collection error, which aborts the whole
+# pytest session instead of leaving one skipped module behind.
 torch = pytest.importorskip("torch")
 nn = pytest.importorskip("torch.nn")
 
@@ -150,6 +150,7 @@ def test_opaque_model_leaves_request_alone():
 
 def test_wsl_and_windows_disable_offload():
     # Neither can offload, and the flag also gates the multi-device hook attach, so it has to read False rather than
+    # pass through.
     for var in _WSL_VARS:
         with _as_platform("posix"):
             os.environ[var] = "1"
@@ -170,7 +171,8 @@ def test_wsl_and_windows_disable_offload():
 
 
 def test_platform_gate_lives_in_one_place():
-    # The offload block used to re-test os.name itself;
+    # The offload block used to re-test os.name itself; the copies drifted apart and only Windows noticed.
+    # _resolve_offload_embedding owns it now.
     helper = _SRC[_SRC.index("def _offload_embedding_unsupported_platform(") :]
     helper = helper[: helper.index("\n\n\ndef ")]
     for probe in ('os.name == "nt"', "WSL_DISTRO_NAME", "WSL_INTEROP"):

@@ -32,7 +32,8 @@ import yaml
 from unsloth_pwsh_runner import run_pwsh
 
 
-# Only PATHEXT maps a bare name onto the `.exe` the verify step insists on, so checks needing a *passing* resolution
+# Only PATHEXT maps a bare name onto the `.exe` the verify step insists on, so checks needing a *passing* resolution are
+# skipped off Windows rather than faked. The rejecting direction is platform neutral and runs everywhere.
 needs_pathext = pytest.mark.skipif(
     sys.platform != "win32",
     reason = "needs Windows PATHEXT resolution to map a bare name onto the .exe",
@@ -85,6 +86,7 @@ def run_step(script, env):
     """Invoke a step script the way the runner does and return (code, output)."""
     full = {**os.environ, **env}
     # Every signing check in this file reads the exit code of this one call, so an interpreter that aborts at startup
+    # would look exactly like a step body that failed closed -- the opposite of what the test claims to have proven.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-Command", f". '{script}'"],
         capture_output = True,
@@ -200,7 +202,7 @@ def test_other_platform_integrity_paths_are_untouched():
 
 
 def test_the_install_step_never_interpolates_workflow_expressions():
-    # `${{ }}` in a run body is a shell-injection surface;
+    # `${{ }}` in a run body is a shell-injection surface; the pinned values go through `env:`.
     body = step("Install trusted-signing-cli")["run"]
     assert "${{" not in body
 
@@ -459,7 +461,8 @@ def test_the_real_asset_is_a_64_bit_windows_console_binary(sandbox):
 
 @needs_network
 def test_the_real_asset_declares_the_arguments_the_signing_script_passes(sandbox):
-    # sign-with-trusted-signing.ps1 passes -e and -d;
+    # sign-with-trusted-signing.ps1 passes -e and -d; account and certificate profile come from the environment the
+    # release job sets.
     url, digest = pinned()
     assert run_step(sandbox["install"], install_env(sandbox, url, digest))[0] == 0
     blob = installed_binary(sandbox).read_bytes()

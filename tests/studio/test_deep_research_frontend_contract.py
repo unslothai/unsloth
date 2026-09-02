@@ -265,6 +265,11 @@ def test_research_presentation_is_integrated() -> None:
     ].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
     # #8686 put a chat-scoped override in front of the global read here, so the literal `const permissionMode =
+    # loadPermissionMode();` this used to pin is gone. The read itself is the contract, and it is still per call:
+    # toggling deep research re-resolves the permission level, taking the chat's own level when it has one and the
+    # persisted global otherwise, rather than reusing a stale value. Scoped to the setter, because over the whole file
+    # this would also match the initial-state constant, which is a different property and would keep passing if this
+    # read were dropped.
     deep_research_update = store.split("setDeepResearchEnabled: (deepResearchEnabled) =>", 1)[
         1
     ].split("setResearchWebsitePolicy:", 1)[0]
@@ -339,6 +344,8 @@ def test_settled_terminal_research_never_stays_disconnected() -> None:
 
 def test_replayed_history_never_borrows_another_attempts_step_result() -> None:
     # A retry deletes the previous attempt's research_plan_steps rows but keeps its events, and the SSE route attaches
+    # the live run snapshot to every replayed event. Matching a replayed step only by position would show the newest
+    # attempt's evidence inside the older one.
     coordinator = source("features/chat/stores/research-run-store.ts")
 
     assert "const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);" in coordinator

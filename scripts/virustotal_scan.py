@@ -44,7 +44,7 @@ SKIPPED_SUFFIXES = (".sig",)
 DEFAULT_REQUEST_INTERVAL = 20.0
 DEFAULT_TIMEOUT_SECONDS = 1500.0
 
-# 0 disables the gate entirely;
+# 0 disables the gate entirely; any positive N fails when malicious + suspicious >= N.
 DEFAULT_FAIL_THRESHOLD = 0
 
 _MAX_ATTEMPTS = 4
@@ -380,6 +380,7 @@ class VirusTotalClient:
                 raise TimeoutError(f"deadline reached before {method} {_redact_url(url)}")
             self._throttle(deadline)
             # Re-check: pacing sleeps between the check above and the call below, so without this a request could start
+            # after the deadline and then block for the full socket timeout, overrunning the step's own budget.
             if deadline is not None and self._clock() >= deadline:
                 raise TimeoutError(
                     f"deadline reached while pacing before {method} {_redact_url(url)}"
@@ -506,6 +507,7 @@ class VirusTotalClient:
         """Poll until the analysis completes or the caller's deadline passes."""
         while True:
             # Checked inside request() too, but raising the analysis-specific message here keeps the summary row
+            # readable.
             if self._clock() >= deadline:
                 raise TimeoutError(f"analysis {analysis_id} did not complete before the deadline")
             _, payload = self.request(

@@ -109,7 +109,7 @@ PORT = int(os.environ.get("SMOKE_PORT", "5217"))
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
-# Under logs/ like every sibling harness;
+# Under logs/ like every sibling harness; logs/ is gitignored, so the tree stays clean.
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-collapse-layout"))
 LABEL = "collapse-layout"
 SMOKE_PAGE = "smoke-collapse-layout.html"
@@ -120,11 +120,17 @@ ARMS = ("radix-height", "radix-grid", "unmeasured-grid", "reasoning")
 # The flag the `reasoning` arm follows is a build-time constant, so the page cannot report it.
 FLAG_SOURCE = FRONTEND / "src" / "components" / "assistant-ui" / "thread-feature-flags.ts"
 
-# Two document sizes, because the claim is about SCALING and a single size cannot show it. The
+# Two document sizes, because the claim is about SCALING and a single size cannot show it. The small one is a plausible
+# thread; the large one is where O(total layout objects) stops being a rounding error. One filler row is a block of a
+# dozen inline boxes, so the layout-object count is roughly forty times the row count, and the report prints the element
+# count the page measured rather than trusting this parameter.
 DEFAULT_FILLERS = (200, 5000)
 DEFAULT_PANE_PARAGRAPHS = int(os.environ.get("SMOKE_COLLAPSE_PANE_PARAGRAPHS", "40"))
 DEFAULT_CYCLES = int(os.environ.get("SMOKE_COLLAPSE_CYCLES", "6"))
-# Unthrottled by default: unlike a streaming render, a forced full-document layout is expensive on any machine, so
+# Unthrottled by default: unlike a streaming render, a forced full-document layout is expensive on any machine, so there
+# is nothing here that needs slowing down to become visible. Kept as a knob because throttling scales both sides of the
+# comparison equally and can lift the signal on a box whose layout is fast enough that the small-filler column reads as
+# noise.
 DEFAULT_THROTTLE = int(os.environ.get("SMOKE_COLLAPSE_THROTTLE", "1"))
 
 # The pane animates for 200ms. Everything below waits past that, so a measurement never lands
@@ -149,6 +155,8 @@ TRACE_CATEGORIES = (
 )
 
 # Clicking through Playwright would put its own hit-testing, and the layout reads that come with it, inside the trace
+# window. The whole cycle also runs in one evaluate so a round trip cannot land between the open and the close of a
+# single toggle.
 TOGGLE_CYCLES_JS = """
 async ([cycles, settleMs]) => {
   const trigger = () => document.querySelector('[data-probe="trigger"]');
@@ -337,6 +345,8 @@ def summarise_layouts(events: list[dict]) -> dict:
             if stack:
                 forced_total.append(begin["totalObjects"])
         # Several frames, not one. The top of a forced-layout stack is an anonymous callee inside the bundled
+        # dependency, which names the file but not the reason; the frame that says this ran from a layout effect is a
+        # few down. Together they make a row attributable instead of arguable.
         if stack:
             sources.add(" <- ".join(_frame_label(frame) for frame in stack[:STACK_FRAMES_KEPT]))
         scope = begin.get("partialLayout")
@@ -381,6 +391,7 @@ def grow_probe(page) -> dict:
     settled_after = page.evaluate(PANE_SNAPSHOT_JS)
 
     # Back to a closed pane at the original size, so the mid-flight run opens from the state the settled one did rather
+    # than from a pane that is already half as long again.
     page.evaluate("() => window.__probeReset()")
     page.wait_for_timeout(SETTLE_MS)
     page.evaluate(CLICK_TRIGGER_JS)
@@ -391,6 +402,7 @@ def grow_probe(page) -> dict:
     page.wait_for_timeout(MIDFLIGHT_GROW_DELAY_MS)
     page.evaluate("(n) => window.__probeGrow(n)", GROW_PARAGRAPHS)
     # Twice the settle, because this growth lands during the transition and the row has to finish resolving against
+    # content that changed underneath it.
     page.wait_for_timeout(SETTLE_MS * 2)
     midflight_after = page.evaluate(PANE_SNAPSHOT_JS)
     return {
@@ -419,7 +431,8 @@ def run_cell(context, arm: str, fillers: int, options: argparse.Namespace) -> di
     problems: list[str] = []
     try:
         page.goto(url, wait_until = "domcontentloaded", timeout = READY_TIMEOUT_MS)
-        # The page publishes `__probeReady` after two frames and puts the element count in it, so "document size" in
+        # The page publishes `__probeReady` after two frames and puts the element count in it, so "document size" in the
+        # report is measured rather than being the parameter restated.
         page.wait_for_function("() => Boolean(window.__probeReady)", timeout = READY_TIMEOUT_MS)
         ready = page.evaluate("() => window.__probeReady")
 
@@ -630,6 +643,7 @@ def collect_failures(report: dict) -> list[str]:
         )
 
     # A sweep whose cells all rendered the same document proves nothing about scaling, and the flat table it produces
+    # reads like a result rather than like a broken parameter.
     by_arm: dict[str, list[dict]] = {}
     for cell in cells:
         by_arm.setdefault(cell["arm"], []).append(cell)
@@ -728,6 +742,7 @@ def run(options: argparse.Namespace) -> dict:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless = not options.headful, args = chromium_launch_args())
         # A fixed viewport, because a filler row's height depends on how many times it wraps and therefore on the width;
+        # a default that varied by machine would move the layout-object count between runs of the same command.
         context = browser.new_context(viewport = {"width": 1200, "height": 900})
         try:
             for arm in options.arms:

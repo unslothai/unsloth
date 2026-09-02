@@ -54,7 +54,7 @@ def plenty_of_free_space(monkeypatch):
     ample = _Usage(total = 100 * 1024**3, used = 1 * 1024**3, free = 99 * 1024**3)
 
     def plenty(path):
-        # Keep the real failure modes;
+        # Keep the real failure modes; only the numbers are ours.
         real_disk_usage(path)
         return ample
 

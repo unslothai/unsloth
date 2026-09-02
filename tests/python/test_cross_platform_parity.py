@@ -128,6 +128,7 @@ class TestPreTuringCapParity:
 
     def test_cu126_span_agrees_across_the_python_modules(self):
         # Neither module imports the other (the installer runs before dependencies exist), so assert the shared span
+        # here rather than let it drift silently.
         span = "_CU126_SM_RANGE = (50, 90)"
         for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
             assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
@@ -141,6 +142,7 @@ class TestPreTuringCapParity:
 
 
 # A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a variable a later step can still
+# cap ("_cuda_tag=cu128"), so accept both spellings.
 _CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
 
 
@@ -279,6 +281,7 @@ class TestTorchIndexOverrideParity:
     )
     def test_amd_reroute_guarded_when_pinned(self, path):
         # The AMD ROCm reroute must be skipped when the index is explicitly pinned, so an explicit cpu / cu* / rocm pin
+        # on an AMD host is not overwritten.
         text = path.read_text(encoding = "utf-8")
         assert (
             "TorchIndexPinned" in text
@@ -410,6 +413,7 @@ class TestCudaLeafDigitParity:
     def test_install_ps1_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         # EXACT cu+digits: a custom leaf like cu128-private must route to the verbatim/unknown path, not be compared
+        # against the installed +cu128 tag.
         assert re.search(
             r"'\^cu\[0-9\]'", text
         ), "install.ps1 Get-TauriGpuBranch must require a digit after cu"
@@ -610,6 +614,7 @@ class TestPinnedRocmLeafDigitParity:
         suffixed /rocm7.2-private and force-repairs it from the wrong --default-index."""
         text = INSTALL_SH.read_text(encoding = "utf-8")
         # setup.ps1 routes every family decision through Test-PipRocmFamilyLeaf, which anchors the rocm match so a
+        # suffixed custom leaf stays on the verbatim path.
         assert (
             'if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then\n    _torch_index_is_rocm_family=true'
             in text
@@ -825,6 +830,7 @@ class TestPinnedIndexClearsUvEnvParity:
         An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         # The custom-leaf branch bounds torch AND both companions (parity with the other installers' custom-pin trio
+        # bounds), gated on a non-cu-family leaf.
         for spec in (
             '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
             '$cpuVisionSpec = "torchvision>=0.19,<0.27.0"',
@@ -949,6 +955,7 @@ class TestNoTorchPersistenceParity:
         assert "no_torch = NO_TORCH" in text
         assert "install_manifest.recorded_no_torch()" in text
         # Written after the manifest is dropped and before the dependency pass, so a pass killed part-way still leaves
+        # the mode recorded somewhere.
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
             "if not install_manifest.remove_manifest():"
         )
@@ -963,12 +970,14 @@ class TestNoTorchPersistenceParity:
         assert "function Get-PersistedNoTorch" in text
         assert "function Set-PersistedNoTorch" in text
         # setup.ps1 drops the manifest before running install_python_stack.py, so the resolved answer has to be handed
+        # down through the environment.
         assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(
             '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
         )
 
     def test_both_sides_accept_the_same_spellings(self):
-        # install.ps1 / install.sh accept 1|true|yes|on;
+        # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not be narrower, or a value one layer
+        # honours another silently ignores.
         assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
         assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest

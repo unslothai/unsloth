@@ -164,7 +164,7 @@ def _ignores(
     import unsloth_zoo.hf_xet_fallback as XF
 
     monkeypatch.setattr(XF, "snapshot_download_with_xet_fallback", fake_download)
-    # The auto format branch calls model_info;
+    # The auto format branch calls model_info; unstubbed that is a live request for a real repo.
     import huggingface_hub
 
     class _Api:
@@ -226,6 +226,7 @@ def test_an_older_unsloth_zoo_degrades_instead_of_crashing(modules_json):
     finally:
         HCS._ST_WEIGHTED_MODULE_TYPES = saved
     # ...and the taxonomy being back restores the fix, so the assertion above is about the missing name and not about a
+    # broken stub.
     assert U._repo_has_weighted_st_subfolders("unsloth/embeddinggemma-300m") is True
 
 
@@ -245,6 +246,7 @@ def test_both_weights_at_root_call_sites_go_through_the_check():
     assert sorted(s.split(":")[0] for s in sites) == ["llama.py", "vision.py"], sites
 
     # AST, not grep: the name also appears in prose inside a docstring, and a text count would police the documentation
+    # instead of the code.
     import ast
 
     tree = ast.parse(Path(U.__file__).read_text(encoding = "utf-8"))

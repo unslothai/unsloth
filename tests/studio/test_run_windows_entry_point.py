@@ -122,7 +122,8 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
     Each side is read from its own file. An earlier version of this test only
     grepped studio.py, so drifting the Rust and PowerShell copies left it green.
     """
-    # Spelled out, not imported from any of the three, so editing any single copy fails here instead of quietly
+    # Spelled out, not imported from any of the three, so editing any single copy fails here instead of quietly agreeing
+    # with itself.
     canonical = (
         "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"

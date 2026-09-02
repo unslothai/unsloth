@@ -61,6 +61,7 @@ def _python_blocks(path: Path) -> list[tuple[int, str]]:
         blocks.append((start + 1, textwrap.dedent("\n".join(body)) + "\n"))
         i += 1
     # The indent is stripped by textwrap, so a block whose lines are indented inconsistently would fail to parse below
+    # rather than pass silently.
     del indent
     return blocks
 
@@ -184,7 +185,8 @@ def test_an_http_error_reports_the_response_body(name: str) -> None:
                     f"it, so the diagnosis never reaches the CI log"
                 )
 
-                # Reading the body is only useful if the printed text carries it, and the status code alongside it
+                # Reading the body is only useful if the printed text carries it, and the status code alongside it names
+                # which request.
                 printed = "\n".join(ast.dump(call) for call in prints)
                 assert (
                     "code" in printed
@@ -198,7 +200,7 @@ def test_an_http_error_reports_the_response_body(name: str) -> None:
                     f"unguarded, so a failed read masks the real status"
                 )
 
-                # And the original error must still propagate: reporting is not
+                # And the original error must still propagate: reporting is not the same as tolerating.
                 assert any(isinstance(node, ast.Raise) for node in handler.body), (
                     f"{name}: {helper.name}() reports the HTTPError but does "
                     f"not re-raise it, so a 4xx would pass as success"

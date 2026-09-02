@@ -500,6 +500,7 @@ def resolve_dependencies(
             return
         defined.add(name)
         # Dependencies first: a hoisted `function` would not care, but a `const` read before its declaration is a TDZ
+        # error rather than `undefined`.
         wanted = set()
         for reference in home.references(text):
             if (

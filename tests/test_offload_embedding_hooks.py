@@ -89,7 +89,8 @@ def test_live_decoder_over_stale_fallback():
 
 
 def test_meta_lm_head_falls_back():
-    # A disk-offloaded (meta) lm_head must not be used as the return device: moving hidden
+    # A disk-offloaded (meta) lm_head must not be used as the return device: moving hidden states to meta is
+    # unrecoverable, so fall back to the captured device. No GPU needed.
     emb = _emb().to("cpu")
     lm = _lm_head(CPU)
     lm.weight = nn.Parameter(lm.weight.to("meta"))

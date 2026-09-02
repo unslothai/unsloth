@@ -241,7 +241,8 @@ def cmd_train(args) -> int:
             lr_scheduler_type = "constant",
             optim = "adamw",
             weight_decay = 0.0,
-            # Pin the elementwise clip (value=1.0, norm disabled) to match the 13-seed-tested fixture;
+            # Pin the elementwise clip (value=1.0, norm disabled) to match the 13-seed-tested fixture; explicit value
+            # overrides zoo's MLX default.
             max_grad_norm = 0.0,
             max_grad_value = 1.0,
             logging_steps = 1,
@@ -297,7 +298,7 @@ def cmd_train(args) -> int:
         )
         if k in train_result
     }
-    # logging_steps=1 + max_steps=N -> N callbacks;
+    # logging_steps=1 + max_steps=N -> N callbacks; gate auto-follows max_steps.
     expected_logged_steps = int(config.max_steps)
     assert (
         len(losses_per_step) == expected_logged_steps
@@ -364,6 +365,7 @@ def cmd_train(args) -> int:
     )
 
     # unsloth-zoo#627 fixed from_pretrained(lora_dir) so the cold-start reload below works on the saved adapter dir
+    # directly.
     lora_dir = workdir / "lora"
     with Phase("save_lora", metrics):
         model.save_pretrained_merged(
@@ -468,7 +470,8 @@ def cmd_reload(args) -> int:
     metrics["generation"] = out
     print(f"  [reload:{args.format}] output: {out!r}", flush = True)
 
-    # Save/reload invariant: reloaded teacher-forced loss on TRAIN_TEXT must
+    # Save/reload invariant: reloaded teacher-forced loss on TRAIN_TEXT must match the in-memory post_train_loss. Robust
+    # to MLX's greedy-decode perturbation, which can flip the first token but not the loss.
     train_metrics_path = save_dir.parent / "train_metrics.json"
     in_mem_loss = None
     in_mem_out = None
@@ -530,7 +533,8 @@ def _find_llama_cli() -> Path | None:
         for rel in ("llama-cli", "build/bin/llama-cli"):
             cand = base / rel
             if cand.is_file() and os.access(cand, os.X_OK):
-                # Absolute: a separator-less relative path would send subprocess to a PATH lookup instead of running
+                # Absolute: a separator-less relative path would send subprocess to a PATH lookup instead of running the
+                # file.
                 return cand.resolve()
         # Last resort: the binary may sit under an unexpected build subdir.
         if base.is_dir():
@@ -553,9 +557,9 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         raise SystemExit(f"no .gguf files in {save_dir}")
     gguf_path = gguf_files[0]
 
-    # Save/reload-integrity smoke (assert below only needs a few chars).
-    # The GGUF is exported q8_0 (see save_gguf) because llama.cpp bf16 CPU decode is unusably slow on the runner.
-    # Run CPU-only (-ngl 0), cap the context (-c 256, the model advertises 32768), and keep generation short;
+    # Save/reload-integrity smoke (assert below only needs a few chars). The GGUF is exported q8_0 (see save_gguf)
+    # because llama.cpp bf16 CPU decode is unusably slow on the runner. Run CPU-only (-ngl 0), cap the context (-c 256,
+    # the model advertises 32768), and keep generation short; all env-tunable.
     n_predict = os.environ.get("UNSLOTH_GGUF_RELOAD_N", "8")
     n_threads = os.environ.get("UNSLOTH_GGUF_RELOAD_THREADS", str(os.cpu_count() or 4))
     n_ctx = os.environ.get("UNSLOTH_GGUF_RELOAD_CTX", "256")
@@ -588,7 +592,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
                 capture_output = True,
                 text = True,
                 timeout = reload_timeout,
-                # Newer llama.cpp keeps llama-cli in chat mode;
+                # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
                 input = "/exit\n",
             )
         except subprocess.TimeoutExpired as exc:

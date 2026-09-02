@@ -234,7 +234,7 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
         assert "skip_reason" in passed, f"vision.py:{call.lineno} plans a text-only decoder"
         source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
         assert "text_only_decoder" in source, f"vision.py:{call.lineno}"
-        # The other way the load can diverge from the plan;
+        # The other way the load can diverge from the plan; see the task-head test.
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 
     # loader.py does the swap for FastModel/FastLanguageModel, so it has to say so too.

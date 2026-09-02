@@ -337,7 +337,8 @@ def check_altgr(page, engine: str, platform: str) -> None:
 
 
 def check_foreign_binding(page, engine: str, platform: str) -> None:
-    # A binding stored on a Mac must not fire on the bare key elsewhere. Before
+    # A binding stored on a Mac must not fire on the bare key elsewhere. Before the registry grew, matchesBinding
+    # ignored the ctrl flag off macOS instead of rejecting it, and a Mac Ctrl chord fired on the unmodified key.
     reload_with(page, json.dumps({"copySessionId": {"primary": "Ctrl+KeyG"}}))
     reset(page)
     page.evaluate(

@@ -194,6 +194,7 @@ def test_the_check_itself_is_never_patched_out():
     func = import_fixes.disable_torchaudio_if_cuda_mismatched
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
     # The docstring names it, deliberately, to say why it is NOT touched, so strip it by AST rather than by string
+    # surgery. Only the body is a claim.
     body = tree.body[0].body
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
         body = body[1:]

@@ -119,6 +119,7 @@ def test_shard_installs_nothing_it_never_drives(cell: dict) -> None:
     installed = set(cell["engines"].split())
     driven = _engines_driven_by(cell["shard"])
     # chromium is the default engine for every suite here, so it is legitimately installed whether or not a step names
+    # it out loud.
     extra = installed - driven - {"chromium"}
     assert not extra, (
         f"shard {cell['shard']!r} installs {sorted(extra)} but no step drives them. "

@@ -80,10 +80,9 @@ LOCK_CHAIN = (
 
 def _run_powershell(script: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     # Through a FILE, not -Command: these scripts carry the whole extracted helper chain, and Windows caps a command
-    # line at 32767 characters.
-    # Passed inline, the moment the chain grows past that every test here dies as WinError 206 rather than testing
-    # anything.
-    # utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI;
+    # line at 32767 characters. Passed inline, the moment the chain grows past that every test here dies as WinError 206
+    # rather than testing anything. utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI; utf-8 with
+    # replacement on the way back because the default console codepage there cannot decode what PowerShell writes.
     handle, name = tempfile.mkstemp(suffix = ".ps1")
     os.close(handle)
     try:
@@ -237,7 +236,8 @@ Write-Output "TEMP:$env:TEMP"
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
-    # The P/Invoke targets kernel32, so off Windows the type loads but the CALL fails;
+    # The P/Invoke targets kernel32, so off Windows the type loads but the CALL fails; it has to degrade to a usable
+    # answer rather than throw.
     assert _lines(result, "PATH:")[0].startswith("PATH:")
     assert _lines(result, "PATH:") != ["PATH:"]
 
@@ -342,7 +342,8 @@ Write-Output "AFTER:$(Test-StudioDirectoryUsable -Path '{good}')"
 
 @requires_pwsh
 def test_unusable_temp_is_replaced_and_then_restored(tmp_path: Path):
-    # Under a regular file so it cannot merely be created: the probe has to fail the
+    # Under a regular file so it cannot merely be created: the probe has to fail the way an ACL-restricted temp
+    # directory fails.
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory")
     env = os.environ.copy()
@@ -1120,7 +1121,8 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     precious = tmp_path / "precious"
     precious.mkdir()
     (precious / "keepme.txt").write_text("do not delete", encoding = "utf-8")
-    # A dead owner PID, or the sweep keeps the directory for the live process its name says owns it;
+    # A dead owner PID, or the sweep keeps the directory for the live process its name says owns it; that case is the
+    # test below.
     stale = root / f"ust-{_DEAD_PID}-01d01d01"
     stale.mkdir()
     (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -1475,7 +1477,7 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
-    # The candidate the probe made is gone;
+    # The candidate the probe made is gone; the directory that was already there stays.
     assert not list(provisioned.glob("ust-*"))
     assert provisioned.is_dir(), "a pre-existing temp directory was unwound"
     # And the tree the probe DID create under the other root is still taken back.

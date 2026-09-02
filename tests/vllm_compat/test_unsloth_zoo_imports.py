@@ -35,7 +35,7 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# Some unsloth_zoo modules read pynvml at import;
+# Some unsloth_zoo modules read pynvml at import; stub it for the runner.
 def _stub_module(name: str, attrs: dict | None = None) -> None:
     if name in sys.modules:
         return
@@ -136,7 +136,8 @@ def test_vllm_lora_request_imports():
 def test_vllm_lora_worker_manager_imports():
     sys.modules.pop("unsloth_zoo.vllm_lora_worker_manager", None)
     mod = importlib.import_module("unsloth_zoo.vllm_lora_worker_manager")
-    # e3072a23 added supports_tower_connector_lora for vLLM 0.14's gpu_model_runner;
+    # e3072a23 added supports_tower_connector_lora for vLLM 0.14's gpu_model_runner; assert the patched class exposes
+    # it.
     cls = getattr(mod, "WorkerLoRAManager", None)
     if cls is not None:
         assert (

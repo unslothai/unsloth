@@ -26,7 +26,8 @@ class _Tok:
 
 
 def _fake_auto_tokenizer():
-    # _load_correct_tokenizer loads a slow tokenizer (from_slow = True) and a fast one;
+    # _load_correct_tokenizer loads a slow tokenizer (from_slow = True) and a fast one; return distinguishable stand-ins
+    # so we can see which one is returned.
     def from_pretrained(name, **kwargs):
         return _Tok("slow" if kwargs.get("from_slow") else "fast")
 

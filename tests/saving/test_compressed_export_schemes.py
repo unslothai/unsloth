@@ -25,7 +25,7 @@ def test_registry_entries_are_well_formed():
         assert isinstance(scheme, str) and scheme, f"{alias!r}: scheme must be a non-empty str"
         assert isinstance(needs_calib, bool), f"{alias!r}: needs_calibration must be a bool"
         assert isinstance(suffix, str) and suffix, f"{alias!r}: suffix must be a non-empty str"
-        # The suffix builds the sibling output dir "<save_dir>-<suffix>";
+        # The suffix builds the sibling output dir "<save_dir>-<suffix>"; keep it path-safe.
         assert not (
             set(suffix) & set("/\\ ")
         ), f"{alias!r}: suffix {suffix!r} must be filesystem-safe"
@@ -56,7 +56,7 @@ def test_near_miss_compressed_names_raise(method):
 
 
 def test_calibration_flags_match_known_schemes():
-    # Only static FP8 and NVFP4 require calibration data;
+    # Only static FP8 and NVFP4 require calibration data; everything else is data-free.
     assert _normalize_compressed_method("fp8")[1] is False
     assert _normalize_compressed_method("fp8_static")[1] is True
     assert _normalize_compressed_method("nvfp4")[1] is True

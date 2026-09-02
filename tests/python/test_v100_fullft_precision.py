@@ -246,6 +246,7 @@ def test_force_float32_beats_explicit_bf16():
 
 def test_unsloth_mixed_precision_bfloat16_beats_explicit_bf16():
     # UNSLOTH_MIXED_PRECISION='bfloat16' (pure bf16 full FT, no autocast) must keep precedence over the explicit-flag
+    # export.
     fp16, bf16, amp, raised = _decide(
         torch.bfloat16,
         bf16_supported = True,

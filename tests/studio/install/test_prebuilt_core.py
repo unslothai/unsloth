@@ -58,6 +58,7 @@ LLAMA_DESCRIPTOR = core.ComponentDescriptor(
     metadata_filename = "UNSLOTH_LLAMA_PREBUILT_INFO.json",
     user_agent = "unsloth-studio-llama-prebuilt",
     # A GPU-selection miss reports "no prebuilt" so the caller can fall back to a source build instead of silently
+    # degrading to CPU.
     fallback_backend = None,
     server_binary_name = lambda host: "llama-server",
     runtime_bin_dir = lambda install_dir, host: install_dir / "build" / "bin",
@@ -323,7 +324,7 @@ def test_macos_min_os_accepts_bare_version_format(component):
 
 def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
     host14 = _arm_mac_host(component, (14, 0))
-    # The live manifest format is 'macos-<ver>';
+    # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
     assert component.ops.macos_min_os_ok(host14, "macos-14.0") is True
     assert component.ops.macos_min_os_ok(host14, "macos-15.0") is False
     assert component.ops.macos_min_os_ok(host14, "13.3") is True
@@ -726,7 +727,8 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
 
 
 def test_core_slim_hooks_default_inert(component, tmp_path):
-    # A component without its own hooks stages nothing extra and adds no resolver fields (llama's probe output must
+    # A component without its own hooks stages nothing extra and adds no resolver fields (llama's probe output must stay
+    # byte-identical).
     assert component.ops.resolver_payload_extra({"install_kind": "slim"}) == {}
     host = make_host(component)
     selection = object()

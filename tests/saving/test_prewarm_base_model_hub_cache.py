@@ -109,6 +109,7 @@ def _build_env(
     if not cached:
         hf_hub_download.exc = _LocalMiss("not cached")
     # Serve model.safetensors.index.json (the merge's shard filter) while shard cache probes still miss, so the
+    # index-filter path can be exercised without a network.
     if index_weight_map is not None:
         _idx_path = tmp_path / "model.safetensors.index.json"
         _idx_path.write_text(json.dumps({"weight_map": index_weight_map}))
@@ -316,6 +317,7 @@ def test_gpt_oss_bf16_mxfp4_swap_skips(monkeypatch, tmp_path):
 
 def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
     # A model whose config is None must skip silently, not fall into the outer exception handler that prints a
+    # misleading "Could not pre-cache" warning.
     fn, stubs = _build_env(monkeypatch, tmp_path)
     model = _FakePeftModel()
     model.config = None
@@ -328,7 +330,8 @@ def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
 
 
 def test_relative_hub_cache_does_not_falsely_skip(monkeypatch, tmp_path):
-    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a real
+    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a real root for the disk probe;
+    # without abspath the walk-up hits "" and pre-warm is skipped.
     monkeypatch.chdir(tmp_path)
     fn, stubs = _build_env(monkeypatch, tmp_path, hub_cache = "relcache/hub")
     fn(_FakePeftModel(), save_method = "merged_16bit")
@@ -399,6 +402,7 @@ def test_fp8_base_prewarms_16bit_sibling_not_fp8_repo(monkeypatch, tmp_path):
 
 def test_fp8_base_without_sibling_still_prewarms_fp8_repo(monkeypatch, tmp_path):
     # A merged_16bit export of an FP8 base with a 16bit sibling merges onto the sibling, so the pre-warm must cache the
+    # sibling (what the merge downloads), not the FP8 repo.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,

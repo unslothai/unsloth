@@ -418,7 +418,8 @@ def test_legacy_downloads_are_restored_during_migration(tmp_path):
     assert "gh release download v0.1.801-beta --pattern latest.json" in "\n".join(commands)
     assert any("releases/801 -f make_latest=true" in line for line in commands)
     assert _latest_of(tmp_path) == "v0.1.801-beta"
-    # A pre-rename release cannot serve the stable links, and the summary says so
+    # A pre-rename release cannot serve the stable links, and the summary says so rather than reporting the downloads as
+    # repaired.
     summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
     assert "predates the stable asset names" in summary
 
@@ -451,7 +452,8 @@ def test_incomplete_draft_and_prerelease_releases_are_never_restored(tmp_path):
         ],
         manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
-    # An explicit repair request that cannot be honoured leaves production broken,
+    # An explicit repair request that cannot be honoured leaves production broken, so it must go red rather than finish
+    # green with nothing done.
     assert result.returncode == 1
     assert "nothing to restore" in result.stderr
     assert not [line for line in commands if "--method PATCH" in line]
@@ -612,8 +614,8 @@ def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
 
 
 def test_a_draft_or_prerelease_target_is_refused(tmp_path):
-    # /releases/latest never resolves to a draft or prerelease, so a repair aimed at
-    # one cannot affect the endpoint. The source filter already refuses them; the
+    # /releases/latest never resolves to a draft or prerelease, so a repair aimed at one cannot affect the endpoint. The
+    # source filter already refuses them; the target is held to the same rule.
     for state in ("draft", "prerelease"):
         target = _release("v0.1.53-beta", release_id = 53, complete = False)
         target[state] = True

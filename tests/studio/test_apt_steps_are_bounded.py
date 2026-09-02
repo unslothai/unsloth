@@ -50,9 +50,12 @@ _APT = re.compile(r"\bapt-get\s+(?:update|install)\b|playwright\s+install\b[^\n]
 # `release_dpkg_lock()` waits up to 24 * 5s for the orphaned holder, then kills it and sleeps 5.
 LOCK_WAIT_SECONDS = 125
 
-# Workflows whose apt calls do not run on a hosted runner and cannot use the
+# Workflows whose apt calls do not run on a hosted runner and cannot use the helper. Each is here for a reason that
+# would survive a rewrite, not because it was inconvenient to convert.
 EXEMPT_WORKFLOWS = {
     # Runs apt inside bare distro containers and inside WSL, as root, with no checkout (the whole point is a machine
+    # with no git). There is no repo on disk to read the helper from, and `sudo`/`fuser` are deliberately absent -- one
+    # leg asserts that `sudo` does not exist on the image at all.
     "clean-machine-install-ci.yml",
 }
 
@@ -107,6 +110,7 @@ def _worst_case_seconds(step: dict, run: str) -> int:
     per_attempt = env.get("RETRY_ATTEMPT_TIMEOUT")
 
     # A step may also set them inline, as `RETRY_ATTEMPTS=3 bash ...helper`, which is how the two steps that embed the
+    # call in a larger script pass them.
     if attempts is None:
         inline = re.search(r"RETRY_ATTEMPTS=(\d+)", run)
         attempts = inline.group(1) if inline else None

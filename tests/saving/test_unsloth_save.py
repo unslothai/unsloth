@@ -303,7 +303,7 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
         torchao_save_path
     ), f"TorchAO directory {torchao_save_path} does not exist."
 
-    # load_in_4bit must stay False: a torchao-quantized model can't be
+    # load_in_4bit must stay False: a torchao-quantized model can't be re-quantized with bitsandbytes.
     import torch.serialization
 
     with torch.serialization.safe_globals([getattr]):

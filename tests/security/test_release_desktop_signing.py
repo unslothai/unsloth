@@ -76,9 +76,10 @@ def test_the_verified_binary_is_the_one_that_signs():
 
 
 def test_the_check_exits_non_zero_on_every_failure_path():
-    # The signing script calls the tool by bare name, and rust-cache restores ~/.cargo/bin, which can hold an
+    # The signing script calls the tool by bare name, and rust-cache restores ~/.cargo/bin, which can hold an unverified
+    # copy of the same name. PATH has to resolve to the digest-checked file.
     run = _verify_step()["run"]
-    # Not on PATH, resolved to an unverified copy, cannot be started, and
+    # Not on PATH, resolved to an unverified copy, cannot be started, and started but exited non-zero.
     assert run.count("exit 1") == 4
 
 
@@ -95,12 +96,14 @@ def test_the_launch_error_is_flattened_to_one_line():
 
 def test_failures_are_not_swallowed_by_a_fallback_message():
     # A truncated download raises a terminating PowerShell error, not a native exit code, so without the catch the step
+    # dies before explaining why.
     run = _verify_step()["run"]
     assert "|| Write-Output" not in run
 
 
 def test_the_native_exit_code_is_inspected():
-    # A PowerShell error spans message, offending line and caret;
+    # A PowerShell error spans message, offending line and caret; an annotation stops at the first newline, dropping the
+    # guidance that follows.
     run = _verify_step()["run"]
     assert "$LASTEXITCODE" in run
 

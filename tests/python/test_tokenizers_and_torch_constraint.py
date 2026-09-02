@@ -484,7 +484,8 @@ class TestTorchConstraintShell:
         ],
     )
     def test_cuda_in_mirror_path_but_noncuda_leaf_keeps_default(self, tmp_path, url):
-        # A cu128 in the mirror base path must not widen when the leaf is cpu /
+        # A cu128 in the mirror base path must not widen when the leaf is cpu / older ROCm: the case anchors on
+        # _torch_index_leaf, not the whole URL.
         assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
 
 

@@ -413,6 +413,7 @@ def test_setup_helpers_gate_on_canonical_custom_root():
     ps_src = SETUP_PS1.read_text(encoding = "utf-8")
     ps_idx = ps_src.index("function Assert-StudioOwnedOrAbsent")
     # To the end of the function, not a fixed width, which a new parameter or comment would push the assertions below
+    # out of.
     ps_func = ps_src[ps_idx:].split("\nfunction ", 1)[0]
     assert (
         "$StudioHomeIsCustom -and" in ps_func
@@ -653,7 +654,8 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
     assert (
         urandom_idx < py_fallback_idx
     ), "/dev/urandom must be tried before the python3 secrets fallback"
-    # Reusing an existing id only when it is valid is what makes re-runs idempotent -- and keeps a pre-planted value
+    # Reusing an existing id only when it is valid is what makes re-runs idempotent -- and keeps a pre-planted value out
+    # of the launcher.
     assert (
         '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")' in block
     ), "install.sh must reuse an existing id only after validating it"
@@ -1364,6 +1366,7 @@ def test_install_sh_root_id_pass_does_not_mutate_user_data_dir(tmp_path):
     template = src[heredoc_body_start:heredoc_body_end]
     launcher_path = tmp_path / "launch.sh"
     # template comes out of install.sh, so it carries whatever non-ASCII that file holds and cp1252 cannot encode it
+    # back out.
     launcher_path.write_text(template, encoding = "utf-8")
     # sed order: root-id first, then data-dir.
     weird_data_dir = "/tmp/with-@@STUDIO_ROOT_ID@@/share"

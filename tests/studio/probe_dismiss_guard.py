@@ -363,7 +363,7 @@ async def one_case(
         before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case in ("drag_then_space", "blur_then_space"):
-        # A drag may retarget the click;
+        # A drag may retarget the click; blur exercises the no-click cleanup path.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}

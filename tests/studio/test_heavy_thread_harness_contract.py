@@ -60,8 +60,8 @@ def verdict() -> str:
 
 def test_every_measured_action_has_a_growth_axis() -> None:
     # An action that is driven but never checked for growth is an action whose column could be constant at every size
-    # without anything failing.
-    # The axes are generated from ACTIONS, so what has to hold is that ACTIONS is the generator and that it still lists
+    # without anything failing. The axes are generated from ACTIONS, so what has to hold is that ACTIONS is the
+    # generator and that it still lists all six.
     text = source(HARNESS)
     declared = section(text, "ACTIONS = (", ")")
     for action in ACTIONS:
@@ -100,7 +100,8 @@ def test_chromium_only_rows_say_so_in_their_own_label() -> None:
 
 
 def test_the_longtask_api_is_recorded_as_supported_or_not() -> None:
-    # Off Chromium these print `-`, and a `-` that means "not supported here" must not be read as
+    # Off Chromium these print `-`, and a `-` that means "not supported here" must not be read as a zero. The label is
+    # the only thing carrying that.
     text = source(HARNESS)
     assert "__longTaskSupported" in text
     assert '("longtask api supported", lambda r: r["long_task_supported"])' in text

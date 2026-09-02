@@ -283,7 +283,7 @@ def _compare(
             clip_sim.append(clip.image_similarity(img, ref))
 
     def _mean(xs: list[float]) -> Optional[float]:
-        # Report inf only when every sample is inf;
+        # Report inf only when every sample is inf; otherwise cap the perfect ones so partial drift still shows.
         if not xs:
             return None
         if all(x == math.inf for x in xs):

@@ -45,6 +45,7 @@ def _load_helper():
         if isinstance(node, ast.FunctionDef) and node.name == "_offload_frozen_module_for_training"
     )
     # The annotations are evaluated when the def executes, so the names they mention have to be real here, not
+    # placeholders.
     from typing import Optional
 
     ns = {"torch": torch, "Optional": Optional, "ModulesToSaveWrapper": object}

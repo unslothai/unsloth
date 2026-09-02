@@ -71,6 +71,7 @@ print("RESULT " + json.dumps({{"device_type": device_type, "targets": targets}})
 def routed():
     code = _CHILD.format(tests = str(_TESTS_DIR), arches = list(_ARCHES))
     # get_device_type() returns "mlx" before it ever looks at torch on Darwin arm64 with mlx installed, so the spoof
+    # would be ignored. Force the GPU path to keep the assertion live there instead of skipping it.
     env = {**os.environ, "UNSLOTH_FORCE_GPU_PATH": "1"}
     proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)

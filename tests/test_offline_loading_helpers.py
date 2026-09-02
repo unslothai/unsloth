@@ -456,6 +456,7 @@ def test_kwargs_preserved_across_retry(monkeypatch):
 
 def test_retry_runs_gc_collect_between_attempts(monkeypatch):
     # The retry lives OUTSIDE the except so the failed attempt's traceback (a partial model) is freed by gc.collect()
+    # before the second load reallocates.
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     gc_calls = []
@@ -515,6 +516,7 @@ def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
 
 def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
     # VLM checkpoint with tokenizer files but no processor config -> base repo (None), so its cached processor still
+    # loads instead of AutoProcessor failing on the local dir.
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     _touch(tmp_path, "preprocessor_config.json")
@@ -796,6 +798,7 @@ def test_an_implicitly_chained_network_error_stays_recognisable(monkeypatch):
         caught.value
     ), "the retry replaced the implicitly chained connection error that made this classifiable"
     # The connection error keeps the slot the traceback prints, and the retry is reported alongside it rather than in
+    # place of it.
     assert isinstance(caught.value.__context__, ConnectionError)
     assert isinstance(caught.value._unsloth_offline_retry_error, AttributeError)
 

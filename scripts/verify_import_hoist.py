@@ -683,7 +683,7 @@ _SELF_TESTS = {
     "rename_clash": (
         # before: _b is a deliberate alias;
         "import re as _b\nb = 123\ndef f():\n    return _b.compile('x'), b\n",
-        # after: someone normalized _b -> b ;
+        # after: someone normalized _b -> b ; now f().b is the int, re is lost
         "import re\nb = 123\ndef f():\n    return b.compile('x'), b\n",
         "BLOCKER",
     ),
@@ -721,7 +721,7 @@ _SELF_TESTS = {
         None,
     ),
     "attr_access_not_a_use": (
-        # x._b is attribute access, not a use of name _b;
+        # x._b is attribute access, not a use of name _b; removing import _b is fine
         "import os\ndef f(x):\n    import sys as _b\n    return x._b + _b.argv[0]\n",
         "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
@@ -789,7 +789,7 @@ _SELF_TESTS = {
 def _self_test() -> int:
     ok = True
     for name, case in _SELF_TESTS.items():
-        # A case may supply its own path;
+        # A case may supply its own path; the __all__ skip is scoped to package __init__.py.
         before, after, expect = case[0], case[1], case[2]
         path = case[3] if len(case) > 3 else f"<{name}>"
         findings = compare(before, after, path)

@@ -110,7 +110,7 @@ def test_harnesses_report_why_the_page_failed() -> None:
 
 
 def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
-    # The live log dies with the runner;
+    # The live log dies with the runner; the screenshot, body excerpt and vite's own transform errors are what remains.
     text = source("playwright_strip_ansi_smoke.py")
     assert "dump(page, vite)" in text, "the assertions do not run under the dump"
     assert "dump_diagnostics(page, ART" in text
@@ -159,6 +159,8 @@ def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, mo
 
 def test_stream_pacing_asserts_its_long_task_probe_measured_something() -> None:
     # longTaskMs is the metric the budgets turn on, and it is 0 both when the render is free and when the observer never
+    # ran: `observe({type: "longtask"})` aborts silently on an engine without the entry type. Without these, a firefox
+    # or webkit run, or a broken observer, scores a perfect zero and exits 0.
     main = verdict("playwright_stream_pacing.py")
     assert 'results.get("longTaskSupported")' in main
     assert 'results["longTasks"] <= 0' in main
@@ -168,15 +170,18 @@ def test_stream_pacing_asserts_its_long_task_probe_measured_something() -> None:
 
 def test_stream_pacing_asserts_the_reply_was_actually_painted() -> None:
     # A page that rendered nothing scores a perfect zero on every budget, so the workload has to be asserted before the
+    # numbers mean anything.
     main = verdict("playwright_stream_pacing.py")
     assert 'results["paintedChars"] < floor' in main
     assert 'results["arrivals"]' in main
     # paintedChars only climbs, so the length at settlement must be checked too, or an empty final DOM passes on the
+    # peak it reached earlier.
     assert 'results["settledChars"] < floor' in main
 
 
 def test_harnesses_own_their_dev_server() -> None:
-    # A server started beside the harness leaves the node child alive when the wrapper is killed, stranding the port
+    # A server started beside the harness leaves the node child alive when the wrapper is killed, stranding the port and
+    # the step's stdout. Each harness owns its own instead.
     for name in (
         "playwright_chat_autoscroll.py",
         "playwright_research_freeze.py",
@@ -296,16 +301,19 @@ def test_thread_weight_proves_it_discriminates_rather_than_gating_on_a_budget() 
     main = thread_weight_verdict()
     assert "GROWTH_AXES" in main
     assert "no measured axis rose with N" in main
-    # The menu is opened non-modally now, so the body must NOT go onto the modal layer; what
+    # The menu is opened non-modally now, so the body must NOT go onto the modal layer; what the verdict has to reject
+    # is a run that mixes the two across N, whose columns then price different mechanisms.
     assert 'menu["body_pointer_events_while_open"]' in main
     # An empty popover satisfies "the menu opened" and costs nothing to render.
     assert 'menu["items_while_open"]' in main
     # A delete that deleted nothing is a fast delete.
     assert 'deleted["messages_after"]' in main
-    # A keystroke that never reached the runtime still reports the double-rAF paint floor, so
+    # A keystroke that never reached the runtime still reports the double-rAF paint floor, so the floor has to be
+    # compared rather than left implicit in the timings.
     assert 'row["paint_floor_ms"]' in main
     assert 'keystroke["runtime_text"] != keystroke["dom_text"]' in main
-    # Requests reaching the network and console warnings both cost a CDP round trip per message, so both would grow
+    # Requests reaching the network and console warnings both cost a CDP round trip per message, so both would grow with
+    # N for reasons the app does not have.
     assert 'row["stray_api_requests"]' in main
     assert 'row["console_warnings"]' in main
 

@@ -136,7 +136,7 @@ def spoof_xpu(monkeypatch):
             monkeypatch.setenv("UNSLOTH_FORCE_XPU", "1")
         else:
             monkeypatch.delenv("UNSLOTH_FORCE_XPU", raising = False)
-        # FLAT is the oneAPI default;
+        # FLAT is the oneAPI default; pin it so the test is host-independent.
         monkeypatch.delenv("ZE_FLAT_DEVICE_HIERARCHY", raising = False)
 
         hw = _import_studio_hardware_module()
@@ -313,7 +313,8 @@ def test_apply_gpu_ids_predetect_dual_build_cuda_active_writes_cvd(spoof_xpu, mo
 
 
 def test_apply_gpu_ids_trusts_parent_backend_param(spoof_xpu, monkeypatch):
-    # Canary: dual build with CUDA active (no hint) keeps CUDA masking, same as detect_hardware picking CUDA on a
+    # Canary: dual build with CUDA active (no hint) keeps CUDA masking, same as detect_hardware picking CUDA on a hybrid
+    # host.
     import torch
 
     hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None, force_xpu = True)

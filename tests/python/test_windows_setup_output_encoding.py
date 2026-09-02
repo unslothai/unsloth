@@ -68,7 +68,8 @@ SLOTH = "\U0001f9a5"
 RULE_CHAR = "─"
 REPLACEMENT = "�"
 
-# The desktop app spawns Windows PowerShell 5.1;
+# The desktop app spawns Windows PowerShell 5.1; pwsh stands in elsewhere. The OEM-code-page bug only reproduces on 5.1,
+# which the Windows runner covers.
 _PWSH = shutil.which("powershell") if sys.platform == "win32" else shutil.which("pwsh")
 pwsh_only = pytest.mark.skipif(_PWSH is None, reason = "PowerShell is unavailable")
 
@@ -240,6 +241,7 @@ def test_banner_and_footer_are_valid_utf8(use_command_shape: bool) -> None:
 
 
 # The banner and the footer are the two blocks a user actually reads in the desktop setup log, and neither goes through
+# step/substep, so they need their own byte-level coverage.
 @pwsh_only
 @pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
 def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
@@ -509,6 +511,7 @@ powershell_51_only = pytest.mark.skipif(
 )
 
 # Documented kernel32 calls and nothing else, so the probe reaches the target state without the scripts under test
+# knowing they are being tested.
 _FREE_CONSOLE = """Add-Type -Namespace Force -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern bool FreeConsole();
 '@
@@ -570,6 +573,7 @@ def _console_less_probe(path: Path) -> str:
     source = path.read_text(encoding = "utf-8")
     masked = _mask_literals(source)
     # Sliced too: it is what turns the Write-Host throw into a dead script rather than a skipped line, so restating it
+    # would be assuming the result.
     eap = _slice_optional(source, r'(?m)^[ \t]*\$ErrorActionPreference = "Stop"')
     assert eap, f"{path.name} no longer stops on error before the banner"
     parts = [eap, _FREE_CONSOLE, "", _slice_preamble(source), ""]
@@ -595,6 +599,7 @@ def _console_less_probe(path: Path) -> str:
             parts.append(assignment)
     parts += ["", _slice_banner(source, masked), ""]
     # On stderr, which the app reads on a separate reader, so stdout stays exactly the byte stream the log panel is
+    # built from.
     parts += [
         '[Console]::Error.WriteLine("psversion=" + $PSVersionTable.PSVersion.ToString())',
         '[Console]::Error.WriteLine("console_outputencoding_codepage=" + [Console]::OutputEncoding.CodePage)',

@@ -352,7 +352,8 @@ def test_shipping_code_names_an_encoding():
     )
 
 
-# The assertion above passes vacuously once the trees are clean, so it cannot tell a
+# The assertion above passes vacuously once the trees are clean, so it cannot tell a working detector from one that
+# always returns None. These pin the detector itself.
 def test_detects_the_plain_cases():
     assert _offenders_in("from pathlib import Path\np = Path('x')\ns = p.read_text()\n")
     assert _offenders_in("p.write_text('hi')\n")
@@ -376,7 +377,7 @@ def test_accepts_a_pinned_encoding():
 
 
 def test_skips_binary_handles():
-    # Binary has no encoding to name;
+    # Binary has no encoding to name; passing one is a ValueError.
     assert not _offenders_in("f = open('x', 'rb')\n")
     assert not _offenders_in("f = open('x', mode = 'wb')\n")
     assert not _offenders_in("f = p.open('rb')\n")

@@ -821,7 +821,8 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
         assert save_mod._gguf_output_size_ratio(dtype, "bf16") == (
             save_mod._gguf_output_size_ratio(dtype, "bf16", upper_bound = False)
         )
-    # A width the diagnosis cannot measure is not guessed at: None puts the
+    # A width the diagnosis cannot measure is not guessed at: None puts the caller back on the fixed floor rather than
+    # charging a whole base copy.
     assert save_mod._gguf_output_size_ratio("something_new", "bf16") == 1.0
     assert save_mod._gguf_output_size_ratio("something_new", "bf16", upper_bound = False) is None
 
@@ -866,6 +867,7 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
     ), "the index named the shards that were just deleted and cannot outlive them"
 
     # Second export into the same directory, provenance snapshotted the way `unsloth_save_pretrained_gguf` does, before
+    # the merge writes.
     preexisting = frozenset(os.listdir(merge))
     # First export: the directory is this export's own, so everything goes.
     _write_merge()

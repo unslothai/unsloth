@@ -119,6 +119,7 @@ def test_aggregate_extra_pulls_in_the_matched_wheel(family: str, torch_tag: str)
 def test_no_extras_invented_for_torch_without_xformers_wheels(torch_tag: str):
     extras = _extras()
     # CUDA extras only -- the intel-gpu-torch2110 / intelgputorch2110 XPU extras carry no xformers row and are not
+    # affected.
     pattern = re.compile(rf"^cu\d+(?:only)?-?torch{torch_tag}$")
     offenders = [n for n in extras if pattern.match(n)]
     assert offenders == [], (

@@ -165,7 +165,8 @@ def test_single_device_move_failure_restores_and_returns_none():
 
 
 def test_cpu_spilled_map_still_releases_its_gpu_shards(_fake_accelerate):
-    # One module spilled to CPU, but the rest is the GPU memory the reload needs, and the spilled weights are already
+    # One module spilled to CPU, but the rest is the GPU memory the reload needs, and the spilled weights are already in
+    # host RAM, so the move is safe.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     device_map = {"model.embed": 0, "model.layers.0": 1, "model.layers.9": "cpu"}
     model = _FakeModel(device_map = device_map)
@@ -220,6 +221,7 @@ def test_quantized_model_is_released_when_the_stack_allows_it():
 
 def test_quantized_model_that_refuses_to_move_is_left_usable():
     # transformers rejects .to() for some bitsandbytes builds and raises before anything moves, so the old behaviour
+    # must hold: no token, nothing escaping.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
 
     class _Refuses(_FakeModel):
@@ -414,6 +416,7 @@ def test_offload_failure_is_logged_not_swallowed():
 
 def test_restore_without_a_snapshot_forwards_skip_keys(_fake_accelerate):
     # dispatch_model() defaults skip_keys to None, which moves every forward kwarg to the executing device, wrong for
+    # tensors transformers marks device-invariant.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     device_map = {"model.embed": 0, "model.layers.0": 1}
     model = _FakeModel(device_map = device_map, devices = ("cuda:0", "cuda:1"))

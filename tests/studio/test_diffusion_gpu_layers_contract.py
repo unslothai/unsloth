@@ -174,7 +174,7 @@ def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
     b._requested_spec_mode = "auto"
     b._spec_fallback_reason = b._speculative_type = b._spec_draft_n_max = None
     b._chat_template_override = b._mtp_draft_path = b._extra_args = None
-    # Dropped-split rows model "the shim stayed old";
+    # Dropped-split rows model "the shim stayed old"; the upgrade flip is separate.
     b.diffusion_split_supported = lambda: False
     return b
 

@@ -30,7 +30,8 @@ ART.mkdir(parents = True, exist_ok = True)
 
 TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TIMEOUT_MS", "30000"))
 
-# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle
+# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle is here on purpose:
+# loadPermissionMode falls back to it, so writing it would leak globally.
 GLOBAL_KEYS = (
     "unsloth_chat_tools_enabled",
     "unsloth_chat_code_tools_enabled",
@@ -391,6 +392,7 @@ def main():
 
         step("and a sidebar switch, with no reload, does the same")
         # The reload-free path is the one users take, and the only one where the store still holds the outgoing chat's
+        # values when the incoming snapshot is applied.
         open_thread_in_page(page, "Chat A")
         expect_pills(page, "A after an in-page switch", True, False, "Ask for approval")
         open_thread_in_page(page, "Chat B")
@@ -399,6 +401,7 @@ def main():
 
         step("leaving a chat for a new one restores the installation defaults in place")
         # No reload here either, so the defaults have to come from the captured copy rather than from the store being
+        # rebuilt out of localStorage.
         new_chat_in_page(page)
         expect_pills(page, "new chat after an in-page switch", False, False, "Approve for me")
 

@@ -55,7 +55,8 @@ def test_optional_block_all_columns_present_unchanged():
 
 
 def test_optional_block_gating_column_empty_is_dropped():
-    # When the gating (first) column is empty the whole block is omitted;
+    # When the gating (first) column is empty the whole block is omitted; this behaviour is unchanged by the None
+    # coercion.
     merged_prompt = "Location: [[{city}, {country}]] end"
     out = _render(
         merged_prompt,
@@ -72,7 +73,8 @@ def test_single_column_optional_block_gated_out_on_none():
 
 
 def test_required_column_none_does_not_render_none():
-    # A required (non-[[...]]) column that is None must not render as the
+    # A required (non-[[...]]) column that is None must not render as the literal "None" either; coercion happens at the
+    # row source, so both the required and optional branches are covered.
     merged_prompt = "Location: {city}, {country} end"
     out = _render(
         merged_prompt,

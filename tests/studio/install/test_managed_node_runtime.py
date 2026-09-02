@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 # node_runtime imports sibling backend packages by top-level name, so put studio/backend on sys.path before importing
+# it.
 _BACKEND = Path(__file__).resolve().parents[3] / "studio" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -141,7 +142,7 @@ def test_resolve_prefers_managed_over_unsuitable_system(monkeypatch, tmp_path):
 
 
 def test_resolve_returns_old_system_as_last_resort(monkeypatch, tmp_path):
-    # System node present but too old;
+    # System node present but too old; managed isolated Node is adequate.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(nr.shutil, "which", lambda name: "/old/node")
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)

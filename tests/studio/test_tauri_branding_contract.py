@@ -113,6 +113,7 @@ def test_dmg_install_window_matches_its_background_art() -> None:
     assert dmg["background"] == "./dmg/background.tiff"
 
     # Finder lays the background out from the same origin it uses for icon coordinates, so the base page has to match
+    # the configured window size or the artwork drifts out from under the app and Applications icons.
     window = (dmg["windowSize"]["width"], dmg["windowSize"]["height"])
     assert window == (660, 400)
     assert tiff_first_image_size(TAURI / "dmg/background.tiff") == window
@@ -246,7 +247,9 @@ def locale_entries(text: str) -> list[tuple[str, str]]:
 
 
 def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
-    # The desktop app displays itself as "Unsloth", never "Unsloth Studio". The i18n
+    # The desktop app displays itself as "Unsloth", never "Unsloth Studio". The i18n catalogs are swept by key rather
+    # than by file: a handful of entries have to name the *remote server* a user points the app at, which genuinely is
+    # an Unsloth Studio and is not this app's display name, so those keys are spared and every other entry is not.
     display_sources = [
         TAURI / "Info.plist",
         TAURI / "capabilities/default.json",
@@ -268,7 +271,8 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
         str(path.relative_to(REPO)) for path in display_sources if "Unsloth Studio" in read(path)
     ]
 
-    # The locale catalogs are swept too, just at key granularity rather than file granularity, so only the
+    # The locale catalogs are swept too, just at key granularity rather than file granularity, so only the remote-server
+    # prose is spared.
     offenders += [
         f"{path.relative_to(REPO)}::{key}"
         for path in sorted(LOCALES.rglob("*.ts"))

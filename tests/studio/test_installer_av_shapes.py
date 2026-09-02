@@ -105,8 +105,8 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
             ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
 
 
-# Every runtime-compiled P/Invoke left in the installers.
-# Each costs a csc.exe compile and is scored, so a new entry needs a reason;
+# Every runtime-compiled P/Invoke left in the installers. Each costs a csc.exe compile and is scored, so a new entry
+# needs a reason; a PowerShell equivalent usually exists.
 ALLOWED_PINVOKES = {
     # Canonicalising linked ancestors of security-relevant paths.
     # No PS 5.1 equivalent: ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
@@ -190,7 +190,8 @@ def test_no_process_memory_apis(name: str) -> None:
         assert banned not in _text(name), f"{name} references {banned}"
 
 
-# What the installers print when they need the user to reinstall. Hardening must not touch
+# What the installers print when they need the user to reinstall. Hardening must not touch user-visible output, and a
+# search-and-replace would take exactly these out.
 REQUIRED_OUTPUT = {
     "install.ps1": ['Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex"'],
     "studio/setup.ps1": ['Write-StudioLine "        irm https://unsloth.ai/install.ps1 | iex"'],

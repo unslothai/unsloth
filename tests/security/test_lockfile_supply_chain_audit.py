@@ -58,6 +58,7 @@ def test_malicious_lockfile_exits_1(tmp_path):
     assert "missing-integrity-hash" in combined
     assert "known-ioc-string" in combined
     # IOC literal built at runtime so CodeQL's py/incomplete-url-substring-sanitization rule doesn't false-positive on
+    # the source-literal + `in` (the operand is the scanner's own output).
     _ioc_host = "filev2." + "getsession.org"
     assert _ioc_host in combined
 
@@ -474,7 +475,8 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         timeout = 30,
         env = env_a,
     )
-    # The stripped value is "%inject\n::error::bad" (len 21) and is not a booleanish token -> accepted-skip path;
+    # The stripped value is "%inject\n::error::bad" (len 21) and is not a booleanish token -> accepted-skip path; rc 0,
+    # audit skipped.
     assert proc_a.returncode == 0
     assert "%0A" in proc_a.stderr and "%25" in proc_a.stderr, (
         "skip value containing \\n and %% must be %0A / %25 escaped; "
@@ -547,7 +549,8 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
 
     import yaml
 
-    # The Linux jobs call `python3`;
+    # The Linux jobs call `python3`; the Windows and macOS jobs pin an interpreter with setup-python and call `python`.
+    # Same audit.
     audit_re = re.compile(r"\bpython3?\s+scripts/lockfile_supply_chain_audit\.py\b")
     install_re = re.compile(r"\bnpm\s+(?:install|ci)\b")
 
@@ -561,6 +564,7 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
             if not isinstance(job, dict):
                 continue
             # (step index, offset within that step) of the job's first audit, so an audit and an install sharing one
+            # step are still ordered against each other.
             audited_at = None
             for index, step in enumerate(job.get("steps") or []):
                 run = step.get("run") if isinstance(step, dict) else None

@@ -500,8 +500,7 @@ def _llama_pid() -> int | None:
 
 
 before_pid = _llama_pid()
-# Bogus variant must be rejected with 4xx.
-# Backend currently 500s;
+# Bogus variant must be rejected with 4xx. Backend currently 500s; surface as AUDIT until fixed.
 code, _ = http(
     "POST",
     "/api/inference/load",
@@ -527,7 +526,7 @@ else:
 
 # ─────────────────────────────────────────────────────────────────────────
 section("Endpoint auth audit")
-# Pin the EXPECTED auth posture per route;
+# Pin the EXPECTED auth posture per route; a new unlisted route fails the audit.
 PUBLIC = {
     ("GET", "/api/health"),
     ("GET", "/api/auth/status"),

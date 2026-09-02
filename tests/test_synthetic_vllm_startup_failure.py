@@ -90,6 +90,7 @@ class _FakeProcess:
 
 
 # Every kit built here, kept alive past the end of the test that made it so the fixture below, and not the dying test
+# frame, decides when it is collected.
 _LIVE_KITS = []
 
 

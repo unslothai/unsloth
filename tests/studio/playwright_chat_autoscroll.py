@@ -65,7 +65,8 @@ OUT.mkdir(parents = True, exist_ok = True)
 # hides the effect.
 TOKEN_COUNT = int(os.environ.get("SMOKE_TOKEN_COUNT", "32"))
 TOKEN_GAP_MS = int(os.environ.get("SMOKE_TOKEN_GAP_MS", "250"))
-# One frame per token at this cadence is 4/s;
+# One frame per token at this cadence is 4/s; the old loop ran at the pump's ceiling, around 62/s. 25/s leaves room for
+# React's own frames and still fails loudly on a return to the ceiling.
 MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "25"))
 # The follow window in the hook.
 FOLLOW_SETTLE_MS = 600

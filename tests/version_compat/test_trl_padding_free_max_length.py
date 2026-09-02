@@ -178,7 +178,7 @@ def test_default_sft_construction_does_not_trip_the_guard(tmp_path, trl_has_guar
     assert args.packing is False
     assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH
     if trl_has_guard:
-        # What TRL >= 1.0.0 asks for;
+        # What TRL >= 1.0.0 asks for; truncation moves to Unsloth's dataset prep.
         assert args.max_length is None
     else:
         assert args.max_length == _MODEL_MAX_SEQ_LENGTH
@@ -275,8 +275,9 @@ def test_pretokenized_rows_are_truncated_so_the_cap_is_really_enforced(
     assert args.max_length is None, f"{name}: the cap should be consumed by the truncation"
     assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH, f"{name}: the cap must be recorded"
     assert args.padding_free is True, f"{name}: padding-free no longer needs dropping"
-    # Padding-free CONCATENATES the batch into one flat sequence, so the collated width is rows x cap, not the cap.
-    # Two rows at exactly 2 x 128 is the proof that neither row exceeded it;
+    # Padding-free CONCATENATES the batch into one flat sequence, so the collated width is rows x cap, not the cap. Two
+    # rows at exactly 2 x 128 is the proof that neither row exceeded it; asserting 128 here would be asserting that
+    # padding-free was off.
     assert _collated_width(trainer) == 2 * _MODEL_MAX_SEQ_LENGTH
 
 
@@ -1019,6 +1020,7 @@ def test_the_codegen_carries_the_third_round_fixes():
     # A None `completion_only_loss` is resolved from the dataset the way TRL resolves it, not read as "on".
     assert "getattr(args, 'completion_only_loss', None) is not False" not in block
     # Resolved from the TRAIN sample now, not this split's columns, because that is what the collator does and the two
+    # have to agree.
     assert "'prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample" in block
 
     # The masks apply onto the same labels one after another, so a row survives only where they all agree, and `labels`
@@ -1477,7 +1479,8 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
         stub.evaluate(eval_dataset = _late())
         return max(len(r) for r in seen["ds"]["input_ids"])
 
-    # Both sides of the change, deterministically, so this pins the wrapper's logic rather than whichever TRL happens
+    # Both sides of the change, deterministically, so this pins the wrapper's logic rather than whichever TRL happens to
+    # be installed.
     for strategy in ("wrapped", "bfd_split"):
         assert _run(True, True, strategy) > _MODEL_MAX_SEQ_LENGTH, (
             f"{strategy}: the split was cut at the cap before TRL's packer "
@@ -1629,6 +1632,7 @@ def test_the_installed_trl_is_on_the_side_of_1_7_0_that_its_version_says():
 
     late_hooks, prepares = _trl_sft_late_hooks()
     # Whichever side of the change this TRL is on, `_prepare_dataset` is reached only from `__init__` and from
+    # `evaluate`. A third caller would be a third path for the late cap to audit.
     assert set(prepares) <= {"__init__", "evaluate"}, prepares
     # `predict` and the two dataloader builders are the base Trainer's on every TRL, which is why only `evaluate` is
     # ever given `packs_late`.
@@ -1949,6 +1953,7 @@ def test_a_short_and_fully_supervised_split_comes_back_untouched():
     cap = _MODEL_MAX_SEQ_LENGTH
     short = cap // 2
     # Two shapes: one the filter runs over and keeps every row of, and one with no supervision column at all, where
+    # there is nothing to run.
     supervised = Dataset.from_list(
         [{"input_ids": list(range(short)), "labels": list(range(short))}] * 2
     )
@@ -2436,7 +2441,7 @@ def test_a_transformed_split_is_not_memoized_by_fingerprint():
     stub.evaluate(eval_dataset = split)
     assert len(seen["ds"]) == 2, "both rows are supervised on the first pass"
 
-    # Same object, same `_fingerprint`;
+    # Same object, same `_fingerprint`; only the transform's closure moved.
     supervised["both"] = False
     stub.evaluate(eval_dataset = split)
     assert len(seen["ds"]) == 1, "the memo served a cap taken before the change"

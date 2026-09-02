@@ -170,9 +170,9 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    # Long enough that the child outlives the scan itself.
-    # Windows PowerShell 5.1 pays a cold start plus a real csc.exe compile of the native helper before it can look at
-    # anything, which alone can outlast a six-ping child;
+    # Long enough that the child outlives the scan itself. Windows PowerShell 5.1 pays a cold start plus a real csc.exe
+    # compile of the native helper before it can look at anything, which alone can outlast a six-ping child; the process
+    # would then be gone by the time the scan ran, and the test would read as "the in-use check missed it".
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = creationflags,
@@ -221,6 +221,7 @@ def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
     probe = scripts / "guard-probe.exe"
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
     # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile, so a short probe can exit before the scan
+    # runs.
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),

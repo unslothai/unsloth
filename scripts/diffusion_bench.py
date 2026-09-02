@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main() so --help
+# never triggers torch).
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
@@ -144,7 +145,7 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     with Image.open(cand_png) as im_b:
         b = np.asarray(im_b.convert("RGB"), dtype = np.float64)
     if a.shape != b.shape:
-        # Different geometry means the comparison is meaningless;
+        # Different geometry means the comparison is meaningless; report worst case.
         return 0.0
     mse = float(((a - b) ** 2).mean())
     if mse == 0.0:

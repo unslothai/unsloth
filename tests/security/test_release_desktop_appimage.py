@@ -569,7 +569,7 @@ def test_apprun_encodes_a_mount_path_carrying_xml_and_sed_metacharacters(tmp_pat
     policy = materialized.read_text(encoding = "utf-8")
     assert "@APPDIR@" not in policy
 
-    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1
+    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1 fonts back in front of Skia.
     root = ElementTree.fromstring(policy)
     directories = [element.text for element in root.findall("dir")]
     assert directories == [f"{appdir}/usr/share/unsloth/fonts"]

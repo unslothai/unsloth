@@ -365,13 +365,16 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     env = _hostile_env(tmp_path)
     paths = _profile_paths(env)
     # The two machine-wide profiles load into the real leg only and no environment variable can move them, so one
+    # touching a probed setting would read as a divergence that says nothing about the simulation. Neither ships with
+    # PowerShell, so this skip is for an administered host, and it names the file so the reason is checkable.
     for scope in ("AllUsersAllHosts", "AllUsersCurrentHost"):
         if paths[scope].is_file():
             pytest.skip(f"a machine-wide profile at {paths[scope]} loads into the real leg only")
     profile = paths["CurrentUserCurrentHost"]
     # Not an assert: on a host whose $PROFILE cannot be redirected into the fixture at all, the real leg would load
-    # whatever the actual account has (or nothing) and prove nothing either way.
-    # XDG_CONFIG_HOME in _hostile_env is what keeps this true on Linux and macOS, so the skip is unreachable there and a
+    # whatever the actual account has (or nothing) and prove nothing either way. XDG_CONFIG_HOME in _hostile_env is what
+    # keeps this true on Linux and macOS, so the skip is unreachable there and a regression in the simulation still
+    # fails locally and in CI.
     if tmp_path not in profile.parents:
         pytest.skip(f"pwsh resolves $PROFILE to {profile}, which this fixture cannot plant into")
     profile.parent.mkdir(parents = True, exist_ok = True)
@@ -393,6 +396,7 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     assert real.returncode == 0, f"stdout={real.stdout!r} stderr={real.stderr!r}"
     simulated = _run_with_profile(tmp_path, _STATE_PROBE)
     # All four probes coming back at their defaults means the file was planted somewhere pwsh does not read, which is a
+    # broken fixture rather than a divergence; the path says which.
     assert _probe_lines(real.stdout) == _probe_lines(simulated.stdout), (
         f"dot-sourced profile diverges from the one pwsh loaded from {profile}: "
         f"{_probe_lines(simulated.stdout)} vs {_probe_lines(real.stdout)}"
@@ -469,7 +473,7 @@ def test_prologue_clears_profile_state_without_disturbing_the_session(tmp_path):
     )
     res = _run_with_profile(tmp_path, body)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
-    # The interfering default is gone;
+    # The interfering default is gone; the proxy one is kept, for the installer and its callees.
     assert "INSIDE_DEFAULTS:1" in res.stdout
     assert "NESTED_DEFAULTS:1" in res.stdout
     assert "INSIDE_PROXY:http://127.0.0.1:9" in res.stdout, "a proxy default must survive"
@@ -650,6 +654,7 @@ def test_module_autoloading_is_restored():
 def test_install_ps1_parses():
     """A syntax error here is a total install failure, and the file is not imported by anything."""
     # A nonzero exit here is claimed to mean install.ps1 has a syntax error, and pwsh aborting before it ever reached
+    # the parser exits nonzero too.
     res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -723,6 +728,7 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
         newline = "",
     )
     # The proxy keys are read straight out of this run's stdout, so an interpreter that died would look like the
+    # prologue publishing an empty handoff.
     handoff = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
         capture_output = True,
@@ -891,6 +897,7 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
         newline = "",
     )
     # Empty stdout is already handled below as "the planted profile was not loaded" and skips the test, so a crashed
+    # interpreter would silently retire this check instead of failing.
     result = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -1126,6 +1133,7 @@ def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]))
 
     # The first host owns Invoke-WebRequest whole, so the second host's credential flag for that same cmdlet is
+    # dropped...
     assert merged == {
         "Invoke-WebRequest:Proxy": "http://first.corp:8080",
         "Invoke-RestMethod:Proxy": "http://rest.corp:8080",
@@ -1296,6 +1304,7 @@ def test_a_stale_alias_does_not_block_a_current_uv_on_path(tmp_path):
         f"@('{stale.as_posix()}', '{current.as_posix()}')",
     )
     # The uv gate is judged by the first and last lines of stdout, and an interpreter crash leaves none, which the
+    # assertion would report as the gate stopping at the stale alias.
     result = run_pwsh(
         [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -1425,6 +1434,7 @@ def test_the_probe_adds_the_callers_host_profile_beside_the_current_host_one(mon
     # ...and before the table is read, or it would snapshot the wrong defaults.
     assert probe.find("_UNSLOTH_PS_HOST_PROFILE") < probe.find("$out = @{}")
     # Unconditional and last, so the profile the probe's own host would have loaded is still there and still gets the
+    # final word on a key both of them set.
     for scope in ("AllUsersCurrentHost", "CurrentUserCurrentHost"):
         named = probe.find(f"Split-Path -Parent $PROFILE.{scope}")
         plain = probe.find(f"$__unslothProfiles += $PROFILE.{scope};")
@@ -1527,6 +1537,7 @@ def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
 
     def _hang(argv, **kwargs):
         # A profile that really does hang burns the timeout it was given, which is what makes a per-host budget cost
+        # twice as much wall clock as the helper documents.
         asked.append(kwargs["timeout"])
         time.sleep(kwargs["timeout"])
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])

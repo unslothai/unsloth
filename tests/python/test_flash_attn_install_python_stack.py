@@ -34,7 +34,8 @@ class TestPrebuiltWheelTorchMapping:
         assert set(wheel_utils._PREBUILT_WHEEL_TORCH_MM.values()) == {"2.10"}
 
     def test_direct_wheel_url_reuses_torch210_on_211(self):
-        # causal-conv1d / mamba go through direct_wheel_url;
+        # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the torch2.10 wheel filename just like
+        # flash-attn does.
         url = wheel_utils.direct_wheel_url(
             filename_prefix = "causal_conv1d",
             package_version = "1.6.1",

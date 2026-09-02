@@ -144,6 +144,7 @@ def set_input(page, label, value):
 
 def open_appearance(page):
     # The shortcut can fire before the app has wired its key handler, so press each chord once behind a fixed sleep and
+    # a slow boot loses the dialog. Alternate them on a bounded retry, waiting on the dialog itself.
     dialog = page.get_by_role("dialog")
     for attempt in range(10):
         page.keyboard.press("Meta+," if attempt % 2 else "Control+,")
@@ -248,6 +249,7 @@ def main():
             fail(f"keyboard did not scroll the select viewport after 40 presses: {kb_top}")
 
         # That read lands mid-scroll and comes in low (24-35px on the ubuntu CI image), which is neither the floor the
+        # wheel has to beat nor a moment a wheel event survives. Let the scroll finish and re-read instead of racing it.
         kb_top = settled_scroll_top(page)
         # At 0 the comparison below is unsatisfiable, so the wheel would always fail.
         if not kb_top > 0:
@@ -293,7 +295,7 @@ def main():
         tab = page.get_by_role("radio").filter(has_text = "Discover").first
         tab.wait_for(state = "visible", timeout = 15000)
         tab_font = tab.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
-        # text-ui-12p5 at the smallest scale;
+        # text-ui-12p5 at the smallest scale; the unscaled 12.5px means twMerge dropped the token.
         if not near(tab_font, 12.5 * small / CSS_BASE):
             fail(f"hub tab font did not scale (twMerge drop?): {tab_font}")
         icon_w = page.evaluate(
@@ -301,6 +303,7 @@ def main():
             " return el ? parseFloat(getComputedStyle(el).width) : null; }"
         )
         # Standard icons render at the UI font size itself below the CSS base, so the smallest setting gives glyphs of
+        # exactly that many px.
         if not near(icon_w, small):
             fail(f"size-icon did not match the UI font size below {CSS_BASE}: {icon_w}")
         page.goto(BASE, wait_until = "domcontentloaded")

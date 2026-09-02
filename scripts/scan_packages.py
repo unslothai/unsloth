@@ -83,7 +83,8 @@ MEDIUM = "MEDIUM"
 
 SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 
-# Hard pin-blocks for confirmed malicious PyPI versions (Socket.dev 2026-05-12 Mini Shai-Hulud wave;
+# Hard pin-blocks for confirmed malicious PyPI versions (Socket.dev 2026-05-12 Mini Shai-Hulud wave; earlier
+# Semgrep/Endor reports for `lightning`).
 BLOCKED_PYPI_VERSIONS: dict[str, set[str]] = {
     "guardrails-ai": {"0.10.1"},
     "mistralai": {"2.4.6"},
@@ -103,8 +104,9 @@ RE_BASE64 = re.compile(
 RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
 
 # Network APIs (excludes urllib.parse which is pure string manipulation) ``httpx2`` is the pydantic-maintained successor
-# and a separate import name, so the older ``httpx``-only alternative did not see it.
-# openai 3.0.0 requires httpx2 and routes every call through it, which made the SDK's own HTTP invisible to each
+# and a separate import name, so the older ``httpx``-only alternative did not see it. openai 3.0.0 requires httpx2 and
+# routes every call through it, which made the SDK's own HTTP invisible to each combined check that needs a network half
+# (secrets + network, IMDS + network, archive + network).
 RE_NETWORK = re.compile(
     r"\burllib\.request\b"
     r"|\burlopen\s*\("
@@ -373,8 +375,8 @@ RE_TOKEN_REGEX = re.compile(
     r"|\bglpat-[0-9A-Za-z_-]{20,}",
 )
 
-# Mini Shai-Hulud May-12 2026 wave indicators.
-# `transformers.pyz` dropper name is high-confidence;
+# Mini Shai-Hulud May-12 2026 wave indicators. `transformers.pyz` dropper name is high-confidence; the host + slogans
+# are CRITICAL.
 RE_MAY12_IOC = re.compile(
     r"(git-tanstack\.com|/tmp/transformers\.pyz|transformers\.pyz"
     r"|With Love TeamPCP|We've been online over 2 hours)",
@@ -400,6 +402,8 @@ RE_WEB3_HIJACK = re.compile(
 )
 
 # Self-propagating worms (Shai-Hulud, ForceMemo) plant their own GitHub workflow in every repo they reach and use
+# trufflehog/gitleaks for credential discovery. Any of these strings in a package payload is strong repo-takeover
+# evidence.
 RE_WORKFLOW_INJECT = re.compile(
     r"\.github/workflows/[^\"\']*\.ya?ml"
     r"|\btrufflehog\b|\bgitleaks\b"
@@ -485,6 +489,7 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
 
     if RE_LARGE_BLOB.search(content):
         # Digest every blob (not just the first 120 chars, and not just the first blob), so a later payload that keeps
+        # the prefix or appends a second encoded blob reopens.
         blob, digest = _blob_digest(content)
         findings.append(
             Finding(
@@ -615,6 +620,7 @@ def _strip_noncode(content: str, blank_comments: bool = True) -> str:
 
 
 # Payload carriers that are suspicious when hidden in a blanked region (a docstring/string) of a file that can
+# dynamically execute strings.
 _HIDDEN_PAYLOAD_PATTERNS = (
     (RE_LARGE_BLOB, "large base64 blob"),
     (RE_EMBEDDED_KEYS, "embedded key material"),
@@ -631,7 +637,8 @@ def _hidden_payload_findings(
     scanning yet ``exec(__doc__)`` / ``exec(<str>)`` could still run it."""
     if not RE_EXEC_EVAL.search(stripped):
         return []
-    # Only docstrings/strings run via exec(__doc__)/exec(<str>);
+    # Only docstrings/strings run via exec(__doc__)/exec(<str>); comments cannot. Isolate that span: keep comments as
+    # real code, take what string-blanking removed (length-preserved, so offsets stay exact for _extract_evidence).
     code = _strip_noncode(original, blank_comments = False)
     removed = "".join(o if o != s else " " for o, s in zip(original, code))
     out = []
@@ -794,6 +801,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 filename,
                 "Reverse shell / bind shell pattern",
                 # Still RE_REVERSE_SHELL, so every finding that survives the gate renders byte-identical evidence to
+                # before this change.
                 _extract_evidence(content, RE_REVERSE_SHELL),
             )
         )
@@ -895,6 +903,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     if has_base64 and has_exec_eval and has_blob:
         # Digest every blob too: a payload may sit on a separate line from the decode call, and a second encoded blob
+        # may be appended later, so binding only the base64/exec lines or the first blob would miss it.
         _, blob_digest = _blob_digest(content)
         findings.append(
             Finding(
@@ -1143,7 +1152,8 @@ def _ends_with_odd_backslash(s: str) -> bool:
     return (len(s) - len(s.rstrip("\\"))) % 2 == 1
 
 
-# Single-line quoted string literal;
+# Single-line quoted string literal; blanks complete one-line strings (the legacy view) so the single-line and
+# multi-line blanked spans can be unioned below.
 _RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 
 
@@ -1367,7 +1377,8 @@ def _extract_evidence(
                 return " | ".join(out)
 
     # Precompute newline offsets once so mapping a match offset to its 1-based line is O(log n) (bisect) rather than
-    # O(n) (content.count) per match;
+    # O(n) (content.count) per match; the latter made this fallback quadratic on a minified file with thousands of
+    # matches.
     nl = [p for p, ch in enumerate(content) if ch == "\n"]
     for m in pattern.finditer(content):
         start = bisect.bisect_left(nl, m.start()) + 1
@@ -1383,7 +1394,9 @@ def _extract_evidence(
         if max_matches and len(out) >= max_matches:
             break
     if overflow_count:
-        # The overflow digest was accumulated from the canonicalized (L<NN>:-less) spans as they were emitted, so a
+        # The overflow digest was accumulated from the canonicalized (L<NN>:-less) spans as they were emitted, so a pure
+        # line shift above the overflow region does not change it and reopen an otherwise-unchanged finding, matching
+        # the per-span key's line-shift stability.
         out.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
     return " | ".join(out)
 
@@ -1411,6 +1424,8 @@ def _blob_digest(content: str) -> tuple[str, str]:
 
 
 # Non-Python checkers Recent PyPI compromises (Lightning 2.6.x, ForceMemo) carried the payload in a bundled .js / .sh /
+# workflow yaml so the Python imports looked clean. These checkers scan those file types when they appear inside a
+# wheel/sdist.
 def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run JS-side checks. Triggered by .js / .mjs / .cjs / .ts."""
     findings = []
@@ -1478,6 +1493,7 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                     package,
                     filename,
                     # Size stays out of the check label (from main) so the baseline key does not drift when a benign
+                    # bundle grows; the full-content digest below still binds the bytes so a payload swap reopens.
                     "Python wheel ships large JS bundle (uncommon; manually review)",
                     f"sha256: {digest}",
                 )
@@ -1555,6 +1571,7 @@ def check_workflow_file(content: str, filename: str, package: str) -> list[Findi
     """Run GitHub-Actions workflow checks. Triggered by .github/workflows/*.yml."""
     findings = []
     # A workflow file inside a PyPI package is suspicious (Shai-Hulud plants `shai-hulud.yml` everywhere);
+    # injection-signature matches are CRITICAL.
     if RE_WORKFLOW_INJECT.search(content):
         findings.append(
             Finding(
@@ -1757,7 +1774,8 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
             elif lower.endswith(".py"):
                 findings.extend(check_py_file(content, filename, package))
             elif lower.endswith((".js", ".mjs", ".cjs", ".ts")):
-                # Lightning 2.6.x hid its payload in a 14.8 MB router_runtime.js;
+                # Lightning 2.6.x hid its payload in a 14.8 MB router_runtime.js; without this branch we'd only see the
+                # small Python loader.
                 findings.extend(check_js_file(content, filename, package))
             elif lower.endswith((".sh", ".bash")):
                 findings.extend(check_shell_file(content, filename, package))
@@ -1765,7 +1783,8 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
                 # Shai-Hulud/ForceMemo plant their own GHA workflow
                 findings.extend(check_workflow_file(content, filename, package))
     except (zipfile.BadZipFile, tarfile.TarError, EOFError, OSError) as exc:
-        # Archive cannot be opened / is structurally broken: either transport
+        # Archive cannot be opened / is structurally broken: either transport corruption or a deliberate attempt to
+        # bypass error-swallowing scanners.
         findings.append(
             Finding(
                 CRITICAL,
@@ -1858,6 +1877,7 @@ _PIP_DOWNLOAD_PIN_FLAGS = [
 
 
 # Strip characters that could escape `dest` via `os.path.join`, so a spec like `../../etc/foo==1.0` cannot land outside
+# the temp tree.
 _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -2518,7 +2538,7 @@ def find_safe_version(
     try:
         bad_idx = versions.index(bad_ver)
     except ValueError:
-        # bad_ver may resolve to a different string;
+        # bad_ver may resolve to a different string; search by sort key
         bad_key = version_sort_key(bad_ver)
         bad_idx = None
         for i, v in enumerate(versions):
@@ -2752,6 +2772,9 @@ def _find_requirements_files(root: str) -> list[str]:
 
 
 # Baseline allowlist: triaged known-good CRITICAL/HIGH findings so the gate can enforce without drowning in
+# legitimate-library noise. Matched on (package, package-relative file, check, evidence hash); the hash strips
+# ``L<NN>:`` markers so version bumps and line shifts do not reopen an entry, but changed flagged code does. Regenerate
+# with ``--write-baseline``.
 _DEFAULT_BASELINE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scan_packages_baseline.json"
 )
@@ -3127,6 +3150,7 @@ def main() -> int:
         shutil.rmtree(tmpdir, ignore_errors = True)
 
     # Baseline allowlist: suppress triaged, known-good findings so the CI gate can be enforcing without red-failing on
+    # legitimate-library noise.
     if args.no_baseline:
         baseline_path = None
     elif args.baseline:

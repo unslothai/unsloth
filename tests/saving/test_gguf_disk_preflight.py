@@ -402,7 +402,8 @@ class TestNoLeakIntoSaveKwargs:
             line = line.strip()
             if line.startswith('del arguments["'):
                 deleted.add(line.split('"')[1])
-        # Every local that exists at the snapshot point and is not a parameter of unsloth_generic_save has to be
+        # Every local that exists at the snapshot point and is not a parameter of unsloth_generic_save has to be deleted
+        # before the call.
         introduced = {
             "self",
             "base_model_name",
@@ -1048,6 +1049,7 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         staging = tmp_path / "tmp"
         staging.mkdir()
         # `tempfile.gettempdir()` caches its answer on first use, so setting the variable alone would leave the
+        # process's real temp directory.
         monkeypatch.setattr(tempfile, "tempdir", str(staging))
         free = {"staging": 0, "other": 1000 * GB}
         monkeypatch.setattr(S, "model_16bit_bytes", lambda model: self._STAGING)
@@ -1841,6 +1843,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
         # The reserve below belongs to `merge_and_overwrite_lora`, which only a PEFT model reaches, so the tests that
+        # exercise it need a model the preflight recognises as one.
         monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
@@ -2479,6 +2482,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
 
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
         # 141 aggregate - 78 sibling = 63GB of checkpoint, 66.3GB once the merge's own 0.95 reserve is on it, and 62GB
+        # holds neither.
         with pytest.raises(RuntimeError) as error:
             self._preflight(phases)
         assert "141.0GB" in str(error.value)
@@ -2774,7 +2778,8 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
-        # `model` is the mount and `model_gguf` is not, so the export is split;
+        # `model` is the mount and `model_gguf` is not, so the export is split; the working directory is on the mount
+        # with `model`.
         monkeypatch.setattr(S, "_filesystem_id", lambda path: state["devices"].get(str(path)))
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
@@ -2941,6 +2946,7 @@ class TestTheFallbackFollowsTheReusedCheckpoint:
         model = self._NonPeftFromDisk(str(checkpoint))
         monkeypatch.setattr(S, "_directory_is_writable", lambda directory: False)
         # `model` and the working directory are one mount, the `_gguf` sibling another, so the export is split and the
+        # conversion lands here.
         monkeypatch.setattr(
             S,
             "estimate_gguf_export_bytes",
@@ -3392,6 +3398,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
                 self._Model(self._Config(torch.bfloat16)),
                 "model",
                 # Any object gets past the "GGUF needs a tokenizer" check and dies well after the preflight, which is
+                # the point.
                 tokenizer = object(),
                 quantization_method = ["f16", "q4_k_m"],
             )

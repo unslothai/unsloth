@@ -58,6 +58,7 @@ def test_fresh_install_starts_unseen():
 
 def test_reinstall_with_live_hook_preserves_seen():
     # Re-entering get_peft_model/patch_peft_model after a grad-enabled probe must NOT wipe the recorded poisoning, or
+    # train() skips the reset and the NaN/flat-loss bug returns.
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)
     hook = m._unsloth_pretrain_marker["hook"]

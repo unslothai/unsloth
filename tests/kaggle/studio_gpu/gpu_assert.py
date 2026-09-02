@@ -49,6 +49,8 @@ import re
 from pathlib import Path
 
 # A llama-server holding less than this on the card is not offloading anything worth calling offload -- CUDA context
+# plus scratch alone is tens of MiB, and a fully CPU-resident model can still show a context-sized allocation if
+# anything touched the device.
 MIN_PROCESS_VRAM_MIB = 96
 
 # Device-wide growth across the load that no CPU-resident model explains.
@@ -275,7 +277,8 @@ def offload_verdict(
     if buffer_mib is not None:
         evidence.append(f"llama.cpp device model buffer: {buffer_mib:.0f} MiB")
 
-    # Unsloth's status body carries no pid, so the caller also discovers the llama-server processes itself;
+    # Unsloth's status body carries no pid, so the caller also discovers the llama-server processes itself; either
+    # source is accepted here.
     candidates: list[int] = []
     for pid in [server_pid, *(server_pids or [])]:
         if isinstance(pid, int) and pid not in candidates:

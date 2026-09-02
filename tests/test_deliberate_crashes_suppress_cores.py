@@ -188,6 +188,7 @@ def _prctl_dumpable_value(node, libc = ()):
     if _called_name(node) != "prctl" or len(node.args) < 2:
         return None
     # The receiver matters: a test's `fake.prctl(4, 1)` mock touches no kernel state, and crediting it let a mock
+    # override the real suppression on the line above.
     if not isinstance(node.func, ast.Attribute) or not _is_libc_handle(node.func.value, libc):
         return None
     cmd, value = node.args[0], node.args[1]
@@ -318,6 +319,7 @@ def _snippets(tree):
         depth = 0,
     ):
         # A deeply nested literal is not a command vector, and recursing all the way into one raised RecursionError out
+        # of a file the scan only wanted to skim.
         if depth > _MAX_COLLECT_DEPTH:
             return
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -387,7 +389,7 @@ def _is_crash_call(node, aliases = None) -> bool:
     name = _called_name(node)
     if name is None:
         return False
-    # `from os import abort as die` binds `die`;
+    # `from os import abort as die` binds `die`; the rules are written against `abort`.
     if isinstance(node.func, ast.Name) and name in aliases:
         name = aliases[name]
     if name in _CRASH_CALLS:
@@ -567,6 +569,7 @@ def _helper_leaves_dumpable(
     if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(call, scope):
         return None
     # Body only: a default or decorator on the helper ran at definition time, so it is not something calling the helper
+    # does again.
     writes = [
         w
         for statement in target.body
@@ -614,10 +617,13 @@ def _suppressed(
     if _clears_dumpable_before(scope, position, inherited, functions, libc):
         return True
     # Following one level of local helper covers `suppress_core()` then the fault, which is the natural shape once more
+    # than one test needs this.
     for called in _iter_executable(scope):
         if not isinstance(called, ast.Call) or _position(called) >= position:
             continue
         # Bare calls only. `obj.suppress_core()` shares its trailing name with a local `def suppress_core`, and
+        # crediting the local one there means an object method that may clear nothing at all is taken as proof the fault
+        # is covered.
         if not isinstance(called.func, ast.Name):
             continue
         target = functions.get(called.func.id)
@@ -709,9 +715,11 @@ def _bindings_before(tree, scope, position):
     """
     env, maybe = {}, {}
     # Python binds a name locally for the whole function if it is assigned anywhere in it, so a global of that name is
+    # never what the body reads, even above the assign.
     shadowed = _rebound_names(scope) if scope is not tree else ()
     for owner_scope in (tree, scope) if scope is not tree else (tree,):
-        # A nested scope runs after the module body, so a global assigned below the `def` is still bound by the time
+        # A nested scope runs after the module body, so a global assigned below the `def` is still bound by the time the
+        # call gets there.
         limit = _AFTER_EVERYTHING if owner_scope is tree and scope is not tree else position
         for node, certain in _assignments_before(owner_scope, limit):
             pair = _assigned_pair(node)
@@ -762,6 +770,7 @@ def _nested_scripts(tree, inherited = False):
             # Bindings AT the exec, so a name reused afterwards is not what runs.
             env, maybe = _bindings_before(tree, scope, _position(node))
             # Same interpreter, so dumpability carries into the payload, including a restore a helper made between the
+            # clear and the exec.
             carried = _clears_dumpable_before(
                 scope,
                 _position(node),
@@ -1035,7 +1044,8 @@ _FIXTURES = {
         "def go(route, task):\n    route.abort('failed')\n    task.abort()\n",
         False,  # a mock named prctl touches no kernel state
     ),
-    # Seven more the detector got wrong, each found by reading it rather than by a
+    # Seven more the detector got wrong, each found by reading it rather than by a failing run. Four let a real core
+    # dump through; three failed CI on safe code.
     "a_pid_that_looks_like_a_signal": (
         "import os, signal\ndef stop():\n    os.kill(11, signal.SIGKILL)\n",
         False,  # a generator body does not run at construction

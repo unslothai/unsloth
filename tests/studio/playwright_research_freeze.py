@@ -330,6 +330,7 @@ def run() -> dict:
         followed_distance = page.evaluate(DISTANCE_FROM_BOTTOM)
         latest_while_following = page.evaluate(LATEST_BUTTON_VISIBLE)
         # A mutation, one macrotask so the observer has queued its follow step, then a small upward flick while that
+        # step is still pending.
         page.evaluate(
             f"""async () => {{
                 const el = document.querySelector('{SCROLLER}');
@@ -382,6 +383,7 @@ def main() -> int:
             "the stream added no activities; the frame budgets below measured no workload"
         )
     # Without these two the file records the per-frame cost and passes regardless, which is how the original loop
+    # shipped: the numbers were there, nothing read them.
     if stream["raf_per_second"] > MAX_STREAM_RAF_PER_SECOND:
         failures.append(
             f"{stream['raf_per_second']} rAF/s during the stream, budget "
@@ -395,7 +397,9 @@ def main() -> int:
     modal = results["modal"]
     if not modal["dialog_opened"]:
         failures.append("plan review dialog never opened; the modal checks proved nothing")
-    # A dialog that never took the layer strands nothing, so every check below passes on a tree
+    # A dialog that never took the layer strands nothing, so every check below passes on a tree where the teardown is
+    # broken. Verified: with `modal={false}` on PlanReview's Dialog this reads "" and the whole phase went green.
+    # Recorded and unread was false-green; assert it.
     if modal["body_pointer_events_while_open"] != "none":
         failures.append(
             "the plan review dialog never took the modal layer "

@@ -62,7 +62,8 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BASE_URL", BASE)
     monkeypatch.setenv("STUDIO_OLD_PW", "stub-password")
     monkeypatch.setenv("PW_ART_DIR", str(tmp_path / "art"))
-    # The real default gives the row 15s to settle;
+    # The real default gives the row 15s to settle; the stub answers instantly, so the only thing the wait would buy
+    # here is 15s of a red test.
     monkeypatch.setenv("STUDIO_MAC_FORCED_PENDING_S", "0.2")
     spec = importlib.util.spec_from_file_location("mac_tab_capabilities_under_test", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
@@ -1023,6 +1024,7 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
     finally:
         shutdown()
     # Fixture preconditions first, so a server that stopped trickling fails loudly instead of letting the probe return
+    # fast and passing for free.
     assert state["accepted"] >= 1, "fixture never accepted a connection"
     assert state["lines"] >= 3, f"fixture stopped trickling headers after {state['lines']} bytes"
     assert state["lines"] < 100, (

@@ -335,6 +335,7 @@ def test_amd_smi_skipped_when_env_root_hipinfo_is_venv_internal(tmp_path):
 
 def test_amd_smi_allowed_when_env_root_hipinfo_outside_venv(tmp_path):
     # A real HIP SDK pointed to by HIP_PATH (outside the venv) still opens the gate, so the env-root venv filter does
+    # not regress HIP-SDK Windows users.
     hip_root = tmp_path / "hipsdk"
     (hip_root / "bin").mkdir(parents = True)
     (hip_root / "bin" / "hipinfo.exe").write_text("")
@@ -362,6 +363,7 @@ def test_external_hipinfo_on_path_skips_venv_only(tmp_path):
 
 def test_python_hipinfo_gates_scan_all_path_entries():
     # All three copies of the amd-smi HIP-SDK probe must scan every PATH entry (not just the first shutil.which hit) so
+    # the venv-internal hipInfo cannot shadow a real SDK's hipinfo later on PATH.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
@@ -422,7 +424,8 @@ def test_ps_installers_gate_amd_smi_on_windows():
 
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
-    # The probe seeds the venv root from a custom Unsloth home;
+    # The probe seeds the venv root from a custom Unsloth home; a ~\studio form must expand to USERPROFILE like the
+    # canonical resolver, else GetFullPath keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
     text = ps.read_text(encoding = "utf-8")
     i = text.find("$studioHomeEnv = ")
     j = text.find('Join-Path $studioHomeEnv "unsloth_studio"', i)
@@ -432,12 +435,14 @@ def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
         f"{ps.name}: the venv-internal probe must expand a leading ~ in the custom "
         "Unsloth home before seeding the venv root (mirroring the canonical resolver)"
     )
-    # The ~ expansion must be guarded on a non-empty USERPROFILE;
+    # The ~ expansion must be guarded on a non-empty USERPROFILE; otherwise Join-Path $env:USERPROFILE throws on a
+    # service/SYSTEM account with no profile, aborting the whole probe (and the install).
     assert "IsNullOrWhiteSpace($env:USERPROFILE)" in block, (
         f"{ps.name}: the ~ expansion must guard against an empty $env:USERPROFILE "
         "before Join-Path (else it throws on a profile-less account)"
     )
     # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1, so the expansion must fall back to
+    # USERPROFILE directly (joining only a non-empty remainder) rather than call Join-Path with "".
     assert "$studioHomeRest" in block and "else { $env:USERPROFILE }" in block, (
         f"{ps.name}: the ~ expansion must handle a bare ~ without passing an empty "
         "child path to Join-Path (PS 5.1 rejects it)"
@@ -477,6 +482,8 @@ def test_install_ps1_rocm_cpu_fallback_uses_retry():
         "Invoke-InstallCommandRetry" in window
     ), "the ROCm->CPU fallback torch install must use Invoke-InstallCommandRetry"
     # Must --force-reinstall: a failed ROCm install can leave an unpinned ROCm torch that still satisfies the CPU
+    # torch>= range, so without it uv keeps the ROCm build and only swaps companions -> mismatched venv the repair block
+    # won't fix.
     assert "--force-reinstall" in window, (
         "the ROCm->CPU fallback must --force-reinstall so a partial ROCm torch is "
         "replaced by the CPU build"
@@ -485,6 +492,7 @@ def test_install_ps1_rocm_cpu_fallback_uses_retry():
 
 def test_setup_ps1_rocm_cpu_fallback_force_reinstalls():
     # setup.ps1's CPU block is shared with the genuine CPU-only path, so it force- reinstalls only after an AMD ROCm
+    # fallback ($ROCmCpuFallback) -- evicting a partial ROCm torch without slowing the common CPU install.
     text = _SETUP_PS1.read_text(encoding = "utf-8")
     assert "$ROCmCpuFallback = $true" in text, (
         "setup.ps1 must flag the AMD ROCm->CPU fallback so the CPU install can force-"
@@ -552,7 +560,8 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
 
 
 def test_install_ps1_installs_rocm_torch_for_known_arch():
-    # The ROCm->CPU fallback (likeliest to hit a transient index issue) once used the non-retrying helper;
+    # The ROCm->CPU fallback (likeliest to hit a transient index issue) once used the non-retrying helper; it must retry
+    # like every other torch install here.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     gates = [
         ln
@@ -668,7 +677,8 @@ def test_install_ps1_rocm_repair_pins_companions():
 
 
 def test_install_sh_wsl_reroute_uses_pipefail():
-    # The `curl | sh` reroute runs via `bash -lc`;
+    # The `curl | sh` reroute runs via `bash -lc`; without pipefail a failed curl is masked by sh exiting 0 on empty
+    # input, so the reroute would wrongly report success and exit 0 from the parent installer.
     text = _INSTALL_SH.read_text(encoding = "utf-8")
     assert "set -o pipefail" in text, "reroute must enable pipefail"
     i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
@@ -685,7 +695,8 @@ def test_install_sh_wsl_reroute_propagates_tauri_need_sudo_exit():
     # masked by sh exiting 0 on empty input, so the reroute would wrongly report
     # In --tauri mode the rerouted child uses exit 2 ([TAURI:NEED_SUDO]) to ask the desktop app to elevate for the
     text = _INSTALL_SH.read_text(encoding = "utf-8")
-    # The reroute targets the selected distro ($_rr_target: 24.04 preferred, 22.04 fallback) via bash -lc;
+    # The reroute targets the selected distro ($_rr_target: 24.04 preferred, 22.04 fallback) via bash -lc; find that
+    # exec line.
     i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
     assert i != -1, "WSL reroute command not found in install.sh"
     window = text[i : i + 500]
@@ -721,6 +732,8 @@ def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
 
 def test_uninstall_removes_managed_node_runtime():
     # The isolated Node.js runtime (install_node_prebuilt.py) lives at ~/.unsloth/node in default mode, a sibling of
+    # studio -- deleting <studio> misses it, so both uninstallers must remove it explicitly (env/custom mode nests it
+    # under the custom root, removed with that root).
     sh = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding = "utf-8")
     assert (
         '_remove_path "$HOME/.unsloth/node"' in sh
@@ -783,6 +796,8 @@ def _load_pystack():
 
 def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypatch):
     # Behavioral: with a Windows AMD box whose per-arch index is down, the repair must attempt the pinned trio via the
+    # nonfatal helper, NOT call the fatal pip_install, and NOT proceed to bitsandbytes -- so the overall install
+    # survives the index failure with the existing (CPU) torch intact.
     try:
         ps = _load_pystack()
     except Exception as exc:

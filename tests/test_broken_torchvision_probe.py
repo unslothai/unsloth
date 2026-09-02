@@ -57,7 +57,7 @@ def test_the_other_shapes_of_the_same_break_are_recognised(message):
 @pytest.mark.parametrize(
     "message",
     [
-        # A CPU-only or driverless box: torchvision cannot load, and that is
+        # A CPU-only or driverless box: torchvision cannot load, and that is not what this probe is for.
         "libcuda.so.1: cannot open shared object file: No such file or directory",
         "libnvrtc.so: cannot open shared object file: No such file or directory",
         "/lib/libjpeg.so: undefined symbol: jpeg_resync_to_restart",

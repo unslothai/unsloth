@@ -62,7 +62,9 @@ def _host(
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: rocm_gpu and not nvidia)
 
     def _detect(dedup = True, **_kw):
-        # The real probe records which tool answered;
+        # The real probe records which tool answered; callers read it to decide whether the list is ROCr-filtered and in
+        # the masks' order. Leaving the global at whatever ran last makes that depend on test order, and on a real AMD
+        # box on the machine.
         stack._LAST_AMD_GFX_PROBE = probe_source if gfx else None
         return list(dict.fromkeys(gfx)) if dedup else list(gfx)
 
@@ -384,6 +386,7 @@ def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name, safe_pa
     decision = _decision(result)
     assert result.returncode == 1, decision
     # ...and the gate that answered must be the one this case names, not whichever other exit-1 state the host happened
+    # to be in, or the case passes on any host that keeps the fast path for an unrelated reason.
     expected_field = {
         "UNSLOTH_NO_TORCH": "no_torch=True",
         "UNSLOTH_TORCH_BACKEND": "backend='cpu'",
@@ -418,7 +421,8 @@ def test_the_cli_answers_end_to_end_over_a_stub_torch(tmp_path, version, hip, ex
     # The decision line, not the bare code:
     decision = _decision(result)
     assert result.returncode == expected, f"{decision}\n{stderr}"
-    # The wheel family must be the input that decided it, so the case cannot pass on a host
+    # The wheel family must be the input that decided it, so the case cannot pass on a host that answered before the
+    # probe was reached.
     assert f"'{version}'" in decision, decision
 
 
@@ -712,6 +716,7 @@ def test_a_repin_to_another_per_arch_leaf_forces_the_pass(monkeypatch):
     comparison sees no change and would keep the fast path over an edited pin -- the update
     that was supposed to move the card onto its own wheels."""
     # A pin that no longer matches the installed wheel is the pin's own question, not a hardware one, and
+    # _ensure_rocm_torch reinstalls for it.
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",

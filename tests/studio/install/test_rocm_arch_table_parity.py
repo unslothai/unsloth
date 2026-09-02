@@ -557,7 +557,7 @@ class TestSpoofFixtureParity:
 _MKT_NAME = re.compile(r"(RX\s*\d{4}|PRO\s*[WV]\d{3,4}|\b90[5-8]0\b)", re.IGNORECASE)
 _GFX_ID = re.compile(r"gfx1[0-2][0-9a-z]{1,2}")
 
-# Skip dirs of third-party or generated code;
+# Skip dirs of third-party or generated code; scanning them is slow and any hit would not be ours to fix.
 _SCAN_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "build", "dist", "__pycache__"}
 
 # Every file allowed to carry a name/arch table, as a repo-relative posix path.
@@ -727,6 +727,7 @@ class TestShadowingIntegratedGfxParity:
 
     def test_install_llama_prebuilt_matches_install_python_stack(self):
         # _apply_host_overrides() honours setup's repick only for these arches, so drift re-splits torch and llama.cpp
+        # across two GPUs on a mixed host.
         assert self._prebuilt_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
     def test_strix_is_excluded_from_every_copy(self):

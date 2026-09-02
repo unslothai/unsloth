@@ -64,6 +64,8 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 # Both trees ship to Windows contributors, and separate CI jobs collect them (repo-cpu-tests and the studio-backend
+# matrix), so the rule covers both. Not a hand-written list: studio/backend/hub/tests and unsloth/kernels/moe/tests are
+# already here, and the next one has to be covered the day it lands.
 SKIP_DIRS = {".git", ".venv", "build", "dist", "frontend", "node_modules", "site-packages"}
 
 
@@ -108,7 +110,10 @@ SOURCES = _tracked_test_files(REPO)
 if SOURCES is None:
     SOURCES = _walked_test_files(REPO)
 GUARDED_METHODS = {"read_text", "write_text"}
-# Openers that are somebody else's are recognised by the file's own imports rather than a fixed list, so `import
+# Openers that are somebody else's are recognised by the file's own imports rather than a fixed list, so `import tarfile
+# as tf` and `from PIL import Image` are both covered without naming either. These wrap their stream in a TextIOWrapper
+# for a "t" mode, which takes the platform default exactly like builtin open. Unlike open they default to "rb", so only
+# an explicit text mode is in scope. lzma takes encoding keyword-only.
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
 # Wrappers that stay lazy, so draining one drains what it was given.
 LAZY_ADAPTERS = {"enumerate", "filter", "islice", "map", "reversed", "zip"}
@@ -174,6 +179,7 @@ ENCODING_POSITION = {"read_text": 0, "write_text": 1, "Path.open": 2, "open": 3}
 # Distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
 # Stand-in for a file whose imports are not to hand, so every helper can be called on its own without pretending it
+# knows what was imported.
 NO_MODULES: dict = {}
 
 
@@ -287,7 +293,7 @@ def _import_time_calls(tree: ast.Module):
         while stack:
             node = stack.pop()
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # The body waits for a call;
+                # The body waits for a call; these two run right now.
                 stack.extend(node.decorator_list)
                 stack.extend(d for d in node.args.defaults if d is not None)
                 stack.extend(d for d in node.args.kw_defaults if d is not None)
@@ -314,6 +320,7 @@ def _import_time_calls(tree: ast.Module):
                 if isinstance(func, ast.Name) and func.id in helpers and func.id not in entered:
                     helper = helpers[func.id]
                     # `READS = _load(paths)` on a generator function only builds the generator, so its body waits for a
+                    # consumer just as a genexp does.
                     if not _is_generator(helper) or id(node) in consumed:
                         entered.add(func.id)
                         body = list(helper.body)
@@ -330,6 +337,7 @@ def _eagerly_consumed(tree: ast.Module) -> set:
     an unconsumed one has not happened yet.
     """
     # `texts = (p.read_text() for p in ...)` then `list(texts)` consumes the generator through a name, so the name has
+    # to lead back to it.
     named: dict = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -463,7 +471,8 @@ def _local_names(func) -> set:
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            # A comprehension target binds in its own scope, so it shadows nothing out here;
+            # A comprehension target binds in its own scope, so it shadows nothing out here; the rest of the
+            # comprehension still does.
             for gen in node.generators:
                 stack.append(gen.iter)
                 stack.extend(gen.ifs)
@@ -473,6 +482,7 @@ def _local_names(func) -> set:
             names.add(node.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             # `start._CODEX_FALLBACK_PROMPT` is a path another module defines at its own module scope, so the import is
+            # an anchor like any constant.
             names.update((a.asname or a.name).split(".")[0] for a in node.names)
         stack.extend(ast.iter_child_nodes(node))
     return names
@@ -530,7 +540,8 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
             visible.update(_import_bindings(node))
             return
         if isinstance(node, ast.If):
-            # Only a branch that certainly runs may bind a name for the code after it;
+            # Only a branch that certainly runs may bind a name for the code after it; the others are explored with a
+            # copy that is thrown away.
             taken = _static_truth(node.test)
             walk(node.test, visible)
             for arm, runs in ((node.body, taken is not False), (node.orelse, taken is not True)):
@@ -663,11 +674,13 @@ def _path_root(node: ast.AST) -> ast.AST:
                 and node.value.id in SELF_NAMES
             ):
                 # An unrecognised call says nothing about where its result points, so tempfile.mkdtemp() and a helper
+                # that copies its argument into a temp dir both stop here.
                 return node
             node = node.value
         elif isinstance(node, ast.Call):
             func = node.func
             # `p.rglob("*.py")` anchors on p, not on the pattern, while Path(x), str(x) and os.path.join(x, ...) anchor
+            # on the argument.
             if isinstance(func, ast.Attribute) and func.attr in PATH_METHODS:
                 node = func.value
             elif _is_path_preserving(func) and node.args:
@@ -688,6 +701,7 @@ def _is_checked_in_root(
     """True when a path expression anchors on something that ships in the repo."""
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         # `for path in (MODEL_SELECTOR, APP_SIDEBAR)` is checked in when every element is, which is what makes the loop
+        # variable one too.
         return bool(node.elts) and all(
             _is_checked_in_root(
                 e.value if isinstance(e, ast.Starred) else e,
@@ -700,7 +714,8 @@ def _is_checked_in_root(
         )
     root = _path_root(node)
     if isinstance(root, ast.Constant) and isinstance(root.value, str):
-        # A relative literal naming something that exists here is checked in;
+        # A relative literal naming something that exists here is checked in; a path the test creates at runtime is not
+        # in the tree to be found.
         value = root.value
         if not value or "\n" in value or "\0" in value or os.path.isabs(value):
             return False
@@ -800,6 +815,7 @@ def _checked_in_locals(
             paired = True  # `A, B = P1, P2` lines its sides up element by element
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             # `for p in SRC_DIR.rglob("*.py")` binds p to a checked-in path too, and `for name, path in CASES` binds
+            # both to the same iterable.
             target, value = node.target, node.iter
         else:
             continue
@@ -824,6 +840,7 @@ def _checked_in_locals(
             if name not in bad and _is_checked_in_root(value, module_names, shadowed, good)
         }
         # A name assigned a checked-in path somewhere and something else elsewhere stays out, since only one of the two
+        # is provable.
         grown -= {
             name
             for name, value in assignments
@@ -885,6 +902,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     one handed a tmp_path rule out what the other proves.
     """
     # Every definition, plus which scope it was written in, so a call resolves to the nearest enclosing `def` of that
+    # name the way Python resolves it.
     scope_of: dict = {}
     defs_in: dict = {}
 
@@ -910,6 +928,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
         return None
 
     # Which function each call sits in, so a parameter already known to hold a checked-in path can be passed on to the
+    # next helper.
     owner: dict = {}
 
     def _mark(node, owning):
@@ -921,6 +940,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
 
     _mark(tree, None)
     # Which class body each call sits in, so `self._read(...)` resolves to that class's method and not a same-named one
+    # in a sibling class.
     in_class: dict = {}
 
     def _mark_class(node, cls):
@@ -947,6 +967,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 ok = all(_is_checked_in_root(v, module_names, ()) for v in values)
                 (grown if ok else bad).add((id(fnode), argname))
         # What the calling function itself can prove, recomputed each pass so a parameter resolved last time can feed a
+        # local this time.
         scope: dict = {}
         for call in ast.walk(tree):
             if not isinstance(call, ast.Call):
@@ -979,7 +1000,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 positional = positional[
                     1:
                 ]  # the receiver already fills `self` A keyword-only parameter never takes a
-            # A keyword-only parameter never takes a positional slot, so it is
+            # A keyword-only parameter never takes a positional slot, so it is matched by name alone.
             params = positional + [a.arg for a in func.args.kwonlyargs]
             supplied = dict(zip(positional, call.args))
             supplied.update({k.arg: k.value for k in call.keywords if k.arg in params})
@@ -1118,6 +1139,7 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
         # An unbound `Path.read_text(p)` puts the instance in slot 0, and `pathlib.Path.read_text(p)` is the same call
+        # fully qualified.
         shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
@@ -1132,6 +1154,7 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
             return None if _pins_encoding(call, position) else f"{func.attr}()"
         if func.attr == "open":
             # io.open and builtins.open ARE the builtin, so they take the builtin's argument positions and the same
+            # platform default.
             if receiver is not None and _origin_root(receiver, modules) in BUILTIN_OPEN_MODULES:
                 if not _is_text(call, 1) or _pins_encoding(call, ENCODING_POSITION["open"]):
                     return None

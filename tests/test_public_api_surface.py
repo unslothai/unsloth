@@ -168,7 +168,7 @@ def test_fast_model_from_pretrained_kwargs():
         )
 
 
-# Bf16 helper alias (renamed once already;
+# Bf16 helper alias (renamed once already; keep both accepted).
 def test_is_bf16_supported_or_alias_callable():
     """is_bf16_supported or the legacy is_bfloat16_supported alias must remain importable."""
     unsloth = pytest.importorskip("unsloth")

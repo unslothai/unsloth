@@ -76,6 +76,7 @@ def test_registration_failures_are_never_silenced():
                 f"{stripped}"
             )
     # Without this, deleting both registrations would leave the loop with nothing to inspect and the test would pass on
+    # an unregistered-PSGallery runner.
     assert seen == {
         "Register-PSRepository",
         "Register-PSResourceRepository",

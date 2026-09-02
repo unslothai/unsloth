@@ -212,7 +212,7 @@ def test_p2_probe_skips_corrupt_prefers_valid():
     """P2 fix: probe continues past a corrupt 'messages' column to a valid 'conversations' column."""
     section("P2 Fix Verification — probe continues past corrupt first column to valid second")
 
-    # messages column is all-None;
+    # messages column is all-None; conversations is a valid ShareGPT column.
     rows = [
         {
             "messages": None,
@@ -258,7 +258,7 @@ def test_p2_explicit_fmt_col_priority():
     """P2 fix: explicit fmt='sharegpt' lets find_none_sharegpt pick its own column (conversations)."""
     section("P2 Fix Verification — explicit fmt='sharegpt' respects per-scanner column priority")
 
-    # messages has valid role/content turns (chatml-ish);
+    # messages has valid role/content turns (chatml-ish); conversations has bad sharegpt turns.
     rows = [
         {
             "messages": [
@@ -293,7 +293,7 @@ def test_p2_gptoss_col_priority():
     """P2 fix: fmt='gptoss' scans 'messages' only, not a clean 'conversations' fallback."""
     section("P2 Fix Verification — fmt='gptoss' scans messages only, not conversations")
 
-    # messages is all-None (corrupt);
+    # messages is all-None (corrupt); conversations is clean sharegpt.
     rows = [
         {
             "messages": None,
@@ -485,7 +485,7 @@ def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
         f"missed: {len(missed)}{snippet}"
     )
     if extra:
-        # Module may legitimately flag more rows (extra structural checks);
+        # Module may legitimately flag more rows (extra structural checks); informational only.
         print(
             f"  [INFO] {label} — module flagged {len(extra)} rows not in brute-force "
             f"(may reflect additional structural checks, not false positives)"
@@ -518,7 +518,7 @@ def test_dataclaw():
 def test_codex_data():
     section("3. HuggingFace — peteromallet/my-personal-codex-data")
     try:
-        # load_dataset fails here (ujson chokes on the large JSONL batch);
+        # load_dataset fails here (ujson chokes on the large JSONL batch); download + parse raw instead.
         from huggingface_hub import hf_hub_download
         from datasets import Dataset
 

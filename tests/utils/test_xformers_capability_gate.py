@@ -47,6 +47,8 @@ def test_capability_gate(capability, probe_result, expect_disabled):
 )
 def test_probe_shapes_are_valid_on_working_gpu():
     # Guards against a malformed probe that raises on every GPU and would silently disable xformers on Blackwell even
+    # where it works. On a pre-sm_120 GPU with a functional xformers the real probe must succeed; sm_120+ is skipped
+    # above because there a False is a correct answer, not a malformed probe.
     assert ad._xformers_runs_on_device() is True
 
 
@@ -97,5 +99,6 @@ def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
         raise RuntimeError("CUDA error: an illegal memory access was encountered")
 
     monkeypatch.setattr(ad.torch.cuda, "synchronize", deferred_cuda_error)
-    # Without the synchronize the stubbed op returns cleanly and the probe wrongly
+    # Without the synchronize the stubbed op returns cleanly and the probe wrongly reports True; the sync surfaces the
+    # deferred error so the probe returns False.
     assert ad._xformers_runs_on_device() is False

@@ -118,7 +118,7 @@ def test_exact_output_try_block():
 
 
 def test_exact_output_multiple_consecutive_imports():
-    # Only the blank after the LAST import in a run is dropped;
+    # Only the blank after the LAST import in a run is dropped; both imports kept.
     src = "def f():\n    import a\n    import b\n\n    return a, b\n"
     expected = "def f():\n    import a\n    import b\n    return a, b\n"
     out, changed = remove_blank_after_short_import(src)

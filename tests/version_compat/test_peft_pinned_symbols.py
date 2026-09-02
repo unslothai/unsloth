@@ -158,7 +158,7 @@ def test_peft_param_wrapper_class(tag: str):
         f"unsloth_zoo/temporary_patches/qwen3_moe.py:43-130 + "
         f"moe_utils.py:757 ImportError (unsloth-zoo#618)"
     )
-    # Member names: informational only;
+    # Member names: informational only; the real bug to catch is full removal.
     for name in ("parameter_name", "forward", "lora_A", "get_base_layer"):
         _present = name in src
 
@@ -284,7 +284,7 @@ def test_peft_modules_to_save_wrapper(tag: str):
 def test_peft_peft_model_from_pretrained_signature(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/peft_model.py")
     assert src is not None, f"{tag}: src/peft/peft_model.py missing"
-    # Just check the method name;
+    # Just check the method name; the full kwarg list is too brittle.
     assert has_def(
         src, "from_pretrained", "func"
     ), f"{tag}: PeftModel.from_pretrained missing in peft_model.py"

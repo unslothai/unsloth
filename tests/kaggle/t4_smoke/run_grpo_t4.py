@@ -506,6 +506,7 @@ def failures_for(result: dict, args) -> list[str]:
 
     if result.get("fast_generate") is None:
         # Not `== "unverifiable"`: any verdict this file has not been taught about is a failure rather than a silent
+        # pass.
         failures.append(
             "fast_generate (the vLLM inference path the notebook uses after "
             f"training) failed: {result.get('fast_generate_error')}"
@@ -549,9 +550,9 @@ def make_libcuda_linkable() -> dict:
         import ctypes.util
         import subprocess
 
-        # ONLY the directories flashinfer passes with -L.
-        # Measured on kernel unsloth-t4-ci-d0d480b6: an earlier version also accepted /usr/local/cuda/compat, found
-        # libcuda.so there, concluded "already linkable" and did nothing, and the link failed anyway because compat is
+        # ONLY the directories flashinfer passes with -L. Measured on kernel unsloth-t4-ci-d0d480b6: an earlier version
+        # also accepted /usr/local/cuda/compat, found libcuda.so there, concluded "already linkable" and did nothing,
+        # and the link failed anyway because compat is not on the link command line.
         link_dirs = ["/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"]
         for d in link_dirs:
             if os.path.exists(os.path.join(d, "libcuda.so")):
@@ -626,6 +627,7 @@ def main() -> int:
 
     if args.cuda_launch_blocking:
         # Must precede any CUDA context creation, so before this process's first `import torch` rather than merely
+        # before `train()`.
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
         os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
@@ -692,6 +694,7 @@ def main() -> int:
         if isinstance(exc, KeyboardInterrupt):
             raise
         # Head AND tail: the last probe's 6000-char tail was entirely ninja's output, dropping the Python frames that
+        # named the caller.
         _tb = traceback.format_exc()
         report["traceback"] = (
             _tb if len(_tb) <= 12000 else _tb[:6000] + "\n...[middle elided]...\n" + _tb[-6000:]

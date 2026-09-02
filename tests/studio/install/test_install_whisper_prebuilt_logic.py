@@ -15,7 +15,8 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
-# The installer imports install_llama_prebuilt (same directory);
+# The installer imports install_llama_prebuilt (same directory); make studio/ importable so that resolves under
+# spec-based loading.
 _STUDIO_DIR = str(MODULE_PATH.parent)
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
@@ -397,7 +398,7 @@ def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (bundle, {})
     )
-    # A prior install test may have left the module flag True;
+    # A prior install test may have left the module flag True; the resolver must force it back to stderr regardless.
     monkeypatch.setattr(M, "_LOG_TO_STDOUT", True, raising = False)
 
     rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
@@ -461,7 +462,8 @@ def test_main_maps_unexpected_error_to_exit_error(tmp_path, monkeypatch):
 
 
 def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
-    # An unexpected failure inside the probe maps to prebuilt_available=False, not a traceback, so the caller falls
+    # An unexpected failure inside the probe maps to prebuilt_available=False, not a traceback, so the caller falls back
+    # cleanly. It is reported as unresolved, since nothing was learned about whether a prebuilt exists.
     host = _host("linux", "x64")
     monkeypatch.setattr(M, "detect_host", lambda: host)
 
@@ -913,7 +915,8 @@ def test_macos_auto_backends_route_to_slim(tmp_path, monkeypatch):
 
 
 def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
-    # A macos llama runtime without libggml-metal*.dylib cannot back metal; the
+    # A macos llama runtime without libggml-metal*.dylib cannot back metal; the cpu fallback still rides the same slim
+    # bundle via the cpu module.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
     bin_dir.mkdir(parents = True)
     for name in ("libggml.dylib", "libggml-base.dylib", "libggml-cpu.dylib"):
@@ -931,6 +934,7 @@ def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
 
 def test_slim_only_release_pairing_failure_is_actionable(tmp_path, monkeypatch):
     # A slim-only release with no llama install is an operational failure, not the narrowly handled installed-version
+    # skew.
     lines: list[str] = []
     monkeypatch.setattr(M, "log", lines.append)
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: None)
@@ -977,6 +981,7 @@ def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs
 
 LLAMA_REPO = "unslothai/llama.cpp"
 # A publisher that is NOT the default, so a lookup that dropped installed_repo and fell back to unslothai/llama.cpp
+# builds a different URL and gets caught.
 FORK_REPO = "acme-fork/llama.cpp"
 
 
@@ -996,13 +1001,15 @@ def _offline_published_tree_lookup(monkeypatch):
         raise OSError(f"offline test tried to fetch {url}")
 
     monkeypatch.setattr(M, "_download_host_json_once", unreachable)
-    # No marker to read, so installed_llama_tree_repo() stays None unless a test points it somewhere;
+    # No marker to read, so installed_llama_tree_repo() stays None unless a test points it somewhere; the lookup then
+    # needs an explicit repo.
     monkeypatch.setattr(M.llama, "default_managed_llama_dir", lambda: Path("/nonexistent-llama"))
     yield
     M._PUBLISHED_GGML_TREE_CACHE.clear()
 
 
 # The autouse fixture above replaces _download_host_json_once with an offline guard, so a test exercising the real
+# wrapper has to hold a reference taken at import, before any fixture runs.
 _REAL_DOWNLOAD_HOST_JSON_ONCE = M._download_host_json_once
 
 
@@ -1020,7 +1027,8 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
         # Different suffixes, same ggml:
         ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
-        # A missing tree falls back to the suffix only when the release does not publish one either;
+        # A missing tree falls back to the suffix only when the release does not publish one either; the lookup is
+        # stubbed offline above.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
@@ -1516,6 +1524,7 @@ def test_runtime_directories_are_a_linux_rocm_concern_only(tmp_path, whisper_os,
 
 def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
     # rocblas stays mandatory: libggml-hip.so lists librocblas.so.5 in its ELF NEEDED (checked on the published b10342
+    # linux-x64-rocm-gfx103X bundle).
     llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
     for directory in M.SLIM_ROCM_RUNTIME_DIRS:
         catalog = llama_bin / directory
@@ -1556,6 +1565,7 @@ def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
 
 def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
     # A slim install whose hardlinked ggml files vanished (llama dir deleted) must reinstall so update re-wires instead
+    # of reporting up to date.
     host = _host("linux", "x64")
     monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
     server = tmp_path / "build" / "bin" / "whisper-server"
@@ -1734,7 +1744,8 @@ def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
     assert marker["install_kind"] == "slim"
     assert marker["paired_llama_tag"] == SLIM_LLAMA_TAG
     assert marker["linked_from"] == str(llama_bin)
-    # The wired filenames land in the marker;
+    # The wired filenames land in the marker; the sidecar launch guard verifies exactly these names instead of hardcoded
+    # per-OS globs.
     assert marker["linked_libraries"] == [
         "libggml-base.so.0",
         "libggml-cpu-x64.so",

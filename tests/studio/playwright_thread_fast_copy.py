@@ -86,7 +86,9 @@ class MissingPrerequisite(Exception):
     """Something the run needs is not installed. Reported as a SKIP, never as a pass."""
 
 
-# : The bundle exposes the module's exports;
+# : The bundle exposes the module's exports; this gives the page one entry point with the shape : the driver wants. The
+# gate and the serialiser are the shipped ones -- the only thing restated : here is `scopeElement`, which is
+# module-private.
 SHIM = """
 window.__fastCopy = function () {
   const M = window.SBFastCopy;
@@ -267,6 +269,7 @@ def check(engine: str, candidate: str) -> Tally:
                 problems.append(f"{engine}/{name}: the serialiser did not restore the selection")
 
             # Both engines' clipboards fold a no-break space to a plain one and neither `toString()` does, so that
+            # difference is not evidence of a divergence.
             raw = before.replace("\u00a0", " ")
             prime_clipboard(page, sentinel)
             native = read_clipboard(page, sentinel, SELECT_ALL)

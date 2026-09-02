@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-# Scratch root for the per-arm `datasets` cache;
+# Scratch root for the per-arm `datasets` cache; no machine-specific layout.
 WORKSPACE = Path(os.environ.get("UNSLOTH_WORKSPACE") or tempfile.gettempdir())
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")

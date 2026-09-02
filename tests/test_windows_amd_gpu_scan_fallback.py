@@ -266,6 +266,7 @@ def test_single_amd_adapter_is_reported(tmp_path, ps51, strict):
     assert out["wmi_array"], f"one adapter must stay an array, got {out['wmi_type']}"
     assert out["labels"] == [_RADEON]
     # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so "reported" has to mean
+    # the name reached the inference.
     assert out["arch"] == "gfx1151"
     assert out["label"] == "AMD ROCm (gfx1151)"
 

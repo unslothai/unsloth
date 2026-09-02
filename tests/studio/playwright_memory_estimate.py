@@ -70,8 +70,8 @@ from _playwright_robust import (  # noqa: E402
 BASE = os.environ["BASE_URL"]
 NEW = os.environ.get("STUDIO_NEW_PW", "MemEst-NEW-2026!")
 # Attach mode: log into an already-provisioned Unsloth with an existing password instead of the first-boot
-# change-password dance.
-# The CI step runs this after the model-config scene against the SAME server, whose bootstrap password that scene has
+# change-password dance. The CI step runs this after the model-config scene against the SAME server, whose bootstrap
+# password that scene has already rotated, so there is no change-password flow left to drive there.
 LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
 LOGIN_USER = os.environ.get("STUDIO_LOGIN_USER", "unsloth")
 GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
@@ -80,11 +80,12 @@ GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
 # suite reported the feature missing. The repo's own name cannot collide that way.
 # Substring of the picker row for the model whose run settings this drives.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT") or GGUF_REPO.rsplit("/", 1)[-1]
-# Context Lengths for the four re-prices.
-# Each must be valid (>=128, a multiple of 128, under the model's ceiling) and DIFFERENT from what the control is
-# showing at the time.
-# That last part is a property of the control, not a precaution: the box reads "Auto" until focused and then reveals the
-# context the load would fit to (8192 here), and typing the number already displayed commits no onChange, so the request
+# Context Lengths for the four re-prices. Each must be valid (>=128, a multiple of 128, under the model's ceiling) and
+# DIFFERENT from what the control is showing at the time. That last part is a property of the control, not a precaution:
+# the box reads "Auto" until focused and then reveals the context the load would fit to (8192 here), and typing the
+# number already displayed commits no onChange, so the request key never moves and no re-price happens. Measured: typing
+# 8192 into a box showing 8192 produced zero requests; every other value produced one. Hence chosen at the moment of
+# typing, against what the box says, rather than fixed per step.
 CTX_CANDIDATES = [
     int(part)
     for part in os.environ.get("STUDIO_CTX_CANDIDATES", "6144,5120,4096,3072,2048,1536").split(",")
@@ -199,7 +200,8 @@ exchanges: list[dict] = []
 
 UNAVAILABLE_BODY = {
     "available": False,
-    # The reason a real backend gives for a GGUF whose file is not on this disk, which is the commonest way a user
+    # The reason a real backend gives for a GGUF whose file is not on this disk, which is the commonest way a user meets
+    # the hidden row.
     "reason": "not_downloaded",
     "weights_bytes": 0,
     "kv_bytes": 0,
@@ -344,6 +346,8 @@ with sync_playwright() as p:
         viewport = {"width": 1280, "height": 900},
         reduced_motion = "reduce",
         # One assertion reads a number the app formatted with `toLocaleString`, whose group separator is a property of
+        # the locale. Left to the engine's default, 8192 renders "8,192" on one runner and "8 192" on another, and the
+        # gate would be measuring the runner.
         locale = "en-US",
     )
     install_view_transition_killer(ctx)
@@ -563,11 +567,15 @@ with sync_playwright() as p:
             diagnose("no-picker-row", f"[data-model-picker-option] has_text={hint!r}")
             return None
         # The quant first: with "Expand quantizations" on, a repo-only lookup finds some gear straight away and which
+        # one is arbitrary. Repo-only stays as the fallback, for the collapsed sole-quant row whose label carries its
+        # own quant.
         gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS)
         if gear is None:
             gear = row_gear(popover, hint)
         if gear is None:
             # A multi-quant repo shows gears only once the row is expanded, and clicking a collapsed sole-quant row
+            # loads it and closes the picker -- so reopen and look again rather than treating a closed picker as a
+            # missing gear.
             if select_on_device_row(popover, hint) is None:
                 diagnose("no-row-gear", f"Inference settings for ...{hint}")
                 return None
@@ -602,6 +610,10 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     ESTIMATE_LABEL = re.compile(r"Estimated Memory Usage", re.I)
     # The run-settings panel exists more than once in this document -- the picker keeps its own copy mounted behind the
+    # one on screen -- so a bare `.first` is a coin toss, and the copy it landed on in CI was one the user cannot see:
+    # the row was painted, screenshotted, and reported missing for twenty seconds. Take the first match that is actually
+    # on screen, and say which strategy found it, because "the row is not there" and "the row is there twice" are the
+    # same failure otherwise.
     _match_note: list[str] = []
 
     def _first_visible(loc, label: str):
@@ -846,6 +858,8 @@ with sync_playwright() as p:
             and str(variant).strip().lower() != (GGUF_VARIANT.strip().lower())
         ):
             # Only the structural locator found it, so the toggle is not reachable by role -- an ancestor is hiding it
+            # from the accessibility tree, or its accessible name is not what it reads as. Reported rather than gated
+            # while it is unproven which; the line above names the strategy that won.
             runtime_warn(
                 f"the estimate priced quant {variant!r}, not {GGUF_VARIANT!r}; the picker row "
                 f"may have collapsed onto a different variant"

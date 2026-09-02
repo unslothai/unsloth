@@ -452,6 +452,7 @@ def test_studio_placement_survives_the_loader_opt_in(
         monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", opt_in)
 
     # The worker narrows CUDA_VISIBLE_DEVICES to the selection before torch initialises, so the loader counts the
+    # selected devices, not the machine's.
     visible = len(gpu_ids) if gpu_ids else 1
     loader = _loader_device_map_helpers()(visible)
 

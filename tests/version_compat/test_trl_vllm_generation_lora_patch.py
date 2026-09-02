@@ -279,6 +279,7 @@ def test_trl_0_22_shape_keeps_working(monkeypatch):
         str(r).startswith("LORA[vllm_gen_lora") for r in requests
     ), f"adapter missing on the 0.22.2-era shape: {log}"
     # The shared engine already holds the live training weights, so a reload_weights would drag the original checkpoint
+    # back off disk.
     assert (
         ("collective_rpc", "reload_weights") not in log
     ), f"reload_weights reached the shared engine and clobbered the trained weights: {log}"
@@ -429,6 +430,7 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
         assert getattr(cls, name) is method, f"{name} was re-patched on the second call"
 
     # One layer of wrapping, and it unwraps to TRL's own function so that `inspect.getsource` / `inspect.signature`
+    # still report TRL's `generate`.
     wrapped = getattr(cls.generate, "__wrapped__", None)
     assert wrapped is not None, "the wrapper did not set __wrapped__"
     assert getattr(wrapped, "__wrapped__", None) is None, "generate was wrapped twice"

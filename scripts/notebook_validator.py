@@ -959,7 +959,8 @@ def cmd_lint(args: argparse.Namespace) -> int:
             continue
         rel = str(path.relative_to(nbdir))
         env = target_environment(rel)
-        # Colab oracle applies only to Colab notebooks;
+        # Colab oracle applies only to Colab notebooks; other targets get the environment-agnostic rules only (their
+        # preinstalls aren't tracked).
         oracle = colab if env == "colab" else {}
         cells = install_cells(nb)
         for idx, cell in cells:

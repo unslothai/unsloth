@@ -264,7 +264,7 @@ class TestStepThirteenWiring:
         )
 
     def test_the_existing_repair_set_is_untouched(self):
-        # Step 2b (which Windows enters;
+        # Step 2b (which Windows enters; the four helpers return early there) and the Linux-only step 13.
         guards = _guards_containing("_ensure_cuda_torch")
         assert [ast.unparse(guard.test) for guard in guards] == [
             "not IS_MACOS and (not NO_TORCH)",
@@ -367,7 +367,7 @@ class TestManifestRecordsTheFlavor:
         assert payload["expected_torch_tag"] == "cu124"
 
     def test_no_index_url_is_ever_written(self, tmp_path):
-        # A pinned index can carry a token;
+        # A pinned index can carry a token; this file sits in the venv and is read back.
         install_manifest.write_manifest(
             root = tmp_path, req_root = tmp_path, expected_torch_tag = "cu124"
         )

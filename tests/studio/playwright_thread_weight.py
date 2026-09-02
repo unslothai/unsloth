@@ -83,6 +83,7 @@ OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-thread-weight"))
 OUT.mkdir(parents = True, exist_ok = True)
 
 # Sorted: the growth check reads the first and last entries as smallest and largest, so an unsorted override would
+# invert every ratio and report a good run as measuring nothing.
 SIZES = sorted(int(n) for n in os.environ.get("SMOKE_THREAD_SIZES", "10,50,200,500").split(","))
 # 6x is the Lighthouse mobile default and roughly the gap between this machine and the reported one under load.
 CPU_THROTTLE_RATE = float(os.environ.get("SMOKE_CPU_THROTTLE", "6"))
@@ -148,6 +149,8 @@ def counters(before: dict[str, float], after: dict[str, float]) -> dict[str, flo
 
 def long_task_summary(page) -> dict[str, float]:
     # PerformanceObserver callbacks are delivered on a later task, so the entry for the long task at the tail of an
+    # action is not in the array yet. Yield once before reading, or the worst entry is silently dropped -- flakily, and
+    # most often at large N where that tail task is longest.
     tasks = page.evaluate(
         "async () => { await new Promise((r) => setTimeout(r, 0)); return window.__longTasks; }"
     )
@@ -375,7 +378,8 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         cdp = context.new_cdp_session(page)
         cdp.send("Performance.enable")
 
-        # Seeding unthrottled: this measures interaction cost at a thread size, not the cost of constructing the
+        # Seeding unthrottled: this measures interaction cost at a thread size, not the cost of constructing the thread,
+        # and 500 messages at 6x would spend minutes here.
         page.evaluate("(n) => window.__threadWeight.seed(n)", size)
         page.wait_for_function(
             "(n) => window.__threadWeight.messageCount() >= n",
@@ -388,6 +392,7 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             timeout = SEED_TIMEOUT_MS,
         )
         # Single-selector gates. counts() walks every element in the document, so polling it per frame makes seeding
+        # superlinear in the thing being seeded.
         page.wait_for_function(
             """() => {
                 const n = window.__threadWeight.highlightedTokenCount();
@@ -447,6 +452,8 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
                 if (m) m.scrollIntoView({ block: "center", behavior: "instant" }); }"""
         )
         # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting code blocks gates
+        # nothing. Wait for the token count to stop moving instead: unfinished highlighting would otherwise land in the
+        # keystroke window, the first action measured.
         page.wait_for_function(
             """() => {
                 const top = window.__threadWeight.viewportMetrics().scrollTop;
@@ -524,7 +531,8 @@ def run() -> dict:
         )
         context = browser.new_context(viewport = {"width": 1440, "height": 900})
         context.add_init_script(OBSERVER_INIT)
-        # Anchored at the origin so it cannot swallow vite's own module URLs, which live under
+        # Anchored at the origin so it cannot swallow vite's own module URLs, which live under src/features/**/api/ and
+        # would otherwise match a bare "/api/" pattern.
         context.route(
             re.compile(rf"^{re.escape(BASE)}/api/"),
             lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
@@ -682,6 +690,8 @@ def harness_failures(results: dict) -> list[str]:
         row = results["by_size"][str(size)]
         counts = row["counts"]
         # A request reaching the server is a CDP round trip to another process inside a region being timed, once per
+        # assistant message. A warning storm is the same cost via the console channel. Both scale with N, so both would
+        # forge the curve.
         if row["stray_api_requests"]:
             failures.append(
                 f"N={size} let {row['stray_api_requests']} /api/ requests reach the network "
@@ -705,8 +715,9 @@ def harness_failures(results: dict) -> list[str]:
                 f"N={size} rendered {counts['codeBlocks']} code blocks and "
                 f"{counts['katexNodes']} KaTeX nodes; the message bodies are not realistic"
             )
-        # An autohidden bar is absent at rest ON PURPOSE, so the resting census cannot be the
-        # guard any more. What must still hold is that hovering produces one: a tree that
+        # An autohidden bar is absent at rest ON PURPOSE, so the resting census cannot be the guard any more. What must
+        # still hold is that hovering produces one: a tree that mounts no bar under the pointer either is broken, and
+        # its menu column is measuring a page that has no menu.
         hovered_triggers = row["menu"].get("triggers_while_hovered")
         if counts["actionBars"] <= 0 and not hovered_triggers:
             failures.append(
@@ -761,6 +772,10 @@ def harness_failures(results: dict) -> list[str]:
             failures.append(f"N={size} clicked delete and the message count did not drop")
 
     # A modal menu puts the body on the modal layer and a non-modal one does not, and the two cost wildly different
+    # amounts. Either is a legitimate tree, but a run that mixes them across N is comparing columns measured on
+    # different mechanisms, which is the quiet way this table stops meaning anything. Collected in the loop above rather
+    # than in a second one over the same sizes: that loop shadowed `size` and `row`, and every check written under it
+    # silently measured only the last N.
     if len(layers) > 1:
         failures.append(
             f"the menu put the body on {sorted(str(x) for x in layers)} across N; the columns "

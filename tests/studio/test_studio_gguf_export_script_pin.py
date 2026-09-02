@@ -50,6 +50,7 @@ def _catches_import_error(handler: ast.ExceptHandler) -> bool:
 
 
 # A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which ImportError alone does not
+# cover.
 _CATCHES_EVERYTHING = ("Exception", "BaseException")
 
 

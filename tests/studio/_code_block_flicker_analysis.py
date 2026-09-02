@@ -14,14 +14,15 @@ wherever the repo's CPU suite runs.
 
 from __future__ import annotations
 
-# Minimum height before a drop counts, so a genuinely short fence is never read as a collapsed
+# Minimum height before a drop counts, so a genuinely short fence is never read as a collapsed tall one.
 TALL_PX = 400
 # Streamdown's inline fallback is 200px plus the wrapper's padding and header row.
 PLACEHOLDER_LO, PLACEHOLDER_HI = 150, 300
 # Frames a drop may take to come back.
 # Going short and STAYING short is a different bug.
 RECOVERY_FRAMES = 240
-# Document-space top movement between two frames of a scroll gesture beyond this is content above being relaid out
+# Document-space top movement between two frames of a scroll gesture beyond this is content above being relaid out under
+# the user.
 SHIFT_PX = 8
 
 

@@ -81,7 +81,7 @@ def _run(
     path = [str(_ROOT)] + ([str(site)] if site is not None else [])
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # Importing Unsloth sets USE_TF/USE_FLAX here;
+    # Importing Unsloth sets USE_TF/USE_FLAX here; each test says its own.
     clean = {k: v for k, v in os.environ.items() if k not in _BACKEND_ENV}
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],

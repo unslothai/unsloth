@@ -229,9 +229,10 @@ def _defined_names(node, overloads):
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         if _is_overload_def(node, overloads):
             return []
-        # ONE ACCESSOR OF EACH KIND IS LEGITIMATE;
-        # A SECOND OF THE SAME KIND IS NOT.
-        # Discarding every accessor meant a getter followed by two copies of the same `@value.setter` scanned clean,
+        # ONE ACCESSOR OF EACH KIND IS LEGITIMATE; A SECOND OF THE SAME KIND IS NOT. Discarding every accessor meant a
+        # getter followed by two copies of the same `@value.setter` scanned clean, with the later setter silently
+        # replacing the earlier one -- which is exactly the merge damage this gate is for. Keying on the KIND keeps the
+        # getter and the setter apart while making two setters collide.
         kind = _accessor_kind(node)
         if kind:
             return [(f"{node.name}.{kind}", f"{kind} accessor")]
@@ -257,6 +258,7 @@ def _defined_names(node, overloads):
     for target in targets:
         for name in _constant_targets(target):
             # One statement binding a name twice (`X = X = 1`) still binds it once, so it is not the two-copies damage
+            # this looks for.
             if name not in referenced and name not in names:
                 names.append(name)
     return [(name, "constant") for name in names]
@@ -297,6 +299,7 @@ def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
             )
         for nested in _branch_bodies(node):
             # A control-flow branch is not a scope, so it keeps the aliases of the body it sits in -- only a class body
+            # starts over.
             _scope_duplicates(nested, scope, out, overloads, module_overloads)
 
 
@@ -511,8 +514,9 @@ _SELF_TEST_CASES = [
     (0, "import urllib.parse as parse\nimport urllib.request as request\n"),
     (0, "value = 1\nvalue = 2\n"),
     (0, "import os\nfrom a import b\n\nX = 1\n\n\ndef go():\n    return os, b, X\n"),
-    # A chained assignment binds every name in the chain, so duplicating the line rebinds every one of them.
-    # `N = K = 256` is written in this repo;
+    # A chained assignment binds every name in the chain, so duplicating the line rebinds every one of them. `N = K =
+    # 256` is written in this repo; requiring a single target dropped the whole statement and the duplicate went
+    # unreported.
     (2, "N = K = 256\nN = K = 512\n"),
     (0, "N = K = 256\nM = 512\n"),
     (

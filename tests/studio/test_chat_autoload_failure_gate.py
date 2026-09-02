@@ -811,7 +811,7 @@ def _require_node():
             ["node", "--experimental-strip-types", "--version"],
             capture_output = True,
             text = True,
-            # A cold Windows runner is slow to start node;
+            # A cold Windows runner is slow to start node; an impatient probe would fail the gate.
             timeout = 60,
         )
     except (OSError, subprocess.SubprocessError):
@@ -863,9 +863,9 @@ def _build_harness(run_dir: Path):
             name = spec.split(" as ")[-1].strip()
             if name:
                 imported.add(name)
-    # Any mention, not just a call.
-    # useChatRuntimeStore, toast and GPU_LAYERS_AUTO are all used in this region without a following paren, and each
-    # would be the same ReferenceError;
+    # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO are all used in this region without a
+    # following paren, and each would be the same ReferenceError; they pass today only because the preamble happens to
+    # define them. Comments are stripped first so a name discussed in prose does not count as a use.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
     preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
@@ -956,6 +956,7 @@ def _run(
         capture_output = True,
         text = True,
         # Explicit: text alone decodes with the Windows ANSI code page, which mangles the non-ASCII toast copy node
+        # emits as UTF-8.
         encoding = "utf-8",
         timeout = 60,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
@@ -1546,7 +1547,7 @@ def test_a_failed_cancel_does_not_latch_the_toast_action_off():
     # In flight only, cleared when the request settles.
     assert 'if (cancelInFlight || active.state === "cancelling") return true;' in helper
     assert "cancelInFlight = false;\n    });" in helper
-    # The subscription fires the deferred attempt once;
+    # The subscription fires the deferred attempt once; retries come from clicks.
     assert "if (!cancelEverIssued) issueCancel();" in helper
 
 

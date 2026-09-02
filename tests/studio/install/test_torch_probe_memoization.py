@@ -177,7 +177,7 @@ class TestMemoization:
             first = stack_mod._probe_torch_runtime()
         assert first[2] == "2.9.1+cu128"
 
-        # A repair path reinstalls torch;
+        # A repair path reinstalls torch; the next classification must see the new build.
         with (
             patch.object(stack_mod, "USE_UV", False),
             patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),

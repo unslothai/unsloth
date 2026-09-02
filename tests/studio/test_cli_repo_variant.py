@@ -108,14 +108,14 @@ def test_empty_string():
 
 
 def test_trailing_colon_no_variant():
-    # "org/repo:" has no quant label;
+    # "org/repo:" has no quant label; pass through unchanged so backend validation gives a clearer error.
     repo, variant = _split("org/repo:")
     assert repo == "org/repo:"
     assert variant is None
 
 
 def test_slash_in_variant_disqualifies_split():
-    # "foo:bar/baz" suffix has a slash, so it's not a quant label;
+    # "foo:bar/baz" suffix has a slash, so it's not a quant label; treat as opaque.
     repo, variant = _split("foo:bar/baz")
     assert repo == "foo:bar/baz"
     assert variant is None

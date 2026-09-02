@@ -39,7 +39,7 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_IME_WALL_TIMEOUT_S", "300"))
 
 
-# One greeting + arithmetic per script;
+# One greeting + arithmetic per script; each catches a distinct Unicode class.
 I18N_SAMPLES = [
     ("en", "English", "Hello, 1+1=2"),
     ("zh-CN", "Chinese (Simplified)", "你好，1+1=2"),
@@ -130,7 +130,7 @@ with sync_playwright() as p:
 
     # url -> count of GET responses that returned 404 and are not yet spent.
     unspent_get_404s: dict[str, int] = {}
-    # (text, url) for console 404s whose URL matched;
+    # (text, url) for console 404s whose URL matched; resolved after the run.
     deferred_404_console: list[tuple[str, str]] = []
 
     def _url_is_exemptible(url: str) -> bool:
@@ -732,6 +732,7 @@ with sync_playwright() as p:
     clear()
     composer.click()
     # Seed sendable content so Send's state reflects composition only, not empty-content gating (insertFromPaste leaves
+    # composingRef false).
     set_value_via_setter("hello")
     composer.evaluate(
         """(el) => {
@@ -797,7 +798,7 @@ with sync_playwright() as p:
     send_btn_mac_blur = page.locator('button[aria-label="Send message"]')
     # Blur to simulate the OS stealing focus during an IME switch.
     composer.evaluate("(el) => el.blur()")
-    # onBlur clears composition;
+    # onBlur clears composition; re-focus so React renders the updated Send state.
     composer.click()
     if send_btn_mac_blur.count() == 0:
         soft_fail("Send button not found for Mac IME switch (onBlur) repro")

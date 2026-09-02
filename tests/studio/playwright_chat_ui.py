@@ -42,7 +42,8 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 
-# When on (default in CI), fail loudly on any missing button/nav/dialog instead of logging a WARN;
+# When on (default in CI), fail loudly on any missing button/nav/dialog instead of logging a WARN; off locally to run
+# against a partial install.
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 
 # Per-turn assistant-bubble wait.
@@ -203,6 +204,10 @@ def exercise_permission_mode_controls(page, shoot):
         )
 
     # The level is an installation setting, mirrored through /api/chat/settings, so "fresh profile" is no longer "fresh
+    # browser": the cross-browser step runs this block three times against ONE install, and runs two and three would
+    # otherwise open on the level run one left behind. Refuse the hydrating GET, with no local level either, which is
+    # the state a first-ever browser on a never-configured install is in. Everything up to the end of the migration loop
+    # reads the level, so the whole stretch is held there.
     def refuse_settings_hydration(route):
         if route.request.method == "GET":
             route.fulfill(
@@ -670,6 +675,7 @@ with sync_playwright() as p:
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
         # Reduce motion so view-transition animations don't intercept pointer events and break Playwright's
+        # actionability check.
         reduced_motion = "reduce",
     )
     # Hard-disable CSS view-transitions: Unsloth's theme toggle + sidebar collapse run startViewTransition() which can
@@ -702,6 +708,7 @@ with sync_playwright() as p:
     page.on("console", _on_console)
 
     # Capture /v1/chat/completions statuses so a mid-test 4xx (which surfaces only as a hung wait_for_function) is
+    # debuggable from the log.
     chat_completions_responses: list[tuple[int, str]] = []
     page.on(
         "response",
@@ -740,6 +747,7 @@ with sync_playwright() as p:
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
             # Do NOT shoot() between wait_for and fill -- the screenshot's font-load wait can let a background poll
+            # detach the form.
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             shoot("01-change-password-filled")
@@ -906,6 +914,7 @@ with sync_playwright() as p:
         fail("could not obtain auth token after change-password")
 
     # Verify the chat page's default model matches DEFAULT_MODELS_GGUF[0] (defaults.py) -- guards the first-launch UX
+    # against list reorders.
     step("default_models[0] matches DEFAULT_MODELS_GGUF[0]")
     EXPECTED_DEFAULT = expected_default_model()
     defaults_resp = evaluate_fetch(
@@ -937,8 +946,11 @@ with sync_playwright() as p:
         'button:has-text("Llama")'
     ).first
     # Best-effort: selector re-mounts as /api/models/list resolves, so use a short timeout and skip the snapshot on
+    # miss.
     sel_text = ""
-    # After change-password the router rebuilds login -> chat shell;
+    # After change-password the router rebuilds login -> chat shell; on macos-14 racing straight into wait_for() either
+    # burns the timeout or crashes the renderer mid-mount. Settle network first, then wait_for with one recovery cycle
+    # on failure.
     try:
         sel_text = (selector_btn.text_content(timeout = 2_000) or "").strip()
     except Exception as _sel_err:
@@ -972,7 +984,7 @@ with sync_playwright() as p:
         fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
-    # Unsloth caches model state in zustand;
+    # Unsloth caches model state in zustand; reload so the composer picks up the loaded model.
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
@@ -981,6 +993,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("model picker: open + drive search bar")
     # Prefer the guided-tour anchor [data-tour="chat-model-selector"] (app-sidebar.tsx) -- as stable as anything in the
+    # codebase.
     picker_btn = page.locator('[data-tour="chat-model-selector"]').first
     if picker_btn.count() == 0:
         # Fall back to text-based locators for older Unsloth builds.
@@ -1075,6 +1088,7 @@ with sync_playwright() as p:
         # Snapshot total bubble count before send;
         bubbles_before = _bubble_count()
         # The llama.cpp and web update banners are fixed bottom-right toasts (z-9998 / z-9999) that can overlap the
+        # composer's Send button and intercept the click. Snooze whichever is showing before sending.
         for prefix in ("llama", "web"):
             snooze_btn = page.locator(f'[data-testid="{prefix}-update-snooze-button"]')
             if snooze_btn.count():
@@ -1379,7 +1393,8 @@ with sync_playwright() as p:
         if toggle.count() == 0:
             info(f"toggle '{feature}' not present on this layout")
             continue
-        # Skip if the button is disabled (model lacks the capability;
+        # Skip if the button is disabled (model lacks the capability; e.g. gemma-3-270m has no reasoning, so thinking
+        # stays disabled).
         if toggle.is_disabled():
             info(f"toggle '{feature}' is disabled for this model -- skip")
             continue
@@ -1412,7 +1427,8 @@ with sync_playwright() as p:
         cfg_open.click()
         page.wait_for_timeout(500)
         shoot("08-config-open")
-        # Walk every Radix slider (role="slider") by index, focus it, press Home (-> min) for deterministic state;
+        # Walk every Radix slider (role="slider") by index, focus it, press Home (-> min) for deterministic state; a
+        # locked slider surfaces an error here.
         sliders = page.locator('[role="slider"]')
         n_sliders = sliders.count()
         info(f"configuration sheet exposes {n_sliders} slider(s)")
@@ -1491,8 +1507,9 @@ with sync_playwright() as p:
             fail(f"desktop Linux detection mismatch: {typography!r}")
         is_dark = typography["isDark"]
         # Tracking is authored in em (thread.tsx tracking-[0.01em] / dark:tracking-[0.02em], and 0.023em for the lighter
-        # dark-mode instance on Linux), so assert the em and let the size come from the element.
-        # Pinning px assumed a 16px base and broke the moment the product default became 15px (--ui-font-scale in
+        # dark-mode instance on Linux), so assert the em and let the size come from the element. Pinning px assumed a
+        # 16px base and broke the moment the product default became 15px (--ui-font-scale in index.css), which any
+        # font-size preference does too.
         expected_em = 0.02 if is_dark else 0.01
         if typography["isDesktopLinux"] and not typography["usesBaselineTypography"]:
             expected_weight = "350" if is_dark else "390"
@@ -1558,6 +1575,7 @@ with sync_playwright() as p:
                 pass
             page.wait_for_timeout(250)
             # Retry once (after Escape to clear stray popups) if the first click is silently swallowed
+            # mid-view-transition.
             opened = False
             for attempt in range(2):
                 try:
@@ -1588,6 +1606,8 @@ with sync_playwright() as p:
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem missing")
                 break
             # Click with fallbacks: a small CI viewport can push the item off-screen (force=True still needs it in
+            # viewport). Fall back to scroll-into-view, then a synthetic evaluate() .click() that skips Playwright's
+            # viewport check.
             click_err = None
             for click_attempt in range(3):
                 try:
@@ -1607,7 +1627,8 @@ with sync_playwright() as p:
                 page.keyboard.press("Escape")
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem click failed ({click_err!r})")
                 break
-            # Settle. The ".dark" class on <html> is the ground truth (theme-store toggles only that);
+            # Settle. The ".dark" class on <html> is the ground truth (theme-store toggles only that); don't gate on
+            # ".light".
             page.wait_for_timeout(700)
             bg = robust_evaluate(
                 page,
@@ -1627,7 +1648,8 @@ with sync_playwright() as p:
             typography_states.append(typography)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
-        # Across cycles we should see both a near-white (light) and a near-black (dark) body bg;
+        # Across cycles we should see both a near-white (light) and a near-black (dark) body bg; one polarity means the
+        # toggle stuck.
         rgbs = [parse_rgb(o["bg"]) for o in observed if parse_rgb(o["bg"])]
         light_seen = any(min(r) > 220 for r in rgbs)
         dark_seen = any(max(r) < 60 for r in rgbs)
@@ -1674,6 +1696,8 @@ with sync_playwright() as p:
                 break
         if btn is None:
             # Unpinned rows (Video, Recipes, Export by default) live in the sidebar's "More" flyout, which opens on
+            # hover, so hover first: a click would toggle it back shut. Click is the fallback for a no-hover
+            # environment.
             more_btn = page.get_by_role("button", name = re.compile(r"^\s*More\s*$", re.I)).first
             if more_btn.count() > 0:
                 more_btn.hover()
@@ -1711,7 +1735,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(400)
         compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
         if compare_item.count() == 0:
-            # Compare chat moved into the "More" submenu;
+            # Compare chat moved into the "More" submenu; hover (then click as fallback) to open it.
             more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
             if more_trigger.count() > 0:
                 more_trigger.hover()
@@ -2048,6 +2072,7 @@ with sync_playwright() as p:
                 raise AssertionError(f"login route reloaded or redirected unexpectedly: {page.url}")
             pw_field.fill(NEW2)
             # Wait on the login POST so a transient 4xx/5xx is caught and retried here, not swallowed until the
+            # out-of-loop composer wait.
             status, _ = click_and_wait_for_response(
                 page,
                 url_substr = "/api/auth/login",
@@ -2086,7 +2111,7 @@ with sync_playwright() as p:
             except Exception:
                 pass
             if _relogin_attempt < 2:
-                # ERR_NO_BUFFER_SPACE needs the OS to recover socket buffers;
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket buffers; back off 5s then 15s before retrying.
                 if "ERR_NO_BUFFER_SPACE" in str(e):
                     backoff_s = 5 if _relogin_attempt == 0 else 15
                     print(
@@ -2095,7 +2120,7 @@ with sync_playwright() as p:
                         flush = True,
                     )
                     time.sleep(backoff_s)
-                # Replace the page if it died;
+                # Replace the page if it died; otherwise next iteration's page.goto() handles the reload.
                 old_page = page
                 page = recover_or_replace_page(
                     page,
@@ -2103,7 +2128,8 @@ with sync_playwright() as p:
                     default_timeout_ms = 60_000,
                     info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
                 )
-                # A freshly created replacement page loses the pageerror/console listeners;
+                # A freshly created replacement page loses the pageerror/console listeners; re-attach so error tracking
+                # survives recovery.
                 if page is not old_page:
                     page.on("pageerror", lambda e: page_errors.append(str(e)))
                     page.on("console", _on_console)

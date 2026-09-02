@@ -80,7 +80,9 @@ AUTH_DIR = Path(
     os.environ.get("STUDIO_AUTH_DIR", str(Path.home() / ".unsloth" / "studio" / "auth"))
 )
 
-# Fast enough that a verdict published for a moment cannot slip between two reads, slow
+# Fast enough that a verdict published for a moment cannot slip between two reads, slow enough that minutes of polling
+# stay a rounding error next to the warm. While detection is unsettled /api/health spends up to its own 1s budget per
+# call anyway, so the real rate over the interesting window is set by the server, not by this.
 POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_VERDICT_POLL_S", "0.25"))
 # How long a verdict is watched after it settles.
 STABLE_HOLD_S = float(os.environ.get("STUDIO_MAC_VERDICT_STABLE_S", "15"))
@@ -570,7 +572,10 @@ def assert_watched_the_window(poller: HealthPoller) -> None:
     if provisional:
         ok(f"{len(provisional)} provisional replies seen before the verdict settled")
         return
-    # Not a failure. Detection is stage one of the warm and the socket binds right after the lifespan starts it, so on
+    # Not a failure. Detection is stage one of the warm and the socket binds right after the lifespan starts it, so on a
+    # quick host the verdict can be settled before the first connection succeeds. It does not make the run vacuous: the
+    # verdict this file guards against stands for as long as the reinstall takes, i.e. minutes, so a first reply
+    # carrying it would be caught by the same check that catches a later one.
     info(
         f"no provisional reply was observed; detection settled within "
         f"{poller.first_reply_at:.2f}s, before the socket answered"
@@ -712,7 +717,8 @@ def scenario_real_mlx(port: int, log: Path) -> None:
         if authed is not None and assert_settled_verdict(authed, False, None, "training-capable"):
             ok("the settled verdict is chat_only=false with device_type mac")
 
-        # device_type names the platform;
+        # device_type names the platform; which backend detection actually selected lives on /api/system, and "mlx"
+        # there is the only proof it took the MLX branch rather than falling through to CPU with training switched off.
         if poller.token:
             status, body = _get(f"http://127.0.0.1:{port}/api/system", poller.token, timeout = 60)
             if status != 200 or not isinstance(body, dict):
@@ -787,7 +793,8 @@ def scenario_no_mlx_repair(port: int, log: Path, work: Path) -> None:
     env.pop("UNSLOTH_DISABLE_MLX_AUTOREPAIR", None)
 
     with booted(port, log, env) as (poller, getter):
-        # The window under test opens once detection settles, not at the first byte, so gating on the repo's health
+        # The window under test opens once detection settles, not at the first byte, so gating on the repo's health wait
+        # here costs nothing and buys its log tail.
         if not wait_for_health(port, log):
             fail("the server never became healthy")
             return

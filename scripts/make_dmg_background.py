@@ -39,6 +39,7 @@ SCALE = 2
 W, H = WIN_W * SCALE, WIN_H * SCALE
 
 # Finder's title bar and bottom path bar eat the rest of the window, so only about this much of the image is ever on
+# screen. measured, not derived.
 VISIBLE_H = 340
 
 TOP_COLOR = "#FFFFFF"

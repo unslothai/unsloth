@@ -777,7 +777,7 @@ ADV_CASES: list[AdvCase] = [
         "A05",
         "package with similar prefix should NOT trigger FAIL",
         "adv05.ts",
-        # Imports the *_extra* name;
+        # Imports the *_extra* name; removing the shorter name is safe (zero usage).
         'import x from "__adv_only_pkg_e_extra__";\n',
         "__adv_only_pkg_e__",
         "PASS",
@@ -848,7 +848,8 @@ ADV_CASES: list[AdvCase] = [
         "FAIL",
         ["__adv_only_pkg_l__"],
     ),
-    # Prettier puts `import` ~22 lines from the `from "pkg"` clause;
+    # Prettier puts `import` ~22 lines from the `from "pkg"` clause; the old ±4-line classify fallback missed it.
+    # Exercises the widened (±25) window.
     AdvCase(
         "A13",
         "Prettier-style 22-identifier multi-line import should FAIL "
@@ -1041,7 +1042,7 @@ def run_pkg_field_cases() -> int:
         synth_head = json.loads(json.dumps(head_pkg))
         for k, v in pc.field_patch.items():
             synth_head[k] = v
-        # Base declares the target;
+        # Base declares the target; head drops it from deps but references it via the extra field.
         synth_base = json.loads(json.dumps(head_pkg))
         synth_base.setdefault("dependencies", {})[pc.target_pkg] = "^1.0.0"
         with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1102,7 +1103,8 @@ def run_adversarial_cases() -> int:
         fpath = ADVERSARIAL_TMP_DIR / ac.filename
         try:
             fpath.write_text(ac.content, encoding = "utf-8")
-            # Base adds the target pkg;
+            # Base adds the target pkg; real head lacks it, so the script treats it as removed and scans the repo (now
+            # with our file).
             synth_base = json.loads(json.dumps(head_pkg))
             synth_base.setdefault("dependencies", {})[ac.target_pkg] = "^1.0.0"
             with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1330,6 +1332,7 @@ def run_enum_cases() -> int:
 
 
 # Script-wrapper cases: scripts_bin_refs / _next_real_bin must credit the real bin (`biome` -> @biomejs/biome), not the
+# wrapper. The old "first non-env token" heuristic missed cross-env / dotenv / etc.
 @dataclass
 class WrapperCase:
     id: str

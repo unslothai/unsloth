@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 # Aliased: this module already has its own `run_pwsh` fragment helper, which now calls the shared runner rather than
+# subprocess.run.
 from unsloth_pwsh_runner import run_pwsh as run_pwsh_retrying
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -432,7 +433,8 @@ class TestSourcePatternsPs1:
         assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
-        # No env-based release-repo override;
+        # No env-based release-repo override; every host now routes to the fork (the CPU-only ggml-org fallback was
+        # removed), mirroring setup.sh.
         assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
         assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in self.content
         assert "$HelperReleaseRepo = if (" not in self.content

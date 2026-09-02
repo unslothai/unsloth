@@ -54,7 +54,8 @@ def dnp(monkeypatch):
     module = _load_module()
     module.reset_warning_state()
     monkeypatch.delenv(module.NUM_PROC_ENV_VAR, raising = False)
-    # Pin the platform: macOS is refused by policy whatever the start method says, so every assertion expecting a
+    # Pin the platform: macOS is refused by policy whatever the start method says, so every assertion expecting a worker
+    # count is really about a forking platform. Platform tests set their own value afterwards, which wins.
     monkeypatch.setattr(module.sys, "platform", "linux")
     try:
         import psutil
@@ -64,6 +65,7 @@ def dnp(monkeypatch):
     except ImportError:
         pass
     # Point this module's cgroup reader at a path that does not exist rather than stubbing the reader itself, so the
+    # tests that are about it can still install a fixture tree and win.
     monkeypatch.setattr(module, "CGROUP_ROOT", "/nonexistent-cgroup-root-for-tests")
     # Pin the memory ceiling too, at its two sources rather than at the reader, so the memory tests can still patch
     # either and win.
@@ -435,6 +437,7 @@ def test_macos_stays_in_process_even_though_multiprocess_forks(monkeypatch, dnp,
     monkeypatch.setattr(dnp.sys, "platform", "darwin")
 
     # Serial at a map() call site, None -- not 1 -- at the config layer, so no Pool is built on datasets >= 4.1 either
+    # way.
     assert dnp.get_dataset_num_proc(8) is None
     assert dnp.get_dataset_num_proc(8, serial_as_none = False) is None
     assert dnp.get_dataset_num_proc(None) is None
@@ -501,6 +504,7 @@ def _rl_num_proc_snippet(trainer_file = "sft_trainer"):
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "num_proc_check":
             # Parenthesised: the segment starts at the first literal, so its continuation lines are an IndentationError
+            # on their own.
             expression = "(" + ast.get_source_segment(source, node.value) + ")"
             return eval(  # noqa: S307
                 expression, {"_serial_as_none": _rl_serial_as_none(tree, source, trainer_file)}
@@ -624,7 +628,8 @@ def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
     lines makes _require_replace raise at import time, so catch drift here."""
     source = _zoo_dataset_utils_source()
 
-    # _require_replace raises on a missing anchor but cannot notice a count = 2
+    # _require_replace raises on a missing anchor but cannot notice a count = 2 anchor dropping to one occurrence, so
+    # assert the counts here.
     for where in (
         NUM_PROC_WHERE,
         "sft_prepare_dataset tokenizing map() calls",
@@ -792,7 +797,8 @@ def test_the_narrow_anchor_keeps_indentation_and_yields_none(monkeypatch):
     module = _load_module()
     module.reset_warning_state()
     monkeypatch.delenv(module.NUM_PROC_ENV_VAR, raising = False)
-    # The injected snippet imports the zoo copy first;
+    # The injected snippet imports the zoo copy first; point that name at the copy under test so this stays a
+    # torch-free, offline assertion.
     if "unsloth_zoo" not in sys.modules:
         monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.dataset_num_proc", module)

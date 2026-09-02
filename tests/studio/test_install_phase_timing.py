@@ -51,6 +51,7 @@ INSTALLERS = (
 )
 
 # Markers of the two filter dialects, each paired with the log-writing stage that must come before it in the same
+# pipeline.
 POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 

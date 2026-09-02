@@ -5,7 +5,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.tsx"
-# The monitor has its own page and Settings links to it;
+# The monitor has its own page and Settings links to it; the shrink contract covers both.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"

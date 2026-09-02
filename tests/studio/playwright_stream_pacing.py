@@ -64,8 +64,8 @@ PORT = int(os.environ.get("SMOKE_PORT", "5186"))
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
-# Under logs/ like every sibling harness.
-# A default of "." would drop an untracked stream-pacing.json in the repo root every run;
+# Under logs/ like every sibling harness. A default of "." would drop an untracked stream-pacing.json in the repo root
+# every run; logs/ is gitignored, so the tree stays clean.
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-stream-pacing"))
 LABEL = "stream-pacing"
 

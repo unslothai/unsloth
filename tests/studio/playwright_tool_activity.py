@@ -63,7 +63,8 @@ ENGINE = os.environ.get("PW_ENGINE", "chromium")
 PORT = int(os.environ.get("SMOKE_PORT", "5219"))
 PREFERENCES_KEY = "unsloth_chat_preferences"
 
-# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the same window, so every reading is
+# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the same window, so every reading is taken
+# well clear of both.
 SETTLE_MS = 600
 
 # 60-character slice the trigger shows, so "the user can read it" cannot be
@@ -266,7 +267,7 @@ def run(base_url: str, pw) -> dict:
         "chevron_answer_median": chevron_answer,
         "preference_answer_median": preference_answer,
     }
-    # A few pixels of slack for sub-pixel rounding;
+    # A few pixels of slack for sub-pixel rounding; the two paths measure identical.
     if abs(preference_answer - chevron_answer) > 8:
         p.append(
             "6: a preference-driven close moves the page differently from a clicked close "
@@ -417,6 +418,7 @@ def run(base_url: str, pw) -> dict:
     s["13_malformed_record"] = malformed
 
     # Reported, not asserted: `??` accepts any non-nullish JSON value, which is true of every boolean in this store and
+    # unreachable from Studio's own UI.
     results["console"] = console
     browser.close()
     return results

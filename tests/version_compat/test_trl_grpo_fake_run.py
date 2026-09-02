@@ -31,7 +31,8 @@ from pathlib import Path
 import pytest
 
 
-# daily-fresh-fetch collects tests/version_compat/ with only pytest installed;
+# daily-fresh-fetch collects tests/version_compat/ with only pytest installed; the spoof and the rest of this module
+# need the real torch runtime. Skip the whole module cleanly when torch is absent rather than crashing collection.
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; fake-run needs the real runtime", allow_module_level = True)
 

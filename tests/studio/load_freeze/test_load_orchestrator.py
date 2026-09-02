@@ -196,9 +196,9 @@ def _drive_concurrent_probe_and_health(
     return max(latencies), elapsed, latencies
 
 
-# Used only by the canary below, which asserts a LOWER bound: that the pre-#5642 route does hold /health.
-# Measured with the shim's 0.6 + 0.6 second delays, the blocking route holds it for 1.72s and does so every time (1.719,
-# 1.729, 1.721, 1.719, 1.727 over five runs), so contention can only push that number further above the bound, never
+# Used only by the canary below, which asserts a LOWER bound: that the pre-#5642 route does hold /health. Measured with
+# the shim's 0.6 + 0.6 second delays, the blocking route holds it for 1.72s and does so every time (1.719, 1.729, 1.721,
+# 1.719, 1.727 over five runs), so contention can only push that number further above the bound, never below it.
 _MAX_HEALTH_LATENCY_SEC = 0.25
 
 # satisfied in milliseconds or never satisfied at all, so all it decides is how long a
@@ -339,6 +339,7 @@ def test_fixed_route_keeps_event_loop_responsive():
                 codes = _health_burst(base, 12)
                 assert codes == [200] * 12, f"/health returned {codes}"
                 # Nothing has released the call, so all twelve were answered with a synchronous detect_audio_type still
+                # in flight. That is the property.
                 assert not gate.released.is_set()
                 assert not probe_f.done(), "/probe returned before the gate was released"
             finally:
@@ -638,7 +639,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
             if "llama_backend.detect_audio_type" not in line:
                 continue
             if "asyncio.to_thread" in line:
-                # Wrapped sync call is acceptable (not preferred);
+                # Wrapped sync call is acceptable (not preferred); surface in PR.
                 continue
             offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
     assert not offenders, (

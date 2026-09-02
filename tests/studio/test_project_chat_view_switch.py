@@ -581,6 +581,7 @@ def _harness_source() -> str:
 
 
 # A rejected switchToNewThread() is only caught on the deferred path, so node would abort the whole process on the
+# immediate one. Recorded here instead, and asserted on.
 SCRIPT_HEADER = """
 const unhandled: string[] = [];
 process.on("unhandledRejection", (reason: any) => {
@@ -624,6 +625,8 @@ def test_the_provider_wires_the_pause_and_the_shared_ref():
         "ThreadAutoSwitch: both write the same shared switch state"
     )
     # Three, not two: ThreadBackendAutosave reads the same ref so its active-thread publication can tell "this pane is
+    # on screen" from "a switch away from it has not landed yet". Both switch children still share it, which is what the
+    # count protects.
     assert jsx.count("newThreadSwitchStateRef={newThreadSwitchStateRef}") == 3, (
         "both switch children must share ONE ref, or leaving a new chat for a saved one "
         "cannot tell the next new chat that the composer is no longer fresh -- and the "
@@ -952,6 +955,7 @@ def test_a_composer_that_is_not_mounted_yet_does_not_break_the_switch():
     ("setup", "path", "attempts"),
     [
         # activeNonce is non-null when the second nonce arrives, so the clear is the synchronous one, outside any
+        # promise chain of its own.
         pytest.param(
             'await renderSettled({ newThreadNonce: "n0" });', "immediate", 2, id = "immediate"
         ),

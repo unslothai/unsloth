@@ -29,7 +29,8 @@ class MockDataset:
         return cls(data_dict)
 
 
-# __spec__ must be set so importlib.util.find_spec doesn't raise ValueError when transformers' import_utils later
+# __spec__ must be set so importlib.util.find_spec doesn't raise ValueError when transformers' import_utils later probes
+# for the real `datasets` package.
 datasets_mock = type(sys)("datasets")
 datasets_mock.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
 datasets_mock.Dataset = MockDataset

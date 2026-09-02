@@ -69,7 +69,8 @@ def info(message: str) -> None:
     print(f"[anchor] {message}", flush = True)
 
 
-# Stage 1, in the page: unmount and re-open, returning as soon as the first row paints so the caller can scroll up
+# Stage 1, in the page: unmount and re-open, returning as soon as the first row paints so the caller can scroll up while
+# the widening is still in flight.
 REOPEN_JS = """
 async () => {
   const api = window.__heavyThread;
@@ -195,9 +196,10 @@ def main() -> int:
                 if opened is None:
                     info("fixture did not land")
                     return 1
-                # A REAL wheel from the input pipeline, over a message rather than the scroll container.
-                # A synthetic dispatchEvent on the viewport does not detach: the hook asks
-                # innerScrollWillConsumeUpward(e.target) whether something nested will consume the gesture, and an event
+                # A REAL wheel from the input pipeline, over a message rather than the scroll container. A synthetic
+                # dispatchEvent on the viewport does not detach: the hook asks innerScrollWillConsumeUpward(e.target)
+                # whether something nested will consume the gesture, and an event dispatched ON the viewport answers
+                # about the viewport itself. The first version did that and its own guard caught it.
                 if not opened["widenedBeforeScroll"]:
                     info("no widening landed before the scroll; the fixture is not long enough")
                     return 1

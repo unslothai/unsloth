@@ -189,7 +189,7 @@ class FakeLlamaServer:
         detok_body: Optional[bytes] = None,
         detok_map: Optional[dict] = None,
         completion_delay: float = 0.0,
-        # Cosmetic: only appears in the stdout template;
+        # Cosmetic: only appears in the stdout template; not parsed.
         model_path: str = "<test-fixture>/gemma-4.gguf",
     ) -> None:
         self.host = host

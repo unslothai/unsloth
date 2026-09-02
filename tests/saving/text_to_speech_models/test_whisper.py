@@ -19,7 +19,8 @@ try:
     from peft import PeftModel
     import requests
 except ImportError as exc:
-    # Imported at collection time, so an absent runtime dep (triton on the Windows CI runner) is a collection error
+    # Imported at collection time, so an absent runtime dep (triton on the Windows CI runner) is a collection error that
+    # reports no results at all.
     pytest.skip(
         f"requires the full unsloth runtime: {exc}",
         allow_module_level = True,

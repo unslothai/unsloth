@@ -66,7 +66,8 @@ def _run_install(
     unmasked_gfx_devices = None,
 ):
     """Drive _ensure_rocm_torch() over a host with ``gfx_devices`` and return the pip calls."""
-    # The torch probe is cached per process and the autouse fixture clears it once per TEST, so a case driving two
+    # The torch probe is cached per process and the autouse fixture clears it once per TEST, so a case driving two hosts
+    # in a row would judge the second by the first's torch.
     stack_mod._invalidate_torch_runtime_probe()
     probe = MagicMock()
     probe.returncode = 0
@@ -144,7 +145,8 @@ def test_an_arch_with_no_generic_kernels_routes_to_the_amd_index(gfx, leaf):
     calls = _run_install(gfx_devices = (gfx,))
     assert f"{_AMD}/{leaf}/" in calls, calls
     assert _GENERIC not in calls, calls
-    # The carrier is shared with the Strix reroute, so the label has to name the leaf actually installed;
+    # The carrier is shared with the Strix reroute, so the label has to name the leaf actually installed; a 780M laptop
+    # reading "Strix" is the installer lying to it.
     assert f"AMD per-gfx index, {leaf.lower()}" in calls, calls
 
 
@@ -479,7 +481,8 @@ def test_torch_already_on_the_right_per_arch_wheels_is_not_reinstalled():
     )
     assert _AMD not in calls, calls
     assert _GENERIC not in calls, calls
-    # Skipping the torch install must still leave rocm_torch_ready set, or the AMD
+    # Skipping the torch install must still leave rocm_torch_ready set, or the AMD bitsandbytes repair every `studio
+    # update` exists for stops running too.
     assert "bitsandbytes" in calls, calls
 
 
@@ -679,6 +682,7 @@ def test_a_generic_torch_beside_a_stale_rocm_meta_package_is_still_repaired():
 
 
 # Verbatim `metadata.requires("torch")` for both builds, read on an AMD DevLab host after installing generic rocm7.1
+# torch over an AMD gfx110X-all one.
 _AMD_TORCH_REQUIRES = [
     "filelock",
     "typing-extensions>=4.10.0",
@@ -1623,6 +1627,8 @@ def test_a_rocr_masked_mi50_beside_a_dgpu_keeps_the_generic_wheels():
     # The dGPU's bitsandbytes is part of what the downgrade cost.
     assert "bitsandbytes" in calls, calls
     # A machine that really is gfx906 alone still takes the legacy tag under the same mask, including a mask whose
+    # ordinal names no device: the sole-arch question is about the machine, and the answer decides which wheels carry
+    # kernels for the card that is there.
     for _ordinal in ("0", "1"):
         _sole = _run_install(
             gfx_devices = ("gfx906",),

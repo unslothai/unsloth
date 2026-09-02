@@ -23,6 +23,7 @@ class _Obj:
 
 def _make_disabled_block_fp8_proj(block_size):
     # A merged/disabled projection whose base layer is a block-fp8 weight that ships a non-default block size on its
+    # checkpoint.
     weight = _Obj()
     weight.quant_state = _Obj()
     base_layer = _Obj()

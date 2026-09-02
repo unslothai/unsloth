@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 
 # Only the bare names. `re.compile(pattern)` and `model.eval()` are not these builtins, and matching on the attribute
+# reported 69 of them across the two repositories.
 SINKS = ("exec", "eval", "compile")
 
 # Notebooks are scanned too:
@@ -126,6 +127,7 @@ def scan_file(path: Path, relative: str) -> list[dict]:
             # A notebook that does not parse as one module is ordinary:
             return []
         # A .py file that will not parse has not been checked, and reporting it clean is the bypass this whole gate
+        # exists to avoid.
         raise SystemExit(f"{relative}: could not be parsed ({error.__class__.__name__})")
     found = []
     for node in ast.walk(tree):
@@ -151,6 +153,7 @@ def collect(targets: list[str]) -> list[dict]:
             paths = sorted(q for s in SUFFIXES for q in root.rglob(f"*{s}"))
         else:
             # A target that resolves to nothing means the gate covers less than it claims to, which is a silent hole
+            # rather than a passing run.
             raise SystemExit(
                 f"{target}: scan target does not exist, so nothing under it was checked"
             )

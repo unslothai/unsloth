@@ -961,6 +961,7 @@ class TestValidatedChecksumsForBundle:
 
     def test_rejects_exact_source_without_repo(self, monkeypatch):
         # An exact source archive with no repo to clone from would silently fall back to upstream source at the tag, so
+        # validation must fail closed.
         bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
         checksums = make_checksums_with_source(
             [], release_tag = "r1", upstream_tag = "b8508", source_commit = "a" * 40
@@ -975,7 +976,8 @@ class TestValidatedChecksumsForBundle:
             validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
     def test_accepts_exact_source_when_only_bundle_has_repo(self, monkeypatch):
-        # The source repo can live only in the manifest bundle, not the checksums;
+        # The source repo can live only in the manifest bundle, not the checksums; validation must accept the bundle's
+        # repo rather than failing closed.
         bundle = make_release(
             [],
             release_tag = "r1",
@@ -1706,7 +1708,9 @@ class TestResolveInstallAttempts:
             resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
 
     def test_windows_cpu_prefers_published_asset(self, monkeypatch):
-        # A CPU-only Linux host on the fork never falls back to the ggml-org CPU
+        # A CPU-only Linux host on the fork never falls back to the ggml-org CPU asset. CPU-only Linux now routes to the
+        # fork, but if a release manifest happens to ship no CPU bundle the resolver raises rather than quietly reaching
+        # for an upstream asset.
         host = make_host(
             system = "Windows",
             machine = "AMD64",
@@ -2185,7 +2189,8 @@ class TestWindowsCudaAttempts:
         assert result[1].runtime_line == "cuda12"
 
     def test_driver_below_published_minor_is_gated_to_cuda12(self, monkeypatch):
-        # A 13.0 driver can't run a 13.1 build (forward minor), so it is gated off cuda13 to the cuda12 build, even
+        # A 13.0 driver can't run a 13.1 build (forward minor), so it is gated off cuda13 to the cuda12 build, even when
+        # only cuda13 runtime libs are detected.
         mock_windows_runtime(monkeypatch, ["cuda13"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 0))
         assets = self._upstream("13.1", "12.4")
@@ -2426,7 +2431,7 @@ class TestWindowsCudaAttemptCoversBlackwell:
         ],
     )
     def test_attempt_covers_blackwell_app_bundle(self, profile, runtime_line, max_sm, covers):
-        # App-named bundles carry no toolkit minor;
+        # App-named bundles carry no toolkit minor; coverage is read from max_sm.
         attempt = self._app_attempt(profile, runtime_line, max_sm)
         assert _windows_cuda_attempt_covers_blackwell(attempt) is covers
 
@@ -2476,6 +2481,7 @@ class TestDirectUpstreamBlackwellPin:
         plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
         order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
         # cuda-12.4 (no sm_120) is dropped entirely on Blackwell, and there is no pinned b9360 fallback anymore, so the
+        # host falls through to the windows-cpu build.
         assert order == [(self.TAG, "windows-cpu")]
         assert "b9360" not in [a.tag for a in plan.attempts]
         # Direct/upstream path stays unverified-by-manifest (no approved hashes).
@@ -2551,7 +2557,8 @@ class TestBlackwellCuda124Exclusion:
         assert _windows_cuda_attempt_covers_blackwell(bundle)
 
     def test_manifest_bundle_without_sm120_dropped(self):
-        # Published cuda12 app bundles are toolkit-12.8 builds with sm_120;
+        # Published cuda12 app bundles are toolkit-12.8 builds with sm_120; manifest SM metadata must keep them on
+        # Blackwell.
         bundle = AssetChoice(
             repo = "unslothai/llama.cpp",
             tag = "b9585",
@@ -2752,6 +2759,8 @@ class TestResolveReleaseAssetChoicePin:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
         # After the published Blackwell filter drops every attempt, the resolver walks back to the upstream release;
+        # stub that fetch so the unit test stays offline (a live GitHub call is blocked by the security scanner) and the
+        # walk-back deterministically finds no usable CUDA build -> PrebuiltFallback.
         monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])
@@ -2762,6 +2771,8 @@ class TestResolveReleaseAssetChoicePin:
             compute_caps = ["120"],
         )
         # The sm_120-incapable upstream cuda-12.4 zip is dropped on Blackwell, and there is no pinned b9360 fallback
+        # anymore, so no usable windows-cuda attempt remains and the manifest resolver walks back instead of selecting
+        # cuda-12.4.
         with pytest.raises(PrebuiltFallback):
             resolve_release_asset_choice(host, self.TAG, release, checksums)
 
@@ -2831,7 +2842,7 @@ class TestPublishedWindowsCudaAppBundleSmSelection:
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result, "expected a windows-cuda attempt for an sm120 host"
-        # Not the lowest-rank "older" bundle (max_sm 89);
+        # Not the lowest-rank "older" bundle (max_sm 89); the tightest covering bundle is cuda12-newer (range 86-120).
         assert result[0].name == f"app-{self.TAG}-windows-x64-cuda12-newer.zip"
 
     def _line(self, line, klass, rank):
@@ -2867,7 +2878,9 @@ class TestPublishedWindowsCudaAppBundleSmSelection:
         assert result[0].name == f"app-{self.TAG}-windows-x64-cuda13-newer.zip"
 
     def test_app_bundle_offered_when_no_runtime_dll_detected(self, monkeypatch):
-        # torch bundles cudart in torch/lib, which DLL probing misses, so detection returns nothing;
+        # torch bundles cudart in torch/lib, which DLL probing misses, so detection returns nothing; the app bundle
+        # ships its own runtime, so selection must fall back to the driver-derived order rather than drop to the
+        # upstream build.
         mock_windows_runtime(monkeypatch, [])
         release = make_release(
             [self._line("cuda12", "newer", 20), self._line("cuda13", "newer", 50)],
@@ -2972,6 +2985,8 @@ class TestPublishedRocmGfxSelection:
 
     def test_choice_records_the_concrete_built_archs(self):
         # The choice carries the arch pair into the install marker, where the runtime GPU gate reads mapped_targets and
+        # drops devices outside it (#7624). It must be the CONCRETE list: recording the umbrella family label instead
+        # would match no device's reported arch and gate every GPU off the host, silently forcing CPU.
         release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
         choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
             release, self._host("gfx1100"), "linux-rocm"
@@ -3006,6 +3021,7 @@ class TestPublishedRocmGfxSelection:
 
     def test_windows_family_token_matches_family_bundle(self):
         # The Windows update path forwards the same family token (gfx120X), so the family-label match must cover
+        # windows-rocm too.
         release = self._release("windows-rocm", "app-b9457-windows-x64-rocm")
         choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
             release, self._host("gfx120x"), "windows-rocm"
@@ -3089,7 +3105,8 @@ class TestPublishedRocmBundleCoverage:
         KNOWN_GAPS, not an unnoticed drop to source builds."""
         import re
 
-        # Read the table from source rather than importing the installer module, which pulls in a heavy dependency
+        # Read the table from source rather than importing the installer module, which pulls in a heavy dependency chain
+        # this suite does not need.
         stack = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
         body = re.search(r"_GFX_TO_AMD_INDEX_ARCH.*?=\s*\{(.*?)\n\}", stack, re.S)
         assert body, "_GFX_TO_AMD_INDEX_ARCH not found in install_python_stack.py"
@@ -3292,6 +3309,7 @@ class TestResolveUpstreamAssetChoice:
 
     def test_windows_blackwell_drops_incapable_cuda_to_cpu(self, monkeypatch):
         # A Blackwell host on a 13.1 driver gets cuda-13.3 gated off and only the sm_120-incapable cuda-12.4 build left;
+        # it must fall through to the CPU bundle rather than be handed a GPU build it cannot offload.
         names = [
             f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip",
             "cudart-llama-bin-win-cuda-13.3-x64.zip",
@@ -4172,9 +4190,9 @@ class TestExactSourceAssetUrl:
         )
 
     def test_resolves_through_real_parser_chain(self):
-        # The cases above hand-build ApprovedReleaseChecksums;
-        # this exercises the production path they bypass: parse_approved_release_checksums -> preferred_source_archive
-        # -> exact_source_asset_url, so a regression in the parser/selection wiring can't pass while only the helper
+        # The cases above hand-build ApprovedReleaseChecksums; this exercises the production path they bypass:
+        # parse_approved_release_checksums -> preferred_source_archive -> exact_source_asset_url, so a regression in the
+        # parser/selection wiring can't pass while only the helper unit tests stay green.
         payload = {
             "schema_version": 1,
             "component": "llama.cpp",

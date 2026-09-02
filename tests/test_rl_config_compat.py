@@ -496,7 +496,7 @@ def test_the_generated_file_imports_the_filter_with_a_safe_fallback():
         "from unsloth.models.rl_config_compat import filter_config_init_kwargs"
         " as _unsloth_filter_config_init_kwargs"
     ) in RL_SOURCE
-    # An import failure must degrade to the historical passthrough, never to a
+    # An import failure must degrade to the historical passthrough, never to a NameError inside a generated trainer.
     assert (
         "def _unsloth_filter_config_init_kwargs(config_class, kwargs, **kw): return kwargs"
         in RL_SOURCE

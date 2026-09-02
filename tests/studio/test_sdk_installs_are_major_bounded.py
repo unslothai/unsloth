@@ -46,8 +46,9 @@ GUARDED = {
 # One `pip install` argument:
 _REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$""")
 
-# pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator, quoted or not.
-# mlx-ci.yml:439 uses "$STUDIO_VENV/bin/pip", and the Windows workflows can use pip.exe;
+# pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator, quoted or not. mlx-ci.yml:439 uses
+# "$STUDIO_VENV/bin/pip", and the Windows workflows can use pip.exe; matching the literal text `pip install` saw
+# neither.
 _PIP_INSTALL = re.compile(
     r"""(?:^|[\s"'/\\])pip[0-9]*(?:\.[0-9]+)*(?:\.exe)?["']?\s+install(?:\s|$)"""
 )

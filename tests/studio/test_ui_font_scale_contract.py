@@ -19,7 +19,8 @@ STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
-# Raw numeric fontSize props are only allowed where a scaled stylesheet rule (.recharts-text) overrides the
+# Raw numeric fontSize props are only allowed where a scaled stylesheet rule (.recharts-text) overrides the presentation
+# attribute at render time.
 FONTSIZE_PROP_ALLOWED_DIRS = (
     "features/studio/sections/charts",
     "features/studio/sections/training-section.tsx",
@@ -52,7 +53,7 @@ def _rel(path):
 def test_preference_writes_a_scale_not_the_root_font_size():
     assert 'setVar("--ui-font-scale"' in STORE
     assert 'el.setAttribute("data-ui-font-size"' in STORE
-    # Older builds set an inline root font-size;
+    # Older builds set an inline root font-size; the applier must clear it.
     assert 'style.removeProperty("font-size")' in STORE
     assert "style.fontSize" not in STORE
 

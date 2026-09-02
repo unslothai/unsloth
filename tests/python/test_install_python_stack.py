@@ -223,7 +223,7 @@ class TestPinnedIndexClearsUvEnv:
         assert "UV_INDEX" not in env
 
     def test_non_pinned_install_keeps_user_mirror(self):
-        # A plain install (no --index-url) must NOT scrub the env, so a user's mirror
+        # A plain install (no --index-url) must NOT scrub the env, so a user's mirror still applies to base packages.
         cmd = ["uv", "pip", "install", "unsloth", "unsloth-zoo"]
         with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
             env = ips._install_env_for_cmd(cmd)
@@ -964,7 +964,7 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [malformed])
         monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        # The rewrite is what normally saves this record;
+        # The rewrite is what normally saves this record; deny it to reach the branch.
         monkeypatch.setattr(ips, "_rewrite_minimal_metadata", lambda *a, **k: False)
 
         def refuse(*_a, **_k):
@@ -1022,7 +1022,8 @@ class TestDuplicateCoreMetadataRepair:
         (backup / "METADATA").write_text(
             "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.12\n", encoding = "utf-8"
         )
-        # Two records; one once the backup is aside;
+        # Two records; one once the backup is aside; none after the uninstall; then the reinstalled one for the final
+        # convergence probe.
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
@@ -1349,6 +1350,7 @@ class TestDuplicateCoreMetadataRepair:
         requirement, overrides, _options = ips._uv_staging_plan("unsloth_zoo")
         assert requirement == "unsloth-zoo==2026.8.15"
         # The annotation names the index the package actually came from, which is the one to reproduce -- not
+        # --index-url, which is only uv's default.
         assert overrides["PIP_INDEX_URL"] == "https://mirror.corp/simple"
         assert overrides["PIP_EXTRA_INDEX_URL"] == ""
         assert overrides["PIP_FIND_LINKS"] == "/opt/wheels"
@@ -1757,7 +1759,8 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._rewrite_minimal_metadata(record, "realpkg") is True
         assert "Name: realpkg" in (record / "METADATA").read_text()
 
-        # A failure after the rewrite must not leave the synthetic file behind: a
+        # A failure after the rewrite must not leave the synthetic file behind: a readable record would tell the next
+        # run there is nothing left to repair.
         quarantine.restore()
         assert not (record / "METADATA").exists()
 
@@ -1896,7 +1899,7 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
         monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
-        # The second package cannot be staged, so the repair fails after the first
+        # The second package cannot be staged, so the repair fails after the first one has already been reinstalled.
         staged = iter(("/staged", None))
         monkeypatch.setattr(ips, "_stage_replacement", lambda _n: next(staged))
         monkeypatch.setattr(
@@ -1907,7 +1910,8 @@ class TestDuplicateCoreMetadataRepair:
         )
 
         assert ips._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is False
-        # The first package was committed before the second was attempted, so the rollback at the end can only touch
+        # The first package was committed before the second was attempted, so the rollback at the end can only touch the
+        # one that failed.
         assert events[0] == "discard"
         assert events[-1] == "restore"
 
@@ -1926,7 +1930,7 @@ class TestDuplicateCoreMetadataRepair:
             ),
         )
         requirement, _overrides, _options = ips._uv_staging_plan("unsloth_zoo")
-        # The reference is kept as written;
+        # The reference is kept as written; only the name is parsed out of it.
         assert requirement == "unsloth-zoo @ file:///src/zoo"
 
     @pytest.mark.parametrize(
@@ -2625,6 +2629,7 @@ class TestExpectedTorchFlavorResolution:
 
     def test_the_index_url_is_reused_only_for_its_own_family(self):
         # setup.ps1 hands over the /cpu index alongside a "rocm" tag on AMD Windows, so repairing from it would install
+        # the very CPU wheel the repair exists to remove.
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://mirror.local/whl/cu124/"):
             assert ips._expected_torch_index_url("cu124") == "https://mirror.local/whl/cu124"
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://download.pytorch.org/whl/cpu"):

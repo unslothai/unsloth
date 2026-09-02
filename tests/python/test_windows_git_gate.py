@@ -124,6 +124,8 @@ def test_a_built_local_llama_dir_drops_the_source_build_git_requirement(tmp_path
 @pytest.mark.parametrize("trigger", ["UNSLOTH_LLAMA_FORCE_COMPILE", "UNSLOTH_LLAMA_PR"])
 def test_an_unbuilt_local_llama_dir_still_requires_git(tmp_path, trigger):
     # Nothing built at the canonical install location falls through to the normal install, so the source build still
+    # runs and still needs git. Suppressing the requirement here let a no-git host silently degrade to a prebuilt
+    # instead.
     env = {
         "UNSLOTH_LOCAL_LLAMA_CPP_DIR": str(tmp_path),
         trigger: "1",

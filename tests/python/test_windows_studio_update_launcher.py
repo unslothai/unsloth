@@ -90,8 +90,9 @@ def _configure_windows(
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda **_kwargs: None)
     monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *_args: None)
     # The runtime gate's process scan is Windows-only, so off Windows it never runs and nothing here noticed it was
-    # unstubbed.
-    # On a real Windows host it shells out to powershell.exe through the same subprocess.run these tests replace, then
+    # unstubbed. On a real Windows host it shells out to powershell.exe through the same subprocess.run these tests
+    # replace, then reads .stdout off a fake that only carries a returncode, and every test in this file dies before
+    # reaching what it meant to assert.
     monkeypatch.setattr(
         studio._studio_runtime_gate,
         "ensure_managed_environment_is_idle",
@@ -454,6 +455,8 @@ def test_a_backup_failure_does_not_abort_the_update(monkeypatch, studio, tmp_pat
 
 def test_an_existing_backup_survives_an_unvalidated_launcher(monkeypatch, studio, tmp_path):
     # A backup outlives __enter__ only when a previous run died before validating, so it holds the last launcher known
+    # to run while the canonical file has passed nothing but the two-byte header check. Overwriting it here destroyed
+    # the only recovery copy.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = b"MZ-broken")
     backup = scripts / "unsloth.exe.update-backup"
     backup.write_bytes(ORIGINAL_LAUNCHER)
@@ -565,6 +568,8 @@ def test_a_setup_exception_restores_a_runnable_launcher(monkeypatch, studio, tmp
 
 def test_a_non_runnable_backup_falls_through_to_the_legacy_copy(monkeypatch, studio, tmp_path):
     # An interrupted run can leave a PE-shaped but non-runnable backup while the legacy .deleteme or the PATH shim is
+    # still good. Accepting the backup on its MZ header alone and stopping there left the update failing forever with
+    # the broken bytes canonical.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     bad_backup = b"MZ-unrunnable"
     (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)
@@ -612,6 +617,7 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
 
     def refuse_move(source, destination):
         # Only the move aside: patching os.replace wholesale would also break _atomic_copy's backup, and the test would
+        # then be passing on a compound failure rather than the one it names.
         if str(destination).endswith(".update-stale"):
             raise OSError("access is denied")
         return real_replace(source, destination)
@@ -786,7 +792,7 @@ def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(monkeypatch, 
     _update(studio)
 
     assert not launcher.exists()
-    # A successful update cleans its recovery copies up;
+    # A successful update cleans its recovery copies up; a rollback would keep them.
     assert not (scripts / "unsloth.exe.update-backup").exists()
     assert [call[0][0] for call in calls] == [str(scripts / "python.exe")]
 
@@ -1005,6 +1011,7 @@ def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
     ), f"{shape} must not pass the gate: the trampoline cannot start it"
 
     # Anti-vacuity: the same venv with a package that does import passes, so the assertion above is about the shape and
+    # not about the fixture being broken.
     (package / "__init__.py").write_text("app = None\n", encoding = "utf-8")
     assert studio._managed_cli_package_present(python)
 
@@ -1081,7 +1088,7 @@ def test_a_custom_root_survives_the_launcher_being_quarantined(monkeypatch, stud
     )
     assert studio._looks_like_installer_managed_studio_home(root)
 
-    # The launcher still answers on its own, so an install that never lost it is
+    # The launcher still answers on its own, so an install that never lost it is unaffected either way.
     shim.unlink()
     (root / "bin" / "unsloth.exe").write_bytes(b"MZ")
     assert studio._looks_like_installer_managed_studio_home(root)
@@ -1090,7 +1097,8 @@ def test_a_custom_root_survives_the_launcher_being_quarantined(monkeypatch, stud
 @pytest.mark.parametrize(
     "label, body",
     [
-        # This decides which tree the CLI manages and the directory is on PATH, so any file of that name would
+        # This decides which tree the CLI manages and the directory is on PATH, so any file of that name would otherwise
+        # be enough to redirect a root.
         ("a hand-rolled wrapper", b'@echo off\r\npython -c "from unsloth_cli import app" %*\r\n'),
         ("the marker without the call", b"@echo off\r\nrem unsloth-studio-managed-launcher\r\n"),
         ("an unrelated batch file", b"@echo off\r\necho hello\r\n"),

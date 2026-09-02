@@ -55,6 +55,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
 )
 
 # Every question these scripts may ask, keyed by (script, normalised question) because line numbers move and wording
+# does not. Do NOT add an entry just to turn a build green: decide the prompt is wanted first.
 APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ("install.sh", "start unsloth studio now?"): (
         "The one sanctioned preference prompt: launch Unsloth after install."
@@ -91,7 +92,8 @@ _BARE_READ = re.compile(
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
 
-# `select reply in Yes No` is the other builtin that blocks for an answer;
+# `select reply in Yes No` is the other builtin that blocks for an answer; its question is the PS3 assignment above it,
+# which the nearby scan already reads.
 _SELECT = re.compile(r"(?:^|[;&(])\s*select\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s")
 
 _PWSH_READ = re.compile(
@@ -186,7 +188,8 @@ def _is_interactive_read(
     # Inside a file-fed loop only a bare read consumes the file:
     if loop_input:
         return False
-    # Per command: in `read -r reply;
+    # Per command: in `read -r reply; echo done | tee log` the pipe is the echo's. `||` is a fallback, not a pipeline,
+    # and leaves the read on the terminal.
     for command in code.split(";"):
         piped = "|" in command.replace("||", "")
         if "<" not in command and not piped and _BARE_READ.search(command):
@@ -388,7 +391,7 @@ def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
         for text in _quoted_strings(line):
             if not _MARKER.search(text):
                 continue
-            # A bare `[Y/n]` is a hint variable;
+            # A bare `[Y/n]` is a hint variable; its question is printed below.
             forward = _nearby_questions(lines, index, direction = 1)
             question = (
                 normalise_question(text)
@@ -507,6 +510,7 @@ def test_helpers_the_installers_invoke_are_scanned():
         source = blank_comments(path.read_text(encoding = "utf-8"), script)
         for match in _HELPER_REF.finditer(source):
             # Below the script that names it, below the repo, or in scripts/, by full path and by name so a URL still
+            # resolves to the local copy. What resolves nowhere is a filename in a message, not an invocation.
             reference = match.group(1).replace("\\", "/")
             name = reference.rsplit("/", 1)[-1]
             for candidate in (

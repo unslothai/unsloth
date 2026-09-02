@@ -288,6 +288,7 @@ def test_the_scan_reads_the_workflows_it_claims_to():
     )
     assert "actions/install-unsloth-local" in text
     # From inside that action's body, not any workflow, so this fails if the walk matched the `uses:` reference without
+    # opening the action.
     assert "The POSIX `install.sh --local --no-torch` bootstrap" in text, (
         "the composite action's own contents are not in the text, so a driver launched "
         "from inside one would read as an orphan"

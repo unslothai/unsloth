@@ -209,7 +209,7 @@ def check_registrations(
                         f"defines {cb_list} (third-party API?)"
                     )
                     continue
-                # Only bare-Name registrations;
+                # Only bare-Name registrations; bound methods/partials skipped.
                 if not (len(call.args) == 1 and isinstance(call.args[0], ast.Name)):
                     skipped.append(
                         f"{src}:{call.lineno}: {call.func.attr}(...) registers a "

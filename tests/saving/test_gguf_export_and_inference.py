@@ -342,5 +342,5 @@ def test_imatrix_iq_inference_runs(exported_imatrix_gguf):
     iq4 = [g for g in exported_imatrix_gguf["ggufs"] if "IQ4_XS" in os.path.basename(g).upper()]
     assert iq4, "no IQ4_XS gguf to run inference on"
     text = _run_llama_capped(cli, iq4[0], exported_imatrix_gguf["prompt"])
-    # IQ4_XS retains enough quality to round-trip the imprinted finetune;
+    # IQ4_XS retains enough quality to round-trip the imprinted finetune; assert coherent output.
     assert text.strip(), "llama-cli produced no output for the IQ4_XS imatrix quant"

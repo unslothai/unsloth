@@ -116,6 +116,7 @@ if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-
 
 def _pwsh(script: str) -> str:
     # Every ARM64 case below is decided by the one "version|arch" line this run prints, and check = True means a pwsh
+    # that aborts at startup would surface as the resolver block itself throwing.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,

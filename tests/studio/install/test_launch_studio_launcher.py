@@ -36,6 +36,7 @@ def test_no_vbs_launcher_generated():
 
 def test_legacy_vbs_removed_on_upgrade():
     # An upgrade must DELETE a pre-existing launch-studio.vbs, not just stop generating it, or AV keeps flagging the
+    # stale file.
     text = _text()
     assert re.search(
         r"Remove-Item\s+-LiteralPath\s+\$legacyLauncherVbs", text

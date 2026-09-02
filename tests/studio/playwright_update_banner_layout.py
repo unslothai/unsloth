@@ -44,9 +44,9 @@ from _playwright_robust import (  # noqa: E402
     wait_for_health,
 )
 
-# The wall this suite did not have, matching playwright_chat_ui.py and playwright_extra_ui.py.
-# It has six raw `page.evaluate` calls, which take no `timeout=` at all, and it runs mid-lane on Windows sharing a
-# server with the suite before it
+# The wall this suite did not have, matching playwright_chat_ui.py and playwright_extra_ui.py. It has six raw
+# `page.evaluate` calls, which take no `timeout=` at all, and it runs mid-lane on Windows sharing a server with the
+# suite before it -- so a wedge here stalled the lane with nothing printed.
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 BASE = os.environ["BASE_URL"]
@@ -58,7 +58,8 @@ ART.mkdir(parents = True, exist_ok = True)
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# The web check fires 5s after mount and the llama.cpp one after 1s;
+# The web check fires 5s after mount and the llama.cpp one after 1s; this is the ceiling on waiting for them, not the
+# wait itself.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
 # What the cards need after they mount, to animate in and lay out.
 SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
@@ -181,7 +182,7 @@ WHISPER_STATUS = dict(
     },
 )
 
-# 921x534 and 768x500 are where the report reproduces;
+# 921x534 and 768x500 are where the report reproduces; the taller ones prove the fix costs nothing when there is room.
 VIEWPORTS = [
     (1440, 900),
     (1280, 830),
@@ -576,7 +577,8 @@ def measure(page, label: str) -> dict:
         f"card={facts['card']} llama={facts['llama']}",
     )
     for name in ("card", "llama", "footer", "toggle"):
-        # As shown, where the rail can hide it;
+        # As shown, where the rail can hide it; as measured otherwise. A card entirely under the fold is None here and
+        # is the reach check's to make.
         shown = facts.get(f"{name}Shown", facts[name]) if name in ("card", "llama") else facts[name]
         if name in ("card", "llama") and shown is None:
             continue
@@ -586,6 +588,7 @@ def measure(page, label: str) -> dict:
             f"{name}={shown} viewport={view}",
         )
     # Anything the rail is holding under its fold has to come back when the rail is scrolled to it, and land on screen
+    # when it does.
     reach = page.evaluate(REACH, REACHABLE)
     for name, seen in (reach or {}).items():
         if seen is None:
@@ -625,7 +628,8 @@ def measure(page, label: str) -> dict:
             facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
-    # The notes are allowed to yield all of their height, and do;
+    # The notes are allowed to yield all of their height, and do; the controls are not, and a card clipped to nothing is
+    # the failure being tested for.
     for name in ("card", "llama", "toggle", "snooze", "copy"):
         box = facts[name]
         # Click-through in every state, scrolling or not.
@@ -691,13 +695,14 @@ def settle_stack(
 def boot(page, path: str) -> None:
     page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
     # Both cards are on a timer, so wait for them rather than for the worst case: this step runs 24 times and the job it
-    # shares has minutes, not tens of minutes, to spare.
-    # The app card's 5s is shortened to E2E_DELAY_MS by the seed script, llama.cpp keeps its 1s, and both still mount
+    # shares has minutes, not tens of minutes, to spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed
+    # script, llama.cpp keeps its 1s, and both still mount after first paint.
     for testid in ("web-update-banner", "llama-update-banner"):
         try:
             page.wait_for_selector(f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS)
         except PlaywrightTimeoutError:
-            # Let the caller's own checks report the missing card;
+            # Let the caller's own checks report the missing card; a bare timeout here would say nothing about which one
+            # or where.
             pass
     # The banners animate in, and a box measured mid-transition is not the box.
     page.wait_for_timeout(SETTLED_MS)
@@ -786,6 +791,7 @@ def exercise_llama_changelog(page, label: str) -> None:
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
     # OLD is already NEW on a rerun, or when an earlier suite in the same job rotated it, and that login fails before
+    # the rotation below can be skipped.
     try:
         token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     except urllib.error.HTTPError as exc:
@@ -981,14 +987,17 @@ def main() -> int:
         for width, height in RESIZE_SWEEP:
             page.set_viewport_size({"width": width, "height": height})
             page.wait_for_timeout(RESIZE_SETTLE_MS)
-            # A third card changes the rail's height, which is what used to move it;
+            # A third card changes the rail's height, which is what used to move it; give the layout a frame to prove it
+            # does not.
             settle_stack(page)
             measure(page, f"{width}x{height} resized")
         page.set_viewport_size({"width": 1280, "height": 830})
         page.wait_for_timeout(RESIZE_SETTLE_MS)
         page.screenshot(path = str(ART / "resize-sweep-end.png"))
 
-        # Parked small and brought back. A minimised window cannot be
+        # Parked small and brought back. A minimised window cannot be photographed, but the restore is where a cached
+        # measurement would show, and the claim is that it lands where a fresh load of the same size does rather than
+        # merely looking tidy.
         for (small_w, small_h), (back_w, back_h) in RESTORE_CYCLES:
             page.set_viewport_size({"width": small_w, "height": small_h})
             page.wait_for_timeout(RESIZE_SETTLE_MS)
@@ -1002,6 +1011,7 @@ def main() -> int:
             )
             fresh_context.add_init_script(seed_js)
             # The card only exists when something is loaded, so the preference alone would leave the rail exactly as it
+            # was and this whole pass would agree with itself about nothing.
             for pattern, payload in (
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),

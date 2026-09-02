@@ -45,8 +45,9 @@ import torch
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _UNSLOTH_DIR = _ROOT / "unsloth"
 
-# Both spellings of "you asked a device that is not there what it can do".
-# A CUDA-built torch with the devices hidden raises the first out of _lazy_init();
+# Both spellings of "you asked a device that is not there what it can do". A CUDA-built torch with the devices hidden
+# raises the first out of _lazy_init(); a CPU-only wheel raises the second from the same place. CI's `Repo tests (CPU)`
+# job installs the CPU wheel, so the second shape is the one it would see.
 _NO_DEVICE = (
     "No CUDA GPUs are available",
     "Torch not compiled with CUDA enabled",
@@ -67,7 +68,8 @@ def _run(
     path.append(str(_ROOT))
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # A runner (or a conftest) that exports UNSLOTH_ALLOW_CPU must not decide the
+    # A runner (or a conftest) that exports UNSLOTH_ALLOW_CPU must not decide the cases for us: each one says for itself
+    # whether the child gets it.
     clean = {k: v for k, v in os.environ.items() if k != "UNSLOTH_ALLOW_CPU"}
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],

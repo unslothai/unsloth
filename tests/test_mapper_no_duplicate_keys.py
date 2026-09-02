@@ -22,6 +22,7 @@ def _duplicate_int_to_float_keys():
             continue
         for target in node.targets:
             # Private names are mangled at code generation, which ``ast.parse`` never reaches, so the identifier reads
+            # exactly as written.
             if isinstance(target, ast.Name) and target.id == "__INT_TO_FLOAT_MAPPER":
                 if not isinstance(node.value, ast.Dict):
                     continue

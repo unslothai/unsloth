@@ -36,7 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION = REPO_ROOT / ".github" / "actions" / "install-unsloth-local" / "action.yml"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
-# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list
+# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list deliberately,
+# in a diff someone reads.
 COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",

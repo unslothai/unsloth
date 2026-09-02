@@ -419,7 +419,8 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     failures = saved_adapter_failures(state)
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
-    # The same file with a B matrix an optimizer moved, the only difference between an adapter that carries training
+    # The same file with a B matrix an optimizer moved, the only difference between an adapter that carries training and
+    # one that does not.
     save_file(
         {
             "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
@@ -687,6 +688,7 @@ def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
 REFERENCE_CONFIG = {
     "max_steps": 3,
     # The rows, not the path: what trained is part of which experiment the trace is a trace of, and the payload records
+    # a digest of them.
     "dataset_digest": "d" * 64,
     "init_loss_scale": 0.0,
     "batch_size": 2,
@@ -765,6 +767,7 @@ def test_a_reference_that_predates_a_setting_does_not_refuse_on_it(tmp_path):
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, config = REFERENCE_CONFIG)
     assert verdict["status"] == "ok"
     # `model` too: the helper's reference names one and this call observed none, and a pin present on one side only did
+    # not run, so it is recorded rather than skipped in silence.
     assert verdict["config_unchecked"] == ["gradient_checkpointing", "model"]
 
 

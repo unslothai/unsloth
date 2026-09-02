@@ -338,7 +338,8 @@ def wait_for_health(
     return False
 
 
-# Page recovery: if the page died mid-test, open a fresh one in the same context (localStorage auth survives);
+# Page recovery: if the page died mid-test, open a fresh one in the same context (localStorage auth survives); otherwise
+# leave it alone. Optionally re-navigates.
 def recover_or_replace_page(
     page: Any,
     ctx: Any,
@@ -552,7 +553,10 @@ def dump_diagnostics(
             info(f"diagnostics: json sidecar {name} failed: {exc}")
 
 
-# Markers for the transient Playwright error raised when a navigation, reload, or auth refresh destroys the JS
+# Markers for the transient Playwright error raised when a navigation, reload, or auth refresh destroys the JS execution
+# context while an evaluate is in flight. Stored lowercase and matched against a lowercased message: Playwright varies
+# the casing across versions ("Frame was detached" vs "frame was detached"), so a case-sensitive check would miss the
+# very races this is meant to catch.
 _CONTEXT_LOST_MARKERS = (
     "execution context was destroyed",
     "context with specified id",
@@ -685,7 +689,8 @@ def evaluate_fetch(
         retry_on_context_loss = method.upper() in _IDEMPOTENT_METHODS
     ctx_retries = 2 if retry_on_context_loss else 0
     for attempt in range(attempts):
-        # robust_evaluate retries the evaluate when a navigation destroys the execution context mid-call;
+        # robust_evaluate retries the evaluate when a navigation destroys the execution context mid-call; the loop here
+        # retries transport failures.
         result = robust_evaluate(
             page, js, payload, retries = ctx_retries, backoff_ms = transport_backoff_ms
         )

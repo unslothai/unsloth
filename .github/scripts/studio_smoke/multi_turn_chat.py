@@ -118,6 +118,8 @@ def check(label: str, first: list[str], second: list[str]) -> None:
         assert a, f"{label}: empty turn {i} response in the first run"
         assert b, f"{label}: empty turn {i} response in the second run"
         # Compared stripped: llama-server varies trailing whitespace (a final newline) between otherwise identical
+        # greedy runs, depending on the batch-flush boundary at which the stream is closed. The generated tokens are the
+        # same; only that whitespace differs. The raw repr stays in the message so a real divergence is still legible.
         if a.strip() != b.strip():
             raise Nondeterministic(
                 f"{label} non-deterministic at turn {i} with temperature=0.0:\n"

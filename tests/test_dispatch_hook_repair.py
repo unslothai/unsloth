@@ -153,6 +153,7 @@ def test_the_llama_loader_stands_aside_under_vllm():
     from unsloth.models.llama import FastLlamaModel
 
     # dedent, not lstrip: this one is a method, so every line is indented and lstrip would leave the body hanging off a
+    # stripped `def`.
     tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
     calls = [
         node

@@ -258,7 +258,7 @@ def test_a_damaged_payload_invalidates_an_otherwise_complete_install(
     state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
     assert state["ok"] is False
     assert state["reason"] == "studio_install_damaged"
-    # The deps walk still succeeded;
+    # The deps walk still succeeded; only the payload is at fault.
     assert state["deps_ok"] is True
 
 

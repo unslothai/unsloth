@@ -52,7 +52,8 @@ window.__nextPaint = () => new Promise((resolve) =>
   requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 """
 
-# Re-open and sample the viewport every frame from the first painted row until the thread stops growing, so the gap is
+# Re-open and sample the viewport every frame from the first painted row until the thread stops growing, so the gap is a
+# timeline rather than a single reading.
 RUN_JS = """
 async ([total, settleFrames]) => {
   const api = window.__heavyThread;

@@ -309,6 +309,7 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     assert "payload.dataset_known_cached =" not in snapshot
     assert "payload.dataset_local_path =" not in snapshot
     # The identity shape now lives in createTrainingStartInputIdentity, so assert the snapshot delegates to it and that
+    # the identity still normalizes and carries the flags.
     assert "createTrainingStartInputIdentity(" in snapshot
     assert "normalizeTrainingStartPayloadForComparison(" in start_inputs
     assert "isUntrainableModelFormat(payload.model_format)" in start_inputs

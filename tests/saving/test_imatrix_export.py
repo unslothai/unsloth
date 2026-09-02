@@ -98,6 +98,7 @@ def test_repo_candidates_appends_gguf():
 
 def test_repo_candidates_maps_official_base_to_unsloth_org():
     # The upstream imatrix only lives in unsloth/<base>-GGUF, so an official base id must map onto the unsloth org
+    # rather than deriving a non-existent meta-llama/...-GGUF repo.
     repos = S._gguf_repo_candidates(_Model("meta-llama/Llama-3.1-8B-Instruct"))
     assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
     assert not any(r.startswith("meta-llama/") for r in repos)
@@ -210,9 +211,9 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
 
     def _fake_run(command, *a, **kw):
         captured["command"] = command
-        # llama-quantize would write the output;
+        # llama-quantize would write the output; emulate so the existence check passes.
         out = command.split()[-2] if False else None
-        # output_gguf is the 2nd-to-last token before quant_type/threads;
+        # output_gguf is the 2nd-to-last token before quant_type/threads; just create it.
         with open(tmp_path / "out.gguf", "wb") as f:
             f.write(b"GGUF")
 

@@ -93,6 +93,7 @@ _HOSTILE_TREE = {
 }
 
 # A SECOND off-prefix layer, holding a recorded dependency and nothing the gate looks for, so the roots search has to
+# find it from sys.path rather than only from wherever `datasets` or `pyarrow` happens to live.
 _SECOND_LAYER = {
     "secondlayer.py": "V = 0\n",
     "secondproj.py": "VALUE = 1\n",
@@ -194,8 +195,8 @@ def _run_on_hostile_tree(
     driver.write_text(_DRIVER, encoding = "utf-8")
 
     # The child venv inherits the BASE prefix's site-packages, not this interpreter's, so dill would otherwise be
-    # missing when the tests run from a venv.
-    # Appended AFTER the overlay, and a real site-packages directory, so dill itself stays on the by-reference side of
+    # missing when the tests run from a venv. Appended AFTER the overlay, and a real site-packages directory, so dill
+    # itself stays on the by-reference side of its own rule.
     import sysconfig
 
     env = dict(os.environ)
@@ -265,6 +266,7 @@ def test_a_co_located_project_module_keeps_its_by_value_state(tmp_path):
         "ovmod": True,
         "projcfg": False,
         # A recorded dependency in a SECOND off-prefix layer, found from sys.path rather than from wherever pyarrow
+        # happens to live.
         "secondlayer": True,
         # And that layer's own unrecorded project module is untouched.
         "secondproj": False,
@@ -772,6 +774,7 @@ def test_the_gate_reads_the_literal_path_the_way_dill_does(tmp_path):
     assert "site-packages" in os.path.realpath(literal)
 
     # This box's virtualenv root is an ancestor of tmp, so without moving the sys prefixes aside the gate answers False
+    # on the prefix rule and the site-packages rule is never reached -- a green test measuring nothing.
     names = ("base_prefix", "base_exec_prefix", "exec_prefix", "prefix", "real_prefix")
     saved = {n: getattr(sys, n) for n in names if hasattr(sys, n)}
     elsewhere = str(tmp_path / "not-a-prefix")

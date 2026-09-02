@@ -106,6 +106,7 @@ def _definition_time_expressions(node):
 
 
 # Helpers that load with no `ast.Import` node, and the module each is imported FROM, since a rename makes the spelling
+# at the call site insufficient.
 _LOADER_ORIGINS = {
     "import_module": "importlib",
     "__import__": "builtins",

@@ -152,6 +152,7 @@ def test_notarization_step_runs_after_the_macos_build_and_before_staging():
     assert step["if"] == "matrix.platform == 'macos-latest'"
     assert step["env"]["ARTIFACT_PATHS"] == "${{ steps.build_macos.outputs.artifactPaths }}"
     # notarytool's own --timeout only caps the polling, so the step still needs a backstop or a stalled upload holds the
+    # serial matrix until GitHub's 6h job limit.
     assert isinstance(step["timeout-minutes"], int)
 
     names = _step_names(workflow)

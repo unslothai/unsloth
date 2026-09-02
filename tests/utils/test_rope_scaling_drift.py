@@ -113,8 +113,8 @@ def _find_function(source_path, function_name):
 def test_config_path_inspects_rope_scaling():
     init_fn = _load_class_init()
     # inv_freq is derived through the shared _unsloth_recompute_inv_freq helper (or still inlined in the config branch
-    # on older layouts);
-    # whichever scope holds the scaling must read config.rope_scaling and call _compute_config_rope_inv_freq, else
+    # on older layouts); whichever scope holds the scaling must read config.rope_scaling and call
+    # _compute_config_rope_inv_freq, else scaled models run unscaled (#2405).
     _, _, init_call_attrs = _iter_names_and_calls(init_fn)
     scope = _find_method(LLAMA_PY, CLASS_NAME, "_unsloth_recompute_inv_freq")
     if scope is not None:
@@ -146,7 +146,8 @@ def test_config_path_inspects_rope_scaling():
 
 
 def test_v5_repair_reuses_recompute():
-    # transformers v5 blanks non-persistent buffers on load, so loader._fix_rope_inv_freq rebuilds inv_freq;
+    # transformers v5 blanks non-persistent buffers on load, so loader._fix_rope_inv_freq rebuilds inv_freq; it must
+    # reuse the scaled recompute, since an unscaled rebuild re-drops llama3 scaling (#2405).
     fix_fn = _find_function(LOADER_PY, "_fix_rope_inv_freq")
     assert fix_fn is not None, (
         "loader._fix_rope_inv_freq not found; if it was renamed, update this "
@@ -284,7 +285,8 @@ def test_extended_rope_scaling_keeps_llama3_and_carries_theta():
 
 
 def test_extended_rotary_reads_config_factor():
-    # LlamaExtendedRotaryEmbedding must honor the config factor, not hardcode 8 (Llama-3.2 uses 32);
+    # LlamaExtendedRotaryEmbedding must honor the config factor, not hardcode 8 (Llama-3.2 uses 32); otherwise the
+    # subclass path re-drops scaling (#2405).
     from types import SimpleNamespace
 
     from unsloth.models.llama import LlamaExtendedRotaryEmbedding

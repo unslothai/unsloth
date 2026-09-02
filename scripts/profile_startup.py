@@ -135,7 +135,7 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
             if killed.returncode == 0:
                 return
         except Exception:
-            # taskkill missing or timed out;
+            # taskkill missing or timed out; fall through so the stub still dies.
             pass
     # check=False: a nonzero taskkill does not raise, so fall through as well.
     proc.terminate()
@@ -283,7 +283,8 @@ def main(argv: list[str]) -> int:
     # Same reason: --import-only never launches anything.
     if a.import_only and a.max_healthz_seconds is not None:
         ap.error("--max-healthz-seconds cannot be combined with --import-only")
-    # nan and inf parse fine as floats but `med > budget` is then always False, so the gate would report success
+    # nan and inf parse fine as floats but `med > budget` is then always False, so the gate would report success without
+    # ever bounding anything.
     if a.max_healthz_seconds is not None and not math.isfinite(a.max_healthz_seconds):
         ap.error("--max-healthz-seconds must be a finite number")
 

@@ -343,6 +343,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
         f"on nothing."
     )
     # The line joins have to be resolved, or the parallel command reads as `pytest tests/ -q` with none of its --ignore
+    # flags and the first test above passes on nothing.
     assert "--ignore=" in root[0]
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
 
