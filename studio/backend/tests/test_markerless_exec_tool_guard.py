@@ -307,12 +307,10 @@ def test_provisional_card_sniff_keeps_benign_and_structured_names():
 
 
 def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
-    """The per-name gate has to be an O(1) set test.
-
-    ``_held_rehearsal_tail_len`` runs on every streamed chunk over the whole catalog, so a
-    membership test against the tool LIST inside that loop makes it quadratic -- measurably
-    so with the thousands of tools a large MCP catalog can carry.
-    """
+    """The per-name gate has to be an O(1) set test. ``_held_rehearsal_tail_len`` runs on every
+    streamed chunk over the whole catalog, so a membership test against the tool LIST inside that
+    loop makes it quadratic -- measurably so with the thousands of tools a large MCP catalog can
+    carry."""
     from core.inference import llama_cpp, safetensors_agentic
 
     class _CountingSet(frozenset):
@@ -382,11 +380,9 @@ def test_a_disabled_leading_name_still_stops_the_chain():
 
 def test_blocked_leading_call_is_not_markup_for_the_streaming_scans():
     """A blocked call streams as prose, so it must not pin the incremental stripper.
-
     ``_first_sentinel`` and ``_needs_whole_buffer`` treating it as markup sets ``_degenerate``
     and re-strips the whole cumulative response on every token, which is quadratic in a long
-    quoted call. Asserted structurally rather than by wall clock so it cannot flake.
-    """
+    quoted call. Asserted structurally rather than by wall clock so it cannot flake."""
     from core.inference.tool_call_parser import _first_sentinel, _promotable_gemma_call_pos
 
     blocked = 'call:terminal{command:"id"}'
@@ -445,11 +441,9 @@ def test_a_disabled_call_does_not_anchor_its_neighbour():
 
 
 def test_an_open_execution_name_prefix_is_still_held_unrestricted():
-    """``terminal`` alone may still become ``terminal_logs``, which IS promotable.
-
-    Releasing it the moment the chunk ends leaks the first half of a real call as prose,
-    so the hold lasts until the ``[`` settles which tool it is.
-    """
+    """``terminal`` alone may still become ``terminal_logs``, which IS promotable. Releasing it the
+    moment the chunk ends leaks the first half of a real call as prose, so the hold lasts until
+    the ``[`` settles which tool it is."""
     from core.inference.safetensors_agentic import _is_rehearsal_prefix
 
     tools = [{"type": "function", "function": {"name": "terminal_logs"}}]
@@ -503,12 +497,10 @@ def test_a_blocked_mcp_rehearsal_body_is_not_scanned_for_other_calls():
 
 
 def test_blocked_span_collection_is_one_forward_pass():
-    """A stream of unclosed ``terminal[ARGS]{`` must not restart a balanced scan per opener.
-
-    Cheap for a model to emit and quadratic to scan, so it ties up a worker. Timed rather
-    than structural because the shape of the scan is the thing under test; the budget is
-    ~1000x the observed cost, so only a return to the quadratic form can trip it.
-    """
+    """A stream of unclosed ``terminal[ARGS]{`` must not restart a balanced scan per opener. Cheap
+    for a model to emit and quadratic to scan, so it ties up a worker. Timed rather than
+    structural because the shape of the scan is the thing under test; the budget is ~1000x the
+    observed cost, so only a return to the quadratic form can trip it."""
     import time
 
     text = "terminal[ARGS]{" * 3200
@@ -518,11 +510,9 @@ def test_blocked_span_collection_is_one_forward_pass():
 
 
 def test_blocked_span_lookup_is_linear_in_the_gemma_scan():
-    """Both the spans and the Gemma matches grow with the input.
-
-    Re-testing every blocked span per match is quadratic, and a turn full of blocked
-    rehearsals whose bodies quote ``call:`` is cheap for a model to emit.
-    """
+    """Both the spans and the Gemma matches grow with the input. Re-testing every blocked span per
+    match is quadratic, and a turn full of blocked rehearsals whose bodies quote ``call:`` is
+    cheap for a model to emit."""
     import time
 
     text = 'terminal[ARGS]{"command":"call:x{y:1}"}' * 16000
@@ -596,11 +586,9 @@ def test_a_call_rehearsed_inside_think_is_still_not_promoted():
 
 
 def test_a_completed_non_call_peer_ends_the_blocked_chain():
-    """Buffering must stop once the peer has closed and is demonstrably not a call.
-
-    Otherwise the whole response is withheld to EOS or the 16 KiB cap for a chain that
-    cannot produce another call.
-    """
+    """Buffering must stop once the peer has closed and is demonstrably not a call. Otherwise the
+    whole response is withheld to EOS or the 16 KiB cap for a chain that cannot produce another
+    call."""
     from core.inference.tool_call_parser import blocked_bare_json_chain_may_continue
 
     blocked = '{"name":"terminal","arguments":{}}'
@@ -615,12 +603,10 @@ def test_a_completed_non_call_peer_ends_the_blocked_chain():
 
 
 def test_a_prefilled_think_opener_is_re_emitted_when_the_closer_survives():
-    """``detect_think_prefill`` drops the opener when ``</think>`` is a special token.
-
-    That was right while the streamer stripped the closer. Preserving tool provenance keeps
-    it, so the same rule now produces the mirrored bug: reasoning that streams with a stray
-    ``</think>`` and no opening tag.
-    """
+    """``detect_think_prefill`` drops the opener when ``</think>`` is a special token. That was
+    right while the streamer stripped the closer. Preserving tool provenance keeps it, so the
+    same rule now produces the mirrored bug: reasoning that streams with a stray ``</think>`` and
+    no opening tag."""
     from core.inference.chat_template_helpers import detect_think_prefill
 
     prompt = "user turn\n<think>\n"
@@ -636,12 +622,10 @@ def test_a_prefilled_think_opener_is_re_emitted_when_the_closer_survives():
 
 
 def test_the_transformers_vision_streamer_preserves_tool_tokens():
-    """An image request carries client tools, and its streamer is built separately.
-
-    Without the flag the Gemma/Qwen wrapper is stripped on that route only, so a genuine call
-    reaches the guard markerless and is returned as prose. Read from source rather than driven:
-    the real boundary needs a loaded Transformers VLM, and importing the module needs torch.
-    """
+    """An image request carries client tools, and its streamer is built separately. Without the flag
+    the Gemma/Qwen wrapper is stripped on that route only, so a genuine call reaches the guard
+    markerless and is returned as prose. Read from source rather than driven: the real boundary
+    needs a loaded Transformers VLM, and importing the module needs torch."""
     import ast
     import pathlib
 
@@ -661,11 +645,9 @@ def test_the_transformers_vision_streamer_preserves_tool_tokens():
 
 
 def test_a_promotable_gemma_peer_behind_a_blocked_call_is_held():
-    """Bare Gemma syntax is not in ``TOOL_XML_SIGNALS``.
-
-    So without a hold the peer's serialization streams to the client and is only promoted at
-    end of turn, too late to retract. Sibling of the bare-JSON chain hold.
-    """
+    """Bare Gemma syntax is not in ``TOOL_XML_SIGNALS``. So without a hold the peer's serialization
+    streams to the client and is only promoted at end of turn, too late to retract. Sibling of
+    the bare-JSON chain hold."""
     from core.inference.tool_call_parser import blocked_gemma_chain_may_continue as may_continue
 
     blocked = 'call:terminal{command:"id"}'
@@ -693,11 +675,9 @@ def test_a_promotable_gemma_peer_behind_a_blocked_call_is_held():
 
 
 def test_the_provisional_card_skips_a_blocked_leading_object():
-    """``_sniff_text_tool_name`` scans the whole drained prefix for ``"name"``.
-
-    On a blocked-first chain that is the object that will NOT run, so the card opens as
-    ``terminal`` with ``call_0`` and the real ``web_search`` call then reuses that id.
-    """
+    """``_sniff_text_tool_name`` scans the whole drained prefix for ``"name"``. On a blocked-first
+    chain that is the object that will NOT run, so the card opens as ``terminal`` with ``call_0``
+    and the real ``web_search`` call then reuses that id."""
     from core.inference.llama_cpp import _sniff_text_tool_name
     from core.inference.tool_call_parser import leading_blocked_bare_json_end
 
@@ -793,10 +773,8 @@ class _WithThinkId:
 
 def test_the_think_prefill_flag_asks_the_decoder_not_the_policy():
     """``NativeToolTokenDecoder`` falls back to ``skip_special_tokens=True`` with no usable ids.
-
-    Deriving the re-emit from ``preserve_tool_tokens`` alone then puts the opener back while
-    the closer is still dropped, leaving the answer inside an unterminated thinking block.
-    """
+    Deriving the re-emit from ``preserve_tool_tokens`` alone then puts the opener back while the
+    closer is still dropped, leaving the answer inside an unterminated thinking block."""
     from core.inference.native_tool_tokens import decoder_preserves_token
 
     assert decoder_preserves_token(_NoSpecialIds(), "</think>") is False
@@ -830,11 +808,9 @@ class _DecodeOnlyTokenizer:
 
 
 def test_the_attribute_form_parameter_opener_survives_decoding():
-    """The ``=`` and attribute spellings have to be preserved together.
-
-    Keeping ``<function name="`` while dropping ``<parameter name="`` leaves a call the
-    attribute-form parser still accepts, with its arguments silently emptied.
-    """
+    """The ``=`` and attribute spellings have to be preserved together. Keeping ``<function name="``
+    while dropping ``<parameter name="`` leaves a call the attribute-form parser still accepts,
+    with its arguments silently emptied."""
     from core.inference.native_tool_tokens import NATIVE_TOOL_CONTROL_TOKENS
 
     for token in ('<parameter name="', '<param name="', "<parameter=", "<param="):
@@ -850,12 +826,10 @@ def test_the_attribute_form_parameter_opener_survives_decoding():
 
 
 def test_a_promotable_bare_gemma_call_is_a_streaming_boundary():
-    """Bare Gemma has no ``TOOL_XML_SIGNALS`` entry, but the parser promotes it anywhere.
-
-    Without a boundary the detectors cannot see a mid-prose call, so its serialization
-    reaches the client and only then executes. The boundary is the call's own start, so the
-    prose ahead of it still streams.
-    """
+    """Bare Gemma has no ``TOOL_XML_SIGNALS`` entry, but the parser promotes it anywhere. Without a
+    boundary the detectors cannot see a mid-prose call, so its serialization reaches the client
+    and only then executes. The boundary is the call's own start, so the prose ahead of it still
+    streams."""
     from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
     from core.inference.safetensors_agentic import _earliest_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS, promotable_gemma_call_pos
@@ -877,13 +851,10 @@ def test_a_promotable_bare_gemma_call_is_a_streaming_boundary():
 
 
 def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
-    """``_clean_generated_text`` trims the active stop token from every snapshot.
-
-    Now that the decoder preserves native controls, a marker that is BOTH the EOS and the
-    required closer (TML Inkling's ``<|end_message|>``) was being removed before the parser
-    read it, so strict parsing rejected a complete call. An ordinary EOS is not a native
-    control and is still trimmed.
-    """
+    """``_clean_generated_text`` trims the active stop token from every snapshot. Now that the
+    decoder preserves native controls, a marker that is BOTH the EOS and the required closer (TML
+    Inkling's ``<|end_message|>``) was being removed before the parser read it, so strict parsing
+    rejected a complete call. An ordinary EOS is not a native control and is still trimmed."""
     import ast
     import pathlib
 
@@ -966,13 +937,11 @@ class _ReasoningChannelTokenizer:
 
 
 def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
-    """``decode_stream_token`` drops any special id outside the preserved set.
-
-    A VLM turn that combines tools with a native reasoning protocol therefore loses the
-    delimiters ``normalize_reasoning_snapshots`` is waiting for, and the reasoning is emitted
-    as ordinary answer text. The whole VLM stream is exercised in
-    ``test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn``.
-    """
+    """``decode_stream_token`` drops any special id outside the preserved set. A VLM turn that
+    combines tools with a native reasoning protocol therefore loses the delimiters
+    ``normalize_reasoning_snapshots`` is waiting for, and the reasoning is emitted as ordinary
+    answer text. The whole VLM stream is exercised in
+    ``test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn``."""
     from core.inference.native_tool_tokens import (
         NativeToolTokenDecoder,
         reasoning_control_tokens,
@@ -994,11 +963,9 @@ def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
 
 def test_a_gemma_peer_behind_a_blocked_json_object_is_held():
     """The end-of-turn parser searches the whole turn, so a chain can change format.
-
     ``blocked_bare_json_chain_may_continue`` stopped at the first non-object suffix, but
     ``{"name":"terminal",..} call:web_search{..}`` still promotes ``web_search``, so the peer
-    streamed and was only promoted at end of turn.
-    """
+    streamed and was only promoted at end of turn."""
     from core.inference.tool_call_parser import blocked_bare_json_chain_may_continue as may_continue
 
     blocked = json.dumps({"name": "terminal", "parameters": {"command": "id"}})
@@ -1022,12 +989,10 @@ def test_a_gemma_peer_behind_a_blocked_json_object_is_held():
 
 
 def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
-    """``promotable_gemma_call_pos`` only sees a call once its ``{`` has arrived.
-
-    A promotable call written after ordinary prose therefore streamed ``call:web`` to the
-    client, and the completed call was promoted a snapshot later. STREAMING holds the tail
-    the same way it holds a split ``NAME[ARGS]`` rehearsal.
-    """
+    """``promotable_gemma_call_pos`` only sees a call once its ``{`` has arrived. A promotable call
+    written after ordinary prose therefore streamed ``call:web`` to the client, and the completed
+    call was promoted a snapshot later. STREAMING holds the tail the same way it holds a split
+    ``NAME[ARGS]`` rehearsal."""
     from core.inference.llama_cpp import _held_rehearsal_tail_len as gguf_hold
     from core.inference.safetensors_agentic import _held_rehearsal_tail_len as st_hold
     from core.inference.tool_call_parser import held_bare_gemma_tail_len

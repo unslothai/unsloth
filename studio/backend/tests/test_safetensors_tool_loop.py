@@ -1970,11 +1970,9 @@ def test_rehearsal_call_name_split_before_args_is_not_streamed():
 
 
 def test_split_bare_json_chain_is_owned_before_later_call_executes():
-    """A blocked first object can still own a chain with a later benign call.
-
-    The first cumulative snapshot must stay buffered: otherwise its raw JSON is
-    visible before the second snapshot makes the chain executable at end-of-turn.
-    """
+    """A blocked first object can still own a chain with a later benign call. The first cumulative
+    snapshot must stay buffered: otherwise its raw JSON is visible before the second snapshot
+    makes the chain executable at end-of-turn."""
     blocked = '{"name":"terminal","parameters":{"command":"id"}}'
     later = '{"name":"web_search","parameters":{"query":"cats"}}'
     loop, exec_fn = _make_loop(

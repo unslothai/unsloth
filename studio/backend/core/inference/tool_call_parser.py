@@ -473,9 +473,9 @@ _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 def leading_bare_gemma_call_is_promotable(stripped: str, enabled_tool_names) -> bool:
     """True when a buffered leading ``call:NAME{`` is one ``_parse_gemma_tool_calls`` would
-    promote. The loops drain on this shape before the parser runs, so it has to answer the
-    same question or the turn is held to EOS for a call that never parses. The
-    ``call``/``call:partial`` PREFIX stays ungated: ``call:term`` may yet be ``call:termdict``."""
+    promote. The loops drain on this shape before the parser runs, so it must answer the same
+    question or the turn is held to EOS for nothing. The ``call:partial`` PREFIX stays
+    ungated: ``call:term`` may yet be ``call:termdict``."""
     m = _GEMMA_BARE_TC_RE.match(stripped)
     return m is not None and _markerless_promotable(m.group(1), enabled_tool_names)
 
@@ -633,8 +633,8 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         if not m:
             out.append(text[cursor:])
             break
-        # A blocked call is markup the parser skipped, not a sentence, so it holds its position
-        # and the promotable call beside it stays anchored (and is still stripped).
+        # A blocked call is skipped markup, not a sentence: it holds its position so the
+        # promotable call beside it stays anchored, and is still stripped.
         blocked = _markerless_blocked_execution(m.group(1), enabled_tool_names)
         keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names) or (
             not _gemma_call_is_anchored(text, m.start(), floor)
@@ -1629,21 +1629,18 @@ def _signal_inside_leading_wrapperless_gemma(
             return False
         if m.end() - 1 < first <= end:
             return True
-        # A promotable call that CLOSES before the signal still owns the turn (inside-or-after
-        # rule, as for closed bare-JSON/Mistral envelopes); name-agnostic mode keeps the
-        # original "inside only" rule.
+        # A promotable call that CLOSES before the signal still owns the turn, as for closed
+        # bare-JSON/Mistral envelopes; name-agnostic mode keeps the "inside only" rule.
         return enabled_tool_names is not None and end < first
 
 
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
-    """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less
-    Gemma call whose balanced body contains the first foreign signal, else None. A
-    prose name -- disabled/example, or execution-class ``python``/``terminal``
-    (never promotable from a bare span) -- means the quoted literal is data: the
-    caller drops the span and recurses on the tail. A promotable call defers to the
-    enabled-call guard."""
+    """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less Gemma call
+    whose balanced body holds the first foreign signal, else None. A prose name means the
+    quoted literal is data, so the caller drops the span and recurses on the tail; a
+    promotable call defers to the enabled-call guard."""
     first = _first_foreign_tool_signal(content)
     # Mirror the enabled-call guard: the Mistral trigger is foreign here too.
     trig = content.find(_MISTRAL_TRIGGER)
@@ -2274,8 +2271,8 @@ def _parse_llama3_bare_json(
             break
         blocked = _markerless_blocked_execution(name, enabled_tool_names)
         if not blocked and not _markerless_promotable(name, enabled_tool_names):
-            # A name outside the tool list means the turn is an ordinary JSON answer rather
-            # than a call chain, so stop rather than promote objects deeper in the data.
+            # An unlisted name means an ordinary JSON answer, not a call chain: stop rather
+            # than promote objects deeper in the data.
             break
         # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict or
         # JSON-string of one (OpenAI). Looser would fire on ``{"name":"x","parameters":"sentence"}``.
@@ -2301,9 +2298,8 @@ def _parse_llama3_bare_json(
         else:
             break
         if blocked:
-            # Call-shaped but blocked: skip it and keep decoding, or a benign call after it is
-            # dropped. The shape check above runs first, so {"name":"terminal","result":".."}
-            # still stops the chain as data.
+            # Call-shaped but blocked: keep decoding, or a benign call behind it is dropped.
+            # The shape check runs first, so {"name":"terminal","result":".."} stops as data.
             cursor += end_offset
             continue
         out.append(
@@ -2556,10 +2552,9 @@ def _parse_gemma_tool_calls(
     # Manual cursor: resume AFTER each consumed balanced body so a nested ``call:OTHER{...}``
     # in an argument is never re-matched. A leading JSON answer's span is data -- scan after it.
     cursor = _leading_json_value_end(content) or 0
-    # A blocked rehearsal's body is argument text too: it owned its span by being promoted, so
-    # refusing to promote it must not hand the contents here. Enabled guarded names only.
-    # One forward pass like _iter_bracket_spans (stop at the last ``}``, resume past each body):
-    # restarting per opener is quadratic, and unclosed ``terminal[ARGS]{`` is cheap to emit.
+    # A blocked rehearsal's body is argument text too, so refusing to promote it must not hand
+    # the contents here. Enabled guarded names only. One forward pass like _iter_bracket_spans
+    # (stop at the last ``}``, resume past each body); restarting per opener is quadratic.
     blocked_spans = []
     _reh_cursor = 0
     _reh_last_close = content.rfind("}")
@@ -2576,8 +2571,7 @@ def _parse_gemma_tool_calls(
             break
         blocked_spans.append((_reh.start(), _reh_end + 1))
         _reh_cursor = _reh_end + 1
-    # Monotonic index into the sorted spans; the cursor only moves forward, so re-testing
-    # every span per match would be quadratic on a turn full of them.
+    # Monotonic index into the sorted spans: re-testing every span per match is quadratic.
     blocked_i = 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
@@ -2743,8 +2737,7 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
     ``tool_calls``."""
     remainder = text
     stripped_any = False
-    # Blocked-but-call-shaped objects the parser skipped, in order, so parse and strip agree
-    # on every link of the chain.
+    # The blocked call-shaped objects the parser skipped, in order, so parse and strip agree.
     kept: list[str] = []
 
     def _out(tail: str) -> str:
@@ -2757,14 +2750,13 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         # Skip the Llama-3 ``;`` inter-call separator between chained calls.
         if stripped_any or kept:
             probe = probe.lstrip(" \t\n\r;")
-        # The separator consumed to reach ``probe``: displayed only when the object before it
-        # still is. Sentinel/whitespace stripping only removes a prefix, so this is exact.
+        # The separator consumed to reach ``probe``, displayed only when the object before it
+        # still is. Stripping only removes a prefix, so this is exact.
         sep = remainder[: len(remainder) - len(probe)] if kept else ""
         if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
             return _out(sep + probe)
-        # Gate on the TOP-LEVEL name only: a nested ``"name"`` (e.g.
-        # {"result":{"name":"web_search",..}}) is data. An un-extractable or unlisted name
-        # means the turn is a JSON answer, so the rest is kept as written.
+        # Top-level name only: a nested ``"name"`` is data. An un-extractable or unlisted one
+        # means a JSON answer, so the rest is kept as written.
         name = _top_level_bare_json_name(probe)
         blocked = _markerless_blocked_execution(name, enabled_tool_names)
         if not blocked and not _markerless_promotable(name, enabled_tool_names):
@@ -2813,11 +2805,10 @@ def _bare_json_call_shaped(obj) -> bool:
 def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
     """Whether a leading guarded call still owns a possible ``; {peer}`` chain.
 
-    Walks the whole run: a peer that has closed and is itself guarded is not an answer, so the
-    scan keeps going. It stops as soon as something settles the turn -- a non-object suffix, a
-    peer that is not call-shaped, or a disabled name, which ends ``_parse_llama3_bare_json``
-    outright. Holding past that point keeps the response private to EOS for nothing, and a
-    cancel before EOS would lose it.
+    Walks the whole run, since a closed guarded peer is not an answer either, and stops as
+    soon as something settles the turn: a peer that is not call-shaped, or a disabled name,
+    which ends ``_parse_llama3_bare_json`` outright. Holding past that point keeps the
+    response private to EOS for nothing, and a cancel before EOS would lose it.
     """
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not probe.startswith("{"):
@@ -2868,10 +2859,9 @@ def promotable_gemma_call_pos(
 ) -> int:
     """Offset of the first bare ``call:NAME{`` the parser would promote, or -1.
 
-    Bare Gemma has no entry in ``TOOL_XML_SIGNALS``, so without this the streaming detectors
-    cannot see a mid-prose call the parser promotes anyway, and its serialization reaches the
-    client before the call runs. The boundary is the call's own start, so the prose ahead of
-    it still streams.
+    Bare Gemma has no ``TOOL_XML_SIGNALS`` entry, so without this the streaming detectors miss
+    a mid-prose call and its serialization reaches the client before the call runs. The
+    boundary is the call's own start, so the prose ahead of it still streams.
     """
     for m in _GEMMA_BARE_TC_RE.finditer(text, start):
         if _markerless_promotable(m.group(1), enabled_tool_names):
@@ -2890,10 +2880,9 @@ def _last_bare_call_word(text: str) -> int:
 def gemma_tail_may_hide_a_call(tail: str, enabled_tool_names: Optional[set]) -> bool:
     """Whether a chain tail can still turn into a bare Gemma call the parser promotes.
 
-    Shared by both chain predicates because the end-of-turn parser searches the whole turn:
-    a blocked leading call in EITHER markerless format can be followed by a Gemma peer, so
-    the same question has to be asked of a bare-JSON tail. The reverse pairing does not
-    arise -- ``_parse_llama3_bare_json`` only reads an object that leads the turn.
+    Shared by both chain predicates: the end-of-turn parser searches the whole turn, so a
+    blocked leading call in either format can be followed by a Gemma peer. The reverse pairing
+    does not arise, since ``_parse_llama3_bare_json`` only reads a LEADING object.
     """
     for nxt in _GEMMA_BARE_TC_RE.finditer(tail):
         if _markerless_promotable(nxt.group(1), enabled_tool_names):
@@ -2911,10 +2900,9 @@ def gemma_tail_may_hide_a_call(tail: str, enabled_tool_names: Optional[set]) -> 
 def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> int:
     """Length of a trailing partial ``call:NAME{..`` the parser will promote once it closes.
 
-    ``promotable_gemma_call_pos`` only sees a call once its ``{`` has arrived, so a mid-prose
-    one leaks ``call:web`` first. STREAMING holds this tail exactly as it holds a split
-    ``NAME[ARGS]`` rehearsal; ordinary prose and a closed call both release it, the latter
-    because the signal scan has already made it a boundary.
+    ``promotable_gemma_call_pos`` needs the ``{``, so a mid-prose call leaks ``call:web``
+    first. STREAMING holds this tail as it holds a split ``NAME[ARGS]`` rehearsal. Prose
+    releases it, and so does a closed call, whose boundary the signal scan already owns.
     """
     partial = _GEMMA_BARE_TC_PREFIX_RE.search(text)
     if partial is not None:
@@ -2933,11 +2921,9 @@ def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> in
 def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
     """Whether a leading guarded ``call:NAME{..}`` still hides a call the parser will promote.
 
-    Sibling of ``blocked_bare_json_chain_may_continue``. Bare Gemma syntax is not in
-    ``TOOL_XML_SIGNALS``, so without this the peer's serialization streams to the client and
-    is only promoted at end of turn, too late to retract. The tail is SEARCHED, not matched:
+    Sibling of ``blocked_bare_json_chain_may_continue``. The tail is SEARCHED, not matched:
     ``_parse_gemma_tool_calls`` scans forward from the blocked call's body, so a peer behind a
-    ``;`` or a sentence counts exactly as much as an adjacent one.
+    ``;`` or a sentence counts as much as an adjacent one.
     """
     probe = text.lstrip()
     m = _GEMMA_BARE_TC_RE.match(probe)
@@ -2946,9 +2932,8 @@ def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set
     end = _gemma_body_brace_end(probe, m.end() - 1)
     if end is None:
         return True  # body still arriving
-    # Separators are not an answer, so a tail of them counts as the empty tail, exactly as
-    # in the bare-JSON sibling. Otherwise ``call:terminal{command:id} `` releases the buffer
-    # and the peer that arrives next streams before end-of-turn promotion can retract it.
+    # Separators are not an answer, so a tail of them counts as the empty tail, as in the
+    # bare-JSON sibling: otherwise the peer arriving after them streams before promotion.
     return gemma_tail_may_hide_a_call(probe[end + 1 :].lstrip(" \t\n\r;"), enabled_tool_names)
 
 

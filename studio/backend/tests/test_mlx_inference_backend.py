@@ -4263,12 +4263,10 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
 
 
 def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
-    """mlx-vlm's ``response.text`` has already dropped the native tool controls.
-
-    Without recovering them the wrapper never reaches the parser, so a genuine
+    """mlx-vlm's ``response.text`` has already dropped the native tool controls. Without recovering
+    them the wrapper never reaches the parser, so a genuine
     ``<|tool_call>call:terminal{..}<tool_call|>`` arrives markerless and the execution guard
-    refuses it. Text-only requests on a model classified as a VLM use this route too.
-    """
+    refuses it. Text-only requests on a model classified as a VLM use this route too."""
     from core.inference import mlx_inference
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
@@ -4341,11 +4339,9 @@ def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
 
 
 def test_mlx_drops_a_trailing_stop_token_from_the_preserved_decode(monkeypatch):
-    """``skip_special_tokens`` used to swallow the stop id; the decoder keeps controls.
-
-    Some runtimes stop on an allowlisted one (TML Inkling's ``<|end_message|>``), so without
-    filtering it an ordinary answer is delivered with the protocol marker appended.
-    """
+    """``skip_special_tokens`` used to swallow the stop id; the decoder keeps controls. Some
+    runtimes stop on an allowlisted one (TML Inkling's ``<|end_message|>``), so without filtering
+    it an ordinary answer is delivered with the protocol marker appended."""
     from core.inference import mlx_inference
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
@@ -4385,11 +4381,9 @@ def test_mlx_drops_a_trailing_stop_token_from_the_preserved_decode(monkeypatch):
 
 
 def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
-    """The VLM path appends each decoded token straight into the snapshot.
-
-    So an allowlisted control used as the runtime EOS would trail every ordinary answer;
-    ``_generate_text`` drops it at its final re-decode and this route needs the same.
-    """
+    """The VLM path appends each decoded token straight into the snapshot. So an allowlisted control
+    used as the runtime EOS would trail every ordinary answer; ``_generate_text`` drops it at its
+    final re-decode and this route needs the same."""
     from core.inference import mlx_inference
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
@@ -4457,12 +4451,9 @@ def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
 
 
 def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
-    """The suppression is for a turn with NO tool markup.
-
-    TML Inkling uses ``<|end_message|>`` both as the required close for
-    ``<|content_invoke_tool_json|>`` and as a possible EOS, and strict parsing rejects the
-    call without it, so blanking it unconditionally loses a complete call.
-    """
+    """The suppression is for a turn with NO tool markup. TML Inkling uses ``<|end_message|>`` both
+    as the required close for ``<|content_invoke_tool_json|>`` and as a possible EOS, and strict
+    parsing rejects the call without it, so blanking it unconditionally loses a complete call."""
     from core.inference import mlx_inference
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
@@ -4532,11 +4523,9 @@ def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
 
 
 def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
-    """ "the turn mentions a marker" is not enough to keep a closer.
-
-    An ordinary answer that merely writes ``[ARGS]`` opened no envelope, so a trailing
-    ``<|end_message|>`` is orphan markup and must not reach the user.
-    """
+    """ "the turn mentions a marker" is not enough to keep a closer. An ordinary answer that merely
+    writes ``[ARGS]`` opened no envelope, so a trailing ``<|end_message|>`` is orphan markup and
+    must not reach the user."""
     from core.inference import mlx_inference
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
@@ -4604,12 +4593,10 @@ def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
 
 
 def test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn(monkeypatch):
-    """The VLM decoder drops every special id outside its preserved set.
-
-    A turn that combines tools with a native reasoning protocol therefore loses the
-    delimiters ``normalize_reasoning_snapshots`` is waiting for, and the thought is emitted
-    as ordinary answer text. The text path already passes the protocol's controls.
-    """
+    """The VLM decoder drops every special id outside its preserved set. A turn that combines tools
+    with a native reasoning protocol therefore loses the delimiters
+    ``normalize_reasoning_snapshots`` is waiting for, and the thought is emitted as ordinary
+    answer text. The text path already passes the protocol's controls."""
     from core.inference import mlx_inference
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend

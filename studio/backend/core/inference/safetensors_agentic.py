@@ -131,12 +131,11 @@ def _is_rehearsal_prefix(
             return False
         name, bracket, _ = stripped.partition("[")
         # Until the ``[`` lands the name is still open: ``terminal`` may yet become
-        # ``terminal_logs``, which IS promotable, so releasing it now would leak the first
-        # half of a real call as prose. Hold it and decide once the shape is settled.
+        # ``terminal_logs``, which IS promotable. Hold it and decide once the shape settles.
         return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
-        # Active by construction, so only the class is left to check, and it must stay an
-        # O(1) set test: this loop runs per streamed chunk over the whole catalog.
+        # Active by construction, so only the class is left, and it must stay an O(1) test:
+        # this loop runs per streamed chunk over the whole catalog.
         if name in EXECUTION_CLASS_TOOL_NAMES:
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
@@ -231,8 +230,8 @@ def _earliest_tool_signal(
                 break
             # Bare/prose [ARGS]: skip it so a later real call in the same chunk is still found.
             from_idx = p + len("[ARGS]")
-    # Bare Gemma is not in ``signals`` but the parser promotes it wherever it sits, so a
-    # mid-prose one has to be a boundary too or its text streams before the call runs.
+    # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
+    # mid-prose one has to be a boundary too.
     gemma = promotable_gemma_call_pos(
         candidate, None if unrestricted else _active_tool_names(active_tools), start
     )
@@ -980,9 +979,8 @@ def run_safetensors_tool_loop(
                 elif blocked_bare_json_chain_may_continue(content_buffer, _enabled_tool_names):
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue
-                    # The potential chain exceeded the bounded private buffer.
-                    # Fail closed rather than stream content that a later peer
-                    # could make executable at end-of-turn.
+                    # The chain outgrew the bounded private buffer: fail closed rather than
+                    # stream content a later peer could make executable.
                     detect_state = _state_draining
                     continue
                 # Closed non-call object (or oversized non-call) -- stream as text.
@@ -990,8 +988,8 @@ def run_safetensors_tool_loop(
             # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
             # buffer it here or it streams raw until the end-of-turn safety net.
             # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
-            # The completed shape takes the parser's gate: a name it will not promote falls
-            # through and streams instead of draining the whole turn.
+            # The completed shape takes the parser's gate, so a name it will not promote
+            # streams instead of draining the turn.
             _gemma_lead = leading_bare_gemma_call_is_promotable(stripped, _enabled_tool_names)
             _gemma_chain = blocked_gemma_chain_may_continue(stripped, _enabled_tool_names)
             if (
@@ -1010,7 +1008,7 @@ def run_safetensors_tool_loop(
                     continue
                 if _gemma_chain:
                     # A promotable peer behind a blocked call must not stream before the
-                    # end-of-turn parser promotes it; mirrors the bare-JSON chain hold.
+                    # end-of-turn parser promotes it.
                     if parse_tool_calls_from_text(
                         stripped,
                         id_offset = next_call_id,

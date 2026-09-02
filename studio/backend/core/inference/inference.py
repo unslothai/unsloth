@@ -1505,14 +1505,13 @@ class InferenceBackend:
         try:
             # Re-emit an open <think> prefill swallowed by skip_prompt (see
             # generate_stream).
-            # An image request carries client tools too, so the wrapper has to survive here
-            # for the same reason it does on the text path.
+            # An image request carries client tools too, so the wrapper survives here as well.
             _preserve_tool_tokens = bool(tools)
             think_prefix = detect_think_prefill(
                 prompt_text,
                 getattr(raw_tokenizer, "all_special_tokens", None),
-                # Ask the decoder, not the policy: with no usable all_special_ids it falls
-                # back to skip_special_tokens=True and drops the closer anyway.
+                # Ask the decoder, not the policy: with no usable all_special_ids it falls back
+                # to skip_special_tokens=True and drops the closer anyway.
                 preserves_think_close = _preserve_tool_tokens
                 and decoder_preserves_token(raw_tokenizer, "</think>"),
             )
@@ -2022,8 +2021,8 @@ class InferenceBackend:
                 else detect_think_prefill(
                     prompt,
                     getattr(tokenizer, "all_special_tokens", None),
-                    # Both streamers below keep </think> when they decode through
-                    # NativeToolTokenDecoder, so the opener has to be re-emitted.
+                    # Both streamers keep </think> through NativeToolTokenDecoder, so the
+                    # opener has to be re-emitted.
                     preserves_think_close = (
                         preserve_tool_tokens or reasoning_channel_markers is not None
                     )
@@ -2959,11 +2958,9 @@ class InferenceBackend:
                     token = None
                 if isinstance(token, str) and token and text.endswith(token):
                     if closes_an_open_envelope(text, token):
-                        # A native CLOSER that is also the stop token still closes the
-                        # envelope the parser is about to read (TML Inkling's
-                        # <|end_message|>); strict parsing rejects the call without it.
-                        # Its own opener must be present, or an answer that merely mentions
-                        # some other marker would keep an orphan closer on screen.
+                        # A native CLOSER that is also the stop token still closes the envelope
+                        # the parser is about to read, and strict parsing needs it. Its own
+                        # opener must be present, or an orphan closer stays on screen.
                         continue
                     text = text[: -len(token)]
                 elif (

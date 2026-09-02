@@ -32,10 +32,10 @@ import re
 # The route's ``_LOCAL_CODE_TOOLS`` (a drift test pins that): under Full access all three run
 # unsandboxed, edit_file included, since disable_sandbox drops its workdir containment. Their
 # MARKERLESS forms (``call:NAME{..}`` / ``name[ARGS]{json}``) are indistinguishable from prose
-# quoting the syntax, so a model echoing attacker text would turn a quote into execution;
-# require a wrapper (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or a structured call.
-# The same rule covers every ``mcp__*`` name because that third-party vocabulary may expose
-# execution or mutation sinks that cannot be safely classified here.
+# quoting the syntax, so a model echoing attacker text would turn a quote into execution.
+# Require a wrapper (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or a structured call.
+# The same rule covers every ``mcp__*`` name, whose third-party vocabulary may expose
+# execution or mutation sinks that cannot be classified here.
 EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 _MCP_TOOL_PREFIX = "mcp__"
 

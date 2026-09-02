@@ -2275,8 +2275,8 @@ class MLXInferenceBackend:
         think_prefix = detect_think_prefill(
             prompt,
             getattr(self._tokenizer, "all_special_tokens", None),
-            # Matches the native_token_decoder condition below: when it runs, </think>
-            # survives, so the prefilled opener has to be re-emitted with it.
+            # Matches native_token_decoder below: when it runs </think> survives, so the
+            # prefilled opener has to be re-emitted with it.
             preserves_think_close = (bool(tools) or reasoning_channel_markers is not None)
             and decoder_preserves_token(
                 self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
@@ -2395,17 +2395,15 @@ class MLXInferenceBackend:
                         # invalid byte sequence can revise characters already shown.
                         # Predates stop handling and affects plain replies too.
                         if native_token_decoder is not None:
-                            # skip_special_tokens used to swallow the stop id; the decoder
-                            # keeps allowlisted controls, and some runtimes stop on one
-                            # (TML Inkling's <|end_message|>). Drop only the TRAILING stop
-                            # id, so the same marker still closes a real tool envelope.
+                            # The decoder keeps allowlisted controls, and some runtimes stop
+                            # on one (TML Inkling's <|end_message|>). Drop only the TRAILING
+                            # stop id, so the marker still closes a real tool envelope.
                             _ids = list(token_ids)
                             if _ids and _ids[-1] in _mlx_stop_token_ids(
                                 self._tokenizer, self._model
                             ):
-                                # Only when the turn carries no tool markup: the same marker
-                                # can be the required closer (TML Inkling's <|end_message|>),
-                                # and strict parsing rejects the call without it.
+                                # Only with no tool markup in the turn: the same marker can be
+                                # the closer strict parsing needs.
                                 _whole = native_token_decoder.decode(_ids)
                                 _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
                                 if not closes_an_open_envelope(_whole, _closer):
@@ -2635,8 +2633,7 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
-        # Detected once and reused below: the decoder has to keep the protocol's delimiters
-        # for the same normalizer that consumes them at the end of this method.
+        # Detected once: the decoder keeps the delimiters the normalizer below consumes.
         vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
         prefill = detect_think_prefill(
@@ -2693,13 +2690,11 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        # Same provenance the text path recovers: mlx-vlm's ``response.text`` has already
-        # dropped the native tool controls, so without this a genuine wrapped call reaches the
-        # parser markerless and the execution guard refuses it. Text-only requests on a model
-        # classified as a VLM come through here too.
-        # A native reasoning protocol whose delimiters are special-token ids needs them
-        # preserved too, as on the text path: ``decode_stream_token`` drops any special id
-        # outside the preserved set, and the normalizer would then never see its markers.
+        # The provenance the text path recovers: mlx-vlm's ``response.text`` has dropped the
+        # native tool controls, so a genuine wrapped call would reach the parser markerless and
+        # the guard would refuse it. Text-only requests on a VLM come through here too.
+        # Delimiters that are special-token ids need preserving too, as on the text path:
+        # ``decode_stream_token`` drops any special id outside the preserved set.
         vlm_token_decoder = (
             NativeToolTokenDecoder(
                 self._tokenizer,
@@ -2708,9 +2703,8 @@ class MLXInferenceBackend:
             if tools and self._tokenizer
             else None
         )
-        # The runtime EOS can itself be an allowlisted control (TML Inkling's
-        # <|end_message|>), and this path appends each decoded token straight into the
-        # snapshot, so it would trail every ordinary answer. Same treatment as _generate_text.
+        # The runtime EOS can itself be an allowlisted control, and this path appends every
+        # decoded token into the snapshot, so it would trail each answer. As in _generate_text.
         vlm_stop_ids = (
             _mlx_stop_token_ids(self._tokenizer, self._model)
             if vlm_token_decoder is not None
@@ -2744,11 +2738,9 @@ class MLXInferenceBackend:
                         token_text = response.text if hasattr(response, "text") else str(response)
                         token_id = getattr(response, "token", None)
                         if vlm_token_decoder is not None and token_id is not None:
-                            # Ordinary ids keep mlx-vlm's own text; only a special id is
-                            # re-decoded, so nothing else about the stream changes.
+                            # Only a special id is re-decoded; ordinary ids keep mlx-vlm's text.
                             _decoded = vlm_token_decoder.decode_stream_token(token_id, token_text)
-                            # A stop token is dropped unless it closes an envelope something
-                            # actually opened; strict parsing needs that closer.
+                            # A stop token is dropped unless it closes an open envelope.
                             token_text = (
                                 ""
                                 if int(token_id) in vlm_stop_ids

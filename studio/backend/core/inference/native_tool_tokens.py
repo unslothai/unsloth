@@ -8,10 +8,9 @@ from __future__ import annotations
 import re
 
 
-# These are provenance-bearing control tokens emitted by supported native tool
-# templates. They must survive decoding so the parser can distinguish a native
-# call from ambiguous markerless prose. Ordinary special tokens (EOS, role
-# boundaries, etc.) remain suppressed exactly as with skip_special_tokens=True.
+# Provenance-bearing control tokens from native tool templates: they must survive decoding
+# so the parser can tell a native call from markerless prose. Everything else (EOS, role
+# boundaries) stays suppressed as with skip_special_tokens=True.
 NATIVE_TOOL_CONTROL_TOKENS = frozenset(
     {
         "<tool_call>",
@@ -53,13 +52,12 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<|tool_call_begin|>",
         "<|tool_call_argument_begin|>",
         "<|tool_call_end|>",
-        # TML Inkling's role opener is deliberately NOT here: nothing consumes a standalone
-        # one, so it would begin every ordinary reply with raw markup, and the invocation
-        # marker below is what makes a call recognizable. ``parse_tool_calls_from_text``
-        # folds the bare name echo into the span either way, so the call still strips clean.
+        # TML Inkling's role opener is deliberately absent: nothing consumes a standalone one,
+        # so it would prefix every ordinary reply with raw markup. The marker below is what
+        # makes the call recognizable, and the span swallows the name echo either way.
         "<|content_invoke_tool_json|>",
         "<|end_message|>",
-        # Kept whenever tool controls are: the parser skips a call rehearsed inside one, so
+        # Kept with the tool controls: the parser skips a call rehearsed inside one, so
         # dropping them makes ``[THINK][TOOL_CALLS]terminal[ARGS]{..}[/THINK]`` a real call.
         "<think>",
         "</think>",
@@ -69,9 +67,8 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
 )
 
 
-# Which openers make a native CLOSER load-bearing. A closer is only worth keeping when its
-# own envelope was opened: "the text mentions some tool signal" is far too broad, since an
-# ordinary answer that merely says ``[ARGS]`` would then keep an orphan ``<|end_message|>``.
+# Which openers make a CLOSER load-bearing. "The text mentions some tool signal" is too
+# broad: an answer that merely says ``[ARGS]`` would keep an orphan ``<|end_message|>``.
 _NATIVE_CONTROL_OPENERS = {
     "</tool_call>": ("<tool_call>",),
     "<tool_call|>": ("<|tool_call>",),
@@ -91,9 +88,8 @@ _NATIVE_CONTROL_OPENERS = {
     "<｜tool▁call▁end｜>": ("<｜tool▁call▁begin｜>",),
     "<|tool_calls_section_end|>": ("<|tool_calls_section_begin|>",),
     "<|tool_call_end|>": ("<|tool_call_begin|>", "<|tool_call_argument_begin|>"),
-    # Only the call marker: ``_TC_JSON_START_RE`` recognizes a TML call at
-    # ``<|content_invoke_tool_json|>{``, so the role opener alone leaves the closer inert and
-    # ``<|message_model|>hello<|end_message|>`` would keep a token nothing can consume.
+    # Only the call marker: ``_TC_JSON_START_RE`` reads a TML call at
+    # ``<|content_invoke_tool_json|>{``, so the role opener leaves the closer inert.
     "<|end_message|>": ("<|content_invoke_tool_json|>",),
     "</think>": ("<think>",),
     "[/THINK]": ("[THINK]",),
@@ -101,19 +97,15 @@ _NATIVE_CONTROL_OPENERS = {
 
 
 # Openers the parser only honors with a body behind them, so a bare mention opens nothing.
-# ``_TC_JSON_START_RE`` reads a TML call at ``<|content_invoke_tool_json|>\s*{``, which makes
-# ``The marker <|content_invoke_tool_json|> starts a call.`` inert. Deliberately NOT applied
-# to ``<tool_call>``: that wrapper legitimately holds ``<function=..>`` markup instead of an
-# object, and demanding a brace there would drop a closer a real call needs.
+# Deliberately NOT applied to ``<tool_call>``: that wrapper legitimately holds ``<function=..>``
+# markup instead of an object, and demanding a brace would drop a closer a real call needs.
 _OPENER_REQUIRES_BODY = {"<|content_invoke_tool_json|>": re.compile(r"\s*\{")}
 
 
 def closes_an_open_envelope(text: str, token: str) -> bool:
     """True when ``token`` is a native CLOSER whose own opener appears in ``text``.
 
-    Used where a runtime stop token has to be kept for the parser rather than trimmed for
-    display: only a closer that something actually opened is load-bearing.
-    """
+    Decides whether a runtime stop token is kept for the parser or trimmed for display."""
     openers = _NATIVE_CONTROL_OPENERS.get(token)
     if not openers:
         return False
@@ -154,8 +146,7 @@ def _decode_without_special_spacing(tokenizer, token_ids, *, skip_special_tokens
             spaces_between_special_tokens = False,
         )
     except TypeError as exc:
-        # Lightweight tokenizers may not expose the option, and do not add that spacing
-        # themselves; re-raise anything else rather than masking it.
+        # Lightweight tokenizers lack the option and do not add that spacing themselves.
         if "spaces_between_special_tokens" not in str(exc):
             raise
         return tokenizer.decode(token_ids, skip_special_tokens = skip_special_tokens)
@@ -166,17 +157,13 @@ def _token_is_preserved(token, preserved_tokens) -> bool:
         return False
     if token in NATIVE_TOOL_CONTROL_TOKENS or token in preserved_tokens:
         return True
-    # A protocol marker may combine one special token with ordinary text, e.g.
-    # ``<|channel>thought``. Preserve the special-token component.
+    # A marker may combine a special token with text (``<|channel>thought``): keep the token.
     return any(token in marker or marker in token for marker in preserved_tokens)
 
 
 def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int], frozenset[int]]:
-    """Return ``(all_special_ids, native_tool_ids)`` for ``tokenizer``.
-
-    If a tokenizer does not expose special-token ids, the caller retains the
-    previous fail-closed ``skip_special_tokens=True`` behavior.
-    """
+    """``(all_special_ids, native_tool_ids)``, both empty when the tokenizer exposes no ids,
+    which leaves the caller on fail-closed ``skip_special_tokens=True``."""
     try:
         special_ids = frozenset(int(token_id) for token_id in tokenizer.all_special_ids)
     except (AttributeError, TypeError, ValueError):
@@ -252,18 +239,14 @@ class NativeToolTokenDecoder:
         self._special_ids, self._tool_ids = _special_token_sets(tokenizer, preserved_tokens)
 
     def preserves(self, token: str) -> bool:
-        """Whether this decoder actually keeps ``token``.
-
-        Not the same as "it is in the allowlist": a tokenizer that exposes no usable
-        ``all_special_ids`` sends every decode back through ``skip_special_tokens=True``,
-        which drops the token regardless. Callers that re-emit a matching opener have to ask
-        the decoder, not the policy.
-        """
+        """Whether this decoder actually keeps ``token``, which is not the same as the
+        allowlist: with no usable ``all_special_ids`` every decode falls back to
+        ``skip_special_tokens=True`` and drops it anyway."""
         if not self._special_ids:
             return False
         for token_id in self._tool_ids:
-            # Same two steps `_special_token_sets` used to retain the id: the converted
-            # token, then the decoded one, since an adapter may only answer the second.
+            # The two steps `_special_token_sets` retained the id by; an adapter may only
+            # answer the second.
             for lookup in (
                 lambda: self._tokenizer.convert_ids_to_tokens(token_id),
                 lambda: _decode_without_special_spacing(
