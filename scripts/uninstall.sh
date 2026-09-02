@@ -430,18 +430,15 @@ _custom_studio_roots() {
         _exe=$(printf '%s' "$_exe" | sed "s/'\\\\''/'/g")
         [ -n "$_exe" ] || return 0
         _emit "$(dirname "$(dirname "$(dirname "$_exe")")")"
-        # A portable install (install.sh --portable / --root) puts the venv in
-        # <root>/studio, so the three-dirname walk above lands on the Studio
-        # root and would leave <root>/{bin,cache,llama.cpp,node,share} -- most
-        # of the bytes -- behind. The conf names the master root directly.
+        # A portable install puts the venv in <root>/studio, so the walk above
+        # lands on the Studio root and leaves the rest of <root> behind.
         _master=$(sed -n "s/^export UNSLOTH_HOME='\(.*\)'\$/\1/p" "$1" | head -n1)
         _master=$(printf '%s' "$_master" | sed "s/'\\\\''/'/g")
         [ -n "$_master" ] && _emit "$_master"
     }
-    # Mirror install.sh's precedence: the master root first when a portable
-    # install exported it, then UNSLOTH_STUDIO_HOME, then STUDIO_HOME (ignored
-    # when both are set). Otherwise uninstalling install A could also delete
-    # install B if the user has STUDIO_HOME left over from B.
+    # Mirror install.sh's precedence: master root, then UNSLOTH_STUDIO_HOME,
+    # then STUDIO_HOME (ignored when both are set). Otherwise uninstalling
+    # install A could delete install B if STUDIO_HOME is left over from B.
     if [ -n "${UNSLOTH_HOME:-}" ]; then
         _emit "$UNSLOTH_HOME"
         _from_conf "$UNSLOTH_HOME/share/studio.conf"

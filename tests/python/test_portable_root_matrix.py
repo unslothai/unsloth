@@ -2,20 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Simulation matrix for the single-root install (issue #8865).
+"""Simulation matrix for the single-root install.
 
-Runs the REAL storage_roots resolver in a subprocess per case, so each case gets
-a genuinely fresh import (the HF resolver snapshots explicit env once per
-process, so in-process reloads would not model a real launch).
-
-Covers:
-  * [Linux, macOS, Windows, WSL] x [NVIDIA, AMD, CPU]  -- the resolver is
-    hardware independent, so the GPU axis is there to PROVE that, not to assume it.
-  * install shapes: default, legacy ~/.unsloth/studio, UNSLOTH_STUDIO_HOME,
-    portable nested, portable flat, marker-only (no env), venv inference.
-  * hostile paths: spaces, apostrophes, unicode, trailing slash, symlink, "~".
-  * precedence: explicit env > Settings DB > portable > platform default.
-  * backwards compatibility: an old install must resolve exactly as before.
+Runs the REAL storage_roots resolver in a subprocess per case: the HF resolver
+snapshots explicit env once per process, so an in-process reload would not model
+a real launch. The GPU axis is there to PROVE the resolver is hardware
+independent, not to assume it.
 """
 
 from __future__ import annotations
@@ -99,7 +91,6 @@ def inside(child: str, parent: str) -> bool:
         return False
 
 
-# Every cache variable that must land inside the root once portable mode is on.
 CONTAINED = (
     "UNSLOTH_COMPILE_LOCATION",
     "UV_CACHE_DIR",
@@ -117,7 +108,6 @@ CONTAINED = (
     "UNSLOTH_STUDIO_PROJECTS_HOME",
 )
 
-# Regenerable caches pinned in EVERY mode, portable or not.
 ALWAYS = (
     "UNSLOTH_COMPILE_LOCATION",
     "UV_CACHE_DIR",
@@ -136,10 +126,6 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp())
     print(f"scratch: {tmp}\n")
 
-    # ---------------------------------------------------------------- platform x gpu
-    # The resolver takes no hardware input. This axis exists to prove that the
-    # GPU vendor cannot change a single resolved path, which is what makes the
-    # change safe on the NVIDIA / AMD / CPU-only pathways alike.
     print("[1] platform x GPU matrix (resolver must be hardware independent)")
     baseline = None
     for plat in ("linux", "darwin", "win32", "wsl"):
@@ -178,7 +164,6 @@ def main() -> int:
                     )[:300],
                 )
 
-    # ---------------------------------------------------------------- containment
     print("\n[2] portable mode contains every cache variable")
     home = tmp / "h_contain"
     home.mkdir()
@@ -198,7 +183,6 @@ def main() -> int:
         f"got {r['documents']}",
     )
 
-    # ---------------------------------------------------------------- default install
     print("\n[3] default install is unchanged (backwards compatibility)")
     home = tmp / "h_default"
     home.mkdir()
@@ -232,7 +216,6 @@ def main() -> int:
             f"got {v}",
         )
 
-    # ---------------------------------------------------------------- old installs
     print("\n[4] existing installs keep resolving where they already are")
     home = tmp / "h_legacy"
     (home / ".unsloth" / "studio").mkdir(parents = True)
@@ -259,7 +242,6 @@ def main() -> int:
         r["HF_HUB_CACHE"],
     )
 
-    # ---------------------------------------------------------------- portable shapes
     print("\n[5] portable shapes: nested, flat, marker-only")
     home = tmp / "h_nested"
     home.mkdir()
@@ -296,7 +278,6 @@ def main() -> int:
         str(r["unsloth_home"]),
     )
 
-    # ---------------------------------------------------------------- precedence
     print("\n[6] precedence: explicit env always wins")
     home = tmp / "h_prec"
     home.mkdir()
@@ -317,7 +298,6 @@ def main() -> int:
     r = run({"UNSLOTH_HOME": str(root), "MPLCONFIGDIR": "   "}, home)
     check("blank counts as unset", inside(r["MPLCONFIGDIR"], str(root)), str(r["MPLCONFIGDIR"]))
 
-    # ---------------------------------------------------------------- hostile paths
     print("\n[7] hostile install roots")
     cases = {
         "spaces": "port able root",
@@ -347,7 +327,6 @@ def main() -> int:
             ],
         )
 
-    # trailing slash and "~" are parsed, not literal
     home = tmp / "h_slash"
     home.mkdir()
     root = tmp / "r_slash"
@@ -360,7 +339,6 @@ def main() -> int:
     r = run({"UNSLOTH_HOME": "~/tilde_root"}, home)
     check("~ expands", r["studio_root"] == str(home / "tilde_root" / "studio"), r["studio_root"])
 
-    # symlinked root must resolve to its target, not double-count
     home = tmp / "h_link"
     home.mkdir()
     real = tmp / "real_root"
@@ -374,7 +352,6 @@ def main() -> int:
         r["studio_root"],
     )
 
-    # ---------------------------------------------------------------- degenerate env
     print("\n[8] degenerate environments")
     home = tmp / "h_blank"
     home.mkdir()
@@ -391,7 +368,6 @@ def main() -> int:
     r = run({"UNSLOTH_PORTABLE": "1"}, home)
     check("UNSLOTH_PORTABLE=1 is on", r["portable"] is True)
 
-    # A read-only root must not crash startup; caches just cannot be created.
     ro = tmp / "ro_root"
     ro.mkdir()
     os.chmod(ro, 0o500)
