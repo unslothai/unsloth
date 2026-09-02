@@ -12925,7 +12925,9 @@ class LlamaCppBackend:
                                     # without holding the whole vocabulary (#7066).
                                     from core.inference.chat_template_helpers import (
                                         delimiter_shaped_tokens,
-                                    )
+                                        trailing_assistant_reasoning,
+    trailing_assistant_resumable,
+)
                                     self._markup_tokens = delimiter_shaped_tokens(val_a)
                                 attr = arch_keys.get(key)
                                 if attr == "n_kv_heads" and val_a is not None:
@@ -28472,7 +28474,14 @@ class LlamaCppBackend:
                 payload["chat_template_kwargs"] = _reasoning_kw
             # Re-checked per iteration: once a tool result is appended the partial is
             # no longer trailing, so later turns are normal.
-            if continue_final_message and trailing_assistant_text(conversation):
+            # `trailing_assistant_resumable`, not `trailing_assistant_text`: a chat
+            # preempted inside its thought block has real work and an empty content
+            # string, and the truthiness test on "" silently dropped the flag, so the
+            # resumed attempt restarted from nothing. llama-server does its own
+            # templating and replays `reasoning_content` as an open thought (verified
+            # against the running server: the stream came back with only NEW reasoning
+            # deltas, so the accumulator continues rather than duplicating).
+            if continue_final_message and trailing_assistant_resumable(conversation):
                 payload["continue_final_message"] = True
                 payload["add_generation_prompt"] = False
             payload["max_tokens"] = (
@@ -30815,9 +30824,32 @@ class LlamaCppBackend:
                         continue_final_message = True,
                     )
                     continue_final_message = True
-                # No visible text means the pause landed before the first token. There
-                # is nothing to continue, and `continue_final_message` refuses an empty
-                # assistant turn, so the attempt is re-issued whole instead.
+                elif _checkpoint.has_reasoning_resume_point():
+                    # Preempted mid-thought, which on a reasoning model is the common
+                    # case rather than the exotic one: the whole first minute of a turn
+                    # produces reasoning and no prose. Carried as `reasoning_content` so
+                    # the backend re-opens the thought; carried as `content` it would be
+                    # rendered as the answer instead.
+                    #
+                    # Merged rather than appended, because the accumulators reset at the
+                    # top of every round, so this holds only the LATEST attempt's
+                    # reasoning while the conversation already carries the earlier ones.
+                    _prior = trailing_assistant_reasoning(conversation)
+                    if _prior:
+                        conversation[-1] = {
+                            **conversation[-1],
+                            "reasoning_content": _prior + reasoning_accum,
+                        }
+                    else:
+                        conversation.append({
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": reasoning_accum,
+                        })
+                    continue_final_message = True
+                # Neither prose nor thought means the pause landed before the first
+                # token. There is nothing to continue, and `continue_final_message`
+                # refuses an empty assistant turn, so the attempt is re-issued whole.
                 try:
                     preempt_policy.on_preempted(_checkpoint)
                     _resumed = preempt_policy.await_resume()

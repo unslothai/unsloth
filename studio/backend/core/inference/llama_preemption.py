@@ -239,6 +239,26 @@ class StreamCheckpoint:
         """
         return bool(self.visible_text.strip())
 
+    def has_reasoning_resume_point(self) -> bool:
+        """Whether there is a thought to continue, absent any visible prose.
+
+        Distinct from ``has_resume_point`` because the two resume through different
+        fields: prose goes back as ``content`` and is extended, a thought goes back as
+        ``reasoning_content`` and re-opens. Sending a thought as content would render it
+        as the answer.
+        """
+        return not self.visible_text.strip() and bool(self.reasoning_text.strip())
+
+    def kept_chars(self) -> int:
+        """Characters carried across the pause, prose or thought.
+
+        Reported rather than ``len(visible_text)`` alone: that read zero on every pause
+        of a reasoning model and made a livelock look like an orderly pause.
+        """
+        if self.has_resume_point():
+            return len(self.visible_text)
+        return len(self.reasoning_text) if self.has_reasoning_resume_point() else 0
+
 
 @runtime_checkable
 class PreemptionPolicy(Protocol):
@@ -856,8 +876,10 @@ class ControllerPreemptionPolicy:
         """
         self._resumes = checkpoint.resumes
         _log.info(
-            "llama preemption paused: gen_id=%s resumes=%s kept_chars=%s charged=%s",
-            self._gen_id, checkpoint.resumes, len(checkpoint.visible_text or ""),
+            "llama preemption paused: gen_id=%s resumes=%s kept_chars=%s kept=%s charged=%s",
+            self._gen_id, checkpoint.resumes, checkpoint.kept_chars(),
+            "prose" if checkpoint.has_resume_point()
+            else ("thought" if checkpoint.has_reasoning_resume_point() else "nothing"),
             checkpoint.charged_tokens,
         )
         participant = self._controller.participant(self._gen_id)

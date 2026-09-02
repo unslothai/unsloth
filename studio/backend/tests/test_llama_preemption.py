@@ -527,3 +527,105 @@ class TestTheRegistry:
         busy.register("live", tokens = 100)
         get_preemption_controller("port-2")
         assert get_preemption_controller("port-1") is busy, "an in-flight controller must survive"
+
+
+class TestAPauseMidThoughtKeepsTheThought:
+    """The measured livelock: ten pauses, `kept_chars=0` on every one.
+
+    Run of 2026-09-02, Qwen3 at a 16384 window with four chats. Every pause landed
+    inside the thought block, so `visible_text` was empty, `has_resume_point()` said
+    there was nothing to continue, and each resume re-issued the request whole. One chat
+    was paused five times, charged 551 then 29 then 829 then 4196 tokens, and was still
+    unfinished when the 1500s deadline cut the run. Preemption was not pausing that
+    chat, it was repeatedly destroying its work.
+    """
+
+    def test_a_thought_is_a_resume_point(self):
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        cp = StreamCheckpoint(visible_text = "", reasoning_text = "Let me work through")
+        assert not cp.has_resume_point(), "there is no prose to extend"
+        assert cp.has_reasoning_resume_point()
+        assert cp.kept_chars() == len("Let me work through")
+
+    def test_prose_wins_when_both_are_present(self):
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        cp = StreamCheckpoint(visible_text = "The answer is", reasoning_text = "thinking")
+        assert cp.has_resume_point()
+        assert not cp.has_reasoning_resume_point(), (
+            "resuming as a thought would push already-visible prose back into the block"
+        )
+        assert cp.kept_chars() == len("The answer is")
+
+    def test_nothing_generated_keeps_nothing(self):
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        cp = StreamCheckpoint()
+        assert cp.kept_chars() == 0
+        assert not cp.has_resume_point()
+        assert not cp.has_reasoning_resume_point()
+
+    def test_whitespace_is_not_progress(self):
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        cp = StreamCheckpoint(visible_text = "  \n ", reasoning_text = " \n")
+        assert not cp.has_resume_point()
+        assert not cp.has_reasoning_resume_point()
+
+
+class TestTheWireCarriesAThoughtPartial:
+    def test_a_reasoning_only_turn_counts_as_resumable(self):
+        from core.inference.chat_template_helpers import (
+            trailing_assistant_resumable,
+            trailing_assistant_reasoning,
+            trailing_assistant_text,
+        )
+
+        convo = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "half a thought"},
+        ]
+        # The exact trap: "" is falsy, so every `and trailing_assistant_text(...)` gate
+        # dropped the continuation flag for a turn that had real work to continue.
+        assert trailing_assistant_text(convo) == ""
+        assert not trailing_assistant_text(convo)
+        assert trailing_assistant_reasoning(convo) == "half a thought"
+        assert trailing_assistant_resumable(convo)
+
+    def test_a_tool_call_turn_is_never_resumable(self):
+        from core.inference.chat_template_helpers import trailing_assistant_resumable
+
+        convo = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "thinking",
+                "tool_calls": [{"id": "1", "function": {"name": "x", "arguments": "{}"}}],
+            },
+        ]
+        assert not trailing_assistant_resumable(convo)
+
+    def test_the_payload_gate_uses_the_resumable_test(self):
+        from pathlib import Path
+
+        from core.inference import llama_cpp
+
+        source = Path(llama_cpp.__file__).read_text()
+        assert 'if continue_final_message and trailing_assistant_resumable(conversation):' in source
+
+    def test_the_splice_path_still_uses_visible_text_only(self):
+        """The manual splice appends its result as VISIBLE text.
+
+        Handing it a thought would paste the reasoning into the answer, which is why
+        this is a second predicate rather than a change to the first one.
+        """
+        from pathlib import Path
+
+        from core.inference import chat_template_helpers
+
+        source = Path(chat_template_helpers.__file__).read_text()
+        splice = source.split("def render_prompt_with_boundary", 1)[1].split("\ndef ", 1)[0]
+        assert "trailing_assistant_text(messages)" in splice
+        assert "trailing_assistant_reasoning" not in splice
