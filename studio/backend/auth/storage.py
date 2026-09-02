@@ -1101,6 +1101,29 @@ def _workspace_jobs_active(username: str) -> bool:
         from core.inference.mcp_client import workspace_has_cached_sessions
         return bool(workspace_has_cached_sessions(username))
 
+    def _research_runs_active() -> bool:
+        # A supervisor between model calls holds no lease this process can see,
+        # but the run row is still non-terminal, and the run reopens this
+        # account's databases and tools under its own pathnames.
+        from storage import research_runs_db
+        return bool(research_runs_db.unfinished_run_ids())
+
+    def _rag_workers_active() -> bool:
+        # Ingestion and linked-folder sync run in workspace-bound threads whose
+        # next rag_db_path() recreates the username-derived directory that the
+        # retirement just renamed.
+        from core.rag import folder_sync
+        from storage import rag_db
+
+        if folder_sync.workspace_sync_worker_active(username):
+            return True
+        try:
+            if not rag_db.rag_available():
+                return False
+        except Exception:  # noqa: BLE001 - an unreadable rag.db answers nothing
+            return True
+        return bool(rag_db.live_ingestion_or_sync_jobs())
+
     from utils.workspace_context import run_in_workspace
 
     for what, probe in (
@@ -1111,6 +1134,8 @@ def _workspace_jobs_active(username: str) -> bool:
         ("media renders", _media_renders_active),
         ("data recipe job", _recipe_job_active),
         ("cached MCP sessions", _mcp_sessions_cached),
+        ("research runs", _research_runs_active),
+        ("RAG workers", _rag_workers_active),
     ):
         try:
             if run_in_workspace(username, probe):
@@ -1235,6 +1260,26 @@ def _quiesce_workspace_jobs(username: str) -> None:
         from core.inference.mcp_client import close_mcp_sessions
         close_mcp_sessions()
 
+    def _stop_research_runs() -> None:
+        # Cancel through the run row rather than the supervisor's in-memory event:
+        # the run may be claimed by a worker that is between model calls, and the
+        # row is what both the supervisor and a restart consult.
+        from storage import research_runs_db
+        for run_id in research_runs_db.unfinished_run_ids():
+            try:
+                research_runs_db.request_cancel(run_id)
+            except KeyError:
+                continue
+
+    def _stop_rag_workers() -> None:
+        # Only this account's sync worker. stop_auto_sync() stops every
+        # workspace's, which is a process shutdown, not an account delete. An
+        # ingestion already running is left to finish; the probe holds the
+        # tombstone until it does, which is what the retry on the create path is
+        # there for.
+        from core.rag import folder_sync
+        folder_sync.stop_workspace_auto_sync(username)
+
     def _shutdown_idle_export_worker() -> None:
         # is_export_active() is false once a checkpoint has finished loading, so
         # the cancel above left the subprocess and the account's private
@@ -1337,6 +1382,8 @@ def _quiesce_workspace_jobs(username: str) -> None:
         ("chat generations", _stop_generations),
         ("media renders", _stop_media_renders),
         ("data recipe job", _stop_recipe_job),
+        ("research runs", _stop_research_runs),
+        ("RAG folder sync worker", _stop_rag_workers),
         ("cached MCP sessions", _close_mcp_sessions),
         # Everything below is state that OUTLIVES the work rather than state that
         # is running: nothing above stops it, because by then there is nothing

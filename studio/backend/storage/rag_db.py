@@ -430,6 +430,39 @@ def _delete_document_chunks(conn, document_id: str) -> None:
     conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
 
 
+def live_ingestion_or_sync_jobs() -> bool:
+    """Whether this workspace has an ingestion or folder sync still leased.
+
+    rag.db is per workspace, so the caller binds the subject and this answers for
+    that account. A leased job means a worker is still writing under the
+    account's own pathnames, which is what account deletion has to wait for.
+    """
+    from core.rag import job_leases
+
+    conn = get_connection()
+    try:
+        # The same ISO clock the leases are written and compared with; an epoch
+        # value would compare as a string and never match.
+        now = datetime.now(timezone.utc).isoformat()
+        row = conn.execute(
+            "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id "
+            "WHERE j.status IN ('pending','running') AND l.expires_at>? LIMIT 1",
+            (job_leases.INGESTION, now),
+        ).fetchone()
+        if row is not None:
+            return True
+        row = conn.execute(
+            "SELECT 1 FROM linked_folder_sync_jobs j JOIN rag_job_leases l "
+            "ON l.kind=? AND l.job_id=j.id "
+            "WHERE j.status IN ('pending','running') AND l.expires_at>? LIMIT 1",
+            (job_leases.FOLDER_SYNC, now),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def reconcile_orphaned_ingestion_jobs() -> int:
     """Fail ingestion jobs/documents left mid-flight by a crash so they stop
     showing as stuck "processing" and become re-ingestible. Work owned by another

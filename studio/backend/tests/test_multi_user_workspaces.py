@@ -4079,3 +4079,73 @@ def test_only_media_loaded_from_the_deleted_workspace_is_unloaded(tmp_path):
         is False
     )
     assert auth_storage._status_names_a_path_under({"repo_id": None}, root) is False
+
+
+def test_a_research_run_holds_the_username_until_it_is_cancelled(tmp_path, monkeypatch):
+    from auth import storage as auth_storage
+    from storage import research_runs_db
+
+    unfinished = {"alice": ["run-1", "run-2"], "bob": []}
+    cancelled = []
+
+    monkeypatch.setattr(
+        research_runs_db,
+        "unfinished_run_ids",
+        lambda: unfinished.get(current_workspace_subject(), []),
+    )
+    monkeypatch.setattr(
+        research_runs_db, "request_cancel", lambda run_id: cancelled.append(run_id) or "cancelling"
+    )
+    # Isolate the probe from every other subsystem this function asks about.
+    monkeypatch.setattr(auth_storage, "_loaded_media_backends", lambda: [])
+
+    # A supervisor between model calls holds no lease this process can see, but
+    # the run row is still non-terminal and the run reopens this account's
+    # databases under its own pathnames.
+    assert auth_storage._workspace_jobs_active("alice") is True
+
+    auth_storage._quiesce_workspace_jobs("alice")
+    assert cancelled == ["run-1", "run-2"]
+
+    unfinished["alice"] = []
+    assert auth_storage._workspace_jobs_active("alice") is False
+
+
+def test_only_the_deleted_accounts_folder_sync_worker_is_stopped(monkeypatch):
+    import threading as _threading
+
+    from core.rag import folder_sync
+
+    class _Worker:
+        def __init__(self):
+            self.joined = False
+            self._alive = True
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout = None):
+            self.joined = True
+            self._alive = False
+
+    alice = (_Worker(), _threading.Event(), _threading.Event())
+    bob = (_Worker(), _threading.Event(), _threading.Event())
+    monkeypatch.setattr(
+        folder_sync, "_workspace_workers", {"alice": alice, "bob": bob}, raising = False
+    )
+
+    assert folder_sync.workspace_sync_worker_active("alice") is True
+    assert folder_sync.workspace_sync_worker_active("carol") is False
+
+    # stop_auto_sync() stops every workspace's worker, which is a process
+    # shutdown; deleting one account must not stop everybody else's sync.
+    folder_sync.stop_workspace_auto_sync("alice")
+    assert alice[1].is_set() and alice[2].is_set()
+    assert alice[0].joined is True
+    assert "alice" not in folder_sync._workspace_workers
+    assert bob[1].is_set() is False
+    assert bob[0].joined is False
+    assert folder_sync.workspace_sync_worker_active("bob") is True
+
+    # Unknown accounts are a no-op rather than an error.
+    folder_sync.stop_workspace_auto_sync("carol")

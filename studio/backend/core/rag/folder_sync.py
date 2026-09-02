@@ -1926,6 +1926,35 @@ def start_auto_sync(
         return launch()
 
 
+def workspace_sync_worker_active(subject: str) -> bool:
+    """Whether a linked-folder sync worker is running for ``subject``."""
+    with _thread_lock:
+        active = _workspace_workers.get(subject)
+    return bool(active is not None and active[0].is_alive())
+
+
+def stop_workspace_auto_sync(subject: str, timeout: float = 2.0) -> None:
+    """Stop one workspace's sync worker, leaving every other account's running.
+
+    Account deletion needs this: the worker is bound to the deleted subject, so
+    its next rag_db_path() recreates the username-derived directory that was just
+    renamed, and a namesake registering the name would share it. stop_auto_sync
+    stops every workspace's, which is a process shutdown, not an account delete.
+    """
+    with _thread_lock:
+        managed = _workspace_workers.get(subject)
+    if managed is None:
+        return
+    worker, stop_event, wake_event = managed
+    stop_event.set()
+    wake_event.set()
+    worker.join(timeout = timeout)
+    if not worker.is_alive():
+        with _thread_lock:
+            if _workspace_workers.get(subject) is managed:
+                _workspace_workers.pop(subject, None)
+
+
 def stop_auto_sync(timeout: float = 2.0) -> None:
     _stop.set()
     _wake.set()

@@ -743,6 +743,26 @@ def approve(run_id: str, revision: int, plan_hash: str) -> str:
         conn.close()
 
 
+def unfinished_run_ids() -> list[str]:
+    """Ids of runs in this workspace that have not reached a terminal status.
+
+    The database is per workspace, so the caller binds the subject and this
+    answers for that account alone. Used by account deletion: a supervisor
+    between model calls holds no lease this process can see, but its run row is
+    still here, and the run outlives the account that started it.
+    """
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(TERMINAL_STATUSES))
+        rows = conn.execute(
+            f"SELECT id FROM research_runs WHERE status NOT IN ({placeholders})",
+            tuple(sorted(TERMINAL_STATUSES)),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [str(row["id"]) for row in rows]
+
+
 def request_cancel(run_id: str) -> str:
     conn = get_connection()
     try:
