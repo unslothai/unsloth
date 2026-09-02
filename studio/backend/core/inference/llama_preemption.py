@@ -22,6 +22,7 @@ KV cache is exhausted.
 from __future__ import annotations
 
 import asyncio
+import os
 import math
 import sys
 import threading
@@ -48,7 +49,27 @@ DEFAULT_PREEMPT_ENABLED = True
 # Room held clear of the budget. A commitment is an estimate, and the cost of being a
 # little wrong is the crash this module exists to prevent, so the last few per cent are
 # never handed out.
-DEFAULT_PREEMPT_BUFFER_RATIO = 0.05
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return default
+    # A ratio outside (0, 0.5) is a typo, not a policy: zero disables the margin that
+    # keeps the cache off the retry path, and half is already drastic.
+    return value if 0.0 < value < 0.5 else default
+
+
+# Raised from 0.05 after measurement. At five per cent the watermark sat at 95% of the
+# cache and llama-server still entered its shrinking-batch retry ten times in one run,
+# which is the path that throws the speculative sub-batch error. The margin has to cover
+# what this side cannot measure exactly: prompt figures are estimates rather than
+# tokenisations, residency is sampled on a TTL rather than continuously, and up to 32
+# tokens per slot are generated between reports. Tunable because the right number depends
+# on the cache size and the traffic, and guessing it once is how it was wrong before.
+DEFAULT_PREEMPT_BUFFER_RATIO = _float_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_RATIO", 0.15)
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 
 # A resume is cheap (the prefix cache usually still holds the prompt) but not free, so a

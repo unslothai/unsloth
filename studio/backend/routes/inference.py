@@ -20902,6 +20902,35 @@ async def produce_openai_chat_completions(
                     None if occupancy is None else occupancy.get("resident")
                 )
                 _gguf_slots_seen["occupancy"] = occupancy
+                if occupancy is None:
+                    return
+                # Reclaim dead residue the moment it is SEEN, not once a victim has
+                # already been chosen. Waiting for that made the erase useless in
+                # practice: by then llama-server had usually entered its shrinking-batch
+                # retry, which is where the speculative sub-batch error comes from, and
+                # the amounts recovered were a few hundred tokens at a time. An idle
+                # slot's cache belongs to a finished request, so freeing it early costs a
+                # future prefix-cache hit and nothing that is running.
+                snapshot = controller.snapshot()
+                ceiling = max(0, snapshot.budget - snapshot.buffer)
+                over = int(occupancy.get("resident") or 0) - ceiling
+                if over > 0 and occupancy.get("idle"):
+                    freed = reclaim_idle_slots(
+                        occupancy,
+                        lambda slot_id: erase_llama_slot(base, slot_id),
+                        needed = over,
+                    )
+                    if freed:
+                        _llama_preemption_log(
+                            "reclaimed-idle-early",
+                            freed = freed,
+                            over = over,
+                            resident = occupancy.get("resident"),
+                        )
+                        controller.note_resident(
+                            max(0, int(occupancy.get("resident") or 0) - freed)
+                        )
+                        _gguf_slots_seen["occupancy"] = None
 
             def _gguf_observe_tokens(generated: int) -> None:
                 """Live n_i, straight from the token stream.

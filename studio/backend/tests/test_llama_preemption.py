@@ -21,6 +21,7 @@ from core.inference.llama_admission import (
 )
 from core.inference.llama_preemption import (
     DEFAULT_PREEMPT_BUFFER_MIN_TOKENS,
+    DEFAULT_PREEMPT_BUFFER_RATIO,
     PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS,
     ParticipantState,
     PreemptionController,
@@ -212,10 +213,22 @@ class TestResumeDoesNotChargeTwice:
 
 
 class TestTheBufferArithmetic:
-    def test_the_buffer_is_five_per_cent_floored(self):
-        assert preemption_buffer_tokens(16384) == 820
-        assert preemption_buffer_tokens(2048) == DEFAULT_PREEMPT_BUFFER_MIN_TOKENS
+    def test_the_buffer_is_a_ratio_of_the_cache_with_a_floor(self):
+        """Pinned as a ratio, not as 820.
+
+        The literal was the five per cent this started at. It was raised after
+        measurement: at five per cent the watermark sat at 95% of the cache and
+        llama-server still entered its shrinking-batch retry ten times in one run, which
+        is the path the speculative sub-batch error comes from. It is tunable now, so a
+        test that hardcodes the figure just has to be edited again next time.
+        """
+        assert preemption_buffer_tokens(16384) == pytest.approx(
+            16384 * DEFAULT_PREEMPT_BUFFER_RATIO, rel = 0.01
+        )
+        assert preemption_buffer_tokens(2048) >= DEFAULT_PREEMPT_BUFFER_MIN_TOKENS
         assert preemption_buffer_tokens(0) == 0
+        # Still never the whole cache, whatever the ratio is set to.
+        assert preemption_buffer_tokens(16384) < 16384 // 2 + 1
 
     def test_nothing_is_preempted_while_it_fits(self):
         controller = _controller(budget = 16384)
@@ -233,9 +246,12 @@ class TestTheBufferArithmetic:
 
     def test_room_asked_for_in_advance_counts(self):
         controller = _controller(budget = 16384)
-        _register(controller, "winner", 13000)
-        _register(controller, "other", 2000)
-        assert controller.plan_preemptions() == [], "15000 fits under the 15564 ceiling"
+        ceiling = 16384 - preemption_buffer_tokens(16384)
+        # Sized from the ceiling rather than from the 15564 it happened to be at five
+        # per cent, so raising the margin does not break the property being tested.
+        _register(controller, "winner", ceiling - 2000)
+        _register(controller, "other", 1500)
+        assert controller.plan_preemptions() == [], "it fits under the ceiling"
         assert controller.plan_preemptions(needed = 1000), "a request for room must be counted"
 
     def test_a_lone_holder_is_not_preempted_for_a_newcomer(self):

@@ -283,7 +283,14 @@ class TestSpeculativeDraftsAreReserved:
         controller.configure(
             budget = 16384, kv_unified = True, draft_tokens = 2, slots = 4
         )
-        assert controller.snapshot().buffer == 828
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        # Derived, not a constant: the ratio is tunable and was raised after measurement,
+        # and an earlier revision pinned 828 here twice over.
+        assert controller.snapshot().buffer == preemption_buffer_tokens(
+            16384, draft_tokens = 2, slots = 4
+        )
+        assert controller.snapshot().buffer > preemption_buffer_tokens(16384)
 
     @pytest.mark.asyncio
     async def test_the_route_passes_the_backends_draft_settings(self):
@@ -957,4 +964,42 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert "controller.note_resident(" in source
         assert "reclaim_idle_slots(" in source, (
             "a live chat is paused without first freeing dead residue"
+        )
+
+
+class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
+    """Reclaiming only once a victim had been chosen made the erase almost useless.
+
+    Measured 2026-09-02: three reclaims freeing 1949, 3103 and 844 tokens while
+    llama-server still entered its shrinking-batch retry 21 times and threw the
+    speculative sub-batch error 4 times. By the time a victim is being chosen the cache
+    is already in trouble. An idle slot's cache belongs to a request that has finished,
+    so there is no reason to wait for trouble before freeing it.
+    """
+
+    def test_the_route_reclaims_on_sight(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        assert "reclaimed-idle-early" in source, (
+            "residue is only reclaimed once a live chat is already being paused"
+        )
+        # And the reclaim must sit in the residency refresh, not behind the victim check.
+        refresh = source.split("def _gguf_refresh_residency", 1)[1].split("def ", 1)[0]
+        assert "reclaim_idle_slots(" in refresh
+
+    def test_the_residency_figure_is_corrected_after_freeing(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        refresh = (
+            Path(inference.__file__).read_text()
+            .split("def _gguf_refresh_residency", 1)[1].split("def ", 1)[0]
+        )
+        assert "controller.note_resident(" in refresh
+        assert "- freed" in refresh, (
+            "the controller would keep planning against the pre-erase figure"
         )
