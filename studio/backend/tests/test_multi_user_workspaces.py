@@ -4758,9 +4758,7 @@ def test_the_idle_unload_loop_asks_the_owning_workspace(monkeypatch):
     from core.inference import llama_keepwarm
     from routes import inference as inference_routes
 
-    monkeypatch.setattr(
-        inference_routes, "_RESIDENT_TEXT_OWNER", ("m", "alice"), raising = False
-    )
+    monkeypatch.setattr(inference_routes, "_RESIDENT_TEXT_OWNER", ("m", "alice"), raising = False)
     monkeypatch.setattr(inference_routes, "_resident_text_model_identifiers", lambda: ["m"])
     assert inference_routes.resident_text_model_workspace() == "alice"
 

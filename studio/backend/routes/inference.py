@@ -7163,9 +7163,7 @@ def _reject_generation_from_a_foreign_private_model() -> None:
         return
     raise HTTPException(
         status_code = 409,
-        detail = (
-            "The loaded model belongs to another account. Load your own model and try again."
-        ),
+        detail = ("The loaded model belongs to another account. Load your own model and try again."),
     )
 
 
