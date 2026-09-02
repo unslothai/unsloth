@@ -91,7 +91,9 @@ def studio_root() -> Path:
             # and failing here would break a resolver called at import time.
             logger.warning(
                 "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
-                "install is not self-contained.", resolved, master,
+                "install is not self-contained.",
+                resolved,
+                master,
             )
         return resolved
     master = unsloth_home()
@@ -449,9 +451,7 @@ def _setup_cache_env() -> None:
         # has to be set before the Data Recipes worker imports the package.
         # Unset, the library builds its paths from Path.home() / ".data-designer".
         "DATA_DESIGNER_HOME": str(root.parent / "data-designer"),
-        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(
-            root.parent / "data-designer" / "managed-assets"
-        ),
+        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(root.parent / "data-designer" / "managed-assets"),
     }
     defaults.update(_portable_cache_defaults(root))
     for key, value in defaults.items():
