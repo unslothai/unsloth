@@ -1259,7 +1259,7 @@ def test_intent_inside_a_think_block_is_not_an_announcement():
 def test_info_string_may_be_a_long_title():
     """An info string carries attributes and paths (``python title="..."``), so its
     length is not what tells an opener from prose."""
-    info = 'python ' + 'title="a-very-long-descriptive-file-name-for-the-snippet.py" ' * 4
+    info = "python " + 'title="a-very-long-descriptive-file-name-for-the-snippet.py" ' * 4
     text = f"First, let me show it.\n```{info}\nx = 1\n```"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
