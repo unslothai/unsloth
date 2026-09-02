@@ -9,13 +9,12 @@ import {
 } from "@/features/settings";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-// The 02 arrows, not the 01 pair: 01 is a bare chevron, and these read as arrows everywhere else.
-import {
-  ArrowDown02Icon,
-  ArrowUp02Icon,
-  Cancel01Icon,
-} from "@hugeicons/core-free-icons";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+// lucide for the two arrows, which is where #10129 moved every directional arrow in the app: the
+// hugeicons shaft is a bezier that bows out rather than meeting at a point, and after that change
+// there is no other use of the pair left to match.
+import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-text-index.ts";
@@ -176,7 +175,8 @@ function FindBar() {
         className={cn(
           // Narrow by default so the whole bar clears a small window, wide once there is room.
           // `min-w-0` lets the field, rather than the bar, give way if it still does not fit.
-          "w-40 min-w-0 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground sm:w-64",
+          // `text-ui-15`, not a raw pixel size, which ignores the UI font size preference.
+          "w-40 min-w-0 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground sm:w-64",
           empty && "text-destructive",
         )}
       />
@@ -200,7 +200,7 @@ function FindBar() {
         aria-label={t("shell.find.previous")}
         title={t("shell.find.previous")}
       >
-        <HugeiconsIcon icon={ArrowUp02Icon} className="size-[18px]" />
+        <ArrowUpIcon strokeWidth={1.75} className="size-[18px]" />
       </Button>
       <Button
         variant="ghost"
@@ -212,7 +212,7 @@ function FindBar() {
         aria-label={t("shell.find.next")}
         title={t("shell.find.next")}
       >
-        <HugeiconsIcon icon={ArrowDown02Icon} className="size-[18px]" />
+        <ArrowDownIcon strokeWidth={1.75} className="size-[18px]" />
       </Button>
       <Button
         variant="ghost"

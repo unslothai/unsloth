@@ -199,8 +199,14 @@ export function foldText(raw: string): string {
   return plain.replace(FINAL_SIGMA_PATTERN, "\u03c3");
 }
 
-/** True when the walk must not descend into this element. */
-export function skipsSubtree(element: FindElementLike): boolean {
+/**
+ * The half of the skip rule that costs no layout: tag name and attributes.
+ *
+ * Asked first, and by the walk directly, so a subtree turned down on markup alone never resolves a
+ * style at all. That is most of what gets skipped: SCRIPT and STYLE, the bar itself, the off-route
+ * workspaces the shell parks under `inert`, and the whole page behind a modal.
+ */
+function skipsByMarkup(element: FindElementLike): boolean {
   // Uppercased first: only HTML elements report their tag that way. SVG and MathML keep their source
   // casing, so an inline `<svg>` answers "svg" and walked straight past this set, putting Mermaid
   // labels in the index as matches no engine can paint. Already uppercase for everything else.
@@ -210,7 +216,22 @@ export function skipsSubtree(element: FindElementLike): boolean {
   // under `inert`; Radix marks the page `aria-hidden` behind a modal.
   if (element.getAttribute("hidden") !== null) return true;
   if (element.getAttribute("inert") !== null) return true;
-  if (element.getAttribute("aria-hidden") === "true") return true;
+  return element.getAttribute("aria-hidden") === "true";
+}
+
+/**
+ * True when the walk must not descend into this element.
+ *
+ * `style` is the element's resolved style, passed in by the walk so the read is made once per
+ * element rather than once here and once again in `visit` -- which is what the measurement quoted
+ * on `computedStyle` was taken to mean, and was not what the code did. Optional because the
+ * exported signature is one the tests call directly; resolving it here is the same answer.
+ */
+export function skipsSubtree(
+  element: FindElementLike,
+  style: ResolvedStyle | null = computedStyle(element),
+): boolean {
+  if (skipsByMarkup(element)) return true;
   // Anything the engine is not painting. Attributes miss the common case: `hidden lg:flex` is a
   // CLASS, and text under it would be counted and walked to while nobody can see it.
   //
@@ -230,7 +251,6 @@ export function skipsSubtree(element: FindElementLike): boolean {
     visibilityProperty: true,
     checkVisibilityCSS: true,
   });
-  const style = computedStyle(element);
   if (painted === false) {
     // `display: contents` has no box, and no box is the first thing `checkVisibility` calls
     // invisible, so a wrapper whose children are all on screen answers false. The shell and the
@@ -349,8 +369,12 @@ export function buildTextIndex(
   let pendingSeparator = false;
 
   const visit = (element: FindElementLike, inherited: boolean): void => {
-    if (skipsSubtree(element)) return;
+    // Markup first, so a subtree turned down on a tag or an attribute costs no layout read at all.
+    // Then one resolved style, shared with the rest of the skip rule: both halves need it, and
+    // resolving it separately in each doubled the cost the comment on `computedStyle` quotes.
+    if (skipsByMarkup(element)) return;
     const style = computedStyle(element);
+    if (skipsSubtree(element, style)) return;
     // The tag set answers `<br>`, whose display is inline. Layout is the rest: two `span.block`
     // run together without a boundary, so "Open" above "AI" reads as one word.
     const block =
@@ -626,6 +650,39 @@ export function findMatches(
     Math.max(total - limit, 0),
   );
   return start === 0 ? head : collectMatches(index, needle, limit, start);
+}
+
+/**
+ * Throw away the one match asked for over the cap, from whichever end the reader is further from.
+ *
+ * The caller asks for `MAX_MATCHES + 1` so that a page holding exactly the cap does not have to
+ * read as a floor, then throws the extra one away. Taking it off the tail is right only while the
+ * window starts at the top of the document. Once the reader is far enough down the anchored window
+ * IS the tail, and its last entry is the document's final occurrence -- the one nearest them, and
+ * the one the walk was then unable to reach at all.
+ *
+ * Measured on 6000 matches with the reader at the bottom: the window covered the final occurrence
+ * at offset 11998, and trimming the tail left the walk ending at 11996.
+ *
+ * Lives here rather than beside its caller for the same reason `mutatesSearchableText` does: the
+ * hook imports React and cannot be loaded under `node --test`.
+ */
+export function dropProbeFurthestFrom(
+  matches: FindMatch[],
+  anchor: number | null,
+  limit = MAX_MATCHES,
+): void {
+  // No anchor means `findMatches` never resolved one, which only happens under the cap. A window
+  // that already starts at the document's first match has nothing above the reader to give up.
+  if (
+    anchor !== null &&
+    matches.length > 0 &&
+    anchor - matches[0].start > matches[matches.length - 1].start - anchor
+  ) {
+    matches.shift();
+    return;
+  }
+  matches.length = limit;
 }
 
 /** True when `[start, end)` reaches into a run whose whitespace is kept rather than collapsed. */

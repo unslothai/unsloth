@@ -32,6 +32,7 @@ import {
   MAX_NODE_CHARS,
   PORTAL_RESERVE_CHARS,
   buildTextIndex,
+  dropProbeFurthestFrom,
   endPositionAt,
   findMatches,
   foldText,
@@ -1095,6 +1096,97 @@ test("a document inside the ceiling is not marked truncated", () => {
   assert.equal(index.truncated, false);
 });
 
+// --- the probe over the cap --------------------------------------------------------------------
+
+/** One node holding `count` occurrences of "x", each at its own offset. */
+function documentOfMatches(count: number): FindElementLike {
+  return el("DIV", [text("x-".repeat(count))]);
+}
+
+/** What `search` does: ask for one over the cap, remember the anchor, then trim. */
+function walkAsTheHookDoes(
+  index: ReturnType<typeof buildTextIndex>,
+  at: number,
+) {
+  let anchoredAt: number | null = null;
+  const matches = findMatches(index, "x", MAX_MATCHES + 1, () => {
+    anchoredAt = at;
+    return at;
+  });
+  const capped = matches.length > MAX_MATCHES;
+  if (capped) dropProbeFurthestFrom(matches, anchoredAt);
+  return { matches, capped };
+}
+
+test("the last match in the document is reachable from the bottom of it", () => {
+  // The probe asked for over the cap used to come off the tail unconditionally. Once the reader is
+  // far enough down the window IS the tail, so that threw away the occurrence beside them.
+  const index = buildTextIndex(documentOfMatches(MAX_MATCHES + 1_000));
+  const all = findMatches(index, "x", Number.POSITIVE_INFINITY, 0);
+  const last = all[all.length - 1].start;
+
+  const { matches, capped } = walkAsTheHookDoes(index, index.text.length);
+  assert.equal(capped, true);
+  assert.equal(matches.length, MAX_MATCHES);
+  assert.ok(
+    matches.some((match) => match.start === last),
+    "the final occurrence must still be walkable",
+  );
+});
+
+test("the first match is still reachable from the top, which is the case that worked", () => {
+  const index = buildTextIndex(documentOfMatches(MAX_MATCHES + 1_000));
+  const { matches } = walkAsTheHookDoes(index, 0);
+  assert.equal(matches.length, MAX_MATCHES);
+  assert.equal(matches[0].start, 0);
+});
+
+test("the window holds the match nearest the reader, wherever they are", () => {
+  const index = buildTextIndex(documentOfMatches(MAX_MATCHES + 2_500));
+  const all = findMatches(index, "x", Number.POSITIVE_INFINITY, 0);
+  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+    const at = Math.floor(index.text.length * fraction);
+    const nearest =
+      all.find((match) => match.start >= at) ?? all[all.length - 1];
+    const { matches } = walkAsTheHookDoes(index, at);
+    assert.ok(
+      matches.some((match) => match.start === nearest.start),
+      `the match beside the reader is missing at ${fraction}`,
+    );
+  }
+});
+
+test("the trim takes the far end, and the tail when there is no anchor to judge by", () => {
+  const window = () => [
+    { start: 100, end: 101 },
+    { start: 200, end: 201 },
+    { start: 300, end: 301 },
+  ];
+  const above = window();
+  dropProbeFurthestFrom(above, 320, 2);
+  assert.deepEqual(
+    above.map((match) => match.start),
+    [200, 300],
+    "a reader past the window gives up the head",
+  );
+
+  const below = window();
+  dropProbeFurthestFrom(below, 90, 2);
+  assert.deepEqual(
+    below.map((match) => match.start),
+    [100, 200],
+    "a reader above the window gives up the tail",
+  );
+
+  const unanchored = window();
+  dropProbeFurthestFrom(unanchored, null, 2);
+  assert.deepEqual(
+    unanchored.map((match) => match.start),
+    [100, 200],
+    "no anchor resolved means the window started at the top",
+  );
+});
+
 // --- the paint window --------------------------------------------------------------------------
 
 test("every match is painted while there are few enough of them", () => {
@@ -1948,11 +2040,17 @@ test("the cap flag is what the bar renders, not the count", async () => {
     /findMatches\(\s*\n\s*index,\s*\n\s*queryRef\.current,\s*\n\s*MAX_MATCHES \+ 1,/,
   );
   assert.match(engine, /cappedRef\.current = matches\.length > MAX_MATCHES;/);
-  // Trimmed back to the cap, so nothing downstream sees the probe match.
+  // Trimmed back to the cap, so nothing downstream sees the probe match -- and trimmed from the
+  // end the reader is further from, since a window anchored near the bottom of a long thread ends
+  // at the document's last match rather than starting at its first.
   assert.match(
     engine,
-    /if \(cappedRef\.current\) matches\.length = MAX_MATCHES;/,
+    /if \(cappedRef\.current\) dropProbeFurthestFrom\(matches, anchoredAt\);/,
   );
+  // The anchor is captured as the thunk resolves it, so the trim costs no second layout read and
+  // still costs nothing under the cap, where the thunk is never called.
+  assert.match(engine, /let anchoredAt: number \| null = null;/);
+  assert.match(engine, /anchoredAt = viewportOffset\(index\);/);
   const bar = await readFile(
     new URL(
       "../src/features/find-in-page/components/find-in-page.tsx",

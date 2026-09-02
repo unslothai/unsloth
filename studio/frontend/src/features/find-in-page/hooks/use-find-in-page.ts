@@ -35,6 +35,7 @@ import {
   type FindTextIndex,
   MAX_MATCHES,
   buildTextIndex,
+  dropProbeFurthestFrom,
   findMatches,
 } from "../lib/find-text-index.ts";
 
@@ -188,14 +189,21 @@ export function useFindInPage(query: string): FindResults {
       // is a thunk because `viewportOffset` reads layout and an argument is evaluated whether or
       // not the callee wants it, so inline it ran on every keystroke however few matches there
       // were.
+      //
+      // Remembered as the thunk resolves it, so the trim below can ask where the reader was
+      // without a second layout read, and without one at all under the cap.
+      let anchoredAt: number | null = null;
       const matches = findMatches(
         index,
         queryRef.current,
         MAX_MATCHES + 1,
-        () => viewportOffset(index),
+        () => {
+          anchoredAt = viewportOffset(index);
+          return anchoredAt;
+        },
       );
       cappedRef.current = matches.length > MAX_MATCHES;
-      if (cappedRef.current) matches.length = MAX_MATCHES;
+      if (cappedRef.current) dropProbeFurthestFrom(matches, anchoredAt);
       // Read before `apply` writes it: this is where the last list left the reader.
       const wasAt = activeStartRef.current;
       matchesRef.current = matches;
