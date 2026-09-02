@@ -9,7 +9,8 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, Query
 
 from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg
 
 from ..schemas import (
     MAX_CHAT_TEMPLATE_BYTES,
@@ -34,7 +35,7 @@ async def validate_chat_template_route(
 async def get_default_chat_template_route(
     model_name: str,
     gguf_variant: Optional[str] = Query(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
     # Cached repos resolve from disk, but a cache miss falls through to the hub and

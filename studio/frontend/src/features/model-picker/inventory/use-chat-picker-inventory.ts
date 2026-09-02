@@ -25,8 +25,12 @@ const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "custom",
 ]);
 
-function isCompleteCachedRow(row: CachedInventoryRow): boolean {
-  return !row.partial && !row.liveDownload;
+/** A row the picker lists. Partial snapshots stay: like the Hub, the picker shows them so they can
+ *  be seen and deleted, and carries `partial` through so a click opens the download instead of
+ *  claiming the weights are there. A live download is still dropped -- bytes are moving and the
+ *  Downloads panel owns that row until they stop. */
+function isListableCachedRow(row: CachedInventoryRow): boolean {
+  return !row.liveDownload;
 }
 
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
@@ -38,6 +42,10 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     cache_path: row.cachePath ?? "",
     last_modified: epochMillisecondsToSeconds(row.lastModified),
     has_vision: row.capabilities.supportsVision,
+    // Listed but not loadable: the row renders a partial mark and its click opens the download.
+    partial: row.partial,
+    // What that mark is allowed to promise: a restart-only partial must not be called a resume.
+    partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
     has_variant_state: row.hasVariantState ?? false,
@@ -52,6 +60,10 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     cache_path: row.cachePath,
     size_bytes: row.bytes,
     last_modified: epochMillisecondsToSeconds(row.lastModified),
+    // Listed but not loadable: the row renders a partial mark and its click opens the download.
+    partial: row.partial,
+    // What that mark is allowed to promise: a restart-only partial must not be called a resume.
+    partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
     tags: row.tags,
@@ -103,7 +115,7 @@ export function useChatPickerInventory(
         .filter(
           (row) =>
             row.modelFormat === "gguf" &&
-            isCompleteCachedRow(row) &&
+            isListableCachedRow(row) &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,
@@ -119,7 +131,7 @@ export function useChatPickerInventory(
         .filter(
           (row) =>
             row.modelFormat !== "gguf" &&
-            isCompleteCachedRow(row) &&
+            isListableCachedRow(row) &&
             // An sd.cpp companion mirror holds a VAE / text encoders and no denoiser. It has no
             // task, and a task of null is what every unclassified CHAT repo carries, so without
             // this it lands in the chat On Device list as a load that cannot succeed.

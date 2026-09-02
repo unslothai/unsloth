@@ -71,6 +71,8 @@ _EXIT_FALLBACK = 2
 _EXIT_NO_SPACE = 4
 # A concrete backend selection could not be satisfied.
 _EXIT_BACKEND_UNAVAILABLE = 5
+# Prebuilt path failed; setup scripts source-build, but the in-app updater cannot.
+_EXIT_FALLBACK = 2
 
 
 class _LlamaPhaseError(RuntimeError):
@@ -832,10 +834,8 @@ def _run_llama_phase(
     backend = None
     model_was_active = False
     mtmd_guard = ExitStack()
-    # The installer now exits 0 for a transient failure it answered by keeping the
-    # existing tree, so success no longer implies the release changed. Read the same way
-    # as the post-install check so the two tags compare. Mainly a macOS case: the update
-    # path passes no pin there, so it does not disqualify itself from the keep branch.
+    # The installer exits 0 for a transient failure it answered by keeping the tree, so
+    # success no longer implies a new release. Read as the post-install check reads it.
     prior_marker = read_install_marker(_find_binary())
     prior_tag = (prior_marker or {}).get("release_tag") or (prior_marker or {}).get("tag")
     try:
@@ -977,10 +977,8 @@ def _run_llama_phase(
         elif backend_request is not None:
             message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
         elif kept_existing:
-            # The phase only runs when a newer release was offered, so this is a failed
-            # update the installer answered by keeping the tree, not a current install.
-            # Naming the old release either way sends the user looking for a fix that
-            # shipped in the new one.
+            # The phase only runs when a newer release was offered, so naming the kept
+            # release as current would send the user looking for a fix it does not have.
             message = (
                 f"llama.cpp could not be updated right now, so the existing {new_tag} "
                 "install was kept. Try again later."
@@ -1015,6 +1013,30 @@ def _run_llama_phase(
             raise _LlamaPhaseError(
                 f"Could not install the {backend_label} llama.cpp build on this machine. "
                 "The installed backend was kept.",
+                reload_required = model_was_active,
+            ) from exc
+        if exc.returncode == _EXIT_FALLBACK:
+            message = str(exc)
+            # Same predicate the formatter uses: exit 2 also carries failures
+            # like a rate-limited huggingface.co validation-model fetch, which
+            # GH_TOKEN cannot fix.
+            if _flow.is_github_rate_limit_text(message):
+                token_present = _flow.github_token_present(env)
+                logger.warning("llama update: GitHub rate limit", authenticated = token_present)
+                advice = (
+                    "Wait for the limit to reset and try again."
+                    if token_present
+                    else "Set GH_TOKEN or GITHUB_TOKEN in your environment and try again."
+                )
+                raise _LlamaPhaseError(
+                    "Could not update llama.cpp: GitHub is rate-limiting release downloads. "
+                    f"{advice}",
+                    reload_required = model_was_active,
+                ) from exc
+            logger.warning("llama update: prebuilt fallback", error = message)
+            detail = message.split(": ", 1)[-1] if ": " in message else message
+            raise _LlamaPhaseError(
+                f"Could not update llama.cpp from the prebuilt bundle. {detail}",
                 reload_required = model_was_active,
             ) from exc
         logger.warning("llama update: failed", error = str(exc))
