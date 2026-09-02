@@ -9,6 +9,8 @@
 // Pure, and written against structural types, so it runs under `node --test` with the hand-rolled
 // DOM in tests/find-in-page.test.ts. There is no DOM library in this project.
 
+import { FIND_SKIP_ATTRIBUTE } from "./find-attributes.ts";
+
 /** `Node.ELEMENT_NODE` / `Node.TEXT_NODE`, spelled out so this module needs no DOM globals. */
 export const ELEMENT_NODE = 1;
 export const TEXT_NODE = 3;
@@ -107,11 +109,11 @@ const BLOCK_TAGS: ReadonlySet<string> = new Set([
   "UL",
 ]);
 
-/** Marks a subtree the bar must not read: the bar itself, first of all. */
-export const FIND_SKIP_ATTRIBUTE = "data-find-skip";
-
-/** Marks the scope the bar searches, set on the shell's content region in `__root.tsx`. */
-export const FIND_SCOPE_ATTRIBUTE = "data-find-scope";
+// Re-exported so this module stays the one import for everything about the index.
+export {
+  FIND_SCOPE_ATTRIBUTE,
+  FIND_SKIP_ATTRIBUTE,
+} from "./find-attributes.ts";
 
 /** Spaces that render as a space but are not one. Each is one UTF-16 unit, which keeps the map valid. */
 const HARD_SPACE_PATTERN = /[\u00A0\u2002\u2003\u2007\u2009\u202F]/g;

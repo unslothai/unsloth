@@ -6,4 +6,4 @@ export { useFindInPageStore } from "./stores/find-in-page-store.ts";
 export {
   FIND_SCOPE_ATTRIBUTE,
   FIND_SKIP_ATTRIBUTE,
-} from "./lib/find-text-index.ts";
+} from "./lib/find-attributes.ts";
