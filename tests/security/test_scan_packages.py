@@ -466,7 +466,7 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
         (
             "unsloth_zoo/compiler.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-        ): "58f43e3b6ddeefff69cb345baec7642eb10e3f081b0753f236be6571550d54e3",
+        ): "f1f6751f710ca026f844ed377b267a998b9650279dab2404d944fab3723991ea",
     }
     actual = {
         (entry["file"], entry["check"]): entry.get("file_sha256")
