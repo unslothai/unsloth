@@ -53,6 +53,23 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
+# Modelfile metadata nearly every pulled model carries. llama.cpp uses the GGUF's own template
+# and defaults instead, so none of it reaches the load and none of it should hide the row.
+# `image.adapter` is deliberately absent: it changes the weights.
+_OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.ollama.image.template",
+        "application/vnd.ollama.image.params",
+        "application/vnd.ollama.image.system",
+        "application/vnd.ollama.image.messages",
+        "application/vnd.ollama.image.prompt",
+    }
+)
+
+_OLLAMA_ADMITTED_LAYER_MEDIA_TYPES = (
+    _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES | _OLLAMA_METADATA_LAYER_MEDIA_TYPES
+)
+
 _OLLAMA_MATERIALIZE_LOCKS: dict[str, threading.Lock] = {}
 _OLLAMA_MATERIALIZE_LOCKS_GUARD = threading.Lock()
 
@@ -79,7 +96,7 @@ def is_ollama_manifest_ref(ref: str) -> bool:
 
 
 def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ...]:
-    """Layer types whose behavior the direct llama.cpp load cannot preserve."""
+    """Layer types that would make the row describe something the load cannot deliver."""
     unsupported: set[str] = set()
     for layer in layers:
         if not isinstance(layer, dict):
@@ -88,7 +105,7 @@ def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ..
         media_type = layer.get("mediaType")
         if not isinstance(media_type, str) or not media_type:
             unsupported.add("<missing mediaType>")
-        elif media_type not in _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES:
+        elif media_type not in _OLLAMA_ADMITTED_LAYER_MEDIA_TYPES:
             unsupported.add(media_type)
     return tuple(sorted(unsupported))
 

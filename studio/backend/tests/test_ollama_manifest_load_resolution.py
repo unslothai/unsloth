@@ -540,13 +540,17 @@ def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(tmp_path, 
     assert active_intent.gguf_path == resolved
 
 
-_UNSUPPORTED_RUNTIME_LAYERS = (
+# Modelfile metadata nearly every pulled model carries.
+_METADATA_LAYERS = (
     "application/vnd.ollama.image.params",
     "application/vnd.ollama.image.template",
     "application/vnd.ollama.image.system",
     "application/vnd.ollama.image.messages",
-    "application/vnd.ollama.image.adapter",
     "application/vnd.ollama.image.prompt",
+)
+
+_UNSUPPORTED_RUNTIME_LAYERS = (
+    "application/vnd.ollama.image.adapter",
     "application/vnd.ollama.image.future-runtime",
 )
 
@@ -555,7 +559,9 @@ def _rich_manifest_ref(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
     from hub.services.models import ollama
 
     root = tmp_path / "ollama-rich"
-    tag_file = _write_ollama_store(root, extra_layers = _UNSUPPORTED_RUNTIME_LAYERS)
+    tag_file = _write_ollama_store(
+        root, extra_layers = _METADATA_LAYERS + _UNSUPPORTED_RUNTIME_LAYERS
+    )
     monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
     ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
     return root, ref
@@ -566,6 +572,34 @@ def test_rich_manifest_is_withheld_from_inventory(tmp_path, monkeypatch):
     root, _ = _rich_manifest_ref(tmp_path, monkeypatch)
 
     assert ollama.scan_ollama_dir(root) == []
+
+
+def test_a_normally_pulled_model_is_listed(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-pulled"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    rows = ollama.scan_ollama_dir(root)
+    assert len(rows) == 1
+    assert ollama.is_ollama_manifest_ref(rows[0].load_id)
+
+
+def test_a_normally_pulled_model_resolves_for_a_load(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+    from models.inference import LoadRequest
+    from routes.inference import _resolve_model_identifier_for_request
+
+    root = tmp_path / "ollama-pulled-load"
+    tag_file = _write_ollama_store(root, extra_layers = _METADATA_LAYERS)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    resolved, _link_name, _is_dir = _resolve_model_identifier_for_request(
+        LoadRequest(model_path = ref), operation = "load-model"
+    )
+    assert resolved.endswith(".gguf")
 
 
 def test_rich_manifest_ref_is_rejected_without_creating_links(tmp_path, monkeypatch):
