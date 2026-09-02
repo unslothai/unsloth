@@ -3,15 +3,12 @@
 
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
-  cachedRepoOverrideIdentity,
-  ggufQuantLabel,
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
   modelStorageKey,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
-  splitQuantSuffix,
 } from "./model-identity";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import {
@@ -1320,19 +1317,15 @@ export function deletePerModelConfig(
 }
 
 /**
- * The stored record an override key names, or null when this browser holds none.
- *
- * Read out of the map rather than parsed. The key joins the id and the variant with a colon,
- * and a variant can name a directory ("distilled/model-Q6_K") while the id is a path, so the
- * join cannot be split back apart: a colon is legal in a POSIX filename, and the backend's own
- * resolver refuses one for that reason. A record knows its own two halves, so the key is tested
- * against them instead, which is exact wherever a parse has to guess.
+ * Every stored record an override key names. Matched, not split: a colon is legal in
+ * a path, and two records can spell one key.
  */
-export function findModelOverrideKeyOwner(
+function findModelOverrideKeyOwners(
   overrideKey: string,
-): { modelId: string; ggufVariant: string | null } | null {
+): { modelId: string; ggufVariant: string | null }[] {
   const key = overrideKey.trim();
   const foldedKey = normalizeModelIdentity(key);
+  const owners: { modelId: string; ggufVariant: string | null }[] = [];
   for (const storageKey of Object.keys(readMap())) {
     const modelId = modelIdFromStorageKey(storageKey);
     if (!modelId) {
@@ -1344,7 +1337,7 @@ export function findModelOverrideKeyOwner(
     );
     if (!variant) {
       if (foldedKey === normalizeModelIdentity(modelId)) {
-        return { modelId, ggufVariant: null };
+        owners.push({ modelId, ggufVariant: null });
       }
       continue;
     }
@@ -1356,121 +1349,23 @@ export function findModelOverrideKeyOwner(
       normalizeModelIdentity(key.slice(0, cut)) ===
         normalizeModelIdentity(modelId)
     ) {
-      return { modelId, ggufVariant: variant };
+      owners.push({ modelId, ggufVariant: variant });
     }
   }
-  return null;
+  return owners;
 }
 
-/** Stored ids naming the same cached quant as *modelId* under its other spelling. */
-function cachedRepoAliasModelIds(
-  modelId: string,
-  ggufVariant?: string | null,
-): string[] {
-  const identity = cachedRepoOverrideIdentity(modelId, ggufVariant);
-  if (identity === null) {
-    return [];
-  }
-  const own = normalizeModelIdentity(modelId);
-  const aliases = new Map<string, string>();
-  for (const key of Object.keys(readMap())) {
-    const storedId = modelIdFromStorageKey(key);
-    // Its own id, so this only asks whether the key carries the quant being forgotten.
-    if (
-      !(storedId && configKeyMatchesModelVariant(key, storedId, ggufVariant))
-    ) {
-      continue;
-    }
-    const storedIdentity = normalizeModelIdentity(storedId);
-    if (
-      storedIdentity === own ||
-      aliases.has(storedIdentity) ||
-      cachedRepoOverrideIdentity(storedId, ggufVariant) !== identity
-    ) {
-      continue;
-    }
-    aliases.set(storedIdentity, storedId);
-  }
-  return [...aliases.values()];
-}
-
-/**
- * The filename label a standalone .gguf used to be keyed by, or null when there is none.
- *
- * Mirrors _legacy_standalone_gguf_key in studio/backend/routes/settings.py: a loose file has
- * no quant to choose between so it is keyed by the bare path now, but the picker once keyed
- * it by the label its filename derives, and an upgraded browser still holds that record.
- * Only for the bare spelling: a key that already names a quant said which entry it meant.
- */
-function legacyStandaloneGgufVariant(
-  modelId: string,
-  ggufVariant?: string | null,
-): string | null {
-  if (normalizeGgufVariantIdentity(ggufVariant)) {
-    return null;
-  }
-  const trimmed = modelId.trim();
-  if (!trimmed.toLowerCase().endsWith(".gguf") || splitQuantSuffix(trimmed)) {
-    return null;
-  }
-  const filename = trimmed.replace(/\\/g, "/").split("/").pop() ?? trimmed;
-  return ggufQuantLabel(filename) || null;
-}
-
-/**
- * Whether a quant of *modelId* other than the one being forgotten still has a record.
- *
- * Mirrors _other_quants_remain: such a quant has its own settings and never reads the bare
- * entry, so this asks whether this forget is the last one for the model, not whether anyone
- * is inheriting. If it is not the last, the bare record stays -- an inheriting quant is
- * exactly what it is there for.
- */
-function otherQuantsRemain(modelId: string, ggufVariant: string): boolean {
-  const own = normalizeModelIdentity(modelId);
-  for (const key of Object.keys(readMap())) {
-    const storedId = modelIdFromStorageKey(key);
-    const storedVariant = normalizeGgufVariantIdentity(
-      ggufVariantFromStorageKey(key),
-    );
-    if (
-      storedId &&
-      storedVariant &&
-      storedVariant !== ggufVariant &&
-      normalizeModelIdentity(storedId) === own
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Delete this model's config and every other spelling the server's forget clears.
- *
- * A remove on the route drops both spellings of a cached repo (cached_repo_alias_keys) and the
- * label a standalone .gguf was keyed by before (_legacy_standalone_gguf_key), while the panel
- * forgets under whichever one the server row happens to carry. Deleting only that one leaves
- * the record adoptLegacyConfigKey moved, or the one resolveChatModelSwitchTarget still promotes,
- * and the model's next save mirrors it straight back over the forget.
- */
-export function deletePerModelConfigAliases(
-  modelId: string,
-  ggufVariant?: string | null,
+/** Delete the records the server keys name; false when one was left behind. */
+export function deletePerModelConfigsForOverrideKeys(
+  overrideKeys: readonly string[],
 ): boolean {
-  let deleted = deletePerModelConfig(modelId, ggufVariant);
-  for (const aliasId of cachedRepoAliasModelIds(modelId, ggufVariant)) {
-    deleted = deletePerModelConfig(aliasId, ggufVariant) && deleted;
-  }
-  const legacyVariant = legacyStandaloneGgufVariant(modelId, ggufVariant);
-  if (legacyVariant) {
-    deleted = deletePerModelConfig(modelId, legacyVariant) && deleted;
-  }
-  // The bare record backs every quant with no record of its own, and a load falls back to
-  // it, so clearing only the qualified key hands the same settings straight back. Only once
-  // this is the model's last quant, though: forgetting Q4 must not strip Q8.
-  const variant = normalizeGgufVariantIdentity(ggufVariant);
-  if (variant && !otherQuantsRemain(modelId, variant)) {
-    deleted = deletePerModelConfig(modelId, null) && deleted;
+  let deleted = true;
+  for (const overrideKey of overrideKeys) {
+    for (const owner of findModelOverrideKeyOwners(overrideKey)) {
+      if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
+        deleted = false;
+      }
+    }
   }
   return deleted;
 }

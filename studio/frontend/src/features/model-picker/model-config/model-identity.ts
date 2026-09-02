@@ -3,7 +3,6 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
-  hfCacheRepoId,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "@/features/hub/lib/model-identity";
@@ -11,7 +10,6 @@ import { looksLikeLocalPath } from "@/lib/local-path";
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 export {
-  hfCacheRepoId,
   isNativeFileLabel,
   isOllamaLinkPath,
   isStandaloneGgufPath,
@@ -178,27 +176,4 @@ export function splitModelOverrideKey(value: string): [string, string | null] {
     return [value, null];
   }
   return [value.slice(0, separator), value.slice(separator + 1)];
-}
-
-/**
-* The repo a cached quant's key names, whichever of its two spellings the key uses, or null
-* when the key has no second spelling. Mirrors _cached_repo_override_identity in
-* studio/backend/utils/openai_auto_switch_settings.py: a repo cached outside the active HF
-* cache is keyed by its repo id and by the `models--org--name/snapshots/<rev>` path an older
-* release wrote, and a forget has to clear both or the survivor is saved back over it.
-*
-* Null without a quant -- a bare entry backs every quant of the repo, so it is nobody's
-* duplicate -- and for any other local path, which is keyed by its path and by nothing else. */
-export function cachedRepoOverrideIdentity(
-  modelId: string,
-  ggufVariant?: string | null,
-): string | null {
-  if (!normalizeGgufVariantIdentity(ggufVariant)) {
-    return null;
-  }
-  const repoId = hfCacheRepoId(modelId);
-  if (repoId !== null) {
-    return normalizeModelIdentity(repoId);
-  }
-  return looksLikeLocalPath(modelId) ? null : normalizeModelIdentity(modelId);
 }

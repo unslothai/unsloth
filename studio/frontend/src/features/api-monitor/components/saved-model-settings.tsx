@@ -12,10 +12,7 @@ import {
   fetchModelOverrides,
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
-import {
-  deletePerModelConfigAliases,
-  findModelOverrideKeyOwner,
-} from "@/features/model-picker/model-config/per-model-config";
+import { deletePerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/per-model-config";
 import { Trash2 } from "lucide-react";
 import {
   type ReactElement,
@@ -143,14 +140,10 @@ export function SavedModelSettingsPanel(): ReactElement {
       setForgetting((prev) => new Set(prev).add(overrideKey));
       try {
         await forgetModelOverride(overrideKey, {
+          listedKeys: Object.keys(overrides ?? {}),
           removeRemote: (modelId, ggufVariant) =>
             putModelOverride(modelId, ggufVariant, null),
-          removeLocal: (modelId, ggufVariant) =>
-            deletePerModelConfigAliases(modelId, ggufVariant),
-          resolveLocal: (key) => {
-            const owner = findModelOverrideKeyOwner(key);
-            return owner ? [owner.modelId, owner.ggufVariant] : null;
-          },
+          removeLocal: deletePerModelConfigsForOverrideKeys,
           reload: load,
           onError: (message) => {
             toast.error(message);
@@ -164,7 +157,7 @@ export function SavedModelSettingsPanel(): ReactElement {
         });
       }
     },
-    [load],
+    [load, overrides],
   );
 
   const entries = Object.entries(overrides ?? {});

@@ -3135,6 +3135,7 @@ export function ModelConfigPage({
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
     // auto-switch reach, not GGUF-ness: the resolver skips Ollama, and a native-path lease is the same.
+    // A forget also drops the local records for every other spelling the server reports clearing.
     if (
       !saveFailed &&
       (target.apiLoadable ?? target.isGguf) &&

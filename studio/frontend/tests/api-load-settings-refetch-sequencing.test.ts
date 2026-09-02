@@ -43,6 +43,16 @@ test("a superseded refetch paints no rows", () => {
   assert.match(LOAD, /const next = await fetchModelOverrides\(\);/);
 });
 
+// The old-backend fallback diffs these keys against the returned map; [] would disable it.
+test("a forget hands the panel's listed keys to the fallback", () => {
+  const forget = SOURCE.slice(
+    SOURCE.indexOf("const forget = useCallback("),
+    SOURCE.indexOf("const entries = "),
+  );
+  assert.match(forget, /listedKeys: Object\.keys\(overrides \?\? \{\}\),/);
+  assert.match(forget, /\[load, overrides\],\s*\);\s*$/);
+});
+
 test("a superseded refetch does not report its failure either", () => {
   const catchBlock = LOAD.slice(LOAD.indexOf("} catch (err: unknown) {"));
   assert.match(catchBlock, /if \(seq !== loadSeq\.current\) \{\s*return;\s*\}/);
