@@ -1278,7 +1278,8 @@ class VideoBackend:
         # the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
 
-        _assert_local_base_is_pipeline(base_repo)
+        overridden_components = (fam.denoiser_attr,) if kind in ("gguf", "single_file") else ()
+        _assert_local_base_is_pipeline(base_repo, excluded_components = overridden_components)
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
         if kind in ("gguf", "single_file") and fam.is_moe:
@@ -6360,6 +6361,7 @@ class VideoBackend:
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
             state.gguf_filename,
+            state.display_repo_id,
             state.repo_id,
             state.base_repo,
             fallback = (fam.default_steps, fam.default_guidance),

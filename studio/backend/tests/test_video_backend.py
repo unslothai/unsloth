@@ -814,18 +814,18 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A local base_repo that IS a real pipeline dir passes the gate.
+    # A transformer-only checkpoint supplies the denoiser, so the companion base may omit it.
     (bad_base / "model_index.json").write_text(
         json.dumps(
             {
                 "_class_name": "LTX2Pipeline",
                 "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
             }
         )
     )
-    (bad_base / "transformer").mkdir()
-    (bad_base / "transformer" / "config.json").write_text("{}")
-    (bad_base / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    (bad_base / "scheduler").mkdir()
+    (bad_base / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/LTX-2.3-GGUF",
         gguf_filename = "x.gguf",
@@ -833,6 +833,9 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
         base_repo = str(bad_base),
     )
     assert fam.name == "ltx-2"
+
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(bad_base), model_kind = "pipeline", family_override = "ltx-2")
 
 
 def test_validate_rejects_gguf_repo_as_pipeline():
@@ -1558,13 +1561,15 @@ def test_pipeline_load_uses_logical_identity_for_a_commit_named_snapshot(fake_ru
     backend = VideoBackend()
     status = backend.load_pipeline(
         str(snapshot),
-        display_repo_id = "Lightricks/LTX-2",
+        display_repo_id = "Lightricks/LTX-2-Distilled",
         model_kind = "pipeline",
     )
 
     assert status["family"] == "ltx-2"
     assert status["repo_id"] == str(snapshot)
-    assert status["display_repo_id"] == "Lightricks/LTX-2"
+    assert status["display_repo_id"] == "Lightricks/LTX-2-Distilled"
+    assert status["defaults"]["steps"] == 8
+    assert status["defaults"]["guidance"] == 1.0
 
 
 def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):

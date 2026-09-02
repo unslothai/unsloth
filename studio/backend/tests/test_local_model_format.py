@@ -545,6 +545,47 @@ def test_local_pipeline_completeness_accepts_a_standard_weight_variant(tmp_path)
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
 
 
+def test_local_pipeline_completeness_can_exclude_an_injected_denoiser(tmp_path):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "companion-only"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "DiffusionPipeline",
+                "transformer": ["diffusers", "Transformer2DModel"],
+                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+            }
+        )
+    )
+    (pipeline / "scheduler").mkdir()
+    (pipeline / "scheduler" / "scheduler_config.json").write_text("{}")
+
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+    assert (
+        local_pipeline_components_are_complete(
+            pipeline, "model_index.json", excluded_components = ("transformer",)
+        )
+        is True
+    )
+    # Exclusion cannot turn an otherwise empty manifest into a valid companion base.
+    (pipeline / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "DiffusionPipeline",
+                "transformer": ["diffusers", "Transformer2DModel"],
+            }
+        )
+    )
+    assert (
+        local_pipeline_components_are_complete(
+            pipeline, "model_index.json", excluded_components = ("transformer",)
+        )
+        is False
+    )
+
+
 def test_hub_inventory_distinguishes_modular_pipeline_roots(tmp_path):
     from hub.services.models.common import (
         _classify_local_path,

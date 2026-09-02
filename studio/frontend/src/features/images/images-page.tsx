@@ -1463,7 +1463,7 @@ export function ImagesPage({
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, effectiveFamilyOverride = familyOverride) => {
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimImageRecipe();
@@ -1474,7 +1474,7 @@ export function ImagesPage({
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, familyOverride));
+      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -2836,6 +2836,7 @@ export function ImagesPage({
       quantHint: string | null,
       source: ModelSelectorChangeMeta["source"] = "hub",
       localPath?: string | null,
+      effectiveFamilyOverride = familyOverride,
     ): Promise<boolean> => {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
@@ -2856,7 +2857,7 @@ export function ImagesPage({
         onResolved: (filename) => {
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
-          applyImageModelDefaults(repoId);
+          applyImageModelDefaults(repoId, effectiveFamilyOverride);
         },
         onNotStarted: () => {
           if (quantRevert.current === revert) {
@@ -2912,7 +2913,7 @@ export function ImagesPage({
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedLabel, "hub"),
+        loadGgufRepoPick(wanted, routedLabel, "hub", null, "auto"),
       );
       return;
     }
@@ -2924,7 +2925,9 @@ export function ImagesPage({
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
+      void Promise.resolve().then(() =>
+        loadGgufRepoPick(pick.repoId, null, "hub", null, "auto"),
+      );
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
@@ -2932,7 +2935,7 @@ export function ImagesPage({
     const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
     quantRevert.current = revert;
     setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
-    applyImageModelDefaults(wanted);
+    applyImageModelDefaults(wanted, "auto");
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
       if (!started && pickGuard.holds(token) && quantRevert.current === revert) {
         revertPick(revert);
@@ -2998,6 +3001,7 @@ export function ImagesPage({
       const token = pickGuard.claim();
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
       const familyOverrideRequired = meta.familyOverrideRequired === true;
+      const nextFamilyOverride = familyOverrideRequired ? familyOverride : "auto";
       if (!familyOverrideRequired) setFamilyOverride("auto");
       const displayRepoId =
         pipelineTarget.repoId !== pipelineTarget.displayRepoId
@@ -3015,7 +3019,7 @@ export function ImagesPage({
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
-        applyImageModelDefaults(id);
+        applyImageModelDefaults(id, nextFamilyOverride);
         void loadOrStage(
           pipelineTarget.repoId,
           { kind: spec.kind, filename: spec.filename, displayRepoId },
@@ -3035,7 +3039,7 @@ export function ImagesPage({
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
-        applyImageModelDefaults(id);
+        applyImageModelDefaults(id, nextFamilyOverride);
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -3064,6 +3068,7 @@ export function ImagesPage({
             meta.ggufVariant ?? null,
             meta.source,
             meta.source === "local" ? id : null,
+            nextFamilyOverride,
           );
           return;
         }
@@ -3072,7 +3077,7 @@ export function ImagesPage({
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyImageModelDefaults(id);
+        applyImageModelDefaults(id, nextFamilyOverride);
         void handleLoad(
           dir,
           { kind: "gguf", filename },
@@ -3095,7 +3100,7 @@ export function ImagesPage({
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyImageModelDefaults(id);
+        applyImageModelDefaults(id, nextFamilyOverride);
         void handleLoad(
           dir,
           { kind: "single_file", filename },
@@ -3117,6 +3122,7 @@ export function ImagesPage({
           spec?.filename ?? meta.ggufVariant ?? null,
           meta.source,
           meta.source === "local" ? id : null,
+          nextFamilyOverride,
         );
         return;
       }
@@ -3133,7 +3139,7 @@ export function ImagesPage({
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyImageModelDefaults(id);
+      applyImageModelDefaults(id, nextFamilyOverride);
       void loadOrStage(
         pipelineTarget.repoId,
         { kind: "pipeline", displayRepoId },
@@ -3153,6 +3159,7 @@ export function ImagesPage({
       beginPick,
       busy,
       currentLoadAdvanced,
+      familyOverride,
       handleLoad,
       loadGgufRepoPick,
       loadOrStage,

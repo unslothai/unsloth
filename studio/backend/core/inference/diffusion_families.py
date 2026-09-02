@@ -1310,13 +1310,20 @@ def _local_model_component_is_complete(component: Path) -> bool:
     )
 
 
-def local_pipeline_components_are_complete(root: Path | str, filename: str) -> bool:
+def local_pipeline_components_are_complete(
+    root: Path | str,
+    filename: str,
+    *,
+    excluded_components: Sequence[str] = (),
+) -> bool:
     """Whether every component declared by a local pipeline can be opened from that root.
 
     A valid manifest alone is not a loadable pipeline: interrupted copies commonly leave the
     index but omit one component directory, model config, weight, or shard. Inventory and both
     media preflights use this same conservative, import-free check so no row can be advertised and
-    then evict the resident model before failing in ``from_pretrained``.
+    then evict the resident model before failing in ``from_pretrained``. A companion base may
+    exclude the denoiser component supplied by a separately selected GGUF/safetensors checkpoint;
+    every remaining declared component is still checked, and at least one must remain.
 
     Saved modular pipelines also declare their components alongside ``_blocks_class_name``. A
     block-only file is not enough evidence that the local snapshot is hydrated, so it is rejected
@@ -1341,7 +1348,8 @@ def local_pipeline_components_are_complete(root: Path | str, filename: str) -> b
         # never a path. Refusing separators also prevents a hand-authored manifest escaping root.
         if name in {"", ".", ".."} or Path(name).name != name or "/" in name or "\\" in name:
             return False
-        declared.append((name, str(spec[0]), str(spec[1])))
+        if name not in excluded_components:
+            declared.append((name, str(spec[0]), str(spec[1])))
 
     if not declared:
         return False

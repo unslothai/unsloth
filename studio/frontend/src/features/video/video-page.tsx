@@ -1375,7 +1375,7 @@ function VideoGenerator({
   const claimVideoRecipe = videoPresets.claimRecipe;
   const videoFormClaimId = videoPresets.formClaimId;
   const applyVideoModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, effectiveFamilyOverride = familyOverride) => {
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimVideoRecipe();
@@ -1386,7 +1386,7 @@ function VideoGenerator({
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, familyOverride));
+      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -2697,6 +2697,7 @@ function VideoGenerator({
       quantHint: string | null,
       source: ModelSelectorChangeMeta["source"] = "hub",
       localPath?: string | null,
+      effectiveFamilyOverride = familyOverride,
     ): Promise<boolean> => {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
@@ -2718,7 +2719,7 @@ function VideoGenerator({
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           // Filename-qualified like the expander branch: the LTX variant lives in the checkpoint name, not the repo id.
-          applyVideoModelDefaults(`${repoId}/${filename}`);
+          applyVideoModelDefaults(`${repoId}/${filename}`, effectiveFamilyOverride);
         },
         onNotStarted: () => {
           if (quantRevert.current === revert) {
@@ -2794,7 +2795,7 @@ function VideoGenerator({
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedLabel, "hub"),
+        loadGgufRepoPick(wanted, routedLabel, "hub", null, "auto"),
       );
       return;
     }
@@ -2806,7 +2807,9 @@ function VideoGenerator({
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
+      void Promise.resolve().then(() =>
+        loadGgufRepoPick(pick.repoId, null, "hub", null, "auto"),
+      );
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
@@ -2816,6 +2819,7 @@ function VideoGenerator({
     setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
     applyVideoModelDefaults(
       pick.opts.filename ? `${pick.repoId}/${pick.opts.filename}` : pick.repoId,
+      "auto",
     );
     // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
     if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
@@ -2919,6 +2923,7 @@ function VideoGenerator({
       const token = pickGuard.claim();
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
       const familyOverrideRequired = meta.familyOverrideRequired === true;
+      const nextFamilyOverride = familyOverrideRequired ? familyOverride : "auto";
       if (!familyOverrideRequired) setFamilyOverride("auto");
       const displayRepoId =
         pipelineTarget.repoId !== pipelineTarget.displayRepoId
@@ -2938,7 +2943,10 @@ function VideoGenerator({
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
         // Without it these distilled entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the 8-step schedule.
-        applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id);
+        applyVideoModelDefaults(
+          spec.filename ? `${id}/${spec.filename}` : id,
+          nextFamilyOverride,
+        );
         if (
           isH3PipelinePick(
             id,
@@ -2974,7 +2982,7 @@ function VideoGenerator({
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
-        applyVideoModelDefaults(`${id}/${meta.ggufFilename}`);
+        applyVideoModelDefaults(`${id}/${meta.ggufFilename}`, nextFamilyOverride);
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -3003,13 +3011,14 @@ function VideoGenerator({
             meta.ggufVariant ?? null,
             meta.source,
             meta.source === "local" ? id : null,
+            nextFamilyOverride,
           );
           return;
         }
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyVideoModelDefaults(id);
+        applyVideoModelDefaults(id, nextFamilyOverride);
         void handleLoad(
           dir,
           { kind: "gguf", filename },
@@ -3031,7 +3040,7 @@ function VideoGenerator({
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyVideoModelDefaults(id);
+        applyVideoModelDefaults(id, nextFamilyOverride);
         void handleLoad(
           dir,
           { kind: "single_file", filename },
@@ -3053,6 +3062,7 @@ function VideoGenerator({
           spec?.filename ?? meta.ggufVariant ?? null,
           meta.source,
           meta.source === "local" ? id : null,
+          nextFamilyOverride,
         );
         return;
       }
@@ -3070,7 +3080,7 @@ function VideoGenerator({
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyVideoModelDefaults(id);
+      applyVideoModelDefaults(id, nextFamilyOverride);
       // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
       // it needs the same partition question: without it the load silently takes fl2va.
       if (

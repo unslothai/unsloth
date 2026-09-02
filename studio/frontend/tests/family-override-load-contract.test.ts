@@ -33,8 +33,15 @@ for (const [name, page] of [
 test("image defaults use explicit and resolved family keys for opaque paths", () => {
   const text = source("../src/features/images/images-page.tsx");
   assert.ok(
-    text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"),
+    text.includes("defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride))"),
   );
+  assert.ok(
+    text.includes(
+      'const nextFamilyOverride = familyOverrideRequired ? familyOverride : "auto"',
+    ),
+  );
+  assert.ok(text.includes("applyImageModelDefaults(id, nextFamilyOverride)"));
+  assert.ok(text.includes('applyImageModelDefaults(wanted, "auto")'));
   assert.ok(text.includes("const seedKey = `${repoId}\\0${residentDefaults}`"));
   assert.ok(text.includes("defaultsFor(residentDefaults)"));
 });
@@ -42,8 +49,15 @@ test("image defaults use explicit and resolved family keys for opaque paths", ()
 test("video defaults use the explicit family for opaque paths", () => {
   const text = source("../src/features/video/video-page.tsx");
   assert.ok(
-    text.includes("defaultsFor(defaultsKeyFor(repoId, familyOverride))"),
+    text.includes("defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride))"),
   );
+  assert.ok(
+    text.includes(
+      'const nextFamilyOverride = familyOverrideRequired ? familyOverride : "auto"',
+    ),
+  );
+  assert.ok(text.includes("applyVideoModelDefaults(id, nextFamilyOverride)"));
+  assert.ok(text.includes('loadGgufRepoPick(wanted, routedLabel, "hub", null, "auto")'));
   assert.ok(
     text.includes("MODEL_DEFAULTS.some((entry) => id.includes(entry.match))"),
   );

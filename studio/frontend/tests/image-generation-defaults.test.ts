@@ -100,7 +100,7 @@ test("routed image picks apply and transactionally roll back model defaults", ()
   const routeBlock = source.slice(routeStart, routeEnd);
   assert.match(routeBlock, /imagePresets\.hydrated/);
   assert.match(routeBlock, /quantRevert\.current = revert/);
-  assert.match(routeBlock, /applyImageModelDefaults\(wanted\)/);
+  assert.match(routeBlock, /applyImageModelDefaults\(wanted, "auto"\)/);
   assert.match(routeBlock, /!started[\s\S]*revertPick\(revert\)/);
 });
 

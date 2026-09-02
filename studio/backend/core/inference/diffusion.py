@@ -619,7 +619,12 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
-def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = False) -> None:
+def _assert_local_base_is_pipeline(
+    base_repo: str,
+    *,
+    allow_modular: bool = False,
+    excluded_components: Sequence[str] = (),
+) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
     ANY existing local path, so without this a local base that is not a pipeline dir would pass the
@@ -635,7 +640,11 @@ def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = Fals
     pipeline (MiniMax-H3 ships no ``model_index.json`` at all), and the local-model scanners
     already count either index. Off by default -- a conventional ``DiffusionPipeline`` load still
     needs the conventional index, and accepting a modular directory there would only move the
-    failure back into the loader."""
+    failure back into the loader.
+
+    ``excluded_components`` are constructor components supplied by the caller rather than loaded
+    from the base. This keeps transformer-only checkpoint companions space-efficient without
+    weakening the completeness rule for a selected full pipeline."""
     base = (base_repo or "").strip()
     if not base:
         return
@@ -650,7 +659,8 @@ def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = Fals
     if allow_modular:
         indexes.append("modular_model_index.json")
     if not root.is_dir() or not any(
-        local_pipeline_components_are_complete(root, name) for name in indexes
+        local_pipeline_components_are_complete(root, name, excluded_components = excluded_components)
+        for name in indexes
     ):
         raise ValueError(
             f"Local base_repo is not a diffusers pipeline directory "
@@ -1890,7 +1900,12 @@ class DiffusionBackend:
                 f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
-        _assert_local_base_is_pipeline(base_repo)
+        overridden_components = (
+            (fam.denoiser_attr,)
+            if kind == "gguf" or (kind == "single_file" and not fam.single_file_is_pipeline)
+            else ()
+        )
+        _assert_local_base_is_pipeline(base_repo, excluded_components = overridden_components)
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
         path_shaped = (

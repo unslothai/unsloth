@@ -2163,18 +2163,19 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = str(tmp_path),
         )
-    # A local base_repo that IS a real pipeline dir passes the gate.
+    # A transformer-only checkpoint supplies the denoiser, so its local companion may omit those
+    # weights while every component it still supplies must be complete.
     (tmp_path / "model_index.json").write_text(
         json.dumps(
             {
                 "_class_name": "QwenImagePipeline",
                 "transformer": ["diffusers", "QwenImageTransformer2DModel"],
+                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
             }
         )
     )
-    (tmp_path / "transformer").mkdir()
-    (tmp_path / "transformer" / "config.json").write_text("{}")
-    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    (tmp_path / "scheduler").mkdir()
+    (tmp_path / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/Qwen-Image-2512-GGUF",
         gguf_filename = "x.gguf",
@@ -2182,6 +2183,10 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         base_repo = str(tmp_path),
     )
     assert fam is not None
+
+    # The same directory is not complete when selected as the full pipeline.
+    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
+        backend.validate_load_request(str(tmp_path), family_override = "qwen-image")
 
 
 def test_validate_rejects_a_malformed_local_pipeline_manifest(fake_runtime, tmp_path):
