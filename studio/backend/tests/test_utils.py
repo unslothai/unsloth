@@ -614,3 +614,45 @@ class TestFormatErrorMessage:
         err = Exception("Something completely unexpected")
         msg = format_error_message(err, "any/model")
         assert msg == "Something completely unexpected"
+
+
+class TestIsTlsVerificationError:
+    def _make(self):
+        from utils.utils import is_tls_verification_error
+        return is_tls_verification_error
+
+    def test_direct_ssl_error(self):
+        import ssl
+        assert self._make()(ssl.SSLCertVerificationError(1, "certificate verify failed")) is True
+
+    def test_wrapped_two_cause_hops(self):
+        import ssl
+
+        inner = ssl.SSLCertVerificationError(1, "certificate verify failed")
+        mid = ConnectionError("transport")
+        mid.__cause__ = inner
+        outer = RuntimeError("Connection failed")
+        outer.__cause__ = mid
+        assert self._make()(outer) is True
+
+    def test_context_chain(self):
+        import ssl
+
+        inner = ssl.SSLCertVerificationError(1, "certificate verify failed")
+        outer = RuntimeError("Connection failed")
+        outer.__context__ = inner
+        assert self._make()(outer) is True
+
+    def test_cycle_is_safe(self):
+        a = RuntimeError("a")
+        b = RuntimeError("b")
+        a.__cause__ = b
+        b.__cause__ = a
+        assert self._make()(a) is False
+
+    def test_string_fallback(self):
+        err = RuntimeError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        assert self._make()(err) is True
+
+    def test_non_tls_error(self):
+        assert self._make()(RuntimeError("connection refused")) is False

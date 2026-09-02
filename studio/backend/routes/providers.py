@@ -56,7 +56,7 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import credential_secrets, providers_db
-from utils.utils import safe_curated_detail, log_and_http_error
+from utils.utils import is_tls_verification_error, safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
@@ -758,6 +758,16 @@ async def test_provider(
             error = str(exc),
             exc_info = True,
         )
+        if is_tls_verification_error(exc):
+            return ProviderTestResult(
+                success = False,
+                message = (
+                    "Connection failed: the endpoint's certificate could not be verified. "
+                    "If it uses a private or self-signed CA, install that CA in the OS "
+                    "trust store and restart Unsloth."
+                ),
+                models_count = None,
+            )
         return ProviderTestResult(
             success = False,
             message = f"Connection failed: {safe_curated_detail(exc)}",

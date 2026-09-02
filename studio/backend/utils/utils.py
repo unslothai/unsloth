@@ -850,6 +850,25 @@ def safe_curated_detail(error: Exception, fallback: str = "An internal error occ
     return msg or fallback
 
 
+def is_tls_verification_error(error: BaseException) -> bool:
+    """True when ``error``, or anything it wraps, is a failed certificate verification.
+
+    httpx re-raises httpcore's error, which re-raises ssl's, so the type we want
+    is a few ``__cause__`` hops down. Type first, text second: the string is the
+    only signal left if a transport stops chaining.
+    """
+    import ssl
+
+    seen: set = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return "CERTIFICATE_VERIFY_FAILED" in str(error)
+
+
 def log_and_http_error(
     error: Exception,
     status_code: int,

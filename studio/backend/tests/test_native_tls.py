@@ -46,7 +46,7 @@ def _fake_truststore(monkeypatch):
 
 @pytest.mark.parametrize(
     ("platform", "expected"),
-    [("darwin", True), ("win32", True), ("linux", False)],
+    [("darwin", True), ("win32", True), ("linux", True), ("freebsd14", False)],
 )
 def test_platform_defaults(monkeypatch, platform, expected):
     monkeypatch.setattr(sys, "platform", platform)
@@ -62,7 +62,7 @@ def test_env_opt_out_wins_on_default_on_platform(monkeypatch, value):
 
 @pytest.mark.parametrize("value", ["1", "true", "YES"])
 def test_env_opt_in_wins_on_default_off_platform(monkeypatch, value):
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "freebsd14")
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", value)
     assert native_tls.native_tls_enabled() is True
 
@@ -115,7 +115,7 @@ def test_activate_mirrors_legacy_uv_override(monkeypatch):
 def test_disabled_does_not_touch_uv_env(monkeypatch):
     import os
 
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "freebsd14")
     _fake_truststore(monkeypatch)
 
     assert native_tls.activate_native_tls() is False
@@ -124,7 +124,7 @@ def test_disabled_does_not_touch_uv_env(monkeypatch):
 
 
 def test_activate_noop_when_disabled(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "freebsd14")
     calls = _fake_truststore(monkeypatch)
 
     assert native_tls.activate_native_tls() is False
@@ -154,3 +154,62 @@ def test_activate_fails_open_when_injection_raises(monkeypatch):
     monkeypatch.setitem(sys.modules, "truststore", fake)
 
     assert native_tls.activate_native_tls() is False
+
+
+def test_linux_activation_does_not_export_uv_env(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert "UV_SYSTEM_CERTS" not in os.environ
+    assert "UV_NATIVE_TLS" not in os.environ
+
+
+def test_linux_explicit_opt_in_keeps_uv_export(monkeypatch):
+    """The platform gate is for the default; an opt-in still carries uv with it.
+
+    Linux exported these whenever the opt-in was set, back when the opt-in was the only
+    way to get native TLS there. Dropping that with the default-on change would revert
+    uv to its bundled roots on exactly the corporate-gateway hosts that set it.
+    """
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "1")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "1"
+    assert os.environ["UV_NATIVE_TLS"] == "1"
+
+
+def test_opt_in_platform_keeps_uv_export(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "freebsd14")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "yes")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "1"
+    assert os.environ["UV_NATIVE_TLS"] == "1"
+
+
+def test_env_opt_out_wins_on_linux(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "0")
+    assert native_tls.native_tls_enabled() is False
+
+
+def test_python_39_fails_open_but_keeps_uv_export(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "version_info", (3, 9, 18))
+    calls = _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is False
+    assert calls == []
+    assert os.environ["UV_SYSTEM_CERTS"] == "1"
