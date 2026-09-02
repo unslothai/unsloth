@@ -284,6 +284,24 @@ def test_the_final_answer_is_continued_too(monkeypatch):
     assert "</html>" in "".join(_texts(events, "content"))
 
 
+def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
+    """llama-server rejects a request carrying both flags."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+
+    _run_no_tools(backend)
+
+    assert len(payloads) == 2, "the final answer was left mid-sentence"
+    for payload in payloads:
+        if payload.get("continue_final_message"):
+            assert payload.get("add_generation_prompt") is False
+
+
 def test_the_final_continuation_is_capped(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
@@ -697,6 +715,7 @@ def test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer(monk
     # apart from the answer continuation: that one replays the partial and extends it.
     assert payloads[2]["messages"][-1]["role"] == "user"
     assert "continue_final_message" not in payloads[2]
+    assert "add_generation_prompt" not in payloads[2]
 
 
 def test_an_answer_already_on_screen_is_not_replaced_by_the_explanation(monkeypatch):

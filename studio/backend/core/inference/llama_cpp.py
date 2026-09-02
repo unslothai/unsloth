@@ -32014,6 +32014,7 @@ class LlamaCppBackend:
                             stream_payload["messages"] = _candidate_messages
                             _final_replayed_chars = len(_last_emitted)
                             stream_payload["continue_final_message"] = True
+                            stream_payload["add_generation_prompt"] = False
                             if _next_cap is not None:
                                 stream_payload["max_tokens"] = _next_cap
                             # Folded in only now, else the reported usage counts the last
@@ -32119,9 +32120,10 @@ class LlamaCppBackend:
                                     _served_r = True
                             if _served_r:
                                 stream_payload["messages"] = _candidate_r
-                                # The retry ends on a USER turn, so the flag from any
-                                # earlier answer continuation no longer describes it.
+                                # The retry ends on a USER turn, so the flags from any
+                                # earlier answer continuation no longer describe it.
                                 stream_payload.pop("continue_final_message", None)
+                                stream_payload.pop("add_generation_prompt", None)
                                 if _next_cap_r is not None:
                                     stream_payload["max_tokens"] = _next_cap_r
                                 if _off_kw is not None:
