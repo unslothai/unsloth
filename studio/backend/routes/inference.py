@@ -7025,7 +7025,6 @@ def _target_native_context_length(
         return None
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
-
         gguf_file = _resolve_target_gguf_file(load_path, gguf_variant)
         return read_gguf_context_length(gguf_file) if gguf_file else None
     except Exception as exc:
