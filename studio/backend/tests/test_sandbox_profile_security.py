@@ -418,6 +418,33 @@ def test_socket_below_nested_read_only_runtime_is_rejected(tmp_path):
         sock.close()
 
 
+def test_socket_in_external_runtime_is_rejected_before_bind(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable")
+    workdir = tmp_path / "workdir"
+    runtime = tmp_path / "external-runtime"
+    socket_path = runtime / "run" / "service.sock"
+    workdir.mkdir()
+    socket_path.parent.mkdir(parents = True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(socket_path))
+    except OSError as exc:
+        sock.close()
+        pytest.skip(f"pathname Unix sockets unavailable: {exc}")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [str(runtime)])
+    try:
+        with pytest.raises(
+            sandbox.UnsafeSandboxWorkdirError,
+            match = "external Python read path contains a special filesystem node",
+        ):
+            sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+    finally:
+        sock.close()
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "FIFOs unavailable")
 def test_fifo_below_nested_read_only_runtime_is_rejected(tmp_path):
     sandbox = _load_sandbox_module()
@@ -622,7 +649,7 @@ def test_linux_probe_uses_keep_groups_when_available(monkeypatch):
     sandbox = _load_sandbox_module()
     captured = []
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
-    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: True)
     monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
 
@@ -639,7 +666,7 @@ def test_linux_probe_uses_keep_groups_when_available(monkeypatch):
 def test_linux_probe_declines_group_device_on_older_bwrap(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
-    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: False)
     monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
     monkeypatch.setattr(
@@ -654,7 +681,7 @@ def test_linux_probe_declines_group_device_on_older_bwrap(monkeypatch):
 def test_linux_probe_retries_transient_group_capability_check(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
-    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: None)
     monkeypatch.setattr(
         sandbox,

@@ -51,6 +51,7 @@ _LINUX_ACCELERATOR_SYSFS_CLASS_PATHS = (
     "/sys/class/kfd",
 )
 _LINUX_MOUNTINFO = "/proc/self/mountinfo"
+_LINUX_FIND_BIN = "/usr/bin/find"
 _WORKDIR_SCAN_MAX_ENTRIES = 100_000
 _WORKDIR_SCAN_MAX_DEPTH = 128
 _PTH_NAMESPACE_SCAN_MAX_ENTRIES = 10_000
@@ -362,7 +363,7 @@ def _bwrap_supports_keep_groups(bwrap: str) -> bool | None:
     return b"--keep-groups" in proc.stdout
 
 
-def _linux_bwrap_path_is_trusted(path: str) -> bool:
+def _linux_executable_path_is_trusted(path: str) -> bool:
     """Return whether *path* and its ancestors resist replacement by this user."""
     if not hasattr(os, "getuid"):
         return False
@@ -407,7 +408,7 @@ def _linux_probe() -> _ProbeResult:
         logger.warning("bwrap not found on PATH; tool execution will run unsandboxed")
         return _ProbeResult(ok = False)
     bwrap = os.path.realpath(os.path.abspath(bwrap))
-    if not _linux_bwrap_path_is_trusted(bwrap):
+    if not _linux_executable_path_is_trusted(bwrap):
         logger.warning(
             "Ignoring untrusted or user-replaceable bwrap executable %s; "
             "tool execution will run unsandboxed",
@@ -643,6 +644,152 @@ def _assert_no_external_hardlinks(
             "sandbox workdir contains regular files hard-linked outside its boundary: "
             f"{sample}{suffix}"
         )
+
+
+def _assert_external_read_paths_have_no_special_nodes(
+    workdir: str, read_paths: tuple[str, ...] | list[str]
+) -> None:
+    """Reject host IPC/device nodes in external trees before read-only binds."""
+    wd = os.path.realpath(workdir)
+    trusted_roots = ("/usr", "/bin", "/sbin", "/lib", "/lib64", _NIX_STORE)
+    scan_roots: list[str] = []
+    for path in read_paths:
+        root = os.path.realpath(path)
+        if _path_is_within(root, wd) or any(
+            _path_is_within(root, trusted) for trusted in trusted_roots
+        ):
+            continue
+        if any(_path_is_within(root, existing) for existing in scan_roots):
+            continue
+        scan_roots = [existing for existing in scan_roots if not _path_is_within(existing, root)]
+        scan_roots.append(root)
+
+    inspected = 0
+    stack: list[tuple[str, int, int]] = []
+    directory_roots: list[tuple[str, int]] = []
+    for root in scan_roots:
+        try:
+            root_stat = os.lstat(root)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise UnsafeSandboxWorkdirError(
+                f"cannot inspect external Python read path safely: {root!r}: {exc}"
+            ) from exc
+        if stat.S_ISREG(root_stat.st_mode):
+            continue
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise UnsafeSandboxWorkdirError(
+                f"external Python read path is a special filesystem node: {root!r}"
+            )
+        directory_roots.append((root, root_stat.st_dev))
+
+    if sys.platform == "linux" and _linux_executable_path_is_trusted(_LINUX_FIND_BIN):
+        native_roots: list[str] = []
+        for root, _root_dev in directory_roots:
+            nested_mounts = _linux_nested_mount_points(root)
+            if nested_mounts:
+                sample = sorted(nested_mounts)[0]
+                raise UnsafeSandboxWorkdirError(
+                    f"external Python read path contains a nested mount point: {sample!r}"
+                )
+            native_roots.append(root)
+        if not native_roots:
+            return
+        try:
+            find_result = subprocess.run(
+                [
+                    _LINUX_FIND_BIN,
+                    "-P",
+                    *native_roots,
+                    "-xdev",
+                    "(",
+                    "-type",
+                    "s",
+                    "-o",
+                    "-type",
+                    "p",
+                    "-o",
+                    "-type",
+                    "b",
+                    "-o",
+                    "-type",
+                    "c",
+                    ")",
+                    "-print",
+                    "-quit",
+                ],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.PIPE,
+                timeout = 5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise UnsafeSandboxWorkdirError(
+                f"cannot inspect external Python read paths safely: {exc}"
+            ) from exc
+        if find_result.returncode != 0:
+            detail = find_result.stderr.decode(errors = "replace").strip()[:200]
+            raise UnsafeSandboxWorkdirError(
+                f"cannot inspect external Python read paths safely: {detail}"
+            )
+        if find_result.stdout:
+            special = find_result.stdout.decode(errors = "replace").strip()[:200]
+            raise UnsafeSandboxWorkdirError(
+                f"external Python read path contains a special filesystem node: {special!r}"
+            )
+        return
+
+    stack.extend((root, 0, root_dev) for root, root_dev in directory_roots)
+
+    while stack:
+        directory, depth, root_dev = stack.pop()
+        if depth > _WORKDIR_SCAN_MAX_DEPTH:
+            raise UnsafeSandboxWorkdirError(
+                "external Python read path exceeds the safe directory-depth limit "
+                f"({_WORKDIR_SCAN_MAX_DEPTH})"
+            )
+        try:
+            entries = os.scandir(directory)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise UnsafeSandboxWorkdirError(
+                f"cannot inspect external Python read path safely: {directory!r}: {exc}"
+            ) from exc
+        with entries:
+            for entry in entries:
+                inspected += 1
+                if inspected > _WORKDIR_SCAN_MAX_ENTRIES:
+                    raise UnsafeSandboxWorkdirError(
+                        "external Python read paths exceed the safe entry limit "
+                        f"({_WORKDIR_SCAN_MAX_ENTRIES})"
+                    )
+                try:
+                    if entry.is_symlink():
+                        continue
+                    # DirEntry normally answers regular-file type from the
+                    # directory record without an lstat syscall. Runtime trees
+                    # are file-heavy, so keep the secure scan cheap on the hot
+                    # sandbox-launch path.
+                    if entry.is_file(follow_symlinks = False):
+                        continue
+                    entry_stat = entry.stat(follow_symlinks = False)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise UnsafeSandboxWorkdirError(
+                        f"cannot inspect external Python read path safely: {entry.path!r}: {exc}"
+                    ) from exc
+                if entry_stat.st_dev != root_dev:
+                    raise UnsafeSandboxWorkdirError(
+                        f"external Python read path crosses a filesystem boundary: {entry.path!r}"
+                    )
+                if stat.S_ISDIR(entry_stat.st_mode):
+                    stack.append((entry.path, depth + 1, root_dev))
+                    continue
+                raise UnsafeSandboxWorkdirError(
+                    f"external Python read path contains a special filesystem node: {entry.path!r}"
+                )
 
 
 def _path_is_within(
@@ -1320,6 +1467,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     wd = os.path.realpath(workdir)
     python_read_paths = _python_read_paths()
     _assert_no_external_hardlinks(workdir, python_read_paths)
+    _assert_external_read_paths_have_no_special_nodes(workdir, python_read_paths)
     top_ro_dirs = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
     # Narrow /etc to runtime essentials; deny sshd_config, machine-id, etc.
     etc_ro_entries = (

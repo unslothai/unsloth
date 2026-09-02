@@ -814,7 +814,7 @@ def test_linux_probe_canonicalizes_relative_path(monkeypatch, tmp_path):
     monkeypatch.setattr(sandbox, "_sandbox_available_cache", None)
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", None)
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "bin/bwrap")
-    monkeypatch.setattr(sandbox, "_linux_bwrap_path_is_trusted", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
     monkeypatch.setattr(
         sandbox,
         "_probe",
