@@ -1003,3 +1003,155 @@ class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
         assert "- freed" in refresh, (
             "the controller would keep planning against the pre-erase figure"
         )
+
+
+class TestEveryNameThePreemptPathCallsIsActuallyBound:
+    """A NameError on the pause path kills the chat it was trying to save.
+
+    Shipped 2026-09-02 and caught only by a live run: an import was inserted into the
+    first textual match of the import statement, which was an unrelated local import
+    deep in the GGUF metadata reader, so the names were bound in a function that never
+    used them and unbound in the one that did. The file still compiled, `ast.parse`
+    still passed, the helpers still imported cleanly from their own module, and the
+    first preemption raised `NameError: name 'trailing_assistant_reasoning' is not
+    defined`. Two chats died in under twenty seconds.
+
+    Checking that a helper exists is not the same as checking its caller can see it.
+    """
+
+    def test_the_resume_helpers_are_bound_wherever_they_are_called(self):
+        """Every function that calls them must import them, whichever one that is.
+
+        Pinned to a function name at first, which broke the moment the block was
+        extracted into a helper. The invariant is not "this function imports it", it is
+        "no function calls a name it cannot see".
+        """
+        import ast
+        from pathlib import Path
+
+        from core.inference import llama_cpp
+
+        watched = {"trailing_assistant_reasoning", "trailing_assistant_resumable"}
+        tree = ast.parse(Path(llama_cpp.__file__).read_text())
+        module_level = set()
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                module_level.update((a.asname or a.name).split(".")[0] for a in node.names)
+
+        seen_any = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            called = {
+                n.func.id
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            }
+            wanted = watched & called
+            if not wanted:
+                continue
+            seen_any = True
+            bound = set(module_level)
+            for inner in ast.walk(node):
+                if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                    bound.update((a.asname or a.name).split(".")[0] for a in inner.names)
+            missing = wanted - bound
+            assert not missing, (
+                f"{node.name} calls {sorted(missing)} without importing them; the first "
+                f"preemption raises NameError"
+            )
+        assert seen_any, "nothing calls the resume helpers any more; drop this test"
+
+    def test_the_helpers_import_from_their_own_module(self):
+        import core.inference.chat_template_helpers as helpers
+
+        assert callable(helpers.trailing_assistant_reasoning)
+        assert callable(helpers.trailing_assistant_resumable)
+
+    def test_the_gguf_metadata_reader_did_not_keep_the_stray_import(self):
+        """The block the bad insertion landed in. It compiled, which is the whole point."""
+        from pathlib import Path
+
+        from core.inference import llama_cpp
+
+        source = Path(llama_cpp.__file__).read_text()
+        assert "                                        trailing_assistant_reasoning,\n" not in source
+
+
+class TestAFailureInTheResumeCannotKillTheChat:
+    def test_the_assembly_is_guarded(self):
+        from pathlib import Path
+
+        from core.inference import llama_cpp
+
+        source = Path(llama_cpp.__file__).read_text()
+        block = source.split("_carried_truncations = list(_respawn_truncations)", 1)[1]
+        block = block.split("preempt_policy.on_preempted", 1)[0]
+        assert "_assemble_preempt_resume(" in block
+        assert "except Exception:" in block, (
+            "a bug in the save-the-chat path would end the chat it was saving"
+        )
+
+    def test_a_raising_assembly_degrades_to_re_issuing_whole(self):
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        # The behaviour the guard buys: a broken assembly leaves the conversation
+        # untouched and the turn continues, rather than propagating out of the
+        # generator as an api_error.
+        convo = [{"role": "user", "content": "hi"}]
+
+        class Boom:
+            def _assemble_preempt_resume(self, *a, **k):
+                raise NameError("trailing_assistant_reasoning is not defined")
+
+        resumed = None
+        try:
+            resumed = Boom()._assemble_preempt_resume(
+                convo, StreamCheckpoint(reasoning_text = "x"), "", "x",
+            )
+        except Exception:
+            resumed = False
+        assert resumed is False
+        assert convo == [{"role": "user", "content": "hi"}]
+
+    def test_assembly_returns_false_when_nothing_was_produced(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        convo = [{"role": "user", "content": "hi"}]
+        out = LlamaCppBackend._assemble_preempt_resume(
+            object(), convo, StreamCheckpoint(), "", "",
+        )
+        assert out is False
+        assert len(convo) == 1, "an empty assistant turn would be refused downstream"
+
+    def test_assembly_carries_a_thought_as_reasoning_not_content(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        convo = [{"role": "user", "content": "hi"}]
+        out = LlamaCppBackend._assemble_preempt_resume(
+            object(), convo, StreamCheckpoint(reasoning_text = "half a thought"),
+            "", "half a thought",
+        )
+        assert out is True
+        assert convo[-1]["reasoning_content"] == "half a thought"
+        assert convo[-1]["content"] == "", (
+            "a thought placed in content would be rendered as the answer"
+        )
+
+    def test_a_second_pause_merges_rather_than_replaces_the_thought(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_preemption import StreamCheckpoint
+
+        convo = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "first half "},
+        ]
+        LlamaCppBackend._assemble_preempt_resume(
+            object(), convo, StreamCheckpoint(reasoning_text = "second half"),
+            "", "second half",
+        )
+        # The accumulators reset each round, so replacing would lose the first pause.
+        assert convo[-1]["reasoning_content"] == "first half second half"
+        assert len(convo) == 2

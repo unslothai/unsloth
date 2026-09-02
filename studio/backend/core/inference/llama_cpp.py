@@ -12925,9 +12925,7 @@ class LlamaCppBackend:
                                     # without holding the whole vocabulary (#7066).
                                     from core.inference.chat_template_helpers import (
                                         delimiter_shaped_tokens,
-                                        trailing_assistant_reasoning,
-    trailing_assistant_resumable,
-)
+                                    )
                                     self._markup_tokens = delimiter_shaped_tokens(val_a)
                                 attr = arch_keys.get(key)
                                 if attr == "n_kv_heads" and val_a is not None:
@@ -27702,6 +27700,61 @@ class LlamaCppBackend:
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
+    def _assemble_preempt_resume(
+        self, conversation, checkpoint, content_accum, reasoning_accum,
+    ) -> bool:
+        """Put a paused attempt's partial back so the next one continues it.
+
+        Returns whether the conversation now ends on something continuable. False means
+        the pause landed before anything was produced, and the attempt is re-issued
+        whole: ``continue_final_message`` refuses an empty assistant turn.
+        """
+        from core.inference.chat_template_helpers import (
+            append_assistant_turn,
+            trailing_assistant_reasoning,
+        )
+
+        if checkpoint.has_resume_point():
+            # Unstripped, for the reason the length continuation gives: the replayed
+            # prefix has to match the text already streamed, or the next delta is
+            # concatenated onto a different string.
+            #
+            # A half-parsed tool call is dropped simply by not being appended. That is
+            # the intended behaviour for a pause mid-call: back up to the end of visible
+            # prose and let the model re-issue the call. Nothing executed, so nothing is
+            # lost by asking again.
+            append_assistant_turn(
+                conversation,
+                {"role": "assistant", "content": content_accum},
+                continue_final_message = True,
+            )
+            return True
+
+        if checkpoint.has_reasoning_resume_point():
+            # Preempted mid-thought, which on a reasoning model is the common case
+            # rather than the exotic one: the opening of a turn is all reasoning and no
+            # prose. Carried as `reasoning_content` so the backend re-opens the thought;
+            # carried as `content` it would be rendered as the answer instead.
+            #
+            # Merged rather than appended, because the accumulators reset at the top of
+            # every round, so this holds only the LATEST attempt's reasoning while the
+            # conversation already carries the earlier ones.
+            prior = trailing_assistant_reasoning(conversation)
+            if prior:
+                conversation[-1] = {
+                    **conversation[-1],
+                    "reasoning_content": prior + reasoning_accum,
+                }
+            else:
+                conversation.append({
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": reasoning_accum,
+                })
+            return True
+
+        return False
+
     def generate_chat_completion_with_tools(
         self,
         messages: list[dict],
@@ -27859,7 +27912,12 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
-        from core.inference.chat_template_helpers import forced_tool_name, trailing_assistant_text
+        from core.inference.chat_template_helpers import (
+            forced_tool_name,
+            trailing_assistant_reasoning,
+            trailing_assistant_resumable,
+            trailing_assistant_text,
+        )
 
         initial_forced_name = forced_tool_name(tool_choice)
         if initial_forced_name and initial_forced_name not in _gguf_active_tool_names(tools):
@@ -30809,44 +30867,23 @@ class LlamaCppBackend:
                 # attempt emits them exactly once. The archive is content-hash
                 # idempotent, the `context_truncated` event is not.
                 _carried_truncations = list(_respawn_truncations)
-                if _checkpoint.has_resume_point():
-                    # Unstripped, for the reason the length continuation gives: the
-                    # replayed prefix has to match the text already streamed, or the
-                    # next delta is concatenated onto a different string.
-                    #
-                    # A half-parsed tool call is dropped simply by not being appended.
-                    # That is the intended behaviour for a pause mid-call: back up to
-                    # the end of visible prose and let the model re-issue the call.
-                    # Nothing executed, so nothing is lost by asking again.
-                    append_assistant_turn(
-                        conversation,
-                        {"role": "assistant", "content": content_accum},
-                        continue_final_message = True,
+                # Assembling the resume must never be able to end the turn. This block
+                # exists to SAVE a chat, and on 2026-09-02 a NameError inside it killed
+                # two of four chats within twenty seconds -- a strictly worse outcome
+                # than not preempting at all. Any failure here degrades to re-issuing
+                # the attempt whole, which is the same path a pause before the first
+                # token already takes.
+                try:
+                    _resume_assembled = self._assemble_preempt_resume(
+                        conversation, _checkpoint, content_accum, reasoning_accum,
                     )
-                    continue_final_message = True
-                elif _checkpoint.has_reasoning_resume_point():
-                    # Preempted mid-thought, which on a reasoning model is the common
-                    # case rather than the exotic one: the whole first minute of a turn
-                    # produces reasoning and no prose. Carried as `reasoning_content` so
-                    # the backend re-opens the thought; carried as `content` it would be
-                    # rendered as the answer instead.
-                    #
-                    # Merged rather than appended, because the accumulators reset at the
-                    # top of every round, so this holds only the LATEST attempt's
-                    # reasoning while the conversation already carries the earlier ones.
-                    _prior = trailing_assistant_reasoning(conversation)
-                    if _prior:
-                        conversation[-1] = {
-                            **conversation[-1],
-                            "reasoning_content": _prior + reasoning_accum,
-                        }
-                    else:
-                        conversation.append({
-                            "role": "assistant",
-                            "content": "",
-                            "reasoning_content": reasoning_accum,
-                        })
-                    continue_final_message = True
+                except Exception:
+                    logger.warning(
+                        "Could not assemble a preemption resume; re-issuing the attempt "
+                        "whole and continuing", exc_info = True,
+                    )
+                    _resume_assembled = False
+                continue_final_message = _resume_assembled or continue_final_message
                 # Neither prose nor thought means the pause landed before the first
                 # token. There is nothing to continue, and `continue_final_message`
                 # refuses an empty assistant turn, so the attempt is re-issued whole.
