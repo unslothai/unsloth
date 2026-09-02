@@ -5252,9 +5252,7 @@ _GUARD_WIRING = (
     # reach these tool calls at all.
     (
         "routes.inference::_proxy_to_external_provider",
-        (
-            "cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)",
-        ),
+        ("cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)",),
         (),
     ),
     # Everything the quiescence sweep stops is running. These clear what a
@@ -5272,7 +5270,11 @@ _GUARD_WIRING = (
         ),
         (),
     ),
-    ("utils.api_errors::install_api_error_handlers", ("RetiredWorkspaceError", "status_code = 401"), ()),
+    (
+        "utils.api_errors::install_api_error_handlers",
+        ("RetiredWorkspaceError", "status_code = 401"),
+        (),
+    ),
 )
 
 

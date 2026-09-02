@@ -316,9 +316,7 @@ def _reject_private_destinations_from_a_managed_account(providers: list) -> None
         except ValueError as exc:
             raise HTTPException(
                 status_code = 403,
-                detail = (
-                    f"This account can only use recipe providers on public addresses. ({exc})"
-                ),
+                detail = (f"This account can only use recipe providers on public addresses. ({exc})"),
             ) from exc
 
 

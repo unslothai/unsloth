@@ -966,6 +966,7 @@ def _resolve_subject_owned_roots(username: str) -> tuple[list, bool]:
 
     def _scoped() -> list:
         from core.inference.tools import sandbox_root
+
         # tmp_root keys on workspace_key like the rest, and unstructured seed
         # processing leaves plaintext parquet chunks under it.
         return [project_workspaces_root(), Path(sandbox_root()), tmp_root()]
