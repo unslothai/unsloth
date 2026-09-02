@@ -38,7 +38,6 @@ import {
   markChatThreadDeleted,
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
-import { createParentResolver } from "./message-order";
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
 
 // Thread ids that belong to a temporary/incognito session. A thread is
@@ -154,6 +153,10 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function isLegacyChatImportDone(): boolean {
   if (!canUseStorage()) return true;
   try {
@@ -264,11 +267,17 @@ export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
 }
 
 function normalizeLegacyMessages(messages: MessageRecord[]): MessageRecord[] {
-  const resolveParent = createParentResolver();
-  return sortMessages(messages).map((message) => ({
-    ...message,
-    parentId: resolveParent(message),
-  }));
+  let previousId: string | null = null;
+  return sortMessages(messages).map((message) => {
+    const parentId = hasOwn(message, "parentId")
+      ? (message.parentId ?? null)
+      : previousId;
+    previousId = message.id;
+    return {
+      ...message,
+      parentId,
+    };
+  });
 }
 
 function messageNeedsBackfill(

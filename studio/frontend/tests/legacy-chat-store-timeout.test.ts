@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ThreadRecord } from "../src/features/chat/types";
-import * as messageOrder from "../src/features/chat/utils/message-order.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Storage = {
@@ -70,7 +69,6 @@ function loadStorage(options: {
           transaction: options.transaction ?? (async () => undefined),
         },
       },
-      "./message-order": messageOrder,
       "./chat-thread-tombstones": {
         isChatThreadDeleted: () => false,
         markChatThreadDeleted: () => {},
