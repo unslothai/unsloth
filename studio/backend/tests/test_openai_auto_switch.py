@@ -3857,19 +3857,52 @@ def test_a_fit_owned_context_falls_back_to_the_declared_window(monkeypatch):
 def test_a_non_gguf_target_declares_its_context_in_config_json(tmp_path):
     import json
 
-    (tmp_path / "config.json").write_text(json.dumps({"max_position_embeddings": 4096}))
-    assert inference_route._target_native_context_length(str(tmp_path), False) == 4096
+    def _at(name, config):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "config.json").write_text(json.dumps(config))
+        return inference_route._target_native_context_length(str(d), False)
 
-    multimodal = tmp_path / "mm"
-    multimodal.mkdir()
-    (multimodal / "config.json").write_text(
-        json.dumps({"text_config": {"max_position_embeddings": 2048}})
+    assert _at("plain", {"max_position_embeddings": 4096}) == 4096
+    # Every field NativeAudioBackend._context_length accepts, not only the first.
+    assert _at("seq", {"max_sequence_length": 3072}) == 3072
+    assert _at("msl", {"max_seq_length": 2560}) == 2560
+    assert _at("npos", {"n_positions": 1536}) == 1536
+    assert _at("slen", {"seq_length": 1024}) == 1024
+    # Nested wins over top level, in the loader's order.
+    assert (
+        _at(
+            "nested",
+            {"max_position_embeddings": 9999, "language_config": {"max_position_embeddings": 2048}},
+        )
+        == 2048
     )
-    assert inference_route._target_native_context_length(str(multimodal), False) == 2048
+    assert (
+        _at("qwen", {"max_position_embeddings": 9999, "qwen3_config": {"seq_length": 777}}) == 777
+    )
+    assert _at("mm", {"text_config": {"max_position_embeddings": 2048}}) == 2048
 
     bare = tmp_path / "bare"
     bare.mkdir()
     assert inference_route._target_native_context_length(str(bare), False) is None
+
+
+def test_minimax_has_no_window_to_preflight_against(monkeypatch):
+    # _context_length returns 0 for MiniMax, so there is no limit a saved override or a
+    # declared window could impose; refusing against one would be inventing a rule.
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a: pytest.fail("override read for MiniMax"),
+    )
+    assert (
+        inference_route._target_effective_context_length(
+            "/srv/minimax", False, None, None, "minimax_music3"
+        )
+        is None
+    )
 
 
 def test_a_prompt_too_long_for_the_target_is_refused_before_the_switch(monkeypatch):

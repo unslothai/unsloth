@@ -7032,11 +7032,24 @@ def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Op
     return detect_gguf_model(local_path)
 
 
-def _local_config_context_length(load_path: str) -> Optional[int]:
-    """``max_position_embeddings`` from a local checkpoint's config.json, or None.
+# The sub-configs and field names NativeAudioBackend._context_length walks, in its
+# order: a nested window wins over a top-level one, and the first positive field wins.
+# Kept in step with that method; a shorter lookup here reads a different limit than the
+# guard that runs after the switch, and the difference is paid for with the resident model.
+_NATIVE_CONTEXT_SUBCONFIGS = ("language_config", "qwen3_config", "text_config")
+_NATIVE_CONTEXT_FIELDS = (
+    "max_position_embeddings",
+    "max_sequence_length",
+    "max_seq_length",
+    "n_positions",
+    "seq_length",
+)
 
-    The resolver only yields downloaded targets, so this is a local file read; a
-    multimodal config keeps the window on its text sub-config.
+
+def _local_config_context_length(load_path: str) -> Optional[int]:
+    """The window a local checkpoint declares in config.json, or None.
+
+    The resolver only yields downloaded targets, so this is a local file read.
     """
     import json
 
@@ -7049,9 +7062,11 @@ def _local_config_context_length(load_path: str) -> Optional[int]:
         config = json.load(f)
     if not isinstance(config, dict):
         return None
-    for source in (config, config.get("text_config")):
-        if isinstance(source, dict):
-            value = _positive_int_or_none(source.get("max_position_embeddings"))
+    for candidate in (*(config.get(name) for name in _NATIVE_CONTEXT_SUBCONFIGS), config):
+        if not isinstance(candidate, dict):
+            continue
+        for field in _NATIVE_CONTEXT_FIELDS:
+            value = _positive_int_or_none(candidate.get(field))
             if value is not None:
                 return value
     return None
@@ -7097,6 +7112,10 @@ def _target_effective_context_length(
     # NativeAudioBackend._context_length discards the requested value for both MOSS
     # types and runs at the model's own window, so a saved override is not the limit
     # there and reading it would refuse or admit against a number nothing applies.
+    # _context_length returns 0 for MiniMax, i.e. no window to measure against, so a
+    # saved override is not a limit there either.
+    if audio_type == "minimax_music3":
+        return None
     if audio_type in _CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES:
         return _target_native_context_length(load_path, is_gguf, gguf_variant)
     try:
