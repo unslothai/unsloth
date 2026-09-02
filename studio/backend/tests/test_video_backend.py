@@ -897,17 +897,13 @@ def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, mon
     # and the helper itself decides whether that policy is worth a trim.
     for policy in ("none", "group", "streaming", "sequential", "model"):
         backend._state = dataclasses.replace(backend._state, offload_policy = policy)
-        backend.generate(
-            prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8
-        )
+        backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
     assert trace == ["none", "group", "streaming", "sequential", "model"]
 
     # And the real helper trims only under whole-model offload, so the other four are no-ops.
     from core.inference import diffusion_memory
 
-    monkeypatch.setattr(
-        diffusion_memory, "_resolve_host_memory_reclaimer", lambda: (lambda: None)
-    )
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: (lambda: None))
     assert [diffusion_memory.reclaim_offload_host_memory(p) for p in trace] == [
         False,
         False,
