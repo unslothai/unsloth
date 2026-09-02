@@ -322,6 +322,50 @@ def test_a_moved_layer_takes_its_share_of_the_recurrent_state_with_it():
     assert "not worth it" in gate.reason
 
 
+def test_the_recurrent_state_is_not_freed_twice_under_no_kv_offload():
+    """``-nkvo`` already put the whole state on the host, so no layer frees any.
+
+    ``llama_memory_hybrid`` hands ONE ``offload`` flag to both the attention cache
+    and the recurrent memory (llama-memory-hybrid.cpp:28,40,58) and that flag is
+    ``cparams.offload_kqv`` (llama-model.cpp:2445-2453), so with the cache off the
+    device the recurrent state is off it too: ``ggml_backend_cpu_buffer_type()``
+    unless ``offload`` (llama-memory-recurrent.cpp:85-91).
+
+    ``resident_floor_bytes`` says the same and leaves ``recurrent_bytes`` out of
+    ``resident`` on that branch, so a per-layer share freed here is bytes that
+    were never counted: the modeled fitter satisfies the budget on fewer layers
+    than llama.cpp must actually move, and is then billed a host recurrent group
+    for state BOTH arms carry.
+    """
+    import dataclasses
+
+    hybrid = dataclasses.replace(dense_layout(), recurrent_bytes = 4 * GIB)
+    nkvo = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = True)
+
+    placement = _fit_fallback_placement(hybrid, gated(), 12 * GIB, 32768, **nkvo)
+    assert placement is not None
+    assert not [g for g in placement.host_groups if g.name.startswith("recurrent")], (
+        "state that -nkvo already moved is common to both placements and must not "
+        "be charged to the fitter alone"
+    )
+
+    # Nothing about the state is freed either, so the fitter has to move exactly
+    # as many layers as it would with no state at all.
+    def moved_layers(layout):
+        p = _fit_fallback_placement(layout, gated(), 12 * GIB, 32768, **nkvo)
+        assert p is not None
+        ffn = [g for g in p.host_groups if g.name == "ffn"][0]
+        return round(ffn.bytes_total / int(0.20 * GIB))
+
+    assert moved_layers(hybrid) == moved_layers(dense_layout())
+
+    # ``kv_on_host`` is the only thing switched off: with the cache on the device
+    # the state still follows its layer, so the test above keeps its teeth.
+    on_device = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
+    still = _fit_fallback_placement(hybrid, gated(), 12 * GIB, 32768, **on_device)
+    assert [g for g in still.host_groups if g.name.startswith("recurrent")]
+
+
 def test_a_spill_larger_than_host_ram_is_refused_outright():
     """The one configuration measured to be unambiguously worse than the fitter.
 

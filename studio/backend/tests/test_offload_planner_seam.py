@@ -1050,21 +1050,28 @@ def test_a_pinned_draft_device_declines_the_plan():
     assert _plan(stub) is not None
 
 
-def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
+def test_a_pass_through_parallel_that_resizes_the_cache_declines_the_plan():
     """Slots are sizing, not placement. Unsloth's --parallel is emitted first and
-    the extras are appended after it, so a larger pass-through wins at the child
-    while the deficit here was priced for the smaller count -- too few blocks
-    spilled, then pinned with --fit off. A SMALLER one only over-reserves, which
-    is safe, so it must not cost a plan."""
+    the extras are appended after it, so a pass-through wins at the child while
+    every byte here was priced for Unsloth's own count.
+
+    LARGER grows the cache under a deficit computed for the smaller count -- too
+    few blocks spilled, then pinned with --fit off. SMALLER used to be waved
+    through as over-reservation, which was safe while the plan only had to be
+    feasible; now that the plan is SCORED against llama.cpp's own fitter, the
+    stale kv_bytes_floor rides into _fit_fallback_placement and inflates that arm
+    alone, so a smaller count buys spills the fitter beats. Neither is priceable
+    here, so both decline. Matching the priced count is not an override."""
     stub = _Stub()
     assert _plan(stub, n_parallel = 1, extra_args = ["--parallel", "8"]) is None
     assert _plan(stub, n_parallel = 1, extra_args = ["-np", "4"]) is None
     assert _plan(stub, n_parallel = 1, extra_args = ["--parallel=8"]) is None
     assert _plan(stub, n_parallel = 8, extra_args = ["--parallel", "8"]) is not None
-    assert _plan(stub, n_parallel = 8, extra_args = ["--parallel", "2"]) is not None
+    assert _plan(stub, n_parallel = 8, extra_args = ["--parallel", "2"]) is None
     assert _plan(stub, n_parallel = 1, env = {"LLAMA_ARG_N_PARALLEL": "8"}) is None
     # Last wins, exactly as llama.cpp parses it.
-    assert _plan(stub, n_parallel = 4, extra_args = ["--parallel", "8", "-np", "2"]) is not None
+    assert _plan(stub, n_parallel = 4, extra_args = ["--parallel", "8", "-np", "2"]) is None
+    assert _plan(stub, n_parallel = 2, extra_args = ["--parallel", "8", "-np", "2"]) is not None
     assert _plan(stub, n_parallel = 1) is not None
 
 

@@ -26414,11 +26414,31 @@ class LlamaCppBackend:
         # Slots are SIZING, not placement, and these numbers were priced at Unsloth's
         # own --parallel. A pass-through is appended after it and llama.cpp is
         # last-wins, so a larger one grows the attention cache and the recurrent
-        # state under a deficit computed for the smaller count. Only larger matters:
-        # a smaller value leaves the plan over-reserved, the safe direction.
+        # state under a deficit computed for the smaller count.
+        #
+        # A SMALLER value used to be waved through as "over-reserved, the safe
+        # direction". That was true while the plan only had to be feasible: a
+        # cache reservation larger than the child's cannot OOM it. It stopped
+        # being true when the plan started being SCORED. ``kv_cache_bytes`` is
+        # measured at the priced slot count and reaches the planner as
+        # ``kv_bytes_floor``, and ``_fit_fallback_placement`` both consumes that
+        # floor and scales its moved live-cache term from it, while the -ot
+        # placement it is compared against carries no cache term at all. So an
+        # over-sized floor inflates exactly one arm: the fitter is modelled
+        # moving more layers than it will, and is charged Access.KV_CACHE on
+        # cache the child never allocates. The bias is one-directional -- every
+        # verdict it changes is a spill ACCEPTED over a fitter that beats it.
+        #
+        # It is not a rounding error either. ``_estimate_kv_cache_bytes`` folds
+        # ``_recurrent_state_bytes(n_parallel)`` into that figure, and that method
+        # scales linearly in the slot count, so on a Nemotron-H-shaped hybrid eight
+        # slots down to one is a 3.4x floor, and re-scoring the fallback at the
+        # count the child really gets turns four of a twenty-one budget sweep
+        # from SPILL to DECLINE. Nothing here can re-measure the cache for the
+        # new count, so decline, like every other pass-through this cannot price.
         priced_parallel = int(inputs.get("n_parallel") or 1)
         override_parallel = _extra_args_n_parallel(extra_args, source_env)
-        if override_parallel is not None and override_parallel > priced_parallel:
+        if override_parallel is not None and override_parallel != priced_parallel:
             logger.debug(
                 "Tensor spill: declined, --parallel %d overrides the %d slots this was priced at",
                 override_parallel,

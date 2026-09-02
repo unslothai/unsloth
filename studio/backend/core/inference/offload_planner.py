@@ -421,7 +421,23 @@ def _fit_fallback_placement(
     # layout does not say which layers are recurrent -- the same approximation
     # ``kv_per_layer`` already makes for a cache that likewise lives on only some
     # of them.
-    recurrent_per_layer = layout.recurrent_bytes / len(blocks)
+    #
+    # Zero under ``-nkvo``, on the same terms as ``kv_live_per_layer`` above.
+    # ``llama_memory_hybrid``'s constructor hands the SAME ``offload`` flag to the
+    # attention cache and to the recurrent memory, and that flag is
+    # ``cparams.offload_kqv`` where ``llama_model::create_memory`` builds the
+    # hybrid, so ``--no-kv-offload`` puts the whole recurrent state on the host
+    # before any layer moves: ``llama_memory_recurrent``'s ctor takes
+    # ``ggml_backend_cpu_buffer_type()`` unless ``offload``. Read at llama.cpp
+    # ``90c26fc``; the symbols are the citation, not the line numbers, which have
+    # already drifted twice in a week on the sibling PR.
+    # ``resident_floor_bytes`` already says
+    # so and leaves ``recurrent_bytes`` out of ``resident`` on that branch, so
+    # freeing a per-layer share here frees bytes that were never counted -- the
+    # modeled fitter reached the budget two or three layers early on a
+    # Nemotron-H-shaped hybrid -- and then billed a host recurrent group that
+    # BOTH placements pay, which is state common to the two arms and cancels.
+    recurrent_per_layer = 0.0 if kv_on_host else layout.recurrent_bytes / len(blocks)
     host_weights = 0
     host_spillable = 0
     for moved, block in enumerate(reversed(blocks), start = 1):
