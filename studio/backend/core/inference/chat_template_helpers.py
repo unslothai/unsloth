@@ -1714,6 +1714,110 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
+_ENDRAW = re.compile(r"\{%-?\s*endraw\s*-?%\}")
+
+
+def _evaluated_spans(template: str) -> tuple:
+    """The ranges Jinja evaluates, walked quote-aware, with string literals taken out.
+
+    ``_jinja_expression_spans`` ends a block at the first ``}}``, so a template printing
+    literal Jinja -- ``{{ "{{ example.0 }}" }}`` -- reads as code. That scanner is shared
+    with ``model_markup`` (#7066) and stays as it is; this repair edits the template
+    llama-server launches with, so it walks the blocks itself.
+
+    A comment and a ``{% raw %}`` body are both skipped. Raw is tracked through this same
+    walk rather than matched in the source, so tag text that only appears inside a comment
+    or a literal cannot make a real expression between two of them look verbatim. Inside a
+    raw body nothing is interpreted at all, the way Jinja reads it: the walk runs to the
+    terminator, so a comment marker there stays text.
+    """
+    spans: list = []
+    index, end = 0, len(template)
+    verbatim = False
+    while index < end - 1:
+        if verbatim:
+            terminator = _ENDRAW.search(template, index)
+            if not terminator:
+                break
+            index = terminator.end()
+            verbatim = False
+            continue
+        if template[index] != "{" or template[index + 1] not in "{%#":
+            index += 1
+            continue
+        if template[index + 1] == "#":
+            closed = template.find("#}", index + 2)
+            index = end if closed < 0 else closed + 2
+            continue
+        closer = "}}" if template[index + 1] == "{" else "%}"
+        block: list = []
+        cursor = index + 2
+        run = cursor
+        quote = ""
+        closed = False
+        while cursor < end:
+            char = template[cursor]
+            if quote:
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == quote:
+                    quote = ""
+                    run = cursor + 1
+            elif char in "'\"":
+                block.append((run, cursor))
+                quote = char
+            elif template.startswith(closer, cursor):
+                block.append((run, cursor))
+                closed = True
+                break
+            cursor += 1
+        if not closed:
+            # An unterminated block is text, not code, so nothing in it is rewritten.
+            break
+        tag = template[index + 2 : cursor].strip().strip("-").strip()
+        if closer == "%}" and tag == "raw":
+            verbatim = True
+        else:
+            spans.extend(block)
+        index = cursor + 2
+    return tuple(spans)
+
+
+_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\s*\.\s*\d+)+)")
+
+
+def repair_numeric_member_access(template) -> Optional[str]:
+    """Rewrite ``x.0`` as ``x[0]`` in evaluated code, or None when nothing needs it.
+
+    llama.cpp's Jinja rejects a numeric member property. The throw lands inside its
+    capability probe, which swallows it, so ``supports_object_arguments`` stays false and a
+    replayed tool call's arguments are never decoded back into an object -- the template's
+    own ``arguments.items()`` then dies on the JSON string (GLM-5.3).
+
+    Only the ranges Jinja evaluates are rewritten, never prompt text, a quoted literal, a
+    raw block, or Jinja syntax a template prints as an example.
+    A chain rewrites whole ("x.0.1" -> "x[0][1]"): leaving the tail behind still throws.
+    Jinja lets whitespace sit around each dot, and llama.cpp throws on that spelling too.
+    """
+    if not isinstance(template, str) or not template:
+        return None
+    spans = _evaluated_spans(template)
+    out: list = []
+    cursor = 0
+    for match in _NUMERIC_MEMBER.finditer(template):
+        if not _within(spans, match.start()):
+            continue
+        out.append(template[cursor : match.start()])
+        indices = "".join(f"[{n}]" for n in re.findall(r"\d+", match.group(2)))
+        out.append(f"{match.group(1)}{indices}")
+        cursor = match.end()
+    if not out:
+        return None
+    out.append(template[cursor:])
+    return "".join(out)
+
+
 def _reads_tools_variable(body: str) -> bool:
     """True when *body* evaluates the ``tools`` variable, rather than printing the word."""
     return any(_TOOLS_VARIABLE.search(_JINJA_STRING.sub("", code)) for code in _jinja_code(body))
@@ -1728,18 +1832,26 @@ def _template_reads_tools(
     value,
     tools,
     prefer_tool_use: bool = True,
+    require_tools_variable: bool = False,
 ) -> bool:
     """True unless the template selected out of *value* takes no part in tool calling.
 
     Reading the ``tools`` variable is the direct case. Replaying tool calls counts too:
     such a template round-trips a tool turn it never advertised, so the schema came from
-    the caller's own system prompt and the catalog is authorized after all."""
+    the caller's own system prompt and the catalog is authorized after all.
+
+    ``require_tools_variable`` drops that second clause, for callers asking whether THIS
+    render puts the schema in the prompt: a template that only round-trips renders
+    byte-identically with and without a catalog, so the healer would otherwise promote
+    calls for tools the model never saw (#7066)."""
     bodies = _selected_template_strings_from_value(value, tools, prefer_tool_use = prefer_tool_use)
     if not bodies:
         # Unreadable, not proven silent. Emptying the catalog here would disable healing
         # for every model whose template shape this module cannot parse, which is a
         # feature regression rather than the narrow authorization fix (#7066).
         return True
+    if require_tools_variable:
+        return any(_reads_tools_variable(body) for body in bodies)
     return any(_reads_tools_variable(body) or _round_trips_tool_calls(body) for body in bodies)
 
 
@@ -1762,14 +1874,33 @@ def _accepts_tools_kwarg(target) -> bool:
     return "tools" in parameters
 
 
-def _renders_tool_schema(target, template, tools) -> bool:
-    """True unless the template *target* will select provably cannot advertise tools."""
+def _renders_tool_schema(
+    target,
+    template,
+    tools,
+    template_is_processor: bool = False,
+) -> bool:
+    """True unless the template *target* will select provably cannot advertise tools.
+
+    A processor is held to the stricter test: its render has no native-template fallback
+    behind it (a text model's template cannot place the image), so what the processor's own
+    body does with ``tools`` is the whole answer.
+
+    ``template_is_processor`` says the *template* is a processor body even though *target*
+    is not: under the orchestrator the route has only the body mirrored through worker IPC,
+    which would otherwise be judged by the permissive tokenizer rule (#10092)."""
     if tools and not _accepts_tools_kwarg(target):
         return False
     value = template or getattr(target, "chat_template", None)
     if not value:
         value = getattr(getattr(target, "tokenizer", None), "chat_template", None)
-    return _template_reads_tools(value, tools, prefer_tool_use = not _is_processor(target))
+    is_processor = template_is_processor or _is_processor(target)
+    return _template_reads_tools(
+        value,
+        tools,
+        prefer_tool_use = not is_processor,
+        require_tools_variable = is_processor,
+    )
 
 
 def renderable_tool_catalog_for_targets(
@@ -1779,6 +1910,7 @@ def renderable_tool_catalog_for_targets(
     cache = None,
     active_model_name = None,
     template = None,
+    template_is_processor: bool = False,
 ):
     """The catalog safe under every object a backend could render this turn with.
 
@@ -1803,11 +1935,13 @@ def renderable_tool_catalog_for_targets(
         # sanitized during the render, so a tool dropped from the prompt stayed authorized
         # for healing. One None target profiles as unprofilable and takes the curated
         # sweep, the safe direction (#7066).
-        return renderable_tool_catalog(tools, None, model_info, cache, active_model_name, template)
+        return renderable_tool_catalog(
+            tools, None, model_info, cache, active_model_name, template, template_is_processor
+        )
     catalog = tools
     for target in live:
         catalog = renderable_tool_catalog(
-            catalog, target, model_info, cache, active_model_name, template
+            catalog, target, model_info, cache, active_model_name, template, template_is_processor
         )
         if not catalog:
             return catalog
@@ -1821,6 +1955,7 @@ def renderable_tool_catalog(
     cache = None,
     active_model_name = None,
     template = None,
+    template_is_processor: bool = False,
 ):
     """The catalog that survives EVERY template this request could render with.
 
@@ -1854,13 +1989,16 @@ def renderable_tool_catalog(
         )
         return []
 
-    active_renders_tools = _renders_tool_schema(tokenizer, template, tools)
+    active_renders_tools = _renders_tool_schema(
+        tokenizer, template, tools, template_is_processor = template_is_processor
+    )
     # A processor stays on "default" and the VLM path renders straight through
     # apply_chat_template_for_generation, with no native-template fallback behind it
     # (mlx_inference.py). When that default body never reads ``tools`` the schema cannot
     # reach the prompt at all, so every tool in the catalog is unadvertised and healing a
     # text-form call would promote one the model was never shown (#7066).
-    if _is_processor(tokenizer) and not active_renders_tools:
+    # Counts here too: the orchestrator passes tokenizer=None, not a processor (#10092).
+    if (template_is_processor or _is_processor(tokenizer)) and not active_renders_tools:
         return _unadvertised()
     # Resolved rather than read: render_native_template fetches it during the render, so on
     # the FIRST request needing the fallback the cache is still empty and this would hand
@@ -2833,6 +2971,185 @@ def last_user_text(messages: list) -> str:
     return ""
 
 
+def count_structured_images(content) -> int:
+    """Number of structured image parts in a message *content* (or a bare part)."""
+    if isinstance(content, list):
+        return sum(count_structured_images(item) for item in content)
+    if not isinstance(content, dict):
+        return 0
+    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
+        return 1
+    return count_structured_images(content.get("content"))
+
+
+def structured_media_reprs(content) -> set:
+    """Every spelling a template could print a structured image part as."""
+    if isinstance(content, list):
+        values = (
+            {str(content), json.dumps(content, ensure_ascii = False)}
+            if count_structured_images(content)
+            else set()
+        )
+        for item in content:
+            values.update(structured_media_reprs(item))
+        return values
+    if not isinstance(content, dict):
+        return set()
+    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
+        return {str(content), json.dumps(content, ensure_ascii = False)}
+    return structured_media_reprs(content.get("content"))
+
+
+def prompt_serializes_structured_media(prompt, messages) -> bool:
+    """Detect templates that embed the exact structured media object repr."""
+    from core.inference.message_content import content_to_text
+
+    media_reprs = set()
+    for message in messages:
+        if isinstance(message, dict):
+            media_reprs.update(structured_media_reprs(message.get("content")))
+    text_content = [
+        content_to_text(message.get("content")) for message in messages if isinstance(message, dict)
+    ]
+    return any(
+        prompt.count(media_repr) > sum(content.count(media_repr) for content in text_content)
+        for media_repr in media_reprs
+    )
+
+
+def vlm_prompt_issue(prompt, messages) -> Optional[str]:
+    """Name the way a VLM render came back unusable, else None.
+
+    Shared by both backends so a defect one of them refuses stays refused by the other.
+    """
+    if not isinstance(prompt, str) or not prompt.strip():
+        return "an empty prompt"
+    if prompt_serializes_structured_media(prompt, messages):
+        return "serialized structured image content"
+    return None
+
+
+def messages_have_tool_history(messages) -> bool:
+    """True when the conversation replays a tool call or a tool result."""
+    return any(
+        isinstance(message, dict)
+        and (
+            message.get("role") == "tool"
+            or message.get("tool_calls")
+            or message.get("tool_call_id")
+        )
+        for message in messages
+    )
+
+
+def messages_with_attached_image(
+    messages: list,
+    system_prompt: str = "",
+    fallback_user_text: str = "",
+    structured_content: bool = False,
+) -> list:
+    """The conversation to render for a turn that carries an attached image.
+
+    Prepends *system_prompt* as a leading system turn, then injects an ``{"type": "image"}``
+    part into the LAST user turn and leaves every other turn -- assistant ``tool_calls``
+    and ``role="tool"`` results included -- exactly as the caller sent it. Rebuilding from
+    the newest user TEXT instead dropped the folded system instruction and the tool history
+    an OpenAI tool loop replays (#10092).
+
+    Nothing the caller owns is mutated: callers still read those dicts after generation,
+    and a retry re-renders the same list.
+
+    *structured_content* wraps content in part lists, as a processor template expects; MLX
+    may render through the nested text tokenizer, whose template expects a string.
+
+    *fallback_user_text* stands in for a user turn with no text of its own, and opens one
+    when there is no user turn at all. Left empty, the conversation is unchanged, so a
+    backend that would rather refuse an image nobody asked about keeps refusing it.
+    """
+    conversation = list(messages or [])
+    if structured_content:
+        # EVERY message: a processor template raises on a replayed turn left as a string.
+        def _as_parts(message):
+            if not isinstance(message, dict):
+                return message
+            body = message.get("content")
+            if isinstance(body, list):
+                return message
+            if isinstance(body, str) and body:
+                return {**message, "content": [{"type": "text", "text": body}]}
+            # exclude_none strips content from an assistant tool-call turn entirely.
+            return {**message, "content": []}
+
+        conversation = [_as_parts(m) for m in conversation]
+    if system_prompt:
+        conversation.insert(
+            0,
+            {
+                "role": "system",
+                "content": (
+                    [{"type": "text", "text": system_prompt}]
+                    if structured_content
+                    else system_prompt
+                ),
+            },
+        )
+    # Once: a reverse scan would mark a nudge retry's correction, not the question.
+    if any(
+        isinstance(m, dict)
+        and isinstance(m.get("content"), list)
+        and count_structured_images(m["content"])
+        for m in conversation
+    ):
+        return conversation
+    for index in range(len(conversation) - 1, -1, -1):
+        message = conversation[index]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content", "")
+        if isinstance(content, str):
+            parts = [{"type": "image"}, {"type": "text", "text": content or fallback_user_text}]
+        elif isinstance(content, list):
+            parts = list(content)
+            if not count_structured_images(parts):
+                parts.insert(0, {"type": "image"})
+        else:
+            break
+        conversation[index] = {**message, "content": parts}
+        return conversation
+    if fallback_user_text:
+        conversation.append(
+            {
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": fallback_user_text}],
+            }
+        )
+    return conversation
+
+
+def render_advertising_tools(render, tools):
+    """Render with *tools*, and say whether the prompt actually carries them.
+
+    Returns ``(prompt, advertised)``. *render* takes a catalog and returns a prompt.
+
+    Comparing the two renders rather than reading the body: a body that merely names the
+    ``tools`` variable can still drop the schema, and a renderer taking ``tools=`` through
+    ``**kwargs`` can swallow it without ever raising.
+
+    The no-tools probe runs FIRST so the prompt this turn uses is the last thing the
+    renderer produced, for anything that caches or observes the render. A probe that raises
+    answers "advertised": the render that failed is the throwaway one.
+    """
+    if not tools:
+        return render(None), False
+    try:
+        without_tools = render(None)
+    except Exception as exc:
+        logger.debug("No-tools probe failed; keeping the tools prompt: %s", exc)
+        return render(tools), True
+    prompt = render(tools)
+    return prompt, prompt != without_tools
+
+
 def append_assistant_turn(
     conversation: list,
     assistant_msg: dict,
@@ -2882,6 +3199,7 @@ def render_prompt_with_boundary(
     processor,
     messages: list,
     continue_final_message: bool = False,
+    tools: Optional[list] = None,
 ) -> str:
     """Render *messages* through a renderer's own chat template.
 
@@ -2890,21 +3208,42 @@ def render_prompt_with_boundary(
     partial from *messages* (which the caller already swept) rather than a separate copy:
     a raw partial could close the turn or open another role instead of resuming (#7066).
     """
+    extra = {"tools": tools} if tools else {}
     partial = trailing_assistant_text(messages) if continue_final_message else None
     if not partial:
-        return processor.apply_chat_template(messages, add_generation_prompt = True, tokenize = False)
+        return processor.apply_chat_template(
+            messages, add_generation_prompt = True, tokenize = False, **extra
+        )
     try:
         return processor.apply_chat_template(
             messages,
             add_generation_prompt = False,
             continue_final_message = True,
             tokenize = False,
+            **extra,
         )
     except TypeError:
         prefix = processor.apply_chat_template(
-            messages[:-1], add_generation_prompt = True, tokenize = False
+            messages[:-1], add_generation_prompt = True, tokenize = False, **extra
         )
         return f"{strip_open_reasoning_prefill(prefix)}{partial}"
+
+
+def neutralize_for_render(tokenizer, messages: list, tools: Optional[list]):
+    """Sweep the catalog and the messages for control markup, in the one correct order.
+
+    Returns ``(messages, tools, markup)``. One place because the sweep is order dependent:
+    a call site that re-derived it swept the messages against a profile the render would
+    not select (#7066).
+    """
+    # Gated on the loaded model's own markers, so another family's sentinel is left alone.
+    markup = markup_for_tokenizer(tokenizer, tools)
+    tools = neutralize_tool_descriptions(tools, None, markup)
+    # Sanitizing can empty the catalog, which flips the selector, so re-profile first
+    # or the messages are swept against a template this request will not use (#7066).
+    if bool(tools) != bool(markup and getattr(markup, "selected_with_tools", False)):
+        markup = markup_for_tokenizer(tokenizer, tools)
+    return neutralize_control_markup_in_messages(messages, None, markup), tools, markup
 
 
 def apply_chat_template_for_generation(
@@ -2923,17 +3262,8 @@ def apply_chat_template_for_generation(
 
     With *continue_final_message* the prompt ends inside the trailing assistant
     turn, so the model resumes the partial instead of restarting it."""
-    # Shared choke point for the transformers and MLX backends (#7066). Gated on the
-    # loaded model's own markers, so text naming another family's sentinel is left alone.
-    _markup = markup_for_tokenizer(tokenizer, tools)
-    tools = neutralize_tool_descriptions(tools, None, _markup)
-    # Sanitizing can empty the catalog, and an empty catalog renders with "default" rather
-    # than "tool_use". Re-profile before sweeping the messages, or they are swept against a
-    # template this request will not use and a default-only delimiter reaches the prompt
-    # raw. Order matters: the catalog is sanitized first so the selector is settled (#7066).
-    if bool(tools) != bool(_markup and getattr(_markup, "selected_with_tools", False)):
-        _markup = markup_for_tokenizer(tokenizer, tools)
-    messages = neutralize_control_markup_in_messages(messages, None, _markup)
+    # Shared choke point for the transformers and MLX backends (#7066).
+    messages, tools, _markup = neutralize_for_render(tokenizer, messages, tools)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking

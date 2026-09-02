@@ -4,8 +4,11 @@
 import { Tick02Icon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { XIcon } from "lucide-react";
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import {
+  ChevronDownIcon,
+  XIcon,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -36,22 +39,6 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 type McpPreset = {
   id: string;
   displayName: string; // stored row name
@@ -241,7 +228,6 @@ export function McpComposerButton({
     }
   }
 
-  // Keep the tooltip anchor pointer-events-none so it cannot swallow row clicks.
   const renderRow = (opts: {
     key: string;
     label: string;
@@ -285,6 +271,7 @@ export function McpComposerButton({
           <TooltipTrigger asChild={true}>
             <span
               aria-hidden={true}
+              // pointer-events-none so the anchor cannot swallow row clicks.
               className="pointer-events-none absolute inset-y-0 right-0 w-0"
             />
           </TooltipTrigger>
@@ -341,7 +328,7 @@ export function McpComposerButton({
               <XIcon className="composer-pill-x" />
             </span>
             <span>MCP</span>
-            <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -400,10 +387,8 @@ export function McpComposerButton({
 export function McpServersDialogMount() {
   const open = useMcpServersDialogStore((s) => s.open);
   const setOpen = useMcpServersDialogStore((s) => s.setOpen);
-  // Server configuration does not require tool support from the loaded model.
   const chatActive = useChatActive();
   useShortcut("openMcpServers", () => setOpen(true), { enabled: chatActive });
-  // Clear the shared open state when leaving chat.
   useEffect(() => {
     if (!chatActive && open) setOpen(false);
   }, [chatActive, open, setOpen]);

@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import structlog
 
@@ -36,9 +36,7 @@ RESOLVE_TTL_SECONDS = 24 * 60 * 60
 # Matches the installer's download progress lines, e.g.
 # "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
 PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
-# The installer announces each server it starts to validate a build. They are
-# grandchildren, so a parent-death signal or a sweep of the installer pid alone
-# never reaches them, and one left running holds the GPU and the staged files.
+# The installer announces each server it starts to validate a build.
 CHILD_PID_LINE_RE = re.compile(r"\AUNSLOTH_INSTALLER_CHILD (started|stopped) (\d+)\Z")
 # The download dominates the update; extract/validate fill the last slice.
 DOWNLOAD_PROGRESS_CEILING = 0.95
@@ -51,6 +49,132 @@ class InstallerExit(RuntimeError):
     def __init__(self, returncode: int, message: str) -> None:
         super().__init__(message)
         self.returncode = returncode
+
+
+# Any installer log line. whisper.cpp updates run through this same helper, so
+# the component is matched as a pattern rather than llama's alone. The prefix is
+# also what separates the installer's own lines from the unprefixed system
+# report it prints after them.
+_PREBUILT_LOG_RE = re.compile(r"^\[[\w.-]+-prebuilt\]\s?(?P<body>.*)$")
+# The verdict line an installer logs before it exits: "prebuilt fallback
+# reason:", "prebuilt install failed:", "prebuilt install refused:", "prebuilt
+# busy reason:", "fatal helper error:", "fatal helper busy conflict:".
+_PREBUILT_VERDICT_RE = re.compile(
+    r"^(?:prebuilt\b[^:]*\b(?:reason|failed|refused)"
+    r"|fatal helper (?:error|busy conflict)):\s*(?P<detail>.*)$"
+)
+# A multi-line reason (the preflight failure lists one library per line) is
+# logged one prefixed line at a time, so a verdict owns the prefixed lines that
+# follow it. Bounded because only the installer's own framing bounds them.
+_VERDICT_CONTINUATION_LIMIT = 8
+
+
+def is_github_rate_limit_text(text: str) -> bool:
+    """Whether installer output blames a GitHub API rate limit.
+
+    Both halves are required. huggingface.co rate-limits the validation model
+    download with its own 429, and that failure also reaches the updater as
+    installer exit 2, so rate-limit wording alone would hand a user GH_TOKEN
+    advice that cannot fix it. GitHub itself answers an exceeded primary or
+    secondary limit with 403 or 429.
+    """
+    lowered = text.lower()
+    if "github" not in lowered:
+        return False
+    return (
+        "rate limit" in lowered
+        or "too many requests" in lowered
+        or "returned 403" in lowered
+        or "returned 429" in lowered
+    )
+
+
+def github_token_present(env: Optional[dict] = None) -> bool:
+    """Whether the installer ran with a GitHub token, as fetch_json reads it."""
+    source = os.environ if env is None else env
+    return bool(source.get("GH_TOKEN") or source.get("GITHUB_TOKEN"))
+
+
+def github_rate_limit_advice(token_present: bool) -> str:
+    """What the user can actually do about the rate limit they just hit.
+
+    An authenticated run has already spent the larger quota, or tripped a
+    secondary limit, and telling it to set the token it is holding is advice it
+    cannot act on. The installer draws the same distinction: fetch_json only
+    appends the token hint when neither variable is set.
+    """
+    if token_present:
+        return "Wait for the limit to reset and try again."
+    return "Set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits."
+
+
+def _installer_verdict(lines: Sequence[str]) -> str | None:
+    """The reason the installer exited on, with its continuation lines.
+
+    The installer logs that reason before dumping a long system report (Windows
+    PATH lines, nvidia-smi, ldd), so a raw tail hides rate-limit and network
+    errors behind noise (#9970). The last verdict wins: it is the one the
+    installer exited on, while an earlier rate-limit retry may have succeeded on
+    a later attempt. An unprefixed line ends a verdict, which is where the
+    system report begins.
+    """
+    verdict: list[str] | None = None
+    open_block: list[str] | None = None
+    for line in lines:
+        stripped = line.strip()
+        if CHILD_PID_LINE_RE.match(stripped) is not None:
+            # A grandchild announcement is protocol, not output: it can land
+            # between a reason and its continuation lines without ending either.
+            continue
+        log_line = _PREBUILT_LOG_RE.match(stripped)
+        if log_line is None:
+            open_block = None
+            continue
+        body = log_line.group("body").strip()
+        match = _PREBUILT_VERDICT_RE.match(body)
+        if match is not None:
+            verdict = open_block = [match.group("detail").strip()]
+        elif open_block is not None and len(open_block) <= _VERDICT_CONTINUATION_LIMIT:
+            open_block.append(body)
+    if verdict is None:
+        return None
+    detail = "\n".join(part for part in verdict if part)
+    return detail or None
+
+
+def format_installer_failure_message(
+    returncode: int,
+    lines: Sequence[str],
+    verdict_lines: Sequence[str] = (),
+    hint_lines: Sequence[str] = (),
+    env: Optional[dict] = None,
+) -> str:
+    """Build an installer failure message that prefers the verdict over tail noise.
+
+    *verdict_lines* and *hint_lines* are what stream_installer kept as they
+    streamed: the system report is long enough on a Linux CUDA host to push the
+    reason out of the bounded tail, so the tail alone is not a reliable place to
+    find it. A rate-limit hint only annotates the tail, because the run may have
+    retried past it and died of something else entirely. *env* is the
+    environment the installer ran with, which decides the rate-limit advice.
+    """
+    advice = github_rate_limit_advice(github_token_present(env))
+    detail = _installer_verdict(verdict_lines) or _installer_verdict(lines)
+    if detail:
+        if is_github_rate_limit_text(detail):
+            return (
+                f"installer exited {returncode}: GitHub API rate limit exceeded while "
+                f"fetching prebuilt releases. {advice}"
+            )
+        clipped = detail if len(detail) <= 1500 else detail[:1497] + "..."
+        return f"installer exited {returncode}: {clipped}"
+    tail = "".join(lines).strip()[-1500:] or "no output"
+    if any(is_github_rate_limit_text(line) for line in (*hint_lines, *lines)):
+        return (
+            f"installer exited {returncode}: GitHub API rate limit exceeded while fetching "
+            f"prebuilt releases. {advice} Installer output: {tail}"
+        )
+    return f"installer exited {returncode}: {tail}"
 
 
 JOB_IDLE = "idle"
@@ -178,7 +302,7 @@ def resolve_prebuilt_for_host(
     except Exception as exc:  # pragma: no cover - subprocess/json defensive
         logger.debug(log_message, error = str(exc))
         value = None
-    if value is not None:  # cache real answers; let failures retry next poll
+    if value is not None:
         memo.update(at = now, key = cache_key, value = value)
     return value
 
@@ -237,8 +361,8 @@ def managed_install_root(
         return marker_root
     if not binary:
         return None
-    # The server-path pin is an explicit user choice that wins in discovery; never
-    # auto-replace its tree (even the user's own checkout).
+    # The server-path pin is an explicit user choice that wins in discovery, so never auto-replace
+    # its tree, even the user's own checkout.
     if os.environ.get(server_path_var):
         return None
     p = Path(binary)
@@ -344,10 +468,8 @@ def stream_installer(
         errors = "replace",
         # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(env),
-        # Deliberately NOT start_new_session: the desktop stop path force-kills
-        # this backend's process group, and a session of its own would take the
-        # installer out of it, leaving it rewriting files after the app reports
-        # the backend stopped.
+        # Deliberately NOT start_new_session: the desktop stop path force-kills this process group, and a session of its
+        # own would leave the installer rewriting files after the app reports stopped.
         **child_popen_kwargs(),
     )
     # The kwargs above are empty on macOS, so record it: an installer that
@@ -358,10 +480,8 @@ def stream_installer(
     announced = AnnouncedChildren()
 
     def _stop_announced() -> None:
-        # This process keeps running after an installer error, so no startup
-        # sweep is coming and its own record shields these from one anyway: a
-        # validation server left here holds the GPU and the staged files
-        # through the retry that follows.
+        # This process keeps running after an installer error, so no startup sweep is coming: a validation server left
+        # here holds the GPU and the staged files through the retry.
         while True:
             pid = announced.take()
             if pid is None:
@@ -377,16 +497,38 @@ def stream_installer(
     watchdog.daemon = True
     watchdog.start()
     tail_lines: list[str] = []
+    # Two buckets, not one: a run can log a dozen rate-limit retries before the
+    # verdict line, and a single capped list would fill with retries and drop the
+    # verdict, which is the line the user needs.
+    verdict_lines: list[str] = []
+    hint_lines: list[str] = []
+    open_verdict = False
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             tail_lines.append(line)
             if len(tail_lines) > 80:
                 del tail_lines[0]
-            child = CHILD_PID_LINE_RE.match(line.strip())
+            stripped = line.strip()
+            child_line = CHILD_PID_LINE_RE.match(stripped)
+            log_line = None if child_line is not None else _PREBUILT_LOG_RE.match(stripped)
+            body = log_line.group("body").strip() if log_line is not None else None
+            if body is not None and _PREBUILT_VERDICT_RE.match(body) is not None:
+                # Restart the block: this verdict supersedes any earlier one.
+                verdict_lines = [line]
+                open_verdict = True
+            elif open_verdict and body is not None:
+                if len(verdict_lines) <= _VERDICT_CONTINUATION_LIMIT:
+                    verdict_lines.append(line)
+            elif body is None and child_line is None:
+                # Where the unprefixed system report starts, the verdict ends.
+                # A grandchild announcement is protocol, not output, and never ends one.
+                open_verdict = False
+            if not open_verdict and len(hint_lines) < 4 and is_github_rate_limit_text(line):
+                hint_lines.append(line)
+            child = child_line
             if child is not None:
-                # Recorded while it runs and dropped when the installer says it
-                # stopped; one it never got to report stays for the sweep.
+                # Recorded while it runs and dropped when the installer says
                 started, child_pid = child.group(1) == "started", int(child.group(2))
                 if started:
                     adopt_pid(child_pid)
@@ -404,14 +546,18 @@ def stream_installer(
         watchdog.cancel()
         if proc.poll() is not None:
             forget_pid(proc.pid)
-        # Anything it started and never reported as stopped, whether it timed
-        # out, exited nonzero, or died mid-line.
+        # Anything it started and never reported as stopped, whether it timed out, exited nonzero, or
+        # died mid-line.
         _stop_announced()
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
     if returncode != 0:
-        tail = "".join(tail_lines).strip()[-1500:]
-        raise InstallerExit(returncode, f"installer exited {returncode}: {tail or 'no output'}")
+        raise InstallerExit(
+            returncode,
+            format_installer_failure_message(
+                returncode, tail_lines, verdict_lines, hint_lines, env = env
+            ),
+        )
 
 
 def _new_phase_record(spec: dict) -> dict:
@@ -496,8 +642,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         offset += weight
         with job_lock:
             if result.get("skipped"):
-                # Skipped with a reason, not a success with no message: deciding late
-                # must not mean explaining less.
+                # Skipped with a reason.
                 job["phases"][name].update(
                     state = PHASE_SKIPPED,
                     reason = result.get("skip_reason") or "up_to_date",
@@ -511,15 +656,12 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
                 )
         if result.get("message"):
             done_messages.append(result["message"])
-        # Only phases affecting the primary (llama) server may raise the job-level
-        # reload flag: the frontend resyncs chat model state off it, and a
-        # whisper-only sidecar reload must not clear the chat checkpoint. Per-phase
-        # reload_required stays visible under job["phases"].
+        # Only phases affecting the primary llama server may raise the job-level reload flag: the
+        # frontend resyncs chat model state off it, and a whisper-only sidecar reload must not clear
+        # the chat checkpoint. Per-phase reload_required stays visible under job["phases"].
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
-            # The legacy job-level to_tag means "the llama build now installed";
-            # a whisper-only round must leave it unset or the UI reports a llama
-            # update that never ran (per-phase to_tag remains under phases).
+            # The legacy job-level to_tag means "the llama build now installed"
             if primary_to_tag is None:
                 primary_to_tag = result.get("to_tag")
 

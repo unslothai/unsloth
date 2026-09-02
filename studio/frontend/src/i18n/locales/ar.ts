@@ -52,6 +52,13 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
+    find: {
+      label: "البحث في الصفحة",
+      previous: "التطابق السابق",
+      next: "التطابق التالي",
+      close: "إغلاق البحث",
+      truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const ar = {
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
       actions: {
+        findInPage: {
+          label: "البحث في الصفحة",
+          description: "البحث في نص هذه الصفحة",
+        },
         openSettings: {
           label: "فتح الإعدادات",
           description: "فتح مربع حوار الإعدادات",
@@ -831,6 +842,16 @@ export const ar = {
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
       },
+      repairInstall: {
+        label: "إصلاح التثبيت",
+        description:
+          "يعيد تشغيل المثبّت على البيئة المُدارة. استخدمه إذا لم يتم اكتشاف وحدة معالجة الرسومات أو إذا تعذّر بدء التطبيق.",
+        action: "إصلاح التثبيت",
+        confirmTitle: "هل تريد إصلاح هذا التثبيت؟",
+        confirmDescription:
+          "يوقف الخادم ويعيد تشغيل المثبّت، الذي يعيد تثبيت PyTorch لوحدة معالجة الرسومات في هذا الجهاز. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmAction: "إصلاح الآن",
+      },
       resetPreferences: {
         sectionTitle: "منطقة الخطر",
         label: "إعادة تعيين جميع التفضيلات المحلية",
@@ -1086,6 +1107,8 @@ export const ar = {
         currentLoad: "الحمل الحالي",
         free: "{value} متاح",
         noGpu: "لا يوجد GPU مرئي",
+        gpuUnusable: "GPU غير قابل للاستخدام",
+        gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
       },
       gpu: {
         title: "أجهزة GPU",
@@ -1094,6 +1117,12 @@ export const ar = {
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
+        noUsableGpu: "لا يوجد على هذا الجهاز أي GPU يمكن لـ PyTorch استخدامه.",
+        mismatchCpuBuild:
+          "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
+        mismatchUnavailable:
+          "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",

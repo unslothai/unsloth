@@ -8,8 +8,11 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -156,3 +159,156 @@ def test_overlapping_status_probes_leave_default_executor_for_streaming(monkeypa
     assert started, "the status probe never ran"
     assert token == "token"
     assert len(responses) == 2
+
+
+def _attempt(model_path: str):
+    return inference_route._ScopedLoadAttempt(
+        token = "attempt",
+        request_id = None,
+        model_path = model_path,
+        subject = "test",
+        cancel_event = threading.Event(),
+        cancel_complete = threading.Event(),
+    )
+
+
+def _patch_fast_status(monkeypatch, backend = None):
+    _patch_status_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_probe_llama_cpp_status",
+        lambda _backend: (False, {}),
+    )
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_running_load_attempt", None)
+    monkeypatch.setattr(inference_route, "_pending_load_attempts", {})
+
+
+def test_status_reports_a_load_queued_on_the_lifecycle_gate(monkeypatch):
+    _patch_fast_status(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_pending_load_attempts",
+        {"attempt": _attempt("org/slow-model-GGUF")},
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.active_model is None
+    assert response.loading == ["org/slow-model-GGUF"]
+
+
+def test_status_keeps_the_resident_model_visible_during_a_load(monkeypatch):
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = "org/resident-model"
+    backend.models = {"org/resident-model": {}}
+    backend.loading_models = set()
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("org/incoming-model"),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.active_model == "org/resident-model"
+    assert response.model_identifier == "org/resident-model"
+    assert response.loaded == ["org/resident-model"]
+    assert response.loading == ["org/incoming-model"]
+
+
+def test_load_is_registered_before_the_lifecycle_gate_and_always_cleared(monkeypatch):
+    from core.inference import llama_keepwarm
+
+    monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    monkeypatch.setattr(inference_route, "_pending_load_attempts", {})
+    seen = []
+
+    @asynccontextmanager
+    async def _gate():
+        seen.append([a.model_path for a in inference_route._pending_load_attempts.values()])
+        yield
+
+    async def _fail(*_args, **_kwargs):
+        raise RuntimeError("load failed")
+
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", _gate)
+    monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", _fail)
+
+    request = inference_route.LoadRequest(model_path = "org/queued-model-GGUF")
+    with pytest.raises(RuntimeError):
+        asyncio.run(inference_route.load_model_gated(request, object(), "test"))
+
+    assert seen == [["org/queued-model-GGUF"]]
+    assert inference_route._pending_load_attempts == {}
+
+
+def test_status_reports_an_on_device_load_by_its_public_id(monkeypatch):
+    """A load still on its way to the backend must not publish the on-disk path the
+    completed load is careful to keep out of the same response."""
+    _patch_fast_status(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("/home/alice/models/Qwen3-30B-A3B-Q4_K_M.gguf"),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.loading == ["Qwen3-30B-A3B-Q4_K_M"]
+
+
+def test_status_reports_a_leased_native_load_by_its_registered_label(monkeypatch):
+    """Once the grant is redeemed the label is what every other field reports."""
+    from utils import native_path_leases
+
+    path = "/home/alice/Downloads/private-model.gguf"
+    native_path_leases._remember_native_path_for_redaction(path, "private-model")
+    try:
+        _patch_fast_status(monkeypatch)
+        monkeypatch.setattr(inference_route, "_running_load_attempt", _attempt(path))
+
+        response = asyncio.run(inference_route.get_status(current_subject = "test"))
+    finally:
+        with native_path_leases._REDACTION_LOCK:
+            native_path_leases._NATIVE_PATH_LABELS.pop(path, None)
+            if path in native_path_leases._NATIVE_PATH_REDACTIONS:
+                native_path_leases._NATIVE_PATH_REDACTIONS.remove(path)
+
+    assert response.loading == ["private-model"]
+
+
+def test_status_leaves_a_hub_repo_id_alone(monkeypatch):
+    """The redaction only has to reach paths; a repo id is already public."""
+    _patch_fast_status(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("unsloth/gemma-4-E2B-it-GGUF"),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.loading == ["unsloth/gemma-4-E2B-it-GGUF"]
+
+
+def test_status_does_not_list_one_transformers_load_twice(monkeypatch):
+    """The backend names the load it is running and the registry names the one the
+    route accepted. Reporting the attempt by its public id must not un-merge them."""
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = None
+    backend.models = {}
+    backend.loading_models = {"/home/alice/models/local-llama"}
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("/home/alice/models/local-llama"),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.loading == ["/home/alice/models/local-llama"]

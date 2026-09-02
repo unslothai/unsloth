@@ -50,9 +50,8 @@ def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     return False
 
 
-# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm
-# marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a stray <|audio|>, and
-# audio_vlm first typed it as audio-input.
+# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm marker. Orpheus carries 28k
+# <custom_token_N> SNAC codes AND a stray <|audio|>, and audio_vlm first typed it as audio-input.
 AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
@@ -68,19 +67,18 @@ AUDIO_TOKEN_PATTERNS = {
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 
-# Every substring a pattern needs, so text holding none of them is settled without a
-# parse -- json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras
-# scan. The patterns are lambdas, so this cannot be derived from them; a codec added
-# there without its marker here would silently stop being detected, and
-# test_audio_token_detection.py fails when the two drift.
+# Every substring a pattern needs, so text holding none is settled without a parse. The patterns are lambdas, so a codec
+# added there without its marker here silently stops being detected.
+# json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras scan, and test_audio_token_detection.py
+# fails when the two drift.
 AUDIO_TOKEN_MARKERS = (
-    "<|AUDIO|>",  # csm
-    "<|startoftranscript|>",  # whisper
-    "<|bicodec_",  # bicodec
-    "<|audio_start|>",  # dac
-    "<custom_token_",  # snac
-    "<audio_soft_token>",  # audio_vlm (Gemma 3n)
-    "<|audio|>",  # audio_vlm (Gemma 4)
+    "<|AUDIO|>",
+    "<|startoftranscript|>",
+    "<|bicodec_",
+    "<|audio_start|>",
+    "<custom_token_",
+    "<audio_soft_token>",
+    "<|audio|>",
 )
 
 AUDIO_TOKENIZER_CONFIG_PATHS = (
