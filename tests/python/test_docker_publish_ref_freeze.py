@@ -225,3 +225,183 @@ def _run_with_failing_ls_remote(script: str, tmp_path: Path):
         env = env,
         timeout = 60,
     )
+
+
+# --- the zoo tag probe --------------------------------------------------------
+# Item 3924993124. Before freezing, the zoo resolver asks whether the pushed
+# unsloth tag exists in unsloth-zoo at all (it usually does not: unsloth's v*
+# tags are Studio releases the zoo never cuts). `--exit-code` exists precisely so
+# a caller can tell the two apart -- git documents status 2 for "talked to the
+# remote, no matching refs", any other non-zero status for "never reached it" --
+# but the probe treated every non-zero status as "tag absent". A transient
+# DNS/TLS failure in that one call therefore published the requested unsloth tag
+# against zoo `main`, and the freeze step below resolves `main` without
+# complaint the moment the network recovers, so nothing else catches it.
+
+ZOO_TAG = "v2026.9.1"
+ZOO_MAIN_SHA = "1" * 40
+ZOO_TAG_SHA = "2" * 40
+
+
+def _expand_tag_trigger(run: str) -> str:
+    """The expansions a push of refs/tags/$ZOO_TAG produces (the dispatch input
+    is empty, so the probe branch is the one that runs)."""
+    run = run.replace("${{ github.event.inputs.unsloth_zoo_ref }}", "")
+    run = run.replace("${{ startsWith(github.ref, 'refs/tags/') }}", "true")
+    run = run.replace("${{ github.ref_name }}", ZOO_TAG)
+    return re.sub(r"\$\{\{[^}]*\}\}", "", run)
+
+
+def _run_zoo_step(script: str, tmp_path: Path, *, probe_exit: int):
+    """Drive the zoo resolver on a tag push with a git stub whose PROBE exits
+    `probe_exit` and whose freeze lookup always succeeds."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    stub = bin_dir / "git"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "--exit-code" ]; then\n'
+        + (
+            '    echo "fatal: unable to access: Could not resolve host" >&2\n'
+            if probe_exit not in (0, 2)
+            else ""
+        )
+        + f"    exit {probe_exit}\n"
+        "  fi\n"
+        "done\n"
+        # The freeze lookup: whatever ref it was handed resolves to a sha.
+        'if [ "${!#}" = "main" ]; then\n'
+        f'  printf "%s\\trefs/heads/main\\n" "{ZOO_MAIN_SHA}"\n'
+        "else\n"
+        f'  printf "%s\\trefs/tags/{ZOO_TAG}\\n" "{ZOO_TAG_SHA}"\n'
+        "fi\n"
+        "exit 0\n",
+        encoding = "utf-8",
+    )
+    stub.chmod(0o755)
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    path = tmp_path / "zoo_step.sh"
+    path.write_text(_expand_tag_trigger(script), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+    )
+    return res, out.read_text(encoding = "utf-8")
+
+
+def test_an_unreachable_zoo_probe_fails_instead_of_taking_main(steps: dict, tmp_path: Path):
+    res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 128)
+    assert res.returncode != 0, (
+        "a transport failure in the tag probe must fail the prepare job; taking "
+        "'main' pairs the requested unsloth tag with an unrelated zoo revision:\n"
+        f"stdout={res.stdout}\nstderr={res.stderr}"
+    )
+    assert f"ref={ZOO_MAIN_SHA}" not in emitted, emitted
+
+
+def test_a_missing_zoo_tag_still_falls_back_to_main(steps: dict, tmp_path: Path):
+    # git's documented "reached the remote, no matching refs" status. This is the
+    # common case for unsloth's Studio tags and must keep working.
+    res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 2)
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert emitted.strip() == f"ref={ZOO_MAIN_SHA}", emitted
+
+
+def test_a_present_zoo_tag_is_mirrored(steps: dict, tmp_path: Path):
+    res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 0)
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert emitted.strip() == f"ref={ZOO_TAG_SHA}", emitted
+
+
+# --- the base manifest digest -------------------------------------------------
+# Item 3924399626. build-studio FROMs the digest this step exports, so it must be
+# THIS run's manifest. metadata-action sorts its tags by priority (raw=200 above
+# sha=100), so `.tags[0]` on a main push is the MUTABLE `:core`, and main runs are
+# deliberately not serialised (the per-sha concurrency group at the top of the
+# workflow). A second run retagging `:core` between the manifest creation and this
+# inspection made the step export that run's digest instead.
+
+OTHER_RUN_DIGEST = "sha256:" + "a" * 64
+THIS_RUN_DIGEST = "sha256:" + "b" * 64
+IMAGE = "docker.io/unsloth/unsloth"
+
+
+@pytest.fixture(scope = "module")
+def manifest_digest_step() -> str:
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    for step in doc["jobs"]["merge"]["steps"]:
+        if step.get("id") == "manifest_digest":
+            return step["run"]
+    raise AssertionError("the manifest digest export step is missing from the merge job")
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
+def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str, tmp_path: Path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    # `docker buildx imagetools inspect <TAG> --format ...`: the mutable :core has
+    # already been retagged by the overlapping run, the run-specific tag has not.
+    stub = bin_dir / "docker"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$4" in\n'
+        f'  *core-sha-*) printf \'"{THIS_RUN_DIGEST}"\' ;;\n'
+        f"  *) printf '\"{OTHER_RUN_DIGEST}\"' ;;\n"
+        "esac\n",
+        encoding = "utf-8",
+    )
+    stub.chmod(0o755)
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    # What metadata-action emits for a default-branch push, in priority order.
+    env["DOCKER_METADATA_OUTPUT_JSON"] = (
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+    )
+    path = tmp_path / "digest_step.sh"
+    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+    )
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert out.read_text(encoding = "utf-8").strip() == f"digest={THIS_RUN_DIGEST}", (
+        "the step read the digest through the mutable :core tag, so an overlapping "
+        "main run can hand build-studio another commit's base image"
+    )
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
+def test_the_digest_export_still_works_without_a_sha_tag(manifest_digest_step: str, tmp_path: Path):
+    # A tag push publishes core-<version>; the fallback must keep resolving.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    stub = bin_dir / "docker"
+    stub.write_text("#!/usr/bin/env bash\n" f"printf '\"{THIS_RUN_DIGEST}\"'\n", encoding = "utf-8")
+    stub.chmod(0o755)
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    env["DOCKER_METADATA_OUTPUT_JSON"] = '{"tags":["' + IMAGE + ':core-v2026.9.1"]}'
+    path = tmp_path / "digest_step.sh"
+    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)], capture_output = True, text = True, env = env, timeout = 60
+    )
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert out.read_text(encoding = "utf-8").strip() == f"digest={THIS_RUN_DIGEST}"

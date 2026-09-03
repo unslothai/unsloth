@@ -18,7 +18,7 @@ Usage:
 A raw github URL (raw.githubusercontent.com/.../nb/Foo.ipynb) is fetched first.
 """
 
-import argparse, json, os, re, shutil, subprocess, sys, tempfile, urllib.request
+import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -56,6 +56,37 @@ def _scan(nb):
             if m:
                 model = m.group(1)
     return pin, model
+
+
+def _stage_metadata(staged, dest):
+    """Give the staged output the metadata the destination must end up with.
+
+    mkstemp() creates 0600 and nbconvert truncates that same inode, so the mode
+    survives os.replace(). Under the documented `-v $PWD:/workspace` layout the
+    container is root and the host user is not, so publishing as-is hands them an
+    output they cannot read, and overwriting an existing one drops its mode and
+    owner. Reuse the destination's metadata, else the umask-derived mode a plain
+    write would have produced. Best effort: a filesystem that refuses chmod/chown
+    must not cost the user their executed notebook.
+    """
+    try:
+        st = os.stat(dest)
+    except OSError:
+        try:
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(staged, 0o666 & ~umask)
+        except OSError:
+            pass
+        return
+    try:
+        os.chmod(staged, stat.S_IMODE(st.st_mode))
+    except OSError:
+        pass
+    try:
+        os.chown(staged, st.st_uid, st.st_gid)
+    except (OSError, AttributeError):
+        pass
 
 
 def main():
@@ -145,6 +176,7 @@ def main():
     try:
         rc = subprocess.call(cmd, env = env)
         if rc == 0 and publish_from is not None:
+            _stage_metadata(publish_from, out_path)
             os.replace(publish_from, out_path)
     finally:
         # Clean up the temp dir and any staging files (already gone when published).

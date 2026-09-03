@@ -810,12 +810,20 @@ def main():
     if not has_target:
         print("[unsloth-nb] nothing to install after keeping the baked stack; ok.")
         return
-    cmd = [REAL[tool]] + head + keep_args
     # Constrain the resolver too: an allowed target could pull an incompatible
     # torch/transformers in as a dependency and replace the baked wheel.
     constraints = _protected_constraints_file()
     if constraints:
-        cmd += ["--constraint", constraints]
+        # `--` ends option parsing for both real tools, so appending the pair after a
+        # kept one makes them read "--constraint" as a package name and fail. Insert
+        # before the terminator; with no `--` present this appends as it did before.
+        try:
+            _eoo = keep_args.index("--")
+        except ValueError:
+            keep_args += ["--constraint", constraints]
+        else:
+            keep_args[_eoo:_eoo] = ["--constraint", constraints]
+    cmd = [REAL[tool]] + head + keep_args
     sys.stdout.flush()
     os.execv(REAL[tool], cmd)
 

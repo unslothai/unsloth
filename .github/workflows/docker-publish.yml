@@ -150,9 +150,19 @@ jobs:
         run: |
           REF="${{ github.event.inputs.unsloth_zoo_ref }}"
           if [ -z "$REF" ] && [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
-              if git ls-remote --exit-code --tags https://github.com/unslothai/unsloth-zoo \
-                  "refs/tags/${{ github.ref_name }}" >/dev/null 2>&1; then
+              # git documents status 2 as "reached the remote, no matching ref";
+              # any other non-zero means the lookup never happened. Swallowing
+              # both let a transport blip pair the unsloth tag with zoo main, and
+              # the freeze below then resolves main happily once the network
+              # recovers. Only 2 may fall through, as the resolvers below do.
+              _rc=0
+              git ls-remote --exit-code --tags https://github.com/unslothai/unsloth-zoo \
+                  "refs/tags/${{ github.ref_name }}" >/dev/null 2>&1 || _rc=$?
+              if [ "$_rc" = "0" ]; then
                   REF="${{ github.ref_name }}"
+              elif [ "$_rc" != "2" ]; then
+                  echo "::error::unslothai/unsloth-zoo unreachable (git ls-remote exit ${_rc}); cannot tell whether it carries tag '${{ github.ref_name }}'"
+                  exit 1
               fi
           fi
           REF="${REF:-main}"
@@ -358,7 +368,14 @@ jobs:
       - name: Export manifest digest
         id: manifest_digest
         run: |
-          TAG="$(jq -r '.tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          # Read the digest back through THIS run's own tag. metadata-action sorts
+          # by priority (raw=200 above sha=100), so tags[0] on a main push is the
+          # mutable :core, and main runs are deliberately not serialised (per-sha
+          # concurrency group above). A second run retagging :core between the
+          # manifest creation and this inspection would export its digest, and
+          # build-studio would layer this run's Studio over that commit's base.
+          # type=sha carries no enable condition, so core-sha-* is always present.
+          TAG="$(jq -r '([.tags[] | select(contains("core-sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"

@@ -830,3 +830,49 @@ def test_vcs_slash_ref_unprotected_kept(shim):
     url = "git+https://github.com/someorg/sometool.git@feature/foo"
     execd, _ = _run(shim, "pip", [url])
     assert execd == [url], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3924399608 -- the protected-constraints pair must go BEFORE `--`.
+# `--` ends option parsing in pip (optparse handles a bare `--` explicitly) and
+# in uv, so anything after it is parsed as a requirement. Appending the pair to
+# a kept `pip install -- six` produced `-- six --constraint <file>`, which both
+# real tools reject with "Invalid requirement: '--constraint'" (reproduced
+# against pip 25.3 and uv 0.11.32), so a valid install cell failed outright.
+
+
+def _execd_full(shim, tool, args):
+    """The full argument list after `install`, constraints pair included."""
+    argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(shim.sys, "argv", argv)
+        with pytest.raises(_Exec) as exc:
+            shim.main()
+    tail = exc.value.argv[exc.value.argv.index("install") + 1 :]
+    return tail
+
+
+@pytest.mark.parametrize("tool", ["pip", "uv"])
+def test_constraints_precede_the_end_of_options_marker(shim, tool):
+    execd = _execd_full(shim, tool, ["--", "snac"])
+    assert "--constraint" in execd, execd
+    assert execd.index("--constraint") < execd.index("--"), (
+        f"the constraints pair lands after `--`, so the real tool parses "
+        f"--constraint as a requirement and the cell fails: {execd}"
+    )
+    # The user's own tokens keep their order and the terminator still guards them.
+    assert execd[execd.index("--") :] == ["--", "snac"], execd
+
+
+@pytest.mark.parametrize("tool", ["pip", "uv"])
+def test_end_of_options_marker_still_protects_the_baked_stack(shim, tool):
+    execd = _execd_full(shim, tool, ["--", "torch", "snac"])
+    assert "torch" not in execd, execd
+    assert execd[execd.index("--") :] == ["--", "snac"], execd
+
+
+@pytest.mark.parametrize("tool", ["pip", "uv"])
+def test_without_a_terminator_the_pair_is_still_appended_last(shim, tool):
+    execd = _execd_full(shim, tool, ["snac"])
+    assert execd[0] == "snac", execd
+    assert execd[-2] == "--constraint", execd
