@@ -63,6 +63,8 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
+  // Latest latent thumbnail as a base64 JPEG data URL; null when previews are unavailable.
+  preview?: string | null;
 }
 
 export interface DiffusionLoadProgress {

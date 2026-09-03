@@ -164,6 +164,7 @@ import {
   shouldContinueGenerating,
   shouldReportGenerateError,
 } from "./lib/generation-stop";
+import { nextProgress, previewFrame, releaseHeldPreview } from "./lib/generation-preview";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1312,6 +1313,17 @@ export function ImagesPage({
   const [genDone, setGenDone] = useState<number | null>(null);
   // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
+  // Held past the denoise: progress reports no preview while the record persists, and the final
+  // blob is still loading after that, so clearing on either would blank the viewer mid-handoff.
+  const [heldPreview, setHeldPreview] = useState<string | null>(null);
+  // The image the held frame hands off to: tracked while the run owns the selection, so it
+  // settles on the record the run produced and any later pick reads as a different image.
+  const previewOwner = useRef<string | null>(null);
+  // Set when the user picks a gallery image mid-run, so the preview gives the viewer back.
+  const [browsingDuringRun, setBrowsingDuringRun] = useState(false);
+  // Whether the run has a record coming. False for a cancelled or failed run, which has no
+  // handoff to wait for, so its last frame must be dropped rather than held indefinitely.
+  const [runProducedImage, setRunProducedImage] = useState(true);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
@@ -1634,6 +1646,39 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const previewSrc = previewFrame({
+    held: heldPreview,
+    generating: busy === "generating",
+    hasSelection: selected !== null,
+    finishedLoaded: Boolean(selectedSrc),
+    browsing: browsingDuringRun,
+  });
+
+  // Drop the frame once its run has handed off, so a later cache miss cannot flash it back.
+  useEffect(() => {
+    const generating = busy === "generating";
+    if (generating) {
+      previewOwner.current = selected?.id ?? null;
+      return;
+    }
+    // A run resumed against an empty gallery goes idle BEFORE loadGallery brings its record
+    // in, so it ends owning nothing. Adopt the first selection to appear instead of reading
+    // it as the user picking something else, which released the frame during the very
+    // handoff the hold exists for.
+    if (previewOwner.current === null && selected) {
+      previewOwner.current = selected.id;
+    }
+    if (
+      releaseHeldPreview({
+        held: heldPreview,
+        generating,
+        finishedLoaded: Boolean(selectedSrc),
+        selectionMatchesRun: (selected?.id ?? null) === previewOwner.current,
+        producedImage: runProducedImage,
+      })
+    )
+      setHeldPreview(null);
+  }, [busy, heldPreview, selected, selectedSrc, runProducedImage]);
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -2269,16 +2314,30 @@ export function ImagesPage({
             genVisibilityListener.current = null;
           }
           if (!isMounted.current) return;
+          // Re-fetch the first page to merge images the finished run saved, and resync
+          // status. Awaited, and before going idle: a resumed run that was stopped produced
+          // nothing, and releasing its held frame depends on knowing that. Reading the cache
+          // after the load (it refreshes synchronously) is what tells the two apart.
+          const knownBefore = galleryCache.images.length;
+          await loadGallery();
+          if (!isMounted.current) return;
+          setRunProducedImage(galleryCache.images.length > knownBefore);
           setBusy(null);
           setGenStep(null);
-          // Re-fetch the first page to merge images the finished run saved, and resync status.
-          void loadGallery();
           void refreshStatus();
           return;
         }
+        if (p.preview) setHeldPreview(p.preview);
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
-          return p;
+          const next = nextProgress(prev, p);
+          if (
+            prev &&
+            prev.step === next.step &&
+            prev.eta_seconds === next.eta_seconds &&
+            prev.preview === next.preview
+          )
+            return prev;
+          return next;
         });
       } catch {
         // transient; keep polling
@@ -2315,6 +2374,7 @@ export function ImagesPage({
         if (g.active) {
           setBusy("generating");
           setGenStep(g);
+          if (g.preview) setHeldPreview(g.preview);
           resumeGeneratePoll();
         }
       } catch {
@@ -3262,6 +3322,11 @@ export function ImagesPage({
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
+    setHeldPreview(null);
+    setBrowsingDuringRun(false);
+    // Nothing produced yet. A run that ends without flipping this back -- cancelled, or
+    // failed -- has no handoff coming, so its last frame is released instead of held.
+    setRunProducedImage(false);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
     cancelAcked.current = false;
@@ -3282,11 +3347,19 @@ export function ImagesPage({
       pollInFlight = true;
       try {
         const p = await getGenerateProgress();
+        if (p.preview) setHeldPreview(p.preview);
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
-          return p;
+          const next = nextProgress(prev, p);
+          if (
+            prev &&
+            prev.step === next.step &&
+            prev.eta_seconds === next.eta_seconds &&
+            prev.preview === next.preview
+          )
+            return prev;
+          return next;
         });
       } catch {
         // transient; keep polling
@@ -3306,6 +3379,12 @@ export function ImagesPage({
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
+        // Per attempt, not per batch. The success latch below is inside this loop, so a
+        // reset left outside it lets attempt 1's outcome speak for attempt 2; and a step
+        // count carried over from the previous attempt makes the next run's genuine step-0
+        // warmup look like the persist window, freezing the card on the old run's ETA.
+        setRunProducedImage(false);
+        setGenStep(null);
         // Stop issuing more GPU generations once the page truly unmounted (a plain tab switch
         // keeps it mounted), or once Stop was pressed: the backend cancel only reaches the denoise
         // in flight, so the remaining runs of a count > 1 request would otherwise start anyway.
@@ -3378,6 +3457,9 @@ export function ImagesPage({
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
+          // settleLostGeneration proved this run's record exists, so it has a handoff
+          // coming just like a normal success: the held frame must survive to meet it.
+          setRunProducedImage(true);
           setGenDone(i + 1);
           continue;
         }
@@ -3390,7 +3472,10 @@ export function ImagesPage({
         // again duplicates a React key and inflates the next page's offset, skipping a record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0]) {
+          setSelectedId(res.images[0].id);
+          setRunProducedImage(true);
+        }
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
@@ -4330,7 +4415,13 @@ export function ImagesPage({
 
         <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
-            {selected && selectedSrc ? (
+            {previewSrc ? (
+              <img
+                src={previewSrc}
+                alt="Generation preview"
+                className="max-h-full max-w-full object-contain shadow-sm"
+              />
+            ) : selected && selectedSrc ? (
               <>
                 <img
                   src={selectedSrc}
@@ -4401,7 +4492,7 @@ export function ImagesPage({
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                  selectedSrc || previewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
@@ -4450,7 +4541,10 @@ export function ImagesPage({
                 >
                   <button
                     type="button"
-                    onClick={() => setSelectedId(image.id)}
+                    onClick={() => {
+                      setSelectedId(image.id);
+                      if (busy === "generating") setBrowsingDuringRun(true);
+                    }}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {srcById[image.id] ? (

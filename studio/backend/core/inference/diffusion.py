@@ -85,6 +85,8 @@ from .diffusion_hidream import (
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     OFFLOAD_NONE,
@@ -127,6 +129,7 @@ from .diffusion_attention import (
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_gguf_compile as gguf_compile
+from . import diffusion_preview
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -894,6 +897,9 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
+    # Latest latent thumbnail (base64 JPEG data URL), None until the first one renders.
+    preview: Optional[str] = None
+    preview_at: float = 0.0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -6089,10 +6095,61 @@ class DiffusionBackend:
                     )
                     if cancel.is_set():
                         pipe._interrupt = True
+                        return callback_kwargs
+                    if (
+                        preview_vae is not None
+                        and now - gen.preview_at >= diffusion_preview.MIN_INTERVAL_S
+                    ):
+                        gen.preview_at = now
+                        started = time.monotonic()
+                        rendered = diffusion_preview.render(
+                            callback_kwargs.get("latents"),
+                            preview_vae,
+                            preview_width,
+                            preview_height,
+                            torch,
+                            logger = logger,
+                        )
+                        if rendered is not None:
+                            gen.preview = rendered
+                        # A preview is overhead, not denoising, so its cost is pushed out of
+                        # the window the ETA averages over. Without this the one-off
+                        # projection fit on the first frame lands inside the sample and the
+                        # next callback reads it as a step, inflating the estimate.
+                        gen.first_step_at += time.monotonic() - started
                     return callback_kwargs
 
+                try:
+                    preview_width, preview_height = _compile_shape_dims(
+                        workflow, init_pil, width, height
+                    )
+                except Exception:  # noqa: BLE001 -- previews must never block a generation
+                    preview_width, preview_height = (
+                        width or DEFAULT_IMAGE_WIDTH,
+                        height or DEFAULT_IMAGE_HEIGHT,
+                    )
+                # A preview costs one VAE decode on the first step to fit the projection.
+                # That is the wrong thing to spend on a CPU-only run, which is already slow
+                # and which previews are meant to sit out; and it is unsafe under any offload
+                # policy, where decoding the VAE mid-denoise pulls it onto the accelerator
+                # outside the sequence the memory plan laid out and can leave it resident
+                # while the next step reloads the transformer.
+                preview_vae = (
+                    getattr(state.pipe, "vae", None)
+                    if (
+                        diffusion_preview.previews_enabled()
+                        and state.offload_policy == OFFLOAD_NONE
+                        and str(getattr(state, "device", "cpu")).split(":")[0] != "cpu"
+                    )
+                    else None
+                )
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                    tensor_inputs = "callback_on_step_end_tensor_inputs" in call_params
+                    if preview_vae is not None and tensor_inputs:
+                        kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
+                    else:
+                        preview_vae = None
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
@@ -6264,6 +6321,7 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                "preview": None,
             }
         return {
             "active": True,
@@ -6271,6 +6329,7 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
+            "preview": gen.preview,
         }
 
     def cancel_generate(self) -> bool:

@@ -4095,6 +4095,10 @@ class DiffusionGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps for this run")
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    preview: Optional[str] = Field(
+        None,
+        description = "Latest latent thumbnail as a base64 JPEG data URL; null when off",
+    )
 
 
 class DiffusionLoadProgressResponse(BaseModel):
