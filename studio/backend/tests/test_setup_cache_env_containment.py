@@ -4,6 +4,7 @@
 """Everything Unsloth writes should sit under one directory (issue #8865)."""
 
 import contextlib
+import errno
 import importlib.util
 import json
 import os
@@ -459,6 +460,89 @@ def test_an_unreadable_managed_assets_child_keeps_its_pin(tmp_path):
     assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(assets)
 
 
+def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
+    """Make every stat of *target* raise *error*, and leave every other path alone.
+
+    chmod covers EACCES; a failing mount answering EIO has no on-disk equivalent
+    an unprivileged user can set up. Both os.stat and os.lstat are patched so the
+    predicates this replaced see the same failure the fix does.
+    """
+    def denying(real):
+        def deny(path, *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)) and Path(path) == target:
+                raise error
+            return real(path, *args, **kwargs)
+
+        return deny
+
+    for name in ("stat", "lstat"):
+        monkeypatch.setattr(os, name, denying(getattr(os, name)))
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason = "chmod 000 denies neither root nor Windows",
+)
+def test_an_unreadable_legacy_data_designer_dir_keeps_the_home_unpinned(tmp_path):
+    # Path.exists() cannot answer this: it raises for EACCES up to 3.13 and
+    # swallows it from 3.14 on, and both readings used to end at the pin, hiding
+    # the user's recipes and parquet behind a freshly seeded managed home.
+    home = tmp_path / "home"
+    _use_data_designer(home / ".data-designer")
+    sr = _load_storage_roots()
+
+    home.chmod(0o000)
+    try:
+        sr._setup_cache_env()
+    finally:
+        home.chmod(0o755)
+
+    assert "DATA_DESIGNER_HOME" not in os.environ
+    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
+
+
+def test_a_legacy_data_designer_dir_on_a_failing_volume_keeps_the_home_unpinned(
+    monkeypatch, tmp_path
+):
+    legacy = tmp_path / "home" / ".data-designer"
+    _use_data_designer(legacy)
+    sr = _load_storage_roots()
+    _fail_stat_on(monkeypatch, legacy, OSError(errno.EIO, "Input/output error"))
+
+    sr._setup_cache_env()
+
+    assert "DATA_DESIGNER_HOME" not in os.environ
+    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
+
+
+def test_a_legacy_data_designer_symlink_we_cannot_follow_keeps_the_home_unpinned(tmp_path):
+    # A loop answers ELOOP, which Path.exists() reports as absence on every
+    # release, so the exception handler never ran and the pin was taken anyway.
+    legacy = tmp_path / "home" / ".data-designer"
+    legacy.parent.mkdir(parents = True, exist_ok = True)
+    legacy.symlink_to(legacy)
+    sr = _load_storage_roots()
+
+    assert Path(legacy).exists() is False
+    sr._setup_cache_env()
+
+    assert "DATA_DESIGNER_HOME" not in os.environ
+
+
+def test_an_absent_legacy_data_designer_dir_still_pins_the_home(tmp_path):
+    # The inverse direction: only an inspection that positively found nothing
+    # declines, so hardening the probe must not turn into never containing
+    # anything. Nothing is at ~/.data-designer here, so the pin is ours to take.
+    (tmp_path / "home").mkdir(parents = True, exist_ok = True)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    managed = tmp_path / "studio" / "data-designer"
+    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
+    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(managed / "managed-assets")
+
+
 def test_managed_assets_follow_an_explicit_data_designer_home(monkeypatch, tmp_path):
     chosen = tmp_path / "mine" / ".data-designer"
     monkeypatch.setenv("DATA_DESIGNER_HOME", str(chosen))
@@ -634,6 +718,122 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     assert result["rc"] == str(config / "matplotlibrc")
     assert result["dpi"] == 222.0
     assert result["style"] is True
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason = "chmod 000 denies neither root nor Windows",
+)
+def test_an_uninspectable_matplotlib_config_dir_leaves_mplconfigdir_unset(tmp_path):
+    # MPLCONFIGDIR lives for the whole process, so reading an unreadable config
+    # dir as an empty one hides the matplotlibrc even once the mount recovers.
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    config.parent.chmod(0o000)
+    try:
+        sr._setup_cache_env()
+    finally:
+        config.parent.chmod(0o755)
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason = "chmod 000 denies neither root nor Windows",
+)
+def test_an_uninspectable_style_library_leaves_mplconfigdir_unset(tmp_path):
+    # Path.glob suppresses the scandir error and yields nothing on every release
+    # we support, so this probe never reached its exception handler at all: an
+    # unreadable stylelib read as an empty one and every custom style went
+    # missing from the loss plots.
+    styles = _matplotlib_config_dir(tmp_path / "home") / "stylelib"
+    styles.mkdir(parents = True)
+    (styles / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    styles.chmod(0o000)
+    try:
+        assert list(styles.glob("*.mplstyle")) == []
+        sr._setup_cache_env()
+    finally:
+        styles.chmod(0o755)
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_a_matplotlib_config_dir_on_a_failing_volume_leaves_mplconfigdir_unset(
+    monkeypatch, tmp_path
+):
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+    _fail_stat_on(monkeypatch, config / "matplotlibrc", OSError(errno.EIO, "Input/output error"))
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith(("linux", "freebsd")),
+    reason = "XDG config base is the Linux/FreeBSD branch",
+)
+def test_an_xdg_config_dir_is_read_without_a_resolvable_home(monkeypatch, tmp_path):
+    # matplotlib's _get_xdg_config_dir reads XDG_CONFIG_HOME before it needs a
+    # home, so bailing out on Path.home() first pinned over a real matplotlibrc.
+    config = tmp_path / "xdg" / "matplotlib"
+    config.mkdir(parents = True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    sr = _load_storage_roots()
+
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+
+    assert sr._matplotlib_defaults(tmp_path / "studio" / "cache") == {}
+
+
+def test_only_a_positive_absence_counts_as_nothing_at_a_path(tmp_path):
+    # The one rule every "pin only when there is nothing to strand" probe shares.
+    sr = _load_storage_roots()
+    present = tmp_path / "present"
+    present.write_text("x", encoding = "utf-8")
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "not-mounted-yet" / "data")
+
+    assert sr._nothing_at(tmp_path / "absent") is True
+    assert sr._nothing_at(present) is False
+    # Both of these answer False through Path.exists(), which is the bug.
+    assert Path(loop).exists() is False and sr._nothing_at(loop) is False
+    assert Path(dangling).exists() is False and sr._nothing_at(dangling) is False
+
+
+def test_nothing_at_reports_an_uninspectable_directory_as_holding_something(
+    monkeypatch, tmp_path
+):
+    sr = _load_storage_roots()
+    styles = tmp_path / "stylelib"
+    styles.mkdir()
+    real_scandir = os.scandir
+
+    def deny(path = ".", *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == styles:
+            raise OSError(errno.EIO, "Input/output error")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", deny)
+
+    assert sr._nothing_at(styles, ending = ".mplstyle") is False
+    assert sr._nothing_at(tmp_path / "absent", ending = ".mplstyle") is True
 
 
 def _fake_torch_on_path(tmp_path, label, version, cuda = None, hip = None, debug = False):
