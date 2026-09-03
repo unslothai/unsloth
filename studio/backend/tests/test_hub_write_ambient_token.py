@@ -683,7 +683,9 @@ def test_offline_anonymous_load_will_not_read_the_operators_cache(
     monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
     # Isolate the offline branch; the online authorization check has its own tests.
     monkeypatch.setattr(
-        export_backend_module, "_anonymous_access_allowed", lambda repo, off, revision = None: (not off, "refused")
+        export_backend_module,
+        "_anonymous_access_allowed",
+        lambda repo, off, revision = None: (not off, "refused"),
     )
 
     backend = export_backend_module.ExportBackend()
@@ -966,7 +968,12 @@ def test_anonymous_access_check_reads_the_gated_flag(monkeypatch, gated, private
     info.private = private
 
     class _Api:
-        def model_info(self, repo_id, revision = None, token = None):
+        def model_info(
+            self,
+            repo_id,
+            revision = None,
+            token = None,
+        ):
             assert token is False, "the check must ask anonymously"
             if raises:
                 raise RuntimeError("401")
@@ -1006,7 +1013,11 @@ def test_a_remote_adapters_base_is_authorized_too(monkeypatch):
 
     checked = []
 
-    def _check(repo, offline, revision = None):
+    def _check(
+        repo,
+        offline,
+        revision = None,
+    ):
         checked.append(repo)
         return (repo != "owner/private-base", "refused")
 
@@ -1362,7 +1373,12 @@ def test_the_cached_revision_is_what_gets_authorized(monkeypatch):
     asked = {}
 
     class _Api:
-        def model_info(self, repo_id, revision = None, token = None):
+        def model_info(
+            self,
+            repo_id,
+            revision = None,
+            token = None,
+        ):
             asked["revision"] = revision
 
             class _Info:

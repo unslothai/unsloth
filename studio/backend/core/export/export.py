@@ -104,7 +104,9 @@ def _remote_load_targets(checkpoint_path: str) -> List[Tuple[str, Optional[str]]
 
 
 def _anonymous_access_allowed(
-    repo_id: str, offline: bool, revision: Optional[str] = None
+    repo_id: str,
+    offline: bool,
+    revision: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Whether an anonymous caller may be served a cache-backed load of *repo_id*.
 
