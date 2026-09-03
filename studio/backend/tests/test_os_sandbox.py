@@ -197,6 +197,7 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     assert "--disable-userns" in argv
     assert "os.execvpe" in argv[argv.index("-c") + 1]
     assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--seccomp") + 1] == str(prepared.pass_fds[0])
     assert ("--proc", "/proc") == argv[argv.index("--proc") : argv.index("--proc") + 2]
     assert ("--dev", "/dev") == argv[argv.index("--dev") : argv.index("--dev") + 2]
     assert ("--remount-ro", "/") == argv[
@@ -583,6 +584,8 @@ def _run_native(
         )
         if prepared.preexec_fn is not None and os.name == "posix":
             kwargs["preexec_fn"] = prepared.preexec_fn
+        if prepared.pass_fds:
+            kwargs["pass_fds"] = prepared.pass_fds
         return subprocess.run(prepared.argv, **kwargs)
     finally:
         prepared.cleanup()
@@ -762,6 +765,13 @@ def denied(family, address):
         client.close()
     raise AssertionError('host endpoint was reachable: ' + repr(address))
 
+if hasattr(socket, 'AF_VSOCK'):
+    try:
+        socket.socket(socket.AF_VSOCK)
+    except OSError:
+        pass
+    else:
+        raise AssertionError('AF_VSOCK remained available')
 denied(socket.AF_INET, {ipv4_address!r})
 denied(socket.AF_INET6, {ipv6_address!r})
 datagram = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -930,6 +940,19 @@ def test_live_symlink_virtualenv_interpreter_runs_inside_sandbox(
         venv_python.symlink_to(sys.executable)
     assert venv_python.is_symlink()
     backend_root = str(Path(__file__).resolve().parents[1])
+    runtime_config = venv / "pyvenv.cfg"
+    inner = f"""
+import _ssl, sys
+assert sys.prefix == {str(venv)!r}
+try:
+    with open({str(runtime_config)!r}, 'a', encoding='utf-8') as stream:
+        stream.write('escape')
+except OSError:
+    pass
+else:
+    raise AssertionError('modified host-writable runtime configuration')
+print('VENV_OK')
+"""
     helper = f"""
 import os, subprocess, sys, types
 logger = types.SimpleNamespace(warning=lambda *args, **kwargs: None)
@@ -942,7 +965,7 @@ assert os.path.abspath(sys.executable) == {str(venv_python)!r}
 capability = os_sandbox.sandbox_capability()
 assert capability.qualified, capability
 spec = os_sandbox.SandboxLaunchSpec(
-    argv=(sys.executable, '-I', '-c', "import sys, zlib; assert sys.prefix == {str(venv)!r}; print('VENV_OK')"),
+    argv=(sys.executable, '-I', '-c', {inner!r}),
     workdir={str(workdir)!r},
     env={{'HOME': {str(workdir)!r}, 'TMPDIR': '/tmp', 'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'}},
 )
@@ -952,6 +975,7 @@ try:
         prepared.argv, cwd=prepared.workdir, env=prepared.env,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, timeout=20, close_fds=True, preexec_fn=prepared.preexec_fn,
+        pass_fds=prepared.pass_fds,
     )
 finally:
     prepared.cleanup()
@@ -972,6 +996,7 @@ print('SYMLINK_VENV_SANDBOX_OK')
     )
     assert completed.returncode == 0, completed.stderr
     assert "SYMLINK_VENV_SANDBOX_OK" in completed.stdout
+    assert "escape" not in runtime_config.read_text(encoding = "utf-8")
 
 
 def test_live_twenty_launch_startup_measurement(

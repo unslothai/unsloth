@@ -16114,6 +16114,8 @@ def _python_exec(
         if sys.platform != "win32":
             if launch_preexec is not None:
                 popen_kwargs["preexec_fn"] = launch_preexec
+            if prepared_launch is not None and prepared_launch.pass_fds:
+                popen_kwargs["pass_fds"] = prepared_launch.pass_fds
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
@@ -16296,6 +16298,8 @@ def _bash_exec(
         if sys.platform != "win32":
             if launch_preexec is not None:
                 popen_kwargs["preexec_fn"] = launch_preexec
+            if prepared_launch is not None and prepared_launch.pass_fds:
+                popen_kwargs["pass_fds"] = prepared_launch.pass_fds
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 

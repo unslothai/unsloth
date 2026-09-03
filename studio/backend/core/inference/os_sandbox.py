@@ -7,16 +7,18 @@ from __future__ import annotations
 
 import errno
 import os
+import platform
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import sysconfig
 import tempfile
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Callable, Protocol
+from typing import BinaryIO, Callable, Protocol
 
 from loggers import get_logger
 
@@ -26,6 +28,13 @@ _SCAN_ENTRY_LIMIT = 100_000
 _PROBE_TIMEOUT_SECONDS = 8
 _PROBE_TOKEN = "UNSLOTH_OS_SANDBOX_PROBE_OK"
 _PROBE_UDP_TOKEN = b"UNSLOTH_OS_SANDBOX_UDP_PROBE"
+_AF_VSOCK = 40
+_LINUX_SECCOMP_ABIS = {
+    "aarch64": (0xC00000B7, 198, 198, 199, 199),
+    "arm64": (0xC00000B7, 198, 198, 199, 199),
+    "amd64": (0xC000003E, 41, 0x40000029, 53, 0x40000035),
+    "x86_64": (0xC000003E, 41, 0x40000029, 53, 0x40000035),
+}
 _LINUX_SYSTEM_ROOTS = (
     "/usr/bin",
     "/usr/sbin",
@@ -79,9 +88,13 @@ class PreparedSandboxLaunch:
     env: dict[str, str]
     preexec_fn: Callable[[], None] | None
     backend: str
+    pass_fds: tuple[int, ...] = ()
+    owned_files: list[BinaryIO] = field(default_factory = list)
     cleanup_paths: list[str] = field(default_factory = list)
 
     def cleanup(self) -> None:
+        while self.owned_files:
+            self.owned_files.pop().close()
         while self.cleanup_paths:
             path = self.cleanup_paths.pop()
             try:
@@ -96,6 +109,49 @@ class SandboxBackend(Protocol):
     def probe(self) -> SandboxCapability: ...
 
     def prepare(self, spec: SandboxLaunchSpec) -> PreparedSandboxLaunch: ...
+
+
+def _linux_seccomp_filter() -> BinaryIO:
+    """Compile a minimal filter for host-channel socket families Bubblewrap cannot hide."""
+    abi = _LINUX_SECCOMP_ABIS.get(platform.machine().lower())
+    if abi is None:
+        raise SandboxUnavailableError(
+            f"Linux architecture {platform.machine() or 'unknown'} is not qualified for seccomp"
+        )
+    audit_arch, socket_nr, socket_alt_nr, socketpair_nr, socketpair_alt_nr = abi
+    # struct seccomp_data: nr@0, arch@4, args[0]@16. Any ABI change kills the
+    # process; AF_VSOCK and io_uring are denied while AF_UNIX remains available.
+    load_word = 0x20
+    jump_equal = 0x15
+    return_value = 0x06
+    kill_process = 0x80000000
+    return_errno = 0x00050000 | errno.EPERM
+    allow = 0x7FFF0000
+    io_uring_setup_nr = 425
+    instructions = (
+        (load_word, 0, 0, 4),
+        (jump_equal, 1, 0, audit_arch),
+        (return_value, 0, 0, kill_process),
+        (load_word, 0, 0, 0),
+        (jump_equal, 6, 0, io_uring_setup_nr),
+        (jump_equal, 3, 0, socket_nr),
+        (jump_equal, 2, 0, socket_alt_nr),
+        (jump_equal, 1, 0, socketpair_nr),
+        (jump_equal, 0, 3, socketpair_alt_nr),
+        (load_word, 0, 0, 16),
+        (jump_equal, 0, 1, _AF_VSOCK),
+        (return_value, 0, 0, return_errno),
+        (return_value, 0, 0, allow),
+    )
+    stream = tempfile.TemporaryFile(prefix = "unsloth-sandbox-seccomp-")
+    try:
+        stream.write(b"".join(struct.pack("=HBBI", *instruction) for instruction in instructions))
+        stream.flush()
+        stream.seek(0)
+    except Exception:
+        stream.close()
+        raise
+    return stream
 
 
 def _contained(
@@ -497,7 +553,12 @@ class LinuxBubblewrapBackend:
         workdir = _validate_workdir(spec.workdir)
         runtime_paths = _runtime_read_paths()
         _validate_runtime_paths(runtime_paths, workdir)
-        identity_dir, passwd, group = _identity_files()
+        seccomp_filter = _linux_seccomp_filter()
+        try:
+            identity_dir, passwd, group = _identity_files()
+        except Exception:
+            seccomp_filter.close()
+            raise
         env = dict(spec.env)
         env["HOME"] = workdir
         env["TMPDIR"] = "/tmp"
@@ -511,6 +572,8 @@ class LinuxBubblewrapBackend:
             "--disable-userns",
             "--cap-drop",
             "ALL",
+            "--seccomp",
+            str(seccomp_filter.fileno()),
             "--proc",
             "/proc",
             "--dev",
@@ -564,6 +627,8 @@ class LinuxBubblewrapBackend:
             env = env,
             preexec_fn = spec.launcher_preexec_fn,
             backend = self.identity,
+            pass_fds = (seccomp_filter.fileno(),),
+            owned_files = [seccomp_filter],
             cleanup_paths = [identity_dir],
         )
 
@@ -740,6 +805,8 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
             )
             if prepared.preexec_fn is not None and os.name == "posix":
                 run_kwargs["preexec_fn"] = prepared.preexec_fn
+            if prepared.pass_fds:
+                run_kwargs["pass_fds"] = prepared.pass_fds
             completed = subprocess.run(prepared.argv, **run_kwargs)
             if completed.returncode != 0 or _PROBE_TOKEN not in completed.stdout:
                 detail = completed.stderr.strip()[-300:] or completed.stdout.strip()[-300:]
