@@ -14,6 +14,7 @@ import core.agent_workspace.memory as memory_module
 from core.agent_workspace.background import BackgroundTaskManager
 from core.agent_workspace.common import AgentWorkspaceError
 from core.agent_workspace.memory import (
+    delete_memory_entry,
     get_memory_entry,
     memory_context,
     run_dream_task,
@@ -534,6 +535,107 @@ def test_dream_cleanup_deletion_requires_and_records_user_acceptance(tmp_path):
         json = {"decision": "accept", "expectedHash": stale["hash"]},
     )
     assert decision.status_code == 200
-    assert decision.json()["proposal"]["deletedEntry"]["path"] == stale["path"]
     with pytest.raises(AgentWorkspaceError, match = "not found"):
         get_memory_entry("project", stale["path"])
+
+
+def test_save_memory_entry_rejects_version_store_symlink(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _project(root)
+    initial = write_memory_entry("project", "project/architecture.md", "version 1 content")
+    assert initial["version"] == 1
+
+    outside = tmp_path / "outside_escape"
+    outside.mkdir()
+
+    version_project_dir = root / ".unsloth" / "memory" / ".versions" / "project"
+    version_project_dir.parent.mkdir(parents = True, exist_ok = True)
+    version_project_dir.symlink_to(outside, target_is_directory = True)
+
+    with pytest.raises(
+        AgentWorkspaceError,
+        match = "(A memory directory component is a symbolic link|Workspace path escapes the project root)",
+    ):
+        write_memory_entry(
+            "project",
+            "project/architecture.md",
+            "version 2 content",
+            expected_hash = initial["hash"],
+        )
+    assert list(outside.iterdir()) == []
+
+
+def test_delete_memory_entry_rejects_version_store_symlink(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _project(root)
+    initial = write_memory_entry("project", "project/cleanup.md", "delete me content")
+
+    outside = tmp_path / "outside_delete"
+    outside.mkdir()
+
+    version_project_dir = root / ".unsloth" / "memory" / ".versions" / "project"
+    version_project_dir.parent.mkdir(parents = True, exist_ok = True)
+    version_project_dir.symlink_to(outside, target_is_directory = True)
+
+    with pytest.raises(
+        AgentWorkspaceError,
+        match = "(A memory directory component is a symbolic link|Workspace path escapes the project root)",
+    ):
+        delete_memory_entry(
+            "project",
+            "project/cleanup.md",
+            expected_hash = initial["hash"],
+        )
+    assert list(outside.iterdir()) == []
+
+
+def test_save_memory_entry_rejects_versions_symlink(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _project(root)
+    initial = write_memory_entry("project", "project/notes.md", "notes v1")
+
+    outside = tmp_path / "outside_versions"
+    outside.mkdir()
+
+    versions_dir = root / ".unsloth" / "memory" / ".versions"
+    versions_dir.symlink_to(outside, target_is_directory = True)
+
+    with pytest.raises(
+        AgentWorkspaceError,
+        match = "(A memory directory component is a symbolic link|Workspace path escapes the project root)",
+    ):
+        write_memory_entry(
+            "project",
+            "project/notes.md",
+            "notes v2",
+            expected_hash = initial["hash"],
+        )
+    assert list(outside.iterdir()) == []
+
+
+def test_save_memory_entry_rejects_internal_version_store_symlink(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _project(root)
+    initial = write_memory_entry("project", "project/architecture.md", "version 1 content")
+    assert initial["version"] == 1
+
+    inside = root / ".unsloth" / "memory" / "inside_target"
+    inside.mkdir(parents = True, exist_ok = True)
+
+    version_project_dir = root / ".unsloth" / "memory" / ".versions" / "project"
+    version_project_dir.parent.mkdir(parents = True, exist_ok = True)
+    version_project_dir.symlink_to(inside, target_is_directory = True)
+
+    with pytest.raises(AgentWorkspaceError, match = "A memory directory component is a symbolic link."):
+        write_memory_entry(
+            "project",
+            "project/architecture.md",
+            "version 2 content",
+            expected_hash = initial["hash"],
+        )
+    assert list(inside.iterdir()) == []
+

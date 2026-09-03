@@ -3,7 +3,9 @@
 
 """Durable SQLite state for project-agent features."""
 
+from contextlib import contextmanager
 import json
+from pathlib import Path
 import sqlite3
 import threading
 import uuid
@@ -724,6 +726,46 @@ def update_plan_status(
         conn.close()
 
 
+def _verification_requirement_name(
+    requirement: Any,
+) -> tuple[str, bool, Optional[str], Optional[str]]:
+    if isinstance(requirement, str):
+        return requirement.strip(), True, None, None
+    if not isinstance(requirement, dict):
+        raise AgentWorkspaceError("Plan task verification requirements are invalid.")
+    name = str(requirement.get("name") or "").strip()
+    required = bool(requirement.get("required", True))
+    run_id = requirement.get("runId")
+    worktree_id = requirement.get("worktreeId")
+    return (
+        name,
+        required,
+        str(run_id) if run_id is not None else None,
+        str(worktree_id) if worktree_id is not None else None,
+    )
+
+
+@contextmanager
+def _plan_task_workspace_slots(project_id: str, requirements: list[Any]):
+    normalized = [
+        parsed for item in requirements if (parsed := _verification_requirement_name(item))[1]
+    ]
+    if not normalized:
+        yield
+        return
+
+    from .common import project_workspace
+    from .worktrees import _workspace_writer_slots, owned_worktree_path
+
+    roots: list[Path] = [project_workspace(project_id).root]
+    for _name, _required, _run_id, worktree_id in normalized:
+        if worktree_id is not None:
+            roots.append(owned_worktree_path(project_id, worktree_id))
+
+    with _workspace_writer_slots(*roots):
+        yield
+
+
 def update_plan_task(
     plan_id: str,
     task_id: str,
@@ -756,69 +798,75 @@ def update_plan_task(
         )
     conn = connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        revision = conn.execute(
-            "SELECT revision, project_id FROM agent_plans WHERE id = ?", (plan_id,)
-        ).fetchone()
-        if revision is None:
-            conn.rollback()
-            return None
-        if expected_revision is not None and revision["revision"] != expected_revision:
-            conn.rollback()
-            raise AgentWorkspaceError("Plan changed in another session. Refresh and retry.")
-        existing_task = conn.execute(
+        initial = conn.execute(
             """
-            SELECT verification_json FROM agent_plan_tasks
-            WHERE id = ? AND plan_id = ?
+            SELECT p.revision, p.project_id, t.verification_json
+            FROM agent_plans p
+            JOIN agent_plan_tasks t ON t.plan_id = p.id
+            WHERE p.id = ? AND t.id = ?
             """,
-            (task_id, plan_id),
+            (plan_id, task_id),
         ).fetchone()
-        if existing_task is None:
-            conn.rollback()
-            return None
-        effective_verification = (
-            verification
-            if verification is not None
-            else _loads(existing_task["verification_json"], [])
-        )
-        if status == "completed":
-            _require_plan_task_verification(str(revision["project_id"]), effective_verification)
-        cursor = conn.execute(
-            f"UPDATE agent_plan_tasks SET {', '.join(assignments)} WHERE id = ? AND plan_id = ?",
-            (*values, task_id, plan_id),
-        )
-        if cursor.rowcount:
-            conn.execute(
-                """
-                UPDATE agent_plans
-                SET updated_at = ?, revision = revision + 1 WHERE id = ?
-                """,
-                (now_ms(), plan_id),
-            )
-        conn.commit()
-        row = conn.execute("SELECT * FROM agent_plans WHERE id = ?", (plan_id,)).fetchone()
-        return _plan(conn, row) if row and cursor.rowcount else None
     finally:
         conn.close()
-
-
-def _verification_requirement_name(
-    requirement: Any,
-) -> tuple[str, bool, Optional[str], Optional[str]]:
-    if isinstance(requirement, str):
-        return requirement.strip(), True, None, None
-    if not isinstance(requirement, dict):
-        raise AgentWorkspaceError("Plan task verification requirements are invalid.")
-    name = str(requirement.get("name") or "").strip()
-    required = bool(requirement.get("required", True))
-    run_id = requirement.get("runId")
-    worktree_id = requirement.get("worktreeId")
-    return (
-        name,
-        required,
-        str(run_id) if run_id is not None else None,
-        str(worktree_id) if worktree_id is not None else None,
+    if initial is None:
+        return None
+    project_id = str(initial["project_id"])
+    effective_verification = (
+        verification
+        if verification is not None
+        else _loads(initial["verification_json"], [])
     )
+    with _plan_task_workspace_slots(
+        project_id,
+        effective_verification if status == "completed" else [],
+    ):
+        conn = connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            revision = conn.execute(
+                "SELECT revision, project_id FROM agent_plans WHERE id = ?", (plan_id,)
+            ).fetchone()
+            if revision is None:
+                conn.rollback()
+                return None
+            if expected_revision is not None and revision["revision"] != expected_revision:
+                conn.rollback()
+                raise AgentWorkspaceError("Plan changed in another session. Refresh and retry.")
+            existing_task = conn.execute(
+                """
+                SELECT verification_json FROM agent_plan_tasks
+                WHERE id = ? AND plan_id = ?
+                """,
+                (task_id, plan_id),
+            ).fetchone()
+            if existing_task is None:
+                conn.rollback()
+                return None
+            effective_verification = (
+                verification
+                if verification is not None
+                else _loads(existing_task["verification_json"], [])
+            )
+            if status == "completed":
+                _require_plan_task_verification(str(revision["project_id"]), effective_verification)
+            cursor = conn.execute(
+                f"UPDATE agent_plan_tasks SET {', '.join(assignments)} WHERE id = ? AND plan_id = ?",
+                (*values, task_id, plan_id),
+            )
+            if cursor.rowcount:
+                conn.execute(
+                    """
+                    UPDATE agent_plans
+                    SET updated_at = ?, revision = revision + 1 WHERE id = ?
+                    """,
+                    (now_ms(), plan_id),
+                )
+            conn.commit()
+            row = conn.execute("SELECT * FROM agent_plans WHERE id = ?", (plan_id,)).fetchone()
+            return _plan(conn, row) if row and cursor.rowcount else None
+        finally:
+            conn.close()
 
 
 def _latest_verification_row(

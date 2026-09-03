@@ -31,6 +31,7 @@ from core.agent_workspace.state import (
     create_plan,
     finish_verification_run,
     get_background_task,
+    get_plan,
     get_verification_config,
     set_verification_config,
     update_background_task,
@@ -1191,3 +1192,67 @@ def test_windows_cleanup_uses_captured_pid_after_leader_exit(monkeypatch):
     common._terminate_bounded_process(ExitedProcess())
 
     assert calls[0][0] == ["taskkill", "/PID", "42", "/T", "/F"]
+
+
+def test_update_plan_task_completed_holds_workspace_slot(tmp_path, monkeypatch):
+    _folder_project(tmp_path)
+    check = {"name": "test", "kind": "test", "command": "echo 1", "required": True}
+    config = set_verification_config("project", [check])
+
+    fingerprint = workspace_fingerprint(tmp_path)
+    run = begin_verification_run("project", fingerprint, config_revision = config["revision"])
+    finish_verification_run(
+        run["id"],
+        "passed",
+        fingerprint,
+        [{"name": "test", "required": True, "status": "passed"}],
+    )
+
+    plan = create_plan(
+        "project",
+        "Verification Plan",
+        "Goal",
+        [{"title": "Task 1", "verification": [{"name": "test", "required": True}]}],
+    )
+    task_id = plan["tasks"][0]["id"]
+
+    slot_held_during_check = []
+    from core.agent_workspace import worktrees
+
+    orig_acquire = worktrees.acquire_workspace_execution_slot
+    def tracking_acquire(identity, *args, **kwargs):
+        slot = orig_acquire(identity, *args, **kwargs)
+        slot_held_during_check.append(("acquired", identity))
+        return slot
+
+    monkeypatch.setattr(worktrees, "acquire_workspace_execution_slot", tracking_acquire)
+
+    # Completing the task must acquire the slot
+    updated = update_plan_task(plan["id"], task_id, status = "completed")
+    assert updated["tasks"][0]["status"] == "completed"
+    assert len(slot_held_during_check) >= 1
+    assert any(entry[0] == "acquired" for entry in slot_held_during_check)
+
+    # A non-completing status update should not acquire the slot
+    plan2 = create_plan(
+        "project",
+        "Verification Plan 2",
+        "Goal",
+        [{"title": "Task 2", "verification": [{"name": "test", "required": True}]}],
+    )
+    task2_id = plan2["tasks"][0]["id"]
+    slot_held_during_check.clear()
+    update_plan_task(plan2["id"], task2_id, status = "running")
+    assert len(slot_held_during_check) == 0
+
+    # Stale evidence (e.g. concurrent edit in workspace) causes task completion to fail
+    (tmp_path / "new_file.txt").write_text("concurrent edit")
+    with pytest.raises(
+        AgentWorkspaceError,
+        match = "Plan task completion requires fresh passing verification evidence.",
+    ):
+        update_plan_task(plan2["id"], task2_id, status = "completed")
+
+    stored_plan = get_plan(plan2["id"])
+    assert stored_plan["tasks"][0]["status"] == "running"
+

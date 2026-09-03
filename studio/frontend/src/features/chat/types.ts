@@ -44,6 +44,7 @@ export type ProjectPatch = Pick<
   | "goal"
   | "goalStatus"
   | "goalUpdatedAt"
+  | "goalRevision"
   | "archived"
   | "createdAt"
   | "updatedAt"

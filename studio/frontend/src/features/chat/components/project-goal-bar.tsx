@@ -67,6 +67,7 @@ function ProjectGoalBarContent({ project }: { project: ProjectRecord }) {
       await updateChatProjectGoal(activeProject.id, {
         goal: next,
         goalStatus: "active",
+        goalRevision: activeProject.goalRevision,
       });
       setEditing(false);
     } catch (error) {
@@ -82,7 +83,10 @@ function ProjectGoalBarContent({ project }: { project: ProjectRecord }) {
     }
     setSaving(true);
     try {
-      await updateChatProjectGoal(activeProject.id, { goalStatus: next });
+      await updateChatProjectGoal(activeProject.id, {
+        goalStatus: next,
+        goalRevision: activeProject.goalRevision,
+      });
     } catch (error) {
       reportSaveError(
         error,
@@ -104,6 +108,7 @@ function ProjectGoalBarContent({ project }: { project: ProjectRecord }) {
       await updateChatProjectGoal(activeProject.id, {
         goal: null,
         goalStatus: null,
+        goalRevision: activeProject.goalRevision,
       });
     } catch (error) {
       reportSaveError(error);

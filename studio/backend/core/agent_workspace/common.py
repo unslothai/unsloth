@@ -76,6 +76,19 @@ def project_workspace(project_id: str) -> ProjectWorkspace:
         raise AgentWorkspaceError("The project folder identity is invalid.") from exc
     if expected_device is None or expected_file is None:
         raise AgentWorkspaceError("The project folder identity is missing. Reopen it.")
+    try:
+        metadata = resolved.stat(follow_symlinks = False)
+    except OSError as exc:
+        raise AgentWorkspaceError("The project folder is unavailable.") from exc
+    if resolved.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        raise AgentWorkspaceError("The project workspace is not a directory.")
+    if (
+        int(metadata.st_dev) != expected_device
+        or int(metadata.st_ino) != expected_file
+    ):
+        raise AgentWorkspaceError(
+            "The project folder identity changed before it could be opened."
+        )
     return ProjectWorkspace(
         project_id = project_id,
         root = resolved,

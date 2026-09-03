@@ -152,6 +152,7 @@ export async function updateChatProjectGoal(
   patch: {
     goal?: string | null;
     goalStatus?: "active" | "paused" | "completed" | null;
+    goalRevision?: number;
   },
 ): Promise<void> {
   await updateStoredChatProject(projectId, {

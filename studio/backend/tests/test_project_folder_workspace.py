@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from core.inference import tools
+from core.agent_workspace import common
 from core.agent_workspace.common import (
     AgentWorkspaceError,
     project_workspace,
@@ -1281,3 +1282,70 @@ def test_artifact_diffing_is_disabled_only_for_folder_project_workspaces(tmp_pat
         tools._tracks_workspace_artifacts(tools.project_session_id(managed_project["id"])) is True
     )
     assert tools._tracks_workspace_artifacts("ordinary-chat") is True
+
+
+def test_project_workspace_rejects_replaced_directory_identity(tmp_path, monkeypatch):
+    root = tmp_path / "original_repo"
+    root.mkdir()
+    project = studio_db.upsert_chat_project(_folder_project("p-replaced", root))
+    ws = project_workspace(project["id"])
+    assert ws.root == root.resolve()
+
+    orig_ensure = common.ensure_chat_project_workspace
+    def ensure_and_replace(pid):
+        res = orig_ensure(pid)
+        backup = tmp_path / "repo_backup"
+        root.rename(backup)
+        root.mkdir()
+        return res
+
+    monkeypatch.setattr(common, "ensure_chat_project_workspace", ensure_and_replace)
+
+    with pytest.raises(
+        AgentWorkspaceError,
+        match = "The project folder identity changed before it could be opened.",
+    ):
+        project_workspace(project["id"])
+
+
+def test_patch_project_goal_enforces_client_goal_revision_cas(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    studio_db.upsert_chat_project(
+        _folder_project(
+            "p-cas",
+            root,
+            goal = "Initial Goal",
+            goalStatus = "active",
+            goalUpdatedAt = 1,
+        )
+    )
+    client = _project_api_client()
+
+    # Client A updates with matching goalRevision = 0
+    res_a = client.patch(
+        "/api/chat/projects/p-cas",
+        json = {"goal": "Updated by A", "goalRevision": 0},
+    )
+    assert res_a.status_code == 200
+    assert res_a.json()["goal"] == "Updated by A"
+    assert res_a.json()["goalRevision"] == 1
+
+    # Client B sends a stale update with goalRevision = 0
+    res_b_stale = client.patch(
+        "/api/chat/projects/p-cas",
+        json = {"goal": "Updated by B", "goalRevision": 0},
+    )
+    assert res_b_stale.status_code == 409
+    assert "Project goal changed before this update completed." in res_b_stale.text
+    assert studio_db.get_chat_project("p-cas")["goal"] == "Updated by A"
+
+    # Client B updates with refreshed goalRevision = 1
+    res_b_ok = client.patch(
+        "/api/chat/projects/p-cas",
+        json = {"goal": "Updated by B", "goalRevision": 1},
+    )
+    assert res_b_ok.status_code == 200
+    assert res_b_ok.json()["goal"] == "Updated by B"
+    assert res_b_ok.json()["goalRevision"] == 2
+

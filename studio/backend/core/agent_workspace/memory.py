@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import uuid
@@ -132,6 +133,60 @@ def _safe_entry_path(root: Path, relative: str, *, create_parent: bool) -> Path:
     return path
 
 
+def _safe_version_path(
+    root: Path,
+    relative: str,
+    filename: str,
+    *,
+    create_parent: bool = True,
+) -> Path:
+    scope_dir = relative.rsplit("/", 1)[0]
+    relative_version = f"{MEMORY_VERSIONS}/{scope_dir}/{filename}"
+    path = contained_path(root, relative_version, must_exist = False)
+    relative_parts = Path(relative_version).parts
+    current = root
+    for part in relative_parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise AgentWorkspaceError("A memory directory component is a symbolic link.")
+        if current.exists() and not current.is_dir():
+            raise AgentWorkspaceError("A memory directory component is not a directory.")
+        if create_parent:
+            current.mkdir(mode = 0o700, exist_ok = True)
+        if current.is_symlink():
+            raise AgentWorkspaceError("A memory directory component is a symbolic link.")
+    if path.is_symlink():
+        raise AgentWorkspaceError("Memory entries cannot be symbolic links.")
+    if (
+        os.open in os.supports_dir_fd
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+    ):
+        try:
+            root_fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise AgentWorkspaceError("The project memory directory cannot be opened safely.") from exc
+        try:
+            current_fd = root_fd
+            for part in relative_parts[:-1]:
+                try:
+                    next_fd = os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd = current_fd,
+                    )
+                except OSError as exc:
+                    raise AgentWorkspaceError("A memory directory component is a symbolic link.") from exc
+                if current_fd != root_fd:
+                    os.close(current_fd)
+                current_fd = next_fd
+            if current_fd != root_fd:
+                os.close(current_fd)
+        finally:
+            os.close(root_fd)
+    return path
+
+
 def _ledger_path(root: Path) -> Path:
     return root / MEMORY_METADATA
 
@@ -162,7 +217,11 @@ def _atomic_write(
     *,
     mode: int = 0o600,
 ) -> None:
+    if path.is_symlink() or path.parent.is_symlink():
+        raise AgentWorkspaceError("A memory path component cannot be a symbolic link.")
     path.parent.mkdir(mode = 0o700, exist_ok = True)
+    if path.parent.is_symlink():
+        raise AgentWorkspaceError("A memory path component cannot be a symbolic link.")
     fd, temporary = tempfile.mkstemp(prefix = f".{path.name}.", dir = str(path.parent))
     temporary_path = Path(temporary)
     try:
@@ -171,6 +230,8 @@ def _atomic_write(
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        if path.is_symlink() or path.parent.is_symlink():
+            raise AgentWorkspaceError("A memory path component cannot be a symbolic link.")
         os.replace(temporary_path, path)
     except Exception:
         try:
@@ -444,9 +505,8 @@ def write_memory_entry(
         previous = entries.get(relative) or {}
         version = int(previous.get("version") or 0) + 1
         if exists:
-            version_root = root / MEMORY_VERSIONS / relative.rsplit("/", 1)[0]
-            version_root.mkdir(mode = 0o700, parents = True, exist_ok = True)
-            version_path = version_root / f"{version - 1:06d}-{_hash(current)[:12]}.md"
+            version_filename = f"{version - 1:06d}-{_hash(current)[:12]}.md"
+            version_path = _safe_version_path(root, relative, version_filename, create_parent = True)
             if not version_path.exists():
                 _atomic_write(version_path, current)
         # Recheck immediately before replacement. The lock coordinates Studio writers;
@@ -499,9 +559,9 @@ def delete_memory_entry(
         _require_agent_private_owner(entry, actor, source_session_id)
         if entry["hash"] != expected_hash:
             raise AgentWorkspaceError("Memory changed since it was read. Redraft the deletion.")
-        version_root = root / MEMORY_VERSIONS / relative.rsplit("/", 1)[0]
-        version_root.mkdir(mode = 0o700, parents = True, exist_ok = True)
-        _atomic_write(version_root / f"{entry['version']:06d}-{entry['hash'][:12]}.md", content)
+        version_filename = f"{entry['version']:06d}-{entry['hash'][:12]}.md"
+        version_path = _safe_version_path(root, relative, version_filename, create_parent = True)
+        _atomic_write(version_path, content)
         _safe_entry_path(root, relative, create_parent = False).unlink()
         ledger.get("entries", {}).pop(relative, None)
         _write_ledger(root, ledger)

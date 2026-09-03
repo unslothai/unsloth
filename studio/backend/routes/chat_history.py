@@ -425,6 +425,8 @@ class ChatProjectPatch(BaseModel):
     goal: Optional[str] = Field(default = None, max_length = 12_000)
     goalStatus: Optional[Literal["active", "paused", "completed"]] = None
     goalUpdatedAt: Optional[int] = None
+    goalRevision: Optional[int] = Field(default = None, ge = 0)
+    expectedGoalRevision: Optional[int] = Field(default = None, ge = 0)
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
     updatedAt: Optional[int] = None
@@ -1401,7 +1403,14 @@ def patch_project(
         and existing.get("goalStatus") != "completed"
     )
     goal_mutation = bool({"goal", "goalStatus", "goalUpdatedAt"} & patch.keys())
-    expected_goal_revision = int(existing.get("goalRevision") or 0)
+    client_goal_revision = patch.get("goalRevision")
+    if client_goal_revision is None:
+        client_goal_revision = patch.get("expectedGoalRevision")
+    expected_goal_revision = (
+        int(client_goal_revision)
+        if client_goal_revision is not None
+        else (int(existing.get("goalRevision") or 0) if goal_mutation else None)
+    )
     try:
         if completing_goal:
             workspace = project_workspace(project_id)
