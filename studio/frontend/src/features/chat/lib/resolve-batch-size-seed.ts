@@ -1,24 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// what a fresh /api/inference/status does to one batch control/baseline pair
+// what a fresh /api/inference/status does to one load control/baseline pair
 
-export interface BatchSizeSeedState {
+/**
+ * Generic in the value type because the rule is about the ECHO, not about batch
+ * sizes: the string tuning controls beside them (load mode, draft cache dtype)
+ * follow the same steady-echo, dirty-control and model-change logic. Defaults to
+ * number, so existing call sites read unchanged.
+ */
+export interface BatchSizeSeedState<T extends number | string = number> {
   /** The editable control: what the next load or Apply would send. */
-  value: number | null;
+  value: T | null;
   /** What the resident server was invoked with, as this tab last saw it. */
-  loaded: number | null;
+  loaded: T | null;
 }
 
 /** The subset of the pair to write back; empty means leave the store alone. */
-export type BatchSizeSeed = Partial<BatchSizeSeedState>;
+export type BatchSizeSeed<T extends number | string = number> = Partial<
+  BatchSizeSeedState<T>
+>;
 
-export function resolveBatchSizeSeed(options: {
+export function resolveBatchSizeSeed<T extends number | string = number>(options: {
   /** ``status.requested_n_batch`` / ``_n_ubatch``; undefined on a backend that omits the field. */
-  incoming: number | null | undefined;
+  incoming: T | null | undefined;
   /** ``status.is_gguf``: a non-GGUF (or diffusion, which echoes null) never has the flag. */
   isGguf: boolean;
-  previous: BatchSizeSeedState;
+  previous: BatchSizeSeedState<T>;
   /** No load of this tab's own is in flight (``!modelLoading``). */
   seedLoadParams: boolean;
   /** The model/variant changed underneath this tab. Nothing staged against the
@@ -26,7 +34,7 @@ export function resolveBatchSizeSeed(options: {
    *  the control adopts it even when a pending edit would otherwise hold, and
    *  even when the new model happens to report the count the old one ran. */
   modelChanged?: boolean;
-}): BatchSizeSeed {
+}): BatchSizeSeed<T> {
   const {
     incoming,
     isGguf,

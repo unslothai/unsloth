@@ -149,6 +149,9 @@ export interface VideoReferenceVideo {
   video: string;
   // Base64/data-URL soundtrack for THIS video; omitted takes the one embedded in the file.
   audio?: string;
+  // Optional explicit interval. Both endpoints are required together; duration must be 2 to 15s.
+  trim_start_seconds?: number;
+  trim_end_seconds?: number;
 }
 
 export interface VideoGenerateRequest {

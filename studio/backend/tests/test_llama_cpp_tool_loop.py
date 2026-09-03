@@ -17,6 +17,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -175,6 +177,64 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert samples[-1]["predicted_per_second"] == 200
 
 
+def test_plain_fixed_seed_disables_slot_prompt_cache_reuse(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "seeded"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "repeat this"}],
+            seed = 3407,
+        )
+    )
+
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+
+
+def test_the_uint32_random_seed_sentinel_also_keeps_cache_reuse(monkeypatch):
+    """llama.h defines LLAMA_DEFAULT_SEED as 0xFFFFFFFF read as uint32, so 4294967295 is the same "pick one at random" as -1 and must keep prompt-cache reuse."""
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "random"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "vary this"}],
+            seed = 0xFFFFFFFF,
+        )
+    )
+
+    assert payloads[0]["seed"] == 0xFFFFFFFF
+    assert "cache_prompt" not in payloads[0]
+
+
+def test_plain_random_seed_sentinel_keeps_slot_prompt_cache_reuse(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "random"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "vary this"}],
+            seed = -1,
+        )
+    )
+
+    assert payloads[0]["seed"] == -1
+    assert "cache_prompt" not in payloads[0]
+
+
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
     stream = [
         _progress(processed = 512, cached = 0, time_ms = 64),
@@ -261,6 +321,164 @@ def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list
         ),
         _done(),
     ]
+
+
+def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
+    """#9730: a forced web_search must reach llama-server on the first turn.
+
+    After the call executes, the follow-up is auto so the model can answer.
+    """
+    first_stream = _structured_tool_call(
+        "web_search", {"query": "current Linux kernel version"}, "call_search"
+    )
+    second_stream = [_sse({"content": "The current version of the Linux kernel is 6.10."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Search the web for the current version of the Linux kernel, "
+                        "then answer in one sentence."
+                    ),
+                }
+            ],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+            ],
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tool_iterations = 5,
+            permission_mode = "off",
+        )
+    )
+
+    assert payloads[0]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["web_search"]
+    assert payloads[1]["tool_choice"] == "auto"
+    assert any(
+        event.get("type") == "tool_start" and event.get("tool_name") == "web_search"
+        for event in events
+    )
+
+
+def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [], payloads)
+
+    with pytest.raises(ValueError, match = "Forced tool 'python' is not enabled"):
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "run python"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                tool_choice = {"type": "function", "function": {"name": "python"}},
+                max_tool_iterations = 1,
+            )
+        )
+
+    assert payloads == []
+
+
+def test_forced_tool_choice_retries_after_other_structured_calls(monkeypatch):
+    wrong_code = "print('wrong tool')\n" * 20
+    streams = [
+        _structured_tool_call("python", {"code": wrong_code}, "call_python"),
+        _structured_tool_call("web_search", {"query": "kernel version"}, "call_search"),
+        [_sse({"content": "The search completed."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Linux kernel result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search the web"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert payloads[0]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["web_search"]
+    assert payloads[1]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[1]["tools"]] == ["web_search"]
+    assert payloads[2]["tool_choice"] == "auto"
+    assert calls == [("web_search", {"query": "kernel version"})]
+    assert [event.get("tool_name") for event in events if event.get("type") == "tool_start"] == [
+        "web_search"
+    ]
+
+
+def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
+    stream = [
+        *_structured_tool_call("python", {"code": "print(1)"}, "call_python")[:-1],
+        _sse({"content": "I will answer without tools."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    def fail_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("tool_choice=none must not autoinject retrieval")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fail_execute_tool)
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "answer directly"}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            tool_choice = "none",
+            max_tool_iterations = 1,
+            rag_scope = {"thread_id": "t1", "autoinject": True},
+        )
+    )
+
+    assert len(payloads) == 1
+    assert "tools" not in payloads[0]
+    assert "tool_choice" not in payloads[0]
+    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+    assert any(event.get("text") == "I will answer without tools." for event in events)
 
 
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
@@ -2141,6 +2359,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2207,6 +2426,7 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2275,6 +2495,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2340,6 +2561,7 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2502,6 +2724,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2551,6 +2774,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2597,6 +2821,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
                 }
             ],
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2902,6 +3127,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2972,6 +3198,7 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2998,6 +3225,7 @@ def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(mon
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -3025,6 +3253,41 @@ def test_direct_answer_never_shows_the_nudge_status(monkeypatch):
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
 
 
+def test_clarification_request_is_not_nudged(monkeypatch):
+    """#8907: the model asked what the user wants, so there is nothing to act on.
+
+    The turn signs off with "I'll dig in", which ``INTENT_SIGNAL`` used to read as a
+    plan. Nudging it regenerated the turn and showed two near-identical questions.
+    """
+
+    clarification = (
+        '"balls" is pretty broad, so what would you like to know or do?\n\n'
+        "- Sports: rules of a game\n"
+        "- Physics: projectile motion, volume of a sphere\n\n"
+        "Let me know what you're after and I'll dig in."
+    )
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": clarification}), _done()]],
+        payloads,
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Balls"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    # one payload: a second would be the wasted re-prompted generation.
+    assert len(payloads) == 1
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts and content_texts[-1] == clarification
+
+
 def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
@@ -3039,6 +3302,22 @@ def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
             nudge_tool_calls = False,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    assert len(payloads) == 1
+
+
+def test_nudge_is_off_when_the_request_flag_is_omitted(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
         )
     )
 
@@ -3183,6 +3462,7 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
             messages = [{"role": "user", "content": "summarize the docs"}],
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
             rag_scope = {"thread_id": "t1"},
         )
     )
@@ -3197,6 +3477,48 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     ]
     assert len(nudges) == 1, nudges
     assert events
+
+
+def test_rag_autoinject_only_resolves_matching_forced_choices(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.tools.build_rag_autoinject",
+        lambda *_a, **_k: {
+            "events": [],
+            "messages": [{"role": "user", "content": "Retrieved passage: Tokyo."}],
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": "search_knowledge_base"}},
+        {"type": "function", "function": {"name": "web_search"}},
+    ]
+
+    def first_payload(tool_choice):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [[_sse({"content": "The passage describes Tokyo."}), _done()]],
+            payloads,
+        )
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "summarize the docs"}],
+                tools = tools,
+                tool_choice = tool_choice,
+                max_tool_iterations = 1,
+                nudge_tool_calls = False,
+                rag_scope = {"thread_id": "t1"},
+            )
+        )
+        return payloads[0]
+
+    matching = first_payload({"type": "function", "function": {"name": "search_knowledge_base"}})
+    required = first_payload("required")
+    unrelated = first_payload({"type": "function", "function": {"name": "web_search"}})
+
+    assert matching["tool_choice"] == "auto"
+    assert required["tool_choice"] == "auto"
+    assert unrelated["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in unrelated["tools"]] == ["web_search"]
 
 
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):
@@ -3233,6 +3555,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "run python"}],
             tools = [{"type": "function", "function": {"name": "python"}}],
+            tool_choice = {"type": "function", "function": {"name": "python"}},
             max_tool_iterations = 2,
             confirm_tool_calls = True,
             # Unset defaults to "auto", which would not prompt this safe print(1).
@@ -3246,6 +3569,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     assert len(starts) == 2
     assert [event["result"] for event in ends] == [TOOL_REJECTED_MESSAGE, "OK"]
     assert calls == [("python", {"code": "print(1)"})]
+    assert [payload.get("tool_choice") for payload in payloads] == ["required", "auto", "auto"]
 
 
 def _streamed_structured_tool_call(
@@ -3647,6 +3971,649 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
         "http://127.0.0.1:49999/v1/chat/completions",
     ]
     assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
+
+
+def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(monkeypatch):
+    """Both an ordinary iteration and final synthesis refit without repeating old drops."""
+    import httpx
+    for max_tool_iterations in (1, 0):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                httpx.ConnectError("server is down"),
+                [_sse({"content": "Recovered."}), _done()],
+            ],
+            payloads,
+        )
+        # Sized so each window overflows by roughly one turn-group. Compaction trims a
+        # headroom margin BELOW the budget and the turn-picking estimator is coarser than
+        # the exact count, so single-group steps would evict the whole history in one pass
+        # and leave the second preflight nothing to refit. The property under test is that
+        # BOTH preflight paths refit against the window they were given.
+        backend._effective_context_length = 2000
+        monkeypatch.setattr(
+            backend,
+            "count_chat_tokens",
+            lambda candidate, *_args, **_kwargs: sum(
+                len(str(message.get("content", ""))) for message in candidate
+            ),
+        )
+
+        def fake_respawn():
+            backend._effective_context_length = 1000
+            return True
+
+        monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "u" * 400},
+                    {"role": "assistant", "content": "a" * 400},
+                    {"role": "user", "content": "u" * 400},
+                    {"role": "assistant", "content": "a" * 400},
+                    {"role": "user", "content": "final"},
+                ],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = max_tool_iterations,
+                context_overflow = "truncate_oldest",
+            )
+        )
+
+        notices = [event for event in events if event.get("type") == "context_truncated"]
+        assert [notice["dropped_messages"] for notice in notices] == [2, 2]
+        assert [notice["context_length"] for notice in notices] == [2000, 1000]
+        assert [payload["max_tokens"] for payload in payloads] == [2000, 1000]
+        assert len(payloads[0]["messages"]) == 3
+        assert len(payloads[1]["messages"]) == 1
+
+
+def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
+    """Unpriced media must not disable compaction that the text alone requires."""
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return sum(len(str(message.get("content", ""))) for message in candidate)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "latest"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "AAAA", "format": "wav"},
+            },
+        ],
+    }
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 40},
+                {"role": "assistant", "content": "a" * 40},
+                audio_turn,
+            ],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 20,
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [event for event in events if event.get("type") == "context_truncated"]
+    assert counted
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in counted
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert [notice["dropped_messages"] for notice in notices] == [2]
+    assert payloads[0]["messages"] == [audio_turn]
+
+
+def test_tool_loop_secondary_counts_strip_media_but_payloads_keep_it(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            _structured_tool_call("python", {"code": "print('ok')"}, "call_python"),
+            [_sse({"content": "Done."}), _done()],
+        ],
+        payloads,
+    )
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return 1000
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_args, **_kwargs: "ok",
+    )
+    audio_data = "A" * 100_000
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "x" * 12_000},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": audio_data, "format": "wav"},
+            },
+        ],
+    }
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [audio_turn],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 512,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(counted) >= 3
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in counted
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert len(payloads) == 2
+    assert payloads[0]["messages"][0] == audio_turn
+    assert payloads[1]["messages"][0] == audio_turn
+    assert payloads[1]["messages"][0]["content"][1]["input_audio"]["data"] == audio_data
+
+
+@pytest.mark.parametrize("with_tools", [False, True])
+def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, with_tools):
+    from core.inference import llama_cpp
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+    recall_recounts: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        total = 0
+        for message in candidate:
+            content = message.get("content", "")
+            if isinstance(content, str):
+                total += len(content)
+            else:
+                total += sum(len(part.get("text", "")) for part in content)
+        return total
+
+    def fake_archive(conversation, _before, **kwargs):
+        before_count = len(counted)
+        kwargs["count_tokens"](conversation)
+        assert len(counted) == before_count + 1
+        recall_recounts.append(counted[-1])
+        return {
+            "conversation": conversation,
+            "events": [],
+            "counts": {},
+            "recalled": False,
+            "anchored": [],
+        }
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "latest"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            },
+        ],
+    }
+    kwargs = {
+        "messages": [
+            {"role": "user", "content": "u" * 40},
+            {"role": "assistant", "content": "a" * 40},
+            audio_turn,
+        ],
+        "max_tokens": 20,
+        "context_overflow": "truncate_oldest",
+        "thread_id": "media-recall",
+    }
+
+    if with_tools:
+        list(
+            backend.generate_chat_completion_with_tools(
+                **kwargs,
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = 1,
+            )
+        )
+    else:
+        list(backend.generate_chat_completion(**kwargs))
+
+    assert recall_recounts
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in recall_recounts
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert payloads[0]["messages"][-1] == audio_turn
+
+
+def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
+    """A rescued respawn refit archives its evictions and emits metadata."""
+    import httpx
+
+    from core.inference import llama_cpp
+
+    # Captured once: the second pass would otherwise wrap the first pass's spy.
+    real_archive = llama_cpp._archive_and_recall
+
+    for max_tool_iterations in (1, 0):
+        payloads: list[dict] = []
+        archived: list[tuple[int, int]] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                httpx.ConnectError("server is down"),
+                [_sse({"content": "Recovered."}), _done()],
+            ],
+            payloads,
+        )
+        backend._effective_context_length = 2000
+        monkeypatch.setattr(
+            backend,
+            "count_chat_tokens",
+            lambda candidate, *_args, **_kwargs: sum(
+                len(str(message.get("content", ""))) for message in candidate
+            ),
+        )
+
+        def spy(conversation, before, **kwargs):
+            archived.append((len(before), len(conversation)))
+            return real_archive(conversation, before, **kwargs)
+
+        monkeypatch.setattr(llama_cpp, "_archive_and_recall", spy)
+
+        def fake_respawn():
+            backend._effective_context_length = 1000
+            return True
+
+        monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "u" * 250},
+                    {"role": "assistant", "content": "a" * 250},
+                    {"role": "user", "content": "u" * 250},
+                    {"role": "assistant", "content": "a" * 250},
+                    {"role": "user", "content": "f" * 900},
+                ],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = max_tool_iterations,
+                context_overflow = "truncate_oldest",
+            )
+        )
+
+        notices = [event for event in events if event.get("type") == "context_truncated"]
+        assert [notice["context_length"] for notice in notices] == [2000, 1000]
+        refit = notices[1]
+        # The rescued refusal reports what it evicted, boundary included: the client reads
+        # that depth to place the compaction notice, so recording nothing would compact
+        # silently. Reported is not REPLAYED, which `_sticky_compaction_boundary` still
+        # declines for any `fits` false record.
+        assert refit["fits"] is False
+        assert refit["dropped_messages"] == 2
+        assert refit["prompt_tokens_after"] == 900 < refit["prompt_tokens_before"]
+        # 4, not the 2 of `dropped_messages`: the boundary counts against the REQUEST's
+        # own leading messages, which the next request replays it against, while the drop
+        # count is what this one fit removed.
+        assert refit["boundary_messages"] == 4
+        assert "boundary_anchor" in refit
+        assert archived[-1] == (3, 1)
+        assert len(payloads[1]["messages"]) == 1
+
+
+def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(monkeypatch):
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 60
+    count_calls = 0
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        nonlocal count_calls
+        count_calls += 1
+        if count_calls == 1:
+            raise httpx.ConnectError("token counter is down")
+        return sum(len(str(message.get("content", ""))) for message in candidate)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(backend, "_respawn_if_dead", lambda: True)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 25},
+                {"role": "assistant", "content": "a" * 25},
+                {"role": "user", "content": "final"},
+            ],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [event for event in events if event.get("type") == "context_truncated"]
+    assert count_calls >= 2
+    assert [notice["dropped_messages"] for notice in notices] == [2]
+    assert len(payloads[0]["messages"]) == 3
+    assert len(payloads[1]["messages"]) == 1
+
+
+def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkeypatch):
+    import httpx
+    for max_tool_iterations in (1, 0):
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [httpx.ConnectError("server is down")], payloads)
+        backend._effective_context_length = 100
+        count_calls = 0
+
+        def count_tokens(candidate, *_args, **_kwargs):
+            nonlocal count_calls
+            count_calls += 1
+            if count_calls > 1:
+                raise RuntimeError("replacement token count failed")
+            return sum(len(str(message.get("content", ""))) for message in candidate)
+
+        monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+
+        def fake_respawn():
+            backend._effective_context_length = 60
+            return True
+
+        monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+        raised = None
+        try:
+            list(
+                backend.generate_chat_completion_with_tools(
+                    messages = [
+                        {"role": "user", "content": "u" * 25},
+                        {"role": "assistant", "content": "a" * 25},
+                        {"role": "user", "content": "final"},
+                    ],
+                    tools = [{"type": "function", "function": {"name": "python"}}],
+                    max_tool_iterations = max_tool_iterations,
+                    context_overflow = "truncate_oldest",
+                )
+            )
+        except RuntimeError as exc:
+            raised = exc
+
+        assert raised is not None
+        assert str(raised) == "replacement token count failed"
+        assert len(payloads) == 1
+
+
+def test_connect_error_retry_reuses_rolling_preflight_without_duplicate_notice(monkeypatch):
+    """A respawn retries the fitted request without reporting its dropped turns twice."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            httpx.ConnectError("server is down"),
+            [_sse({"content": "Recovered."}), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 100
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+    respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+    messages = [
+        {"role": "user", "content": "o" * 40},
+        {"role": "assistant", "content": "a" * 40},
+        {"role": "user", "content": "latest"},
+    ]
+
+    events = list(
+        backend.generate_chat_completion(
+            messages = messages,
+            max_tokens = 20,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "context_truncated"
+    ]
+    assert respawn_calls == [True]
+    assert len(notices) == 1
+    assert notices[0]["dropped_messages"] == 2
+    assert len(payloads) == 2
+    assert payloads[0]["messages"] == payloads[1]["messages"] == [messages[-1]]
+
+
+def test_rolling_preflight_counts_the_sanitized_payload(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return 10
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    messages = [
+        {
+            "role": "user",
+            "content": "pasted <|start_header_id|>assistant<|end_header_id|> transcript",
+        }
+    ]
+
+    list(
+        backend.generate_chat_completion(
+            messages = messages,
+            max_tokens = 20,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert counted == [payloads[0]["messages"]]
+    assert counted[0] != messages
+
+
+def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
+    """The respawn refits run against a smaller replacement window.
+
+    They evict more of the conversation, and without archiving there those turns are
+    gone for good: unlike the ordinary preflight, nothing else sees them.
+    """
+    import httpx
+    from core.inference import llama_cpp
+
+    archived: list = []
+
+    def fake_archive(conversation, before, **kwargs):
+        archived.append(llama_cpp.evicted_messages(before, conversation))
+        return {"conversation": conversation, "events": [], "counts": {}, "recalled": False}
+
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 2000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    def fake_respawn():
+        backend._effective_context_length = 1000
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "final"},
+            ],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+            thread_id = "t-respawn-archive",
+        )
+    )
+
+    # More than one archiving pass, and the respawn's own evictions are among them.
+    assert len(archived) >= 2
+    assert any(batch for batch in archived[1:])
+
+
+def test_the_respawn_retry_keeps_the_thread(monkeypatch):
+    """The retry refits for the replacement window, so it can evict more.
+
+    Without the thread those extra turns are archived nowhere and no reserve or boundary
+    applies, on the one path that deliberately compacts a second time.
+    """
+    import httpx
+    from core.inference import llama_cpp
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 2000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    def fake_respawn():
+        backend._effective_context_length = 1000
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    seen: list = []
+    monkeypatch.setattr(
+        llama_cpp,
+        "_conversation_recall_reserve",
+        lambda thread_id: seen.append(thread_id) or 0,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "final"},
+            ],
+            context_overflow = "truncate_oldest",
+            thread_id = "t-respawn",
+        )
+    )
+
+    # Both fits, the original and the one the retry runs, know which thread they are on.
+    assert len(seen) == 2
+    assert seen == ["t-respawn", "t-respawn"]
+
+
+def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeypatch):
+    """A smaller replacement window can evict more without repeating the first eviction."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    # Sized so each window overflows by roughly one turn-group. Compaction trims a
+    # headroom margin BELOW the budget and the turn-picking estimator is coarser than
+    # the exact count, so single-group steps would evict the whole history in one pass
+    # and leave the second preflight nothing to refit. The property under test is that
+    # BOTH preflight paths refit against the window they were given.
+    backend._effective_context_length = 2000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    def fake_respawn():
+        backend._effective_context_length = 1000
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    events = list(
+        backend.generate_chat_completion(
+            messages = [
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "final"},
+            ],
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "context_truncated"
+    ]
+    assert [notice["dropped_messages"] for notice in notices] == [2, 2]
+    assert [notice["context_length"] for notice in notices] == [2000, 1000]
+    assert [payload["max_tokens"] for payload in payloads] == [2000, 1000]
+    assert len(payloads[0]["messages"]) == 3
+    assert len(payloads[1]["messages"]) == 1
 
 
 def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
@@ -5278,3 +6245,783 @@ def test_parallel_disabled_suppresses_provisional_for_reused_index(monkeypatch):
         if e.get("tool_call_id") == "call_term"
         and e.get("type") in {"tool_start", "tool_args", "tool_end"}
     ]
+
+
+def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
+    """The estimator sees the messages only; the tools array is prompt too.
+
+    A large (MCP) catalogue can be thousands of tokens, so a budget ignoring it reports
+    room the request lacks, into a tool exchange the next iteration cannot evict.
+    """
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_s",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": "It was 5150."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 4096
+    # What llama-server would really return: the messages, plus a catalogue that on its
+    # own fills most of the window. The estimator counts the messages and nothing else.
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: 2800
+        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+    )
+
+    seen = {}
+
+    def execute_tool(name, arguments, **kwargs):
+        seen.update(kwargs)
+        return "an earlier turn"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 2000},
+                {"role": "assistant", "content": "a" * 2000},
+                {"role": "user", "content": "u" * 2000},
+                {"role": "assistant", "content": "a" * 2000},
+                {"role": "user", "content": "what was the code"},
+            ],
+            tools = [{"type": "function", "function": {"name": "search_conversation"}}],
+            max_tokens = 512,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    from core.inference.context_window import prompt_budget
+
+    budget = seen.get("conversation_budget_tokens")
+    assert budget is not None
+    # 2,800 of the 3,584-token budget is catalogue and framing the estimator cannot see,
+    # so what is left is hundreds of tokens, not the thousands it would have claimed.
+    assert 0 <= budget < 1000
+
+
+def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatch):
+    """dropped_messages is summed by the client, and it counts THIS request's messages.
+
+    A tool loop refits every iteration, so a long agent run also counts the tool
+    exchanges it created, which the next request's transcript lacks. Re-applying that
+    total advances the boundary past the turns actually evicted, so the boundary is
+    carried separately, measured against the messages the request was sent with.
+    """
+    calls = 6
+    streams = []
+    for index in range(calls):
+        streams.append(
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": f"c{index}",
+                                "function": {
+                                    "name": "python",
+                                    "arguments": '{"code": "step %d"}' % index,
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ]
+        )
+    streams.append([_sse({"content": "done."}), _finish("stop"), _done()])
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._effective_context_length = 4000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        )
+        // 4,
+    )
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "R" * 3200
+    )
+
+    branch = [
+        # Unsloth always prepends one and a fit never evicts it, so counting it as the
+        # front of the branch reported zero on every compaction.
+        {"role": "system", "content": "you are helpful"},
+        {"role": "user", "content": "u" * 1200},
+        {"role": "assistant", "content": "a" * 1200},
+        {"role": "user", "content": "u2" * 600},
+        {"role": "assistant", "content": "a2" * 600},
+        {"role": "user", "content": "keep going"},
+    ]
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = branch,
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 400,
+            max_tool_iterations = calls + 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event for event in events if event.get("type") == "context_truncated" and event.get("fits")
+    ]
+    assert len(notices) > 1, "the fixture must refit more than once"
+    # Summed, this passes the number of evictable messages the branch ever had.
+    assert sum(notice["dropped_messages"] for notice in notices) > len(branch)
+    # The boundary does not: it says where the branch was cut, so it never passes what the
+    # branch had to give (4; the system prompt and the latest turn are neither evictable
+    # nor counted) and it only ever moves forward.
+    boundaries = [notice["boundary_messages"] for notice in notices]
+    assert max(boundaries) == 4
+    assert boundaries == sorted(boundaries)
+
+
+def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypatch):
+    """`fit_rolling_context` returns None when it drops nothing.
+
+    A prompt that simply FITS, after a context-length increase or on a shorter branch,
+    therefore left the budget to a character estimate that cannot see the template's own
+    framing. It reported room the request did not have, the recall appended a passage too
+    large for the real window, and the next iteration could not evict it again because the
+    current tool exchange is protected.
+    """
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_s",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": "It was 5150."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 4096
+    # Most of the window is catalogue and template framing, which no character estimate
+    # can see. The messages themselves are short, so the fit drops nothing at all.
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: 2800
+        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+    )
+
+    seen = {}
+
+    def execute_tool(name, arguments, **kwargs):
+        seen.update(kwargs)
+        return "an earlier turn"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "what was the code"}],
+            tools = [{"type": "function", "function": {"name": "search_conversation"}}],
+            max_tokens = 512,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    budget = seen.get("conversation_budget_tokens")
+    assert budget is not None
+    # 3,584 of budget against a real prompt of roughly 2,800: hundreds of tokens of room,
+    # not the thousands the estimate claimed from a handful of short messages.
+    assert 0 <= budget < 1000, budget
+
+
+def test_the_exact_recall_budget_is_recomputed_after_an_intervening_tool(monkeypatch):
+    """The exact count is absolute, so caching it for the request goes stale.
+
+    The loop appends the assistant call and the tool result of every intervening tool to
+    the conversation, so a figure taken before them understates the prompt by exactly
+    those exchanges and hands the search room that is already spent.
+    """
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_t",
+                                "function": {"name": "terminal", "arguments": '{"command":"ls"}'},
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_s",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": "It was 5150."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 4096
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: 1000
+        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+    )
+
+    budgets: list = []
+
+    def execute_tool(name, arguments, **kwargs):
+        if name == "search_conversation":
+            budgets.append(kwargs.get("conversation_budget_tokens"))
+            return "an earlier turn"
+        # A big result, which the loop appends before the search runs.
+        return "x" * 12000
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "what was the code"}],
+            tools = [
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "search_conversation"}},
+            ],
+            max_tokens = 512,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert budgets and budgets[0] is not None
+    # The 12,000-character tool result is roughly 1,200 tokens of the 3,584-token budget,
+    # and the count taken before it cannot see them.
+    assert budgets[0] < 1400, budgets
+
+
+def _count_from_size(messages, *_args, **_kwargs):
+    """Stand in for the tokenizer, priced the way a real chat template prices.
+
+    Two behaviours the fake has to keep or the tests pass while the gate is blind:
+
+    1. The size FALLS when the conversation shrinks, so re-pricing after a compaction is
+       distinguishable from the attempt before it.
+    2. An assistant turn's `tool_calls` cost NOTHING until a `tool` message answers them.
+       Qwen3.8's template renders them only then, which is what made the first version of
+       this gate useless: measured on the conversation as it stood, a 40 KB argument was
+       invisible, the turn priced at 1,063 tokens against a 4,096 window, and the tool ran
+       into a request that came back 400. A counter that charges for unanswered arguments
+       cannot catch that regression.
+    """
+    answered = {
+        str(message.get("tool_call_id"))
+        for message in messages
+        if message.get("role") == "tool" and message.get("tool_call_id")
+    }
+    billed = []
+    for message in messages:
+        calls = message.get("tool_calls")
+        if message.get("role") == "assistant" and calls:
+            visible = [call for call in calls if str(call.get("id")) in answered]
+            billed.append({**message, "tool_calls": visible})
+        else:
+            billed.append(message)
+    return len(json.dumps(billed, default = str)) // 4
+
+
+def test_an_unservable_tool_call_is_refused_before_it_runs(monkeypatch):
+    """The write must not land on a turn llama-server is going to reject anyway.
+
+    The model's own arguments are already in the conversation by the time the tool is
+    invoked, so a whole-file `edit_file` can put the prompt over the window before the
+    tool has returned anything. `tool_result_budget` clamps to zero there and the
+    truncation reads that as "cut hard", so the tool used to run, the result was cut to
+    its notice, and the next request was refused with the file written.
+    """
+    # The bulk is in the USER turn, which no receipt can replace, so running the call and
+    # compacting its arguments cannot rescue this one either -- which is what makes it the
+    # case that still earns a refusal.
+    immovable = "please read all of this: " + "u" * 40000
+    streams = [
+        _structured_tool_call(
+            "edit_file",
+            {"path": "flappy-bird.html", "edits": [{"old_string": "", "new_string": "x" * 2000}]},
+            "call_write_game",
+        ),
+        [_sse({"content": "Understood."}), _done()],
+    ]
+    backend = _make_backend(monkeypatch, streams, [])
+    monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
+
+    executed: list[str] = []
+
+    def fake_execute_tool(name, _arguments, **_kwargs):
+        executed.append(name)
+        return "wrote the file"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": immovable}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tokens = 512,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert executed == [], "the side effect was spent on an unservable turn"
+    refusals = [
+        event
+        for event in events
+        if event.get("type") == "tool_end" and "Nothing was written" in str(event.get("result", ""))
+    ]
+    assert refusals, [e.get("type") for e in events]
+    assert "edit_file" in refusals[0]["result"]
+
+
+def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
+    """The first lever, before refusing: arguments of a call that already returned.
+
+    They are pure replay -- the tool received them in full and the file is on disk -- so
+    spending them is what keeps a thread alive that would otherwise dead-end.
+    """
+    earlier = "<!DOCTYPE html>" + "y" * 30000
+    prior_call = {
+        "id": "call_earlier",
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "arguments": json.dumps({"path": "page.html", "old_string": "", "new_string": earlier}),
+        },
+    }
+    history = [
+        {"role": "user", "content": "Write page.html"},
+        {"role": "assistant", "content": "Writing.", "tool_calls": [prior_call]},
+        {
+            "role": "tool",
+            "tool_call_id": "call_earlier",
+            "name": "edit_file",
+            "content": "Wrote page.html",
+        },
+        {"role": "user", "content": "Now fix the title"},
+    ]
+    streams = [
+        _structured_tool_call(
+            "edit_file",
+            {
+                "path": "page.html",
+                "old_string": "<title>a</title>",
+                "new_string": "<title>b</title>",
+            },
+            "call_fix_title",
+        ),
+        [_sse({"content": "Fixed."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
+
+    executed: list[str] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append(name)
+        # The tool still receives real arguments, never a receipt.
+        assert arguments.get("new_string") == "<title>b</title>"
+        return "Edited page.html"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = history,
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tokens = 512,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert executed == ["edit_file"], [e.get("type") for e in events]
+    assert not [
+        event
+        for event in events
+        if event.get("type") == "tool_end" and "Nothing was written" in str(event.get("result", ""))
+    ]
+    # The assertions above hold with no gate at all -- an ungated loop runs every tool it
+    # is handed. What distinguishes the fix is the prompt SENT after the tool returned:
+    # the earlier call's 30 KB argument must have become a receipt, and only there.
+    assert len(payloads) >= 2, "the loop never made a second request"
+    replayed = json.dumps(payloads[-1]["messages"], default = str)
+    assert earlier not in replayed, "the earlier 30 KB argument was replayed verbatim"
+    assert "arguments you sent" in replayed
+    assert "page.html" in replayed
+
+
+def test_refusing_a_call_also_stops_it_costing_the_window(monkeypatch):
+    """Observed live: an accurate refusal, then the 400 it was issued to prevent.
+
+    The refusal is a `tool` message, and a chat template renders an assistant turn's
+    `tool_calls` only once one of those answers them. So declining to run the tool is the
+    very thing that makes its arguments start costing the prompt, and the generation that
+    follows is rejected anyway -- with nothing written, but also nothing the user can do.
+    The refused arguments are the one case with no replay value at all.
+    """
+    # Again the bulk is immovable: a refusal is the only outcome left, and the point here
+    # is that refusing must not ALSO leave the arguments costing the window.
+    immovable = "please read all of this: " + "u" * 40000
+    oversized = "<!DOCTYPE html>" + "x" * 8000
+    streams = [
+        _structured_tool_call(
+            "edit_file",
+            {"path": "flappy-bird.html", "edits": [{"old_string": "", "new_string": oversized}]},
+            "call_write_game",
+        ),
+        [_sse({"content": "I could not write that file."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
+
+    executed: list[str] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, _arguments, **_kwargs: executed.append(name) or "wrote it",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": immovable}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tokens = 512,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert executed == []
+    assert len(payloads) >= 2, "the loop never got to a follow-up generation"
+    replayed = json.dumps(payloads[-1]["messages"], default = str)
+    # The prompt that follows the refusal must not carry what was refused.
+    assert oversized not in replayed
+    assert "refused before it ran" in replayed
+    # And must not claim a file exists to go and read.
+    assert "re-read the file" not in replayed
+
+
+def test_reply_room_is_reclaimed_before_generating(monkeypatch):
+    """A prompt that FITS can still leave nothing to answer in.
+
+    Observed on a 4096 window: every tool call servable, none refused, the file written,
+    and the turn ended on `finish_reason: length` with the model still thinking -- the
+    prompt had eaten the room its answer needed. The pre-execution gate never fired
+    because nothing was ever unservable, so compaction, the exact lever for this, was
+    never asked to run.
+    """
+    bulky = "<!DOCTYPE html>" + "z" * 30000
+    prior_call = {
+        "id": "call_done",
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "arguments": json.dumps(
+                {"path": "game.html", "edits": [{"old_string": "", "new_string": bulky}]}
+            ),
+        },
+    }
+    history = [
+        {"role": "user", "content": "Write game.html"},
+        {"role": "assistant", "content": "Writing.", "tool_calls": [prior_call]},
+        {
+            "role": "tool",
+            "tool_call_id": "call_done",
+            "name": "edit_file",
+            "content": "Created game.html",
+        },
+        {"role": "user", "content": "Now tell me what you did"},
+    ]
+    payloads: list[dict] = []
+    # No tool call this turn: the model just answers, so only the reply-room pass can act.
+    backend = _make_backend(monkeypatch, [[_sse({"content": "Done."}), _done()]], payloads)
+    monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "should not run",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = history,
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tokens = 512,
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert payloads, "no generation request was made"
+    sent = json.dumps(payloads[0]["messages"], default = str)
+    assert bulky not in sent, "the finished call's 30 KB argument was still replayed"
+    assert "arguments you sent" in sent
+
+
+def test_an_oversized_call_is_run_and_compacted_rather_than_refused(monkeypatch):
+    """Refusing costs the same tokens as running, and leaves nothing written.
+
+    The refusal is itself the `tool` message that makes the arguments render, so declining
+    does not avoid their cost. The model then retries with a fresh oversized call and each
+    round reclaims less -- 50%, then 34%, then 15% of one measured thread, ending in a
+    one-character reply. Running the call needs no context at all; only the next prompt
+    does, and by then the arguments describe a file on disk.
+    """
+    oversized = "<!DOCTYPE html>" + "x" * 24000
+    streams = [
+        _structured_tool_call(
+            "edit_file",
+            {"path": "flappy-bird.html", "edits": [{"old_string": "", "new_string": oversized}]},
+            "call_write_game",
+        ),
+        [_sse({"content": "Wrote the game."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
+
+    executed: list[str] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append(name)
+        # The tool still receives the real content -- the file must actually be written.
+        assert oversized in json.dumps(arguments)
+        return "Created flappy-bird.html"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tokens = 512,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert executed == ["edit_file"], "the call was refused instead of run"
+    assert not [
+        e
+        for e in events
+        if e.get("type") == "tool_end" and "Nothing was written" in str(e.get("result", ""))
+    ]
+    assert len(payloads) >= 2, "no follow-up generation was made"
+    replayed = json.dumps(payloads[-1]["messages"], default = str)
+    assert oversized not in replayed, "the arguments were replayed after the call ran"
+    assert "arguments you sent" in replayed
+
+
+_BIG_BODY = "<!DOCTYPE html>" + "x" * 9000
+
+
+def _two_edits_in_one_turn():
+    return [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_big",
+                        "type": "function",
+                        "function": {
+                            "name": "edit_file",
+                            "arguments": json.dumps(
+                                {
+                                    "path": "game.html",
+                                    "old_string": "",
+                                    "new_string": _BIG_BODY,
+                                }
+                            ),
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_small",
+                        "type": "function",
+                        "function": {
+                            "name": "edit_file",
+                            "arguments": json.dumps(
+                                {
+                                    "path": "game.html",
+                                    "old_string": "TODO",
+                                    "new_string": "done",
+                                }
+                            ),
+                        },
+                    },
+                ]
+            }
+        ),
+        _done(),
+    ]
+
+
+def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeypatch):
+    """Compaction rebuilds the messages, which silently detaches the local handle.
+
+    The run-then-compact rescue rewrites `conversation` in place. The loop was still
+    holding the assistant message it built BEFORE that, so the next call in the same
+    batch appended its `tool_call` to a dict no longer in the list while its RESULT was
+    appended to the list. The model then received a `tool` message answering a call it
+    could not see, which some templates reject outright and the rest render as an
+    unexplained result.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [_two_edits_in_one_turn(), [_sse({"content": "Done."}), _done()]],
+        payloads,
+    )
+
+    # Price the turn off the replayed JSON: the big call does not fit, the receipt does.
+    def fake_count_chat_tokens(messages, *_args, **_kwargs):
+        return len(json.dumps(messages, default = str)) // 2
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count_chat_tokens)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Wrote game.html",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Write the game"}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tool_iterations = 4,
+        )
+    )
+
+    sent = payloads[-1]["messages"]
+    announced = {
+        call.get("id")
+        for message in sent
+        if message.get("role") == "assistant"
+        for call in (message.get("tool_calls") or [])
+    }
+    answered = {message.get("tool_call_id") for message in sent if message.get("role") == "tool"}
+
+    assert answered, "no tool result reached the model at all"
+    assert answered <= announced, f"results with no visible call: {answered - announced}"
+    # And the compaction still happened: the body is not replayed.
+    assert _BIG_BODY not in json.dumps(sent)
+
+
+def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
+    """The last request of a tool run is the biggest, and it skips the top of the loop.
+
+    ``on_conversation_grew`` is KV admission's only view of a growing tool loop and fires
+    at the TOP of a round. The iteration cap breaks out mid-round instead, after the
+    assistant turn and its tool result are appended, and goes straight to the synthesized
+    final answer. Without a re-cost there the largest prompt of the run is the one the
+    pool never hears about, and llama.cpp answers the overcommit by killing every
+    decoding slot at once.
+    """
+    first_stream = _structured_tool_call("web_search", {"query": "kernel"}, "call_search")
+    final_stream = [_sse({"content": "6.10."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        # Long enough that skipping it is a real under-count, not a rounding error.
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10. " * 400,
+    )
+
+    seen: list[list[dict]] = []
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Search for the kernel version."}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            # One round, so the loop breaks on the cap mid-round rather than at the top.
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            on_conversation_grew = lambda conversation: seen.append(copy.deepcopy(conversation)),
+        )
+    )
+
+    assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
+    final_messages = payloads[-1]["messages"]
+    assert any(
+        message.get("role") == "tool" for message in final_messages
+    ), "the final pass should carry the tool result this test is about"
+    assert seen, "the callback never ran"
+    last_seen = seen[-1]
+    assert any(message.get("role") == "tool" for message in last_seen), (
+        "the last re-cost ran before the tool result was appended, so the final pass "
+        "was sent under stale KV accounting"
+    )
+    assert len(last_seen) == len(final_messages), (
+        f"the final pass sends {len(final_messages)} messages but the pool was last told "
+        f"about {len(last_seen)}"
+    )

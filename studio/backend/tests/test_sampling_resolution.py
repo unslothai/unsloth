@@ -127,6 +127,21 @@ def test_model_recommended_sampling_values_are_in_range():
     assert not invalid, "Out-of-range model sampling defaults: " + ", ".join(invalid)
 
 
+def test_qwen38_reuses_qwen36_sampling_defaults():
+    qwen36 = ic.load_inference_config("unsloth/Qwen3.6-27B-GGUF")
+    qwen38 = ic.load_inference_config("unsloth/Qwen3.8-27B-GGUF")
+
+    assert qwen38 == qwen36
+    assert qwen38 == {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "trust_remote_code": False,
+    }
+
+
 def test_repetition_penalty_not_auto_recommended(monkeypatch):
     # The Chat UI's mergeBackendRecommendedInference never adopts a backend repetition_penalty
     # (e.g. lfm2's family value 1.05), so the server must not auto-apply one either. It stays at

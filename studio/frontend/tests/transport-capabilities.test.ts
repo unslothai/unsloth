@@ -38,6 +38,28 @@ test("a backend with no auto fields still resolves to xet", () => {
   assert.equal(caps.auto_reason, null);
 });
 
+test("the resumability verdict survives normalization", () => {
+  const caps = normalizeDownloadTransportCapabilities({
+    http: { available: true, reason: null },
+    xet: { available: true, reason: null },
+    partials_resumable: true,
+  });
+
+  assert.equal(caps.partials_resumable, true);
+});
+
+test("an unverified backend never claims a partial is resumable", () => {
+  // Older backend, or junk: continuing a partial is honest either way, a byte-resume is not.
+  for (const value of [{}, { partials_resumable: "yes" }]) {
+    const caps = normalizeDownloadTransportCapabilities({
+      http: { available: true, reason: null },
+      xet: { available: true, reason: null },
+      ...value,
+    });
+    assert.equal(caps.partials_resumable, false);
+  }
+});
+
 test("a junk auto verdict is not trusted", () => {
   const caps = normalizeDownloadTransportCapabilities({
     http: { available: true, reason: null },

@@ -3,13 +3,13 @@
 
 import {
   GPU_LAYERS_AUTO,
-  defaultInferenceParams,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuSelection,
   useChatRuntimeStore,
-} from "@/features/chat";
+} from "@/features/chat/stores/chat-runtime-store";
+import { defaultInferenceParams } from "@/features/chat/presets/preset-policy";
 // Its own module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
 import {
@@ -55,13 +55,24 @@ export function applyPerModelConfigToRuntime(
       normalizeSpeculativeType(config.speculativeType) ??
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
+    specDraftCacheDtype: config.specDraftCacheDtype ?? null,
     nParallel: config.nParallel ?? null,
     // the diffusion runner ignores the llama-server batch flags
     nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
     nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
+    // Same reason as the batch flags: these are llama-server's own, and the
+    // diffusion runner never launches one.
+    loadMode: options.isDiffusion ? null : (config.loadMode ?? null),
+    ctxCheckpoints: options.isDiffusion ? null : (config.ctxCheckpoints ?? null),
+    cacheRam: options.isDiffusion ? null : (config.cacheRam ?? null),
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
+    // The diffusion runner has no projector to skip, so the toggle is inert
+    // there for the same reason tensorParallel is.
+    disableVision: options.isDiffusion
+      ? false
+      : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is
     // a standing preference so an absent mode falls back to the persisted one.
@@ -107,10 +118,15 @@ export function currentRuntimePerModelConfig(
     mlxKvBits: s.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
+    specDraftCacheDtype: s.specDraftCacheDtype ?? null,
     nParallel: s.nParallel ?? null,
     nBatch: s.nBatch ?? null,
     nUbatch: s.nUbatch ?? null,
+    loadMode: s.loadMode ?? null,
+    ctxCheckpoints: s.ctxCheckpoints ?? null,
+    cacheRam: s.cacheRam ?? null,
     tensorParallel: s.tensorParallel ?? false,
+    disableVision: s.disableVision ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
     // model's GPU Memory settings back (see applyPerModelConfigToRuntime). The
@@ -136,10 +152,15 @@ export function perModelConfigsEqual(
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
+    (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
     (a.nBatch ?? null) === (b.nBatch ?? null) &&
     (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
+    (a.loadMode ?? null) === (b.loadMode ?? null) &&
+    (a.ctxCheckpoints ?? null) === (b.ctxCheckpoints ?? null) &&
+    (a.cacheRam ?? null) === (b.cacheRam ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
+    Boolean(a.disableVision) === Boolean(b.disableVision) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&

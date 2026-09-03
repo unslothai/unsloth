@@ -33,6 +33,33 @@ NOT_IN_CI = {
     # through huggingface_hub; the UI workflows deliberately boot API-only with
     # one 254 MiB GGUF and no network model resolution.
     "playwright_train_pickers.py",
+    # A measurement harness rather than a gate: it prints the per-N cost table #8977
+    # was sized from and deliberately sets no budget, and the sizes that make the
+    # curve mean anything (to 500 messages under 6x CPU throttling) cost tens of
+    # minutes. Run by hand when that curve needs re-measuring. The part of it that
+    # can go wrong silently, the verdict in harness_failures, is driven without a
+    # browser by test_autoscroll_harness_contract.py, which CI does run.
+    "playwright_thread_weight.py",
+    # The same shape as playwright_thread_weight.py: a measurement harness, not a
+    # gate. It prints what a collapsible toggle costs against document size, and it
+    # deliberately sets no budget, because the number is hardware-dependent and a
+    # threshold here would be flaky rather than informative. The cells that make the
+    # O(total layout objects) curve readable run 100k+ element documents and cost
+    # minutes. Run by hand when that curve needs re-measuring. What it asserts that
+    # CANNOT go stale silently, the flag wiring and the absence of a measurement in
+    # the unmeasured primitive, is covered without a browser by
+    # studio/frontend/tests/reasoning-grid-collapse.test.ts, which CI does run.
+    "playwright_collapse_layout.py",
+    # Half of what it asserts is about the engine Frontend CI does not install. It proves the
+    # thread's fast copy path byte for byte against the real clipboard on BOTH engines: Chromium
+    # answers and must match, WebKit must refuse and its refusal must be backed by a measured
+    # divergence. That job installs Chromium only, so a Chromium-only run would assert the easy
+    # half and silently drop the reason the fast path is engine-gated at all. It also needs a
+    # vite library build of the module, which no other smoke there does. Run by hand when the
+    # serialiser changes. What CI does run is studio/frontend/tests/thread-fast-copy.test.ts,
+    # which pins the gate's branches and the patch's bookkeeping but, by its own docstring,
+    # cannot see how a real engine serialises anything.
+    "playwright_thread_fast_copy.py",
 }
 
 
@@ -136,6 +163,22 @@ def test_every_playwright_driver_is_invoked_by_ci():
     )
 
 
+def test_mcp_argument_driver_launches_the_managed_studio_python():
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+    )
+    steps = document["jobs"]["ui-smoke"]["steps"]
+    run = next(
+        str(step["run"])
+        for step in steps
+        if step.get("name") == "MCP arguments end to end (Playwright)"
+    )
+    driver = (REPO / "tests" / "studio" / "playwright_mcp_arguments.py").read_text(encoding = "utf-8")
+
+    assert 'export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"' in run
+    assert 'os.environ.get("STUDIO_MCP_PYTHON", sys.executable)' in driver
+
+
 def test_the_exemptions_are_still_exempt_and_still_exist():
     """An exemption that outlives its file, or its reason, quietly shrinks the check."""
     names = {driver.name for driver in DRIVERS}
@@ -147,6 +190,25 @@ def test_the_exemptions_are_still_exempt_and_still_exist():
         f"{now_covered} are exempted from CI coverage but CI now names them. Remove them from "
         f"NOT_IN_CI so the check keeps guarding them."
     )
+
+
+def test_tool_activity_install_enforces_the_script_allowlist():
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+    )
+    steps = document["jobs"]["ui-smoke"]["steps"]
+    run = next(
+        str(step["run"])
+        for step in steps
+        if step.get("name") == "Tool activity collapse regression (Playwright)"
+    )
+    upgrade = "npm install -g npm@^11"
+    version_gate = "11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*"
+    install = "npm --prefix studio/frontend ci --strict-allow-scripts"
+    assert upgrade in run
+    assert version_gate in run
+    assert install in run
+    assert run.index(upgrade) < run.index(version_gate) < run.index(install)
 
 
 def test_the_linux_job_still_drives_all_three_browser_engines():

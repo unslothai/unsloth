@@ -11,62 +11,60 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# Must stay equal to the minimax-h3 family's `gguf_repo`. They are the same one-click pick, and
-# main's test_curated_gguf_repos_are_unsloth_mirrors only checks the family field, so a divergence
-# here would let that test pass while the actual download still came from a community repack.
-# tests/test_video_backend.py::test_the_h3_native_repo_matches_the_family_gguf_repo pins the pair.
-# The mirror carries the Qwen3-VL encoder quants as well as the denoisers, so this repo alone
-# satisfies h3_native_hub_files' first two entries.
+# Must stay equal to the minimax-h3 family's `gguf_repo`. They are the same one-click pick, and main's
+# test_curated_gguf_repos_are_unsloth_mirrors only checks the family field, so a divergence here would let that test
+# pass while the actual download still came from a community repack.
+# tests/test_video_backend.py::test_the_h3_native_repo_matches_the_family_gguf_repo pins the pair. The mirror carries
+# the Qwen3-VL encoder quants as well as the denoisers, so this repo alone satisfies h3_native_hub_files' first two
+# entries.
 H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
-H3_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
+# The VAEs live beside the denoisers, so the native pick is one repo we control end to end. It was Comfy-Org/MiniMax-H3,
+# which put a community repack in the download path of BOTH H3 paths; an install that already holds those bytes keeps
+# using them through h3_component_source below, because the HF cache is keyed by repo id and repointing alone
+# re-downloads ~6 GB.
+H3_COMPONENT_REPO = "unsloth/MiniMax-H3-GGUF"
+# only for reusing an existing cache entry; the pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES
+# Where the component files came from originally. Only for reusing an existing cache entry: a fresh install never reads
+# it. The pairing itself lives in diffusion_families' _SD_CPP_LEGACY_SOURCES, which owns this decision for every
+# mirrored asset; this name is what the delete-cached claims read, and a test pins the two together.
+H3_LEGACY_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
 H3_VIDEO_VAE = "vae/minimax_h3_video_vae_fp16.safetensors"
 H3_AUDIO_VAE = "vae/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
-# Measured with the merged Diffusers T2VA workflow and component-level CPU
-# offload. The base is the largest component plus runtime overhead; activation
-# memory scales with spatiotemporal volume across the tested 960x544 and
-# 1344x768, 124-345 frame matrix. The guard covers allocator variation around
-# the measured success and OOM boundaries.
+# Measured with the merged Diffusers T2VA workflow and component-level CPU offload. The base is the largest component
+# plus runtime overhead; activation memory scales with spatiotemporal volume across the tested 960x544 and 1344x768,
+# 124-345 frame matrix. The guard covers allocator variation around the measured success and OOM boundaries.
 H3_DIFFUSERS_VRAM_BASE_GB = 68.5
 H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
 
-# The terms H3_DIFFUSERS_VRAM_BASE_GB is built from, so a load that shrinks one of the big
-# components can rebuild the floor from what it actually holds instead of the released sizes.
-#
-# With everything under enable_auto_cpu_offload the base is the LARGEST SINGLE RESIDENT COMPONENT
-# plus runtime overhead, not the sum: at any instant one component is on the device and the rest
-# are parked on the host. That is exactly why seeding a 20 GB pre-quantized denoiser moved this
-# number by nothing -- the 66.7 GB conditioner was already the larger of the two and simply took
-# over as the maximum. Both have to shrink before the floor does.
-#
-# ONE case breaks the max, and it is the case a pre-quantized denoiser creates. A torchao module
-# does not survive being moved mid-block, so _load_h3_modular_pipeline PINS it to the device and
-# takes it out of the offload rotation (see pin_prequantized_module). It is then resident for the
-# whole generation and the floor becomes additive: denoiser + whichever offloaded component is
-# largest. Measured at 960x544x124 with the int8 denoiser pinned, torch.cuda.max_memory_allocated:
-#
-#   bfloat16 conditioner   94.62 GB   =  20.3 + 66.7 + 5.18 activations + 2.44
-#   int8 conditioner       55.20 GB   =  20.3 + 27.1 + 5.18 activations + 2.58
-#
-# so 2.6 covers the pinned overhead on the conservative side of both. Note what the first row says
-# about the shipped constant: a pinned denoiser and a dense conditioner really need ~95 GB, and the
-# flat 68.5 under-states that by 26 GB. Rebuilding the floor from the resident components fixes
-# that under-estimate in the same stroke as crediting the saving.
+# The terms H3_DIFFUSERS_VRAM_BASE_GB is built from, so a load that shrinks one of the big components can rebuild the
+# floor from what it holds instead of the released sizes. With everything under enable_auto_cpu_offload the base is the
+# LARGEST SINGLE RESIDENT COMPONENT plus runtime overhead, not the sum: at any instant one component is on the device
+# and the rest are parked on the host. That is exactly why seeding a 20 GB pre-quantized denoiser moved this number by
+# nothing -- the 66.7 GB conditioner was already the larger of the two and took over as the maximum. Both have to shrink
+# before the floor does. ONE case breaks the max, and it is the case a pre-quantized denoiser creates. A torchao module
+# does not survive being moved mid-block, so _load_h3_modular_pipeline PINS it to the device and takes it out of the
+# offload rotation (see pin_prequantized_module). It is then resident for the whole generation and the floor becomes
+# additive: denoiser + whichever offloaded component is largest. Measured at 960x544x124 with the int8 denoiser pinned,
+# torch.cuda.max_memory_allocated: bfloat16 conditioner 94.62 GB = 20.3 + 66.7 + 5.18 activations + 2.44 int8
+# conditioner 55.20 GB = 20.3 + 27.1 + 5.18 activations + 2.58 so 2.6 covers the pinned overhead on the conservative
+# side of both. Note what the first row says about the shipped constant: a pinned denoiser and a dense conditioner need
+# ~95 GB, and the flat 68.5 under-states that by 26 GB. Rebuilding the floor from the resident components fixes that
+# under-estimate in the same stroke as crediting the saving.
 H3_DIFFUSERS_VRAM_OVERHEAD_GB = 1.8
 H3_DIFFUSERS_VRAM_PINNED_OVERHEAD_GB = 2.6
 H3_TEXT_ENCODER_BF16_GB = 66.7
 H3_TRANSFORMER_BF16_GB = 66.3
-# Video + audio VAE, from the family's bf16_components_gb. Only a floor for the offloaded term: it
-# stops a very small conditioner from claiming a base no component rotation could actually fit in.
+# Video + audio VAE, from the family's bf16_components_gb. Only a floor for the offloaded term: it stops a very small
+# conditioner from claiming a base no component rotation could actually fit in.
 H3_VAE_RESIDENT_GB = 11.1
 
 
-# Resident decimal GB of each hosted pre-quantized denoiser, from the artifact sizes in
-# unsloth/MiniMax-H3-FP8 (MiniMax-H3-INT8.pt 18.86 GiB, MiniMax-H3-FP8.pt 18.87 GiB). Both are the
-# PRUNED (curve-form adaLN) partition, which is why they are so far under half the 66.3 GB dense
-# denoiser rather than at it.
+# Resident decimal GB of each hosted pre-quantized denoiser, from the artifact sizes in unsloth/MiniMax-H3-FP8
+# (MiniMax-H3-INT8.pt 18.86 GiB, MiniMax-H3-FP8.pt 18.87 GiB). Both are the PRUNED (curve-form adaLN) partition, which
+# is why they are so far under half the 66.3 GB dense denoiser rather than at it.
 H3_TRANSFORMER_PREQUANT_GB: dict[str, float] = {"int8": 20.3, "fp8": 20.3}
 
 
@@ -121,16 +119,15 @@ def estimate_h3_diffusers_vram_gb(
     return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
 
 
-# The VRAM at which the offload tier changes, and the host floor of the tier above it. Both are
-# the shipped values, unchanged: that tier is only reachable on a >= 132 GB device, where the
-# component sizes below are not what stands between a load and a generation, and there is no
-# measurement here to justify moving it.
+# both are the shipped values, unchanged: that tier is only reachable on a >= 132 GB device
+# The VRAM at which the offload tier changes, and the host floor of the tier above it. Both are the shipped values,
+# unchanged: that tier is only reachable on a >= 132 GB device, where the component sizes below are not what stands
+# between a load and a generation, and there is no measurement here to justify moving it.
 H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB = 132.0
 H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB = 85.0
-# The offload tier parks every component on the host, so its floor is their SUM (unlike the VRAM
-# floor, which is the largest resident one). Derived, not newly measured: it is the shipped 150.0
-# minus the released component sum, so the released configuration still asks for exactly 150.0 and
-# only a load holding smaller components asks for less.
+# The offload tier parks every component on the host, so its floor is their SUM (unlike the VRAM floor, which is the
+# largest resident one). Derived, not newly measured: it is the shipped 150.0 minus the released component sum, so the
+# released configuration still asks for exactly 150.0 and only a load holding smaller components asks for less.
 H3_DIFFUSERS_HOST_RAM_HEADROOM_GB = 5.9
 
 
@@ -161,9 +158,9 @@ def estimate_h3_diffusers_host_ram_gb(
     return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
 
 
-# torch.autocast casts the weight and bias of these module types to the autocast dtype on
-# entry. Norms sit on autocast's float32 promote list and bare parameters are read directly,
-# so both must keep their source precision.
+# torch.autocast casts these module types' weight and bias to the autocast dtype on entry
+# torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on autocast's
+# float32 promote list and bare parameters are read directly, so both must keep their source precision.
 _AUTOCAST_WEIGHT_MODULE_NAMES = ("Linear", "Conv1d", "Conv2d", "Conv3d")
 
 
@@ -202,8 +199,8 @@ def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
     """
     import torch
 
-    # Every lookup below is a getattr with a default, so a None vae and a vae whose
-    # attributes moved both fall through to a zero report without a separate guard.
+    # Every lookup below is a getattr with a default, so a None vae and a vae whose attributes moved both fall through
+    # to a zero report without a separate guard.
     report = {"encoder_freed": 0, "decoder_freed": 0}
 
     if workflow == "t2va":
@@ -235,9 +232,9 @@ def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
     return report
 
 
+# ── canvas geometry ──────────────────────────────────────────────────────────  MiniMax-H3's upstream canvas rule,
+# shared by both engines.
 # ── canvas geometry ──────────────────────────────────────────────────────────
-#
-# MiniMax-H3's upstream canvas rule, shared by both engines.
 H3_CANVAS_SHORT_EDGE = 768
 H3_CANVAS_MAX_PIXELS = 768 * 1344
 H3_CANVAS_MULTIPLE = 32
@@ -297,13 +294,12 @@ def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:
     return image.resize(target, Image.LANCZOS, box = (left, top, left + crop_w, top + crop_h))
 
 
+# ── omni references (Ref2VA) ─────────────────────────────────────────────────  Ref2VA uses a separate transformer
+# partition selected at load time.
 # ── omni references (Ref2VA) ─────────────────────────────────────────────────
-#
-# Ref2VA uses a separate transformer partition selected at load time.
 H3_TASK_KEYFRAMES = "fl2va"
 H3_TASK_REFERENCES = "ref2va"
 
-# Upstream request limits.
 H3_MAX_REF_IMAGES = 9
 H3_MAX_REF_VIDEOS = 3
 H3_MAX_REF_AUDIOS = 3
@@ -311,12 +307,41 @@ H3_MAX_REFERENCES = 12
 # A reference video's trained window, in seconds.
 H3_REF_VIDEO_MIN_SECONDS = 2.0
 H3_REF_VIDEO_MAX_SECONDS = 15.0
+# a container reports its longest track, so a file whose audio outruns its video reads as longer than it can show
+# How far a trim may reach past the video track before it is refused. A container reports its longest track, so a file
+# whose audio outruns its video reads as longer than it can show, and a client picking an interval from that duration
+# (HTMLMediaElement.duration, in Unsloth's case) asks for slightly more video than exists. Within this margin the last
+# frame is held instead.
+H3_REF_TRIM_COVERAGE_SLACK_SECONDS = 0.5
 H3_FPS = 24
 
 # "match" uses the generation area. Diffusers-only "max" uses a 2048px short edge.
 H3_REF_SIZE_MATCH = "match"
 H3_REF_SIZE_MAX = "max"
 H3_REF_IMAGE_SHORT_EDGE = 2048
+# H3 downscales references immediately, so this path can accept larger bounded sources
+H3_REF_IMAGE_SOURCE_MAX_SIDE = 8192
+H3_REF_IMAGE_SOURCE_MAX_PIXELS = 32_000_000
+
+
+def validate_h3_reference_trim(
+    start_seconds: Optional[float], end_seconds: Optional[float]
+) -> Optional[tuple[float, float]]:
+    """Validate an explicit reference-media interval, or return None for the whole source."""
+    if start_seconds is None and end_seconds is None:
+        return None
+    if start_seconds is None or end_seconds is None:
+        raise ValueError("Reference video trim start and end must be provided together.")
+    start, end = float(start_seconds), float(end_seconds)
+    if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+        raise ValueError("Reference video trim must satisfy 0 <= start < end.")
+    duration = end - start
+    if duration + 1e-6 < H3_REF_VIDEO_MIN_SECONDS or duration - 1e-6 > H3_REF_VIDEO_MAX_SECONDS:
+        raise ValueError(
+            f"MiniMax-H3 reference video trims must be {H3_REF_VIDEO_MIN_SECONDS:g} to "
+            f"{H3_REF_VIDEO_MAX_SECONDS:g} seconds; this one is {duration:.1f}s."
+        )
+    return start, end
 
 
 def h3_transformer_task(filename: str) -> str:
@@ -366,7 +391,13 @@ def h3_reference_frame_size(source_w: int, source_h: int) -> tuple[int, int]:
     return width, height
 
 
-def decode_h3_reference_video(blob: bytes) -> tuple[list, Optional[Any], Optional[int]]:
+def decode_h3_reference_video(
+    blob: bytes,
+    *,
+    trim_start_seconds: Optional[float] = None,
+    trim_end_seconds: Optional[float] = None,
+    decode_audio: bool = True,
+) -> tuple[list, Optional[Any], Optional[int]]:
     """Decode one uploaded video to 24 fps frames plus its soundtrack, if it carries one.
 
     Returns ``(frames, waveform, sample_rate)``. The frames land on MiniMax-H3's own 24 fps by
@@ -374,27 +405,116 @@ def decode_h3_reference_video(blob: bytes) -> tuple[list, Optional[Any], Optiona
     implementation, and the one the Diffusers blocks make from a declared rate -- so both
     engines receive a stream that is already on the model's clock. The waveform is float32
     ``(samples, channels)`` at the container's own rate; both engines resample it themselves.
+    ``decode_audio=False`` avoids touching an embedded track that a replacement will supersede.
     """
     import io
 
     import av
     import numpy as np
 
+    trim = validate_h3_reference_trim(trim_start_seconds, trim_end_seconds)
+    video_timeline_start = None
+    if trim is None:
+        frames, duration, video_timeline_start = _decode_h3_video_without_trim(blob, av)
+    else:
+        try:
+            frames, video_timeline_start = _decode_h3_video_trim_by_timestamp(blob, av, trim)
+        except _H3MediaTimestampsUnavailable:
+            # Ordinal selection must restart because a seek makes frame zero keyframe-relative.
+            frames, video_timeline_start = _decode_h3_video_trim_by_ordinal(blob, av, trim)
+        duration = trim[1] - trim[0]
+    if not frames or duration + 1e-6 < H3_REF_VIDEO_MIN_SECONDS:
+        raise ValueError(
+            f"MiniMax-H3 reference videos run {H3_REF_VIDEO_MIN_SECONDS:g} to "
+            f"{H3_REF_VIDEO_MAX_SECONDS:g} seconds; this one is {duration:.1f}s."
+        )
+    expected_frames = int(round(duration * H3_FPS))
+    if trim is not None and len(frames) < expected_frames:
+        # Hold the last frame across a shortfall the slack allows, as the trim decoders do at their own endpoint; a
+        # larger gap means the range really was not there.
+        if len(frames) + math.ceil(H3_REF_TRIM_COVERAGE_SLACK_SECONDS * H3_FPS) < expected_frames:
+            raise ValueError("That reference video did not cover the selected range.")
+        frames.extend([frames[-1]] * (expected_frames - len(frames)))
+    frames = frames[:expected_frames]
+
+    waveform, sample_rate = (None, None)
+    if decode_audio:
+        with av.open(io.BytesIO(blob)) as container:
+            if container.streams.audio:
+                waveform, sample_rate = _decode_audio_stream(
+                    container,
+                    np,
+                    trim_start_seconds = trim[0] if trim else None,
+                    trim_end_seconds = trim[1] if trim else None,
+                    timeline_start_seconds = video_timeline_start,
+                    untrimmed_duration_seconds = len(frames) / H3_FPS if trim is None else None,
+                )
+    return frames, waveform, sample_rate
+
+
+class _H3MediaTimestampsUnavailable(Exception):
+    """Internal signal to retry a trim from the beginning using the declared rate."""
+
+
+def _stream_start_seconds(stream: Any) -> Optional[float]:
+    start_time = getattr(stream, "start_time", None)
+    time_base = getattr(stream, "time_base", None)
+    if start_time is None or time_base is None:
+        return None
+    return float(start_time * time_base)
+
+
+def _frame_timestamp_seconds(frame: Any) -> Optional[float]:
+    pts = getattr(frame, "pts", None)
+    time_base = getattr(frame, "time_base", None)
+    if pts is None or time_base is None:
+        return None
+    return float(pts * time_base)
+
+
+def _seek_media(container: Any, stream: Any, absolute_seconds: float, *, label: str) -> bool:
+    """Seek backward near an absolute stream timestamp when its time base permits it."""
+    time_base = getattr(stream, "time_base", None)
+    if time_base is None:
+        return False
+    offset = math.floor(absolute_seconds / float(time_base) + 1e-6)
+    try:
+        container.seek(offset, backward = True, any_frame = False, stream = stream)
+    except Exception as exc:  # noqa: BLE001 -- decoder-specific seek errors become input feedback
+        raise ValueError(f"Could not seek to the requested reference {label} trim start.") from exc
+    return True
+
+
+def _fit_h3_video_frame(
+    frame: Any, fitted_size: Optional[tuple[int, int]]
+) -> tuple[Any, tuple[int, int]]:
+    from PIL import Image
+
+    image = frame.to_image().convert("RGB")
+    if fitted_size is None:
+        fitted_size = h3_reference_frame_size(*image.size)
+    if image.size != fitted_size:
+        image = image.resize(fitted_size, Image.LANCZOS)
+    return image, fitted_size
+
+
+def _decode_h3_video_without_trim(blob: bytes, av: Any) -> tuple[list, float, Optional[float]]:
+    """Preserve the existing whole-file rate-based behavior and its 15-second refusal."""
+    import io
+
     with av.open(io.BytesIO(blob)) as container:
         if not container.streams.video:
             raise ValueError("That reference file carries no video track.")
         stream = container.streams.video[0]
+        timeline_start = _stream_start_seconds(stream)
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS)
         if source_fps <= 0:
             source_fps = float(H3_FPS)
-        # Select, resample, and resize incrementally to bound memory for 4K inputs.
-        from PIL import Image
-
+        max_source_frames = math.floor(H3_REF_VIDEO_MAX_SECONDS * source_fps + 1e-6)
         frames = []
         decoded_count = 0
         next_target = 0
         fitted_size = None
-        max_source_frames = math.floor(H3_REF_VIDEO_MAX_SECONDS * source_fps + 1e-6)
         for source_index, frame in enumerate(container.decode(video = 0)):
             decoded_count = source_index + 1
             if decoded_count > max_source_frames:
@@ -406,33 +526,142 @@ def decode_h3_reference_video(blob: bytes) -> tuple[list, Optional[Any], Optiona
             target_source = int(next_target * source_fps / H3_FPS)
             if target_source > source_index:
                 continue
-            image = frame.to_image().convert("RGB")
-            if fitted_size is None:
-                fitted_size = h3_reference_frame_size(*image.size)
-            if image.size != fitted_size:
-                image = image.resize(fitted_size, Image.LANCZOS)
+            image, fitted_size = _fit_h3_video_frame(frame, fitted_size)
             while int(next_target * source_fps / H3_FPS) <= source_index:
                 frames.append(image)
                 next_target += 1
-
     if decoded_count == 0:
         raise ValueError("That reference video decoded to no frames.")
-    duration = decoded_count / source_fps
-    if duration + 1e-6 < H3_REF_VIDEO_MIN_SECONDS:
-        raise ValueError(
-            f"MiniMax-H3 reference videos run {H3_REF_VIDEO_MIN_SECONDS:g} to "
-            f"{H3_REF_VIDEO_MAX_SECONDS:g} seconds; this one is {duration:.1f}s."
-        )
-    frames = frames[: int(round(duration * H3_FPS))]
+    return frames, decoded_count / source_fps, timeline_start
 
-    waveform, sample_rate = (None, None)
+
+def _decode_h3_video_trim_by_timestamp(
+    blob: bytes, av: Any, trim: tuple[float, float]
+) -> tuple[list, Optional[float]]:
+    """Select an explicit interval from presentation timestamps and stop at its endpoint."""
+    import io
+
+    start, end = trim
+    target_count = int(round((end - start) * H3_FPS))
     with av.open(io.BytesIO(blob)) as container:
-        if container.streams.audio:
-            waveform, sample_rate = _decode_audio_stream(container, np)
-    return frames, waveform, sample_rate
+        if not container.streams.video:
+            raise ValueError("That reference file carries no video track.")
+        stream = container.streams.video[0]
+        timeline_start = _stream_start_seconds(stream)
+        if timeline_start is not None and start > 0:
+            _seek_media(container, stream, timeline_start + start, label = "video")
+
+        frames = []
+        fitted_size = None
+        candidate = None
+        last_relative = None
+        last_duration = None
+
+        def _fill_until(relative_limit: float) -> None:
+            nonlocal fitted_size
+            if candidate is None:
+                return
+            wanted = min(
+                target_count,
+                max(0, math.ceil((relative_limit - start) * H3_FPS - 1e-6)),
+            )
+            if wanted <= len(frames):
+                return
+            image, fitted_size = _fit_h3_video_frame(candidate, fitted_size)
+            frames.extend([image] * (wanted - len(frames)))
+
+        for frame in container.decode(video = 0):
+            timestamp = _frame_timestamp_seconds(frame)
+            if timestamp is None:
+                raise _H3MediaTimestampsUnavailable
+            if timeline_start is None:
+                # Without a declared start or seek, the first frame is the timeline origin.
+                timeline_start = timestamp
+            relative = timestamp - timeline_start
+            if candidate is not None:
+                _fill_until(relative)
+                if len(frames) >= target_count:
+                    return frames, timeline_start
+            candidate = frame
+            last_relative = relative
+            duration = getattr(frame, "duration", None)
+            time_base = getattr(frame, "time_base", None)
+            last_duration = (
+                float(duration * time_base)
+                if duration is not None and time_base is not None and duration > 0
+                else None
+            )
+
+        if candidate is None or last_relative is None:
+            raise ValueError("That reference video decoded to no frames in the selected range.")
+        declared_duration = getattr(stream, "duration", None)
+        stream_time_base = getattr(stream, "time_base", None)
+        source_end = (
+            float(declared_duration * stream_time_base)
+            if declared_duration is not None and stream_time_base is not None
+            else last_relative + (last_duration or 0.0)
+        )
+        if source_end + H3_REF_TRIM_COVERAGE_SLACK_SECONDS < end:
+            raise ValueError("Reference video trim ends after the source video.")
+        _fill_until(end)
+        if len(frames) < target_count:
+            raise ValueError("That reference video decoded to no frames in the selected range.")
+        return frames, timeline_start
 
 
-def decode_h3_reference_audio(blob: bytes) -> tuple[Any, int]:
+def _decode_h3_video_trim_by_ordinal(
+    blob: bytes, av: Any, trim: tuple[float, float]
+) -> tuple[list, Optional[float]]:
+    """Fallback for streams whose decoded frames carry no presentation timestamps."""
+    import io
+    with av.open(io.BytesIO(blob)) as container:
+        if not container.streams.video:
+            raise ValueError("That reference file carries no video track.")
+        stream = container.streams.video[0]
+        source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS)
+        if source_fps <= 0:
+            source_fps = float(H3_FPS)
+        # The frame on screen at t is the last one starting at or before it, so the start floors where the exclusive end
+        # ceils. Ceiling both skips the frame straddling a fractional start, drifting this fallback ahead of the
+        # timestamp path.
+        start_source_frame = math.floor(trim[0] * source_fps + 1e-6)
+        end_source_frame = math.ceil(trim[1] * source_fps - 1e-6)
+        target_count = int(round((trim[1] - trim[0]) * H3_FPS))
+        frames = []
+        decoded_count = 0
+        next_target = 0
+        fitted_size = None
+        for source_index, frame in enumerate(container.decode(video = 0)):
+            decoded_count = source_index + 1
+            if source_index < start_source_frame:
+                continue
+            if source_index >= end_source_frame:
+                break
+            selected_index = source_index - start_source_frame
+            target_source = int(next_target * source_fps / H3_FPS)
+            if target_source > selected_index:
+                continue
+            image, fitted_size = _fit_h3_video_frame(frame, fitted_size)
+            while (
+                len(frames) < target_count
+                and int(next_target * source_fps / H3_FPS) <= selected_index
+            ):
+                frames.append(image)
+                next_target += 1
+        slack_frames = math.ceil(H3_REF_TRIM_COVERAGE_SLACK_SECONDS * source_fps)
+        if decoded_count + slack_frames < end_source_frame:
+            raise ValueError("Reference video trim ends after the source video.")
+        if not frames:
+            raise ValueError("That reference video decoded to no frames in the selected range.")
+        return frames, _stream_start_seconds(stream)
+
+
+def decode_h3_reference_audio(
+    blob: bytes,
+    *,
+    trim_start_seconds: Optional[float] = None,
+    trim_end_seconds: Optional[float] = None,
+) -> tuple[Any, int]:
     """Decode one uploaded audio file to a float32 ``(samples, channels)`` waveform + its rate."""
     import io
 
@@ -442,51 +671,175 @@ def decode_h3_reference_audio(blob: bytes) -> tuple[Any, int]:
     with av.open(io.BytesIO(blob)) as container:
         if not container.streams.audio:
             raise ValueError("That reference file carries no audio track.")
-        waveform, sample_rate = _decode_audio_stream(container, np)
+        waveform, sample_rate = _decode_audio_stream(
+            container,
+            np,
+            trim_start_seconds = trim_start_seconds,
+            trim_end_seconds = trim_end_seconds,
+        )
     if waveform is None:
         raise ValueError("That reference audio decoded to no samples.")
     return waveform, sample_rate
 
 
-def _decode_audio_stream(container: Any, np: Any) -> tuple[Optional[Any], Optional[int]]:
-    """The container's first audio stream as float32 ``(samples, channels)`` at its own rate.
+def _decode_audio_stream(
+    container: Any,
+    np: Any,
+    *,
+    trim_start_seconds: Optional[float] = None,
+    trim_end_seconds: Optional[float] = None,
+    timeline_start_seconds: Optional[float] = None,
+    untrimmed_duration_seconds: Optional[float] = None,
+) -> tuple[Optional[Any], Optional[int]]:
+    """Decode the first audio stream as float32 samples at its native rate.
 
-    Bounded while decoding, for the reason the video path above is: the encoded size says almost
-    nothing about the decoded size. A 32 MiB request-limit MP3 is over half an hour of audio, which
-    expands to ~1.9 GB of float32 here and doubles again in ``np.concatenate``, and three
-    references are accepted per request. H3's reference window is
-    ``H3_REF_VIDEO_MAX_SECONDS`` anyway, so anything past it is unusable rather than merely large:
-    refuse it with the same message the video guard uses instead of decoding it first."""
+    Decode incrementally to enforce H3's 15-second limit. For untrimmed video, cap embedded audio
+    to the video timeline.
+    """
     import av
 
+    trim = validate_h3_reference_trim(trim_start_seconds, trim_end_seconds)
     stream = container.streams.audio[0]
     sample_rate = int(stream.codec_context.sample_rate or 48_000)
-    # One resampler pass gives interleaved float32 whatever the source layout/format was.
+    if trim is not None:
+        try:
+            return _decode_audio_trim_by_timestamp(
+                container,
+                stream,
+                np,
+                av,
+                sample_rate,
+                trim,
+                timeline_start_seconds = timeline_start_seconds,
+            )
+        except _H3MediaTimestampsUnavailable:
+            start_time = getattr(stream, "start_time", None)
+            time_base = getattr(stream, "time_base", None)
+            if time_base is None:
+                raise ValueError(
+                    "Reference audio timestamps are unavailable and its stream cannot be reset."
+                ) from None
+            try:
+                container.seek(int(start_time or 0), backward = True, any_frame = False, stream = stream)
+            except Exception as exc:  # noqa: BLE001 -- decoder-specific reset errors
+                raise ValueError(
+                    "Reference audio timestamps are unavailable and its stream cannot be reset."
+                ) from exc
+
     resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
     channels = len(stream.layout.channels)
     max_samples = math.floor(H3_REF_VIDEO_MAX_SECONDS * sample_rate + 1e-6)
+    start_sample = math.floor(trim[0] * sample_rate + 1e-6) if trim else 0
+    untrimmed_end_sample = (
+        int(round(untrimmed_duration_seconds * sample_rate))
+        if untrimmed_duration_seconds is not None
+        else None
+    )
+    end_sample = math.floor(trim[1] * sample_rate + 1e-6) if trim else untrimmed_end_sample
     chunks = []
-    total = 0
+    source_total = 0
 
-    def _take(resampled: Any) -> None:
-        nonlocal total
+    def _take(resampled: Any) -> bool:
+        nonlocal source_total
         block = resampled.to_ndarray().reshape(-1, channels)
-        total += block.shape[0]
-        if total > max_samples:
+        block_start = source_total
+        block_end = block_start + block.shape[0]
+        source_total = block_end
+        if trim is None and untrimmed_duration_seconds is None and source_total > max_samples:
             raise ValueError(
                 f"MiniMax-H3 reference audio runs up to {H3_REF_VIDEO_MAX_SECONDS:g} seconds; "
                 f"this one is longer. Trim it first."
             )
-        chunks.append(block)
+        take_start = max(block_start, start_sample)
+        take_end = min(block_end, end_sample) if end_sample is not None else block_end
+        if take_start < take_end:
+            chunks.append(block[take_start - block_start : take_end - block_start])
+        # A track running past its video is clamped, not refused: encoder padding overshoots routinely, and longer
+        # tracks decoded fine before trimming existed. Stopping here also skips a tail no engine receives.
+        return end_sample is not None and block_end >= end_sample
 
+    stopped = False
     for frame in container.decode(audio = 0):
         for resampled in resampler.resample(frame):
+            if _take(resampled):
+                stopped = True
+                break
+        if stopped:
+            break
+    if not stopped:
+        for resampled in resampler.resample(None):
             _take(resampled)
-    for resampled in resampler.resample(None):
-        _take(resampled)
+    # Short soundtracks are kept, not refused, as in the timestamp path above.
     if not chunks:
         return None, None
     return np.concatenate(chunks, axis = 0).astype("float32"), sample_rate
+
+
+def _decode_audio_trim_by_timestamp(
+    container: Any,
+    stream: Any,
+    np: Any,
+    av: Any,
+    sample_rate: int,
+    trim: tuple[float, float],
+    *,
+    timeline_start_seconds: Optional[float],
+) -> tuple[Any, int]:
+    """Place decoded samples on the requested media timeline and stop at the endpoint."""
+    start, end = trim
+    origin = timeline_start_seconds
+    if origin is None:
+        origin = _stream_start_seconds(stream)
+    if origin is not None and start > 0:
+        _seek_media(container, stream, origin + start, label = "audio")
+
+    channels = len(stream.layout.channels)
+    target_count = int(round((end - start) * sample_rate))
+    output = np.zeros((target_count, channels), dtype = "float32")
+    resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
+    copied_any = False
+    stopped = False
+
+    def _take(resampled: Any) -> bool:
+        nonlocal origin, copied_any
+        timestamp = _frame_timestamp_seconds(resampled)
+        if timestamp is None:
+            raise _H3MediaTimestampsUnavailable
+        if origin is None:
+            origin = timestamp
+        block = resampled.to_ndarray().reshape(-1, channels)
+        block_start = timestamp - origin
+        block_end = block_start + block.shape[0] / sample_rate
+        if block_start >= end:
+            return True
+        destination_start = int(round((block_start - start) * sample_rate))
+        source_start = max(0, -destination_start)
+        destination_start = max(0, destination_start)
+        take = min(block.shape[0] - source_start, target_count - destination_start)
+        if take > 0:
+            output[destination_start : destination_start + take] = block[
+                source_start : source_start + take
+            ]
+            copied_any = True
+        return block_end >= end
+
+    for frame in container.decode(audio = 0):
+        for resampled in resampler.resample(frame):
+            if _take(resampled):
+                stopped = True
+                break
+        if stopped:
+            break
+    if not stopped:
+        for resampled in resampler.resample(None):
+            if _take(resampled):
+                break
+    # Nothing copied means no soundtrack here, whether the track ended before the interval or starts after it. Silence
+    # instead would be a fabricated track, and would hide the gap from stage_h3_references' positional pairing. A track
+    # that merely runs out partway did copy something, so it keeps its silent tail rather than failing.
+    if not copied_any:
+        return None, None
+    return output, sample_rate
 
 
 def write_h3_reference_wav(path: Path, waveform: Any, sample_rate: int) -> None:
@@ -528,7 +881,7 @@ class MiniMaxH3StagedReferences:
     """``MiniMaxH3References`` written to disk the way sd-cli reads them back."""
 
     images: tuple[str, ...] = ()
-    # Frame DIRECTORIES: sd-cli reads a reference video as images sorted lexicographically.
+    # frame DIRECTORIES: sd-cli reads a reference video as images sorted lexicographically
     videos: tuple[str, ...] = ()
     video_audios: tuple[str, ...] = ()
     audios: tuple[str, ...] = ()
@@ -597,7 +950,7 @@ def h3_diffusers_references(references: MiniMaxH3References) -> list:
     )
 
     def waveform_tensor(waveform: Any) -> Any:
-        # The blocks take a (channels, samples) tensor; the decoder produces (samples, channels).
+        # the blocks take a (channels, samples) tensor; the decoder produces (samples, channels)
         return torch.from_numpy(waveform).transpose(0, 1).contiguous()
 
     built: list = []
@@ -700,13 +1053,56 @@ def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
     )
 
 
+def h3_component_source(*files: str) -> str:
+    """The repo to fetch the shared VAEs from: our mirror, or the repack it was mirrored from
+    when an existing install already holds those exact bytes under the old id.
+
+    The HF cache is keyed by repo id, so moving the id alone would re-download ~5.8 GB on upgrade
+    and fail outright offline. The mirror is byte identical (same sha256), so reusing the old
+    entry loads the same weights. Fresh installs never take this branch.
+
+    ``prefer_cached_legacy_source`` rather than a probe of our own: it already owns this exact
+    mirror-to-repack decision for every other sd.cpp asset, and it counts BOTH cache roots.
+    That second part is the reason it has to be this one. The native fetch below passes
+    ``reuse_other_cache_root``, so a repack left behind by a cache-folder change is still
+    perfectly usable -- but only the OLD repo id can reach it, and a live-root-only probe would
+    call it absent and re-pull ~5.8 GB (offline, fail).
+
+    Answered for the files GIVEN, and the native loop asks one at a time because that is how it
+    downloads them. A pre-move pull interrupted between the two VAEs leaves only one under the old
+    id; asking for the pair calls the old id useless and re-pulls the 5.2 GB already on disk,
+    while asking per file reuses it and takes only the other from the mirror. With no argument it
+    answers for the pair, for callers describing the pair rather than fetching it.
+
+    PURE: table lookup plus a local stat, no network, so a download plan and the fetch that
+    follows it agree on the source.
+    """
+    wanted = files or (H3_VIDEO_VAE, H3_AUDIO_VAE)
+    try:
+        from .diffusion_families import prefer_cached_legacy_source
+        return prefer_cached_legacy_source(H3_COMPONENT_REPO, wanted)
+    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
+        return H3_COMPONENT_REPO
+
+
+def h3_component_metadata_repo(repo_id: str) -> str:
+    """Which repo to read a shared VAE's SIZE from, given the repo its bytes will come from.
+
+    The repack is a source of bytes ALREADY ON DISK, never of network metadata. It may since have
+    been renamed or taken down -- the exact failure this move exists to survive -- and a
+    ``model_info`` against it would fail the download plan for a load its own cache can still
+    satisfy. The mirror's copy is byte identical, so the number is the same.
+    """
+    return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
         (H3_GGUF_REPO, transformer_filename),
         (H3_GGUF_REPO, h3_text_encoder_filename(transformer_filename)),
-        (H3_COMPONENT_REPO, H3_VIDEO_VAE),
-        (H3_COMPONENT_REPO, H3_AUDIO_VAE),
+        (h3_component_source(H3_VIDEO_VAE), H3_VIDEO_VAE),
+        (h3_component_source(H3_AUDIO_VAE), H3_AUDIO_VAE),
     )
 
 
@@ -715,11 +1111,10 @@ class MiniMaxH3NativeRuntime:
     engine: Any
     files: Any
     offload_flags: tuple[str, ...]
-    # (size, mtime_ns) of the sd-cli this runtime was built on, taken at load, right after
-    # ensure_h3_sd_cpp_binary vetted it for H3 support and accelerator. Every generation compares
-    # against THIS, not against whatever the path holds when it starts: an install that lands
-    # between the load and a generation replaces the binary in place, and two reads taken after it
-    # agree with each other while agreeing with nothing that was ever checked. None means the
+    # (size, mtime_ns) of the sd-cli this runtime was built on, taken at load, right after ensure_h3_sd_cpp_binary
+    # vetted it for H3 support and accelerator. Every generation compares against THIS, not against whatever the path
+    # holds when it starts: an install that lands between the load and a generation replaces the binary in place, and
+    # two reads taken after it agree with each other while agreeing with nothing that was ever checked. None means the
     # identity could not be taken, which reads as "cannot vouch" rather than "unchanged".
     binary_identity: Optional[tuple[int, int]] = None
 
@@ -727,7 +1122,7 @@ class MiniMaxH3NativeRuntime:
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
     """Convert an sd.cpp WebM into a gallery-compatible H.264/AAC MP4.
 
-    The native backend is available in Studio's no-torch runtime, so keep this
+    The native backend is available in Unsloth's no-torch runtime, so keep this
     export entirely in PyAV rather than routing decoded frames through Diffusers.
     """
     import av

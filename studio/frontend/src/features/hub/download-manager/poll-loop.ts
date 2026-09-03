@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { carriesOverSeed } from "./adopt-rules";
+import {
+  carriesOverSeed,
+  idleProbeVerdict,
+  seededMeasuredTransfer,
+} from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
@@ -15,12 +19,11 @@ import {
 } from "./api";
 import { cancelExternalJob, isExternalJob } from "./external-jobs";
 import {
-  CANCELLED_LINGER_MS,
   CANCEL_WATCHDOG_MS,
   COMPLETE_LINGER_MS,
-  ERROR_LINGER_MS,
   HIDDEN_POLL_INTERVAL_MS,
   IDLE_EVICT_GRACE_MS,
+  INTERRUPTED_DOWNLOAD_MESSAGE,
   INVENTORY_BUMP_DEBOUNCE_MS,
   POLL_BACKOFF_AFTER_MS,
   POLL_BACKOFF_INTERVAL_MS,
@@ -56,23 +59,31 @@ import {
   pollAccessErrorMessage,
   withPollRequestTimeout,
 } from "./download-api-adapter";
-import type {
-  DownloadRequest,
-  JobListeners,
-  JobRuntime,
-  ManagedDownload,
-  ProgressLike,
-  Terminal,
+import {
+  downloadRequestInventoryKind,
+  type DownloadRequest,
+  type JobListeners,
+  type JobRuntime,
+  type ManagedDownload,
+  type ProgressLike,
+  type Terminal,
 } from "./download-manager-types";
 import {
-  XET_NOTICE_DESCRIPTION,
-  XET_NOTICE_DESCRIPTION_CLASS,
-  XET_NOTICE_DURATION_MS,
+  RESTART_NOTICE_TITLE,
   XET_NOTICE_TITLE,
-  reserveXetNotice,
+  composeNoticeDescription,
+  composeRestartNoticeDescription,
   shouldShowXetNotice,
-  xetNoticesShown,
 } from "./xet-progress-notice";
+import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
+import {
+  currentRoute,
+  currentStartToastSelectionEpoch,
+  dismissStartToast,
+  liveCallerToast,
+  showCallerToast,
+  showStartToast,
+} from "./start-toast";
 import {
   getState,
   hasActiveRepoPeer,
@@ -94,8 +105,28 @@ import {
   runtimeRegistry,
   teardownRuntime,
 } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 
+function showRestartStartToast(
+  key: string,
+  xet: boolean,
+  caller: DownloadRequest["callerToast"],
+  originRoute: string,
+  originSelectionEpoch: number,
+): void {
+  showStartToast(
+    key,
+    {
+      title: RESTART_NOTICE_TITLE,
+      description: composeRestartNoticeDescription({
+        xet,
+        callerToast: caller,
+      }),
+    },
+    originRoute,
+    originSelectionEpoch,
+  );
+}
 function notify(
   job: ManagedDownload,
   event: keyof JobListeners,
@@ -153,6 +184,7 @@ export function applyProgressUpdate(
   patchJob(key, {
     expectedBytes: resolved.expected,
     downloadedBytes: resolved.downloadedBytes,
+    measuredTransfer: resolved.measuredTransfer,
     completedBytes: resolved.completedBytes,
     completeOnDisk: resolved.completeOnDisk,
     fraction: resolved.fraction,
@@ -189,6 +221,7 @@ function markPollFailure(key: string, rt: JobRuntime): void {
   patchJob(key, {
     error: POLL_DEGRADED_MESSAGE,
     bytesPerSec: 0,
+    etaSeconds: 0,
   });
 }
 
@@ -199,6 +232,7 @@ export function finalize(
 ): void {
   const job = getState().jobs[key];
   teardownRuntime(key);
+  dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
   if (job.kind === DOWNLOAD_KIND.MODEL) {
@@ -208,9 +242,7 @@ export function finalize(
     notify(job, "onCancelled", 0);
     removeJob(key);
   } else if (outcome === "complete") {
-    // A terminal "complete" arriving before the final progress poll must not
-    // leave a stale sub-total. Reconcile to the largest known figure so
-    // downloaded == completed >= expected, fraction 1, and report that.
+    // A terminal "complete" before the final progress poll must not leave a stale sub-total, so reconcile to the largest known figure.
     const bytes = Math.max(
       opts.bytes ?? 0,
       job.downloadedBytes,
@@ -224,14 +256,21 @@ export function finalize(
       completedBytes: bytes,
       completeOnDisk: true,
       bytesPerSec: 0,
+      etaSeconds: 0,
       error: null,
     });
     notify(job, "onComplete", bytes);
     scheduleRemoval(key, COMPLETE_LINGER_MS);
   } else if (outcome === "cancelled") {
-    patchJob(key, { state: "cancelled", bytesPerSec: 0, error: null });
+    patchJob(key, {
+      state: "cancelled",
+      bytesPerSec: 0,
+      etaSeconds: 0,
+      error: null,
+    });
     notify(job, "onCancelled", 0);
-    scheduleRemoval(key, CANCELLED_LINGER_MS);
+    // Stay in Downloads until dismissed so the user can resume the partial
+    // without searching the model again.
   } else {
     const rawError =
       typeof opts.error === "string" && opts.error
@@ -242,9 +281,9 @@ export function finalize(
       error:
         opts.error === null ? null : (pollAccessErrorMessage(rawError) ?? rawError),
       bytesPerSec: 0,
+      etaSeconds: 0,
     });
     notify(job, "onError", 0);
-    scheduleRemoval(key, ERROR_LINGER_MS);
   }
   scheduleInventoryBump();
 }
@@ -305,7 +344,6 @@ async function finalizeTerminalStatus(
         finalBytes = downloadedBytes;
       }
     } catch {
-      // Terminal status is authoritative; progress reconciliation is best-effort.
     }
     finalize(key, "complete", { bytes: finalBytes });
   } else if (terminalKind === "error") {
@@ -315,19 +353,19 @@ async function finalizeTerminalStatus(
   }
 }
 
-// Rolling-window rate, withheld until the window is trustworthy. The old EMA
-// published its first sample verbatim and decayed toward -- never reaching --
-// zero while stalled, so ramp-up and idle ticks produced "753d 5h left" (#7667).
-// 0 hides both labels, as the training-start overlay already does.
+  // Rolling-window rate, withheld until the window is trustworthy: an EMA publishing its first sample verbatim gave "753d 5h left" (#7667). 0 hides both labels.
 function applySpeedSample(
   rt: JobRuntime,
   downloadedBytes: number,
   expectedBytes: number,
   nowMs: number,
-): number {
+): { bytesPerSec: number; etaSeconds: number } {
   appendSample(rt.speedSamples, nowMs / 1000, downloadedBytes);
   const stats = computeTransferStats(rt.speedSamples, expectedBytes);
-  return stats.stable ? stats.rateBytesPerSecond : 0;
+  return {
+    bytesPerSec: stats.stable ? stats.rateBytesPerSecond : 0,
+    etaSeconds: stats.stable ? stats.etaSeconds : 0,
+  };
 }
 
 function reconcileProgressAndSpeed(
@@ -337,18 +375,31 @@ function reconcileProgressAndSpeed(
   progressResp: ProgressLike,
   generationChanged: boolean,
 ): { madeProgress: boolean } {
-  const { expected, downloadedBytes, completedBytes, completeOnDisk, fraction, madeProgress } =
-    resolveProgressUpdate(current, progressResp, {
-      resetMonotonic: generationChanged,
-    });
-  const bytesPerSec = applySpeedSample(rt, downloadedBytes, expected, Date.now());
-  patchJob(key, {
-    expectedBytes: expected,
+  const {
+    expected,
     downloadedBytes,
+    measuredTransfer,
     completedBytes,
     completeOnDisk,
     fraction,
-    bytesPerSec,
+    madeProgress,
+  } = resolveProgressUpdate(current, progressResp, {
+    resetMonotonic: generationChanged,
+  });
+  if (generationChanged) {
+    // Another server owns this transfer, so the old samples describe a different run; the counter cannot say so, since a restart resumes from the same cache.
+    rt.speedSamples.length = 0;
+  }
+  const speed = applySpeedSample(rt, downloadedBytes, expected, Date.now());
+  patchJob(key, {
+    expectedBytes: expected,
+    downloadedBytes,
+    measuredTransfer,
+    completedBytes,
+    completeOnDisk,
+    fraction,
+    bytesPerSec: speed.bytesPerSec,
+    etaSeconds: speed.etaSeconds,
   });
   markPollSuccess(key, rt);
   return { madeProgress };
@@ -358,18 +409,30 @@ function handleIdleAfterProgress(
   rt: JobRuntime,
   key: string,
   madeProgress: boolean,
+  progressResp: ProgressLike,
 ): void {
   const updatedJob = getState().jobs[key];
   if (updatedJob && hasObservedExpectedBytes(updatedJob)) {
     finalize(key, "complete", { bytes: updatedJob.downloadedBytes });
   } else if (rt.cancelRequested) {
     finalize(key, "cancelled");
+  } else if (
+    idleProbeVerdict(
+      progressResp.downloaded_bytes,
+      progressResp.cache_path,
+      progressResp.target_present,
+      progressResp.cache_measured,
+    ) === "gone"
+  ) {
+    finalize(key, "gone");
   } else if (madeProgress) {
     rt.idleSinceMs = null;
   } else {
     rt.idleSinceMs ??= Date.now();
     if (Date.now() - rt.idleSinceMs >= IDLE_EVICT_GRACE_MS) {
-      finalize(key, "gone");
+      // The backend went idle with the card still up: keep a resumable row
+      // instead of dropping it. "gone" is only when the cache itself vanished.
+      finalize(key, "error", { error: INTERRUPTED_DOWNLOAD_MESSAGE });
     }
   }
 }
@@ -413,7 +476,10 @@ async function tick(key: string): Promise<void> {
     );
     if (!isCurrent(key, epoch)) return;
 
-    const generationChanged = syncServerGeneration(key, job, status);
+    // syncServerGeneration persists immediately, so a change seen before the progress path would look unchanged next tick; hold it until a progress poll consumes it.
+    if (syncServerGeneration(key, job, status)) {
+      rt.pendingGenerationChange = true;
+    }
 
     const terminalKind = terminalKindFromState(status.state);
     if (terminalKind !== null) {
@@ -444,6 +510,8 @@ async function tick(key: string): Promise<void> {
     const current = getState().jobs[key];
     if (!current) return;
 
+    const generationChanged = rt.pendingGenerationChange === true;
+    rt.pendingGenerationChange = false;
     const { madeProgress } = reconcileProgressAndSpeed(
       rt,
       key,
@@ -453,7 +521,7 @@ async function tick(key: string): Promise<void> {
     );
 
     if (status.state === "idle") {
-      handleIdleAfterProgress(rt, key, madeProgress);
+      handleIdleAfterProgress(rt, key, madeProgress, progressResp);
     } else {
       rt.idleSinceMs = null;
     }
@@ -539,13 +607,17 @@ export async function startJob(
     state?: DownloadJobState;
     transport?: ResolvedTransport;
     cancelTransport?: ResolvedTransport | null;
+    originRoute?: string;
+    originSelectionEpoch?: number;
+    restartDisclosure?: boolean;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
-  // Peer guard stops a FRESH start from double-starting a variant already
-  // downloading (or colliding with a no-variant snapshot). Skipped when ADOPTING:
-  // the restored own entry would look like a peer and freeze the bar; adoptJob's
-  // `pollingStarted` guard already prevents double-polling the same key.
+  const startRoute = opts.originRoute ?? currentRoute();
+  const startSelectionEpoch =
+    opts.originSelectionEpoch ?? currentStartToastSelectionEpoch();
+  // Peer guard stops a FRESH start from double-starting a variant already downloading. Skipped when ADOPTING:
+  // the restored own entry would look like a peer and freeze the bar, and adoptJob already guards double-polling.
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     return;
   }
@@ -578,12 +650,12 @@ export async function startJob(
 
   const expected = Math.max(existing?.expectedBytes ?? 0, req.expectedBytes);
   const hfToken = getHfToken() || null;
-  // An explicit opts.useXet (a retry pinning a transport) wins; otherwise carry the stored
-  // preference UNRESOLVED so "auto" survives to effectiveTransportMode(). Collapsing it to a
-  // boolean here would read "auto" as "not xet" and send every download over HTTP.
-  const requestedMode: TransportMode =
-    opts.useXet === undefined
-      ? getTransportMode()
+  // Carry the stored preference UNRESOLVED so "auto" survives to effectiveTransportMode(); collapsing it to a boolean sends every download over HTTP.
+  // Never awaited for an adopted job: suspending here let a concurrent adoptJob replace this runtime, leaving duplicate timers and a leaked listener.
+  const requestedMode: TransportMode = opts.adopt
+    ? TRANSPORT.HTTP
+    : opts.useXet === undefined
+      ? await resolveTransportMode()
       : opts.useXet
         ? TRANSPORT.XET
         : TRANSPORT.HTTP;
@@ -604,15 +676,17 @@ export async function startJob(
   const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
-  // An adopted job never called apiStart, so it learns the run's generation from
-  // the probe (or persisted value) to scope a later cancel to this exact run.
+    // Seeding the bytes without carrying the flag said "measured" for a figure the poll only held, which is the "0 B left" the guard exists to stop.
+  const seedMeasuredTransfer = seededMeasuredTransfer(
+    carryOverSeed,
+    existing?.measuredTransfer,
+  );
+    // An adopted job never called apiStart, so it learns the run's generation from the probe to scope a later cancel to this exact run.
   const seedGeneration = opts.adopt
     ? Number.isSafeInteger(opts.generation)
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
-  // An adopted job prefers what the backend just reported and falls back to
-  // the persisted value, for the transport and its cancel marker alike.
   const adopted = opts.adopt
     ? adoptedTransports(
         { transport: opts.transport, cancelTransport: opts.cancelTransport },
@@ -620,6 +694,7 @@ export async function startJob(
       )
     : { transport: mode, cancelTransport: undefined };
   const activeTransport = adopted.transport;
+  const inventoryKind = downloadRequestInventoryKind(req);
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -629,6 +704,7 @@ export async function startJob(
     kind: req.kind,
     repoId: req.repoId,
     variant: req.variant,
+    etaSeconds: 0,
     state: adoptingCancel ? "cancelling" : "running",
     downloadedBytes: seedDownloaded,
     completedBytes: seedCompleted,
@@ -638,28 +714,31 @@ export async function startJob(
     bytesPerSec: 0,
     error: null,
     startedAt: opts.adopt ? (existing?.startedAt ?? Date.now()) : Date.now(),
-    // An adopted job prefers the backend's live transport, then a persisted
-    // value. It never claims the HTTP placeholder used to skip resolution.
+    // An adopted job prefers the backend's live transport, then the persisted value; never the HTTP placeholder used to skip resolution.
     ...(activeTransport ? { transport: activeTransport } : {}),
-    // A fallback run's cancel marker. Only an adopted job can have one: the
-    // fallback happens long after a start.
     ...(adopted.cancelTransport
       ? { cancelTransport: adopted.cancelTransport }
+      : {}),
+    ...(seedMeasuredTransfer !== undefined
+      ? { measuredTransfer: seedMeasuredTransfer }
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
-    // Recorded so a later start for the same scope slot can tell whether this running job is fetching its files or a different quant's. An adopted job keeps the existing record.
     ...(req.files && req.files.length > 0
       ? { scopedFiles: [...req.files] }
       : opts.adopt && existing?.scopedFiles
         ? { scopedFiles: existing.scopedFiles }
         : {}),
-    // The staged plan's own verdict on which entry is the picked model, so the panel labels it without guessing from file extensions. An adopted job keeps the existing record, since only the stager can supply it.
     ...(req.checkpoint !== undefined
       ? { checkpoint: req.checkpoint }
       : opts.adopt && existing?.checkpoint !== undefined
         ? { checkpoint: existing.checkpoint }
+        : {}),
+    ...(inventoryKind !== undefined
+      ? { inventoryKind }
+      : opts.adopt && existing?.inventoryKind !== undefined
+        ? { inventoryKind: existing.inventoryKind }
         : {}),
   });
 
@@ -674,8 +753,7 @@ export async function startJob(
       });
       return;
     }
-    // A cancel during this apiStart round-trip can land before the job is
-    // claimable; re-issue against the accepted generation.
+    // A cancel during this apiStart round trip can land before the job is claimable, so re-issue against the accepted generation.
     if (rt.cancelRequested && result.accepted) {
       reissueDroppedStartCancel(req, result.generation);
     }
@@ -689,31 +767,72 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-    // Explain the 0%-then-done shape of a Xet transfer, for the first few only.
+    // One accepted start, one job-owned toast. A preflight restart disclosure
+    // waits until here so rejected, attached and already-stopping starts cannot
+    // leave a claim behind for the next model selection.
+    const stopping = rt.cancelRequested;
+    const liveOwnStart =
+      result.attached !== true && result.state === "running" && !stopping;
+    const discloseRestart = opts.restartDisclosure === true && liveOwnStart;
+    // Checked BEFORE reserving: a reservation is one of three for the life of the install, and spending one on a toast discarded on arrival burns all three unseen.
+    const onOriginRoute = currentRoute() === startRoute;
+    const onOriginSelection =
+      req.kind !== DOWNLOAD_KIND.MODEL ||
+      currentStartToastSelectionEpoch() === startSelectionEpoch;
     if (
+      onOriginRoute &&
+      onOriginSelection &&
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,
         attached: result.attached === true,
-        // A cancel can land while this start is in flight, and the reissue
-        // above is the giveaway. Do not promise a download that is stopping.
-        live: result.state === "running" && !rt.cancelRequested,
-        shown: xetNoticesShown(),
+        live: result.state === "running" && !stopping,
       })
     ) {
-      // Reserving is async (a cross-tab lock), and nothing below waits on a
-      // toast, so let the download get on with it.
-      void reserveXetNotice().then((reserved) => {
-        if (!reserved) return;
-        toast.info(XET_NOTICE_TITLE, {
-          description: XET_NOTICE_DESCRIPTION,
-          duration: XET_NOTICE_DURATION_MS,
-          classNames: { description: XET_NOTICE_DESCRIPTION_CLASS },
-        });
+      void reserveXetNoticeFromServer().then(({ granted }) => {
+        // This round trip can outlive the transfer: finalize() dismisses by id before it resolves, so raising here would leave a finished or cancelled job claiming to run.
+        if (!isCurrent(key, epoch) || rt.cancelRequested) return;
+        // The caller's line can go stale while the transport/restart facts stay true.
+        const caller = liveCallerToast(req.callerToast);
+        if (discloseRestart) {
+          showRestartStartToast(
+            key,
+            granted,
+            caller,
+            startRoute,
+            startSelectionEpoch,
+          );
+          return;
+        }
+        if (granted) {
+          showStartToast(
+            key,
+            {
+              title: XET_NOTICE_TITLE,
+              description: composeNoticeDescription(caller),
+            },
+            startRoute,
+            startSelectionEpoch,
+          );
+          return;
+        }
+        showCallerToast(key, caller, startRoute, startSelectionEpoch);
       });
+    } else if (!stopping && onOriginRoute && onOriginSelection) {
+      const caller = liveCallerToast(req.callerToast);
+      if (discloseRestart) {
+        showRestartStartToast(
+          key,
+          false,
+          caller,
+          startRoute,
+          startSelectionEpoch,
+        );
+      } else {
+        showCallerToast(key, caller, startRoute, startSelectionEpoch);
+      }
     }
-    // An adopted job can already have fallen back from Xet to HTTP, which
-    // keeps its original cancel marker and so its stop control.
+    // An adopted job may already have fallen back from Xet to HTTP, which keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {
       patchJob(key, { cancelTransport: result.cancel_transport });
     }
@@ -851,7 +970,6 @@ async function probeCancelOutcome(
 export async function cancelJob(key: string): Promise<void> {
   const job = getState().jobs[key];
   if (!job) return;
-  // Another subsystem owns this transfer; it does the cancelling.
   if (isExternalJob(key)) {
     await cancelExternalJob(key);
     return;
@@ -870,8 +988,7 @@ export async function cancelJob(key: string): Promise<void> {
   } catch (err) {
     const liveAtError = runtimeRegistry.runtimes.get(key);
     if (rt && liveAtError && liveAtError.epoch !== cancelEpoch) return;
-    // apiCancel failed; the probe below is authoritative. Disarm the watchdog so
-    // it can't finalize "cancelled" mid-probe and tear down a still-running worker.
+    // apiCancel failed and the probe below is authoritative: disarm the watchdog so it cannot finalize "cancelled" mid-probe and tear down a running worker.
     clearWatchdog(liveAtError);
 
     const probe = await probeCancelOutcome(key, job, rt, cancelEpoch);
@@ -906,24 +1023,23 @@ export function adoptJob(
   generation?: number,
   state?: DownloadJobState,
   transport?: ResolvedTransport,
-  // null is the backend reporting no marker, which must clear a stored one;
-  // undefined is a caller that cannot report one at all.
+  // null is the backend reporting no marker, which must clear a stored one; undefined is a caller that cannot report one at all.
   cancelTransport?: ResolvedTransport | null,
 ): void {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   if (runtimeRegistry.runtimes.get(key)?.pollingStarted) {
-    // Persistence hydration and the backend-active probe run concurrently, so a
-    // late backend response must still replace a missing or stale stored value.
-    // Only for the run it described, though: a cancel and restart in between
-    // makes this a different job, possibly on the other transport.
+  // A late backend response must still replace a stale stored value, but only for the run it described: a cancel and restart in between makes this a different job.
     const known = getState().jobs[key]?.serverGeneration;
-    if (transport && probeDescribesCurrentRun(known, generation)) {
+    if (probeDescribesCurrentRun(known, generation)) {
+      const inventoryKind = downloadRequestInventoryKind(req);
       patchJob(key, {
-        transport,
-        ...(cancelTransport === undefined
-          ? {}
-          : { cancelTransport: cancelTransport ?? undefined }),
+        ...(transport ? { transport } : {}),
+        ...(transport && cancelTransport !== undefined
+          ? { cancelTransport: cancelTransport ?? undefined }
+          : {}),
         ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
+        ...(req.files?.length ? { scopedFiles: [...req.files] } : {}),
+        ...(inventoryKind ? { inventoryKind } : {}),
       });
     }
     return;
@@ -968,8 +1084,7 @@ export async function probeAndAdopt(
             repoId,
             variant: active.variant,
             expectedBytes: 0,
-            // Carry the live job's own file list so the adopted record can be matched against a later start for the same slot.
-            // Without it the adopted job had an unknown set and any sibling checkpoint's request read as "already started".
+            // Carry the live job's file list so the adopted record can be matched against a later start for the same slot; without it any sibling checkpoint's request read as "already started".
             ...(active.files && active.files.length > 0 ? { files: [...active.files] } : {}),
           },
           active.generation,
@@ -983,14 +1098,10 @@ export async function probeAndAdopt(
       return;
     }
 
-    // The active-downloads list, not download-status: only the list reports the
-    // transport, without which an adopted HTTP dataset shows Cancel for a
-    // transfer that would have resumed.
+  // The active-downloads list, not download-status: only the list reports the transport, without which an adopted HTTP dataset shows Cancel for a transfer that would have resumed.
     const datasets = await getActiveDatasetDownloads(signal, repoId);
     if (signal.aborted) return;
-    // No repo compare here: the endpoint resolves the cached casing before it
-    // filters, so an exact match against the card's spelling would drop the
-    // very row it just asked for.
+  // No repo compare here: the endpoint resolves the cached casing before it filters, so an exact match against the card's spelling would drop the row it just asked for.
     for (const active of datasets) {
       if (active.state !== "running" && active.state !== "cancelling") continue;
       adoptJob(

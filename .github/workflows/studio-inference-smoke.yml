@@ -41,6 +41,7 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/workflows/studio-inference-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -49,6 +50,11 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
   push:
     branches: [main]
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
@@ -138,10 +144,22 @@ jobs:
 
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
@@ -176,7 +194,12 @@ jobs:
         id: sdks
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 10
-        run: pip install 'openai>=1.50' 'anthropic>=0.40'
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       # Phase 1's environment and model cache sit HERE, after the shared
       # preamble, not before it. They used to run before the installer, which is
@@ -295,10 +318,23 @@ jobs:
         timeout-minutes: 10
         if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.rotate-api.outcome == 'success' }}
         run: |
+          # speculative_type=off and n_parallel=1 are what make the determinism
+          # assertion in the next step answerable. llama-server's README: "the
+          # logits are not guaranteed to be bit-for-bit identical for different
+          # batch" sizes. A non-MTP GGUF otherwise takes the --spec-default branch,
+          # which is live n-gram drafting, not the absence of a drafter: the server
+          # logs "draft acceptance = 0.46875 (30 accepted / 64 generated)". Its
+          # draft pool is built from text the server has already seen, so the FIRST
+          # turn-1 request after a load drafts nothing and decodes one token at a
+          # time while every later one verifies a ~32-token draft in one batch, and
+          # check(runner(), runner()) always compares the cold replay against a warm
+          # one. n_parallel=1 also drops --kv-unified, whose shared-pool occupancy is
+          # a second input to the batch. The other phases of this workflow keep both
+          # defaults, so the shipped path stays covered.
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
             --max-time 600 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048,\"speculative_type\":\"off\",\"n_parallel\":1}" \
             | jq '{status, display_name, is_gguf, context_length}'
 
       - name: Multi-turn determinism via OpenAI + Anthropic SDKs
@@ -468,7 +504,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
@@ -543,7 +591,19 @@ jobs:
                                   if delta.get("content"):
                                       parts.append(delta["content"])
                       return "".join(parts), events
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       # A stall after the tool already produced its result is
@@ -1029,7 +1089,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:

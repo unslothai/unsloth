@@ -29,7 +29,7 @@ the `paths:` list in the workflow: `unsloth/**`, `tests/kaggle/**`,
 `.github/scripts/kaggle_t4_ci/**`, the workflow file itself, and
 `pyproject.toml` (the payloads install the commit under test as a
 distribution, so how it is built and what it depends on is part of what this
-tests). A PR that only edits Studio frontend or docs cannot regress a T4
+tests). A PR that only edits Unsloth frontend or docs cannot regress a T4
 training run, and spending a GPU session on it buys nothing.
 
 Eligible invocations per week:
@@ -61,17 +61,44 @@ documented baseline is 30h; the surplus is a discretionary "floating"
 allowance that can be withdrawn, so treat 30h as the number that is
 guaranteed. This workflow is allotted **40 GPU-h/week** of it.
 
-Measured session cost, on kernels `066cd463` (control + canary, 263s of
-payload) and `8161ceb9` / `7ab727f1` (gpt-oss, 375s of payload):
+Measured per-leg durations, on run `32607621452`:
+
+| leg | duration |
+|---|---|
+| gptoss | 384.1 s |
+| frontier | 312.2 s |
+| canary | 265.3 s |
+| control | 262.2 s |
+
+All four now ride in ONE kernel, two at a time, one worker per card taking its
+next leg when the previous one exits. Packed longest-first that is
+384.1 + 262.2 = 646.3 s on one card against 312.2 + 265.3 = 577.5 s on the
+other, so:
 
 | kernel | wall clock |
 |---|---|
-| kernel 1 (control + canary) | 0.10 h |
-| kernel 2 (gptoss + frontier) | 0.13 h |
-| **one invocation** | **~0.25 h** |
+| one kernel, four legs | 0.18 h |
+| **one invocation** | **~0.25 h** (envelope, see below) |
 
-A session bills its wall clock once, not per card, so the second T4 of each
-kernel is free. That is why `frontier` costs nothing to carry.
+A session bills its wall clock once, not per card. That used to mean the second
+T4 of each of two kernels was free, and it is why `frontier` was described as
+costing nothing to carry. With one kernel it means something narrower: the two
+cards are free relative to each other while both are busy, and the 68.8 s tail
+where only one card still has work costs no more than the rest of the session.
+
+**This shape is not a quota optimisation.** Two kernels of two legs measured
+0.10 h + 0.13 h = 0.23 h against 0.18 h here, which is within the rounding.
+What two kernels cost was the whole ACCOUNT: they took both of Kaggle's
+concurrent sessions, so `kaggle-t4-studio-gpu-ci.yml`, which shares this
+account, could not push at all and queued behind the entire notebook job
+(measured: Unsloth run `32607617804` waited ~40 minutes on notebook run
+`32607621452`). One kernel leaves the second session for Unsloth, and the two
+workflows now hold separate GitHub concurrency groups so they can use it.
+
+The **~0.25 h** envelope below is deliberately NOT lowered to the measured
+0.18 h. Every figure in this document is derived from it, and the real cost
+moved down, so it remains a true upper bound; re-deriving the whole budget to
+book a 0.07 h saving would only make the reserve thinner.
 
 ## The sampling rate
 
@@ -101,18 +128,23 @@ more than 40h in a week, whatever the arithmetic above got wrong. Raise
 `--reserve-hours` to throttle CI harder; do not raise it above roughly 45 or
 CI will never run at all on a week with any other usage.
 
-The worst case, if every sampled launch ran to both kernel ceilings, is far
+The worst case, if every sampled launch ran to the kernel ceiling, is far
 above the allowance and is not what controls the spend. The reserve is.
 
 `--budget-hours` is that worst case, and it is DERIVED rather than chosen:
 `launch.py`'s constants bound one invocation at about 13800s of wall clock
 (the push retries and the `_discard()` each one pays, the shared polling
 deadline, `EVIDENCE_BUDGET_SEC`, and `release()` reconciling every slug
-filed), and Kaggle runs at most 2 batch GPU sessions for this account at a
-time, each billing its wall clock once. So 2 x 13800s = 7.7 GPU-h, set to 8.
+filed), and this workflow pushes ONE session, billing its wall clock once. So
+1 x 13800s = 3.8 GPU-h, set to 4.
+
+It was `2 x 13800s = 7.7 GPU-h, set to 8` while the legs travelled as two
+kernels. The multiplier is how many sessions THIS invocation pushes, not
+Kaggle's per-account cap of 2: the other slot may be Unsloth's, and Unsloth
+reserves against its own budget rather than this one.
 `test_the_reserved_budget_covers_every_billable_launcher_phase` recomputes it
-from `launch.py`; do not edit the number here or in the workflow without
-changing what it is derived from.
+from `launch.py` and `--kernels`; do not edit the number here or in the
+workflow without changing what it is derived from.
 
 ## What would change these numbers
 

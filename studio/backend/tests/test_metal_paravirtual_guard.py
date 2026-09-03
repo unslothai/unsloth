@@ -227,7 +227,17 @@ def test_repeat_auto_load_does_not_reload_a_healthy_cpu_server(monkeypatch, tmp_
     def _never(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("tore down a healthy server on a duplicate /load")
 
-    monkeypatch.setattr(backend, "_find_llama_server_binary", _never)
+    # _kill_process is the teardown this test is about, so it stays forbidden.
+    # _find_llama_server_binary is NOT teardown and is now legitimately on the fast
+    # path: adopt_load_intent_if_matched() asks _binary_changed_since_launch()
+    # whether a different llama-server is installed than the live one was launched
+    # from, which is the point of a custom build -- an identical request must still
+    # reload when the binary underneath it changed. Forbidding the READ made a
+    # duplicate load look like a teardown. Return a fixed path so the revision
+    # comparison sees no change and the fast path is still what is exercised.
+    monkeypatch.setattr(
+        backend, "_find_llama_server_binary", lambda *a, **k: "/nonexistent/llama-server"
+    )
     monkeypatch.setattr(backend, "_kill_process", _never)
 
     assert (
@@ -451,7 +461,7 @@ def test_a_user_owned_drafter_is_pinned_to_cpu_too():
     """A user --spec-type makes _build_speculative_flags emit nothing, so their
     --model-draft never appeared in spec_flags and the drafter kept running corrupt."""
     user_extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf"]
-    # Studio emits no spec block at all here, which is why spec_flags alone is blind.
+    # Unsloth emits no spec block at all here, which is why spec_flags alone is blind.
     backend = llama_cpp.LlamaCppBackend()
     assert (
         backend._build_speculative_flags(
@@ -570,6 +580,9 @@ def _mmproj_gate(
         ),
         "model_path": "/m.gguf",
         "mmproj_path": None,
+        # This harness is about the paravirtual gate, so vision is on; the toggle's
+        # own effect on the same block is covered in test_mmproj_placement_policy.py.
+        "disable_vision": False,
         "_paravirtual_cpu_forced": paravirtual,
         "server_caps": caps,
         "is_vision": is_vision,
@@ -1394,7 +1407,17 @@ def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeyp
     def _never(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("tore down a healthy server on a duplicate /load")
 
-    monkeypatch.setattr(backend, "_find_llama_server_binary", _never)
+    # _kill_process is the teardown this test is about, so it stays forbidden.
+    # _find_llama_server_binary is NOT teardown and is now legitimately on the fast
+    # path: adopt_load_intent_if_matched() asks _binary_changed_since_launch()
+    # whether a different llama-server is installed than the live one was launched
+    # from, which is the point of a custom build -- an identical request must still
+    # reload when the binary underneath it changed. Forbidding the READ made a
+    # duplicate load look like a teardown. Return a fixed path so the revision
+    # comparison sees no change and the fast path is still what is exercised.
+    monkeypatch.setattr(
+        backend, "_find_llama_server_binary", lambda *a, **k: "/nonexistent/llama-server"
+    )
     monkeypatch.setattr(backend, "_kill_process", _never)
 
     assert (

@@ -23,7 +23,12 @@ type ResidentRuntime = Pick<
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
+  | "requested_load_mode"
+  | "requested_spec_draft_cache_type"
+  | "requested_ctx_checkpoints"
+  | "requested_cache_ram"
   | "tensor_parallel"
+  | "disable_vision"
   | "chat_template_override"
   | "requested_llama_extra_args"
   | "gpu_memory_mode"
@@ -39,6 +44,7 @@ type ResidentRuntime = Pick<
   | "gpu_placement_paravirtual"
   | "tensor_split"
   | "cpu_fallback_reason"
+  | "spec_fallback_reason"
 >;
 
 function sameList(
@@ -218,9 +224,15 @@ export function residentSpeculativeNeedsRepair(
   ) {
     return true;
   }
+  // ngram-mod is not in SPECULATIVE_MODES because it runs no drafter, so none of the
+  // drafter arms can repair it. It does still stand down on a build that does not
+  // advertise the mode, and that one records "binary_outdated", which an update repairs.
+  const modeCanRepair =
+    SPECULATIVE_MODES.has(mode) ||
+    (mode === "ngram" && status.spec_fallback_reason === "binary_outdated");
   if (
     !RETRYABLE_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") ||
-    !SPECULATIVE_MODES.has(mode)
+    !modeCanRepair
   ) {
     return false;
   }
@@ -281,8 +293,8 @@ const SETTING_CHECKS: SettingCheck[] = [
     // cross-model GGUF pick and as the resident context when re-picking the same one.
     // Reading null as "no opinion" against a status echoing either number was a reload.
     pinned: () => true,
-    // A GGUF invocation field: a safetensors or MLX status never sets it, and the general
-    // non-GGUF rule below is what keeps this from reading that absence as 0.
+    // A safetensors or MLX status reports this too, so the general non-GGUF rule below
+    // is what keeps this check off those models.
     agrees: (c, s, standing) =>
       standing.resolveContextLength(c.customContextLength ?? null) ===
       (s.requested_context_length ?? 0),
@@ -308,11 +320,16 @@ const SETTING_CHECKS: SettingCheck[] = [
         standing.speculativeType),
   },
   {
-    // Only when the pick names one, as _runtime_matches_intent is guarded on
-    // `intent.spec_draft_n_max is not None`: an unset limit asks for no change, so
-    // comparing null against the count the resident load was launched with was a reload.
-    pinned: (c) => c.specDraftNMax != null,
-    agrees: (c, s) => c.specDraftNMax === (s.spec_draft_n_max ?? null),
+    // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
+    // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
+    // as the status carries a count only when a depth-consuming load recorded an override.
+    pinned: () => true,
+    agrees: (c, s) =>
+      // The MTP-free recovery clears the runtime value while _runtime_matches_intent
+      // still compares against _last_load_intent's count, so null here is "unknown",
+      // not "the default". Let /load answer, as RETRYABLE_SPEC_FALLBACKS assumes.
+      s.spec_fallback_reason !== "runtime_error" &&
+      (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
   {
     chatOnly: true,
@@ -335,6 +352,37 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (c, s) => (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
   },
   {
+    chatOnly: true,
+    // Same shape as the batch pair above: a blank control means the llama.cpp
+    // default, and the status echoes what the load asked for rather than what it
+    // resolved to, so null on both sides is agreement and anything else reloads.
+    pinned: () => true,
+    agrees: (c, s) => (c.loadMode ?? null) === (s.requested_load_mode ?? null),
+  },
+  {
+    chatOnly: true,
+    // Always pinned: the status echoes what the load requested, so a resident server
+    // that asked for nothing reports null and a blank control agrees with it. Reading
+    // blank as "no opinion" instead would mean clearing the dtype back to the f16
+    // default never relaunched, leaving the server on the quantized draft cache the
+    // panel no longer shows.
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.specDraftCacheDtype ?? null) ===
+      (s.requested_spec_draft_cache_type ?? null),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.ctxCheckpoints ?? null) === (s.requested_ctx_checkpoints ?? null),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
+  },
+  {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
     pinned: () => true,
     agrees: (c, s) =>
@@ -350,6 +398,14 @@ const SETTING_CHECKS: SettingCheck[] = [
       (resolveTensorParallel(c.llamaExtraArgs, c.tensorParallel) &&
         s.tensor_parallel !== true &&
         s.tensor_parallel_dropped_by_arch_gate === true),
+  },
+  {
+    // Not nullable, so it always has an opinion; a status omitting it ran with the
+    // projector. The backend reloads when this disagrees, so adopting a resident
+    // server that disagrees would drop the setting and keep the VRAM spent.
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
   },
   {
     // Blank-trimmed on both ends: the applier and the load both send "" as null.

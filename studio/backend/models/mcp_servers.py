@@ -3,7 +3,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
 
 
 class McpServerCreate(BaseModel):
@@ -40,6 +40,19 @@ class McpServerTestRequest(BaseModel):
     use_oauth: bool = False
 
 
+class McpStdioDecodeRequest(BaseModel):
+    url: StrictStr
+
+
+class McpStdioCommand(BaseModel):
+    command: StrictStr
+    arguments: list[StrictStr] = Field(default_factory = list)
+
+
+class McpStdioEncodeResponse(BaseModel):
+    url: str
+
+
 class McpServerProbeResult(BaseModel):
     ok: bool
     tool_count: int = 0
@@ -53,5 +66,5 @@ class McpServerImportRequest(BaseModel):
 
 class McpServerImportResult(BaseModel):
     created: list[McpServerResponse] = Field(default_factory = list)
-    skipped: list[str] = Field(default_factory = list)  # display names skipped as duplicates
+    skipped: list[str] = Field(default_factory = list)
     errors: list[str] = Field(default_factory = list)

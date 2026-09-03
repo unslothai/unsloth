@@ -67,7 +67,7 @@ updates:
       default-days: 7
       semver-minor-days: 3
       semver-patch-days: 3
-    # Tauri renders Studio on Linux through GTK3 and the gtk-rs GTK3
+    # Tauri renders Unsloth on Linux through GTK3 and the gtk-rs GTK3
     # bindings are archived at 0.18.2, so `gtk`/`gdk` will never ship
     # 0.19+. Moving `glib`/`gdk-pixbuf` past 0.18 puts two
     # incompatible copies in the tree and native_clipboard.rs stops

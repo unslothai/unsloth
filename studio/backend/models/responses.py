@@ -8,9 +8,6 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
-# --- Training route response models ---
-
-
 class TrainingStopResponse(BaseModel):
     """Response for stopping a training job"""
 
@@ -32,9 +29,6 @@ class TrainingMetricsResponse(BaseModel):
     current_loss: Optional[float] = Field(None, description = "Most recent loss value")
     current_lr: Optional[float] = Field(None, description = "Most recent learning rate")
     current_step: Optional[int] = Field(None, description = "Most recent step number")
-
-
-# --- Model management route response models ---
 
 
 class LoRABaseModelResponse(BaseModel):

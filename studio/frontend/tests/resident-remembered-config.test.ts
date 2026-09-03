@@ -38,6 +38,7 @@ function config(nParallel: number | null, maxSeqLength: number | null = null) {
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,
+    disableVision: false,
     chatTemplateOverride: null,
   };
 }

@@ -398,7 +398,7 @@ def test_the_largest_accepted_value_round_trips_exactly(provider_routes: Path):
 def test_a_failed_credential_write_restores_the_previous_override(
     provider_routes: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Metadata is written before the key, so the rollback has to carry the column."""
+    """A failed key write rolls the metadata update back in the shared transaction."""
     created = _create(
         ProviderCreate(
             provider_type = "custom",
