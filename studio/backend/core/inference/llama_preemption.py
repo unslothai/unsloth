@@ -69,7 +69,24 @@ def _float_env(name: str, default: float) -> float:
 # tokenisations, residency is sampled on a TTL rather than continuously, and up to 32
 # tokens per slot are generated between reports. Tunable because the right number depends
 # on the cache size and the traffic, and guessing it once is how it was wrong before.
+def _int_env(name: str, default: int) -> int:
+    """Positive integer from the environment, else the default. Never raises."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Kept only so an operator who set the old knob is not silently ignored; see
+# `preemption_buffer_tokens` for why a fraction of the cache is the wrong shape.
 DEFAULT_PREEMPT_BUFFER_RATIO = _float_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_RATIO", 0.15)
+# Reaction headroom for ONE decoding slot: what it can generate between a watermark sweep
+# and the moment a chosen victim's stream actually stops holding its cells.
+DEFAULT_PREEMPT_BUFFER_PER_SLOT = 192
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 
 # A resume is cheap (the prefix cache usually still holds the prompt) but not free, so a
@@ -412,9 +429,25 @@ def preemption_buffer_tokens(budget: int, *, draft_tokens: int = 0, slots: int =
     """
     if budget <= 0:
         return 0
-    scaled = int(math.ceil(budget * DEFAULT_PREEMPT_BUFFER_RATIO))
-    reserve = max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, scaled)
-    reserve += max(0, int(draft_tokens or 0)) * max(1, int(slots or 1))
+    # PER SLOT, not per cache. The buffer is reaction headroom: the cells that can be
+    # generated between one watermark sweep and a chosen victim's stream actually
+    # stopping. That quantity scales with how many chats are decoding at once, and not at
+    # all with how big the cache is, so a fraction of the budget is the wrong shape.
+    #
+    # It was a fraction (15%) until 2026-09-03, chosen by guess. Simulated across cache
+    # sizes, slot counts and eviction latencies, that was not merely wasteful but
+    # actively harmful: on the default 16384 cache with four slots it held back 2458
+    # tokens against the 768 this reserves, and makespan was 26890 steps against 239.
+    # An oversized buffer lowers the shared ceiling, so more chats outgrow it, and each
+    # of those then has to wait for the cache to itself. The cache serialises.
+    #
+    # 192 tokens per slot is the smallest value with zero overflow in every configuration
+    # tried: 4096 to 65536 cells, 4 and 8 slots, and eviction latencies from one sweep
+    # interval to sixteen. 128 per slot overflows; 256 costs a small cache dearly.
+    per_slot = _int_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_PER_SLOT", DEFAULT_PREEMPT_BUFFER_PER_SLOT)
+    slot_count = max(1, int(slots or 1))
+    reserve = max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, per_slot * slot_count)
+    reserve += max(0, int(draft_tokens or 0)) * slot_count
     # Still never the whole cache: a large draft window on a small -c must degrade to a
     # tight buffer, not to a ceiling of zero.
     return min(reserve, max(1, budget // 2))
@@ -462,6 +495,7 @@ class PreemptionSnapshot:
     paused: int
     parked: int
     winner: Optional[str]
+    slots: int = 1
 
 
 class PreemptionController:
@@ -883,6 +917,7 @@ class PreemptionController:
                 paused = states.count(ParticipantState.PAUSED),
                 parked = states.count(ParticipantState.PARKED_ON_TOOL),
                 winner = self._epoch_winner,
+                slots = max(1, self._slots or 1),
             )
 
 

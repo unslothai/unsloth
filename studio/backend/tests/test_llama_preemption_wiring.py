@@ -269,7 +269,10 @@ class TestSpeculativeDraftsAreReserved:
     def test_drafts_are_added_on_top_of_the_ratio(self):
         from core.inference.llama_preemption import preemption_buffer_tokens
 
-        plain = preemption_buffer_tokens(16384)
+        # Same slot count on both sides. The reaction term is per-slot now, so
+        # comparing a four-slot reserve against a one-slot one measured that change
+        # rather than the drafts.
+        plain = preemption_buffer_tokens(16384, slots = 4)
         drafted = preemption_buffer_tokens(16384, draft_tokens = 2, slots = 4)
         assert drafted == plain + 8, "every slot may hold n_draft unaccounted tokens"
 
@@ -277,7 +280,7 @@ class TestSpeculativeDraftsAreReserved:
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         assert preemption_buffer_tokens(16384, draft_tokens = 0, slots = 4) == (
-            preemption_buffer_tokens(16384)
+            preemption_buffer_tokens(16384, slots = 4)
         )
 
     def test_a_huge_draft_window_cannot_swallow_a_small_cache(self):
@@ -359,7 +362,9 @@ class TestSpeculativeDraftsAreReserved:
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         snapshot = get_preemption_controller("http://127.0.0.1:10/").snapshot()
-        assert snapshot.buffer == preemption_buffer_tokens(snapshot.budget)
+        assert snapshot.buffer == preemption_buffer_tokens(
+            snapshot.budget, slots = snapshot.slots
+        )
 
 
 class TestTheLiveCrashOf20260901:
@@ -796,11 +801,16 @@ class TestTheStreamActuallyReportsGrowth:
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         assert 0 < _TOKEN_REPORT_EVERY <= 64
-        # Worst case every slot overshoots by a full batch between reports.
-        worst = _TOKEN_REPORT_EVERY * 8
-        assert worst < preemption_buffer_tokens(16384), (
-            f"{worst} tokens of lag against a {preemption_buffer_tokens(16384)} buffer"
-        )
+        # This is the whole reason the buffer is per-slot. Worst case every slot
+        # overshoots by a full batch between reports, so the lag scales with the slot
+        # count and the headroom has to scale with it too. Computing the buffer for one
+        # slot while computing the lag for eight compared two different systems.
+        for slots in (1, 2, 4, 8, 16):
+            worst = _TOKEN_REPORT_EVERY * slots
+            buffer = preemption_buffer_tokens(16384, slots = slots)
+            assert worst < buffer, (
+                f"{slots} slots lag by {worst} tokens against a {buffer} buffer"
+            )
 
     def test_the_route_supplies_the_callback(self):
         from pathlib import Path

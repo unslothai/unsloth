@@ -47,6 +47,22 @@ def _controller(budget = 16384, kv_unified = True):
     return controller
 
 
+def _ceiling(controller):
+    """The live watermark. Tests size themselves against this rather than a literal.
+
+    Hardcoded token counts broke every time the buffer changed, most recently when it
+    stopped being a fraction of the cache and became a per-slot reserve: fourteen tests
+    failed for one intended change, none of them because the behaviour was wrong.
+    """
+    snapshot = controller.snapshot()
+    return snapshot.budget - snapshot.buffer
+
+
+def _fill(controller, gen_id, fraction, state = ParticipantState.DECODING):
+    """Register a participant holding `fraction` of the ceiling."""
+    return _register(controller, gen_id, int(_ceiling(controller) * fraction), state = state)
+
+
 def _register(controller, gen_id, tokens, state = ParticipantState.DECODING):
     return controller.register(gen_id, tokens = tokens, state = state)
 
@@ -213,19 +229,26 @@ class TestResumeDoesNotChargeTwice:
 
 
 class TestTheBufferArithmetic:
-    def test_the_buffer_is_a_ratio_of_the_cache_with_a_floor(self):
-        """Pinned as a ratio, not as 820.
+    def test_the_buffer_is_per_slot_with_a_floor(self):
+        """Pinned as a shape, not as a number.
 
-        The literal was the five per cent this started at. It was raised after
-        measurement: at five per cent the watermark sat at 95% of the cache and
-        llama-server still entered its shrinking-batch retry ten times in one run, which
-        is the path the speculative sub-batch error comes from. It is tunable now, so a
-        test that hardcodes the figure just has to be edited again next time.
+        This has now been a literal 820, a ratio of 5%, a ratio of 15%, and a per-slot
+        reserve. Each rewrite broke the tests that named the previous figure, so this
+        asserts the properties that must hold under any of them.
         """
-        assert preemption_buffer_tokens(16384) == pytest.approx(
-            16384 * DEFAULT_PREEMPT_BUFFER_RATIO, rel = 0.01
-        )
+        # Per SLOT, not per cache. The reaction headroom the buffer buys is what can be
+        # generated between a sweep and a victim's stream actually stopping, which scales
+        # with how many chats decode at once and not with the size of the cache.
+        four = preemption_buffer_tokens(16384, slots = 4)
+        eight = preemption_buffer_tokens(16384, slots = 8)
+        assert eight > four, "twice the slots generate twice as much during an eviction"
+        assert preemption_buffer_tokens(16384, slots = 4) == preemption_buffer_tokens(
+            65536, slots = 4
+        ), "a bigger cache does not make an eviction slower"
         assert preemption_buffer_tokens(2048) >= DEFAULT_PREEMPT_BUFFER_MIN_TOKENS
+        # And it must be a small share of a normal cache, or it serialises: at 15% of
+        # 16384 the simulated makespan was 26890 steps against 239 at this size.
+        assert four < 16384 * 0.08
         assert preemption_buffer_tokens(0) == 0
         # Still never the whole cache, whatever the ratio is set to.
         assert preemption_buffer_tokens(16384) < 16384 // 2 + 1
@@ -275,8 +298,8 @@ class TestWhoStops:
         Newest-first ranked best overall at 2.89 and best of all on completions.
         """
         controller = _controller(budget = 16384)
-        _register(controller, "older", 5000)
-        _register(controller, "newer", 11000)
+        _fill(controller, "older", 0.35)
+        _fill(controller, "newer", 0.75)
         victims = {p.gen_id for p in controller.plan_preemptions()}
         assert "newer" in victims, "the most recently arrived chat should stop first"
         assert "older" not in victims
@@ -284,8 +307,8 @@ class TestWhoStops:
     def test_size_does_not_decide(self):
         """Registration order does, so a big early chat outranks a small late one."""
         controller = _controller(budget = 16384)
-        _register(controller, "big_and_early", 11000)
-        _register(controller, "small_and_late", 5000)
+        _fill(controller, "big_and_early", 0.75)
+        _fill(controller, "small_and_late", 0.35)
         victims = {p.gen_id for p in controller.plan_preemptions()}
         assert victims == {"small_and_late"}
 
@@ -313,10 +336,10 @@ class TestWhoStops:
         stop as soon as the projection fits.
         """
         controller = _controller(budget = 16384)
-        _register(controller, "first", 8000)
+        _fill(controller, "first", 0.55)
         _register(controller, "second", 400)
         _register(controller, "third", 400)
-        _register(controller, "fourth", 7000)
+        _fill(controller, "fourth", 0.48)
         victims = [p.gen_id for p in controller.plan_preemptions()]
         assert victims, "something had to stop"
         assert "first" not in victims, "the oldest chat should be the last to go"
@@ -334,8 +357,8 @@ class TestWhoStops:
         existed. A victim holds its cells until the pause is confirmed.
         """
         controller = _controller(budget = 16384)
-        _register(controller, "winner", 11000)
-        victim = _register(controller, "victim", 5000)
+        _fill(controller, "winner", 0.75)
+        victim = _fill(controller, "victim", 0.35)
         before = controller.committed_tokens()
         controller.plan_preemptions()
         assert victim.state == ParticipantState.PREEMPTING
@@ -371,9 +394,9 @@ class TestNobodyIsExemptFromEviction:
         # Registration order matters now, so the huge chat is deliberately NOT the oldest:
         # as the oldest it would be taken last and then spared by the last-holder rule,
         # which would make this assertion unreachable rather than true.
-        _register(controller, "oldest", 2000)
-        _register(controller, "huge", 11000)
-        _register(controller, "newest", 2000)
+        _fill(controller, "oldest", 0.14)
+        _fill(controller, "huge", 0.72)
+        _fill(controller, "newest", 0.14)
         victims = {p.gen_id for p in controller.plan_preemptions(needed = 6000)}
         assert "huge" in victims, "an exempt chat can grow until it fills the window"
         assert "oldest" not in victims, "the last holder standing must survive"
@@ -388,8 +411,8 @@ class TestNobodyIsExemptFromEviction:
     def test_the_sweep_takes_everyone_when_the_room_demands_it(self):
         """The worst case must remain reachable: all but one can stop."""
         controller = _controller(budget = 16384)
-        for name, tokens in (("a", 5000), ("b", 5000), ("c", 5000)):
-            _register(controller, name, tokens)
+        for name in ("a", "b", "c"):
+            _fill(controller, name, 0.33)
         victims = [p.gen_id for p in controller.plan_preemptions(needed = 14000)]
         assert len(victims) >= 2, f"the sweep stopped early, got {victims}"
 
@@ -403,8 +426,8 @@ class TestStarvation:
 
     def _starve(self, controller):
         """Drive `starved` through three preemptions in a row."""
-        _register(controller, "hog", 12000)
-        starved = _register(controller, "starved", 4000)
+        _fill(controller, "hog", 0.82)
+        starved = _fill(controller, "starved", 0.28)
         for _ in range(PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS):
             assert [p.gen_id for p in controller.plan_preemptions()] == ["starved"]
             controller.note_resumed("starved")
@@ -423,7 +446,7 @@ class TestStarvation:
         """
         controller = _controller(budget = 16384)
         starved = self._starve(controller)
-        _register(controller, "newcomer", 4000)
+        _fill(controller, "newcomer", 0.28)
         victims = [p.gen_id for p in controller.plan_preemptions()]
         assert victims, "something had to stop"
         assert victims[0] != "starved", (
@@ -794,9 +817,13 @@ class TestAChatThatOutgrewTheSharedCeiling:
         solo = next(
             w for w in range(snapshot.budget, shared, -1) if not controller.cannot_ever_fit(w)
         )
-        assert solo - shared > 1000, (
-            f"solo ceiling {solo} barely clears the shared {shared}; the reaction buffer "
-            f"is still being charged to a chat that has nobody to react to"
+        # Most of the reaction headroom comes back, since a lone chat has nobody to
+        # react to. Expressed against the buffer rather than as a literal: this said
+        # "> 1000" while the buffer was 2458 tokens, and the buffer is 776 now.
+        assert solo - shared >= snapshot.buffer // 2, (
+            f"solo ceiling {solo} barely clears the shared {shared} against a buffer of "
+            f"{snapshot.buffer}; the reaction headroom is still being charged to a chat "
+            f"that has nobody to react to"
         )
 
     def test_none_of_this_applies_when_preemption_is_off(self):
