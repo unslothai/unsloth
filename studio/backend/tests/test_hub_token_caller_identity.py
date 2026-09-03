@@ -266,11 +266,14 @@ def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
     from routes.data_recipe import seed as seed_routes
 
     seen = {}
+    monkeypatch.setattr("hub.utils.hf_tokens._probe_repo_access", lambda *_a, **_k: True)
+    reset_repo_access_cache()
     monkeypatch.setattr(
         seed_routes,
         "_list_hf_data_files",
         lambda *, dataset_name, token: seen.update(token = token) or [],
     )
+    monkeypatch.setattr(seed_routes, "load_dataset", lambda **_k: iter([]), raising = False)
 
     for via_api_key in (True, False):
         app = FastAPI()
