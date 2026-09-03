@@ -148,13 +148,36 @@ done
 
 # `unsloth studio update` re-runs install.sh from the shim with UNSLOTH_HOME set,
 # which made the refresh re-derive <root>/studio and exit "binary missing".
+# The fixture is a REAL flat install, not a bare directory named unsloth_studio: the layout
+# is chosen off the same sentinels the venv-replacement ownership guard accepts, and a
+# fixture without them would only prove that any folder of that name flips the layout --
+# see the negative cases below.
 H="$(new_home)"
-mkdir -p "$H/flat/unsloth_studio/bin"
+mkdir -p "$H/flat/unsloth_studio/bin" "$H/flat/share" "$H/flat/bin"
+: > "$H/flat/unsloth_studio/.unsloth-studio-owned"
+: > "$H/flat/share/studio.conf"
 F="$(CDPATH= cd -P -- "$H/flat" && pwd -P)"
 out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
     UNSLOTH_PORTABLE=1 UNSLOTH_HOME="$F" UNSLOTH_STUDIO_HOME="$F" bash -c "$SNIP" _)"
 check "flat root survives a refresh"   "$F"     "$(field "$out" 2)"
 check "flat root keeps its bin"        "$F/bin" "$(field "$out" 4)"
+
+# Each sentinel on its own is enough, so a flat install that lost one of them (an owner
+# marker install.sh wrote best-effort, a studio.conf a --shortcuts-only run has not
+# reached yet) is still recognized rather than relocated under <root>/studio.
+for _sent in owner conf shim; do
+    H="$(new_home)"
+    mkdir -p "$H/flat/unsloth_studio/bin"
+    case "$_sent" in
+        owner) : > "$H/flat/unsloth_studio/.unsloth-studio-owned" ;;
+        conf)  mkdir -p "$H/flat/share"; : > "$H/flat/share/studio.conf" ;;
+        shim)  mkdir -p "$H/flat/bin";   : > "$H/flat/bin/unsloth" ;;
+    esac
+    F="$(CDPATH= cd -P -- "$H/flat" && pwd -P)"
+    out="$(env -i HOME="$H" PATH="$PATH" USER="${USER:-tester}" \
+        UNSLOTH_PORTABLE=1 UNSLOTH_HOME="$F" bash -c "$SNIP" _)"
+    check "flat detected from the $_sent sentinel alone" "$F" "$(field "$out" 2)"
+done
 
 H="$(new_home)"
 mkdir -p "$H/nested/studio/unsloth_studio/bin"

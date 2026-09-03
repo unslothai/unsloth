@@ -691,8 +691,27 @@ _resolve_studio_destinations() {
             UNSLOTH_ROOT="$_resolved_root"
             # A root holding the venv directly IS the Studio root (flat layout);
             # otherwise an update re-derives <root>/studio and finds no venv.
-            # Same rule as storage_roots.studio_root().
-            [ -d "$_resolved_root/unsloth_studio" ] && _PORTABLE_FLAT=true
+            # Bare existence of <root>/unsloth_studio is NOT enough to say so. --root takes
+            # any writable directory, so a shared or unrelated one that merely holds a folder
+            # of that name -- an empty leftover, or somebody's dev venv -- would turn the
+            # requested nested layout into a flat Studio root and write Studio state straight
+            # into it, and a POPULATED unrelated one would then be refused outright by the
+            # venv-replacement ownership guard further down, costing an otherwise valid
+            # nested install. Require the same three sentinels that guard accepts (the
+            # in-venv owner marker, share/studio.conf, the bin shim), so the layout decision
+            # and the guard can never disagree: choosing flat here now implies that guard
+            # passes. share/studio.conf and bin/unsloth sit at <root> in BOTH layouts, so a
+            # root that is already NESTED is excluded first -- otherwise a stray
+            # <root>/unsloth_studio beside a real <root>/studio install would relocate it.
+            # Inline, not a helper: several tests lift this function out on its own, where a
+            # helper defined elsewhere would go silently inert.
+            _rsd_flat_venv="$_resolved_root/unsloth_studio"
+            if [ -d "$_rsd_flat_venv" ] && [ ! -d "$_resolved_root/studio/unsloth_studio" ] \
+                && { [ -f "$_rsd_flat_venv/.unsloth-studio-owned" ] \
+                     || [ -f "$_resolved_root/share/studio.conf" ] \
+                     || [ -f "$_resolved_root/bin/unsloth" ]; }; then
+                _PORTABLE_FLAT=true
+            fi
             if [ "$_PORTABLE_FLAT" = true ]; then
                 STUDIO_HOME="$UNSLOTH_ROOT"
             else
@@ -828,7 +847,35 @@ _export_portable_roots() {
     else
         _PORTABLE_MARKER_PRIOR_1=n
     fi
-    printf '%s\n' "$UNSLOTH_ROOT" > "$_PORTABLE_MARKER_PATH_1" 2>/dev/null || true
+    # Fatal, not best-effort. This marker is the ONLY portable signal that survives on disk,
+    # and every reader requires a regular FILE at this exact path: storage_roots.unsloth_home()
+    # tests `(root / PORTABLE_MARKER).is_file()`, and the CLI's venv inference does the same in
+    # _looks_like_installer_managed_studio_home and _portable_marker_root. A directory left at
+    # the name by an earlier partial or manual setup makes every one of them read False, so the
+    # documented `source <root>/.../activate` path silently resolves back to ~/.unsloth and
+    # writes the HF caches, the projects root and the database OUTSIDE the root the user chose
+    # -- an install that reports success and is not portable. Swallowing that with `|| true` is
+    # the one failure here that cannot be noticed later.
+    # Safe to exit from: this runs before the uv bootstrap and before anything is installed, so
+    # the only things on disk are the empty directories mkdir -p just made inside the user's own
+    # root. It is also before the EXIT/signal traps are armed, so the slot recorded four lines
+    # up is cleared by hand rather than left for a rollback that will not run -- it would be a
+    # no-op anyway (prior "n" removes nothing, because -f is false on a directory), and clearing
+    # it keeps that true if the traps ever move earlier. Inline, not a helper, for the same
+    # reason the snapshot above is inline: this block is lifted out and run on its own by tests.
+    if ! printf '%s\n' "$UNSLOTH_ROOT" > "$_PORTABLE_MARKER_PATH_1" 2>/dev/null; then
+        _PORTABLE_MARKER_PATH_1=""
+        _PORTABLE_MARKER_PRIOR_1=""
+        echo "ERROR: could not write the portable root marker at $UNSLOTH_ROOT/.unsloth-portable-root." >&2
+        if [ -d "$UNSLOTH_ROOT/.unsloth-portable-root" ]; then
+            echo "       A directory is in its place. Remove or rename it and re-run." >&2
+        else
+            echo "       Check that $UNSLOTH_ROOT is writable and has free space, then re-run." >&2
+        fi
+        echo "       Without it this install is not portable: an activated venv would fall" >&2
+        echo "       back to $HOME/.unsloth and write outside the root you selected." >&2
+        exit 1
+    fi
 
     substep "portable: everything under $UNSLOTH_ROOT"
 }

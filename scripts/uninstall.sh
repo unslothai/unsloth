@@ -129,9 +129,14 @@ _sd_cpp_sibling_bases() {
         # Studio roots only. _custom_studio_roots also emits the MASTER root of a nested
         # portable install, whose parent is one level above the install, so an sd-server
         # belonging to a NEIGHBOURING install would be signalled there. The master root's own
-        # <root>/stable-diffusion.cpp is already covered by the loop above. Same flat-first
-        # test as the removal loop; see the comment there.
-        if [ ! -d "$_sb/unsloth_studio" ] && [ -d "$_sb/studio/unsloth_studio" ]; then
+        # <root>/stable-diffusion.cpp is already covered by the loop above. Same master-root
+        # test as the removal loop; see the comment there for why the venv alone cannot decide
+        # it. Inline rather than a shared helper: this function is extracted and sourced on its
+        # own by tests/sh/test_uninstall_sd_cpp_custom_root.sh, where a helper defined
+        # elsewhere would die as "command not found" inside a condition and go silently inert.
+        if [ ! -f "$_sb/unsloth_studio/.unsloth-studio-owned" ] \
+            && { [ -d "$_sb/studio/unsloth_studio" ] \
+                 || [ -f "$_sb/.unsloth-portable-root" ]; }; then
             continue
         fi
         printf '%s\n' "$_sb"
@@ -618,13 +623,29 @@ _unsloth_uninstall_main() {
         # both (UNSLOTH_HOME and studio.conf's `export UNSLOTH_HOME` name the master root, the
         # UNSLOTH_EXE walk names the Studio root), and the legacy sibling cleanup below takes
         # each entry's PARENT, which is one level too high for a master root. Decided BEFORE the
-        # removal, which takes the layout this reads with it. Flat test first, matching
-        # storage_roots.studio_root(): a root holding the venv directly IS the Studio root, and
-        # there the parent walk is the path an older build really used. Positive evidence of the
-        # nested venv is required rather than assumed, so an install with no venv either way
-        # keeps the behaviour it had.
+        # removal, which takes the layout this reads with it.
+        #
+        # Flat test first, matching storage_roots.studio_root(): a root holding the venv
+        # directly IS the Studio root, and there the parent walk is the path an older build
+        # really used. But the venv cannot decide this ON ITS OWN in either direction, and the
+        # two directions are not symmetric. Presence of <root>/unsloth_studio is only evidence
+        # of a flat install when that venv is OURS, so it takes the install-time owner marker
+        # -- otherwise a stray directory of that name inside a nested master root would send
+        # the walk one level above the install. And ABSENCE of a venv is no evidence at all: a
+        # nested portable install whose studio/unsloth_studio was deleted or damaged still has
+        # its portable marker, and reading that as "flat" made this remove
+        # <parent>/stable-diffusion.cpp, which a SEPARATE installation beside the portable root
+        # can own. So the marker counts as master evidence in its own right, and the nested
+        # venv stays a bare -d: widening what reads as a master root only ever SKIPS the parent
+        # walk, which at worst leaves a legacy sibling of a broken install on disk, while
+        # narrowing it deletes somebody else's runtime. The one behaviour this gives up is
+        # removing the legacy sibling of a flat portable root whose venv lost its owner marker.
+        # Inline, not a shared helper: this loop body is extracted and run standalone by
+        # tests/sh/test_uninstall_sd_cpp_custom_root.sh.
         _custom_is_master=0
-        if [ ! -d "$_custom_root/unsloth_studio" ] && [ -d "$_custom_root/studio/unsloth_studio" ]; then
+        if [ ! -f "$_custom_root/unsloth_studio/.unsloth-studio-owned" ] \
+            && { [ -d "$_custom_root/studio/unsloth_studio" ] \
+                 || [ -f "$_custom_root/.unsloth-portable-root" ]; }; then
             _custom_is_master=1
         fi
         _remove_root_recording_db "$_custom_root"
@@ -666,7 +687,11 @@ _unsloth_uninstall_main() {
         _is_studio_root "$_lex_root" || continue
         # The same master-root exclusion the canonical pass makes: this pass takes the parent
         # too, so a nested portable master root would reach one level above the install here.
-        if [ ! -d "$_lex_root/unsloth_studio" ] && [ -d "$_lex_root/studio/unsloth_studio" ]; then
+        # Same predicate, inline for the same reason (this block is extracted and run on its
+        # own too); see the canonical loop for why the venv alone cannot decide it.
+        if [ ! -f "$_lex_root/unsloth_studio/.unsloth-studio-owned" ] \
+            && { [ -d "$_lex_root/studio/unsloth_studio" ] \
+                 || [ -f "$_lex_root/.unsloth-portable-root" ]; }; then
             continue
         fi
         _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
