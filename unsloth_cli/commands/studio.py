@@ -59,6 +59,41 @@ _PORTABLE_MARKER = ".unsloth-portable-root"
 # storage_roots.STUDIO_CHILD_DIRNAME, duplicated for the same reason.
 _STUDIO_CHILD_DIRNAME = "studio"
 
+# storage_roots.STUDIO_OWNED_MARKER, likewise. See _is_flat_portable_root.
+_STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
+
+
+def _is_flat_portable_root(master: Path) -> bool:
+    """Whether *master* holds the Studio venv directly, rather than in studio/.
+
+    storage_roots._is_flat_portable_root, duplicated for the same reason the
+    marker constants are; the two must not disagree, since this CLI exports
+    UNSLOTH_HOME into the backend and a split here would point them at two
+    different installs. Bare existence of <master>/unsloth_studio does not say
+    flat: `--root` takes any writable directory, so an empty leftover or a dev
+    venv of that name would turn the nested layout install.sh built into a flat
+    Studio root. install.sh requires one of three ownership sentinels and
+    excludes an already-nested root FIRST, because share/studio.conf and
+    bin/unsloth sit at <master> in BOTH layouts; same set, same order here.
+
+    Nested on OSError, which is the layout install.sh builds by default.
+    """
+    try:
+        venv = master / "unsloth_studio"
+        if not venv.is_dir():
+            return False
+        if (master / _STUDIO_CHILD_DIRNAME / "unsloth_studio").is_dir():
+            return False
+        return (
+            (venv / _STUDIO_OWNED_MARKER).is_file()
+            or (master / "share" / "studio.conf").is_file()
+            # Not platform-varied: only install.sh builds this layout, and
+            # install.ps1 refuses portable mode rather than writing unsloth.exe.
+            or (master / "bin" / "unsloth").is_file()
+        )
+    except OSError:
+        return False
+
 
 def _inherits_parent_portable_marker(root: Path) -> bool:
     """Whether a marker in ``root.parent`` names the install rooted at *root*.
@@ -85,6 +120,53 @@ def _inherits_parent_portable_marker(root: Path) -> bool:
     return False
 
 
+def _parent_marker_is_trustworthy(parent: Path) -> bool:
+    """Whether a marker in *parent* is proof that OUR installer wrote it.
+
+    storage_roots._parent_marker_is_trustworthy, duplicated for the same reason
+    the marker constant is; the two must not disagree. Inheriting a parent marker
+    exports that parent as UNSLOTH_HOME, and this CLI's export outranks the
+    backend's own on-disk lookup, so a marker anyone can create would let a
+    lower-privileged user name the llama.cpp, node and whisper.cpp directories a
+    protected Studio root then executes. Contents cannot answer this: whoever
+    writes the file writes the contents. Windows has no comparable st_uid or mode
+    bits and install.ps1 refuses portable mode outright, so nothing is checked
+    and nothing installed breaks.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        parent_stat = parent.stat()
+        marker_uid = (parent / _PORTABLE_MARKER).stat().st_uid
+    except OSError:
+        return False
+    # root is trusted so a system-wide install under /opt stays inheritable when
+    # Studio runs as an unprivileged service account.
+    trusted_uids = (os.geteuid(), 0)
+    if parent_stat.st_uid not in trusted_uids or marker_uid not in trusted_uids:
+        return False
+    # 0o022 is group-write | other-write. A sticky shared directory such as /tmp
+    # still fails here, which is the case this exists for.
+    return not parent_stat.st_mode & 0o022
+
+
+def _parent_portable_root(root: Path) -> Optional[Path]:
+    """Master root the parent marker names for *root*, or None.
+
+    Fails closed, and silently: this runs at import time from
+    _resolve_studio_home, where a message would land in `unsloth --help`. The
+    backend logs the one warning, since declining here makes it decline too.
+    """
+    if not _inherits_parent_portable_marker(root):
+        return None
+    parent = root.parent
+    if not (parent / _PORTABLE_MARKER).is_file():
+        return None
+    if not _parent_marker_is_trustworthy(parent):
+        return None
+    return parent
+
+
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
     unsloth_studio is not misidentified as a custom Unsloth root.
@@ -109,10 +191,7 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     # ~/.unsloth/studio. Same spellings as _infer_studio_home_from_venv, parent
     # lookup included: a venv under an unrelated child of a portable root has no
     # sentinel of its own and must keep falling back.
-    if (candidate / _PORTABLE_MARKER).is_file() or (
-        _inherits_parent_portable_marker(candidate)
-        and (candidate.parent / _PORTABLE_MARKER).is_file()
-    ):
+    if (candidate / _PORTABLE_MARKER).is_file() or _parent_portable_root(candidate) is not None:
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -189,13 +268,10 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             root = Path(master).expanduser().resolve()
         except (OSError, ValueError):
             root = Path(master).expanduser()
-        # Flat layout: a root holding the venv directly IS the Studio root, the same
-        # rule storage_roots.studio_root() applies to UNSLOTH_HOME.
-        try:
-            flat = (root / "unsloth_studio").is_dir()
-        except OSError:
-            flat = False
-        candidate = root if flat else root / "studio"
+        # Flat layout: a root holding the venv directly IS the Studio root, but
+        # only when it can prove it is ours. Same rule storage_roots.studio_root()
+        # applies to UNSLOTH_HOME; see _is_flat_portable_root.
+        candidate = root if _is_flat_portable_root(root) else root / _STUDIO_CHILD_DIRNAME
         try:
             is_custom = candidate != (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
@@ -231,14 +307,9 @@ def _portable_marker_root() -> Optional[Path]:
     try:
         if (STUDIO_HOME / _PORTABLE_MARKER).is_file():
             return STUDIO_HOME
-        if (
-            _inherits_parent_portable_marker(STUDIO_HOME)
-            and (STUDIO_HOME.parent / _PORTABLE_MARKER).is_file()
-        ):
-            return STUDIO_HOME.parent
+        return _parent_portable_root(STUDIO_HOME)
     except OSError:
         return None
-    return None
 
 
 def _portable_master_root() -> Optional[Path]:
