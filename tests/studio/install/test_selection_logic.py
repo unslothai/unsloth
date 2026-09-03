@@ -95,6 +95,13 @@ def load_studio_run_module(monkeypatch):
     startup_banner.stdout_supports_color = lambda: False
     monkeypatch.setitem(sys.modules, "startup_banner", startup_banner)
 
+    # run.py exports UNSLOTH_STUDIO_HOME and UNSLOTH_LLAMA_CPP_PATH at module scope, and this
+    # helper execs it in-process, so those would otherwise outlive the test and be inherited by
+    # every later one in the session. monkeypatch restores whatever the runner really had.
+    for _leaked in ("UNSLOTH_STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
+        monkeypatch.setenv(_leaked, os.environ.get(_leaked, ""))
+        monkeypatch.delenv(_leaked)
+
     paths = types.ModuleType("utils.paths")
     paths.__path__ = []
     storage_roots = types.ModuleType("utils.paths.storage_roots")
