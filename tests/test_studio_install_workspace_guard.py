@@ -633,6 +633,90 @@ def test_tauri_preflight_scrubs_studio_home_env():
     assert (
         'cmd.env_remove("STUDIO_HOME")' in commands
     ), "commands.rs check_install_status must scrub STUDIO_HOME"
+    # Those two literals are belt and braces: what actually removes the whole scrub list at
+    # these sites is the managed context, so the call is the load-bearing half.
+    assert (
+        preflight.count("apply_managed_cli_context_tokio(&mut cmd)") >= 2
+    ), "preflight probes must build the managed context, which is what applies the scrub list"
+    assert (
+        "apply_managed_cli_context_tokio(&mut cmd)" in commands
+    ), "commands.rs check_install_status must build the managed context"
+
+
+# The three storage_roots.py resolvers that CHOOSE a data root, as opposed to the ones that
+# join a subdirectory onto whatever they chose. Every environment variable read inside them
+# moves the desktop's databases, assets and caches, so every one has to be scrubbed.
+_ROOT_CHOOSING_RESOLVERS = ("unsloth_home", "portable_mode", "studio_root")
+
+
+def _root_moving_env_names() -> set[str]:
+    """The env vars storage_roots.py picks a root from, read out of the shipped source.
+
+    Derived rather than written down, so a fourth root variable fails this test on the commit
+    that adds it instead of on the bug report that follows it.
+    """
+    source = (
+        REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py"
+    ).read_text(encoding = "utf-8")
+    names: set[str] = set()
+    for resolver in _ROOT_CHOOSING_RESOLVERS:
+        start = source.index(f"\ndef {resolver}(")
+        end = source.index("\ndef ", start + 1)
+        body = source[start:end]
+        found = set(re.findall(r'os\.environ\.get\(\s*"([A-Z][A-Z0-9_]*)"', body))
+        assert found, f"storage_roots.{resolver} reads no environment variable any more"
+        names |= found
+    return names
+
+
+def _rust_string_list(source: str, const_name: str) -> list[str]:
+    """The string literals in a `const NAME: &[&str] = &[...];` declaration."""
+    start = source.index(f"const {const_name}:")
+    return re.findall(r'"([^"]*)"', source[start : source.index(";", start)])
+
+
+def test_tauri_managed_children_scrub_every_root_moving_env():
+    """A shell-level Unsloth root must not reach the packaged desktop's Python children.
+
+    The desktop pins the legacy ~/.unsloth root and hardcodes it in Rust, so any variable
+    storage_roots.py would resolve a different root from has to be removed before the spawn,
+    or the databases, assets and caches move while the Rust half keeps reading the old place.
+    """
+    src_root = REPO_ROOT / "studio" / "src-tauri" / "src"
+    process = (src_root / "process.rs").read_text(encoding = "utf-8")
+    install = (src_root / "install.rs").read_text(encoding = "utf-8")
+
+    scrubbed = _rust_string_list(process, "MANAGED_CHILD_SCRUBBED_ENV")
+    assert len(scrubbed) == len(set(scrubbed)), f"duplicate names in the scrub list: {scrubbed}"
+    missing = sorted(_root_moving_env_names() - set(scrubbed))
+    assert not missing, (
+        f"{missing} would redirect the managed backend's data root away from the legacy one "
+        "the Tauri shell hardcodes"
+    )
+
+    # Second scrub path: start_backend removes the list again after the managed context, so
+    # the skip is a fact about the child rather than an assumption about the caller. It must
+    # take the whole list, not a hand-written subset that the list can drift away from.
+    start = process.index("pub fn start_backend(")
+    end = min(
+        offset
+        for offset in (process.find("\npub fn ", start + 1), process.find("\nfn ", start + 1))
+        if offset != -1
+    )
+    backend_start = process[start:end]
+    assert (
+        "for name in MANAGED_CHILD_SCRUBBED_ENV" in backend_start
+    ), "start_backend must scrub the whole list, not the names that were in it when it was written"
+
+    # Third spawn path: the installer runs install.sh / install.ps1 directly, so it never
+    # reaches apply_managed_cli_context and has to apply the list itself.
+    assert (
+        "for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV" in install
+    ), "install.rs spawns outside the managed context and must scrub the whole list"
+    for name in scrubbed:
+        assert (
+            f'cmd.env_remove("{name}")' not in install
+        ), f"install.rs scrubs {name} by hand as well as by list; the hand-written copy can rot"
 
 
 def test_install_sh_shim_uses_atomic_replace():
