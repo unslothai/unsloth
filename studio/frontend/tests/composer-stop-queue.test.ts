@@ -25,8 +25,6 @@ test("stop stays available when the running composer can queue", async () => {
   const stopLabel = 'aria-label="Stop generating"';
   const queueGuard = "{!queueDisabled ?";
 
-  // Stop is an action on the current reply, so it must not be inside the
-  // queue-availability branch that is enabled by typing in the composer.
   const stopIndex = controls.indexOf(stopLabel);
   const queueGuardIndex = controls.indexOf(queueGuard);
   assert.ok(stopIndex >= 0, "the running composer must expose Stop generating");
@@ -48,8 +46,7 @@ test("stop stays available when the running composer can queue", async () => {
     /<Button[\s\S]*?aria-label="Stop generating"[\s\S]*?>/,
   );
   assert.ok(stopButton, "the running composer must render a stop button");
-  // Without it a cancelled reply just advances the queue, so stop cannot end a
-  // queue run while one is streaming (#6244 wired it for that).
+  // Without it a cancelled reply just advances the queue (#6244 wired it).
   assert.match(
     stopButton[0],
     /onClick=\{stop\}/,

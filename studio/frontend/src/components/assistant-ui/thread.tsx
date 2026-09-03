@@ -6717,9 +6717,8 @@ const ComposerRightControls: FC<{
                 size="icon"
                 className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
-                // Cancel only ends the reply; a cancelled run reads as finished
-                // to handlePromptQueueRunState, which then dispatches the next
-                // queued prompt. stop() is what ends the queue run itself.
+                // Cancel only ends the reply; handlePromptQueueRunState then
+                // dispatches the next queued prompt. stop() ends the run.
                 onClick={stop}
               >
                 <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
