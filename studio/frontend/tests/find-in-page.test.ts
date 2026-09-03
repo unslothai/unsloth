@@ -1977,8 +1977,13 @@ test("an odd run of regional indicators displaces the whole run after a cut", ()
   );
   // Every indicator in the resumed run, not just the first: the ones the text reads as boundaries
   // are inside a flag, and the boundary between them is where the page really breaks.
-  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS + 1, MAX_NODE_CHARS + 5]);
-  assert.deepEqual([...index.shifted], [MAX_NODE_CHARS + 3]);
+  // Asked of the offsets rather than of the whole set: doubt is held as runs now, so an indicator
+  // covers the unit inside its surrogate pair as well as its start, and that unit begins nothing
+  // either way.
+  assert.equal(index.unsafe.has(MAX_NODE_CHARS + 1), true);
+  assert.equal(index.unsafe.has(MAX_NODE_CHARS + 5), true);
+  assert.equal(index.unsafe.has(MAX_NODE_CHARS + 3), false);
+  assert.equal(index.shifted.has(MAX_NODE_CHARS + 3), true);
   // No indicator here stands alone on the page, so none is findable on its own either way.
   assert.deepEqual(findMatches(index, at(0x1f1e7), 10), []);
   // The flag the displacement makes, which the run being called unknown used to throw away.
@@ -2257,6 +2262,60 @@ test("the chain a cut leaves is followed past the seam, not only to it", () => {
   assert.deepEqual(findMatches(index, "\u1000", 10), []);
   // What lies past the end of the chain is still findable, or the fence has eaten the feature.
   assert.equal(findMatches(index, "a", MAX_MATCHES).length > 0, true);
+});
+
+test("doubt over a whole node is one run, not an entry per character", () => {
+  // The per-node bound stops one sibling filling memory; it does not stop forty of them filling it
+  // to the index ceiling. Held as offsets that was millions of entries for a document whose length
+  // nothing on our side chose, so contiguous doubt is one run and the count is what is asserted.
+  const nodes = [];
+  for (let at = 0; at < MAX_INDEX_CHARS; at += MAX_NODE_CHARS) {
+    nodes.push(text("́".repeat(MAX_NODE_CHARS + 1)));
+  }
+  const index = buildTextIndex(el("DIV", [el("P", nodes)]));
+  assert.equal(index.text.length, MAX_INDEX_CHARS);
+  // Millions of offsets in doubt, and it takes one run per node to say so.
+  assert.equal(index.unsafe.size > MAX_INDEX_CHARS / 2, true);
+  assert.equal(index.unsafe.runs < 100, true);
+});
+
+test("a chain a cut leaves crosses as many siblings as it needs", () => {
+  // The doubt was dropped at the edge of the first sibling, so a chain that reached its target in
+  // the sibling after that lost it. One extender is enough when it is a node of its own, which is
+  // what markup made of nested inline spans produces all the time.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 1) + "क्"),
+        text("́"),
+        text("त"),
+      ]),
+    ]),
+  );
+  assert.deepEqual(findMatches(index, "त", 10), []);
+  // And the chain still ends: what follows the letter it joins is ordinary text again.
+  const beyond = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 1) + "क्"),
+        text("́"),
+        text("त tail"),
+      ]),
+    ]),
+  );
+  assert.equal(findMatches(beyond, "tail", 10).length, 1);
+});
+
+test("a mark on a space in the query survives the space flexing", () => {
+  // Whitespace in a query matches any run of it, because a soft-wrapped paragraph renders as one
+  // line while its node holds the newline. A mark attached to that space is part of the same
+  // grapheme and was being dropped with it, so the shortened match ended inside a grapheme and the
+  // fence threw away the only occurrence of text that is on the page verbatim.
+  const index = buildTextIndex(el("DIV", [el("P", [text(" ́")])]));
+  assert.equal(findMatches(index, " ́", 10).length, 1);
+  // The flexing itself is untouched: a plain space still matches a run of whitespace.
+  const wrapped = buildTextIndex(el("DIV", [el("P", [text("one \n two")])]));
+  assert.equal(findMatches(wrapped, "one two", 10).length, 1);
 });
 
 test("the work a cut costs is bounded by the index, not by the node", () => {

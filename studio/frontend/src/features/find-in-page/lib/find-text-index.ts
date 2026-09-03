@@ -125,6 +125,83 @@ export interface TextSegment {
   preserved: boolean;
 }
 
+/** The offsets a walk left in doubt, held as runs rather than as points. A node of nothing but
+ *  extenders puts every offset it has in doubt, and a page can be made of forty of them, so one
+ *  entry each is millions for a document whose length nothing on our side chose. Runs are merged
+ *  as they arrive, which is in order except for the regional cuts, so the sort at the end has only
+ *  the few they add to do. */
+export class OffsetRuns {
+  /** Flattened, non-overlapping `[start, end)` pairs. */
+  private bounds: number[] = [];
+  private ordered = true;
+
+  add(start: number, end = start + 1): void {
+    const at = this.bounds.length;
+    if (at > 0 && start === this.bounds[at - 1]) {
+      this.bounds[at - 1] = end;
+      return;
+    }
+    if (at > 0 && start < this.bounds[at - 1]) this.ordered = false;
+    this.bounds.push(start, end);
+  }
+
+  private settle(): void {
+    if (this.ordered) return;
+    const runs: [number, number][] = [];
+    for (let at = 0; at < this.bounds.length; at += 2) {
+      runs.push([this.bounds[at], this.bounds[at + 1]]);
+    }
+    runs.sort((a, b) => a[0] - b[0]);
+    this.bounds = [];
+    for (const [start, end] of runs) {
+      const at = this.bounds.length;
+      if (at > 0 && start <= this.bounds[at - 1]) {
+        this.bounds[at - 1] = Math.max(this.bounds[at - 1], end);
+        continue;
+      }
+      this.bounds.push(start, end);
+    }
+    this.ordered = true;
+  }
+
+  has(at: number): boolean {
+    this.settle();
+    let low = 0;
+    let high = this.bounds.length / 2 - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (at < this.bounds[mid * 2]) high = mid - 1;
+      else if (at >= this.bounds[mid * 2 + 1]) low = mid + 1;
+      else return true;
+    }
+    return false;
+  }
+
+  /** How many runs it took to say that, which is the thing that costs memory. */
+  get runs(): number {
+    this.settle();
+    return this.bounds.length / 2;
+  }
+
+  get size(): number {
+    this.settle();
+    let total = 0;
+    for (let at = 0; at < this.bounds.length; at += 2) {
+      total += this.bounds[at + 1] - this.bounds[at];
+    }
+    return total;
+  }
+
+  *[Symbol.iterator](): IterableIterator<number> {
+    this.settle();
+    for (let at = 0; at < this.bounds.length; at += 2) {
+      for (let one = this.bounds[at]; one < this.bounds[at + 1]; one += 1) {
+        yield one;
+      }
+    }
+  }
+}
+
 export interface FindTextIndex {
   text: string;
   /** Sorted by `start`, gapped wherever a separator was written. */
@@ -133,19 +210,19 @@ export interface FindTextIndex {
   /** Offsets where the walk left something out, so nothing here can say whether a grapheme
    *  carries on across them. A cut in the middle of the document leaves two, on each side of the
    *  separator standing in for what was dropped; one at the end of the walk leaves one. */
-  unsafe: ReadonlySet<number>;
+  unsafe: OffsetRuns;
   /** Offsets that begin a grapheme even though the text alone says otherwise. A cut that drops an
    *  odd run of regional indicators leaves the run behind it pairing off one indicator early, so
    *  the flags a reader can see sit between the ones the index would find. */
-  shifted: ReadonlySet<number>;
+  shifted: OffsetRuns;
 }
 
 export const EMPTY_TEXT_INDEX: FindTextIndex = {
   text: "",
   segments: [],
   truncated: false,
-  unsafe: new Set(),
-  shifted: new Set(),
+  unsafe: new OffsetRuns(),
+  shifted: new OffsetRuns(),
 };
 
 /** The only code point whose `toLowerCase` grows. Mapped to the Turkic fold, a bare `i`, since one
@@ -277,11 +354,13 @@ export function buildTextIndex(
   let length = 0;
   let truncated = false;
   /** See `FindTextIndex.unsafe`. */
-  const unsafe = new Set<number>();
+  const unsafe = new OffsetRuns();
   /** What was dropped, while the separator now due stands for that rather than for a block
    *  boundary. The only thing that can say whether the next node begins where it looks like it
    *  does, and readable here and nowhere later. Null at a real boundary. */
   let pendingClip: ClipContext | null = null;
+  /** See `ChainAhead`. Cleared wherever the clip is, and by a cut of its own. */
+  let pendingChain: ChainAhead | null = null;
   /** Where a run of regional indicators resumes after a cut that fell inside one. */
   const regionalCuts: { from: number; known: boolean }[] = [];
   /** The ceiling, the only thing that stops the walk. */
@@ -303,6 +382,8 @@ export function buildTextIndex(
     if (block) {
       pendingSeparator = true;
       pendingClip = null;
+      pendingChain = null;
+      pendingChain = null;
     }
     const preserved =
       style?.whiteSpace === undefined
@@ -352,8 +433,7 @@ export function buildTextIndex(
             // mark, and a node is not bounded by anything a page cannot choose. A model returning
             // megabytes of one combining mark otherwise bought a `Set` entry per code point of it.
             if (pendingClip !== null) {
-              const kept = Math.min(ceiling - length, MAX_NODE_CHARS);
-              markReached(pendingClip, data, length, unsafe, kept);
+              pendingChain = { clip: pendingClip, crossed: "", seen: 0 };
             }
             // Parity is what makes a regional indicator pair, and it is counted from the
             // separator, so an odd run left behind takes the next indicator with it and displaces
@@ -379,6 +459,14 @@ export function buildTextIndex(
           if (!separated) unsafe.add(length);
           full = true;
           return;
+        }
+        // After the ceiling check, so `take` is known, and before the text is appended, since it
+        // is this node's offsets that are in doubt.
+        if (
+          pendingChain !== null &&
+          !markReached(pendingChain, data, length, unsafe, take)
+        ) {
+          pendingChain = null;
         }
         const raw = data.length > take ? data.slice(0, take) : data;
         parts.push(raw);
@@ -425,10 +513,11 @@ export function buildTextIndex(
     // them happen to use: nothing dropped back there can reach into what a portal paints.
     pendingSeparator = true;
     pendingClip = null;
+    pendingChain = null;
     visit(extra, false);
   }
   const joined = parts.join("");
-  const shifted = new Set<number>();
+  const shifted = new OffsetRuns();
   for (const cut of regionalCuts) {
     for (
       let at = cut.from;
@@ -696,20 +785,20 @@ const CHAIN_AHEAD_LIMIT = CLIP_CONTEXT_LIMIT;
 /** Mark every offset the chain a cut left can still reach, not only the one at the seam: the chain
  *  runs on into the next node, so a linker at the seam carries the doubt to the letter it joins. */
 function markReached(
-  clip: ClipContext,
+  chain: ChainAhead,
   data: string,
   from: number,
-  unsafe: Set<number>,
+  unsafe: OffsetRuns,
   kept: number,
-): void {
+): boolean {
   const end = Math.min(data.length, Math.max(kept, 0));
-  let crossed = "";
   let at = 0;
-  for (let seen = 0; at < end && seen < CHAIN_AHEAD_LIMIT; seen += 1) {
+  while (at < end && chain.seen < CHAIN_AHEAD_LIMIT) {
     const point = String.fromCodePoint(data.codePointAt(at) as number);
-    if (!reaches(clip, point, crossed)) return;
-    unsafe.add(from + at);
-    crossed += point;
+    if (!reaches(chain.clip, point, chain.crossed)) return false;
+    unsafe.add(from + at, from + at + point.length);
+    chain.crossed += point;
+    chain.seen += 1;
     at += point.length;
   }
   // Past the window the chain is still followed, but taken rather than read: answering exactly
@@ -719,10 +808,22 @@ function markReached(
   // is inside the grapheme the cut split.
   while (at < end) {
     const point = String.fromCodePoint(data.codePointAt(at) as number);
-    unsafe.add(from + at);
+    unsafe.add(from + at, from + at + point.length);
     at += point.length;
-    if (!links(point)) return;
+    if (!links(point)) return false;
   }
+  // Ran out of node with the chain still going, so it carries on into the next one. A sibling of
+  // nothing but extenders otherwise ended the doubt at its own edge, and the letter it joins,
+  // which is in the sibling after that, was left looking like a grapheme of its own.
+  return true;
+}
+
+/** A chain left by a cut, while it is still running. `seen` is the precise budget, spent across
+ *  however many nodes the chain crosses rather than restarting at each one. */
+interface ChainAhead {
+  clip: ClipContext;
+  crossed: string;
+  seen: number;
 }
 
 /** Joins to whatever is on its left, so a chain runs through it. */
@@ -795,7 +896,11 @@ function canonicalSource(needle: string, dotted: boolean): string {
   let out = "";
   for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
     if (/^\s/.test(cluster)) {
+      // The space flexes, what is attached to it does not: a mark on a space is part of that
+      // grapheme, and dropping it left the match ending inside one, which the fence then threw
+      // away. Only one `\s+` for a run of them, so the marks of the last still follow it.
       out += out.endsWith("\\s+") ? "" : "\\s+";
+      out += escapeForRegex(cluster.slice(1));
       continue;
     }
     const spellings = [cluster];
