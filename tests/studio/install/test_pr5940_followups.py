@@ -489,10 +489,9 @@ def test_install_ps1_rocm_cpu_fallback_uses_retry():
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
-    # Slice up to the fallback's own install command rather than a fixed byte count. The
-    # commentary between the warning and the command grows (it now also records why no
-    # kept-release pin can reach this CPU base), and a byte window quietly stops covering
-    # the line it exists to check -- passing, or failing, for the wrong reason.
+    # Slice up to the fallback's own install command rather than a fixed byte count: the commentary
+    # between the warning and the command grows, and a byte window quietly stops covering the line it
+    # exists to check, passing or failing for the wrong reason.
     _end = text.find("--default-index", i)
     assert _end != -1, "ROCm->CPU fallback install command not found in install.ps1"
     window = text[i:_end]

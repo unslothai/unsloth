@@ -312,10 +312,8 @@ function Install-UnslothStudio {
         )
         if ($Code -eq 0) { $Code = 1 }
         Write-TauriLog "ERROR_DEFAULT" $Message
-        # Clear the release-preservation handoff on any failure: a non-Tauri `irm | iex`
-        # run throws below and leaves the caller's session alive, so a leaked
-        # UNSLOTH_KEPT_TORCH would let a later `studio setup`/`update` (or a retry that
-        # skips the branch-entry clear) re-pin the abandoned exact torch release.
+        # Under `irm | iex` the caller's session survives a failure, so a leaked
+        # UNSLOTH_KEPT_TORCH would re-pin the abandoned release on a later setup/update.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
@@ -709,7 +707,7 @@ function Install-UnslothStudio {
 
     # UNSLOTH_PYTHON pins the version (mirrors install.sh --python); default 3.13.
     $PythonVersion = if ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON } else { "3.13" }
-    # python.org fallback patch when winget and the live listing both fail; bump alongside $PythonVersion.
+    # python.org fallback patch when winget and the live listing fail; bump with $PythonVersion.
     $PythonFallbackFullVersion = "3.13.13"
     # Patch releases the stack cannot run; mirrors PYTHON_SKIP in install.sh.
     # Windows resolves an installed interpreter and hands uv its path rather
@@ -722,7 +720,7 @@ function Install-UnslothStudio {
     # able to complete, over a package it will not install.
     if ($SkipTorch) { $PythonSkip = @() }
 
-    # Install dest priority: UNSLOTH_STUDIO_HOME, STUDIO_HOME alias, USERPROFILE-redirect, default.
+    # Dest priority: UNSLOTH_STUDIO_HOME, STUDIO_HOME alias, USERPROFILE-redirect, default.
     # Whitespace-only == unset (matches the Python resolvers' .strip()).
     $envOverrideVar = $null
     $envOverride = $null
@@ -1308,7 +1306,7 @@ public static class UnslothStudioFinalPathV2
     }
 
     # ── Helper: safely add a directory to the persistent User PATH ──
-    # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442). Append keeps existing tools first; Prepend for must-win.
+    # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442). Append keeps existing tools first.
     function Add-ToUserPath {
         param(
             [Parameter(Mandatory = $true)][string]$Directory,
@@ -1648,8 +1646,8 @@ public static class UnslothStudioFinalPathV2
             [Parameter(Mandatory = $true)][ScriptBlock]$Command,
             [string]$Label = "install command"
         )
-        # Installer-pinned index installs must beat an inherited uv mirror (#6898): for
-        # --default-index, clear uv index env vars and set UV_NO_CONFIG=1 so a uv.toml/pyproject index can't outrank the CLI pin.
+        # A pinned index must beat an inherited uv mirror (#6898): for --default-index, clear
+        # uv index env vars and set UV_NO_CONFIG=1 so a uv.toml/pyproject index can't outrank it.
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
@@ -1705,7 +1703,7 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    # Retry Invoke-InstallCommand on transient uv download failures with backoff; returns last exit code on permanent failure.
+    # Retry Invoke-InstallCommand on transient uv failures; returns the last exit code on permanent failure.
     function Invoke-InstallCommandRetry {
         param(
             [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
@@ -2118,9 +2116,9 @@ public static class UnslothStudioFinalPathV2
                 [System.IO.Directory]::CreateDirectory($appDir) | Out-Null
             }
 
-            # Same-install discriminator: per-install opaque id read by launcher and backend
-            # (/api/health); avoids leaking the install path and canonicalization drift. Lives at
-            # $StudioHome\share\studio_install_id (found via _STUDIO_ROOT_RESOLVED) regardless of mode. 32 crypto bytes -> 64 hex.
+            # Per-install opaque id (32 crypto bytes -> 64 hex) read by launcher and backend
+            # (/api/health), so neither has to compare install paths. Always at
+            # $StudioHome\share\studio_install_id, found via _STUDIO_ROOT_RESOLVED.
             $_studioIdDir = Join-Path $StudioHome "share"
             if (-not (Test-Path -LiteralPath $_studioIdDir)) {
                 [System.IO.Directory]::CreateDirectory($_studioIdDir) | Out-Null
@@ -2169,8 +2167,8 @@ public static class UnslothStudioFinalPathV2
                 }
             }
 
-            # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) and bake per-install
-            # $portFile / $mutexName so concurrent custom-root launchers don't serialize on one global mutex. Default installs get an empty prefix.
+            # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) and bake per-install $portFile /
+            # $mutexName so custom-root launchers don't serialize on one global mutex. Default: empty prefix.
             $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
                 # Reuse the preflight's managed path for legacy-home overrides.
                 $_llamaPath = Get-ManagedLlamaCppDir
@@ -2438,14 +2436,14 @@ exit 0
             # shortcuts instead point straight at powershell.exe running
             # launch-studio.ps1 with a hidden window (selected below).
 
-            # Delete any launch-studio.vbs left by a pre-hardening install (AV-flagged shape). Covers default and env-mode ($appDir).
+            # Drop any launch-studio.vbs left by a pre-hardening install (AV-flagged shape).
             $legacyLauncherVbs = Join-Path $appDir "launch-studio.vbs"
             if (Test-Path -LiteralPath $legacyLauncherVbs) {
                 Remove-Item -LiteralPath $legacyLauncherVbs -Force -ErrorAction SilentlyContinue
             }
 
-            # Prefer bundled icon (local/dev), else best-effort download from raw GitHub; only attach if
-            # the file has a valid ICO header. Snapshot the existing icon to gate the heavier cache refresh on a real change.
+            # Prefer the bundled icon (local/dev), else download from raw GitHub; attach only on a valid
+            # ICO header. Snapshot the existing icon so the heavy cache refresh runs on a real change.
             $preIconHash = $null
             if (Test-Path -LiteralPath $iconPath) {
                 try { $preIconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash } catch {}
@@ -2507,7 +2505,7 @@ exit 0
                 return
             }
 
-            # First install == no pre-existing .lnk; gates the heavy refresh so a no-op reinstall doesn't repeatedly clear caches (a dropper-like AV cluster).
+            # First install == no pre-existing .lnk. Gates the heavy refresh: repeatedly clearing caches on a no-op reinstall is a dropper-like AV cluster.
             $firstInstall = -not (
                 ($desktopLink -and (Test-Path -LiteralPath $desktopLink)) -or
                 ($startMenuLink -and (Test-Path -LiteralPath $startMenuLink))
@@ -2581,8 +2579,8 @@ exit 0
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
-                    # Cheap per-item refresh so a rewritten same-name .lnk renders its new target/icon:
-                    # per-item SHChangeNotify SHCNE_UPDATEITEM + SHCNF_PATHW (the global SHCNE_ASSOCCHANGED broadcast alone does not recover a stale item).
+                    # Per-item SHChangeNotify so a rewritten same-name .lnk renders its new target/icon;
+                    # the global SHCNE_ASSOCCHANGED broadcast alone does not recover a stale item.
                     try {
                         Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, uint flags, string item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
                         # SHCNE_UPDATEITEM (0x00002000) + SHCNF_PATHW (0x0005) per shortcut
@@ -2592,12 +2590,12 @@ exit 0
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {}
-                    # Heavier icon-cache clear + StartMenuExperienceHost rebuild only on first install or icon change (doing it every no-op reinstall is a dropper-like cluster).
+                    # Heavier icon-cache clear + StartMenuExperienceHost rebuild only on a first install or icon change.
                     if ($firstInstall -or $iconChanged) {
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
-                        # Win11 StartMenuExperienceHost keeps its own tile-icon cache that ie4uinit/explorer restart don't
-                        # invalidate. Drop only the render caches (NEVER start2.bin, the pinned layout) and let the host rebuild. Win10 has no such host.
+                        # Win11 StartMenuExperienceHost keeps a tile-icon cache ie4uinit cannot invalidate. Drop
+                        # only the render caches (NEVER start2.bin, the pinned layout). Win10 has no such host.
                         try {
                             $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
                             if (Test-Path -LiteralPath $smehTemp) {
@@ -3157,7 +3155,7 @@ exit 0
         substep "Get it from https://aka.ms/getwinget if Python / uv are not already on PATH." "Yellow"
     }
 
-    # ── Helper: detect a working Python 3.11-3.13. Skips conda: its modified DLL search paths break torch's c10.dll on Windows; check both exe path AND sys.base_prefix since a conda-derived venv inherits base_prefix even when its path lacks "conda". ──
+    # ── Detect a working Python 3.11-3.13. Skip conda (its DLL search paths break torch's c10.dll); match exe path AND sys.base_prefix, since a conda-derived venv inherits base_prefix. ──
     $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
 
     function Test-IsCondaPython {
@@ -3224,7 +3222,7 @@ exit 0
                 } catch {}
             }
         }
-        # python3 / python via -All to look past stubs shadowing a real Python; skip WindowsApps (App Execution Alias stubs can open the Store; real Store Python is caught by the py launcher above) and conda (path + sys.base_prefix).
+        # python3 / python via -All to look past stubs shadowing a real Python. Skip WindowsApps (alias stubs open the Store; real Store Python is caught by the py launcher above) and conda.
         foreach ($name in @("python3", "python")) {
             foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
                 if (-not $cmd.Source) { continue }
@@ -3294,7 +3292,7 @@ exit 0
         return $null
     }
 
-    # ── Fallback: install CPython from python.org when winget is unavailable/fails (notably msstore cert-pinning 0x8a15005e). Silent per-user install (no UAC) puts python.exe + py launcher on PATH. Returns @{ Version; Path } or $null. ──
+    # ── Fallback when winget is unavailable/fails (notably msstore cert-pinning 0x8a15005e): a silent per-user python.org install, no UAC. Returns @{ Version; Path } or $null. ──
     function Install-PythonFromPythonOrg {
         # $Arch overrides the host arch, to pull x64 onto an ARM64 box.
         param([string]$Arch = "")
@@ -3311,7 +3309,7 @@ exit 0
             return $null
         }
 
-        # Latest $PythonVersion.x patch from the python.org listing, else same-minor fallback. Use the pinned full version only when it matches the requested minor so a non-default UNSLOTH_PYTHON (e.g. 3.12) doesn't silently install 3.13.
+        # Latest $PythonVersion.x patch from the python.org listing, else the same-minor fallback. The pinned full version only applies to a matching minor, so UNSLOTH_PYTHON=3.12 can't install 3.13.
         $full = if ($PythonFallbackFullVersion -like "$PythonVersion.*") { $PythonFallbackFullVersion } else { "$PythonVersion.0" }
         try {
             $listing = [string](Invoke-RestMethod -Uri "https://www.python.org/ftp/python/" -UseBasicParsing -TimeoutSec 20)
@@ -3357,7 +3355,7 @@ exit 0
             "InstallAllUsers=0",
             "PrependPath=1",
             "Include_launcher=1",
-            # Launcher per-user too: Include_launcher defaults InstallLauncherAllUsers=1 (needs admin, breaks this non-admin fallback).
+            # Launcher per-user too: Include_launcher defaults to all-users, which needs admin.
             "InstallLauncherAllUsers=0",
             "Include_pip=1",
             "AssociateFiles=0",
@@ -3433,7 +3431,7 @@ exit 0
         $wingetExit = $null
 
         if ($script:WingetAvailable) {
-            # --source winget avoids the msstore source (cert-pinning 0x8a15005e can abort the whole install); Python and uv both live in the winget source. Lower ErrorActionPreference so winget stderr isn't a terminating error on PS 5.1.
+            # --source winget avoids msstore, whose cert-pinning (0x8a15005e) can abort the install; Python and uv both live in the winget source. Lower ErrorActionPreference so winget stderr isn't terminating.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
@@ -3447,7 +3445,7 @@ exit 0
             $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
             if (-not $DetectedPython) {
-                # Still not functional after winget -- force reinstall. Handles real failures AND "already installed" codes where winget thinks Python is present but it's not on PATH.
+                # Still not functional after winget -- force reinstall. Covers real failures and "already installed" codes where Python isn't actually on PATH.
                 substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
                 $ErrorActionPreference = "Continue"
                 try {
@@ -3460,7 +3458,7 @@ exit 0
             }
         }
 
-        # Fall back to python.org if winget is unavailable or couldn't install a working Python (msstore cert errors --source winget can't fix), keeping the install automatic.
+        # Fall back to python.org when winget is unavailable or left no working Python, keeping the install automatic.
         if (-not $DetectedPython) {
             if ($script:WingetAvailable) {
                 substep "winget could not install Python -- falling back to python.org..." "Yellow"
@@ -3809,7 +3807,7 @@ exit 0
         }
     }
 
-    # A freshly installed uv can sit later on PATH than an older one; prefer a just-installed uv from a known location.
+    # A freshly installed uv can sit behind an older one on PATH; prefer known install locations.
     if (-not (Test-UvVersionOk)) {
         $origPath = $env:PATH
         foreach ($d in @($script:UvInstallDestDir, $env:UV_INSTALL_DIR, $env:XDG_BIN_HOME,
@@ -3829,7 +3827,7 @@ exit 0
         return (Exit-InstallFailure "uv could not be installed")
     }
 
-    # Bytecode compilation can exceed uv's 60s default on slow machines; default 180s, preserving overrides ("0" disables).
+    # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
     }
@@ -3842,7 +3840,7 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
-    # ── Create venv (migrate old layout if possible, otherwise fresh); pass the resolved exe path to uv so it doesn't re-resolve back to conda. ──
+    # ── Create venv (migrating the old layout when possible); hand uv the resolved exe path so it doesn't re-resolve back to conda. ──
     Write-TauriLog "STEP" "Creating virtual environment"
     if (-not (Test-Path -LiteralPath $StudioHome)) {
         # .NET API: New-Item -Path treats brackets as wildcards.
@@ -3855,9 +3853,8 @@ exit 0
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
     $script:StudioVenvRollbackPartial = $false
-    # Release-preservation state, reset per run: with `irm | iex` the script scope IS the
-    # caller's session, so a second invocation (e.g. a different UNSLOTH_STUDIO_HOME with no
-    # existing venv) must not inherit the previous run's release or pin.
+    # Reset per run: under `irm | iex` the script scope IS the caller's session, so a second
+    # invocation must not inherit the previous run's release or pin.
     $script:PrevTorchVer = ""
     $script:PrevTorchPin = $null
 
@@ -4172,25 +4169,23 @@ exit 0
         }
     }
 
-    # Raw torch.__version__ from $PythonExe's venv (last non-empty stdout line), or $null.
-    # Bounded ProcessStartInfo probe (async-drain both streams, 30s timeout, kill on hang) so a
-    # wedged "import torch" can't stall the installer; feeds Get-InstalledTorchTag and the torch
-    # release-preservation decision (twin of install.sh's _PREV_TORCH_VER probe / _previous_torch_pin).
+    # Raw torch.__version__ from $PythonExe's venv, or $null. Bounded probe (async-drained streams,
+    # 30s timeout) so a wedged "import torch" can't stall the installer. Twin of install.sh's
+    # _PREV_TORCH_VER; feeds Get-InstalledTorchTag and the release-preservation decision.
     function Get-InstalledTorchVersionRaw {
         param([string]$PythonExe)
         if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
-            # Dist metadata, not "import torch": a broken CUDA/ROCm DLL or a slow native
-            # import would yield no release and silently drop the pin (parity with install.sh).
+            # Dist metadata, not "import torch": a broken DLL would drop the pin (as in install.sh).
             $psi.Arguments = '-c "import importlib.metadata as m; print(m.version(''torch''))"'
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
-            # Drain BOTH streams async before WaitForExit: a synchronous ReadToEnd() would block on a wedged "import torch", and an undrained stderr would deadlock a child flooding the pipe buffer. A truly hung probe still hits the 30s timeout.
+            # Drain BOTH streams async before WaitForExit: ReadToEnd() blocks on a wedged import, and an undrained stderr deadlocks a child flooding the pipe. A hung probe still hits the 30s timeout.
             $outTask = $proc.StandardOutput.ReadToEndAsync()
             $errTask = $proc.StandardError.ReadToEndAsync()
             $finished = $proc.WaitForExit(30000)
@@ -4228,10 +4223,9 @@ exit 0
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
             throw "Refusing to delete non-Unsloth venv at $VenvDir"
         }
-        # Record the existing venv's torch RELEASE BEFORE the rollback move (see Get-PreviousTorchPin);
-        # a re-run then keeps that release rather than silently jumping torch versions. Opt out with
-        # UNSLOTH_TORCH_UPGRADE=1. Only the new-layout replace probes; the legacy-migration branches
-        # reuse the venv, so torch survives naturally and needs no pin.
+        # Record the venv's torch RELEASE before the rollback move so a re-run keeps it instead of
+        # jumping versions (see Get-PreviousTorchPin; UNSLOTH_TORCH_UPGRADE=1 opts out). Only the
+        # new-layout replace needs it: legacy migration reuses the venv, so torch survives.
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
         }
@@ -4343,7 +4337,7 @@ exit 0
         $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
         $env:__COMPAT_LAYER = 'RunAsInvoker'
         try {
-            # [Process]::Start, NOT Start-Process -PassThru: the latter leaves .ExitCode $null after WaitForExit on PS 5.1, so $LASTEXITCODE reads non-zero and kills detection. Async reads drain the pipes; amd-smi args have no spaces so a plain join is safe.
+            # [Process]::Start, NOT Start-Process -PassThru: PS 5.1 leaves .ExitCode $null after WaitForExit, so $LASTEXITCODE reads non-zero and detection dies. amd-smi args have no spaces.
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
             $psi.Arguments = ($SmiArgs -join ' ')
@@ -4373,7 +4367,7 @@ exit 0
         }
     }
 
-    # ── Helper: run nvidia-smi under a timeout so a wedged driver can't hang the installer (no RunAsInvoker: nvidia-smi doesn't auto-elevate). Returns combined stdout+stderr; "" on timeout/failure. ──
+    # ── Run nvidia-smi under a timeout so a wedged driver can't hang the installer (no RunAsInvoker; nvidia-smi doesn't auto-elevate). Returns stdout+stderr, "" on timeout/failure. ──
     function Invoke-NvidiaSmiBounded {
         param(
             [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
@@ -4408,7 +4402,7 @@ exit 0
         }
     }
 
-    # ── Helper: nvidia-smi -L lists at least one real GPU. Exit 0 alone isn't enough (a stale/driverless nvidia-smi can exit 0 with no GPU, marking an AMD host NVIDIA and suppressing ROCm) -- require a "GPU <n>:" data row. ──
+    # ── nvidia-smi -L lists at least one real GPU. Exit 0 alone isn't enough: a driverless smi exits 0 with no GPU, marking an AMD host NVIDIA, so require a "GPU <n>:" row. ──
     function Test-NvidiaSmiHasGpu {
         param([Parameter(Mandatory = $true)][string]$Exe)
         $out = Invoke-NvidiaSmiBounded $Exe @('-L')
@@ -4446,11 +4440,11 @@ exit 0
     # it are outside that gate, so an NVIDIA host would leave it undefined.
     $ROCmUnsupportedGfxArch = $null
     if (-not $HasNvidiaSmi) {
-        # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (HIP SDK sets HIP_PATH but may not add bin to PATH). Ignore the venv hipInfo.exe (AMD wheel, not a HIP SDK, so amd-smi would still auto-elevate). Cf. _path_inside_venv().
+        # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin (the SDK may not add bin to PATH). Ignore the venv hipInfo.exe: an AMD wheel, not a HIP SDK, so amd-smi would still auto-elevate.
         function Test-HipinfoIsVenvInternal {
             param([AllowNull()][string]$HipinfoPath)
             if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
-            # Also derive the venv from the setup python + default Unsloth home, so the venv hipInfo is caught when VenvDir/VIRTUAL_ENV are unset.
+            # Also derive the venv from the setup python + default home, for when VenvDir/VIRTUAL_ENV are unset.
             $venvRoots = @()
             if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
             $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
@@ -4459,12 +4453,12 @@ exit 0
                 try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
             }
             if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
-            # A custom Unsloth home moves the venv off the default path; seed it too or its hipInfo escapes the filter.
+            # A custom Unsloth home moves the venv off the default path; seed it too.
             $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
             if ($studioHomeEnv) {
-                # Expand a leading ~ like the canonical resolver; else GetFullPath keeps the literal ~ and the hipInfo escapes the filter.
+                # Expand a leading ~ like the canonical resolver; GetFullPath would keep the literal ~.
                 if (($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-                    # A bare "~" leaves an empty child path (Join-Path rejects that on PS 5.1), so use USERPROFILE directly and only join a real remainder.
+                    # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
                     $studioHomeRest = $studioHomeEnv.Substring(1).TrimStart('/', '\')
                     $studioHomeEnv = if ($studioHomeRest) { Join-Path $env:USERPROFILE $studioHomeRest } else { $env:USERPROFILE }
                 }
@@ -4474,7 +4468,7 @@ exit 0
             foreach ($root in $venvRoots) {
                 if ([string]::IsNullOrWhiteSpace($root)) { continue }
                 try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
-                # Skip a bare drive root (e.g. a non-venv UNSLOTH_SETUP_PYTHON yields C:) -- it would match every path on that drive.
+                # Skip a bare drive root -- it would match every path on that drive.
                 if ($r -match '^[a-zA-Z]:$') { continue }
                 if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
                     $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -4483,12 +4477,12 @@ exit 0
             }
             return $false
         }
-        # Scan all hipinfo and keep the first non-venv one (the venv copy could shadow a real HIP SDK); -CommandType Application matches only real executables, not an alias/function named hipinfo.
+        # Keep the first non-venv hipinfo (the venv copy could shadow a real HIP SDK); -CommandType Application skips an alias/function named hipinfo.
         $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
             Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
             Select-Object -First 1
         if (-not $hipinfoExe) {
-            # Iterate the env roots and take the first non-venv bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
+            # First non-venv bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
             $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
             foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
                 $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
@@ -4541,7 +4535,7 @@ exit 0
                 }
             } catch {}
         }
-        # Without a working HIP runtime amd-smi elevates a child at runtime (UAC/DiskPart prompt RunAsInvoker can't suppress), so only probe when a HIP SDK is present or the user opts in; else fall through to WMI name inference (enough for ROCm wheels + llama.cpp prebuilt). An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) wins over the HIP-SDK heuristic, since a broken runtime can still pop the prompt.
+        # Without a working HIP runtime amd-smi pops a UAC/DiskPart prompt RunAsInvoker can't suppress, so probe only with a HIP SDK present or on opt-in; else WMI name inference is enough for the ROCm wheels + llama.cpp prebuilt. An explicit UNSLOTH_ENABLE_AMD_SMI opt-out wins.
         $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
         $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
         if (-not $HasROCm -and $amdSmiAllowed) {
@@ -4551,7 +4545,7 @@ exit 0
                     $smiOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('list')
                     if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                         $HasROCm = $true
-                        # Mirror the hipinfo path: collect all gfx tokens in enumeration order and pick the runtime-visible one via HIP_VISIBLE_DEVICES.
+                        # Like the hipinfo path: gfx tokens in enumeration order, pick via HIP_VISIBLE_DEVICES.
                         $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                         # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
                         $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
@@ -4639,7 +4633,7 @@ exit 0
                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                 substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
             }
-            # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI); targets only arches the ROCm prebuilts cover (gfx120X/110X/1151/1150/103X), unknown names fall back to CPU.
+            # 2. Best-effort marketing name -> arch lookup (amd-smi / WMI), covering only the arches the ROCm prebuilts ship; unknown names fall back to CPU.
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
                     @{ P = "9070|9080|R9700";                                     A = "gfx1201" }  # RDNA 4 (Navi 48: RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
@@ -4705,7 +4699,7 @@ exit 0
                 }
             }
         }
-        # Capture ROCm version for wheel selection (hipconfig, then amd-smi). Run whenever the HIP SDK binary is present, since hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
+        # ROCm version for wheel selection (hipconfig, then amd-smi). Run whenever the HIP SDK is present: hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
         if ($HasROCm -or $HipSdkInstalled) {
             $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
             if (-not $hipConfigExe) {
@@ -4745,7 +4739,9 @@ exit 0
         }
     }
 
-    # ── Optional WSL-ROCm driver hint: WSL2 needs AMD Adrenalin >= 26.2.2 (native Windows GPU works with any recent driver). Can't auto-install (AMD referrer-gates downloads, no winget package), so just point at AMD's page; shown only when the installed driver predates 26.2.2 (Feb 2026). Suppress with UNSLOTH_SKIP_AMD_DRIVER_HINT=1. ──
+    # ── WSL2 needs AMD Adrenalin >= 26.2.2 (native Windows GPU works with any recent driver). AMD
+    # referrer-gates downloads and ships no winget package, so just point at their page when the
+    # installed driver predates 26.2.2. Suppress with UNSLOTH_SKIP_AMD_DRIVER_HINT=1. ──
     function Show-AmdWslDriverHint {
         if ($env:UNSLOTH_SKIP_AMD_DRIVER_HINT) { return }
         try {
@@ -4762,7 +4758,7 @@ exit 0
                     $drvDate = [Management.ManagementDateTimeConverter]::ToDateTime([string]$amd.DriverDate)
                 }
             } catch {}
-            # Older than 26.2.2 (Feb 2026) => can't expose the GPU to WSL ROCm; unreadable date => still show the hint (informational, suppressible).
+            # Predating 26.2.2 (Feb 2026) can't expose the GPU to WSL ROCm; an unreadable date still hints.
             if ($drvDate -and $drvDate -ge (Get-Date '2026-02-01')) { return }
             substep "Tip: to use this GPU inside WSL too, install AMD Adrenalin 26.2.2+ (for WSL2)." "Cyan"
             substep "  Your current driver predates it; native Windows GPU is unaffected. Get it from AMD:" "Cyan"
@@ -4996,7 +4992,7 @@ exit 0
         substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
         substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } elseif ($ROCmGfxArch) {
-        # Known arch: Unsloth setup installs AMD's bundled-runtime ROCm PyTorch wheels (repo.amd.com), which ship their own runtime -- HIP SDK optional.
+        # Known arch: setup installs AMD's repo.amd.com wheels, which bundle the runtime (HIP SDK optional).
         step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
         substep "Detected: $ROCmGpuLabel" "Cyan"
         substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
@@ -5046,7 +5042,7 @@ exit 0
     # On an AMD GPU (no NVIDIA), surface the optional WSL-ROCm driver hint.
     if (-not $HasNvidiaSmi -and ($ROCmGfxArch -or $ROCmGpuLabel)) { Show-AmdWslDriverHint }
 
-    # Trim trailing slashes from the URL PATH only, preserving ?query / #fragment (a whole-URL TrimEnd corrupts a token ending in "/"). Shared.
+    # Trim trailing slashes from the URL PATH only (a whole-URL TrimEnd corrupts a token ending in "/"); ?query / #fragment preserved. Shared.
     function Trim-IndexPathSlashes {
         param([string]$Url)
         $value = $Url.Trim()
@@ -5095,9 +5091,8 @@ exit 0
     function Get-CudaFamilyCappedForPreTuring {
         param([string]$Family, [string]$SmiExe)
         if ($Family -notin @('cu128', 'cu130')) { return $Family }
-        # torch 2.11.0+cu128 dropped Volta (its arch list runs sm_75..sm_120; 2.10.0+cu128
-        # still had sm_70), so now that the pin reaches 2.11 a pre-Turing host is stranded
-        # on cu128 exactly as it is on cu130. Both families take the 75 floor.
+        # torch 2.11.0+cu128 dropped Volta (sm_75..sm_120; 2.10.0+cu128 still had sm_70), so with the
+        # pin at 2.11 a pre-Turing host is stranded on cu128 as on cu130. Both families take the 75 floor.
         $legacyFloorSm = 75
         switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm) {
             'cu126' {
@@ -5116,7 +5111,7 @@ exit 0
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
-        # Explicit pin skips ALL GPU probing: UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); _FAMILY is the leaf appended to the mirror base. Matches install.sh / install_python_stack.py.
+        # An explicit pin skips ALL GPU probing: UNSLOTH_TORCH_INDEX_URL is used verbatim, _FAMILY is the leaf appended to the mirror base. Matches install.sh / install_python_stack.py.
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
             return (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL)
         }
@@ -5126,7 +5121,7 @@ exit 0
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
-            # Newer NVIDIA drivers print "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y"; accept both so we don't fall through to the cu126 default.
+            # Newer drivers print "CUDA UMD Version: X.Y"; accept both spellings, else we fall through to cu126.
             if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                 $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 if ($major -ge 13)                        { $family = "cu130" }
@@ -5142,7 +5137,7 @@ exit 0
         return "$baseUrl/cu126"
     }
 
-    # Strip userinfo AND query/fragment so an authenticated pin never leaks. Shared with _strip_index_url_credentials (install.sh / py / setup.ps1).
+    # Strip userinfo AND query/fragment so an authenticated pin never leaks. Shared with _strip_index_url_credentials.
     function Remove-IndexUrlCredentials {
         param([string]$Url)
         # Ordinal, not culture-aware: on non-English locales (e.g. th-TH) linguistic
@@ -5189,7 +5184,7 @@ exit 0
         return 'cpu'
     }
 
-    # Expected tag from the index leaf: cuXXX / cpu / rocm ($ROCmIndexUrl or a gfx* leaf -> rocm); $null on an unknown leaf so repair no-ops.
+    # Expected tag from the index leaf: cuXXX / cpu / rocm; $null on an unknown leaf so repair no-ops.
     function Get-ExpectedTorchFlavorTag {
         param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
         if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
@@ -5387,12 +5382,11 @@ exit 0
         return $false
     }
 
-    # ── Torch release preservation (twin of install.sh's _previous_torch_pin, PR 7250): keep the
-    # previous venv's torch RELEASE across a re-run when it falls inside the freshly chosen constraint
-    # window; flavor follows the new index. Opt out with UNSLOTH_TORCH_UPGRADE=1. ──
+    # ── Torch release preservation (twin of install.sh's _previous_torch_pin, PR 7250): keep the previous
+    # venv's torch RELEASE across a re-run when it falls inside the freshly chosen constraint window; flavor
+    # follows the new index. Opt out with UNSLOTH_TORCH_UPGRADE=1. ──
 
-    # Parse a probed torch.__version__ into a normalized stable release, or $null.
-    # Strips ONLY the +local tag; anchored numeric match so dev/rc/alpha/garbage never pin.
+    # Probed torch.__version__ -> normalized stable release, or $null. Strips ONLY the +local tag; the anchored numeric match keeps dev/rc/alpha/garbage from ever pinning.
     function ConvertTo-TorchNumericRelease {
         param([string]$TorchVersion)
         if ([string]::IsNullOrWhiteSpace($TorchVersion)) { return $null }
@@ -5408,8 +5402,7 @@ exit 0
         }
     }
 
-    # True when a release falls inside a "torch>=A,<B" range. Fails closed on any
-    # other constraint shape (exact pins, bare torch) -- preservation then defers.
+    # True when a release falls inside a "torch>=A,<B" range. Fails closed on any other shape (exact pins, bare torch), so preservation defers.
     function Test-TorchReleaseInWindow {
         param(
             [Parameter(Mandatory = $true)]$Release,
@@ -5422,16 +5415,13 @@ exit 0
         return ($Release.Version -ge $floor.Version -and $Release.Version -lt $ceiling.Version)
     }
 
-    # The kept-release trio for a previously installed torch, or $null when nothing
-    # should be kept (no/unstable version, UNSLOTH_TORCH_UPGRADE=1, outside the final
-    # route window -- a raised ROCm floor correctly rejects an older release).
-    # Exact-release pin, matching install.sh's _previous_torch_pin; companions pair
-    # to the kept minor (torchaudio no longer exact-pins torch).
+    # Exact-release trio for a previously installed torch (as in install.sh's _previous_torch_pin), or
+    # $null when nothing should be kept: no/unstable version, UNSLOTH_TORCH_UPGRADE=1, or outside the
+    # final route window (a raised ROCm floor rejects an older release). Companions pair to the kept minor.
     function Get-PreviousTorchPin {
         param(
             [string]$TorchVersion,
-            # Named -Constraint (like Test-TorchReleaseInWindow): the Windows port keeps no shell-style
-            # constraint variable, and its structural tests forbid that token appearing in install.ps1.
+            # Named -Constraint (like Test-TorchReleaseInWindow): the Windows port keeps no shell-style constraint variable, and its structural tests forbid that token in install.ps1.
             [Parameter(Mandatory = $true)][string]$Constraint
         )
         if ($env:UNSLOTH_TORCH_UPGRADE -eq '1') { return $null }
@@ -5448,7 +5438,7 @@ exit 0
         }
     }
 
-    # An explicit pin is authoritative: the AMD ROCm reroute below must not rewrite it (e.g. a deliberate cpu pin on an AMD host).
+    # An explicit pin is authoritative; the AMD ROCm reroute below must not rewrite it.
     $TorchIndexPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                         (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
@@ -5490,7 +5480,7 @@ exit 0
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
             "gfx1152" = "torch>=2.11.0,<2.12.0"
         }
-        # Companion ranges track the torch ceiling so pip resolves a consistent trio on AMD's per-arch index (each published independently). Mirrors setup.ps1 / install_python_stack.py; bump all three together for 2.12.x.
+        # Companion ranges track the torch ceiling so pip resolves a consistent trio on AMD's per-arch index (each published independently). Mirrors setup.ps1 / install_python_stack.py; bump all three together.
         $torchvisionFloorMap = @{
             "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
             "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
@@ -5519,7 +5509,7 @@ exit 0
         }
     }
 
-    # A gfx*/rocm pin skips the auto-reroute above, but the generic CPU/CUDA install below (torch>=2.4,<2.11) would pull a known-bad wheel on the gfx115x/gfx120x/rocm>=7.2 indexes (the _grouped_mm bug). Route a pinned ROCm index through the ROCm path.
+    # A gfx*/rocm pin skips the auto-reroute above, but the generic CPU/CUDA install below would pull a known-bad wheel (_grouped_mm) on the gfx115x/gfx120x/rocm>=7.2 indexes, so route it through the ROCm path.
     if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {
         $_pinLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
         $_pinRocm211 = $false
@@ -5537,7 +5527,7 @@ exit 0
             $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
             substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
         } elseif ($_pinLeaf -match '^gfx[0-9]' -or $_pinLeaf -match '^rocm[0-9]+(\.[0-9]+)?$') {
-            # Other gfx / older rocm (<=7.1) ship torch <2.11; route via the ROCm path with bare specs. Only EXACT rocm<digits>/gfx* are families; a suffixed leaf is verbatim.
+            # Other gfx / older rocm (<=7.1) ship torch <2.11; route via the ROCm path with bare specs. Only EXACT rocm<digits>/gfx* are families.
             $ROCmIndexUrl = $TorchIndexUrl
         }
     }
@@ -5554,7 +5544,7 @@ exit 0
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-StudioLine ""
         if ($ROCmGfxArch) {
-            # Only an unmapped arch reaches here (a mapped one set $ROCmIndexUrl above): no ROCm torch wheels for this arch (e.g. RDNA2 gfx103X) -> CPU.
+            # Only an unmapped arch reaches here (a mapped one set $ROCmIndexUrl): no ROCm wheels, so CPU.
             substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmGfxArch." "Yellow"
             substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
@@ -5594,8 +5584,8 @@ exit 0
     }
 
     # ── Install PyTorch first, then unsloth separately ──
-    # Two steps because `uv pip install unsloth --torch-backend=cpu` on Windows resolves to the pre-CLI unsloth==2024.8 (no unsloth.exe); installing torch from the explicit index first avoids that solver dead-end.
-    # --upgrade-package (not --upgrade) so upgrading unsloth doesn't re-resolve torch from PyPI and strip the +cuXXX suffix step 1 pinned; new deps (transformers, trl, peft) are still pulled in.
+    # Two steps: `uv pip install unsloth --torch-backend=cpu` on Windows resolves to the pre-CLI unsloth==2024.8 (no unsloth.exe), so install torch from the explicit index first to avoid that dead-end.
+    # --upgrade-package (not --upgrade) so upgrading unsloth can't re-resolve torch from PyPI and strip the +cuXXX suffix step 1 pinned; new deps (transformers, trl, peft) still come in.
     # ── Helper: find no-torch-runtime.txt ──
     function Find-NoTorchRuntimeFile {
         if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
@@ -5608,18 +5598,15 @@ exit 0
     }
 
     # ── Freeze the installed torch trio for the with-deps unsloth install (twin of install.sh's
-    # _build_unsloth_torch_overrides): a released unsloth wheel can pin an older torch, and a
-    # with-deps resolve then downgrades the pinned +cuXXX/+rocm trio. Return a temp uv --overrides
-    # file pinning torch/torchvision/torchaudio to their installed versions, or $null when torch is
-    # absent (--no-torch) so the caller installs unchanged. Caller removes the file afterwards. ──
+    # _build_unsloth_torch_overrides): a released unsloth wheel can pin an older torch and downgrade the
+    # +cuXXX/+rocm trio. Returns a temp uv --overrides file, or $null under --no-torch. Caller removes it. ──
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
         if ($SkipTorch) { return $null }
         $pins = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
-        # --overrides replaces any UV_OVERRIDE env file, so fold caller-supplied
-        # override files in (minus their torch-trio lines) like install.sh does.
+        # --overrides replaces any UV_OVERRIDE env file, so fold caller-supplied override files in (minus their torch-trio lines) like install.sh does.
         $ovDirs = @()
         if ($env:UV_OVERRIDE) {
             foreach ($ovFile in ($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })) {
@@ -5631,12 +5618,10 @@ exit 0
                 }
             }
         }
-        # uv resolves an override file's relative references (-r nested.txt, ./pkg.whl)
-        # against THAT file's own directory, so a merged copy in %TEMP% makes uv look for
-        # them beside the temp file and the install fails. Write the merge next to the
-        # caller's override file instead. Falls back to %TEMP% when there is no caller
-        # file (nothing relative to preserve), when several span different directories,
-        # or when that directory is not writable.
+        # uv resolves an override file's relative references (-r nested.txt, ./pkg.whl) against THAT
+        # file's own directory, so a merge in %TEMP% makes uv look for them beside the temp file and the
+        # install fails. Write it next to the caller's override instead, falling back to %TEMP% when
+        # there is no caller file, several span different directories, or that directory is read-only.
         $f = $null
         $ovDirs = @($ovDirs | Sort-Object -Unique)
         if ($ovDirs.Count -eq 1) {
@@ -5647,10 +5632,9 @@ exit 0
             } catch { $f = $null }
         }
         if (-not $f) { $f = [System.IO.Path]::GetTempFileName() }
-        # UTF-8 without a BOM, not -Encoding ascii: a non-ASCII path or marker in the
-        # caller's override file would otherwise be rewritten as "?" and uv would fail to
-        # find the requirement. WriteAllText adds no trailing newline, so terminate the
-        # last line explicitly (an unterminated file joins two requirements into one).
+        # UTF-8 without a BOM, not -Encoding ascii, which would rewrite a non-ASCII path in the caller's
+        # override as "?". WriteAllText adds no trailing newline, so terminate the last line explicitly
+        # or an unterminated file joins two requirements into one.
         [System.IO.File]::WriteAllText($f, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
         return $f
     }
@@ -5660,7 +5644,7 @@ exit 0
     $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.2" }
 
     if ($_Migrated) {
-        # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving existing torch/CUDA unless the flavor repair below re-lands it.
+        # Migrated env: force-reinstall unsloth+unsloth-zoo, preserving torch/CUDA unless the flavor repair below re-lands it.
         Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
@@ -5701,26 +5685,24 @@ exit 0
             }
         }
     } elseif ($TorchIndexUrl -or $ROCmIndexUrl) {
-        # Bounded default trio (torch 2.11 line; wheels verified on cpu + cu126/cu128/cu130 for
-        # win_amd64 with paired triton-windows 3.6), HOISTED so the release-preservation decision
-        # below can use it as the default route window. torchaudio 2.11 dropped its torch pin, so a
-        # bare companion can drift from a capped torch. Bump the three ceilings together with
-        # install.sh's _TORCH_CEILING trio and the repair/fallback sites below (2 more literals).
+        # Bounded default trio (torch 2.11 line; wheels verified on cpu + cu126/cu128/cu130 for win_amd64
+        # with paired triton-windows 3.6), hoisted so the release-preservation decision below can use it as
+        # the default route window. torchaudio 2.11 dropped its torch pin, so a bare companion can drift
+        # from a capped torch. Bump all three with install.sh's _TORCH_CEILING trio and the 2 sites below.
         $_pinTorchSpec = "torch>=2.4,<2.12.0"
         $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
         $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
-        # Release preservation (twin of install.sh's _PREV_TORCH_PIN decision): evaluated after every
-        # index/floor choice, incl. the ROCm reroute, so a raised floor rejects an older release. The
-        # kept release is exported for setup.ps1 (UNSLOTH_KEPT_TORCH) and cleared after setup runs.
+        # Release preservation (twin of install.sh's _PREV_TORCH_PIN decision): evaluated after every index/floor
+        # choice, incl. the ROCm reroute, so a raised floor rejects an older release. The kept release is
+        # exported for setup.ps1 as UNSLOTH_KEPT_TORCH and cleared after setup runs.
         $script:PrevTorchPin = $null
-        # Internal handoff variable: always clear an inherited value first (an interrupted
-        # earlier run can leak a stale pin into setup.ps1) and set it only on a fresh decision.
+        # Clear an inherited value first (an interrupted run leaks a stale pin), then set it only on a fresh decision.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (-not $SkipTorch -and $script:PrevTorchVer) {
             $_routeWindow = $_pinTorchSpec
-            # The Intel XPU branch below installs its own trio (floor 2.6, its own ceiling), so
-            # vet the kept release against THAT window or a kept 2.5 would be exported as a pin
-            # the XPU index can never satisfy. ROCm is evaluated last so its floor still wins.
+            # The Intel XPU branch below installs its own trio, so vet the kept release against THAT
+            # window or a kept 2.5 becomes a pin the XPU index can never satisfy. ROCm is last, so its
+            # floor still wins.
             if ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") { $_routeWindow = (Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython))[0] }
             if ($ROCmIndexUrl -and $ROCmTorchFloor) { $_routeWindow = $ROCmTorchFloor }
             $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $script:PrevTorchVer -Constraint $_routeWindow
@@ -5752,7 +5734,7 @@ exit 0
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             }
             if ($torchInstallExit -ne 0) {
-                # Transient AMD-index failure: fall back to a CPU base (Unsloth setup retries ROCm). Explicit CPU index -- for a pinned ROCm index $TorchIndexUrl IS the ROCm mirror, so reusing it would just retry it.
+                # Transient AMD-index failure: fall back to a CPU base (setup retries ROCm). Explicit CPU index, because under a ROCm pin $TorchIndexUrl IS the mirror that just failed.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Unsloth setup retries ROCm." "Yellow"
                 # --force-reinstall: a failed ROCm install can leave an unpinned ROCm
@@ -5766,7 +5748,7 @@ exit 0
                     Write-StudioLine "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
                 }
-                # CPU base is in; drop the ROCm expectation so the flavor-repair block below won't retry the just-failed index and abort. setup.ps1 reinstalls ROCm afterwards (recomputes its own index URL).
+                # CPU base is in; drop the ROCm expectation so the flavor repair below won't retry the failed index and abort. setup.ps1 reinstalls ROCm afterwards.
                 $ROCmIndexUrl = $null
                 $ROCmTorchFloor = $null
             }
@@ -5840,17 +5822,15 @@ exit 0
             # families included: torchaudio 2.11 dropped its exact torch pin from
             # the wheel metadata, so a bare companion next to torch<2.11 can
             # resolve a mismatched 2.11.0 build. Mirrors install.sh.
-            # The trio is the one hoisted above ($_pinTorchSpec / $_pinVisionSpec /
-            # $_pinAudioSpec -- the torch 2.11 line), so the route window the
-            # release-preservation decision vetted against and the specs installed here
-            # can never drift apart.
+            # The trio hoisted above, so the route window the release-preservation decision vetted
+            # against and the specs installed here can never drift apart.
             $_torchSpecs = @($_pinTorchSpec, $_pinVisionSpec, $_pinAudioSpec)
             if ($VenvPlatform -eq "win-arm64") {
                 substep "windows on arm: skipping torchaudio (upstream publishes no"
                 substep "win_arm64 wheel); torch and torchvision install normally."
                 $_torchSpecs = @($_pinTorchSpec, $_pinVisionSpec)
             }
-            # Kept-release attempt first (pin vetted against the leaf-gated route window); companions follow the kept minor and the win-arm64 no-torchaudio shape. Range install (the hoisted bounded trio) runs when there is no pin or the kept attempt failed.
+            # Kept-release attempt first (pin vetted against the leaf-gated route window); companions follow the kept minor and the win-arm64 no-torchaudio shape. The range trio runs when it fails or there is no pin.
             if ($script:PrevTorchPin) {
                 $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
                 $_keptSpecs = @($_keptTorch, $_keptVision)
@@ -6006,7 +5986,10 @@ sys.exit(2 if conflict else (0 if installed else 1))
         substep "[WARN] installed $PackageName version could not be determined" "Yellow"
     }
 
-    # ── Enforce the installed torch flavor matches the detected GPU build. PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv keeps a stale torch+cpu against a CUDA index and setup.ps1 loops on "cpu != required cuXXX". Reinstall the right triplet when a GPU build is expected: CUDA from $TorchIndexUrl, ROCm from $ROCmIndexUrl (a PEP 503 index uv resolves via --default-index). --no-torch / CPU-only hosts are no-ops. ──
+    # ── Enforce that the installed torch flavor matches the detected GPU build. PEP 440 ignores the
+    # +cpu/+cuXXX/+rocm local label in a range, so uv keeps a stale torch+cpu against a CUDA index and
+    # setup.ps1 loops on "cpu != required cuXXX". Reinstall the triplet when a GPU build is expected:
+    # CUDA from $TorchIndexUrl, ROCm from $ROCmIndexUrl. --no-torch / CPU-only hosts are no-ops. ──
     if (-not $SkipTorch) {
         $expectedTorchTag = Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl
         if ($expectedTorchTag -and $expectedTorchTag -ne 'cpu') {
@@ -6018,7 +6001,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
                     # Pin companions like the fresh ROCm path (bare names can pull an ABI-incompatible torchvision/torchaudio from the per-arch index).
                     $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
                     $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
-                    # Kept-release substitution (twin of install.sh's _install_torch_default_index honoring _PREV_TORCH_PIN): honor the preserved torch when the pin survived the E-decision (already floor-vetted); restore the range specs and retry if it isn't installable here.
+                    # Kept-release substitution (as _install_torch_default_index does in install.sh): use the preserved torch when its pin survived, restoring the range specs and retrying if it won't install.
                     $_rocmKept = $false
                     if ($script:PrevTorchPin) {
                         $_origRocmSpec = $rocmSpec; $_origVisionSpec = $visionSpec; $_origAudioSpec = $audioSpec
@@ -6042,7 +6025,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet with the default 2.11-line trio (ceiling bump site, see the hoisted trio above).
                     $_fixTorchSpec = "torch>=2.4,<2.12.0"; $_fixVisionSpec = "torchvision>=0.19,<0.27.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.12.0"
-                    # Kept-release substitution (twin of install.sh's _install_torch_default_index honoring _PREV_TORCH_PIN): honor the preserved torch when the pin survived the E-decision; restore the range specs and retry if it isn't installable here. The --reinstall-package triplet stays on both attempts.
+                    # Kept-release substitution (as _install_torch_default_index does in install.sh): use the preserved torch when its pin survived, restoring the range specs and retrying if it won't install. The --reinstall-package triplet stays on both attempts.
                     $_cudaKept = $false
                     if ($script:PrevTorchPin) {
                         $_origFixTorchSpec = $_fixTorchSpec; $_origFixVisionSpec = $_fixVisionSpec; $_origFixAudioSpec = $_fixAudioSpec
@@ -6050,11 +6033,10 @@ sys.exit(2 if conflict else (0 if installed else 1))
                         $_cudaKept = $true
                     }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    # Same trio builder as the XPU install above: a migrated win-arm64 venv
-                    # reaches THIS path, and asking for a torchaudio the index has no wheel for
-                    # fails the repair before setup.ps1's ARM-aware fallback. When a kept pin is
-                    # active the scalars above already hold it, so the range trio is read back
-                    # from $_origFix*Spec -- that is what the restore path below returns to.
+                    # Same trio builder as the XPU install above: a migrated win-arm64 venv reaches THIS
+                    # path, and asking for an unpublished torchaudio fails the repair before setup.ps1's
+                    # ARM-aware fallback. A kept pin lives in the scalars above, so the range trio is read
+                    # back from $_origFix*Spec -- what the restore path below returns to.
                     $_fixSpecs = @($_fixTorchSpec, $_fixVisionSpec, $_fixAudioSpec)
                     $_origFixSpecs = if ($_cudaKept) { @($_origFixTorchSpec, $_origFixVisionSpec, $_origFixAudioSpec) } else { $_fixSpecs }
                     if ($expectedTorchTag -eq 'xpu') {
@@ -6296,7 +6278,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         $env:STUDIO_LOCAL_INSTALL = "0"
         Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
     }
-    # 'studio setup' (not 'update'): 'update' pops SKIP_STUDIO_BASE -> redundant reinstall + bypasses the PR #4667 fast-path version check. Propagate UNSLOTH_STUDIO_HOME only for env-override installs (else an inherited value misplaces llama.cpp).
+    # 'studio setup', not 'update': 'update' pops SKIP_STUDIO_BASE, so it reinstalls redundantly and skips the PR #4667 fast path. Propagate UNSLOTH_STUDIO_HOME only for env-override installs, else llama.cpp is misplaced.
     $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
     $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
     $previousTauriMode = $env:UNSLOTH_TAURI_MODE
@@ -6317,7 +6299,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
     }
     $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
-    # Hand the venv interpreter to setup.ps1 so it reuses the Python we resolved instead of re-probing the system (which can trip over an unsupported `python` 3.14 or a Store stub on PATH). setup.ps1 Test-Path-guards this before use.
+    # Hand the venv interpreter to setup.ps1 so it reuses the Python we resolved rather than re-probing a system where a 3.14 or a Store stub leads PATH. setup.ps1 Test-Path-guards it before use.
     $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
     # Installer already owns the runtime mutex; the child inherits it rather
     # than deadlocking trying to reacquire it.
@@ -6413,7 +6395,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     Clear-TauriInstallError "studio setup completed"
 
-    # ── Expose `unsloth` via a shim dir containing only unsloth.exe (NOT the venv Scripts dir, which also holds python.exe/pip.exe and would hijack the system interpreter). Hardlink preferred, copy fallback if cross-volume/non-NTFS. ──
+    # ── Expose `unsloth` from a shim dir holding only unsloth.exe, NOT the venv Scripts dir, whose python.exe/pip.exe would hijack the system interpreter. Hardlink, or copy if cross-volume/non-NTFS. ──
     # Remove the legacy venv Scripts PATH entry that older installers wrote.
     $LegacyScriptsDir = Join-Path $VenvDir "Scripts"
     try {
@@ -6448,7 +6430,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     $ShimDir = Join-Path $StudioHome "bin"
     [System.IO.Directory]::CreateDirectory($ShimDir) | Out-Null
     $ShimExe = Join-Path $ShimDir "unsloth.exe"
-    # Fatal preflight outside the lock-handling try/catch -- a directory at the shim path must not be downgraded to "Continuing with the existing launcher", or the install finishes with no usable shim.
+    # Fatal preflight outside the lock-handling try/catch: a directory at the shim path must not be downgraded to "Continuing with the existing launcher", leaving no usable shim.
     if (Test-Path -LiteralPath $ShimExe -PathType Container) {
         Write-StudioLine "[ERROR] Cannot create unsloth launcher: $ShimExe is a directory." -ForegroundColor Red
         Write-StudioLine "        Move or remove it manually, then re-run the installer." -ForegroundColor Yellow
@@ -6459,7 +6441,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     try {
         if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
-            # New-Item -ItemType HardLink doesn't accept -LiteralPath in any PowerShell version, so use -Path; wildcards in $ShimExe (brackets in custom roots) glob-expand here and fall through to the Copy-Item -LiteralPath fallback below.
+            # New-Item -ItemType HardLink takes no -LiteralPath in any PowerShell version, so wildcards in $ShimExe (brackets in custom roots) glob-expand and fall through to the Copy-Item fallback below.
             New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {
             Copy-Item -LiteralPath $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
@@ -6531,7 +6513,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
     New-StudioShortcuts -ManagedPythonPath $VenvPython
 
-    # Warn if another 'unsloth' wins on PATH (different venv, system pip). Content-hash equality (Get-FileHash) so hardlinks/symlinks/identical copies of the shim don't false-trigger; CommandType Application restricts the probe to real executables.
+    # Warn if another 'unsloth' wins on PATH (different venv, system pip). Compare content hashes so hardlinks/symlinks/identical copies don't false-trigger; CommandType Application skips non-executables.
     try {
         $_pathCmd = Get-Command unsloth -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($_pathCmd) {
@@ -6564,7 +6546,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         # Diagnostic only; never block install on a probe failure.
     }
 
-    # Interactive terminals: prompt before starting Unsloth (unless the caller disabled it); non-interactive (CI, Docker): just print instructions.
+    # Interactive terminals prompt before starting Unsloth; CI / Docker just print instructions.
     $IsInteractive = (-not $SkipAutostart) -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
         Write-StudioLine ""
@@ -6611,7 +6593,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     } else {
         step "launch" "manual commands:"
-        # Single-quote the printed paths so $-vars / backticks in custom roots don't reparse when the user pastes the command.
+        # Single-quote printed paths so $-vars / backticks in custom roots survive a copy-paste.
         $_actLiteral = "'" + ((Join-Path $VenvDir "Scripts\Activate.ps1") -replace "'", "''") + "'"
         # Activating the venv puts Scripts\unsloth.exe first and PATHEXT prefers .EXE,
         # so every bare `unsloth` below is unusable where the policy denies it. Same
@@ -6654,21 +6636,17 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
 }
 
-# $null so a value left by an earlier run in the same session never reaches the finally
-# below: under `irm | iex` the script scope IS the caller's session. Twin of install.sh's
-# `_UNSLOTH_TORCH_OVERRIDES=""` ahead of its traps -- only a path this run created is removed.
+# $null so a value left by an earlier run never reaches the finally below: under `irm | iex` the script
+# scope IS the caller's session. Twin of install.sh's `_UNSLOTH_TORCH_OVERRIDES=""` ahead of its traps.
 $script:TorchOverridesFile = $null
 try {
     Install-UnslothStudio @args
 } finally {
-    # UNSLOTH_KEPT_TORCH is a process-scoped handoff to setup.ps1. Under `irm | iex` the
-    # session outlives the installer, so a terminating exception that bypasses the in-flow
-    # clears must not leave an abandoned exact pin for a later `studio setup` / `update`.
+    # UNSLOTH_KEPT_TORCH is a process-scoped handoff to setup.ps1, and under `irm | iex` the session
+    # outlives the installer: never leave an abandoned pin for a later `studio setup` / `update`.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-    # Same for the generated uv overrides temp file (twin of install.sh's
-    # _cleanup_install_temporaries): it copies the caller's inherited UV_OVERRIDE contents, so a
-    # terminating error between its creation and the in-flow removal would leave those
-    # requirements sitting in %TEMP%. Only paths this script created are ever set here.
+    # Same for the generated uv overrides temp file (twin of install.sh's _cleanup_install_temporaries):
+    # it copies the caller's inherited UV_OVERRIDE contents, which must not be left in %TEMP%.
     if ($script:TorchOverridesFile) {
         Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
         $script:TorchOverridesFile = $null

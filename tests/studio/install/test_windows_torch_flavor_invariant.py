@@ -159,9 +159,8 @@ class TestInstallPs1Parity:
     same wheels, and a support log from either must read the same."""
 
     def test_the_repair_trio_matches_install_ps1(self):
-        # install.ps1 builds the non-XPU repair trio as three scalars rather than one
-        # inline array: a kept-release pin substitutes into them individually, and the
-        # originals have to be restorable one by one when that pin will not install.
+        # install.ps1 builds the non-XPU repair trio as three scalars, not one inline array: a
+        # kept-release pin substitutes into them individually and must be restorable the same way.
         match = re.search(
             r'\$_fixTorchSpec\s*=\s*("[^"]+")\s*;\s*'
             r'\$_fixVisionSpec\s*=\s*("[^"]+")\s*;\s*'

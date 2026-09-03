@@ -1,12 +1,12 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of
-# install.sh's _build_unsloth_torch_overrides. It folds a caller-supplied UV_OVERRIDE
-# file into the frozen torch-trio pins, so it must not corrupt that caller's content:
+# Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of install.sh's
+# _build_unsloth_torch_overrides. It folds a caller-supplied UV_OVERRIDE file into the frozen
+# torch-trio pins without corrupting that caller's content:
 #   - non-ASCII requirement lines survive (an ascii-encoded rewrite turns them into "?")
-#   - the merged file stays beside the caller's override file, because uv resolves
-#     `-r nested.txt` inside an override file relative to THAT file's own directory
+#   - the merged file stays beside the caller's override, because uv resolves `-r nested.txt`
+#     inside an override file relative to THAT file's own directory
 # AST-extracted and run in-process -- no venv, no network, no uv needed.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
 
@@ -35,8 +35,7 @@ function Check($name, $cond) {
 # The helper reads $SkipTorch from its enclosing scope.
 $SkipTorch = $false
 
-# A stand-in interpreter: the helper only ever calls it as `& $PythonExe -c <code>`
-# and reads the printed `name==version` lines.
+# A stand-in interpreter: the helper only calls it as `& $PythonExe -c <code>` and reads the printed `name==version` lines.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-ovtest-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $fakePy = Join-Path $work "fakepython"

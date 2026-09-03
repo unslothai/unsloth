@@ -1,10 +1,9 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit test for install.ps1's torch release preservation helpers
-# (ConvertTo-TorchNumericRelease, Test-TorchReleaseInWindow, Get-PreviousTorchPin),
-# the Windows port of install.sh's _previous_torch_pin (PR 7250). Pure helpers,
-# AST-extracted and run in-process -- no GPU/venv needed.
+# Unit test for install.ps1's torch release preservation helpers (ConvertTo-TorchNumericRelease,
+# Test-TorchReleaseInWindow, Get-PreviousTorchPin), the Windows port of install.sh's
+# _previous_torch_pin (PR 7250). Pure helpers, AST-extracted and run in-process.
 # Run: pwsh -NoProfile -File tests/studio/test_previous_torch_pin.ps1
 
 $ErrorActionPreference = "Stop"
@@ -108,13 +107,13 @@ Check "probe runs before the rollback move" (
 Check "pin decision cites the UNSLOTH_TORCH_UPGRADE escape hatch" ($src -match 'UNSLOTH_TORCH_UPGRADE=1 to get the newest')
 Check "kept-release fallback clears the pin" ($src -match '\$script:PrevTorchPin\s*=\s*\$null')
 Check "kept release exported for setup.ps1" ($src -match 'UNSLOTH_KEPT_TORCH')
-# The probe must read dist metadata: a broken CUDA/ROCm DLL would make "import torch"
-# fail and silently drop the pin (install.sh reads metadata for the same reason).
+# The probe must read dist metadata: a broken CUDA/ROCm DLL would fail "import torch" and silently
+# drop the pin (install.sh reads metadata for the same reason).
 Check "probe reads dist metadata, not import torch" (
     $src -match 'importlib\.metadata as m; print\(m\.version' -and
     $src -notmatch '-c "import torch; print\(torch\.__version__\)"')
-# Under irm | iex the script scope is the caller's session: a second run with no existing
-# venv must not inherit the earlier run's release or pin.
+# Under irm | iex the script scope is the caller's session, so a second run with no existing venv
+# must not inherit the earlier run's release or pin.
 Check "preservation state reset before the venv branch" (
     $src.IndexOf('$script:PrevTorchVer = ""') -ge 0 -and
     $src.IndexOf('$script:PrevTorchVer = ""') -lt $src.IndexOf('if (Test-Path -LiteralPath $VenvPython) {'))
