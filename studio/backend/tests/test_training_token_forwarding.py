@@ -1,20 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""load_and_format_dataset threads an explicit hf_token into every remote call.
+"""load_and_format_dataset must forward an explicit hf_token to every remote call.
 
-The GPU worker resolves the user's token from config and hands it to
-load_and_format_dataset, but the method built its load_dataset and
-get_dataset_split_names kwargs with only path/name/revision. A gated or
-private dataset therefore fell back to the ambient HF_TOKEN env var
-(get_dataset_split_names resolves None through huggingface_hub.get_token()),
-so on a host whose env token differs from the request token the metadata
-probes and the eventual load could run under the wrong identity.
-
-These tests pin that the token is forwarded when provided — on the streaming
-and eager paths, and through the auto-detected eval-split probe — and stays
-absent when it is not (so the environment fallback keeps working for callers
-that never had a token)."""
+Without it, load_dataset and get_dataset_split_names resolve None through
+huggingface_hub.get_token() and read a gated dataset under the ambient HF_TOKEN
+instead of the request identity. The no-token case is pinned too: that env fallback
+is the only credential a caller without a token has."""
 
 from __future__ import annotations
 
@@ -33,13 +25,11 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Register a stub module for a dep the backend pytest job does not install.
+    """Stub a dep the backend pytest job does not install, as test_audio_type_inconclusive.py does.
 
-    Same helper and reason as test_audio_type_inconclusive.py: core.training.trainer
-    imports unsloth and trl at module scope while the studio-backend pytest job installs
-    studio.txt plus torch and transformers and stops there. A real install is left alone.
-    __spec__ = None keeps the trainer's own _ensure_real_packages namespace-shadow guard a
-    no-op on the stub.
+    core.training.trainer imports unsloth and trl at module scope; that job installs studio.txt
+    plus torch and transformers and stops. __spec__ = None keeps the trainer's own
+    _ensure_real_packages namespace-shadow guard a no-op on the stub.
     """
     if name in sys.modules:
         return
@@ -65,8 +55,7 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 import core.training.trainer as trainer_mod  # noqa: E402
 
-# Drop the stubs now that the trainer holds its own references, for the same reason as
-# test_audio_type_inconclusive.py: the whole suite would otherwise run against them.
+# Trainer holds its own references now; leaving the stubs would run the whole suite on them.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
@@ -137,7 +126,6 @@ def test_streaming_path_forwards_explicit_token(monkeypatch):
     )
 
     assert result is not None
-    # Streaming eval probes the splits before loading them.
     assert probe_calls == [
         {
             "path": "org/gated",
@@ -146,7 +134,6 @@ def test_streaming_path_forwards_explicit_token(monkeypatch):
             "token": "hf_0123456789abcdef",
         }
     ]
-    # Train load first, eval load second.
     assert [call.get("split") for call in load_calls] == ["train", "validation"]
     for call in load_calls:
         assert call["path"] == "org/gated"
@@ -198,7 +185,6 @@ def test_auto_detect_eval_forwards_explicit_token(monkeypatch):
             "token": "hf_0123456789abcdef",
         }
     ]
-    # Train load first, then the auto-detected "validation" candidate.
     assert [call.get("split") for call in load_calls] == ["train", "validation"]
     for call in load_calls:
         assert call["path"] == "org/gated"

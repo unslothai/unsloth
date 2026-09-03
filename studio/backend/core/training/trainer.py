@@ -2520,10 +2520,8 @@ class UnslothTrainer:
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
 
-        A provided hf_token is forwarded to every load_dataset and
-        get_dataset_split_names call, so a gated or private dataset is read
-        under the request identity rather than whatever HF_TOKEN the
-        environment carries.
+        hf_token must reach every load_dataset and get_dataset_split_names call below,
+        or a gated dataset is read under the ambient HF_TOKEN instead of the request.
         """
         from core.training.s3_dataset import S3DownloadCancelled
 
