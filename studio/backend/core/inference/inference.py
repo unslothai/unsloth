@@ -3,6 +3,8 @@
 
 """Core inference backend."""
 
+from __future__ import annotations
+
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
 from transformers import TextIteratorStreamer, TextStreamer

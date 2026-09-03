@@ -18195,7 +18195,12 @@ class LlamaCppBackend:
                     except Exception as exc:
                         logger.debug("Fast-path audio probe failed: %s", exc)
                         detected = None
-                    if not self._apply_detected_audio(detected, intent.audio_codec_path):
+                    applied_audio = (
+                        self._apply_detected_audio(detected)
+                        if intent.audio_codec_path is None
+                        else self._apply_detected_audio(detected, intent.audio_codec_path)
+                    )
+                    if not applied_audio:
                         return False
                 if not self._healthy:
                     return False
@@ -24768,7 +24773,12 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.debug("Audio probe failed: %s", exc)
                 detected = None
-            if not self._apply_detected_audio(detected, intent.audio_codec_path):
+            applied_audio = (
+                self._apply_detected_audio(detected)
+                if intent.audio_codec_path is None
+                else self._apply_detected_audio(detected, intent.audio_codec_path)
+            )
+            if not applied_audio:
                 return False
 
             if not self._healthy:

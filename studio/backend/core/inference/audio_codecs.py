@@ -6,6 +6,8 @@ Audio codec loading and decoding for TTS inference.
 Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 """
 
+from __future__ import annotations
+
 import io
 import json
 import os
