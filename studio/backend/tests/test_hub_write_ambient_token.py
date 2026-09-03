@@ -560,6 +560,8 @@ def test_export_backend_probes_anonymously_but_never_logs_in_with_the_sentinel(
     monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
     monkeypatch.setattr(export_backend_module, "is_vision_model", _fake_is_vision)
     monkeypatch.setattr(export_backend_module, "FastLanguageModel", _FakeLoader)
+    # This case is the online path; the offline refusal has its own test below.
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
 
     backend = export_backend_module.ExportBackend()
     success, _message = backend.load_checkpoint(
@@ -689,3 +691,41 @@ def test_export_backend_forwards_the_sentinel_into_the_gguf_lora_conversion(
 
     assert success, message
     assert seen["token"] == expected
+
+
+@pytest.mark.parametrize(
+    "model_id,hf_token,offline,should_refuse",
+    [
+        ("someone/private-model", False, True, True),
+        ("someone/private-model", False, False, False),
+        ("someone/private-model", "hf_caller_own_token", True, False),
+        ("someone/private-model", None, True, False),
+        ("/tmp/local-checkpoint", False, True, False),
+    ],
+)
+def test_offline_anonymous_load_will_not_read_the_operators_cache(
+    monkeypatch, model_id, hf_token, offline, should_refuse
+):
+    """Offline, nothing authenticates, so the shared cache would serve whatever the operator
+    downloaded. The scrubbed environment cannot help; only a refusal can."""
+    from core.export import export as export_backend_module
+
+    reached = {}
+
+    def _fake_detect(model_id, hf_token, local_files_only):
+        reached["probe"] = True
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: offline)
+    monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
+
+    backend = export_backend_module.ExportBackend()
+    success, message = backend.load_checkpoint(checkpoint_path = model_id, hf_token = hf_token)
+
+    assert success is False
+    if should_refuse:
+        assert "is not served to API callers" in message
+        assert "probe" not in reached, "refused loads must not touch the cache at all"
+    else:
+        assert reached.get("probe"), f"expected the load to proceed, got: {message}"

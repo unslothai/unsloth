@@ -571,6 +571,13 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # (HF_TOKEN and HUGGING_FACE_HUB_TOKEN are both read); and this caller's own, because the
     # worker outlives the load and later serves export commands from other callers, who would
     # then inherit it. A credential belongs to one request, so it travels as an argument.
+    #
+    # The scope is the worker, not the command, and it cannot be otherwise: huggingface_hub
+    # freezes HF_HUB_DISABLE_IMPLICIT_TOKEN at import, and keeping the operator's token around
+    # to hand back to a later ambient caller would put it right back where in-process
+    # trust_remote_code can read it. So an export runs under the identity that loaded the
+    # checkpoint. A UI export after an API-key load gets no ambient fallback; reloading the
+    # checkpoint spawns a fresh worker (the orchestrator always does) and restores it.
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env
         apply_token_to_child_env(os.environ, False)

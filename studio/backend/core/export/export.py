@@ -33,6 +33,7 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
     ensure_dir,
+    is_local_path,
     outputs_root,
     resolve_export_write_dir,
     resolve_output_dir,
@@ -504,6 +505,19 @@ class ExportBackend:
 
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
+
+            # A cache read never reauthorizes, so offline the shared cache would hand this
+            # caller whatever the operator downloaded, private repos included. The scrubbed
+            # environment does not help: nothing authenticates. Same rule the capability
+            # probes apply (utils/models/model_config.py:1074, 1267), refused here instead,
+            # because the load has no anonymous answer to fall back to.
+            if local_files_only and is_anonymous(probe_token) and not is_local_path(model_id):
+                return (
+                    False,
+                    f"Cannot load '{model_id}' without a Hugging Face token while the Hub is "
+                    "unreachable: the local cache is the server operator's and is not served "
+                    "to API callers. Supply hf_token, or retry when the Hub is reachable.",
+                )
 
             # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
             _device_map_kw = (
