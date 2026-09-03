@@ -504,27 +504,74 @@ def _triton_cache_defaults(root: Path) -> dict[str, str]:
     }
 
 
+def _nothing_at(path: Path, *, ending: str = "") -> bool:
+    """Whether *path* positively holds nothing, the only state that licenses a pin.
+
+    The rule behind every "pin only when there is nothing to strand" default
+    below, kept in one place so a later probe cannot pick up half of it. The path
+    predicates cannot express it. Path.exists, is_file and is_dir report ENOTDIR,
+    ELOOP and EBADF as absence on every release we support, and 3.14 answers them
+    through os.path, which swallows the rest, EACCES and EIO included. Path.glob
+    has always suppressed the scandir error, in pathlib's own selectors before
+    3.13 and in the shared globber after. Each reads a directory we merely cannot
+    inspect as an empty one, and the redirect that follows hides the user's
+    files. os.lstat and os.scandir raise on all of it, so only the error that
+    says the name is not there returns True here.
+
+    lstat rather than stat: a symlink is something the user put there even when
+    it dangles. With *ending*, the question becomes whether the DIRECTORY holds
+    no entry carrying that suffix; pass it lowercase, since the Path.glob this
+    replaces matched case-insensitively on Windows.
+    """
+    try:
+        if not ending:
+            os.lstat(path)
+            return False
+        with os.scandir(path) as entries:
+            return not any(entry.name.lower().endswith(ending) for entry in entries)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        # Could not look. Declining a pin costs a shared cache directory, while
+        # taking one we should not have costs the configuration or datasets it
+        # hides, and leaves the access error where the user cannot see it.
+        return False
+
+
 def _matplotlib_config_dir() -> Path | None:
     """Where matplotlib reads matplotlibrc and stylelib/ from when MPLCONFIGDIR
-    is unset. Mirrors matplotlib.__init__._get_config_or_cache_dir, which takes
-    the XDG config base on Linux/FreeBSD and %LOCALAPPDATA% on Windows, but keeps
-    a pre-existing ~/.matplotlib there for backward compatibility.
+    is unset, or None when this machine has no such directory at all. Mirrors
+    matplotlib.__init__._get_config_or_cache_dir, which takes the XDG config base
+    on Linux/FreeBSD and %LOCALAPPDATA% on Windows, but keeps a pre-existing
+    ~/.matplotlib there for backward compatibility.
+
+    None means no home to read a configuration from, which matplotlib answers
+    with a temporary directory, so there is nothing for a pin to strand. A
+    directory we merely cannot inspect is returned rather than dropped, leaving
+    the decision to _nothing_at in the caller.
     """
+    # XDG_CONFIG_HOME ahead of Path.home(), as _get_xdg_config_dir does: an
+    # install that sets it has a config dir even with no resolvable home.
+    if sys.platform.startswith(("linux", "freebsd")):
+        base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
+        if base:
+            return Path(base) / "matplotlib"
     try:
         home = Path.home()
     except (OSError, RuntimeError):
         return None
     if sys.platform.startswith(("linux", "freebsd")):
-        base = (os.environ.get("XDG_CONFIG_HOME") or "").strip() or str(home / ".config")
-        return Path(base) / "matplotlib"
+        return home / ".config" / "matplotlib"
     if sys.platform == "win32":
-        try:
-            if (home / ".matplotlib").is_dir():
-                return home / ".matplotlib"
-        except OSError:
-            return None
+        legacy = home / ".matplotlib"
+        # is_dir() got this wrong both ways: before 3.14 an unreadable
+        # ~/.matplotlib raised and the handler here turned that into the pin,
+        # and from 3.14 it reads as absent and sends the probe to %LOCALAPPDATA%,
+        # empty on exactly the machines where the old directory holds the rc.
+        if not _nothing_at(legacy):
+            return legacy
         local_app_data = (os.environ.get("LOCALAPPDATA") or "").strip()
-        return Path(local_app_data) / "matplotlib" if local_app_data else home / ".matplotlib"
+        return Path(local_app_data) / "matplotlib" if local_app_data else legacy
     return home / ".matplotlib"
 
 
@@ -536,17 +583,15 @@ def _matplotlib_defaults(root: Path) -> dict[str, str]:
     the cache, so pinning it also drops a user matplotlibrc and every custom
     style, which silently changes the loss plots core/training/training.py
     draws. matplotlib creates the directory on import, so its contents, not its
-    existence, decide.
+    existence, decide -- and contents we could not list are not evidence of an
+    empty directory, which is why both checks run through _nothing_at.
     """
     config_dir = _matplotlib_config_dir()
-    try:
-        if config_dir is not None and (
-            (config_dir / "matplotlibrc").is_file()
-            or any((config_dir / "stylelib").glob("*.mplstyle"))
-        ):
-            return {}
-    except OSError:
-        pass
+    if config_dir is not None and not (
+        _nothing_at(config_dir / "matplotlibrc")
+        and _nothing_at(config_dir / "stylelib", ending = ".mplstyle")
+    ):
+        return {}
     return {"MPLCONFIGDIR": str(root / "matplotlib")}
 
 
@@ -560,13 +605,15 @@ def _data_designer_in_use(home: Path) -> bool:
     read is still a home, and calling it empty would drop the pin and run the
     next launch against ~/.data-designer instead, hiding the recipes and
     datasets under this one behind a re-seeded default. Keeping the managed path
-    lets the access error surface where the user can see it.
+    lets the access error surface where the user can see it. Same rule as
+    _nothing_at, read for a directory's contents rather than its name; iterdir
+    is used because it raises where Path.glob and the predicates return empty.
     """
     try:
         entries = list(home.iterdir())
     except FileNotFoundError:
         return False
-    except OSError:
+    except (OSError, ValueError):
         return True
     for entry in entries:
         try:
@@ -576,7 +623,7 @@ def _data_designer_in_use(home: Path) -> bool:
                 return True
         except FileNotFoundError:
             continue
-        except OSError:
+        except (OSError, ValueError):
             return True
     return False
 
@@ -605,11 +652,12 @@ def _data_designer_defaults(root: Path) -> dict[str, str]:
     if _data_designer_in_use(home):
         return pinned
     try:
-        if (Path.home() / ".data-designer").exists():
-            return {}
+        legacy = Path.home() / ".data-designer"
     except (OSError, RuntimeError):
-        pass
-    return pinned
+        # No home to hold one, so this pin can hide nothing: data_designer's own
+        # default comes off the same call and is equally unavailable.
+        return pinned
+    return pinned if _nothing_at(legacy) else {}
 
 
 def _path_safe(value: str) -> str:
