@@ -43,6 +43,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
+from contextvars import ContextVar
 import os
 import re
 import subprocess
@@ -1003,6 +1004,63 @@ def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
     if token is None:
         return None
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Scoped to a request, not cached: a repo gated or deleted between requests is seen on the next.
+_HubModelInfoScope = Dict[Tuple[str, Optional[str]], Any]
+_hub_model_info_scope: ContextVar[Optional[_HubModelInfoScope]] = ContextVar(
+    "hub_model_info_scope", default = None
+)
+
+
+# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
+_HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
+@_contextlib.contextmanager
+def shared_hub_model_info():
+    """Share a ``model_info`` response between the Hub probes here, per repo and credential."""
+    token = _hub_model_info_scope.set({})
+    try:
+        yield
+    finally:
+        _hub_model_info_scope.reset(token)
+
+
+def _hub_model_info(
+    repo_id: str,
+    hf_token: HfTokenArg = None,
+    *,
+    files_metadata: bool = False,
+    timeout: Optional[float] = None,
+):
+    from huggingface_hub import model_info as hf_model_info
+
+    # The remote-LoRA probe in ``ModelConfig.from_identifier`` reads this call raising rather
+    # than guarding itself, and ``_offline_while_reading`` can force offline mid-request.
+    scope = None if _env_offline() else _hub_model_info_scope.get()
+    # The forced-anonymous sentinel is a credential of its own, so key on its fingerprint.
+    key = (repo_id, _token_fingerprint(hf_token))
+    if scope is not None:
+        if key in scope:
+            return scope[key]
+        # File sizes measure as free to ask for even on a repo of many quants, and asking
+        # unconditionally is what lets one response serve every probe: the variant listing
+        # needs them, and a response without them could not be shared with it.
+        files_metadata = True
+
+    kwargs: Dict[str, Any] = {
+        "token": hf_token,
+        "files_metadata": files_metadata,
+        # The response is shared, so whichever probe reads first decides the bound every
+        # later one inherits. Default it here rather than per call site.
+        "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
+    }
+    info = hf_model_info(repo_id, **kwargs)
+
+    if scope is not None:
+        scope[key] = info
+    return info
 
 
 # Revision-less entries keep the historical 3-part key; pinned entries append revision.
@@ -2732,10 +2790,8 @@ def list_gguf_variants(
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         return cached if cached is not None else ([], False)
 
-    from huggingface_hub import model_info as hf_model_info
-
     try:
-        info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+        info = _hub_model_info(repo_id, hf_token, files_metadata = True)
     except Exception as e:
         # Permanent errors (deleted/gated/bad revision) must surface; stale cache would mask the
         # real cause. Matches the early return in ``detect_gguf_model_remote``.
@@ -3039,13 +3095,10 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     if _env_offline():
         return _detect_gguf_from_hf_cache(repo_id)
 
-    import time
-    from huggingface_hub import model_info as hf_model_info
-
     last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
-            info = hf_model_info(repo_id, token = hf_token)
+            info = _hub_model_info(repo_id, hf_token)
             repo_files = []
             for sibling in info.siblings:
                 fname = sibling.rfilename
@@ -3111,10 +3164,6 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
-# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
-_HUB_MODEL_INFO_TIMEOUT = 15.0
-
-
 def _embedding_marker_in_hf_cache(model_name: str) -> bool:
     """True when model_name's cached snapshot carries a modules.json (the ST marker).
     Cache-only, no network; used offline and as a fallback when the Hub lookup times out."""
@@ -3167,9 +3216,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     try:
-        from huggingface_hub import model_info as hf_model_info
-
-        info = hf_model_info(model_name, token = hf_token, timeout = _HUB_MODEL_INFO_TIMEOUT)
+        info = _hub_model_info(model_name, hf_token)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
@@ -4047,9 +4094,7 @@ class ModelConfig:
         # Remote HF models: when offline, huggingface_hub raises OfflineModeIsEnabled in ~0ms.
         if not is_lora and not is_local:
             try:
-                from huggingface_hub import model_info as hf_model_info
-
-                info = hf_model_info(identifier, token = hf_token)
+                info = _hub_model_info(identifier, hf_token)
                 repo_files = [s.rfilename for s in info.siblings]
                 if "adapter_config.json" in repo_files:
                     is_lora = True
