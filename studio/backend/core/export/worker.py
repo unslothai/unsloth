@@ -564,7 +564,6 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # operator. Scrub whenever the policy is non-ambient, token or no token.
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env
-
         apply_token_to_child_env(os.environ, config.get("hf_token") or False)
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
