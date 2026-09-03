@@ -1616,6 +1616,8 @@ export const ptBR = {
       newTokenCreated: "Novo token de acesso criado",
       accessTokenCopied: "Token de acesso copiado",
       copyAccessToken: "Copiar token de acesso",
+      copyAccessTokenFailed:
+        "Não foi possível copiar automaticamente. Selecione o token e copie manualmente.",
       copyNow: "Copie agora. O token não será exibido novamente.",
       usageExamples: "Exemplos de uso",
       usageTools: "Ferramentas",

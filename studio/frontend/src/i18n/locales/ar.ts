@@ -1597,6 +1597,7 @@ export const ar = {
       newTokenCreated: "تم إنشاء توكن وصول جديد",
       accessTokenCopied: "تم نسخ توكن الوصول",
       copyAccessToken: "نسخ توكن الوصول",
+      copyAccessTokenFailed: "تعذّر النسخ تلقائيًا. حدّد التوكن وانسخه يدويًا.",
       copyNow: "انسخه الآن - لن يُعرض مرة أخرى.",
       usageExamples: "أمثلة الاستخدام",
       usageTools: "الأدوات",
