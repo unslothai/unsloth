@@ -802,12 +802,29 @@ UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
 # Moved aside rather than snapshotted into a variable, the way the venv is: the copy keeps
 # the executable bit and the exact bytes (a symlink stays a symlink), and a run killed
 # outright leaves the copy on disk instead of nothing at all.
+#
+# And the pair below, on the same discipline, for the third carrier of portable mode. The
+# marker is not the only file that decides whether a tree comes up contained: $DATA_DIR holds
+# studio.conf, which a portable run fills with UNSLOTH_HOME, UNSLOTH_PORTABLE=1 and every
+# cache root, and launch-studio.sh, which sources it -- and the .desktop entry, the macOS
+# .app and the `unsloth studio update` path all launch through those two. A conversion whose
+# $DATA_DIR does not move (flat: UNSLOTH_STUDIO_HOME=D normal, then --portable over D, and
+# the same in reverse) rewrites both in place, several hundred lines before the setup gate
+# that decides whether the conversion happened at all. So they are snapshotted here with
+# everything else. Copied rather than moved: create_studio_shortcuts writes them from
+# scratch, and a move would leave the tree with NO launcher if that write failed. These two
+# arm LAST, at the shortcuts call, and only while the conversion is still uncommitted, so an
+# install that got past the setup gate keeps the rewrite it just made.
 _PORTABLE_MARKER_PATH_1=""
 _PORTABLE_MARKER_PRIOR_1=""
 _PORTABLE_MARKER_PATH_2=""
 _PORTABLE_MARKER_PRIOR_2=""
 _PORTABLE_MARKER_PATH_3=""
 _PORTABLE_MARKER_PRIOR_3=""
+_PORTABLE_CONF_PATH=""
+_PORTABLE_CONF_BACKUP=""
+_PORTABLE_LAUNCHER_PATH=""
+_PORTABLE_LAUNCHER_BACKUP=""
 _PORTABLE_FLAT_SHIM_PATH=""
 _PORTABLE_FLAT_SHIM_BACKUP=""
 _PORTABLE_SHIM_PATH=""
@@ -927,6 +944,32 @@ _export_portable_roots() {
             fi
             echo "       Without it this install is not portable: an activated venv would fall" >&2
             echo "       back to $HOME/.unsloth and write outside the root you selected." >&2
+            # Slot 1 went out at the top of this function and this run is over, so put it back
+            # by hand -- the same by-hand discipline the publish above uses, and for the same
+            # reason: the EXIT trap that normally pairs a marker with the environment it
+            # describes is armed several hundred lines below, so nothing else will. Left alone,
+            # a failed conversion of an existing normal <root>/studio install keeps reading as
+            # portable through the parent marker at $UNSLOTH_ROOT (every reader only tests that
+            # the file is there) and silently redirects its caches, its projects root and
+            # studio.db into a root this run never finished building. Reverse order: slot 3 was
+            # released four lines up, slot 1 goes now, so the window unwinds the way it was
+            # published. The prior encoding is the one _restore_portable_marker_slot reads --
+            # "y" plus the old bytes, or "n" for absent -- and it is spelled out again here
+            # rather than shared with that function because tests lift this block out and run
+            # it with nothing else defined.
+            if [ -n "$_PORTABLE_MARKER_PATH_1" ]; then
+                case "$_PORTABLE_MARKER_PRIOR_1" in
+                    y*)
+                        printf '%s\n' "${_PORTABLE_MARKER_PRIOR_1#y}" \
+                            > "$_PORTABLE_MARKER_PATH_1" 2>/dev/null || true
+                        ;;
+                    n*)
+                        rm -f -- "$_PORTABLE_MARKER_PATH_1" 2>/dev/null || true
+                        ;;
+                esac
+                _PORTABLE_MARKER_PATH_1=""
+                _PORTABLE_MARKER_PRIOR_1=""
+            fi
             exit 1
         fi
     elif [ -f "$_epr_record" ]; then
@@ -943,7 +986,6 @@ _export_portable_roots() {
 
     substep "portable: everything under $UNSLOTH_ROOT"
 }
-_export_portable_roots
 
 # The mirror image of that marker. It is the only portable signal that survives on
 # disk, and everything reads it: storage_roots.unsloth_home(), setup.sh's
@@ -1097,7 +1139,6 @@ _clear_stale_portable_marker() {
         fi
     fi
 }
-_clear_stale_portable_marker
 
 # mkdir -p follows a layout directory the user pre-symlinked to another volume, so
 # the tree lands there and the `rm -rf '<root>'` printed below leaves it behind.
@@ -1359,12 +1400,92 @@ _restore_portable_shim() {
     return 0
 }
 
+# studio.conf and launch-studio.sh, taken aside before create_studio_shortcuts writes over
+# them. Armed only when this run is converting -- portable mode, or a marker/launcher slot
+# that _clear_stale_portable_marker filled -- so an ordinary reinstall, whose rewrite of these
+# two is a no-op anyway, never copies anything. Kept here beside the marker restore for the
+# reason the whole file gives: a conversion that fails has to hand back a tree that launches
+# the way it did before, and these two are what the .desktop entry, the .app and the update
+# path actually run.
+_snapshot_portable_launcher() {  # data-dir
+    [ -n "$1" ] || return 0
+    # Armed only while a conversion is still UNCOMMITTED, which is exactly the reported case:
+    # setup.sh failed, so the gate above committed nothing and the rewrite below is about to
+    # describe an install that will not be here. A run whose conversion DID commit rewrites
+    # these two for keeps, because the tree they describe is the one that now exists -- so the
+    # test is the marker and launcher slots, not $_PORTABLE_MODE, which stays true past the
+    # commit and would arm this on a run with nothing left to unwind.
+    if [ -z "${_PORTABLE_MARKER_PATH_1:-}${_PORTABLE_MARKER_PATH_2:-}${_PORTABLE_MARKER_PATH_3:-}${_PORTABLE_SHIM_PATH:-}${_PORTABLE_FLAT_SHIM_PATH:-}" ]; then
+        return 0
+    fi
+    # -f, not -e: a directory at either name is not something this can hand back, and the write
+    # below would fail on it anyway. Only a file that is ALREADY there is recorded; one this
+    # run creates is left where it is, because "shortcuts survive a failed setup" is this
+    # installer's documented contract and deleting a launcher the .desktop entry and the .app
+    # point at would break it for the sake of a file nothing had before. -p keeps
+    # launch-studio.sh executable. A copy that cannot be made takes its own remains with it and
+    # disarms, rather than promising a restore that would find nothing.
+    _spl_conf="$1/studio.conf"
+    if [ -f "$_spl_conf" ]; then
+        _spl_backup="$1/.unsloth-studio-conf.$$"
+        if cp -p "$_spl_conf" "$_spl_backup" 2>/dev/null; then
+            _PORTABLE_CONF_PATH="$_spl_conf"
+            _PORTABLE_CONF_BACKUP="$_spl_backup"
+        else
+            rm -f "$_spl_backup" 2>/dev/null || true
+            substep "could not copy $_spl_conf aside; a failed conversion cannot put it back" "$C_WARN"
+        fi
+    fi
+    _spl_launcher="$1/launch-studio.sh"
+    if [ -f "$_spl_launcher" ]; then
+        _spl_backup="$1/.unsloth-launch-studio.$$"
+        if cp -p "$_spl_launcher" "$_spl_backup" 2>/dev/null; then
+            _PORTABLE_LAUNCHER_PATH="$_spl_launcher"
+            _PORTABLE_LAUNCHER_BACKUP="$_spl_backup"
+        else
+            rm -f "$_spl_backup" 2>/dev/null || true
+            substep "could not copy $_spl_launcher aside; a failed conversion cannot put it back" "$C_WARN"
+        fi
+    fi
+    return 0
+}
+
+# The other half. Copied back rather than renamed back, unlike the shim slots: an operator can
+# point share/studio.conf at a file kept somewhere else, `cat >` in create_studio_shortcuts
+# writes THROUGH that symlink, and a rename would answer it by replacing the link with a plain
+# file and leaving the conversion's bytes in the target with nothing left to undo them. `cp -p`
+# writes through it the same way the rewrite did, so the link survives and the bytes behind it
+# are the ones that were there. The copy goes either way, restored or not, so a failure here
+# cannot leave a dotfile in $DATA_DIR that nothing ever prunes.
+_restore_portable_launcher_slot() {  # path backup
+    [ -n "$1" ] || return 0
+    [ -n "$2" ] || return 0
+    if [ -f "$2" ] && cp -p "$2" "$1" 2>/dev/null; then
+        rollback_substep "restored $1"
+    fi
+    rm -f "$2" 2>/dev/null || true
+    return 0
+}
+
+_restore_portable_launcher() {
+    _restore_portable_launcher_slot "$_PORTABLE_CONF_PATH" "$_PORTABLE_CONF_BACKUP"
+    _restore_portable_launcher_slot "$_PORTABLE_LAUNCHER_PATH" "$_PORTABLE_LAUNCHER_BACKUP"
+    _PORTABLE_CONF_PATH=""
+    _PORTABLE_CONF_BACKUP=""
+    _PORTABLE_LAUNCHER_PATH=""
+    _PORTABLE_LAUNCHER_BACKUP=""
+    return 0
+}
+
 # Called from the exit and signal handlers only, so a successful install keeps what it wrote.
 _restore_portable_marker() {
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_1" "$_PORTABLE_MARKER_PRIOR_1"
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_2" "$_PORTABLE_MARKER_PRIOR_2"
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_3" "$_PORTABLE_MARKER_PRIOR_3"
     _restore_portable_shim
+    # After the shim, for the same reason the shim comes after the venv: the launcher these
+    # two describe is back on its path by now.
+    _restore_portable_launcher
     _PORTABLE_MARKER_PATH_1=""
     _PORTABLE_MARKER_PATH_2=""
     _PORTABLE_MARKER_PATH_3=""
@@ -1374,6 +1495,19 @@ _restore_portable_marker() {
 # The install is committed. Anything that fails after this -- the autostart returning nonzero
 # is the reachable one -- must not undo the marker, exactly as _commit_studio_venv_replacement
 # stops the same exit from restoring the previous environment over the one just installed.
+#
+# Two callers, because the state above does not all become permanent at the same moment. The
+# marker and the record describe the ENVIRONMENT, so they are permanent the instant the venv
+# is, and the caller beside the venv commit asks for `identity` to release exactly those. The
+# launchers are not: the nested retirement leaves <root>/bin/unsloth empty on purpose and the
+# flat one is still waiting for the `ln -sfn` three hundred lines further down, so releasing
+# their copies there would answer a fatal shim step in between by leaving nothing on the path
+# and no copy to put it back -- deleting a launcher of the user's on a run that then reports
+# failure. They wait for the caller at the end of the install, which is past the launcher that
+# supersedes them. One function rather than two, and the slots cleared inline in it, because
+# the tests lift this body out and read it for the slots it names -- and they anchor on the
+# definition line ending in `{`, so the argument is documented here rather than beside it.
+#   $1  "identity" to release the marker slots only; empty to release everything.
 _commit_portable_marker() {
     _PORTABLE_MARKER_PATH_1=""
     _PORTABLE_MARKER_PRIOR_1=""
@@ -1381,6 +1515,9 @@ _commit_portable_marker() {
     _PORTABLE_MARKER_PRIOR_2=""
     _PORTABLE_MARKER_PATH_3=""
     _PORTABLE_MARKER_PRIOR_3=""
+    # An `if`, not `[ ... ] && return 0`: as the last thing a caller sees, a false AND-list
+    # hands back 1 and ends the install under set -e.
+    if [ "${1:-}" = identity ]; then return 0; fi
     # The conversion stands, so the launcher it displaced stays displaced -- retired in one
     # direction, renamed over in the other; drop the copy that was only there to put it back.
     # An `if`, not `[ ... ] && rm`: set -e is on and the false branch of that AND-list would
@@ -1395,6 +1532,20 @@ _commit_portable_marker() {
     _PORTABLE_SHIM_BACKUP=""
     _PORTABLE_FLAT_SHIM_PATH=""
     _PORTABLE_FLAT_SHIM_BACKUP=""
+    # Same for the launcher pair. Empty at the commit beside the venv -- these arm later, at
+    # the shortcuts call -- and holding the copies at the commit that ends the install, which
+    # is the point past which the rewrite stands. Left behind they are two dotfiles in the
+    # user's $DATA_DIR that nothing ever reads or prunes.
+    if [ -n "$_PORTABLE_CONF_BACKUP" ]; then
+        rm -f "$_PORTABLE_CONF_BACKUP" 2>/dev/null || true
+    fi
+    if [ -n "$_PORTABLE_LAUNCHER_BACKUP" ]; then
+        rm -f "$_PORTABLE_LAUNCHER_BACKUP" 2>/dev/null || true
+    fi
+    _PORTABLE_CONF_PATH=""
+    _PORTABLE_CONF_BACKUP=""
+    _PORTABLE_LAUNCHER_PATH=""
+    _PORTABLE_LAUNCHER_BACKUP=""
     return 0
 }
 
@@ -1447,6 +1598,24 @@ trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
 trap '_on_install_signal 143' TERM
+
+# Only now, with the handlers above armed, does anything get published or retired. Both of
+# these were called at their definitions, three hundred lines up and several hundred before
+# the traps, and every artifact they touch is one the traps exist to put back: the marker at
+# $UNSLOTH_ROOT, the master root record at $STUDIO_HOME, the parent marker one level up, and
+# the two launchers a conversion displaces. A run that ended anywhere in that window kept
+# whatever it had already written -- and the window was never only the two `exit 1`s inside
+# the publish. `_PRIOR="y$(cat -- "$path")"` takes its exit status from the substitution, so
+# a record that exists but cannot be read (mode 640 in a shared root, the umask case these
+# markers are written for) aborts the install under `set -e` with no message at all, from six
+# different lines; a Ctrl-C between the removal at the top of _clear_stale_portable_marker and
+# the parent marker further down did the same. Moving the two CALLS below the traps, rather
+# than snapshotting each of those paths again, is what makes all of it one rule: nothing is
+# published or retired until the thing that unwinds it is listening. The definitions stay
+# where they are -- the tests lift them out by name -- and the by-hand cleanup inside the
+# publish stays too, because it is the same block run standalone there.
+_export_portable_roots
+_clear_stale_portable_marker
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -6646,6 +6815,28 @@ if [ "$_SETUP_EXIT" -eq 0 ]; then
     # First: until this runs, anything that fails below reaches the exit trap, which would
     # restore the previous environment over the one just installed.
     _commit_studio_venv_replacement
+    # And immediately with it, the identity that environment was built to have. The venv and
+    # the marker describe one thing, so they commit together or they roll back together; a
+    # half of each is what makes a failure below bad. Until this line the split ran the wrong
+    # way: the venv went permanent here while the marker waited three hundred lines, and a
+    # fatal shim step in between (a directory at <root>/bin/unsloth is the reachable one, and
+    # create_studio_shortcuts returning 1 is the wider one) kept a fully built portable
+    # environment while the exit handler deleted the marker that makes it portable, so running
+    # it directly resolved back to $HOME/.unsloth. The other direction was worse: it restored
+    # the portable markers and the <root>/bin/unsloth wrapper this run had retired, in front of
+    # a venv that is now a NORMAL install, so the converted tree read as portable again.
+    # Committed here rather than by delaying the venv commit to the end: the venv commit is
+    # first in this gate on purpose (tests/sh/test_install_rollback_lifecycle.sh pins it there),
+    # because every command before it is one more chance for the trap to rm -rf the environment
+    # that was just built and move the old one back. Widening that window to cover the shim and
+    # the shortcuts would trade a wrong marker for a destroyed venv. What is still armed after
+    # this line is only what has not been replaced yet -- the launcher the nested retirement
+    # left empty, the one the portable shim block is about to rename over, and the two files
+    # create_studio_shortcuts rewrites -- and the full commit at the end of the install
+    # releases those, once the launcher that supersedes them is on disk. Hence `identity`
+    # here: releasing a launcher copy while its path is still empty would answer a failed
+    # shim step by deleting the user's launcher instead of handing it back.
+    _commit_portable_marker identity
     tauri_clear_install_error "studio setup completed"
 fi
 
@@ -6936,6 +7127,20 @@ fi
 # create_studio_shortcuts gates persistent menu shortcuts on env-mode;
 # launcher + studio.conf + icon are always written.
 if [ "$TAURI_MODE" != true ]; then
+    # ...which is the problem when this run is a conversion, because the setup gate that
+    # decides whether the conversion happened is eight lines BELOW this call, and studio.conf
+    # is where portable mode is written down for everything that launches through $DATA_DIR.
+    # A flat --portable over UNSLOTH_STUDIO_HOME=D resolves $DATA_DIR to the same D/share the
+    # normal install already owns, so a setup.sh failure used to restore the venv, the marker
+    # and D/bin/unsloth and still leave D/share/studio.conf exporting UNSLOTH_PORTABLE=1 --
+    # the restored normal install forced back into portable mode by the launcher that sources
+    # it. The same call strips those exports in the other direction. So take the pair aside
+    # first; the handlers put them back and the commit below drops the copies. Not moved into
+    # create_studio_shortcuts: --shortcuts-only calls that too, and it installs nothing, so it
+    # is not a conversion and has nothing to unwind. _snapshot_portable_launcher is a no-op
+    # unless a conversion is actually in flight, so an ordinary install still writes straight
+    # through, and it returns 0 when $DATA_DIR is empty.
+    _snapshot_portable_launcher "${DATA_DIR:-}"
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 
