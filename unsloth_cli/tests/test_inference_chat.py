@@ -1459,12 +1459,14 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
+    # max_seq_length 0 is the unrequested default: it matches whatever context a
+    # resident Unsloth server already runs, so attaching does not reload the model.
     assert loads == [
         (
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 4096,
+                "max_seq_length": 0,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -1517,7 +1519,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 2048,
+                "max_seq_length": 0,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
