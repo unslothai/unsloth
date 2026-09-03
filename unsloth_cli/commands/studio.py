@@ -56,6 +56,34 @@ _CMD_SHIM_MAX_BYTES = 8192
 # storage_roots.PORTABLE_MARKER, duplicated: the CLI must not import the backend.
 _PORTABLE_MARKER = ".unsloth-portable-root"
 
+# storage_roots.STUDIO_CHILD_DIRNAME, duplicated for the same reason.
+_STUDIO_CHILD_DIRNAME = "studio"
+
+
+def _inherits_parent_portable_marker(root: Path) -> bool:
+    """Whether a marker in ``root.parent`` names the install rooted at *root*.
+
+    install.sh writes either <master>/studio (nested) or the master root itself
+    (flat), and its _clear_stale_portable_marker matches that same `*/studio`
+    spelling before it will touch a parent marker. Any OTHER direct child of a
+    marked root is a separate installation, and the CLI is what exports
+    UNSLOTH_HOME into the backend's environment, where it outranks the backend's
+    own on-disk lookup -- so an unrestricted lookup here hands that install the
+    first one's master root, cache roots, node, llama.cpp and whisper.cpp no
+    matter what storage_roots decides. Same predicate as
+    storage_roots._inherits_parent_portable_marker; the two must not disagree.
+
+    Case-folded where the filesystem is: the installer writes `studio`, but a
+    user typing `Studio` into UNSLOTH_STUDIO_HOME names the same directory and
+    resolve() does not correct the spelling.
+    """
+    name = root.name
+    if name == _STUDIO_CHILD_DIRNAME:
+        return True
+    if os.name == "nt" or sys.platform == "darwin":
+        return name.lower() == _STUDIO_CHILD_DIRNAME
+    return False
+
 
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
@@ -78,8 +106,13 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
         return True
     # A NESTED portable install keeps share/ and bin/ one level above the venv,
     # so neither sentinel below is beside it and the CLI fell back to
-    # ~/.unsloth/studio. Same spellings as _infer_studio_home_from_venv.
-    if (candidate / _PORTABLE_MARKER).is_file() or (candidate.parent / _PORTABLE_MARKER).is_file():
+    # ~/.unsloth/studio. Same spellings as _infer_studio_home_from_venv, parent
+    # lookup included: a venv under an unrelated child of a portable root has no
+    # sentinel of its own and must keep falling back.
+    if (candidate / _PORTABLE_MARKER).is_file() or (
+        _inherits_parent_portable_marker(candidate)
+        and (candidate.parent / _PORTABLE_MARKER).is_file()
+    ):
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -148,11 +181,18 @@ STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
 
 def _portable_marker_root() -> Optional[Path]:
-    """Master root the installer recorded beside or above STUDIO_HOME, or None."""
+    """Master root the installer recorded beside or above STUDIO_HOME, or None.
+
+    The parent lookup is the nested layout only; see
+    _inherits_parent_portable_marker for why it cannot be every child.
+    """
     try:
         if (STUDIO_HOME / _PORTABLE_MARKER).is_file():
             return STUDIO_HOME
-        if (STUDIO_HOME.parent / _PORTABLE_MARKER).is_file():
+        if (
+            _inherits_parent_portable_marker(STUDIO_HOME)
+            and (STUDIO_HOME.parent / _PORTABLE_MARKER).is_file()
+        ):
             return STUDIO_HOME.parent
     except OSError:
         return None
