@@ -26,32 +26,30 @@ the problem.
 
 from typing import Any, Optional
 
-# Two different failures share the word "context" and need different advice.
-#
-# Starvation: the decode could not find KV space because concurrent generations drew on
-# the same unified cache. Nothing about this request was too big, so telling the user to
-# shorten it is wrong. Matched on a substring because the server appends punctuation and,
-# on some paths, batch details.
+# Starvation: concurrent generations drew on the same unified cache Two different failures share the word "context" and
+# need different advice. Starvation: the decode could not find KV space because concurrent generations drew on the same
+# unified cache. Nothing about this request was too big, so telling the user to shorten it is wrong. Matched on a
+# substring because the server appends punctuation and, on some paths, batch details.
 _STARVATION_MARKERS = (
     "context size has been exceeded",
     "failed to find free space in the kv cache",
     "failed to find a memory slot",
 )
 
-# Oversize: the request alone did not fit, and the server says so precisely, including
-# both token counts. That text is kept verbatim; only the remedy is added.
+# oversize: the server's precise text (both token counts) is kept verbatim, only the remedy is added
+# Oversize: the request alone did not fit, and the server says so precisely, including both token counts. That text is
+# kept verbatim; only the remedy is added.
 _OVERSIZE_MARKERS = (
     "exceeds the available context size",
     "exceeds the context size",
 )
 
-# Worded around the chat client's own substring test. `chat-adapter.ts::isContextLimitError`
-# matches "context window" (among others) and shows "Context limit reached: the conversation
-# has filled the model's context window ... or start a new chat" -- the advice this message
-# exists to deny, since nothing about the conversation was too long and a new chat fails
-# identically while the other generation is still running. The backend `code` cannot rescue
-# it: `chat-api.ts` rethrows an in-band error chunk as `new Error(message)` and the text is
-# all the client has. "Context Length" names the setting and is not one of its markers.
+# Worded around the chat client's own substring test. `chat-adapter.ts::isContextLimitError` matches "context window"
+# (among others) and shows "Context limit reached: the conversation has filled the model's context window... or start a
+# new chat" -- the advice this message exists to deny, since nothing about the conversation was too long and a new chat
+# fails identically while the other generation is still running. The backend `code` cannot rescue it: `chat-api.ts`
+# rethrows an in-band error chunk as `new Error(message)` and the text is all the client has. "Context Length" names the
+# setting and is not one of its markers.
 KV_STARVATION_MESSAGE = (
     "The model ran out of context space while generating. This happens when several "
     "chats or research runs generate at the same time, because they all draw on one "
@@ -90,9 +88,9 @@ class LlamaStreamError(RuntimeError):
         kv_starvation: bool = False,
         context_oversize: bool = False,
     ):
-        # str(exc) stays the server's own text where there is one, so the existing
-        # token-count regex in _friendly_error still matches an oversize refusal and
-        # rewrites it into the established "Message too long" wording.
+        # keep the server's own text so _friendly_error's token-count regex still rewrites an oversize refusal
+        # str(exc) stays the server's own text where there is one, so the existing token-count regex in _friendly_error
+        # still matches an oversize refusal and rewrites it into the established "Message too long" wording.
         super().__init__(server_message or friendly)
         self.friendly = friendly
         self.server_message = server_message

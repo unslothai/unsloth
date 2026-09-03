@@ -467,8 +467,9 @@ class TestToolActionNudge:
             model_name = "Llama-3.1-70B-Instruct",
         )
 
-        assert nudge.startswith("The current date is ")
-        assert "Tools are available when they materially improve" in nudge
+        # the date rides on the system prompt now, not the nudge.
+        assert "The current date is " not in nudge
+        assert nudge.startswith("Tools are available when they materially improve")
         assert "prefer using tools rather than answering from memory" not in nudge
         assert "fetch its full content by calling web_search with the url parameter" in nudge
         assert "Use code execution for math" in nudge
@@ -726,6 +727,198 @@ class TestAnthropicMessagesToOpenAI:
         assert result[0]["role"] == "tool"
         assert result[0]["tool_call_id"] == "tu_1"
         assert result[0]["content"] == "Result text"
+
+    def test_tool_result_precedes_trailing_user_text(self):
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "what files are here?"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me look."},
+                    {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "README.md\nsrc/"},
+                    {"type": "text", "text": "<system-reminder>Keep going.</system-reminder>"},
+                ],
+            },
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert [m["role"] for m in result] == ["user", "assistant", "tool", "user"]
+        assert result[2]["tool_call_id"] == "tu_1"
+        assert result[2]["content"] == "README.md\nsrc/"
+        assert result[3]["content"] == "<system-reminder>Keep going.</system-reminder>"
+
+    def test_tool_result_with_image_keeps_user_parts_after_tool(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+                    {"type": "text", "text": "and this?"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert [m["role"] for m in result] == ["tool", "user"]
+        parts = result[1]["content"]
+        assert parts[0] == {"type": "text", "text": "and this?"}
+        assert parts[1]["type"] == "image_url"
+
+    def test_tool_results_fold_into_user_turns_for_a_toolless_template(self):
+        """Gemma 2 / 3 have no `tool` role and check alternation by parity, so a
+        tool message makes llama-server 400 the whole request."""
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        msgs = [
+            {"role": "user", "content": "what files are here?"},
+            {
+                "role": "assistant",
+                "content": "Let me look.",
+                "tool_calls": [
+                    {
+                        "id": "tu_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": '{"command": "ls"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tu_1", "content": "README.md"},
+            {"role": "user", "content": "keep going"},
+        ]
+        folded = fold_tool_results_into_user(msgs)
+        assert [m["role"] for m in folded] == ["user", "assistant", "user", "user"]
+        payload = json.loads(folded[2]["content"])
+        assert payload == {
+            "tool_response": {
+                "tool": "Bash",
+                "content": "README.md",
+                "tool_call_id": "tu_1",
+            }
+        }
+        assert folded[1] is msgs[1]  # assistant turn untouched, tool_calls intact
+
+    def test_folding_is_a_no_op_without_tool_messages(self):
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert fold_tool_results_into_user(msgs) == msgs
+
+    def test_folding_survives_an_orphan_tool_result(self):
+        """No tool_calls to resolve the name against: the id still carries."""
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        msgs = [{"role": "tool", "tool_call_id": "nope", "content": "R"}]
+        folded = fold_tool_results_into_user(msgs)
+        assert [m["role"] for m in folded] == ["user"]
+        assert json.loads(folded[0]["content"]) == {
+            "tool_response": {"content": "R", "tool_call_id": "nope"}
+        }
+
+    def test_sanitizer_folds_only_when_the_template_lacks_tool_support(self):
+        """A tool-capable template keeps role=tool as the converter emitted it."""
+        from routes.inference import _sanitize_anthropic_openai_messages
+
+        class Backend:
+            def __init__(self, supports_tools):
+                self.supports_tools = supports_tools
+
+        anthropic = [
+            {"role": "user", "content": [{"type": "text", "text": "q"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "README.md"},
+                    {"type": "text", "text": "keep going"},
+                ],
+            },
+        ]
+        converted = anthropic_messages_to_openai(anthropic)
+
+        tool_capable = _sanitize_anthropic_openai_messages(converted, Backend(True))
+        assert [m["role"] for m in tool_capable] == ["user", "assistant", "tool", "user"]
+
+        toolless = _sanitize_anthropic_openai_messages(converted, Backend(False))
+        assert [m["role"] for m in toolless] == ["user", "assistant", "user"]
+        assert "README.md" in toolless[-1]["content"]
+        assert "keep going" in toolless[-1]["content"]
+
+    def test_sanitizer_defaults_to_not_folding_when_the_backend_cannot_answer(self):
+        from routes.inference import _sanitize_anthropic_openai_messages
+
+        class Hostile:
+            @property
+            def supports_tools(self):
+                raise RuntimeError("backend not ready")
+
+        msgs = [{"role": "tool", "tool_call_id": "tu_1", "content": "R"}]
+        assert _sanitize_anthropic_openai_messages(msgs, Hostile()) == msgs
+        assert _sanitize_anthropic_openai_messages(msgs, object()) == msgs
+
+    def test_folding_follows_the_passthrough_capability_not_the_tool_loop_one(self):
+        """DiffusionGemma reports supports_tools=False to stay out of the agentic
+        loop, but its template renders tool roles and client tools dispatch on
+        supports_tool_passthrough; folding on the former strips that framing."""
+        from routes.inference import _sanitize_anthropic_openai_messages, _template_supports_tools
+
+        class DiffusionGemma:
+            supports_tools = False  # forced off: keeps it out of the tool loop
+            supports_tool_passthrough = True  # the real template capability
+
+        class ToollessTemplate:
+            supports_tools = False
+            supports_tool_passthrough = False
+
+        assert _template_supports_tools(DiffusionGemma()) is True
+        assert _template_supports_tools(ToollessTemplate()) is False
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tu_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tu_1", "content": "README.md"},
+            {"role": "user", "content": "keep going"},
+        ]
+        kept = _sanitize_anthropic_openai_messages(msgs, DiffusionGemma())
+        assert [m["role"] for m in kept] == ["assistant", "tool", "user"]
+
+        folded = _sanitize_anthropic_openai_messages(msgs, ToollessTemplate())
+        assert [m["role"] for m in folded] == ["assistant", "user"]
+
+    def test_folding_gate_prefers_passthrough_even_when_supports_tools_raises(self):
+        from routes.inference import _template_supports_tools
+        class HalfReady:
+            supports_tool_passthrough = False
+
+            @property
+            def supports_tools(self):
+                raise RuntimeError("not ready")
+
+        # Passthrough answers first, so a raising supports_tools cannot skip the fold.
+        assert _template_supports_tools(HalfReady()) is False
 
     def test_mixed_text_and_tool_use_blocks(self):
         msgs = [
@@ -1265,6 +1458,13 @@ class TestAnthropicStreamEmitter:
 # =====================================================================
 
 
+def _connected_request(disconnected = False):
+    async def _is_disconnected():
+        return disconnected
+
+    return SimpleNamespace(is_disconnected = _is_disconnected)
+
+
 class TestAnthropicToolNonStreaming:
     @pytest.mark.parametrize(
         ("helper", "event"),
@@ -1287,7 +1487,7 @@ class TestAnthropicToolNonStreaming:
             yield event
 
         async def _run():
-            task = asyncio.create_task(helper(_run_gen, "msg_1", "m"))
+            task = asyncio.create_task(helper(_connected_request(), _run_gen, "msg_1", "m"))
             await asyncio.sleep(0)
             heartbeat_ticks = 0
             while not task.done():
@@ -1319,7 +1519,9 @@ class TestAnthropicToolNonStreaming:
             yield {"type": "content", "text": "ok"}
 
         async def _run():
-            task = asyncio.create_task(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+            task = asyncio.create_task(
+                _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+            )
             await asyncio.sleep(0)
             heartbeat_ticks = 0
             while not task.done():
@@ -1358,7 +1560,9 @@ class TestAnthropicToolNonStreaming:
             yield event
 
         async def _cancel_generation():
-            task = asyncio.create_task(helper(_run_gen, "msg_1", "m", cancel_event = cancel_event))
+            task = asyncio.create_task(
+                helper(_connected_request(), _run_gen, "msg_1", "m", cancel_event = cancel_event)
+            )
             assert await asyncio.to_thread(generator_started.wait, 1.0)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1367,6 +1571,43 @@ class TestAnthropicToolNonStreaming:
             assert generator_stopped.is_set()
 
         asyncio.run(_cancel_generation())
+
+    @pytest.mark.parametrize(
+        ("helper", "event"),
+        [
+            pytest.param(
+                _anthropic_tool_non_streaming,
+                {"type": "content", "text": "ok"},
+                id = "tools",
+            ),
+            pytest.param(_anthropic_plain_non_streaming, "ok", id = "plain"),
+        ],
+    )
+    def test_client_disconnect_cancels_generation(self, helper, event):
+        generator_started = threading.Event()
+        cancel_event = threading.Event()
+        emitted = 0
+
+        def _run_gen():
+            nonlocal emitted
+            generator_started.set()
+            for _ in range(400):
+                if cancel_event.wait(0.005):
+                    return
+                emitted += 1
+                yield event
+
+        async def _drive():
+            request = _connected_request(disconnected = True)
+            response = await helper(request, _run_gen, "msg_1", "m", cancel_event = cancel_event)
+            assert await asyncio.to_thread(generator_started.wait, 1.0)
+            return response
+
+        response = asyncio.run(_drive())
+
+        assert cancel_event.is_set()
+        assert emitted < 400
+        assert response.status_code == 200
 
     def test_duplicate_tool_start_replaces_provisional_tool_block(self):
         def _run_gen():
@@ -1389,7 +1630,9 @@ class TestAnthropicToolNonStreaming:
                 "result": "Rendered HTML canvas.",
             }
 
-        response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
         body = json.loads(response.body)
         tool_blocks = [block for block in body["content"] if block["type"] == "tool_use"]
 
@@ -1410,7 +1653,9 @@ class TestAnthropicToolNonStreaming:
 
         tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
         response = asyncio.run(
-            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
+            _anthropic_tool_non_streaming(
+                _connected_request(), _run_gen, "msg_1", "m", openai_tools = tools
+            )
         )
         body = json.loads(response.body)
         text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
@@ -1775,12 +2020,15 @@ class TestAnthropicPassthroughStreamAdapter:
                 16,
                 "msg_1",
                 "test-model",
+                seed = 3407,
             )
             return await self._collect(response)
 
         lines = asyncio.run(run())
 
         assert captured["body"]["stream_options"] == {"include_usage": True}
+        assert captured["body"]["seed"] == 3407
+        assert captured["body"]["cache_prompt"] is False
         message_delta = self._payloads(lines, "message_delta")[0]
         assert message_delta["usage"]["input_tokens"] == 2
         assert message_delta["usage"]["output_tokens"] == 4
@@ -2206,6 +2454,10 @@ def _mock_backend(monkeypatch, **overrides):
     """
     import routes.inference as inf_mod
 
+    # Pinned off by default so prompt assertions do not depend on the host's stored setting;
+    # the date's own behaviour on this route is covered in test_current_date_prompt_settings.
+    monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+
     calls = []
 
     def _gen_plain(**kwargs):
@@ -2282,6 +2534,80 @@ class TestAnthropicMessagesToolRouting:
 
         return _drive(_consume())
 
+    def test_plain_non_streaming_states_the_current_date(self, monkeypatch):
+        # /v1/messages used to get the date from the tool nudge; it now rides the system turn,
+        # so this route needs its own coverage or the date silently disappears from it.
+        import routes.inference as inf_mod
+
+        backend = _mock_backend(monkeypatch, context_length = 2048)
+        monkeypatch.setattr(
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        _drive(anthropic_messages(_basic_payload(), request = self._Request(), current_subject = "t"))
+
+        [(_path, kwargs)] = backend.calls
+        assert kwargs["messages"][0] == {
+            "role": "system",
+            "content": "The current date is 2026-08-15.",
+        }
+
+    @pytest.mark.parametrize(
+        ("extra", "expected_path"),
+        [
+            ({}, "plain"),
+            ({"enable_tools": True, "permission_mode": "off"}, "tools"),
+        ],
+        ids = ["plain", "server-tools"],
+    )
+    def test_seed_reaches_internal_anthropic_generation(self, monkeypatch, extra, expected_path):
+        backend = _mock_backend(monkeypatch)
+
+        _drive(
+            anthropic_messages(
+                _basic_payload(seed = 3407, **extra),
+                request = self._Request(),
+                current_subject = "t",
+            )
+        )
+
+        [(path, kwargs)] = backend.calls
+        assert path == expected_path
+        assert kwargs["seed"] == 3407
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_seed_reaches_anthropic_client_tool_passthrough(self, monkeypatch, stream):
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            seed = 3407,
+            stream = stream,
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured["seed"] == 3407
+
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -2300,6 +2626,70 @@ class TestAnthropicMessagesToolRouting:
         assert entry["prompt_preview"] == "user: hi"
         assert entry["reply_preview"] == "ok"
         assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize("with_tools", [False, True])
+    def test_non_streaming_disconnect_stops_generation_and_records_it_cancelled(
+        self, monkeypatch, with_tools
+    ):
+        # The route already 499s a client that is gone before admission, so the gap is a
+        # client that leaves once a slot was granted and tokens are already flowing.
+        import routes.inference as inf_mod
+
+        total = 200
+        emitted = []
+        started = threading.Event()
+
+        class _LeavingRequest:
+            state = SimpleNamespace()
+            url = SimpleNamespace(path = "/v1/messages")
+            method = "POST"
+
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _emit(kwargs, event):
+            cancel_event = kwargs["cancel_event"]
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield event
+
+        def _gen_plain(**kwargs):
+            text = ""
+            for _ in _emit(kwargs, None):
+                text += "x"
+                yield text
+
+        def _gen_tools(**kwargs):
+            yield from _emit(kwargs, {"type": "content", "text": "x"})
+
+        _mock_backend(
+            monkeypatch,
+            supports_tool_passthrough = False,
+            generate_chat_completion = _gen_plain,
+            generate_chat_completion_with_tools = _gen_tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        fields = (
+            {"tools": [{"name": "x", "input_schema": {"type": "object"}}]} if with_tools else {}
+        )
+
+        response = _drive(
+            anthropic_messages(
+                _basic_payload(**fields), request = _LeavingRequest(), current_subject = "t"
+            )
+        )
+
+        assert response.status_code == 200
+        assert len(emitted) < total, "generation ran to completion after the client left"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        # A cancelled run has no natural stop reason; end_turn would read as a full answer.
+        assert entry["stop_reason"] is None
         assert monitor.active_count() == 0
 
     @pytest.mark.parametrize("stream", [False, True])
@@ -2721,6 +3111,30 @@ class TestAnthropicMessagesToolRouting:
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "tools"
+
+    def test_api_server_tool_request_keeps_the_current_date(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        backend = _mock_backend(monkeypatch)
+        monkeypatch.setattr(
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+
+        class ApiRequest(self._Request):
+            headers = {"authorization": "Bearer sk-unsloth-test"}
+            state = SimpleNamespace(skip_api_monitor = True)
+
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+        _drive(anthropic_messages(payload, request = ApiRequest(), current_subject = "t"))
+
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert kwargs["messages"][0]["content"].startswith("The current date is 2026-08-15.\n\n")
 
     def test_server_tool_choice_alias_uses_the_selected_studio_name(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
@@ -4479,3 +4893,69 @@ class TestPreserveThinkingHonoursTheBackendDefault:
 
         asyncio.run(anthropic_count_tokens(payload, request = _Request(), current_subject = "t"))
         assert seen["count_messages"] == gen_messages
+
+
+def test_effort_resolved_from_output_config():
+    # Claude Code sends the tier as output_config.effort, never as reasoning_effort.
+    assert (
+        _basic_payload(
+            output_config = {"effort": "high"}, thinking = {"type": "adaptive"}
+        ).reasoning_effort
+        == "high"
+    )
+
+
+def test_explicit_reasoning_effort_outranks_output_config():
+    assert (
+        _basic_payload(output_config = {"effort": "low"}, reasoning_effort = "max").reasoning_effort
+        == "max"
+    )
+
+
+def test_unknown_output_config_effort_is_ignored():
+    # thinking on, so an ignored level is the level check talking, not the gate below.
+    adaptive = {"type": "adaptive"}
+    assert (
+        _basic_payload(output_config = {"effort": "turbo"}, thinking = adaptive).reasoning_effort
+        is None
+    )
+    assert (
+        _basic_payload(
+            output_config = {"format": {"type": "json"}}, thinking = adaptive
+        ).reasoning_effort
+        is None
+    )
+
+
+# Claude Code sends output_config.effort on every request, thinking on or off, so
+# adopting it unconditionally would turn `reasoning_effort` into an always-present
+# override -- and a named level means "think" from _anthropic_reasoning_args down.
+_EFFORT_THINKING_OFF_SHAPES = [
+    ({}, None),
+    ({"thinking": {"type": "disabled"}}, False),
+    ({"enable_thinking": False}, False),
+]
+
+
+@pytest.mark.parametrize("fields, expected_enable", _EFFORT_THINKING_OFF_SHAPES)
+def test_output_config_effort_never_switches_thinking_back_on(fields, expected_enable):
+    from routes.inference import _anthropic_reasoning_args
+
+    payload = _basic_payload(output_config = {"effort": "high"}, **fields)
+    # Left unset, so nothing downstream reads a level the caller never asked for.
+    assert payload.reasoning_effort is None
+    args = _anthropic_reasoning_args(payload)
+    assert args["enable_thinking"] is expected_enable
+    assert args["reasoning_effort"] is None
+
+
+def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
+    # The gate applies to output_config only: an explicit reasoning_effort keeps
+    # the documented precedence covered by _THINKING_EFFORT_MATRIX.
+    from routes.inference import _anthropic_reasoning_args
+
+    args = _anthropic_reasoning_args(
+        _basic_payload(thinking = {"type": "disabled"}, reasoning_effort = "high")
+    )
+    assert args["enable_thinking"] is True
+    assert args["reasoning_effort"] == "high"

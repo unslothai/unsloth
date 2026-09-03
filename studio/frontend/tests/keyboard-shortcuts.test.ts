@@ -347,7 +347,11 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     root,
-    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: !isAuthFlowRoute && !chatOnlyMeasured,/,
+    /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
+  );
+  assert.match(
+    root,
+    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
   );
   // Video has its own predicate rather than the chat-only one: /video checks
   // auth and nothing else, so the chord would land on the unsupported-hardware
@@ -358,7 +362,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     root,
-    /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: !isAuthFlowRoute && !videoDisabled,/,
+    /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: routeShortcutEnabled && !videoDisabled,/,
   );
   const sidebar = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
@@ -518,6 +522,10 @@ test("no default takes a chord the browser owns without a reason", () => {
     // the desktop build is where these are pressed.
     "Mod+Shift+BracketLeft",
     "Mod+Shift+BracketRight",
+    // Find in page: the one default that takes a browser chord on the web too,
+    // because the browser's own find is what it replaces. Reserving it is still
+    // right -- it is what warns a web user before they rebind onto it.
+    "Mod+KeyF",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -531,6 +539,15 @@ test("no default takes a chord the browser owns without a reason", () => {
         );
       }
     }
+  }
+  // Being on the list has to MEAN the chord is flagged, or dropping a value from the reserved set
+  // silently turns an exception into an unwarned default and this test keeps passing.
+  for (const value of deliberate) {
+    assert.ok(
+      isBrowserReservedBinding(value, true) ||
+        isBrowserReservedBinding(value, false),
+      `${value} is listed as a deliberate exception but nothing flags it`,
+    );
   }
 });
 
@@ -1372,7 +1389,7 @@ test("the new-chat chords stay out of the auth flow", async () => {
     const at = root.indexOf(`"${id}"`);
     assert.ok(at !== -1, `${id} is registered`);
     const call = root.slice(at, root.indexOf("\n  );", at) + 5);
-    assert.match(call, /enabled: !isAuthFlowRoute/, `${id} is gated`);
+    assert.match(call, /enabled: routeShortcutEnabled/, `${id} is gated`);
   }
 });
 
@@ -1387,7 +1404,7 @@ test("switching back to Chat lands on the view the user left", async () => {
   assert.ok(at !== -1, "switchToChat is registered");
   const call = root.slice(at, root.indexOf("\n  );", at) + 5);
   assert.match(call, /navigate\(\{ to: "\/chat", search: chatSearch \}\)/);
-  assert.match(call, /enabled: !isAuthFlowRoute/);
+  assert.match(call, /enabled: routeShortcutEnabled/);
   // The other workspaces keep the bare helper; only chat carries a search.
   assert.match(root, /useShortcut\("switchToImages", goTo\("\/images"\)/);
   // location.search is the raw URL's, not the matched route's, so a seeded
@@ -1576,6 +1593,7 @@ test("every action has a useShortcut call site", async () => {
     "../src/features/chat/mcp-composer-button.tsx",
     "../src/features/chat/components/chat-search-dialog.tsx",
     "../src/features/api-monitor/api-monitor-overlay.tsx",
+    "../src/features/find-in-page/components/find-in-page.tsx",
   ];
   const sources = await Promise.all(
     files.map((file) => readFile(new URL(file, import.meta.url), "utf8")),
@@ -1609,7 +1627,7 @@ test("auto-repeat only reaches the actions that walk a list", async () => {
     /event\.preventDefault\(\);\n(?:\s*\/\/[^\n]*\n)*\s*if \(event\.repeat && !repeats\) return;/,
   );
   // Off by default, so a new call site is one-shot until it says otherwise.
-  assert.match(hook, /repeats = false,\n\s*\} = options;/);
+  assert.match(hook, /repeats = false,\n(?:\s*\w+,\n)*\s*\} = options;/);
   assert.match(
     hook,
     /\[bindings, enabled, skipInTextFields, textFieldException, repeats\]/,

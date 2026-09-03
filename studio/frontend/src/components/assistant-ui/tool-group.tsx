@@ -10,12 +10,12 @@ import {
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import {
   toolOutputKey,
-  useChatPreferencesStore,
   useToolPaneScope,
   useUnresolvedToolPaneScope,
-} from "@/features/chat";
+} from "@/features/chat/tool-output-scope";
 import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";

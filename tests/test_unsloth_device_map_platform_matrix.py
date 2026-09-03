@@ -153,6 +153,8 @@ def _build(
             exec(ast.get_source_segment(_SRC, node), ns)
         elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
             "UNSLOTH_DEVICE_MAP",
+            "UNSLOTH_BALANCED_DEVICE_MAP",
+            "_PLANNED_DEVICE_MAPS",
             "DEFAULT_DEVICE_MAP",
             "_SIZE_UNITS",
         ):

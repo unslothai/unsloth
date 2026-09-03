@@ -58,16 +58,14 @@ LAST_STOCK_RESUMABLE_VERSION = (1, 17)
 # The newest major whose internals this has been read against. A 2.x is not assumed to look alike.
 MAX_SUPPORTED_MAJOR = 1
 
-# What flock reports when another holder has the lock, and nothing else. EACCES belongs to fcntl,
-# not flock; ENOLCK and EOPNOTSUPP mean this filesystem cannot lock at all.
+# What flock reports when another holder has the lock, and nothing else: EACCES belongs to fcntl,
+# and ENOLCK / EOPNOTSUPP mean this filesystem cannot lock at all.
 _CONTENDED = frozenset({errno.EWOULDBLOCK, errno.EAGAIN})
 
-# Filesystems backed by storage attached to this host, so a lock taken here is the only lock.
 # An allowlist rather than a list of network types: a FUSE mount reports whatever name its daemon
-# chose, and unless it negotiates FUSE_FLOCK_LOCKS the kernel answers flock locally (libfuse
-# fuse_lowlevel.h), so fuse.rclone or fuse.s3fs over shared object storage passes the probe while
-# excluding nobody. Naming the ones we know instead means an unrecognised or blank type keeps the
-# stock writer rather than silently re-enabling a shared one.
+# chose and, unless it negotiates FUSE_FLOCK_LOCKS, the kernel answers flock locally, so
+# fuse.rclone or fuse.s3fs over shared object storage would pass a network-name test. An
+# unrecognised or blank type keeps the stock writer.
 _LOCAL_FSTYPES = frozenset(
     {
         # Linux
@@ -156,8 +154,8 @@ def _probe_dir(hub_cache: Optional[Path | str] = None) -> Optional[Path]:
             logger.debug("resumable partials: no hub cache to probe (%s)", exc)
             return None
     if hub_cache is not None:
-        # Asked about a named root, so only report on one that is there. Creating it would
-        # resurrect a cache the user detached, and an absent root holds no partials to judge.
+        # Asked about a named root, so only report on one that is there: creating it would resurrect a cache
+        # the user detached, and an absent root holds no partials to judge.
         return root if root.is_dir() else None
     try:
         root.mkdir(parents = True, exist_ok = True)
@@ -205,7 +203,7 @@ def _filesystem_is_local_on(directory: str, device: int) -> bool:
     """
     path = Path(directory).resolve()
     if str(path).startswith("\\\\") or str(path).startswith("//"):
-        return False  # UNC share
+        return False
     try:
         table = _mounts()
     except Exception as exc:  # noqa: BLE001 - unreadable now does not mean unreadable next time
@@ -234,8 +232,8 @@ def _lock_is_honoured_at(directory: str) -> bool:
     return _lock_is_honoured_on(directory, _device_at(directory))
 
 
-# Keyed on the directory and the device, so moving the cache, or swapping the mount under it,
-# re-probes instead of reusing a verdict about a filesystem that is no longer there.
+# Keyed on the directory and the device, so moving the cache or swapping the mount under it re-
+# probes instead of reusing a verdict about a filesystem that is gone.
 @lru_cache(maxsize = 8)
 def _lock_is_honoured_on(directory: str, device: int) -> bool:
     """Take the lock twice and require the second to be refused.
@@ -247,8 +245,8 @@ def _lock_is_honoured_on(directory: str, device: int) -> bool:
     """
     import fcntl
 
-    # A random, exclusively created file: the cache can be shared, and a predictable name there
-    # lets another user pre-place a symlink that an unguarded open would follow and truncate.
+    # A random, exclusively created file: the cache can be shared, and a predictable name lets another
+    # user pre-place a symlink an unguarded open would follow and truncate.
     try:
         handle, name = tempfile.mkstemp(dir = directory, prefix = ".unsloth-flock-probe.")
     except Exception as exc:  # noqa: BLE001 - nowhere to probe now is not nowhere to probe later
@@ -300,16 +298,13 @@ def _exclusion_is_provable(hub_cache: Optional[Path | str] = None) -> bool:
     try:
         import fcntl  # noqa: F401
     except ImportError:
-        # No fcntl on Windows, where huggingface_hub locks via msvcrt: mandatory rather than
-        # advisory. A network share still cannot be spoken for, which the locality check catches.
-        # Windows has no way to establish who owns a partial: os.stat reports st_uid 0 for every
-        # file, and reading an ACL needs pywin32, which is not a dependency here. Without an owner
-        # check, another account on a shared NTFS cache could leave a partial with a chosen prefix
-        # and have the remaining range appended to it, which the size-only check downstream would
-        # pass. So the shared name stays off here and Windows keeps the stock writer.
+        # No fcntl on Windows, where huggingface_hub locks via msvcrt, and Windows has no way to establish
+        # who owns a partial (os.stat reports st_uid 0 for every file and reading an ACL needs pywin32),
+        # so another account on a shared NTFS cache could leave a partial with a chosen prefix and have
+        # the remaining range appended to it, which the size-only check would pass.
         return False
-    # _ProbeUnavailable is deliberately not caught: a probe that could not run is not an answer,
-    # and letting it out keeps any caller from caching one. Callers turn it into "not proven".
+    # _ProbeUnavailable is deliberately not caught: a probe that could not run is not an answer, and
+    # letting it out keeps any caller from caching one.
     return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
 
 
@@ -356,8 +351,7 @@ def _objection_to(descriptor: int) -> Optional[str]:
         return "hard linked from elsewhere"
     euid = getattr(os, "geteuid", None)
     if euid is None:
-        # No owner to compare against, so nothing here can be vouched for. Reachable only if the
-        # writer is ever enabled without geteuid; _exclusion_is_provable refuses that today.
+        # No owner to compare against, so nothing here can be vouched for.
         return "on a platform where ownership cannot be established"
     if info.st_uid != euid():
         return "owned by another user"
@@ -419,10 +413,8 @@ def _open_stable_partial(path: Path) -> Optional[Any]:
                 if exc.errno in (errno.ELOOP, errno.EMLINK):
                     objection = "a symlink"
                 else:
-                    # Anything else is a partial this account cannot use and must not judge: a
-                    # 0600 one left by another user answers EACCES, a directory in its place
-                    # EISDIR. Raising would fail every attempt at the blob for good, while the
-                    # stock writer creates a file of its own and does not need this one at all.
+                    # Anything else is a partial this account cannot use and must not judge (another user's 0600 file
+                    # answers EACCES, a directory EISDIR); raising would fail every attempt at the blob for good.
                     logger.warning(
                         "Cannot open the download partial at %s (%s); leaving it alone and "
                         "letting the stock writer fetch the file.",
@@ -451,8 +443,8 @@ def restore_resumable_partials() -> bool:
     try:
         permitted = can_restore_partials()
     except _ProbeUnavailable as exc:
-        # The worker calls this at import, so an escaping exception would take the whole download
-        # process down instead of leaving it with the stock writer it can always fall back on.
+        # The worker calls this at import, so an escaping exception would take the whole download process
+        # down instead of leaving it the stock writer.
         logger.debug("resumable partials: %s", exc)
         return False
     if not permitted:
@@ -478,8 +470,8 @@ def restore_resumable_partials() -> bool:
         if destination_path.exists() and not force_download:
             return
 
-        # A XET-backed repo still comes down over HTTP when hf_xet is absent or disabled, so what
-        # matters is whether XET will run, not whether its metadata exists. XET writes its own way.
+        # A XET-backed repo still comes down over HTTP when hf_xet is absent or disabled, so what matters is
+        # whether XET will run, not whether its metadata exists.
         uses_xet = xet_file_data is not None and file_download.is_xet_available()
         if force_download or uses_xet:
             return stock(
@@ -512,10 +504,8 @@ def restore_resumable_partials() -> bool:
         with opened as handle:
             resume_size = handle.tell()
             if expected_size is not None and resume_size > expected_size:
-                # Longer than the file is supposed to be, so there is nothing to resume from: a
-                # Range starting past the end answers 416 and would do so on every retry, where
-                # the stock writer's fresh name recovers. Truncating through the handle we already
-                # validated, rather than unlinking, keeps the name from being swapped underneath.
+                # Longer than the file is supposed to be, so there is nothing to resume from: a Range starting past
+                # the end answers 416 on every retry.
                 logger.warning(
                     "Restarting '%s': the partial holds %s bytes but the file is %s.",
                     filename,
@@ -543,9 +533,8 @@ def restore_resumable_partials() -> bool:
                 expected_size = expected_size,
                 tqdm_class = kwargs.get("tqdm_class"),
             )
-        # _chmod_and_move resolves the name again, so publish only if the name still holds the
-        # file that was actually written. Otherwise another account could swap something in
-        # after the last write and have it installed as the blob under a verified descriptor.
+        # _chmod_and_move resolves the name again, so publish only if the name still holds the file that was
+        # actually written; otherwise another account could swap something in after the last write.
         if not _still_the_written_file(incomplete_path, written):
             logger.warning(
                 "Not publishing '%s': the partial at %s was replaced while it was being written.",

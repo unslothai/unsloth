@@ -1,18 +1,26 @@
 import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
+import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "./prompt-queue-events";
 import { localPromptQueueModelBoundary } from "./prompt-queue-model-boundary";
 
-export const PROMPT_QUEUE_STOP_EVENT = "unsloth:prompt-queue-stop";
-export const PROMPT_QUEUE_RUN_FAILED_EVENT = "unsloth:prompt-queue-run-failed";
+// Re-exported so existing importers and the barrel keep their paths. Module
+// scope readers should use ./prompt-queue-events directly: this module has
+// dependencies, so the cycle can catch it mid-initialization.
+export {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "./prompt-queue-events";
+export type {
+  PromptQueueRunFailedEventDetail,
+  PromptQueueStopEventDetail,
+} from "./prompt-queue-events";
 
-export type PromptQueueStopEventDetail = {
-  threadIds?: string[];
-  temporaryOnly?: boolean;
-  localOnly?: boolean;
-};
-
-export type PromptQueueRunFailedEventDetail = {
-  threadId?: string | null;
-};
+import type {
+  PromptQueueRunFailedEventDetail,
+  PromptQueueStopEventDetail,
+} from "./prompt-queue-events";
 
 export function requestPromptQueueStop(threadIds?: string[]) {
   if (

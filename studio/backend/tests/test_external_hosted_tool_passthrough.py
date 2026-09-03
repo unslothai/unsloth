@@ -178,6 +178,46 @@ def test_a_hosted_tool_request_still_reaches_the_provider(monkeypatch, provider_
     assert any("hi" in chunk for chunk in chunks)
 
 
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_a_studio_hosted_provider_receives_the_current_date(monkeypatch, provider_type):
+    inf = _install(monkeypatch, provider_type)
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    _run(inf, _payload())
+
+    messages = FakeExternalClient.last["passthrough"]["messages"]
+    assert messages[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+    assert messages[1] == {"role": "user", "content": "what is 2+2?"}
+
+
+def test_an_api_request_without_resolved_server_tools_stays_undated(monkeypatch):
+    inf = _install(monkeypatch, "openai")
+    monkeypatch.setattr(inf, "_request_has_api_key", lambda _request: True)
+    monkeypatch.setattr(inf, "_request_is_internal_workflow", lambda _request: False)
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    _run(
+        inf,
+        _payload(
+            enable_tools = True,
+            enabled_tools = ["unknown_tool"],
+            run_tools_locally = True,
+        ),
+    )
+
+    assert FakeExternalClient.last["passthrough"]["messages"] == [
+        {"role": "user", "content": "what is 2+2?"}
+    ]
+
+
 def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
     """The regression in one line: `code_execution` has no local implementation,
     so a loop that captures this request executes web_search itself and silently

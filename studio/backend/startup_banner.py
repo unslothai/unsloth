@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import sys
 
+from utils.host_policy import is_wildcard_host, wildcard_loopback_host
+
 
 def _safe_print(text: str) -> None:
     """Print text without crashing on terminals that cannot encode Unicode."""
@@ -99,7 +101,8 @@ def print_studio_access_banner(
     def style(text: str, code: str) -> str:
         return f"{code}{text}{reset}" if use_color else text
 
-    ipv6_bind = bind_host in ("::", "::1")
+    listen_all = is_wildcard_host(bind_host)
+    ipv6_bind = bind_host == "::1" or wildcard_loopback_host(bind_host) == "::1"
     if ipv6_bind:
         loopback_url = f"http://[::1]:{port}"
         alt_local = f"http://localhost:{port}"
@@ -111,13 +114,11 @@ def print_studio_access_banner(
     else:
         external_url = f"http://{display_host}:{port}"
 
-    listen_all = bind_host in ("0.0.0.0", "::")
-    # The exact aliases the canned loopback_url below is valid for; any other bind
-    # (e.g. a specific LAN IP) must show its real address, not http://127.0.0.1.
+    # The exact aliases the canned loopback_url is valid for; any other bind (e.g. a specific LAN IP)
+    # must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
-    # Use the loopback URL only when reachable on loopback; otherwise show
-    # the actual bound address.
+    # Use the loopback URL only when reachable on loopback; otherwise show the actual bound address.
     primary_url = loopback_url if listen_all or loopback_bind else external_url
     api_base = primary_url
 

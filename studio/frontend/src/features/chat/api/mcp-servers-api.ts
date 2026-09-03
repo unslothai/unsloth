@@ -4,6 +4,13 @@
 import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
+import {
+  getMcpServerMutationEpoch,
+  readAfterPendingMcpServerMutations,
+  readMcpServerMutationSnapshot,
+  trackMcpServerMutation,
+} from "./mcp-server-mutation-tracker";
+
 export interface McpServerConfig {
   id: string;
   display_name: string;
@@ -26,6 +33,17 @@ export interface McpServerImportResult {
   skipped: string[];
   errors: string[];
 }
+
+export interface McpStdioCommand {
+  command: string;
+  arguments: string[];
+}
+
+let mcpServerListRequest: Promise<McpServerConfig[]> | null = null;
+let mcpServerSettlementListRequest: {
+  minimumEpoch: number;
+  promise: Promise<McpServerConfig[]>;
+} | null = null;
 
 function parseErrorText(status: number, body: unknown): string {
   if (body && typeof body === "object") {
@@ -53,8 +71,56 @@ async function mcpRequest<T>(
   return json as T;
 }
 
-export function listMcpServers(): Promise<McpServerConfig[]> {
-  return mcpRequest("/");
+export function listMcpServers({
+  waitForPendingMutations = true,
+  minimumMutationEpoch,
+}: {
+  waitForPendingMutations?: boolean;
+  minimumMutationEpoch?: number;
+} = {}): Promise<McpServerConfig[]> {
+  if (!waitForPendingMutations) {
+    const requestedEpoch = minimumMutationEpoch ?? getMcpServerMutationEpoch();
+    if (
+      mcpServerSettlementListRequest &&
+      mcpServerSettlementListRequest.minimumEpoch >= requestedEpoch
+    ) {
+      return mcpServerSettlementListRequest.promise;
+    }
+    const request = readMcpServerMutationSnapshot(() =>
+      mcpRequest<McpServerConfig[]>("/"),
+    );
+    const slot = { minimumEpoch: requestedEpoch, promise: request };
+    mcpServerSettlementListRequest = slot;
+    void request.then(
+      () => {
+        if (mcpServerSettlementListRequest === slot) {
+          mcpServerSettlementListRequest = null;
+        }
+      },
+      () => {
+        if (mcpServerSettlementListRequest === slot) {
+          mcpServerSettlementListRequest = null;
+        }
+      },
+    );
+    return request;
+  }
+
+  if (mcpServerListRequest) return mcpServerListRequest;
+
+  const request = readAfterPendingMcpServerMutations(() =>
+    mcpRequest<McpServerConfig[]>("/"),
+  );
+  mcpServerListRequest = request;
+  void request.then(
+    () => {
+      if (mcpServerListRequest === request) mcpServerListRequest = null;
+    },
+    () => {
+      if (mcpServerListRequest === request) mcpServerListRequest = null;
+    },
+  );
+  return request;
 }
 
 export function createMcpServer(payload: {
@@ -64,16 +130,18 @@ export function createMcpServer(payload: {
   isEnabled?: boolean;
   useOauth?: boolean;
 }): Promise<McpServerConfig> {
-  return mcpRequest("/", {
-    method: "POST",
-    body: {
-      display_name: payload.displayName,
-      url: payload.url,
-      headers: payload.headers ?? null,
-      is_enabled: payload.isEnabled ?? true,
-      use_oauth: payload.useOauth ?? false,
-    },
-  });
+  return trackMcpServerMutation(
+    mcpRequest("/", {
+      method: "POST",
+      body: {
+        display_name: payload.displayName,
+        url: payload.url,
+        headers: payload.headers ?? null,
+        is_enabled: payload.isEnabled ?? true,
+        use_oauth: payload.useOauth ?? false,
+      },
+    }),
+  );
 }
 
 export function updateMcpServer(
@@ -88,16 +156,21 @@ export function updateMcpServer(
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
-  if (payload.displayName !== undefined) body.display_name = payload.displayName;
+  if (payload.displayName !== undefined)
+    body.display_name = payload.displayName;
   if (payload.url !== undefined) body.url = payload.url;
   if (payload.headers !== undefined) body.headers = payload.headers;
   if (payload.isEnabled !== undefined) body.is_enabled = payload.isEnabled;
   if (payload.useOauth !== undefined) body.use_oauth = payload.useOauth;
-  return mcpRequest(`/${serverId}`, { method: "PUT", body });
+  return trackMcpServerMutation(
+    mcpRequest(`/${serverId}`, { method: "PUT", body }),
+  );
 }
 
 export function deleteMcpServer(serverId: string): Promise<void> {
-  return mcpRequest(`/${serverId}`, { method: "DELETE" });
+  return trackMcpServerMutation(
+    mcpRequest(`/${serverId}`, { method: "DELETE" }),
+  );
 }
 
 export function refreshMcpServerTools(
@@ -121,11 +194,29 @@ export function testMcpServer(payload: {
   });
 }
 
+export function decodeMcpStdioCommand(url: string): Promise<McpStdioCommand> {
+  return mcpRequest("/stdio/decode", {
+    method: "POST",
+    body: { url },
+  });
+}
+
+export function encodeMcpStdioCommand(payload: McpStdioCommand): Promise<{
+  url: string;
+}> {
+  return mcpRequest("/stdio/encode", {
+    method: "POST",
+    body: payload,
+  });
+}
+
 // Bulk-import servers from a standard mcpServers JSON config (Claude Desktop,
 // Cursor, Cline, VS Code). The backend skips duplicates and reports per-entry
 // errors instead of failing the whole batch.
 export function importMcpServers(
   config: unknown,
 ): Promise<McpServerImportResult> {
-  return mcpRequest("/import", { method: "POST", body: { config } });
+  return trackMcpServerMutation(
+    mcpRequest("/import", { method: "POST", body: { config } }),
+  );
 }
