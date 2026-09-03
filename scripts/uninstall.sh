@@ -60,6 +60,18 @@ another install's chat history with it.
 EOF
 }
 
+# Strip leading/trailing whitespace, the same normalization install.sh applies to every root
+# it reads (install.sh:73). The installer, storage_roots.py ((os.environ.get(...) or "").strip())
+# and unsloth_cli/commands/studio.py all treat a whitespace-only root as UNSET, so the
+# uninstaller has to agree: untrimmed, `UNSLOTH_HOME=" "` passed `-n`, took the first branch of
+# the precedence chain below and stopped there, so a real install named by UNSLOTH_STUDIO_HOME
+# was never examined and survived the uninstall that environment asked for.
+# Written as a multi-line function on purpose: tests/sh/test_uninstall_sd_cpp_custom_root.sh
+# lifts helpers out with `sed -n '/^_name() {/,/^}/p'`, and a one-liner would extract as nothing.
+_trim_ws() {
+    printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 # Stop an Unsloth server via its PID file (written by install.sh's _spawn_terminal).
 _kill_pid_file() {
     _pid_file="$1"
@@ -506,15 +518,24 @@ _custom_studio_roots() {
     # narrower reading wins: a spare directory is recoverable, a deleted studio.db is not.
     # Nothing is stranded either way, since the studio root of the install being removed
     # comes from the master root's own studio.conf just above.
-    if [ -n "${UNSLOTH_HOME:-}" ]; then
-        _emit "$UNSLOTH_HOME"
-        _from_conf "$UNSLOTH_HOME/share/studio.conf"
-    elif [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
-        _emit "$UNSLOTH_STUDIO_HOME"
-        _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
-    elif [ -n "${STUDIO_HOME:-}" ]; then
-        _emit "$STUDIO_HOME"
-        _from_conf "$STUDIO_HOME/share/studio.conf"
+    # Trimmed BEFORE the precedence test, as install.sh trims UNSLOTH_HOME before it decides
+    # portable mode: a whitespace-only value is what an unset variable looks like to the
+    # installer and to storage_roots.py, so it must not claim the first branch here and hide
+    # the variable that names the install this environment really produced. Trimmed values are
+    # what the branches use as well, so " /path " resolves like /path rather than failing every
+    # -d test. `$(_trim_ws ...)` and not a trailing `[ ... ] &&` chain: this runs under `set -e`.
+    _root_master=$(_trim_ws "${UNSLOTH_HOME:-}")
+    _root_studio=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    _root_alias=$(_trim_ws "${STUDIO_HOME:-}")
+    if [ -n "$_root_master" ]; then
+        _emit "$_root_master"
+        _from_conf "$_root_master/share/studio.conf"
+    elif [ -n "$_root_studio" ]; then
+        _emit "$_root_studio"
+        _from_conf "$_root_studio/share/studio.conf"
+    elif [ -n "$_root_alias" ]; then
+        _emit "$_root_alias"
+        _from_conf "$_root_alias/share/studio.conf"
     fi
     # Default-mode conf.
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
@@ -1016,7 +1037,10 @@ _unsloth_uninstall_main() {
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can
     # only be located if the user re-exports the variable. Print a hint when
     # neither var is set so the bare `curl | sh` flow doesn't silently miss.
-    if [ -z "${UNSLOTH_STUDIO_HOME:-}" ] && [ -z "${STUDIO_HOME:-}" ]; then
+    # Trimmed like the precedence chain in _custom_studio_roots: a whitespace-only value named
+    # no root and removed nothing, so the hint that explains how to reach a custom install has
+    # to print rather than be suppressed by a variable that is set to nothing usable.
+    if [ -z "$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")" ] && [ -z "$(_trim_ws "${STUDIO_HOME:-}")" ]; then
         echo ""
         echo "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"
         echo "pointing at a custom directory, re-run this script with the same variable"
