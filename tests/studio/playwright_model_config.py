@@ -55,7 +55,7 @@ from _playwright_robust import (  # noqa: E402
 
 BASE = os.environ["BASE_URL"]
 NEW = os.environ.get("STUDIO_NEW_PW", "ModelCfg-NEW-2026!")
-# Attach mode: log into an already-provisioned Studio with an existing password
+# Attach mode: log into an already-provisioned Unsloth with an existing password
 # instead of the first-boot change-password dance. CI leaves STUDIO_LOGIN_PW unset
 # to exercise the real change-password flow; local runs can set it to skip re-provisioning.
 LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
@@ -322,7 +322,7 @@ with sync_playwright() as p:
     if LOGIN_PW:
         # Attach mode: log in via the API and seed the token before navigation,
         # skipping the first-boot change-password dance.
-        step("setup: API login + token seed (attach to running Studio)")
+        step("setup: API login + token seed (attach to running Unsloth)")
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
             f"try{{localStorage.setItem('unsloth_auth_token', {json.dumps(_tok)});}}"
@@ -974,46 +974,252 @@ with sync_playwright() as p:
     #    reload was the regression that reverted the predecessor PR.
     # ─────────────────────────────────────────────────────
     step("legacy unsloth_load_settings migrates once and stays idempotent")
+
+    _seed_marks = [0]
+
+    def seed_legacy_for_next_document(seed: dict, *, wipe_migrated: bool) -> None:
+        """Put the legacy store in place for the NEXT document, before any app code runs.
+
+        Not `evaluate` on the live page, which is what this used to do. Writing the
+        seed into the document that is about to be discarded makes the assertion race
+        that document's own in-flight work: `savePerModelConfig` in
+        model-config-page.tsx runs from the `.then()` of a GET
+        /api/settings/openai-auto-switch/overrides, so a response that arrives in the
+        window between `removeItem('unsloth_model_configs')` and the navigation
+        RE-CREATES the key from the server row. The reloaded page then finds that key
+        already present, `mergeLegacyEntries` skips the legacy entry it was seeded to
+        migrate (`Object.hasOwn(map, key)`), and `migrateLegacyLoadSettingsOnce`
+        latches `unsloth_model_configs_migrated` anyway -- so the step reported the
+        migration dropping a value when nothing had migrated at all.
+
+        That window is roughly 20ms wide and only opens when the previous step's Load
+        outruns its own wait, which is why this failed intermittently rather than
+        every time: three reds in fourteen main runs, with the commit that introduced
+        the write-back itself green.
+
+        An init script runs at document start on the new page, after every write from
+        the old document has gone with it, so the store the migration reads is the one
+        this step asked for. The sessionStorage mark keeps it to a single document:
+        init scripts cannot be removed, and re-seeding on the reload below would
+        re-arm the very legacy entry the idempotency half needs to stay absent.
+        """
+        _seed_marks[0] += 1
+        mark = f"__ui_modelcfg_seed_{_seed_marks[0]}"
+        page.add_init_script(
+            "(() => {\n"
+            f"  const MARK = {json.dumps(mark)};\n"
+            "  try {\n"
+            "    if (sessionStorage.getItem(MARK)) { return; }\n"
+            "    sessionStorage.setItem(MARK, '1');\n"
+            f"    localStorage.setItem('unsloth_load_settings', {json.dumps(json.dumps(seed))});\n"
+            + (
+                "    localStorage.removeItem('unsloth_model_configs');\n"
+                "    localStorage.removeItem('unsloth_model_configs_migrated');\n"
+                if wipe_migrated
+                else ""
+            )
+            + "  } catch (e) {}\n"
+            "})();"
+        )
+
+    def clear_server_overrides_for_model() -> None:
+        """Drop the server-side override rows for the model under test.
+
+        This step clears localStorage and nothing else, which was fine while local
+        storage was the only thing feeding the panel. It is not any more: the shared
+        override row now outranks the local record, and opening the panel writes the
+        row back down into `unsloth_model_configs`. Steps 2 to 4 above each mirror a
+        save to the server and nothing removes it, so what this step actually measured
+        was the migration racing that write-back -- and the migrated value lost
+        whenever the row carried a context of its own.
+
+        Seen on main as two different-looking failures from the same cause: an entry
+        with nothing from the legacy seed in it (row written over a wiped map), and an
+        entry carrying the seed's kvCacheDtype but step 3b's context (row written over
+        the migrated map). Removing the row leaves the legacy import as the only thing
+        that can put a value in this key, which is what the step is about.
+        """
+        # MODEL AND QUANT NORMALISED SEPARATELY, which is what `entries_for_model` already does
+        # to these same two values. Folding the whole `<model>:<quant>` string as one identity
+        # only works while the model half folds too: `normalizeModelIdentity` deliberately keeps
+        # a plain POSIX path's case, so with a local-path GGUF_REPO the row
+        # `/models/Foo.gguf:UD-Q4_K_XL` normalises to itself and never matched the lowercased
+        # `...:ud-q4_k_xl` this was comparing against. The stale row then survived the cleanup and
+        # the migration check went on to measure server precedence instead.
+        want_model = _normalize_model_identity(GGUF_REPO)
+        want_quant = GGUF_VARIANT.strip().lower()
+
+        def _is_row_for_model(key: str) -> bool:
+            if _normalize_model_identity(key) == want_model:
+                return True
+            model, sep, quant = key.rpartition(":")
+            return bool(sep) and (
+                _normalize_model_identity(model) == want_model
+                and quant.strip().lower() == want_quant
+            )
+
+        def rows_for_model() -> list[str] | None:
+            """The override rows for this model, or None if the inventory could not be READ.
+
+            None is not the empty list. `evaluate_fetch` reports a timeout or an HTTP error by
+            returning `status == 0` / a non-None `error` rather than raising, so a request that
+            never landed used to come back as "there are no override rows" -- the cleanup did
+            nothing, its own post-delete verification passed on the same silence, and stale rows
+            went on to contaminate the migration check with no line of output saying so.
+            """
+            resp = evaluate_fetch(
+                page,
+                f"{BASE}/api/settings/openai-auto-switch/overrides",
+                headers = {"Authorization": f"Bearer {token}"},
+            )
+            if not resp.get("status") or resp.get("error") is not None:
+                return None
+            body = resp.get("body")
+            if not isinstance(body, dict) or not isinstance(body.get("overrides"), dict):
+                return None
+            return [k for k in body["overrides"] if _is_row_for_model(str(k))]
+
+        def remove_rows(keys: list[str]) -> None:
+            for key in keys:
+                evaluate_fetch(
+                    page,
+                    f"{BASE}/api/settings/openai-auto-switch/overrides",
+                    method = "PUT",
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    body = {"model_id": key, "remove": True},
+                )
+
+        stale = rows_for_model()
+        if stale is None:
+            runtime_warn(
+                "could not read the server override inventory, so the rows left by the earlier "
+                "steps were not cleared; the migration check below may be measuring server "
+                "precedence instead"
+            )
+            return
+        remove_rows(stale)
+        # AND IT HAS TO STAY REMOVED. `syncModelOverride` is fire-and-forget, so a mirror PUT
+        # from steps 2 to 4 can still be in flight when this runs and recreate the row moments
+        # after a single post-delete read found it gone -- which puts back exactly the
+        # contamination this cleanup exists to remove. So absence is confirmed over a short
+        # window rather than at one instant, and a row that comes back is removed again.
+        # EVERY INTERVAL, not until the first empty one. Breaking on the first empty sample
+        # confirms absence at one instant plus 250 ms, which is the same single-read weakness one
+        # step further along: a queued PUT arriving in the third interval still recreates the row
+        # before hydration reads it. The window is only a window if it is sampled to the end.
+        left: list[str] | None = []
+        for _ in range(4):
+            page.wait_for_timeout(250)
+            seen_now = rows_for_model()
+            if seen_now is None:
+                left = None
+                break
+            if seen_now:
+                remove_rows(seen_now)
+            left = seen_now
+        if left is None:
+            runtime_warn(
+                "could not re-read the server override inventory after clearing it, so whether "
+                "the rows stayed removed is unknown; the migration check below may be measuring "
+                "server precedence instead"
+            )
+        elif left:
+            # Not fatal on its own: say so rather than let the migration assertion below
+            # report the leftover row as the migration losing a value.
+            runtime_warn(
+                f"server override rows for the model under test survived removal: {left}; "
+                "the migration check below may be measuring server precedence instead"
+            )
+        elif stale:
+            info(f"cleared {len(stale)} server override row(s) left by the earlier steps")
+
+    def wait_for_migration_settled(timeout_ms: int = 15_000) -> str | None:
+        """Block until the legacy import has actually run, and return its flag.
+
+        The condition, not a sleep. `migrateLegacyLoadSettingsOnce` sets
+        `unsloth_model_configs_migrated` as its last act on every path it takes --
+        imported, nothing to import, legacy store unreadable -- so the flag appearing
+        is exactly "the import has been and gone", which is what the assertions below
+        need to be true before they read anything. A fixed wait either reads too early
+        on a slow runner, which is how this step reported a value missing that was
+        about to be written, or pads every green run with time it does not need.
+        """
+        deadline = time.monotonic() + timeout_ms / 1000
+        flag = None
+        while time.monotonic() < deadline:
+            flag = robust_evaluate(
+                page, "() => localStorage.getItem('unsloth_model_configs_migrated')"
+            )
+            if flag is not None:
+                return flag
+            page.wait_for_timeout(100)
+        return flag
+
     try:
+        clear_server_overrides_for_model()
         legacy_key = f"{GGUF_REPO}::{GGUF_VARIANT}"
         legacy = {
             legacy_key: {
                 "contextLength": DISTINCT_CTX,
                 "kvCacheDtype": "q8_0",
                 "tensorParallel": True,
+                # A fingerprint, and the reason it is this field: no other step here sets
+                # Disable Vision, and toApiOverride only sends disable_vision when true,
+                # so a record carrying it can only have come from this seed. The context
+                # alone cannot tell "the import ran and lost a field" from "the import
+                # never ran", and kvCacheDtype and tensorParallel cannot either -- step 4
+                # writes both to the server, so a row mirrored back down reproduces them.
+                "disableVision": True,
             }
         }
-        robust_evaluate(
-            page,
-            "(seed) => {"
-            "  localStorage.setItem('unsloth_load_settings', JSON.stringify(seed));"
-            "  localStorage.removeItem('unsloth_model_configs');"
-            "  localStorage.removeItem('unsloth_model_configs_migrated');"
-            "  return true;"
-            "}",
-            arg = legacy,
-        )
+        seed_legacy_for_next_document(legacy, wipe_migrated = True)
         page.reload()
         composer = page.locator('textarea[aria-label="Message input"]')
         composer.wait_for(state = "visible", timeout = 60_000)
         # Opening the picker config forces the store to read (which migrates).
         popover = open_picker()
         open_config(popover, MODEL_HINT)
-        page.wait_for_timeout(800)
+        flag_first = wait_for_migration_settled()
         cfg_first = read_configs()
-        migrated_ctx = any(
-            e.get("customContextLength") == DISTINCT_CTX for e in entries_for_model(cfg_first)
-        )
-        if migrated_ctx:
+        model_entries = entries_for_model(cfg_first)
+        migrated_ctx = any(e.get("customContextLength") == DISTINCT_CTX for e in model_entries)
+        # Did the import run at all? Two very different failures were being reported as
+        # one. "It ran and lost the context" is a bug in the migration; "nothing from
+        # this seed is here" means the key was written by something else and the import
+        # skipped it, which is what a racing write produces. Collapsing them into "not
+        # migrated" sent the last investigation into normalizeV1, which was innocent.
+        migrated_any = any(e.get("disableVision") is True for e in model_entries)
+        # AND THE PASS REQUIRES THE FINGERPRINT TOO. The context alone does not say where it came
+        # from: a server override row that survived the cleanup carries DISTINCT_CTX as well --
+        # step 3b wrote it -- and hydration can put that into `model_entries` with the legacy
+        # import never having applied the seed at all. Reporting OK on the context by itself is
+        # the very confusion `disableVision` was added to end, left out of the branch that
+        # decides whether this step passed.
+        if migrated_ctx and migrated_any:
             info(f"OK migration: legacy context {DISTINCT_CTX} preserved after migrating")
+        elif migrated_ctx:
+            soft_fail(
+                f"legacy context {DISTINCT_CTX} is present but NOTHING ELSE from the seed is: "
+                f"disableVision is the fingerprint that only this seed sets, so the context was "
+                f"put here by something other than the legacy import -- a surviving server "
+                f"override row hydrating over the map is what produces this "
+                f"(entries={json.dumps(model_entries)[:400]})"
+            )
+        elif migrated_any:
+            soft_fail(
+                f"legacy context {DISTINCT_CTX} was DROPPED by the migration: other fields "
+                f"of the same legacy entry did land, so migrateLegacyLoadSettingsOnce ran "
+                f"and lost the context (entries={json.dumps(model_entries)[:400]})"
+            )
         else:
             soft_fail(
-                f"legacy context {DISTINCT_CTX} not migrated into unsloth_model_configs "
-                f"(got {json.dumps(cfg_first)[:400]})"
+                f"legacy entry never migrated at all: nothing from the seed reached "
+                f"unsloth_model_configs, so the key was already occupied when "
+                f"migrateLegacyLoadSettingsOnce ran (cfg={json.dumps(cfg_first)[:400]})"
             )
-        flag_first = robust_evaluate(
-            page, "() => localStorage.getItem('unsloth_model_configs_migrated')"
-        )
         if flag_first != "1":
             soft_fail(f"migration flag not set after migrating (got {flag_first!r})")
         shoot("09-after-migration")
@@ -1024,19 +1230,23 @@ with sync_playwright() as p:
         # in, nothing duplicates, and the migrated value is untouched.
         if migrated_ctx:
             probe_key = "unsloth/__idem_probe__::Q4_K_M"
-            robust_evaluate(
-                page,
-                "(seed) => {"
-                "  localStorage.setItem('unsloth_load_settings', JSON.stringify(seed));"
-                "  return true;"
-                "}",
-                arg = {probe_key: {"contextLength": DISTINCT_CTX + 2048, "tensorParallel": True}},
+            # Same document-start seeding as the first half, and for the same reason:
+            # this one deliberately leaves `unsloth_model_configs` alone, so a write
+            # racing the navigation would land in the very map the assertions below
+            # compare key-for-key.
+            seed_legacy_for_next_document(
+                {probe_key: {"contextLength": DISTINCT_CTX + 2048, "tensorParallel": True}},
+                wipe_migrated = False,
             )
             page.reload()
             composer.wait_for(state = "visible", timeout = 60_000)
             popover = open_picker()
             open_config(popover, MODEL_HINT)
-            page.wait_for_timeout(800)
+            # The flag is already "1" here, so this waits on the store having been read
+            # by the reloaded page rather than on the import: `readMap` is what would
+            # re-run the import if the flag were being ignored, which is the regression
+            # this half exists to catch.
+            wait_for_migration_settled()
             cfg_second = read_configs()
             keys_first = set(cfg_first.keys())
             keys_second = set(cfg_second.keys())

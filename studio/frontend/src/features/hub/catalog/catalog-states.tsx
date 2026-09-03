@@ -52,7 +52,7 @@ function describeFailure(
       }
     : {
         title: "Can't reach Hugging Face",
-        body: `Studio couldn't load ${resourceLabel} from Hugging Face.`,
+        body: `Unsloth couldn't load ${resourceLabel} from Hugging Face.`,
         offlineLike: false,
       };
 }

@@ -7,7 +7,7 @@
  * `initialize()` snapshots project, temporary status, model and creation time when the
  * thread MATERIALIZES, which used to be the same tick as the send. Two things separated
  * them: `BaseComposerRuntimeCore.send()` awaits every incomplete attachment before
- * `handleSend` and Studio's PDF/DOCX/text adapters extract there, and the shared provider
+ * `handleSend` and Unsloth's PDF/DOCX/text adapters extract there, and the shared provider
  * (#8908) now survives a view switch. Navigating meanwhile moves all four -- the adapter is
  * rebuilt with the new project, and ChatPage's view effect clears `incognito` -- so a
  * document sent from a Temporary Chat, or from one project into another, was created under
@@ -21,6 +21,7 @@ export type ThreadCreationClaim = {
   projectId: string | null;
   incognito: boolean;
   modelId: string;
+  modelGgufVariant: string | null;
   createdAt: number;
 };
 
@@ -78,6 +79,7 @@ export function readThreadCreationClaim(
     projectId: claim.projectId,
     incognito: claim.incognito,
     modelId: claim.modelId,
+    modelGgufVariant: claim.modelGgufVariant,
     createdAt: claim.createdAt,
   };
 }

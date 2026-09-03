@@ -335,7 +335,7 @@ test("the landing does not restore a chat that was deleted while it was away", (
 test("no restore path puts a deleted chat back on screen", () => {
   // Three places put a retained id back: ProjectLanding's resume effect (pinned above),
   // NonceThreadResumeRestore, and the remembered-nonce reopen. All three ask the RUNTIME
-  // whether it still knows the thread, and Studio deletes by tombstoning storage rather than
+  // whether it still knows the thread, and Unsloth deletes by tombstoning storage rather than
   // calling runtime.threads.delete(), so all three still answer yes after a delete. Guarding
   // one fixes nothing.
   const restore = componentSource(provider, "function NonceThreadResumeRestore({");
@@ -354,7 +354,7 @@ test("no restore path puts a deleted chat back on screen", () => {
 test("a delayed first send keeps the creation inputs it was sent under", () => {
   // The adapter is rebuilt every render and handed to the core via __internal_setOptions, so
   // initialize() reads the provider's LATEST projectId. send() awaits every incomplete
-  // attachment before handleSend and Studio's PDF/DOCX/text adapters extract there, so with
+  // attachment before handleSend and Unsloth's PDF/DOCX/text adapters extract there, so with
   // the provider surviving a project switch a document send materializes in whichever project
   // is on screen by then.
   const thread = readFileSync(
@@ -411,18 +411,17 @@ test("a delayed first send keeps the creation inputs it was sent under", () => {
 });
 
 test("compare lists its threads once before it waits on any run", () => {
-  // Two constraints one boolean cannot carry. The wait has to be GLOBAL, because a first
-  // compare run starts before either thread exists and files its handles under "__default";
-  // and it has to exist at all, because these ids feed ComparePane's `initialThreadId`, so
-  // learning them mid-run points ThreadAutoSwitch at a generating thread. But the shared
-  // provider keeps a base chat's run alive across the switch into compare, so a global wait
-  // on the FIRST list left an existing compare on blank runtimes with no later edge to
-  // recover on. That list has nothing to clobber, so only re-lists wait.
-  const waits =
+  // general compare can run external panes, while lora compare only uses the local runtime.
+  const globalWaits =
     page.match(
       /const anyRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.runningByThreadId\)\.length > 0,\s*\);/g,
     ) ?? [];
-  assert.equal(waits.length, 2, "both compare variants share the global wait");
+  assert.equal(globalWaits.length, 1, "General Compare waits on every pane run");
+  const localWaits =
+    page.match(
+      /const anyRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.localRunByThreadId\)\.length > 0,\s*\);/g,
+    ) ?? [];
+  assert.equal(localWaits.length, 1, "LoRA Compare waits only on local runs");
   const gates =
     page.match(
       /if \(anyRunning && listedPairRef\.current === pairId\) return;\s*listedPairRef\.current = pairId;/g,

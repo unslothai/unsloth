@@ -961,7 +961,7 @@ export function ApiMonitorPage(): ReactElement {
                 {entries.length > 0
                   ? "No requests match this filter."
                   : loggingDisabled
-                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Studio to re-enable."
+                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
                     : "No API traffic yet. Point a client at the base URL above to see requests here."}
               </p>
             ) : (

@@ -44,6 +44,7 @@ export function ModelsHeader({
   localCount,
   isDataset,
   gpuLabel,
+  gpuSharedLabel,
   ramLabel,
   coreLabel,
   activeCheckpoint,
@@ -55,6 +56,7 @@ export function ModelsHeader({
   localCount: number;
   isDataset: boolean;
   gpuLabel: string;
+  gpuSharedLabel: string | null;
   ramLabel: string;
   coreLabel: string;
   activeCheckpoint: string | null;
@@ -63,6 +65,9 @@ export function ModelsHeader({
   onEject: () => void;
 }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  const gpuMemoryValue = gpuSharedLabel
+    ? `${gpuLabel} VRAM + ${gpuSharedLabel}`
+    : gpuLabel;
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
@@ -88,7 +93,11 @@ export function ModelsHeader({
           label="Local"
           value={String(localCount)}
         />
-        <StatPill icon={ChipIcon} label="VRAM" value={gpuLabel} />
+        <StatPill
+          icon={ChipIcon}
+          label={gpuSharedLabel ? "shared" : "VRAM"}
+          value={gpuMemoryValue}
+        />
         <StatPill icon={RamMemoryIcon} label="RAM" value={ramLabel} />
         <StatPill icon={CpuIcon} label="CPU" value={coreLabel} />
 

@@ -1,4 +1,4 @@
-# Proving a Studio performance change
+# Proving an Unsloth performance change
 
 This is the protocol for turning "it feels faster" into a number a reviewer can trust. It exists
 because an audit of 40 frontend pull requests found that **30 of them had no effect distinguishable
@@ -43,19 +43,19 @@ python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null output
 # 4. Parity: prove you did not change what is rendered
 python -m tests.studio.studiobench.sweep.ui_parity --null outputs/null outputs/mine
 
-# 5. Read the payload back as a scored report. No Studio, no browser, no network.
+# 5. Read the payload back as a scored report. No Unsloth, no browser, no network.
 python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
 ```
 
-The three commands in steps 1 and 2 drive a real Studio and therefore need credentials. The rest
+The three commands in steps 1 and 2 drive a real Unsloth and therefore need credentials. The rest
 read a payload that already exists: `--assert-liveness`, `floor_table`, `ui_parity` and `--report`
-run offline, with no Studio, no browser and no network.
-See **"You need a Studio, and you need its password"** in [README.md](README.md) before you
+run offline, with no Unsloth, no browser and no network.
+See **"You need an Unsloth, and you need its password"** in [README.md](README.md) before you
 run the first one: a missing `--password` fails as an HTTP 401 only after the browser has
 already started, and `--doctor` reports PASS on that exact configuration. If you drive the wave
-against Studios you started yourself rather than letting studiobench install them, `--ab` needs
+against Unsloth instances you started yourself rather than letting studiobench install them, `--ab` needs
 `--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything. It also
-needs `--password` **and** `--password-b`, one per arm: two separately booted Studios mint two
+needs `--password` **and** `--password-b`, one per arm: two separately booted Unsloth instances mint two
 different bootstrap passwords, so a single `--password` is a 401 on the treatment alone, after
 the browser is already up.
 
@@ -174,19 +174,28 @@ were junk.
 
 ## 4. Parity: prove you did not change what is rendered
 
-### The policy, and the two exemptions
+### The policy, and the three exemptions
 
-**UI and UX idempotency is required for every change, with exactly two exemptions:**
+**UI and UX idempotency is required for every change, with exactly three exemptions:**
 
 1. **A deliberate difference accepted for a dramatic performance improvement.** This is a decision
    somebody makes on the record with the number attached, not a default. If you are relying on it,
    say so in the pull request and say what the difference is.
 2. **A difference that exists only OFF SCREEN.** This one is a definition rather than a judgement:
    rendering only what is visible is an accepted technique, not a parity violation.
+3. **Select-all need not select all, PROVIDED copy stays complete.** Copy may be implemented as
+   "emit the whole thread as markdown, or as plain text, read from the source" rather than as a
+   faithful reproduction of a DOM selection.
+   - **Completeness of the copied content is REQUIRED.** Silent truncation is data loss.
+   - **Visual selection fidelity is NOT required.**
 
-Neither exemption removes the need for a floor. An exemption changes what counts as a pass; it does
+   This is what makes deferral and virtualization cheap: the copy path stops depending on what is
+   mounted. Do not reject a design on the grounds that it breaks DOM-based select-all.
+
+No exemption removes the need for a floor. An exemption changes what counts as a pass; it does
 not make an unmeasured claim into a measured one, so the null control still has to run on the same
-scale.
+scale. The third carries a condition on top of that, and the condition is the required half: an
+exemption you are relying on for the selection does not excuse the copy.
 
 **A bare "PARITY OK" reads far stronger than any of the three modes can support**, which is why
 each mode prints the CLAIM it is making and the POLICY it is judging against, and why you should
@@ -197,6 +206,23 @@ read both before quoting a pass:
 | `--mode digest` | the thread root and declared overlays serialise identically, on screen and off | no, it does not know what was on screen |
 | `--mode visible` | every message the viewport showed is present and identical, and every difference lies off screen | **yes** -- this is the mode that can say so |
 | `--mode behaviour` | scroll extent matches and the invariants a windowed mount breaks first still hold | no, and it says nothing about appearance |
+
+No mode grants exemption 3 off a digest. `--mode behaviour` is the only one that speaks to it,
+through `clipboard_carries_the_whole_thread`, which scores the copy against the THREAD rather than
+against the other arm -- that is the required half. Where a payload carries no readable
+`select_all_copy`, the gate records that the exemption exists and does not grant it.
+
+**And it scores it by LENGTH, not by content.** Each arm's `clipboard_chars` is divided by the
+thread's own visible text and has to land inside `MIN_CLIPBOARD_COVERAGE`-`MAX_CLIPBOARD_COVERAGE`;
+the copied characters are never compared. That is not an oversight to be fixed by comparing them.
+The base arm's clipboard is the DOM's RENDERED TEXT and a store-based copy is markdown SOURCE, so
+the two are different serialisations of one conversation and a character comparison fails on a
+CORRECT build -- the only way to make it pass would be to normalise until it stopped testing
+anything. The band is where the strength is, and it is two-sided for that reason: the lower bound
+refused truncation measured at 0.61 of the thread, the upper bound refused the substitution its
+first fix turned into, measured at 2.16. A copy that rewrote content while landing inside the band
+would not be caught, so `--mode behaviour` prints the band it is enforcing next to its claim and
+does not use the bare word "complete".
 
 The digest is **sidebar-blind and layout-blind**: run against a real sidebar-drag change it reported
 0 of 34 differing pairs, and so did its own null control. So a digest pass is not a statement that
@@ -477,7 +503,7 @@ has nothing to do with rendering.
 
 `arms/content_visibility_probe.js` is the working probe. Install it with
 `SBENCH_EXTRA_INIT_SCRIPT`, read it back with `SBENCH_PAGE_CONSOLE="CVPOT "`. Both are unset by
-default, so a scored run is unaffected. A probe run drives a real Studio like everything else in
+default, so a scored run is unaffected. A probe run drives a real Unsloth like everything else in
 the loop, so it needs the credentials above; the file's own header carries the full command.
 
 A run carrying a probe is **not scorable**, because the probe samples the DOM and forces layout on
@@ -504,7 +530,7 @@ does not parse also leaves the scene scripts alone.
 On **webkit**, the default engine on Linux and macOS, it does not: Playwright hands webkit its init
 scripts as one bootstrap unit, so a syntax error in the probe stops dom.js, parity.js and
 surfaces.js as well. The probe is installed as plain source rather than through `eval` because
-Studio serves `script-src 'self'` with no `'unsafe-eval'`, and webkit enforces that against an init
+Unsloth serves `script-src 'self'` with no `'unsafe-eval'`, and webkit enforces that against an init
 script, so an eval-installed probe never ran there at all. The source **opens** its script, with
 nothing put in front of it, so a probe that begins `"use strict"` keeps its directive prologue and
 runs under the semantics the file was written for.

@@ -71,7 +71,7 @@ def test_snapshot_is_json_safe_and_ordered_by_start():
     assert [e["thread_id"] for e in snap] == ["first", "second"]
     # The threading.Event must not leak into an HTTP response body.
     assert all("event" not in e for e in snap)
-    assert {"handle", "thread_id", "model", "kind", "started_at"} == set(snap[0])
+    assert {"handle", "thread_id", "run_id", "model", "kind", "started_at"} == set(snap[0])
 
 
 def test_thread_ids_are_deduped_and_skip_unnamed_runs():
@@ -115,6 +115,34 @@ def test_cancel_thread_with_no_match_is_a_no_op():
         assert active_generations.cancel_thread("nope") == 0
         assert active_generations.cancel_thread("") == 0
         assert not a.is_set()
+
+
+def test_cancel_run_targets_only_matching_durable_generation():
+    durable, sibling = threading.Event(), threading.Event()
+    with active_generations.ActiveGeneration(durable, thread_id = "t1", run_id = "run-1"):
+        with active_generations.ActiveGeneration(sibling, thread_id = "t1", run_id = "run-2"):
+            assert active_generations.cancel_run("run-1") == 1
+            assert durable.is_set()
+            assert not sibling.is_set()
+
+
+def test_same_durable_run_and_event_borrows_existing_registration():
+    event = threading.Event()
+    with active_generations.ActiveGeneration(
+        event, run_id = "run-1", thread_id = "stale", model = "stale"
+    ):
+        with active_generations.ActiveGeneration(
+            event, run_id = "run-1", thread_id = "thread-1", model = "local"
+        ):
+            snapshot = active_generations.snapshot()[0]
+            assert (active_generations.count(), snapshot["thread_id"], snapshot["model"]) == (
+                1,
+                "thread-1",
+                "local",
+            )
+            assert active_generations.cancel_all() == 1
+    assert event.is_set()
+    assert active_generations.count() == 0
 
 
 def test_cancel_does_not_unregister_entries():
@@ -1165,7 +1193,7 @@ def _install_completions_stream_mock(monkeypatch, events):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1287,7 +1315,7 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1361,7 +1389,7 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)

@@ -468,7 +468,7 @@ def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
     import routes.chat_history as chat_history
 
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "__LOCALID_bulk111"}])
-    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: ([], []))
+    monkeypatch.setattr(chat_history, "clear_chat_history", lambda **_kwargs: ([], [], []))
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
 
     import asyncio
@@ -942,7 +942,7 @@ def test_a_directory_of_plain_python_files_is_not_a_cache(tmp_path, monkeypatch)
 
 
 def test_a_marked_directory_is_cleared(tmp_path, monkeypatch):
-    """Studio writes the marker when it creates the location."""
+    """Unsloth writes the marker when it creates the location."""
     cache = tmp_path / "compiled_cache"
     cache.mkdir()
     (cache / "helper.py").write_text("print(1)\n")
@@ -1052,7 +1052,7 @@ def test_a_shared_compile_location_keeps_preserved_patterns(tmp_path, monkeypatc
 
 
 def test_a_marked_shared_directory_is_still_cleared_whole(tmp_path, monkeypatch):
-    """The marker means Studio made the directory, so the old behaviour stands."""
+    """The marker means Unsloth made the directory, so the old behaviour stands."""
     cache = tmp_path / "marked"
     cache.mkdir()
 
@@ -1268,7 +1268,7 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
 
 
 def test_an_unrelated_cache_named_folder_in_the_cwd_is_not_ours(tmp_path, monkeypatch):
-    """Studio is launched from wherever the shell happens to be, so the name
+    """Unsloth is launched from wherever the shell happens to be, so the name
     alone cannot license an rmtree."""
     launch_dir = tmp_path / "someproject"
     cache = launch_dir / "unsloth_compiled_cache"
@@ -1526,7 +1526,7 @@ def test_a_pre_existing_compile_directory_is_never_marked_as_ours(tmp_path, monk
     from utils import cache_cleanup
     from utils.paths import storage_roots
 
-    # Where Studio would pin it, already there and holding someone else's files.
+    # Where Unsloth would pin it, already there and holding someone else's files.
     pinned = Path(storage_roots.cache_root()).parent / "compiled_cache"
     pinned.mkdir(parents = True)
     (pinned / "someones_notes.txt").write_text("keep me")
@@ -1822,7 +1822,7 @@ def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_foreign_tool_result_keeps_its_own_fields():
-    """Studio's wrapper always carries images; anything else with text and
+    """Unsloth's wrapper always carries images; anything else with text and
     sessionId is someone else's result and must not be reduced to its text."""
     # The predicate lives beside the rest of the sandbox contract, and the
     # adapter and both tool cards share that one copy.
@@ -2564,7 +2564,7 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     assert "return removed, active_runs, False" in source
 
     route = inspect.getsource(chat_history.clear_history)
-    assert "cleared, cleared_runs = clear_chat_history()" in route
+    assert "cleared, cleared_runs, cleared_chat_runs = clear_chat_history(" in route
     assert "cleared" in route.split("_remove_sandboxes(", 1)[1].split(")", 1)[0]
 
 
@@ -2588,7 +2588,7 @@ def test_a_symlinked_cache_marker_does_not_license_a_delete(tmp_path, monkeypatc
 
 
 def test_a_real_cache_marker_still_counts(tmp_path):
-    """The other half: a directory Studio made is still cleaned out."""
+    """The other half: a directory Unsloth made is still cleaned out."""
     from utils import cache_cleanup
 
     ours = tmp_path / "unsloth_compiled_cache"
@@ -2695,9 +2695,6 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
     import routes.chat_history as chat_history
 
     cancelled = []
-    monkeypatch.setattr(chat_history, "delete_chat_threads", lambda ids: None)
-    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
-
     from state import active_generations
 
     monkeypatch.setattr(active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1)
@@ -3282,9 +3279,9 @@ def test_a_chat_started_during_the_clear_is_cancelled_too():
 
     source = inspect.getsource(chat_history.clear_history)
     assert "late" in source
-    assert source.index("cleared, cleared_runs = clear_chat_history()") < source.index(
-        "_cancel_active_generations(late)"
-    )
+    assert source.index(
+        "cleared, cleared_runs, cleared_chat_runs = clear_chat_history("
+    ) < source.index("_cancel_active_generations(late)")
     assert source.index("_cancel_active_generations(late)") < source.index("_remove_sandboxes(")
 
 
@@ -6306,6 +6303,28 @@ class _WholeSecondMtime:
 
     def __getattr__(self, name):
         return getattr(self._stat, name)
+
+
+def test_session_in_flight_does_not_swallow_tool_exceptions(tmp_path, monkeypatch):
+    """A tool that raises must surface, not be reported as an unknown tool."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    session = "__LOCALID_raises1"
+    with pytest.raises(ValueError, match = "boom"):
+        with tools._session_in_flight(session):
+            raise ValueError("boom")
+
+    assert tools._session_key(session) not in tools._active_sessions
+
+
+def test_execute_tool_reports_a_bad_arg_instead_of_unknown_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    with pytest.raises(AttributeError):
+        tools.execute_tool("python", {"code": 42}, session_id = "__LOCALID_badarg1")
 
 
 if __name__ == "__main__":

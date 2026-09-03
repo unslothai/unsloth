@@ -307,11 +307,18 @@ def _fake_studio_db(monkeypatch, messages):
     import sys
     import types
 
+    from core.inference import checkpoint
+
     module = types.SimpleNamespace(list_chat_messages = lambda thread_id: messages)
     package = types.ModuleType("storage")
     package.studio_db = module
     monkeypatch.setitem(sys.modules, "storage", package)
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+    # These fixtures store rolling-shaped records (`fits` + `dropped_messages`, no
+    # `checkpoint` key). Sticky replay treats a missing key as rolling, and the
+    # process default is checkpoint, so pin rolling here or every omitted-key
+    # record is refused. Policy-switch coverage lives in test_checkpoint_compaction.
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
 
 
 def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
@@ -631,7 +638,7 @@ def test_sticky_boundary_ignores_an_anchor_the_branch_no_longer_has(monkeypatch)
 def test_sticky_boundary_anchor_skips_the_system_turn(monkeypatch):
     """Counted the way `_branch_boundary` counts: system and developer turns do not.
 
-    Studio prefixes every request with a system message, so counting it would put every
+    Unsloth prefixes every request with a system message, so counting it would put every
     anchor one place late and quietly deepen every boundary by one.
     """
     from core.inference import llama_cpp
@@ -938,7 +945,8 @@ def test_the_sticky_boundary_is_applied_once_per_request():
     text = source.read_text(encoding = "utf-8")
     assert "_sticky_boundary_applied = True" in text
     # Whitespace-insensitive: the gate is one expression however the formatter wraps it.
-    assert "0 if _sticky_boundary_applied" in " ".join(text.split())
+    # Both halves are spent together, so the depth and its provenance cannot disagree.
+    assert "(0, True) if _sticky_boundary_applied" in " ".join(text.split())
 
 
 def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
@@ -1113,10 +1121,10 @@ def test_conversation_search_returns_what_the_budget_does_hold(archived, monkeyp
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
-    """Studio always sends enabled_tools, and it never names this internal tool.
+    """Unsloth always sends enabled_tools, and it never names this internal tool.
 
     While the gate could only REMOVE, the allowlist filter dropped search_conversation
-    first, so neither it nor the compaction nudge ever appeared in a Studio chat.
+    first, so neither it nor the compaction nudge ever appeared in an Unsloth chat.
     """
     import asyncio
     import types
@@ -1510,8 +1518,10 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     assert "branch_messages = _request_branch" not in text
     assert 'kwargs["conversation_branch"] = _request_branch' not in text
     # And the boundary is still measured against the client's messages, which is what it
-    # will be re-applied to.
-    assert "_branch_boundary(conversation, _request_branch)" in text
+    # will be re-applied to. Recorded through `_boundary_metadata`, which is the only
+    # writer, so the depth, its anchor and the headroom that produced it stay together.
+    assert "_boundary_metadata( conversation, _request_branch," in text
+    assert '"boundary_messages": _branch_boundary(fitted, before),' in text
 
 
 # --- The instruction the user gave, and the follow-up that says nothing ---

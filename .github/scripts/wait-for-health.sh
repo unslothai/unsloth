@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Poll a booted Studio's /api/health until it reports healthy, and on timeout
+# Poll a booted Unsloth's /api/health until it reports healthy, and on timeout
 # print the tail of that server's log before failing.
 #
 # Usage:
@@ -65,7 +65,7 @@ done
 # Two halves of one bound, and neither works without the other.
 #
 # --max-time, because curl sets no maximum transfer time by default and
-# --connect-timeout stops helping the moment the handshake completes. A Studio
+# --connect-timeout stops helping the moment the handshake completes. An Unsloth
 # that binds the port and then wedges its event loop -- the shape of a wedged
 # server on a 4 vCPU runner with four of them on it -- parks the FIRST
 # iteration forever, and an iteration count is not a deadline if an iteration

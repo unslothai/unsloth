@@ -556,7 +556,7 @@ class TestSandboxEnvIsolation:
         env = _build_safe_env(str(tmp_path))
         parts = env["PATH"].split(os.pathsep)
         assert str(git_dir) in parts
-        # Curated prefix stays ahead of host Git so Studio python/pip win.
+        # Curated prefix stays ahead of host Git so Unsloth python/pip win.
         assert parts.index(str(git_dir)) > 0
 
     def test_host_path_dirs_not_inherited(self, monkeypatch, tmp_path):

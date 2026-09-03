@@ -158,6 +158,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: studio-backend
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -184,7 +185,8 @@ jobs:
           # Torch CPU + transformers are required by a chunk of the backend test
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            'torch>=2.4,<2.11' 'torchaudio<2.11'
           pip install 'transformers>=4.51,<5.5'
           # peft: core/inference/inference.py imports it at module scope, and it is listed
           # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
@@ -251,6 +253,8 @@ jobs:
         # isolation guard scans for the tight ones, so a new test below the threshold
         # fails that guard instead of flaking here.
         #
+        # test_media_auto_switch has a 0.4s budget that xdist scheduling can exceed.
+        #
         # --timeout: a per-test wall-clock cap, so a test that never returns fails with its
         # own name in the summary instead of taking the job's 45 minutes down with it and
         # reporting "cancelled". 330s comes off the measured distribution rather than taste:
@@ -286,6 +290,7 @@ jobs:
             --ignore=tests/test_scan_loras_off_event_loop.py \
             --ignore=tests/test_anthropic_messages.py \
             --ignore=tests/test_profile_stats.py \
+            --ignore=tests/test_media_auto_switch.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -305,7 +310,8 @@ jobs:
             tests/test_tunnel_safe_long_post.py \
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
-            tests/test_profile_stats.py
+            tests/test_profile_stats.py \
+            tests/test_media_auto_switch.py
 
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
@@ -360,6 +366,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: repo-cpu-tests
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -386,7 +393,7 @@ jobs:
             'numpy<3' pytest pytest-asyncio pytest-xdist httpx
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
+            'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           pip install 'transformers>=4.51,<5.5'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.
@@ -450,6 +457,7 @@ jobs:
             --ignore=tests/studio/test_hardware_dispatch_matrix.py \
             --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
             --ignore=tests/studio/test_xpu_spoof_pipeline.py \
+            --ignore=tests/studio/test_mlx_context_platform_matrix.py \
             --ignore=tests/vllm_compat \
             --ignore=tests/version_compat \
             -m 'not server and not e2e' \
@@ -470,7 +478,8 @@ jobs:
           python -m pytest -q --tb=short \
             tests/studio/test_hardware_dispatch_matrix.py \
             tests/studio/test_is_mlx_dispatch_gate.py \
-            tests/studio/test_xpu_spoof_pipeline.py
+            tests/studio/test_xpu_spoof_pipeline.py \
+            tests/studio/test_mlx_context_platform_matrix.py
 
       - name: Event-loop latency tests (wall clock, run without CPU contention)
         env:
@@ -535,4 +544,3 @@ jobs:
           dir: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ steps.pip-cache.outputs.key }}
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
-

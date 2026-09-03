@@ -3,7 +3,7 @@
 
 """Where a HEAVY thread stalls, as a curve over how much content the thread holds.
 
-Users report Studio and Desktop going sluggish "after long generations with any code cells
+Users report Unsloth and Desktop going sluggish "after long generations with any code cells
 and/or text": typing, scrolling, opening a message menu, deleting and re-opening the thread all
 lag once a session has accumulated a few very long replies. That report is about CONTENT VOLUME,
 not message count, so the axis here is characters of thread content, not messages, and the
@@ -40,7 +40,7 @@ So the primary four, all portable:
 
 A MessageChannel ping-pong is the usual way to build the stall detector and it was measured and
 rejected here: it spins ~150k times a second, and on Firefox that HALVED the frame rate of the
-page under test (38 frames -> 14, median frame 17ms -> 34ms) before any Studio code ran. The
+page under test (38 frames -> 14, median frame 17ms -> 34ms) before any Unsloth code ran. The
 1ms setTimeout loop ticks ~150 times a second, costs nothing measurable on any of the three
 engines, and reported the same 120ms synthetic stall on all three.
 
@@ -108,7 +108,7 @@ needs its own port: a killed run can leave its vite dev server holding the previ
 
 The dev server is deliberate and is a limitation to read the numbers against: React runs in
 development mode, nothing is minified, and vite serves unbundled modules. Absolute milliseconds
-are therefore higher than a packaged Studio's. The curve across sizes and the ranking across
+are therefore higher than a packaged Unsloth's. The curve across sizes and the ranking across
 actions are what this file is for.
 """
 
@@ -502,7 +502,7 @@ async (settleMs) => {
   await window.__nextPaint();
   window.__hv.begin();
   const started = performance.now();
-  // The wheel event first, and it is load-bearing. Studio replaces assistant-ui's autoscroll
+  // The wheel event first, and it is load-bearing. Unsloth replaces assistant-ui's autoscroll
   // with an intent-aware one, and a bare scrollTo from the bottom is read as programmatic and
   // snapped straight back: measured, the jump landed at the bottom it started from and the whole
   // column timed nothing. A wheel is what says a person did this.

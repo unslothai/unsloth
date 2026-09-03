@@ -1,94 +1,77 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The rail clips at its padding box, so with no padding under the bottom card
-// that card lost its shadow, all of which falls below it: the llama.cpp toast
-// was reported as "the bottom is cut off".
+// The rail clips at its padding box, so it reserves a gutter around its cards
+// or their shadows are cut off and a cap a few px short slices a card's corners
+// (#9246). The gutter must not be taken out of the cards: the rail sits on the
+// floor and its bottom padding carries them back up to their inset, and its cap
+// grows by both gutters to pay for them.
 //
-// Pinned here: the gutter is reserved under the cards and added on top of the
-// band they may fill, so they stay put and a cap a few px short no longer
-// slices one.
+// Arithmetic in CSS rather than in JS, since the rail is anchored and not
+// placed, so this reads the source: the node suite has no DOM to compute in.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import {
-  STACK_SHADOW_GUTTER_BOTTOM,
-  STACK_SHADOW_GUTTER_TOP,
-  railBottomOffset,
-  railCardsHeight,
-  railMaxHeight,
-  stackGeometry,
-} from "../src/features/settings/stores/monitor-frame-store.ts";
+const PROVIDER = readFileSync(
+  new URL("../src/app/provider.tsx", import.meta.url),
+  "utf8",
+);
 
-const GUTTER = STACK_SHADOW_GUTTER_BOTTOM + STACK_SHADOW_GUTTER_TOP;
+/** A `const NAME = <number>;` declaration in the provider. */
+function constant(name: string): number {
+  const found = PROVIDER.match(new RegExp(`const ${name} = (\\d+);`));
+  assert.ok(found, `${name} is gone from the provider`);
+  return Number(found[1]);
+}
 
-const INSET = 16;
+const GUTTER_BOTTOM = constant("STACK_SHADOW_GUTTER_BOTTOM");
+const GUTTER_TOP = constant("STACK_SHADOW_GUTTER_TOP");
+
+/** Where the cards sit, and the band they may fill, before the gutter. */
+const CARDS_INSET = 16;
+const CARDS_BAND_TRIM = 32;
 
 test("the gutters clear the shadows the rail carries", () => {
   // Off the rendered blur: light is one level of white 8px below and gone 6px
   // above; dark is one level of #181818 16px below and 8px above.
-  assert.ok(STACK_SHADOW_GUTTER_BOTTOM >= 16, "the shadow below is clipped");
-  assert.ok(STACK_SHADOW_GUTTER_TOP >= 8, "the shadow above is clipped");
+  assert.ok(GUTTER_BOTTOM >= 16, "the shadow below is clipped");
+  assert.ok(GUTTER_TOP >= 8, "the shadow above is clipped");
 });
 
 test("the rail's edge drops by the gutter, so the cards keep their inset", () => {
-  // Offset plus padding is where the cards land.
-  assert.equal(
-    railBottomOffset(INSET) + STACK_SHADOW_GUTTER_BOTTOM,
-    INSET,
-    "the bottom card moved",
-  );
-  // A lifted placement keeps it too.
-  assert.equal(railBottomOffset(148) + STACK_SHADOW_GUTTER_BOTTOM, 148);
-});
-
-test("the cap grows by both gutters, so the cards' band is unchanged", () => {
-  for (const room of [0, 56, 137, 468]) {
+  // The rail is on the floor, so its bottom padding alone is the cards' inset.
+  const rails = PROVIDER.match(/pointer-events-none fixed bottom-(\d+) right-4/g);
+  assert.equal(rails?.length, 2, "a rail left its bottom-right corner");
+  for (const rail of rails ?? []) {
+    const edge = Number(rail.match(/bottom-(\d+)/)?.[1]);
     assert.equal(
-      railMaxHeight(room) - GUTTER,
-      room,
-      "a gutter is being taken out of the cards",
+      edge + GUTTER_BOTTOM,
+      CARDS_INSET,
+      "the bottom card moved off its inset",
     );
   }
 });
 
-test("the clip box holds a card the cap is a little short of", () => {
-  const card = 137;
-  // A cap a few px short of the card used to slice its bottom corners off.
-  assert.ok(
-    railMaxHeight(card - 10) >= card,
-    "the rail still slices a card the cap is 10px short of",
-  );
-  // Not a licence to overflow by any amount: a cramped rail still scrolls.
-  assert.ok(railMaxHeight(card - 40) < card);
+test("the cap grows by both gutters, so the cards' band is unchanged", () => {
+  // calc(100dvh - Npx), where N is the band's own trim less the gutter added
+  // back. Anything larger spends the cards' room on the padding.
+  const caps = PROVIDER.match(/max-h-\[calc\(100dvh_-_(\d+)px\)\]/g);
+  assert.equal(caps?.length, 2, "a rail lost its cap");
+  for (const cap of caps ?? []) {
+    const trim = Number(cap.match(/_(\d+)px/)?.[1]);
+    assert.equal(
+      trim,
+      CARDS_BAND_TRIM - GUTTER_BOTTOM - GUTTER_TOP,
+      "a gutter is being taken out of the cards' band",
+    );
+  }
 });
 
-test("the measured height discounts the gutters the rail carries", () => {
-  const card = 137;
-  assert.equal(railCardsHeight(card + GUTTER, GUTTER), card);
-  // An empty rail is padding alone, and asks for nothing.
-  assert.equal(railCardsHeight(GUTTER, GUTTER), 0);
-  // Never negative, whatever scrollHeight rounds to.
-  assert.equal(railCardsHeight(15, 16), 0);
-});
-
-test("a discounted measurement places the rail as an unpadded one did", () => {
-  const W = 1280;
-  const H = 720;
-  const card = 137;
-  // The composer, docked under a thread with turns.
-  const composer = {
-    left: 220,
-    top: H - 140,
-    right: 1180,
-    bottom: H,
-    coverable: true,
-  };
-  const measured = railCardsHeight(card + GUTTER, GUTTER);
-  assert.deepEqual(
-    stackGeometry([composer], W, H, measured, measured),
-    stackGeometry([composer], W, H, card, card),
-    "the gutter leaked into the placement",
-  );
+test("the gutter is applied in px, not a rem utility", () => {
+  // pb-4/pt-2 resolve through --spacing in rem, so at any root but 16px the
+  // padding and the inset above would disagree and the cards would drift.
+  assert.match(PROVIDER, /paddingTop: STACK_SHADOW_GUTTER_TOP/);
+  assert.match(PROVIDER, /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/);
 });

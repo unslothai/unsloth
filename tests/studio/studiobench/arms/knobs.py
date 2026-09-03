@@ -4,7 +4,7 @@
 """The seven runtime-injected knobs, as a decision table: which knob removes the slope names the fix.
 
 Every arm here runs on the SHIPPED PRODUCTION BUILD through `add_init_script`. Nothing is
-compiled, nothing is patched on disk, and an external tester with a laptop and a Studio install
+compiled, nothing is patched on disk, and an external tester with a laptop and an Unsloth install
 can run the whole ablation plane. That constraint is not a convenience. An ablation that requires
 a custom build is an ablation that will be run once, by the person who wrote it, on the machine
 where the problem does not reproduce.

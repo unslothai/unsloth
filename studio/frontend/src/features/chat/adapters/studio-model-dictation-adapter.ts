@@ -8,6 +8,7 @@ import { useSettingsDialogStore } from "@/features/settings/stores/settings-dial
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
   MTMD_STT_MODELS,
+  type SttDevice,
   applyDictationDictionary,
   isCuratedSttModel,
   recordRecentDictation,
@@ -20,6 +21,7 @@ import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { startDictationLevelMeter } from "./dictation-level";
+import { type SegmentRecorder, createAudioRecorder } from "./pcm-recorder";
 import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
 // Re-exported so the one public entry point for dictation is unchanged.
 export { SttModelNotDownloadedError } from "./stt-errors";
@@ -180,6 +182,7 @@ export async function transcribeAudioBlob(
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
+  params.set("device", settings.sttDevice);
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
@@ -308,15 +311,21 @@ export function loadSttModel(
   model: string,
   engine?: SttEngine,
   signal?: AbortSignal,
+  device?: SttDevice,
 ): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
+  const resolvedDevice = device ?? useVoiceSettingsStore.getState().sttDevice;
   // Announced so the indicator shows the load immediately, as the toast does.
   return queueSttLifecycle(() =>
     withModelLoadNotice("stt", model, async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, engine: resolvedEngine }),
+      body: JSON.stringify({
+        model,
+        engine: resolvedEngine,
+        device: resolvedDevice,
+      }),
       signal,
     });
     if (!response.ok) {
@@ -379,11 +388,15 @@ export async function cancelSttDownload(
 export function unloadSttModel(
   engine?: SttEngine,
   model?: string,
+  options?: { wait?: boolean },
 ): Promise<void> {
   return queueSttLifecycle(async () => {
     const params = new URLSearchParams();
     if (engine) params.set("engine", engine);
     if (model) params.set("model", model);
+    // Opt-out only: the default drains an in-flight transcription, right when the
+    // caller needs the memory back now.
+    if (options?.wait === false) params.set("wait", "false");
     const query = params.size ? `?${params}` : "";
     const response = await authFetch(
       `/api/inference/audio/stt/unload${query}`,
@@ -483,7 +496,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       chunks: Blob[];
       startedAt: number;
       voiced: boolean;
-      recorder: MediaRecorder;
+      recorder: SegmentRecorder;
     };
     const results: string[] = [];
     const queue: { index: number; blob: Blob }[] = [];
@@ -633,10 +646,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         chunks: [],
         startedAt: performance.now(),
         voiced: false,
-        recorder: new MediaRecorder(
-          stream,
-          mimeType ? { mimeType } : undefined,
-        ),
+        recorder: createAudioRecorder(stream, mimeType),
       };
       currentSeg = seg;
       silenceMs = 0;

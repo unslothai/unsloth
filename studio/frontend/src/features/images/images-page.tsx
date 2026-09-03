@@ -601,7 +601,7 @@ function SliderField({
   );
 }
 
-// Matches the field-label style used across Studio (export/chat settings).
+// Matches the field-label style used across Unsloth (export/chat settings).
 function Field({
   label,
   hint,
@@ -3570,7 +3570,7 @@ export function ImagesPage({
               (d) =>
                 [
                   String(d.index),
-                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GB` : ""}`,
+                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GiB` : ""}`,
                 ] as [string, string],
             ),
           ]}

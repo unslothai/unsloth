@@ -47,6 +47,13 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
+    find: {
+      label: "Find in page",
+      previous: "Previous match",
+      next: "Next match",
+      close: "Close find",
+      truncated: "This page is too long to search in full.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -217,22 +224,14 @@ export const en = {
       clear: "Remove shortcut",
       reset: "Restore default",
       resetAll: "Reset all to defaults",
-      groups: {
-        general: "General",
-        chat: "Chat",
-      },
+      primarySlot: "Shortcut",
+      alternateSlot: "Alternate shortcut",
+      browserReserved:
+        "Your browser may keep this chord for itself. It works in the desktop app.",
       actions: {
-        newChat: {
-          label: "New chat",
-          description: "Start a new chat",
-        },
-        searchChats: {
-          label: "Search chats",
-          description: "Open the chat search dialog",
-        },
-        toggleSidebar: {
-          label: "Toggle sidebar",
-          description: "Show or hide the sidebar",
+        findInPage: {
+          label: "Find in page",
+          description: "Search the text on this page",
         },
         openSettings: {
           label: "Open settings",
@@ -241,6 +240,206 @@ export const en = {
         openKeyboardShortcuts: {
           label: "Keyboard shortcuts",
           description: "Open this shortcuts list",
+        },
+        searchChats: {
+          label: "Search chats",
+          description: "Open the chat search dialog",
+        },
+        openMcpServers: {
+          label: "MCP servers",
+          description: "Configure MCP servers for this chat",
+        },
+        logOut: {
+          label: "Log out",
+          description: "Sign out of Unsloth",
+        },
+        approveToolRequest: {
+          label: "Approve request",
+          description: "Allow the tool call waiting for approval",
+        },
+        declineToolRequest: {
+          label: "Decline request",
+          description: "Deny the tool call waiting for approval",
+        },
+        newChat: {
+          label: "New chat",
+          description: "Start a new chat",
+        },
+        newTemporaryChat: {
+          label: "New temporary chat",
+          description: "Start a chat that is not saved to history",
+        },
+        newStandaloneChat: {
+          label: "New standalone chat",
+          description: "Start a new chat outside of any project",
+        },
+        archiveChat: {
+          label: "Archive chat",
+          description: "Archive the selected chats, or the current one",
+        },
+        markChatUnread: {
+          label: "Mark as unread",
+          description: "Mark the selected chats unread, or the current one",
+        },
+        togglePinChat: {
+          label: "Toggle pin",
+          description: "Pin or unpin the selected chats, or the current one",
+        },
+        selectAllChats: {
+          label: "Select all chats",
+          description: "Select every chat in the sidebar",
+        },
+        clearChatSelection: {
+          label: "Clear selection",
+          description: "Deselect the selected chats. Escape does too",
+        },
+        deleteSelectedChats: {
+          label: "Delete selected chats",
+          description: "Delete every selected chat",
+        },
+        nextRecentlyViewedChat: {
+          label: "Next recently viewed chat",
+          description: "Cycle forward through recently viewed chats",
+        },
+        previousRecentlyViewedChat: {
+          label: "Previous recently viewed chat",
+          description: "Cycle back through recently viewed chats",
+        },
+        nextChat: {
+          label: "Next chat",
+          description: "Switch to the next chat in the sidebar",
+        },
+        previousChat: {
+          label: "Previous chat",
+          description: "Switch to the previous chat in the sidebar",
+        },
+        nextChatNeedingAttention: {
+          label: "Next chat needing attention",
+          description: "Switch to the next generating, queued or unread chat",
+        },
+        clearAllUnreads: {
+          label: "Clear all unreads",
+          description: "Mark every chat as read",
+        },
+        goToRecentChat1: {
+          label: "Go to recent chat 1",
+          description: "Open the first chat under Recents",
+        },
+        goToRecentChat2: {
+          label: "Go to recent chat 2",
+          description: "Open the second chat under Recents",
+        },
+        goToRecentChat3: {
+          label: "Go to recent chat 3",
+          description: "Open the third chat under Recents",
+        },
+        goToRecentChat4: {
+          label: "Go to recent chat 4",
+          description: "Open the fourth chat under Recents",
+        },
+        goToRecentChat5: {
+          label: "Go to recent chat 5",
+          description: "Open the fifth chat under Recents",
+        },
+        goToRecentChat6: {
+          label: "Go to recent chat 6",
+          description: "Open the sixth chat under Recents",
+        },
+        switchToChat: {
+          label: "Switch to Chat",
+          description: "Go to the chat workspace",
+        },
+        switchToProjects: {
+          label: "Switch to Projects",
+          description: "Go to the projects workspace",
+        },
+        switchToHub: {
+          label: "Switch to Model hub",
+          description: "Go to the model hub",
+        },
+        switchToTrain: {
+          label: "Switch to Train",
+          description: "Go to the training workspace",
+        },
+        switchToRecipes: {
+          label: "Switch to Recipes",
+          description: "Go to Data Recipes",
+        },
+        switchToImages: {
+          label: "Switch to Images",
+          description: "Go to the images workspace",
+        },
+        switchToVideo: {
+          label: "Switch to Video",
+          description: "Go to the video workspace",
+        },
+        switchToAudio: {
+          label: "Switch to Audio",
+          description: "Go to the audio workspace",
+        },
+        switchToExport: {
+          label: "Switch to Export",
+          description: "Go to the export workspace",
+        },
+        toggleSidebar: {
+          label: "Toggle sidebar",
+          description: "Show or hide the sidebar",
+        },
+        toggleApiMonitor: {
+          label: "Toggle API activity",
+          description: "Show or hide the API activity monitor",
+        },
+        openModelPicker: {
+          label: "Open model picker",
+          description: "Choose the model for this chat",
+        },
+        openProjectPicker: {
+          label: "Open project picker",
+          description: "Switch to another project from the chat header",
+        },
+        startDictation: {
+          label: "Dictation",
+          description: "Start or stop dictating into the composer",
+        },
+        attachFiles: {
+          label: "Attach photos and files",
+          description: "Add an attachment to the composer",
+        },
+        sendMessage: {
+          label: "Send message",
+          description: "Send what is in the composer",
+        },
+        cycleReasoningEffort: {
+          label: "Cycle reasoning effort",
+          description: "Step through the reasoning effort levels",
+        },
+        increaseReasoningEffort: {
+          label: "Increase reasoning effort",
+          description: "Raise reasoning effort one level",
+        },
+        decreaseReasoningEffort: {
+          label: "Decrease reasoning effort",
+          description: "Lower reasoning effort one level",
+        },
+        toggleFastMode: {
+          label: "Toggle Fast mode",
+          description: "Turn Fast mode on or off",
+        },
+        renameChat: {
+          label: "Rename chat",
+          description: "Rename the current chat",
+        },
+        forkChat: {
+          label: "Fork chat",
+          description: "Branch a new chat from the latest message",
+        },
+        copyChatAsMarkdown: {
+          label: "Copy as Markdown",
+          description: "Copy the whole chat to the clipboard as Markdown",
+        },
+        copySessionId: {
+          label: "Copy session id",
+          description: "Copy this chat's sandbox session id",
         },
       },
     },
@@ -294,6 +493,13 @@ export const en = {
         customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
+        sttDeviceLabel: "Load into",
+        sttDeviceAuto: "GPU when available",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "Use the GPU when there is one, and the CPU otherwise.",
+        sttDeviceCpuDescription:
+          "Keep the model in system RAM. Transcription is slower, but no GPU memory is used.",
         sttModelSearchPlaceholder: "Search any model on HF",
         sttModelSearching: "Searching Hugging Face…",
         sttModelValidating: "Checking Whisper compatibility…",
@@ -412,6 +618,15 @@ export const en = {
         engineStudioDescription: "Uses the loaded audio model (e.g. Orpheus)",
         engineSystem: "System voices",
         engineStudio: "Load TTS model",
+        engineCustom: "Custom endpoint",
+        engineCustomDescription:
+          "An OpenAI-compatible TTS server from your connections (e.g. Kokoro)",
+        connectionLabel: "Connection",
+        connectionDescription:
+          "Add an OpenAI-compatible server in the Connections tab",
+        connectionPlaceholder: "Select a connection",
+        customModelLabel: "Model",
+        customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",
         modelLabel: "TTS model",
         modelDescription:
           "Load an audio model from the model selector (e.g. Orpheus TTS)",
@@ -490,7 +705,7 @@ export const en = {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
         enableDescription:
-          "Load a downloaded GGUF named in an API request before serving. Off by default.",
+          "Load a downloaded model named in an API request before serving. Off by default.",
         autoDownload: "Download missing models",
         autoDownloadDescription:
           "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",
@@ -565,6 +780,29 @@ export const en = {
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Download transport",
+        transportDescription:
+          "How model and dataset files come down from Hugging Face. HTTPS resumes where it stopped; Xet is often faster on a first download but starts the file again if you cancel.",
+        transportHint:
+          "HTTPS is plain TLS: every network, proxy and VPN allows it, a cancelled or dropped transfer resumes from the bytes already on disk, and memory use stays flat. Xet fetches deduplicated chunks, so a repo sharing data with one you already have can arrive much faster, but it needs hf_xet, uses more RAM, and a cancel discards the file in flight. Auto asks this machine: it weighs RAM and whether Xet has been stalling here, and falls back to HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Standard TLS. Resumes after a cancel, works on any network, steady memory use.",
+        transportDescriptionNoResume:
+          "How model and dataset files come down from Hugging Face. Neither transport can resume on this install, so a cancelled download starts again; Xet is often faster on a first download.",
+        httpsHintNoResume:
+          "Standard TLS. Works on any network, steady memory use. This install cannot resume a cancelled download.",
+        xetHint:
+          "Deduplicated chunk transfer. Often faster on a fresh download, restarts the file if you cancel, needs more memory.",
+        autoHint:
+          "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
+        autoCurrently: "Auto is using {transport} on this machine.",
+        xetMissing: "Xet is unavailable because hf_xet is not installed.",
+      },
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
@@ -575,7 +813,7 @@ export const en = {
         embeddingModel: "Embedding model",
         embeddingModelDescription:
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
-        searchPlaceholder: "Search embedding models",
+        searchPlaceholder: "Search any model on HF",
         reindexWarning:
           "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
         emptyError: "Enter a Hugging Face model id or local path.",
@@ -583,7 +821,24 @@ export const en = {
         saveError: "Failed to save the embedding model.",
         saved: "Embedding model saved.",
         saveAnyway: "Save anyway",
-        resetAction: "Reset to default",
+        recommended: "Recommended",
+        onDevice: "On device",
+        searching: "Searching Hugging Face…",
+        checking: "Checking…",
+        noResults: "No embedding models found",
+        download: "Download",
+        unload: "Unload",
+        unloadFailed: "Couldn't unload the embedding model",
+        downloadingStatus: "Downloading…",
+        notDownloaded: "Not downloaded",
+        notDownloadedSized: "Not downloaded · {size}",
+        loaded: "Loaded",
+        downloading: "Downloading {model}",
+        downloadingDescription:
+          "Progress is in the downloads panel. Indexing uses it once it lands.",
+        downloadFailed: "Couldn't start the download",
+        downloadConflict: "Resume this download from the Hub",
+        downloadBusy: "Download already in progress",
       },
       storage: {
         sectionTitle: "Storage",
@@ -594,6 +849,16 @@ export const en = {
         copied: "Path copied",
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
+      },
+      repairInstall: {
+        label: "Repair installation",
+        description:
+          "Reruns the installer over the managed environment. Use this if the GPU is not detected or the app will not start.",
+        action: "Repair install",
+        confirmTitle: "Repair this installation?",
+        confirmDescription:
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+        confirmAction: "Repair now",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
@@ -642,9 +907,9 @@ export const en = {
           "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
         retry: "Try again",
         privacyNote:
-          "Stats are computed from the chat and training history held by your Unsloth install. Nothing is collected, and nothing is sent to Unsloth or any third party.",
+          "Stats are computed from local chat, API usage, and training history held by your Unsloth install. API prompts, responses, and keys are never stored for stats. Nothing is sent to Unsloth or any third party.",
         emptyChats:
-          "No chats yet. Start a conversation and your stats will fill in here.",
+          "No chat or API usage yet. Start a conversation or make an authenticated local API request and your stats will fill in here.",
         lifetimeTokens: "Lifetime tokens",
         peakTokens: "Peak day",
         longestChat: "Longest chat",
@@ -666,6 +931,9 @@ export const en = {
         totalMessages: "Total messages",
         tokensIn: "Tokens sent",
         tokensOut: "Tokens generated",
+        totalTokens: "Total tokens",
+        studioChatTokens: "Unsloth Chat tokens",
+        apiTokens: "API tokens",
         cachedTokens: "Cached tokens",
         cachedValue: "{tokens} ({percent}% of input)",
         avgTokensPerChat: "Average tokens per chat",
@@ -841,6 +1109,8 @@ export const en = {
         currentLoad: "Current load",
         free: "{value} free",
         noGpu: "No visible GPU",
+        gpuUnusable: "GPU unusable",
+        gpuUnusableDetail: "Detected, but PyTorch cannot use it",
       },
       gpu: {
         title: "GPU devices",
@@ -849,6 +1119,12 @@ export const en = {
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noUsableGpu: "No GPU on this machine is usable by PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
+        mismatchUnavailable:
+          "PyTorch ({version}) cannot initialise the GPUs below, so they cannot be used. Check the GPU driver, or repair the installation.",
+        unusableDevice: "unusable",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -962,6 +1238,8 @@ export const en = {
         processMemory: "Process memory",
         notInstalled: "Not installed",
         unknown: "Unknown",
+        // {vram} is the dedicated total, {shared} the shared pool beside it.
+        vramWithShared: "{vram} VRAM + {shared} shared",
       },
     },
     agents: {
@@ -969,7 +1247,7 @@ export const en = {
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
+        "connects Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
@@ -991,6 +1269,12 @@ export const en = {
       docs: "Docs",
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
@@ -1076,6 +1360,9 @@ export const en = {
         showAllQuantizations: "Show all quantizations",
         showAllQuantizationsDescription:
           "On: list every quantization in “On Device”, including not downloaded. Off: show only downloaded quantizations.",
+        showMemoryBar: "Show VRAM usage bar",
+        showMemoryBarDescription:
+          "Chart each downloaded model's estimated VRAM use under its row: weights, KV cache at the context it will load with, and any speculative draft reserve.",
       },
       menu: {
         title: "Chat menu",
@@ -1102,16 +1389,42 @@ export const en = {
       rememberParamsPerModel: "Remember settings per model",
       rememberParamsPerModelDescription:
         "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
+      autoCompact: "Auto-compact long chats",
+      autoCompactDescription:
+        "When a local GGUF chat fills the context length you set, drop older turns instead of returning an error. This is not based on free VRAM.",
+      compactionStyle: "When context fills",
+      compactionStyleDescription:
+        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
+      compactionStyleInherit: "Use server default",
+      compactionStyleCheckpoint: "Reset conversation",
+      compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
+      compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
+      compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
+      compactionStyleRollingNone: "Drop oldest turns (no extra trim)",
+      autoCompactKeywords:
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
       },
+      currentDate: {
+        label: "Tell the model today's date",
+        description:
+          "Add the current date to the prompt so web search and Deep Research look for recent sources instead of assuming the model's training cutoff.",
+        loadError: "Failed to load current date settings",
+        saveError: "Failed to update current date settings",
+      },
+      tools: {
+        collapseByDefault: "Collapse tool activity by default",
+        collapseByDefaultDescription:
+          "Keep tool inputs and outputs collapsed while tools run. Expand any tool row to inspect it.",
+      },
       webSearch: {
         title: "Web search",
         images: "Show images from web search",
         imagesDescription:
-          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Studio, so the browser never contacts image hosts.",
+          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Unsloth, so the browser never contacts image hosts.",
       },
       artifacts: {
         title: "Canvas",
@@ -1124,6 +1437,11 @@ export const en = {
         blockedBanner: "Blocked {count} external resource from {hosts}.",
         blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
         blockedBannerAction: "Allow for this canvas",
+        blockedTitle: "Canvas network access is off",
+        blockedHint:
+          "Turn on “{setting}” in Settings → Chat to let canvases load external resources, or allow it just for this canvas.",
+        blockedSettingsAction: "Open Settings",
+        blockedDismiss: "Dismiss",
       },
       data: "Data",
       exportHistory: "Export chat history",
@@ -1132,7 +1450,7 @@ export const en = {
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents or Recents plus project chats as Raw JSONL, CSV, or ShareGPT JSONL, combined or per chat.",
+        "Download Recents or Recents plus project chats as Training JSONL, CSV, or ShareGPT JSONL, combined or per chat. Message JSONL is available per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
@@ -1195,6 +1513,8 @@ export const en = {
       archivedImagesDescription: "View and manage images you have archived.",
       archivedVideos: "Archived videos",
       archivedVideosDescription: "View and manage videos you have archived.",
+      archivedAudio: "Archived audio",
+      archivedAudioDescription: "View and manage audio clips you have archived.",
       manageAction: "Manage",
       manageChats: "Manage chats",
       manageChatsDescription:
@@ -1377,7 +1697,7 @@ export const en = {
         desktopCheckingDescription: "This usually takes a few seconds.",
         desktopAvailable: "Desktop app {version} is available",
         desktopAvailableDescription:
-          "Update now and the desktop app will restart when it finishes.",
+          "Update now to prepare it in the background. You keep working and restart when it is ready.",
         desktopExternalServer:
           "Run `unsloth studio update` from the terminal that started your server.",
         desktopManualInstall:
@@ -1387,11 +1707,20 @@ export const en = {
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
           "Unsloth will continue checking automatically.",
+        desktopPreparingDescription:
+          "The update is being prepared in the background. You can keep working.",
+        desktopReadyToRestartDescription:
+          "Everything is ready. Restart to finish installing the update.",
+        desktopReadyToInstallDescription:
+          "The app update is downloaded. Finish updating the backend to install it.",
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
         checking: "Checking...",
+        preparing: "Preparing...",
         updateNow: "Update now",
+        restartToUpdate: "Restart to update",
+        finishUpdate: "Finish update",
         openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
@@ -1550,8 +1879,8 @@ export const en = {
       sourceLocalModel: "Local model",
       vramOomBadge: "OOM",
       vramTightBadge: "Tight",
-      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GB)",
-      vramTight: "~{est}GB VRAM (tight on {total}GB)",
+      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GiB)",
+      vramTight: "~{est}GB VRAM (tight on {total}GiB)",
       vramApprox: "~{est}GB VRAM",
     },
     methods: {
@@ -2086,5 +2415,16 @@ export const en = {
       datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
     },
+  },
+  modelMemory: {
+    readout:
+      "Weights {model} + context {context} = {total} of {budget} usable VRAM",
+    readoutWithSpec:
+      "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
+    // Measured against llama.cpp: the cache is allocated at context creation,
+    // sized to n_ctx, so the rate is what a longer context actually costs.
+    kvRate: "KV reserved, ~{rate}/token",
+    oomLikely: "With current settings OOM likely",
+    tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
   },
 } as const;

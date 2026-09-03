@@ -45,11 +45,10 @@ from studiobench.scoring import (  # noqa: E402
 from studiobench.scoring.anchors import ONSET_SCORE_THRESHOLD  # noqa: E402
 
 
-# ---------------------------------------------------------------------------------------
 # Measure: the ban on bare zeros
+
+
 # ---------------------------------------------------------------------------------------
-
-
 def test_not_attempted_cannot_carry_a_value():
     with pytest.raises(PayloadSchemaError):
         Measure(value = 1.0, attempted = False, unit = "ms", note = "nope")
@@ -214,11 +213,10 @@ def test_validate_payload_requires_excluded_cells():
         validate_payload({"excluded_cells": None})
 
 
-# ---------------------------------------------------------------------------------------
 # frames: both directions of jank
+
+
 # ---------------------------------------------------------------------------------------
-
-
 def test_uniform_mediocrity_is_caught_by_time_in_jank_and_missed_by_max():
     """Every frame 120 ms. `max` says 120, which sounds survivable. It is not."""
 
@@ -260,11 +258,10 @@ def test_histogram_is_always_present_and_totals_the_frames():
     assert sum(b["bucket_count"] for b in stats.histogram) == len(deltas)
 
 
-# ---------------------------------------------------------------------------------------
 # per-metric and per-rung scoring
+
+
 # ---------------------------------------------------------------------------------------
-
-
 def test_log_anchors_put_the_geometric_midpoint_at_fifty():
     anchor = METRIC_BY_KEY["keystroke_p95_ms"]
     midpoint = math.sqrt(anchor.good * anchor.bad)
@@ -332,11 +329,10 @@ def test_missing_most_metrics_makes_the_rung_incomplete_rather_than_easy():
     assert "weight" in rung.incomplete_reason
 
 
-# ---------------------------------------------------------------------------------------
 # aggregation, and the three ways naive AUC lies
+
+
 # ---------------------------------------------------------------------------------------
-
-
 def test_log_rung_weights_do_not_let_the_top_rung_be_the_whole_score():
     weights = log_rung_weights([1_000, 10_000, 100_000, 500_000, 1_000_000])
     assert sum(weights) == pytest.approx(1.0)
@@ -409,11 +405,10 @@ def test_non_monotone_usability_is_flagged_rather_than_maximised():
     assert len(rungs) == 3
 
 
-# ---------------------------------------------------------------------------------------
 # A/B
+
+
 # ---------------------------------------------------------------------------------------
-
-
 def _identity(session: str = "s1", **overrides) -> RunIdentity:
     fields = {
         "bench_version": "studiobench/1",
@@ -537,17 +532,15 @@ def test_bootstrap_ci_brackets_the_geometric_mean():
     assert metric.ci_low <= metric.ratio_geomean <= metric.ci_high
 
 
-# ---------------------------------------------------------------------------------------
-# A CI that contains 1.0 is not a result: the pairs have to agree on the sign
-# ---------------------------------------------------------------------------------------
-#
-# The noise floor is a fact about the HARNESS -- whether a difference of this size is resolvable
-# here at all -- and it was the only gate a direction had to pass. Repetitions that disagree
-# produce a geometric mean well clear of the floor anyway: 0.7, 0.7, 1.2, 1.2 averages to 0.917
-# with a CI of 0.700-1.200, and the table said "improved" over it, in the one column anybody
-# quotes. The CI was computed, printed, and never consulted.
+# A CI that contains 1.0 is not a result: the pairs have to agree on the sign. The noise floor is a
+# fact about the HARNESS, whether a difference of this size is resolvable at all, and it was the
+# only gate a direction had to pass. Repetitions that disagree produce a geometric mean well clear
+# of the floor anyway: 0.7, 0.7, 1.2, 1.2 averages to 0.917 with a CI of 0.700-1.200, and the
+# table said 'improved' over it in the one column anybody quotes. The CI was computed, printed,
+# and never consulted.
 
 
+# ---------------------------------------------------------------------------------------
 def _split_pairs(metric: str, ratios: list[float]) -> list[Pair]:
     """One metric, one ratio per rung, so the pairs can be made to disagree on the sign."""
     out = []
@@ -635,22 +628,16 @@ def test_the_table_does_not_print_a_direction_it_could_not_resolve():
     assert "contains it" in text  # the interval straddles 1.0, as opposed to being absent
 
 
-# ---------------------------------------------------------------------------------------
-# A measured zero is a reading: sub-floor arms bound the ratio rather than voiding the pair
-# ---------------------------------------------------------------------------------------
-#
-# `Pair.usable` required both values to be strictly positive. `time_in_jank_pct` and `jank_index`
-# are 0.0 on any arm smooth enough to have no over-budget frames, which is the ordinary state of a
-# healthy base, so a treatment that introduced jank over a zero-jank base had its pair dropped:
-# the table said `no reading` about two arms that had both read, the regression was absent from
-# `regressions` and from the headline, and as a null control it neither voided nor reached the
-# noise floor derived from it.
-#
-# The rule applied here is the one `score.py` has always applied to the same reading: a sub-floor
-# value is at least as good as the floor, so the floor is what enters the ratio. What that must
-# NOT do is admit a reading that was never taken, which is the distinction `frames.py` protects
-# when it refuses to score an unscheduled rAF loop as zero jank.
+# A measured zero is a reading: sub-floor arms bound the ratio rather than voiding the pair.
+# `Pair.usable` required both values to be strictly positive, but `time_in_jank_pct` and
+# `jank_index` are 0.0 on any arm smooth enough to have no over-budget frames, so a treatment that
+# introduced jank over a zero-jank base had its pair dropped: the table said `no reading` about
+# two arms that had both read. The rule applied here is the one `score.py` has always applied, a
+# sub-floor value is at least as good as the floor so the floor enters the ratio, without
+# admitting a reading that was never taken, the distinction `frames.py` protects when it refuses
+# to score an unscheduled rAF loop as zero jank.
 
+# ---------------------------------------------------------------------------------------
 JANK_FLOOR = 0.1
 SMOOTH = Measure.read(0.0, "%", floor = JANK_FLOOR)
 JANKY = Measure.read(5.0, "%", floor = JANK_FLOOR)
@@ -665,8 +652,8 @@ def test_a_zero_jank_base_still_pairs_against_a_treatment_that_introduced_jank()
 
     assert pair.base.has_reading and pair.treatment.has_reading
     assert pair.usable is True
-    # The floor stands in for the sub-floor arm, so the ratio is a LOWER bound: the true
-    # magnitude is larger, never smaller.
+    # The floor stands in for the sub-floor arm, so the ratio is a LOWER bound: the true magnitude is
+    # larger, never smaller.
     assert pair.ratio == 50.0
     assert pair.bounded is True
     assert pair.to_json()["bounded"] is True

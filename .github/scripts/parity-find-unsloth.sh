@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Print the absolute path of the `unsloth` CLI belonging to ONE Studio home.
+# Print the absolute path of the `unsloth` CLI belonging to ONE Unsloth home.
 #
 # Usage:
 #   parity-find-unsloth.sh <studio-home>
@@ -17,7 +17,7 @@
 # The layout is `$STUDIO_HOME/unsloth_studio/bin/unsloth` (install.sh sets
 # VENV_DIR="$STUDIO_HOME/unsloth_studio"). The other candidates are the legacy
 # layouts `runtime/lifecycle._find_unsloth_bin` still accepts; they are checked
-# so this script and that function cannot disagree about where a Studio lives.
+# so this script and that function cannot disagree about where an Unsloth lives.
 # Nothing is guessed: if no candidate exists this fails loudly rather than
 # falling back to whatever PATH offers.
 

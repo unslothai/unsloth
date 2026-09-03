@@ -22,7 +22,7 @@ export interface ProviderRegistryEntry {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
-  /** Studio runs its own tool loop (search/code/MCP/RAG) against this provider. */
+  /** Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider. */
   supports_studio_tools?: boolean;
   /** Backend-only entry, surfaced through a custom preset rather than the dropdown. */
   hidden?: boolean;

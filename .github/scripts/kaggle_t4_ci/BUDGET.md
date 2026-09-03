@@ -29,7 +29,7 @@ the `paths:` list in the workflow: `unsloth/**`, `tests/kaggle/**`,
 `.github/scripts/kaggle_t4_ci/**`, the workflow file itself, and
 `pyproject.toml` (the payloads install the commit under test as a
 distribution, so how it is built and what it depends on is part of what this
-tests). A PR that only edits Studio frontend or docs cannot regress a T4
+tests). A PR that only edits Unsloth frontend or docs cannot regress a T4
 training run, and spending a GPU session on it buys nothing.
 
 Eligible invocations per week:
@@ -91,8 +91,8 @@ where only one card still has work costs no more than the rest of the session.
 What two kernels cost was the whole ACCOUNT: they took both of Kaggle's
 concurrent sessions, so `kaggle-t4-studio-gpu-ci.yml`, which shares this
 account, could not push at all and queued behind the entire notebook job
-(measured: Studio run `32607617804` waited ~40 minutes on notebook run
-`32607621452`). One kernel leaves the second session for Studio, and the two
+(measured: Unsloth run `32607617804` waited ~40 minutes on notebook run
+`32607621452`). One kernel leaves the second session for Unsloth, and the two
 workflows now hold separate GitHub concurrency groups so they can use it.
 
 The **~0.25 h** envelope below is deliberately NOT lowered to the measured
@@ -140,7 +140,7 @@ filed), and this workflow pushes ONE session, billing its wall clock once. So
 
 It was `2 x 13800s = 7.7 GPU-h, set to 8` while the legs travelled as two
 kernels. The multiplier is how many sessions THIS invocation pushes, not
-Kaggle's per-account cap of 2: the other slot may be Studio's, and Studio
+Kaggle's per-account cap of 2: the other slot may be Unsloth's, and Unsloth
 reserves against its own budget rather than this one.
 `test_the_reserved_budget_covers_every_billable_launcher_phase` recomputes it
 from `launch.py` and `--kernels`; do not edit the number here or in the

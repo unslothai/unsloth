@@ -4,8 +4,11 @@
 import { Tick02Icon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { XIcon } from "lucide-react";
-import { type FC, useCallback, useEffect, useState } from "react";
+import {
+  ChevronDownIcon,
+  XIcon,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -21,7 +24,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useShortcut } from "@/features/settings";
 
+import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
   type McpServerConfig,
   createMcpServer,
@@ -29,25 +34,11 @@ import {
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 type McpPreset = {
   id: string;
   displayName: string; // stored row name
@@ -103,28 +94,82 @@ export function McpComposerButton({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
 
   const [servers, setServers] = useState<McpServerConfig[]>([]);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const dialogOpen = useMcpServersDialogStore((s) => s.open);
+  const setDialogOpen = useMcpServersDialogStore((s) => s.setOpen);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+  const [serversLoaded, setServersLoaded] = useState(false);
+  const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const pendingUrlsRef = useRef(new Set<string>());
   const [hintKey, setHintKey] = useState<string | null>(null);
+  const listRefreshGenerationRef = useRef(0);
+  const hasLoadedServerSnapshotRef = useRef(false);
 
   // Grey out only when a loaded model lacks tool support; with no model yet,
   // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
-  const refresh = useCallback(async () => {
-    try {
-      const rows = await listMcpServers();
-      setServers(rows);
-    } catch {
-      // Keep prior state if the list call fails.
-    }
+  const refresh = useCallback(
+    async (waitForPendingMutations = true, minimumMutationEpoch = 0) => {
+      const generation = listRefreshGenerationRef.current + 1;
+      listRefreshGenerationRef.current = generation;
+      setServersLoaded(false);
+      try {
+        const rows = await listMcpServers({
+          waitForPendingMutations,
+          minimumMutationEpoch,
+        });
+        if (listRefreshGenerationRef.current !== generation) return;
+        setServers(rows);
+        hasLoadedServerSnapshotRef.current = true;
+        setServersLoaded(true);
+      } catch {
+        if (
+          listRefreshGenerationRef.current === generation &&
+          hasLoadedServerSnapshotRef.current
+        ) {
+          setServersLoaded(true);
+        }
+      }
+    },
+    [],
+  );
+
+  const applyServer = useCallback((server: McpServerConfig) => {
+    setServers((current) => {
+      const index = current.findIndex(
+        (candidate) => candidate.id === server.id,
+      );
+      if (index === -1) return [...current, server];
+      return current.map((candidate) =>
+        candidate.id === server.id ? server : candidate,
+      );
+    });
   }, []);
 
-  // Load the server list on mount and whenever the menu opens.
   useEffect(() => {
-    void refresh();
+    const unsubscribe = subscribeToMcpServerMutationSettlements((epoch) => {
+      void refresh(false, epoch);
+    });
+    return () => {
+      unsubscribe();
+      listRefreshGenerationRef.current += 1;
+    };
   }, [refresh]);
+
+  // Load the server list on mount, and again when the dialog closes: it can
+  // be opened from the chord as well as from this menu.
+  useEffect(() => {
+    if (dialogOpen) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refresh();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh, dialogOpen]);
 
   const enabledUrls = new Set(
     servers.filter((s) => s.is_enabled).map((s) => normalizeMcpUrl(s.url)),
@@ -134,7 +179,7 @@ export function McpComposerButton({
     (s) => !PRESET_URLS.has(normalizeMcpUrl(s.url)),
   );
   const enabledCount = servers.filter((s) => s.is_enabled).length;
-  const active = mcpEnabledForChat && enabledCount > 0;
+  const active = usable && mcpEnabledForChat && enabledCount > 0;
 
   async function toggleServer(args: {
     url: string;
@@ -144,41 +189,45 @@ export function McpComposerButton({
     disablesWebSearch?: boolean;
   }) {
     const norm = normalizeMcpUrl(args.url);
-    if (pendingUrl === norm) return; // guard rapid double-clicks
-    setPendingUrl(norm);
+    if (pendingUrlsRef.current.has(norm)) return; // guard rapid double-clicks
+    pendingUrlsRef.current.add(norm);
+    setPendingUrls(new Set(pendingUrlsRef.current));
     try {
       if (args.checked) {
         // Reuse the already-loaded row, else create one.
         if (args.existing) {
           if (!args.existing.is_enabled) {
-            await updateMcpServer(args.existing.id, { isEnabled: true });
+            applyServer(
+              await updateMcpServer(args.existing.id, { isEnabled: true }),
+            );
           }
         } else {
-          await createMcpServer({
-            displayName: args.displayName,
-            url: args.url,
-            isEnabled: true,
-          });
+          applyServer(
+            await createMcpServer({
+              displayName: args.displayName,
+              url: args.url,
+              isEnabled: true,
+            }),
+          );
         }
         setMcpEnabledForChat(true);
         // Search servers turn off the built-in Web Search to avoid overlap.
         if (args.disablesWebSearch) setToolsEnabled(false);
       } else if (args.existing) {
-        await updateMcpServer(args.existing.id, { isEnabled: false });
+        applyServer(
+          await updateMcpServer(args.existing.id, { isEnabled: false }),
+        );
       }
-      await refresh();
     } catch (err) {
       toast.error("Failed to update MCP server", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setPendingUrl(null);
+      pendingUrlsRef.current.delete(norm);
+      setPendingUrls(new Set(pendingUrlsRef.current));
     }
   }
 
-  // One dropdown row. Enabled rows get a green underlay and a tick that becomes
-  // an X on hover (click removes). The hint tooltip anchor is pointer-events-none
-  // so the row stays clickable (a Radix TooltipTrigger would swallow the select).
   const renderRow = (opts: {
     key: string;
     label: string;
@@ -191,7 +240,8 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      disabled={pendingUrl === normalizeMcpUrl(opts.url)}
+      // Server configuration remains available when the loaded model lacks tools.
+      disabled={!serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
         void toggleServer({
@@ -221,6 +271,7 @@ export function McpComposerButton({
           <TooltipTrigger asChild={true}>
             <span
               aria-hidden={true}
+              // pointer-events-none so the anchor cannot swallow row clicks.
               className="pointer-events-none absolute inset-y-0 right-0 w-0"
             />
           </TooltipTrigger>
@@ -232,127 +283,120 @@ export function McpComposerButton({
 
   return (
     <>
-      {usable ? (
-        <DropdownMenu
-          open={menuOpen}
-          onOpenChange={(open) => {
-            setMenuOpen(open);
-            if (open) void refresh();
-          }}
-        >
-          <DropdownMenuTrigger asChild={true}>
-            <button
-              type="button"
-              className="composer-pill-btn"
-              data-pill-label="MCP"
-              data-active={active ? "true" : "false"}
-              aria-label="MCP servers"
-            >
-              {/* Icon doubles as an off switch: hover swaps to an X; clicking
-                  it turns MCP off without opening the menu. In compact
-                  icon-only mode the glyph is the whole button, so clicks fall
-                  through to the trigger and open the menu instead. */}
-              <span
-                role="button"
-                aria-label="Turn off MCP"
-                tabIndex={-1}
-                onPointerDown={(e) => {
-                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
-                  e.stopPropagation();
-                }}
-                onClick={(e) => {
-                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
-                  e.stopPropagation();
-                  setMcpEnabledForChat(false);
-                }}
-                className="composer-pill-glyph cursor-pointer"
-              >
-                <HugeiconsIcon
-                  icon={McpServerIcon}
-                  className="size-[15px]"
-                  strokeWidth={2}
-                />
-                <XIcon className="composer-pill-x" />
-              </span>
-              <span>MCP</span>
-              <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            side={side}
-            align="start"
-            sideOffset={0}
-            avoidCollisions={true}
-            className="unsloth-plus-menu mcp-menu w-[232px]"
+      <DropdownMenu
+        open={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (open) void refresh();
+        }}
+      >
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            className={`composer-pill-btn ${usable ? "" : "opacity-40"}`}
+            data-pill-label="MCP"
+            data-active={active ? "true" : "false"}
+            aria-label={
+              usable
+                ? "MCP servers"
+                : "MCP servers, unavailable for the loaded model"
+            }
           >
-            <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
-            {MCP_PRESETS.map((preset) => {
-              const norm = normalizeMcpUrl(preset.url);
-              return renderRow({
-                key: preset.id,
-                label: preset.label ?? preset.displayName,
-                url: preset.url,
-                displayName: preset.displayName,
-                enabled: enabledUrls.has(norm),
-                existing: servers.find((s) => normalizeMcpUrl(s.url) === norm),
-                hint: preset.hint,
-                disablesWebSearch: preset.disablesWebSearch,
-              });
-            })}
-            {customServers.length > 0 ? <DropdownMenuSeparator /> : null}
-            {customServers.map((server) =>
-              renderRow({
-                key: server.id,
-                label: server.display_name,
-                url: server.url,
-                displayName: server.display_name,
-                enabled: server.is_enabled,
-                existing: server,
-              }),
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={() => {
-                setMenuOpen(false);
-                setDialogOpen(true);
+            {/* Outside compact mode, the hover X disables MCP without opening the menu. */}
+            <span
+              role="button"
+              aria-label="Turn off MCP"
+              tabIndex={-1}
+              onPointerDown={(e) => {
+                if (e.currentTarget.closest('[data-pill-compact="true"]'))
+                  return;
+                e.stopPropagation();
               }}
-            >
-              Manage MCP servers
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            {/* Not disabled, so the tooltip still fires on hover. */}
-            <button
-              type="button"
-              className="composer-pill-btn cursor-not-allowed opacity-40"
-              data-active="false"
-              aria-disabled={true}
-              aria-label="MCP servers"
+              onClick={(e) => {
+                if (e.currentTarget.closest('[data-pill-compact="true"]'))
+                  return;
+                e.stopPropagation();
+                setMcpEnabledForChat(false);
+              }}
+              className="composer-pill-glyph cursor-pointer"
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
                 className="size-[15px]"
                 strokeWidth={2}
               />
-              <span>MCP</span>
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            MCP works with local tool-capable models
-          </TooltipContent>
-        </Tooltip>
-      )}
-      <ChatMcpServersDialog
-        open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          // Resync after managing servers.
-          if (!next) void refresh();
-        }}
-      />
+              <XIcon className="composer-pill-x" />
+            </span>
+            <span>MCP</span>
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side={side}
+          align="start"
+          sideOffset={0}
+          avoidCollisions={true}
+          className="unsloth-plus-menu mcp-menu w-[232px]"
+        >
+          <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
+          {usable ? null : (
+            <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+              The loaded model cannot use MCP tools
+            </DropdownMenuLabel>
+          )}
+          {MCP_PRESETS.map((preset) => {
+            const norm = normalizeMcpUrl(preset.url);
+            return renderRow({
+              key: preset.id,
+              label: preset.label ?? preset.displayName,
+              url: preset.url,
+              displayName: preset.displayName,
+              enabled: enabledUrls.has(norm),
+              existing: servers.find((s) => normalizeMcpUrl(s.url) === norm),
+              hint: preset.hint,
+              disablesWebSearch: preset.disablesWebSearch,
+            });
+          })}
+          {customServers.length > 0 ? <DropdownMenuSeparator /> : null}
+          {customServers.map((server) =>
+            renderRow({
+              key: server.id,
+              label: server.display_name,
+              url: server.url,
+              displayName: server.display_name,
+              enabled: server.is_enabled,
+              existing: server,
+            }),
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              setMenuOpen(false);
+              setDialogOpen(true);
+            }}
+          >
+            Manage MCP servers
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </>
+  );
+}
+
+/** Mount the dialog independently so its shortcut works while MCP is disabled. */
+export function McpServersDialogMount() {
+  const open = useMcpServersDialogStore((s) => s.open);
+  const setOpen = useMcpServersDialogStore((s) => s.setOpen);
+  const chatActive = useChatActive();
+  useShortcut("openMcpServers", () => setOpen(true), { enabled: chatActive });
+  useEffect(() => {
+    if (!chatActive && open) setOpen(false);
+  }, [chatActive, open, setOpen]);
+  // Also clear it when logout or expiry unmounts this subtree directly.
+  useEffect(() => {
+    return () => useMcpServersDialogStore.getState().setOpen(false);
+  }, []);
+  return (
+    <ChatMcpServersDialog open={chatActive && open} onOpenChange={setOpen} />
   );
 }

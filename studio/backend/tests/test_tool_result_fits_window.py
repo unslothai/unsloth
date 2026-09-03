@@ -57,14 +57,14 @@ def _spill_path(out: str) -> str:
 
 @pytest.fixture(autouse = True)
 def _records(tmp_path_factory, monkeypatch):
-    """Ownership records live in Studio's own storage, so tests get their own copy of it
+    """Ownership records live in Unsloth's own storage, so tests get their own copy of it
     rather than writing into the real one."""
     where = tmp_path_factory.mktemp("tool-output-records")
     monkeypatch.setattr(tools, "_spill_records_dir", lambda: str(where))
 
 
 def _own(workdir) -> "os.PathLike":
-    """The spill directory as Studio itself would leave it: created, and recorded as ours.
+    """The spill directory as Unsloth itself would leave it: created, and recorded as ours.
 
     Tests that pre-create it are standing in for a sandbox this process has already
     spilled into. A directory made any other way has no record, which is the case
@@ -581,7 +581,7 @@ class TestPruningOnlyTouchesStudioSpills:
 
     def test_an_unowned_directory_is_never_written_to(self, tmp_path):
         """And nothing is added to it either, so the notice falls back to no paging hint
-        rather than putting Studio's files among the user's."""
+        rather than putting Unsloth's files among the user's."""
         (tmp_path / tools._SPILL_DIR).mkdir()
         (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
 
@@ -711,7 +711,7 @@ class TestTheSpillStaysInsideTheSandbox:
         tools._prune_spills(str(target))
 
         # os.remove would only unlink the link, so the file it points at is safe either
-        # way; what the filter buys is that a name Studio did not write is left alone.
+        # way; what the filter buys is that a name Unsloth did not write is left alone.
         assert (target / ("f" * 12 + ".txt")).is_symlink()
         assert victim.read_text() == "keep me"
 
@@ -1104,7 +1104,7 @@ class TestAProjectIsBoundedAsOneWorkspace:
 
 class TestDeletingAChatIsNotBlockedByItsSpills:
     def test_a_sandbox_holding_only_spills_is_still_removable(self, tmp_path):
-        """Spills are Studio's own, written by this process and deliberately kept off the
+        """Spills are Unsloth's own, written by this process and deliberately kept off the
         file cards. Counted as the user's content they leave an unreachable sandbox behind,
         reported as holding files the user never created."""
         tools._truncate(
@@ -1179,8 +1179,8 @@ class TestTheNativePathIsBoundedWithoutATokenizer:
 class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
     """The sandbox is a directory the model runs commands in, so nothing kept inside it is
     evidence about it. A marker file there can be replaced with a link, and once it is a
-    plain file its contents can be rewritten to name the user's own files as Studio's,
-    which turns the cleanup into a delete. The record lives in Studio's own storage."""
+    plain file its contents can be rewritten to name the user's own files as Unsloth's,
+    which turns the cleanup into a delete. The record lives in Unsloth's own storage."""
 
     def test_nothing_about_ownership_is_written_into_the_sandbox(self, tmp_path):
         out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
@@ -1251,7 +1251,7 @@ class TestConcurrentSpillsKeepTheirRecords:
         """A project's chats share one sandbox. Appending a spill and rewriting the
         manifest after a prune are a read-modify-write over one file, and a pruner that
         read it before another call appended would discard the newer entry, leaving a
-        file nothing counts, prunes, or recognises as Studio's."""
+        file nothing counts, prunes, or recognises as Unsloth's."""
         import threading
 
         workdir = str(tmp_path)
@@ -1369,7 +1369,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
 
     def test_a_sandbox_that_stays_keeps_its_record(self, tmp_path, monkeypatch):
         """The control: the files are the user's, the sandbox stays, and so does the
-        record of what in it is Studio's."""
+        record of what in it is Unsloth's."""
         workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill333")
         open(os.path.join(workdir, "game.html"), "w").close()
 
@@ -1502,7 +1502,7 @@ class TestInstallingASpillNeverReplacesAnything:
 
     def test_the_record_names_what_was_installed_not_what_is_there_now(self, tmp_path):
         """Between the install and the record, another call sharing the sandbox can replace
-        the file. Stating the path then records THAT content as Studio's, and a later prune
+        the file. Stating the path then records THAT content as Unsloth's, and a later prune
         or cleanup deletes the user's data on the strength of it."""
         root = _own(tmp_path)
         name = "abcdef123456.txt"
@@ -1519,7 +1519,7 @@ class TestInstallingASpillNeverReplacesAnything:
 
 
 class TestPruningDeletesOnlyWhatItChecked:
-    """The manifest lock orders Studio's own threads; the thing racing here is the sandbox.
+    """The manifest lock orders Unsloth's own threads; the thing racing here is the sandbox.
     A background process can replace a recorded spill between the check and the unlink, and
     a delete by name then takes the replacement."""
 

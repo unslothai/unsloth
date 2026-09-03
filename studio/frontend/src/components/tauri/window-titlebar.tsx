@@ -123,7 +123,7 @@ export function DesktopTitlebarNavigation({
   return (
     <div
       className={cn(
-        "flex mt-1 translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
+        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
         className,
       )}
       role="toolbar"
@@ -417,8 +417,7 @@ export function WindowTitlebar({
           // No z-index here: the header above is positioned and numbered, so it is a
           // stacking context and anything written here is compared inside it, never against
           // the grips. The overlap that invites one costs Close 92px and the other two 60px
-          // each, and measures the same before and after this PR; see
-          // tests/studio/playwright_overlay_rail.py.
+          // each, and is unchanged by the grips taking the named layer.
           role="toolbar"
           aria-label="Window controls"
         >

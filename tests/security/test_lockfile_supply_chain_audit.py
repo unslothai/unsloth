@@ -400,3 +400,210 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
         assert "[lockfile-audit] npm:" in c, (
             f"value {bad_val!r} should have fallen through to run audit; " f"got:\n{c}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Followup regression tests for #5604:
+#   - unsupported lockfile versions must block in default mode (v1 downgrade
+#     would otherwise pass with rc=0 because the structural walk only runs
+#     on v2/v3)
+#   - the ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` warning must be routed through
+#     ``_gha_escape()`` so an attacker-controlled value cannot inject a
+#     second workflow-command line via embedded ``\n::error::...``
+#   - the audit script must be invoked BEFORE ``npm install`` in any
+#     workflow that consumes the audited lockfiles
+# ---------------------------------------------------------------------------
+
+
+def test_unsupported_lockfile_version_blocks_default(tmp_path):
+    """A v1 lockfile (or any non-v2/v3 version) means the structural
+    dependency walk never runs, so ``blocked-known-malicious`` /
+    ``known-ioc-string`` findings cannot be produced. Treating that as
+    advisory lets an attacker downgrade a checked-in lockfile to v1
+    and silently exit CI with rc=0. Default mode must refuse.
+    """
+    p = tmp_path / "package-lock.json"
+    p.write_text(
+        "{\n"
+        '  "name": "test",\n'
+        '  "version": "1.0.0",\n'
+        '  "lockfileVersion": 1,\n'
+        '  "dependencies": {"react": {"version": "18.2.0"}}\n'
+        "}\n"
+    )
+    proc = _run_auditor(root = tmp_path, npm_lockfiles = [p])
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 1, (
+        f"v1 lockfile must block default mode (was advisory pre-followup); "
+        f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n"
+        f"--- stderr ---\n{proc.stderr}"
+    )
+    assert "unsupported-lockfile-version" in combined, combined
+
+
+def test_blocking_kinds_contains_unsupported_lockfile_version():
+    """Direct module-level assertion: if anyone moves
+    ``unsupported-lockfile-version`` back out of BLOCKING_KINDS this
+    test trips immediately, before they re-introduce the downgrade
+    bypass."""
+    assert "unsupported-lockfile-version" in lsa.BLOCKING_KINDS
+
+
+def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
+    """An attacker controlling ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` could
+    embed a literal ``\\n::error::...`` and split the warning into a
+    second workflow-command annotation. Both branches interpolate the
+    value and so both must route it through ``_gha_escape()``: the
+    accepted branch echoes the stripped value, the rejected branch
+    echoes the PRE-strip raw one.
+
+    Which branch a value takes is decided AFTER stripping, so a payload
+    has to be chosen for the branch it is meant to exercise. Anything
+    long enough to carry a whole ``::error::`` lands on the accepted
+    side; the rejected side is reachable only under the 5-char floor or
+    on a booleanish token, which is why branch B below looks so small.
+    """
+    fixture = FIXTURES / "clean_lockfile.json"
+
+    def _physical_lines_starting_with_double_colon(stderr: str) -> list[str]:
+        # GH Actions parses workflow commands per physical line. Only
+        # lines that START with `::` after any leading whitespace count
+        # as a new annotation. Any such line BEYOND the first warning
+        # is an injected command.
+        return [ln for ln in stderr.splitlines() if ln.lstrip().startswith("::")]
+
+    # Branch A -- accepted skip value (audit skipped, rc 0). It strips
+    # to itself, is not a booleanish token and clears the 5-char floor,
+    # so it carries a full `::error::` into the echoed reason.
+    injected_bad = "%inject\n::error::bad"  # contains %, \n, and ::
+    env_a = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_bad}
+    proc_a = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--root",
+            str(tmp_path),
+            "--npm-lockfile",
+            str(fixture),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = env_a,
+    )
+    # The stripped value is "%inject\n::error::bad" (len 21) and is not
+    # a booleanish token -> accepted-skip path; rc 0, audit skipped.
+    assert proc_a.returncode == 0
+    assert "%0A" in proc_a.stderr and "%25" in proc_a.stderr, (
+        "skip value containing \\n and %% must be %0A / %25 escaped; "
+        f"stderr was:\n{proc_a.stderr}"
+    )
+    cmd_lines_a = _physical_lines_starting_with_double_colon(proc_a.stderr)
+    assert len(cmd_lines_a) == 1 and cmd_lines_a[0].startswith("::warning::"), (
+        "exactly one ::-prefixed physical line expected (the audit's own "
+        f"::warning::); injection split the message into: {cmd_lines_a}"
+    )
+
+    # Branch B -- rejected skip value (audit falls through and runs).
+    # Strips to "1\n%", under the 5-char floor, so it reaches the branch
+    # that echoes _skip_raw. test_skip_env_var_with_short_value_rejected
+    # covers this branch with a plain "1", which carries no control
+    # character and so cannot tell escaped from unescaped.
+    injected_short = "1\n%"
+    env_b = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_short}
+    proc_b = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--root",
+            str(tmp_path),
+            "--npm-lockfile",
+            str(fixture),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = env_b,
+    )
+    combined_b = proc_b.stdout + proc_b.stderr
+    assert "REQUIRES a justification" in combined_b, combined_b
+    # Per-file banner: a rejected value must fall through to the audit,
+    # not skip it. Clean fixture, so rc 0 with the audit performed.
+    assert "[lockfile-audit] npm:" in combined_b, combined_b
+    assert proc_b.returncode == 0, (
+        f"rejected skip must still run the audit and pass a clean fixture; "
+        f"rc={proc_b.returncode}\n--- stdout ---\n{proc_b.stdout}\n"
+        f"--- stderr ---\n{proc_b.stderr}"
+    )
+    assert "%0A" in proc_b.stderr and "%25" in proc_b.stderr, (
+        "the RAW skip value's \\n and %% must be %0A / %25 escaped; "
+        f"stderr was:\n{proc_b.stderr}"
+    )
+    warnings_b = [
+        ln
+        for ln in _physical_lines_starting_with_double_colon(proc_b.stderr)
+        if ln.startswith("::warning::")
+    ]
+    assert len(warnings_b) == 1 and "Proceeding with audit" in warnings_b[0], (
+        "the rejected-skip warning must stay on ONE physical line; an "
+        f"unescaped newline split it: {proc_b.stderr!r}"
+    )
+
+
+def test_audit_runs_before_npm_install_in_consumer_workflows():
+    """Any GH Actions workflow that consumes one of the audited
+    lockfiles via ``npm install`` / ``npm ci`` must run the
+    lockfile_supply_chain_audit step BEFORE that install, otherwise a
+    compromised lockfile's lifecycle scripts execute before the audit
+    can refuse the run.
+
+    Parsed as YAML and checked per JOB, not per file. Reading the raw
+    text instead sees neither half of the guarantee: an install written
+    as a ``run: |`` block scalar is invisible, and a file-wide "first
+    audit offset" lets one job's audit vouch for another job's install.
+    Together those left this test green with the whole Windows audit
+    step of studio-tauri-smoke.yml deleted.
+    """
+    import re
+
+    import yaml
+
+    # The Linux jobs call `python3`; the Windows and macOS jobs pin an
+    # interpreter with setup-python and call `python`. Same audit.
+    audit_re = re.compile(r"\bpython3?\s+scripts/lockfile_supply_chain_audit\.py\b")
+    install_re = re.compile(r"\bnpm\s+(?:install|ci)\b")
+
+    workflows_dir = REPO_ROOT / ".github" / "workflows"
+    for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
+        wf = workflows_dir / wf_name
+        assert wf.is_file(), f"missing workflow: {wf}"
+        doc = yaml.safe_load(wf.read_text(encoding = "utf-8"))
+        checked = 0
+        for job_id, job in (doc.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            # (step index, offset within that step) of the job's first
+            # audit, so an audit and an install sharing one step are
+            # still ordered against each other.
+            audited_at = None
+            for index, step in enumerate(job.get("steps") or []):
+                run = step.get("run") if isinstance(step, dict) else None
+                if not isinstance(run, str):
+                    continue
+                audit = audit_re.search(run)
+                if audit is not None and audited_at is None:
+                    audited_at = (index, audit.start())
+                install = install_re.search(run)
+                if install is None:
+                    continue
+                checked += 1
+                assert audited_at is not None and audited_at < (index, install.start()), (
+                    f"{wf_name}: job {job_id!r} reaches ``npm install`` / "
+                    f"``npm ci`` in step {index} with no lockfile audit before "
+                    f"it in that job; a compromised lockfile's lifecycle "
+                    f"scripts would execute before the audit can refuse it"
+                )
+        assert checked, (
+            f"{wf_name}: found no ``npm install`` / ``npm ci`` step at all, so "
+            f"this guard passed vacuously -- the workflow or the pattern drifted"
+        )

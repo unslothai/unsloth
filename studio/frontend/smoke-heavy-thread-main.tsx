@@ -19,7 +19,7 @@
 //   typescript fence     a second language, so one grammar is not the whole Shiki story
 //   python tool call     collapsible card with a code-execution result pane
 //   bash tool call       code_execution card, the other result-pane shape
-//   html artifact        a full ```html document, which Studio collapses into an artifact card
+//   html artifact        a full ```html document, which Unsloth collapses into an artifact card
 //   render_html tool     the HTML canvas artifact, as a tool part rather than a fence
 //   svg fence            a highlighted fence that also renders an inline <img> preview
 //   image parts          a raster PNG data URL and a unique SVG data URL, as image content parts
@@ -234,7 +234,7 @@ function jsonFence(index: number, targetChars: number): string {
 }
 
 function htmlArtifact(index: number, targetChars: number): string {
-  // A full document, which is what Studio treats as an artifact rather than as a code block,
+  // A full document, which is what Unsloth treats as an artifact rather than as a code block,
   // and it draws on a <canvas> so the fixture carries the shape users call a canvas artifact.
   const head = [
     "<!doctype html>",
@@ -265,7 +265,7 @@ function htmlArtifact(index: number, targetChars: number): string {
 }
 
 function svgFence(index: number, targetChars: number): string {
-  // Studio renders a highlighted fence AND an inline <img> preview for an svg fence, so this one
+  // Unsloth renders a highlighted fence AND an inline <img> preview for an svg fence, so this one
   // block buys both a Shiki pass and an image decode. No <script>, no on*= handlers, no
   // <foreignObject>: any of those make the preview refuse to render and the block silently
   // becomes an ordinary code fence.

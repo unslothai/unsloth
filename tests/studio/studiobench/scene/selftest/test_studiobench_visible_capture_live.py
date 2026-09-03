@@ -40,9 +40,9 @@ if str(_STUDIO_TESTS) not in sys.path:
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 _PARITY_JS = _STUDIO_TESTS / "studiobench" / "scene" / "parity.js"
 
-#: A thread of tall messages in a short viewport, so only a few are ever on screen at once. Each
-#: message publishes `aria-posinset`, which is how a windowed arm states thread position; the
-#: capture keys on it so a window and a full mount are comparable.
+#: A thread of tall messages in a short viewport, so only a few are ever on screen. Each message
+#: publishes `aria-posinset`, which is how a windowed arm states thread position, and the capture
+#: keys on it so a window and a full mount are comparable.
 FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -108,7 +108,7 @@ def page(browser):
     pg.set_content(FIXTURE)
     # `add_script_tag` after the content, not `add_init_script` before it: Playwright's
     # `set_content` does not always run init scripts, and the symptom is `window.__sb` simply not
-    # existing, which reads like a broken instrument rather than a mis-ordered fixture.
+    # existing, which reads like a broken instrument.
     pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
     pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
     yield pg
@@ -119,7 +119,7 @@ def _watch(page) -> None:
     got = page.evaluate("() => window.__sb.parityVisible.watch()")
     assert got.get("visible_attempted") is True, got
     # IntersectionObserver's first delivery is asynchronous, so give it a frame before anything
-    # scrolls. Without this the initial viewport contents are attributed to whatever came next.
+    # scrolls, or the initial viewport contents are attributed to whatever came next.
     page.wait_for_timeout(120)
 
 
@@ -306,20 +306,17 @@ def test_a_row_mounted_during_the_action_is_still_picked_up_cheaply(page):
     assert 3 in got["ever_visible"], got["ever_visible"]
 
 
+# Where the virtualizer publishes its ordinals is not a UI change. `runtime/readiness.py` accepts
+# `aria-posinset` / `aria-setsize` on the `[data-role]` message OR on an ancestor row wrapper,
+# walking with `closest()`, because the ordinal belongs on whichever element is the member of
+# the set.
+# The visible-region digest then read every attribute on the message, so an arm taking that
+# option differed from the fully mounted arm on EVERY message while the rendered content was
+# identical. Auto-mode parity was unusable for a DOM shape the gate explicitly permits, and a
+# wall of identical non-findings buries anything real.
+
+
 # ── where the virtualizer publishes its ordinals is not a UI change ──
-#
-# `runtime/readiness.py` accepts `aria-posinset` / `aria-setsize` on the `[data-role]` message OR on
-# an ancestor row wrapper -- it walks with `closest()`, because the ordinal belongs on whichever
-# element is the member of the set, and refusing the first option would refuse a correctly
-# implemented arm for putting the attribute in a place the gate itself calls right.
-#
-# The visible-region digest then read every attribute on the message, so an arm that took that
-# option differed from the fully mounted arm on EVERY message -- which publishes neither attribute
-# anywhere -- while the rendered content was identical. Auto-mode parity was unusable for a DOM
-# shape the gate explicitly permits, and a wall of differences that are all the same non-finding
-# buries anything real underneath it.
-
-
 def _arm_html(ordinals: str, suffix: str = "") -> str:
     """One thread of twenty messages, with the virtualization ordinals published `on_the_message`,
     `on_the_row` wrapper, or `nowhere` -- which is what the shipped build does."""
@@ -423,20 +420,17 @@ def test_a_real_rendering_difference_is_still_caught(browser):
     assert verdict["verdict"] == P.DIFFER, verdict
 
 
-# ── a rebuilt row is at its own position, not at the end of a lifetime count ──
-#
-# `thread_reopen` leaves the thread and comes back, and a FULLY MOUNTED arm answers that by
-# removing every message row and creating a new one for every message inside the same document.
-# Those rebuilt rows publish no `aria-posinset` -- only a windowed arm publishes one -- so their
-# ordinal comes from the fallback, and the fallback used to be a LIFETIME counter of observed
-# nodes. It already stood at N, so the rebuilt rows were stamped N+1..2N while the windowed arm on
-# the other side of the A/B stamped its real 1..N. `compare_visible` compares the two sets of
-# ordinals first, found them disjoint, and reported "the two arms put DIFFERENT MESSAGES on
-# screen" -- a hard visible-difference verdict -- for a rebuild that was identical.
+# A rebuilt row is at its own position, not at the end of a lifetime count. `thread_reopen`
+# leaves the thread and comes back, and a FULLY MOUNTED arm removes every message row and
+# creates a new one inside the same document. Those rebuilt rows publish no `aria-posinset`, so
+# their ordinal came from a LIFETIME counter already standing at N: they were stamped N+1..2N
+# while the windowed arm stamped its real 1..N, so `compare_visible` found the two ordinal sets
+# disjoint and reported a hard visible difference for a rebuild that was identical.
 
 
 #: The shipped shape: every message mounted, and NOTHING publishing a virtualization ordinal.
 #: `__rebuild()` is the thread_reopen rebuild, in one commit, in the same document.
+# ── a rebuilt row is at its own position, not at the end of a lifetime count ──
 REBUILD_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -606,15 +600,13 @@ def test_the_structural_digest_still_sees_the_ordinals(browser):
     assert all(numbered[i] != plain[i] for i in numbered), (numbered, plain)
 
 
+#: An EMPTY viewport, so a row appended to it is on screen immediately. `__churn` mounts and
+#: unmounts a row inside ONE task, which is how a row comes to be observed while detached: the
+#: MutationObserver batch runs after both operations, so the node is in `addedNodes` and no
+#: longer among the document's messages and has no position the instrument can honestly claim.
+#: `__remount` hands THE SAME NODE back, as a virtualizer that recycles rows does.
 # ── a recycled node, and the ordinal it used to be denied ──────────────────
 
-
-#: An EMPTY viewport, so a row appended to it is on screen immediately. `__churn` mounts a row and
-#: unmounts it inside ONE task, which is how a row comes to be observed while detached: the
-#: MutationObserver batch runs after both operations, the node is in `addedNodes` and is no longer
-#: among the document's messages, so it has no position the instrument can honestly claim.
-#: `__remount` then hands THE SAME NODE back, which is what a virtualizer that recycles its rows
-#: does on the next scroll step.
 RECYCLE_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -674,9 +666,9 @@ def test_a_recycled_row_is_placed_when_it_finally_mounts(browser):
     assert got["ever_visible"] == [1], got
 
 
-#: A row that is RENUMBERED IN PLACE. It stays connected, stays intersecting, and is handed to
-#: another message -- which is what a virtualizer that recycles its row nodes does, and it is not a
-#: childList mutation, so nothing about it reaches a childList-only observer.
+#: A row that is RENUMBERED IN PLACE: it stays connected, stays intersecting, and is handed to
+#: another message, as a virtualizer that recycles row nodes does. It is not a childList
+#: mutation, so nothing about it reaches a childList-only observer.
 RENUMBER_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -727,3 +719,134 @@ def test_a_row_renumbered_in_place_is_restamped_and_reported(browser):
     # And its content is filed under the position it actually holds.
     assert "42" in got["messages"], got["messages"]
     assert got["unplaced_rows"] == 0, got
+    # A LEGITIMATE RENUMBER IS NOT A COLLISION. One node holds one position at a time here, so the
+    # collision counter added for the two-rows-one-ordinal case must not fire, or a correct
+    # recycling virtualizer would be refused on every action it recycles a row in.
+    assert got["ordinal_collisions"] == 0, got
+
+
+#: TWO MOUNTED ROWS PUBLISHING ONE POSITION. A virtualizer that renumbers a recycled row wrongly
+#: leaves an extra message on screen wearing a position another row already holds.
+COLLISION_FIXTURE = """
+<!doctype html><meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  .aui-thread-viewport { height: 400px; overflow-y: auto; }
+  [data-role] { height: 100px; }
+</style>
+<div class="aui-thread-root">
+  <div class="aui-thread-viewport" id="vp">
+    <div aria-posinset="1"><div data-role="user">message 1</div></div>
+    <div aria-posinset="2"><div data-role="assistant">message 2</div></div>
+  </div>
+</div>
+<script>
+  window.__ghost = (before) => {
+    const vp = document.getElementById("vp");
+    const holder = document.createElement("div");
+    holder.setAttribute("aria-posinset", "1");
+    const row = document.createElement("div");
+    row.setAttribute("data-role", "user");
+    row.textContent = "a ghost the user can see";
+    holder.appendChild(row);
+    if (before) vp.insertBefore(holder, vp.firstChild);
+    else vp.appendChild(holder);
+  };
+</script>
+"""
+
+
+def _capture_with_ghost(browser, *, before: bool) -> dict:
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    try:
+        pg.set_content(COLLISION_FIXTURE)
+        pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+        pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        _watch(pg)
+        pg.evaluate("(b) => window.__ghost(b)", before)
+        pg.wait_for_timeout(150)
+        return _capture(pg)
+    finally:
+        pg.close()
+
+
+def test_two_rows_sharing_a_thread_position_are_counted_rather_than_overwritten(browser):
+    """THE DEFECT. The digest map is keyed by ordinal and the assignment was unconditional, so the
+    second row in DOM order silently REPLACED the first one's entry; `VIS.ever` is a Set of
+    numbers, so it collapsed the pair as well. Three rows on screen came out of the capture looking
+    exactly like a capture of two.
+
+    Whether that was ever caught was DOM order and nothing else. Reproduced in this browser, the
+    same ghost inserted BEFORE the row it shadows leaves the surviving digest agreeing with the
+    other arm and the pair returns MATCH; inserted after, it returns DIFFER. Last writer wins, so
+    the collision passes exactly when the survivor happens to be the one that agrees.
+    """
+    for before in (True, False):
+        got = _capture_with_ghost(browser, before = before)
+        assert got["ordinal_collisions"] == 1, (before, got)
+        assert got["collided_ordinals"] == [1], (before, got)
+        # The counter is not derived from the arithmetic, and this is why: two of the three rows on
+        # screen are filed under one key, so the map still holds two entries.
+        assert set(got["messages"]) == {"1", "2"}, got["messages"]
+
+
+def test_a_collision_refuses_the_pair_instead_of_reporting_agreement(browser):
+    """THE CONSEQUENCE, through the comparison. Three rows are on screen on one arm and two on the
+    other, and the capture cannot say so: the digest map holds two entries either way and
+    `ever_visible` holds two ordinals either way. So `compare_visible` reached a verdict out of a
+    set it did not know was short, and WHICH verdict depended only on which of the two rows sharing
+    the position happened to be written last -- MATCH when the survivor agrees with the other arm,
+    DIFFER when it does not, neither of them a statement about the row that was dropped.
+
+    Refused rather than answered. A pair whose inputs are known to be incomplete carries no verdict
+    in either direction, which is the rule this file applies to every other unreadable capture."""
+    from studiobench.analysis import parity as P
+
+    clean = _capture_with_ghost(browser, before = False)
+    clean["ordinal_collisions"] = 0
+    clean["collided_ordinals"] = []
+    ghosted = _capture_with_ghost(browser, before = True)
+    verdict = P.compare_visible(clean, ghosted)
+    assert verdict["verdict"] == P.NOT_COMPARABLE, verdict
+    assert "SAME thread position" in verdict["reason"], verdict
+
+
+def test_losing_the_thread_outranks_the_collision_refusal(browser):
+    """THE ONE FINDING A COLLISION CANNOT HAVE MANUFACTURED, so the refusal must not swallow it.
+
+    "One arm's viewport ended EMPTY and the other's did not" is raised with `severe: True` and is
+    documented at that site as not suppressible, because losing the conversation is a different kind
+    of statement from a capture that could not be read. A blanket collision refusal placed ahead of
+    it downgraded it to NOT COMPARABLE.
+
+    A collision provably cannot cause it: a collision needs TWO mounted rows sharing one position,
+    so the map it corrupts still holds an entry. It can merge two entries and never empty a map.
+    """
+    from studiobench.analysis import parity as P
+
+    ghosted = _capture_with_ghost(browser, before = True)
+    assert ghosted["ordinal_collisions"] == 1, ghosted
+    # The other arm ended with nothing on screen at all, the 100K `model_change` shape: 12 mounted
+    # messages to 0, never recovered.
+    empty = dict(ghosted)
+    empty["messages"] = {}
+    empty["ordinal_collisions"] = 0
+    empty["collided_ordinals"] = []
+
+    verdict = P.compare_visible(empty, ghosted)
+    assert verdict["verdict"] == P.DIFFER, verdict
+    assert verdict.get("severe") is True, verdict
+    assert "lost the thread" in verdict["reason"], verdict
+
+
+def test_a_collision_with_both_viewports_alive_is_still_refused(browser):
+    """THE CONTROL for the one above. The severe finding is the only thing that outranks the
+    refusal, so a collision on an arm whose viewport is perfectly healthy must still refuse."""
+    from studiobench.analysis import parity as P
+
+    clean = _capture_with_ghost(browser, before = False)
+    clean["ordinal_collisions"] = 0
+    clean["collided_ordinals"] = []
+    ghosted = _capture_with_ghost(browser, before = True)
+    assert clean["messages"] and ghosted["messages"], (clean, ghosted)
+    assert P.compare_visible(clean, ghosted)["verdict"] == P.NOT_COMPARABLE

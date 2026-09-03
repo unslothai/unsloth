@@ -32,6 +32,12 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    is_anonymous,
+    normalize_token,
+)
 from core.inference.diffusion_families import (
     flux2_base_inner_dim,
     flux2_mismatch_reason,
@@ -68,9 +74,14 @@ _INNER_DIM_CACHE_MAX = 256
 _CACHE_LOCK = threading.Lock()
 
 
-def _token_fingerprint(token: Optional[str]) -> str:
+def _token_fingerprint(token: HfTokenArg) -> str:
     """A stable, non-reversible tag for a token, or "" for none. Never the token itself: this
-    lands in a process-global dict that a traceback or a heap dump would render."""
+    lands in a process-global dict that a traceback or a heap dump would render.
+
+    A caller forced anonymous tags apart from one that may still use the ambient token,
+    so neither reads back the other's verdict."""
+    if is_anonymous(token):
+        return ANONYMOUS_CACHE_IDENTITY
     if not token:
         return ""
     return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()[:16]
@@ -323,7 +334,7 @@ def flux2_inner_dim_for_pick(
     # spending a range request to learn that on every such load is pure waste.
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
-    token = (hf_token or "").strip() or None
+    token = normalize_token(hf_token)
     # Resolved BEFORE the memo is consulted, because the file's identity is part of the key. Two
     # stats, against a probe that is otherwise an HTTP round trip.
     local = _local_gguf_path(repo_id, gguf_filename)
@@ -371,7 +382,7 @@ def _revalidated_inner_dim(
     cached = _snapshot_revision(_local_gguf_path(repo_id, gguf_filename))
     if cached is None:
         return got
-    token = (hf_token or "").strip() or None
+    token = normalize_token(hf_token)
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:
         return got
@@ -407,7 +418,7 @@ def flux2_pick_mismatch(
     )
 
 
-# GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
+# GGUF ``general.architecture`` values nothing in Unsloth can decode. Beside the FLUX.2 check
 # because both ask whether the pick is loadable, off the same prefix. The set itself lives in a
 # leaf module, shared with the chat gate and the listing classifier so they cannot drift.
 from utils.gguf_archs import (  # noqa: E402 -- beside the cache it keys
@@ -533,7 +544,7 @@ def _speech_probe_architecture(
     because a probe that failed on an expired credential caches "no verdict" and the retry with a
     working one would read that back and let the speech file through to the download; the file
     identity, because a checkpoint replaced under the same name is a different checkpoint."""
-    token = (hf_token or "").strip() or None
+    token = normalize_token(hf_token)
     # Resolved BEFORE the memo is consulted, because the file's identity is part of the key.
     local = _local_gguf_path(repo_id, gguf_filename)
     key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))

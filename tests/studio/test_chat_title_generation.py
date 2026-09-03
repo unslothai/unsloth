@@ -76,7 +76,7 @@ def test_generate_title_passes_first_assistant_reply_after_first_user():
     )
 
     assert 'const firstUserIndex = messages.findIndex((m) => m.role === "user");' in block
-    assert '.find((m, i) => m.role === "assistant" && i > firstUserIndex)' in block
+    assert 'm.role === "assistant" && i > firstUserIndex' in block
     assert "const assistantText = extractTextParts(firstAssistant);" in block
     assert "generateTitleWithModel({" in block
     assert "userText," in block
