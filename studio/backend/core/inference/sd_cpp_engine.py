@@ -400,7 +400,6 @@ def _studio_component_root(name: str) -> Path:
     legacy = Path.home() / ".unsloth" / name
     try:
         from utils.paths.storage_roots import studio_root
-
         root = studio_root()
     except (ImportError, OSError, ValueError):
         home = (
