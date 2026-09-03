@@ -167,3 +167,252 @@ def test_the_leg_list_default_survives_a_schedule_event():
     """``inputs`` is null on a schedule, so an input default cannot supply the
     value; it has to come from the fallback."""
     assert "inputs.legs || (github.event_name == 'schedule'" in TEXT
+
+
+# ------------------------------------------------- the command line it composes
+
+# Every rule above reads the workflow as TEXT: that a leg list is selected, that
+# it replaces --all-kernels, that the schedule forces the gate. Each was true
+# and the nightly still never ran, because the build step also emitted
+# --with-studio unconditionally and build_kernel.py refuses that combination:
+#
+#     ::notice::running grpo,multi_gpu,latest_compile instead of the wired set
+#     --with-studio requires --all-kernels
+#     ##[error]Process completed with exit code 1
+#
+# Runs 33587255856 and 33716011285, which is every scheduled run there has ever
+# been. Both halves were guarded separately and neither guard could see the
+# other, so the rules below take the step's own shell body, run it, and hand the
+# argv it composes to the real parser. A pair of flags that cannot be passed
+# together is then a red on CPU rather than a nightly that quietly never fires.
+
+
+def _build_step():
+    """The `Build the kernel notebooks` step, off the parsed YAML."""
+    for job in DOC["jobs"].values():
+        for step in job.get("steps") or []:
+            if step.get("name") == "Build the kernel notebooks":
+                return step
+    raise AssertionError("the build step is gone, so nothing here can be true")
+
+
+def _compose_argv(event, tmp_path, legs_input = "", studio_concurrent = "", github_output = ""):
+    """Run the build step's shell body and return the argv it would invoke.
+
+    The body is executed by bash, not pattern-matched, so the branches decide
+    what is emitted exactly as they do on a runner. `python` is a stub on PATH
+    that records its arguments and exits 0, which is the only substitution.
+    """
+    import json
+    import os
+    import shlex
+    import subprocess
+
+    step = _build_step()
+    # `inputs` is null on push and on a schedule, so every input expression is
+    # the empty string on both of the triggers modelled here. The one value
+    # that differs between them is LEG_LIST, and it comes from the workflow's
+    # own fallback rather than from a copy of the leg names kept here.
+    nightly = ",".join(_nightly_legs())
+    env_values = {
+        "LEG_LIST": legs_input or (nightly if event == "schedule" else ""),
+        "SKIP_BAND": "",
+        "MAX_STEPS": "10",
+        "REF_STEPS": "10",
+    }
+    for key in step.get("env") or {}:
+        assert key in env_values, f"the build step gained {key}, which this rule does not model"
+
+    body = step["run"]
+    # Interpolations left in the body itself. `steps.*.outputs.*` are refs the
+    # builder only echoes into the kernel, so any hex will do; the input
+    # expressions are empty for both triggers, which is what puts the run on
+    # the default branch of each `if`.
+    body = body.replace("${{ steps.ref.outputs.ref }}", "0" * 40)
+    body = body.replace("${{ steps.pins.outputs.zoo_ref }}", "1" * 40)
+    body = body.replace("${{ inputs.shared_wheels }}", "")
+    body = body.replace("${{ inputs.studio_concurrent }}", studio_concurrent)
+    assert "${{" not in body, f"an unmodelled expression survives: {body}"
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir(parents = True, exist_ok = True)
+    argvfile = tmp_path / "argv.json"
+    (bindir / "python").write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(argvfile)!r}, 'w').write(json.dumps(sys.argv[1:]))\n",
+        encoding = "utf-8",
+    )
+    (bindir / "python").chmod(0o755)
+
+    env = dict(os.environ, PATH = f"{bindir}{os.pathsep}{os.environ['PATH']}", **env_values)
+    # The step writes its `studio` output here. Pointed at a real file so
+    # the rules can read what it published rather than what it printed.
+    env["GITHUB_OUTPUT"] = github_output or str(tmp_path / "github_output")
+    # `bash -e`, which is what GitHub runs a `run:` block under on Linux.
+    proc = subprocess.run(
+        ["bash", "-e", "-c", body],
+        cwd = ROOT, env = env, capture_output = True, text = True,
+    )
+    assert proc.returncode == 0, f"the step body itself failed:\n{proc.stderr}"
+    assert argvfile.exists(), f"the body never invoked python:\n{proc.stdout}\n{proc.stderr}"
+    argv = json.loads(argvfile.read_text(encoding = "utf-8"))
+    assert argv and argv[0].endswith("build_kernel.py"), argv
+    return argv, proc.stdout + proc.stderr, shlex.join(argv)
+
+
+def _run_builder(argv, tmp_path):
+    import subprocess
+    import sys
+
+    out = [str(tmp_path / "kernel") if a == "kernel" else a for a in argv]
+    assert out != argv, "the step no longer writes to `kernel`, so this rule writes into the repo"
+    return subprocess.run(
+        [sys.executable, *out], cwd = ROOT, capture_output = True, text = True,
+    )
+
+
+def test_the_nightly_command_line_is_one_the_builder_accepts(tmp_path):
+    """THE RULE THAT WOULD HAVE CAUGHT IT.
+
+    Not "the flags look right" -- the step's own shell composes the argv and the
+    real builder is handed it. A nightly that cannot be built is a nightly that
+    does not exist, and it costs a scheduled run to find out.
+    """
+    argv, log, printed = _compose_argv("schedule", tmp_path)
+    proc = _run_builder(argv, tmp_path)
+    assert proc.returncode == 0, (
+        f"the nightly builds nothing:\n  {printed}\n"
+        f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+    )
+    assert "--legs" in argv, argv
+    assert "--all-kernels" not in argv, argv
+
+
+def test_the_per_pr_command_line_is_one_the_builder_accepts(tmp_path):
+    """The same rule for the trigger that was working, so a fix for the nightly
+    cannot be a regression for everything else. This is the pair: narrowing one
+    branch until it parses while breaking the other would satisfy the test
+    above on its own."""
+    argv, log, printed = _compose_argv("push", tmp_path)
+    proc = _run_builder(argv, tmp_path)
+    assert proc.returncode == 0, (
+        f"the per-PR run builds nothing:\n  {printed}\n"
+        f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+    )
+    assert "--all-kernels" in argv, argv
+    assert "--legs" not in argv, argv
+
+
+def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
+    """The specific pair that was mutually exclusive.
+
+    Asserted in BOTH directions. Dropping Studio from the nightly is only a fix
+    if the per-PR kernel still carries it -- otherwise the Studio payload is
+    covered by nothing at all, which is the failure
+    test_the_build_step_actually_packs_studio_in was written for.
+    """
+    nightly, _, _ = _compose_argv("schedule", tmp_path)
+    assert "--with-studio" not in nightly, (
+        "the nightly still asks for Studio alongside a leg list, which "
+        "build_kernel.py refuses outright"
+    )
+    per_pr, _, _ = _compose_argv("push", tmp_path)
+    assert "--with-studio" in per_pr, (
+        "no trigger packs Studio in any more, so the whole Studio payload runs "
+        "nowhere"
+    )
+    assert "--studio-args" in per_pr, per_pr
+
+
+def test_studio_concurrent_still_reaches_the_builder_on_the_per_pr_run(tmp_path):
+    """`--studio-concurrent` moved inside the Studio branch, and a flag that
+    stops being passed is exactly the failure run 32674263571 shipped: the
+    variant of an A/B ran the control's schedule and nothing was red."""
+    argv, _, _ = _compose_argv("push", tmp_path)
+    assert "--studio-concurrent" in argv, (
+        "the default per-PR build no longer shares a card, so Studio waits for "
+        "both to drain and the makespan claim in this workflow's header is gone"
+    )
+
+
+def test_a_leg_list_dispatch_is_told_studio_is_not_aboard(tmp_path):
+    """A run that drops Studio and a run whose Studio silently stopped being
+    packed look identical in the summary, so the first one says so."""
+    _, log, _ = _compose_argv("schedule", tmp_path)
+    assert "Studio is not in this kernel" in log, log
+
+
+def test_an_explicit_leg_dispatch_takes_the_same_path_as_the_nightly(tmp_path):
+    """`legs` is a workflow_dispatch input as well as a schedule fallback, and
+    it reaches the same branch. A hand dispatch naming one leg hit the identical
+    build failure."""
+    argv, _, printed = _compose_argv("workflow_dispatch", tmp_path, legs_input = "grpo")
+    assert "--with-studio" not in argv, printed
+    proc = _run_builder(argv, tmp_path)
+    assert proc.returncode == 0, f"{printed}\n{proc.stdout}\n{proc.stderr}"
+
+
+def test_studio_concurrent_false_actually_removes_the_flag(tmp_path):
+    """The OTHER half of the input, and the text rules cannot see it.
+
+    `--studio-concurrent` moved into a branch, and a branch that hardcodes the
+    flag rather than reading the variable still contains every string the
+    workflow-text rules look for: STUDIO_CONCURRENT is still assigned from the
+    input, the input is still declared, and the flag still reaches the builder.
+    Only running it with the input set to `false` and finding the flag gone
+    says the switch works.
+
+    Reaching for it is not hypothetical either. Studio seeing both cards is the
+    only way its own device selection is under test at all, and that dispatch
+    is the one this input exists to make possible.
+    """
+    off, _, printed = _compose_argv("workflow_dispatch", tmp_path, studio_concurrent = "false")
+    assert "--studio-concurrent" not in off, (
+        f"studio_concurrent=false still shares a card, so the two-card Studio "
+        f"dispatch is unreachable: {printed}"
+    )
+    assert "--with-studio" in off, "turning sharing off must not drop Studio itself"
+    proc = _run_builder(off, tmp_path)
+    assert proc.returncode == 0, f"{printed}\n{proc.stdout}\n{proc.stderr}"
+
+    on, _, _ = _compose_argv("workflow_dispatch", tmp_path)
+    assert "--studio-concurrent" in on, "the default stopped sharing, which is a makespan regression"
+
+
+def test_the_studio_reporter_is_told_when_studio_is_not_aboard(tmp_path):
+    """The build step publishes whether it packed Studio, and the reporter is
+    gated on it.
+
+    `kaggle_studio_ci/report.py` filters the launcher's reports down to the
+    `studio-gpu` label and `own_verdict` answers an EMPTY set with `partial`,
+    carrying the notebook kernel's own reason. So an ungated reporter renders
+    "Unsloth GPU smoke: PARTIAL" on every leg-list run, describing a payload
+    that was never in the kernel and quoting a reason belonging to the other
+    half. Not red, which is worse: it is a section that reads like a result.
+    """
+    for event, expected in (("schedule", "false"), ("push", "true")):
+        outfile = tmp_path / f"out_{event}"
+        outfile.write_text("", encoding = "utf-8")
+        argv, log, _ = _compose_argv(
+            event, tmp_path / event, github_output = str(outfile),
+        )
+        written = dict(
+            line.split("=", 1) for line in
+            outfile.read_text(encoding = "utf-8").splitlines() if "=" in line
+        )
+        assert written.get("studio") == expected, (
+            f"{event} publishes studio={written.get('studio')!r}, so the "
+            f"reporter gate reads the wrong answer"
+        )
+        assert ("--with-studio" in argv) is (expected == "true"), argv
+
+
+def test_the_studio_report_step_reads_that_output():
+    """The output above is only worth publishing if something gates on it."""
+    for job in DOC["jobs"].values():
+        for step in job.get("steps") or []:
+            if step.get("name") == "Report Studio":
+                assert "steps.build.outputs.studio == 'true'" in step["if"], step["if"]
+                return
+    raise AssertionError("the Studio reporter step is gone")

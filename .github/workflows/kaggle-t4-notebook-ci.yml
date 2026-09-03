@@ -955,9 +955,6 @@ jobs:
           if [ "${{ inputs.studio_concurrent }}" = "false" ]; then
             STUDIO_CONCURRENT=''
           fi
-          if [ -n "$STUDIO_CONCURRENT" ]; then
-            echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards. The report records tensor_split_over_two_cards=false rather than claiming it."
-          fi
           # A leg list REPLACES --all-kernels rather than filtering it: the
           # kernel plan and the payload count both come out of the same call,
           # so a filter applied afterwards would leave the launcher expecting
@@ -968,6 +965,43 @@ jobs:
           else
             KERNEL_SELECT="--all-kernels"
           fi
+          # STUDIO RIDES THE WIRED SET ONLY, and this is a refusal rather than a
+          # preference. build_kernel.py exits on `--with-studio` without
+          # `--all-kernels`, because --legs builds one deliberately narrowed
+          # kernel and hanging a ten-minute Studio install off it defeats the
+          # point of narrowing it.
+          #
+          # Both of those were emitted unconditionally, so the nightly asked for
+          # a leg list AND for Studio and never got as far as Kaggle: runs
+          # 33587255856 and 33716011285, every scheduled run there has ever
+          # been, died in this step on
+          #
+          #     --with-studio requires --all-kernels
+          #
+          # The two halves landed separately and each was guarded on its own --
+          # that a leg list replaces --all-kernels, and that the build step
+          # packs Studio in -- so nothing asserted the command line they compose
+          # together is one the parser accepts. That is what
+          # test_grpo_nightly.py's parser rules now do, on both triggers.
+          STUDIO=()
+          if [ -z "$LEG_LIST" ]; then
+            STUDIO=(--with-studio --studio-args "--max-steps 8")
+            if [ -n "$STUDIO_CONCURRENT" ]; then
+              STUDIO+=("$STUDIO_CONCURRENT")
+              echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards. The report records tensor_split_over_two_cards=false rather than claiming it."
+            fi
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+          else
+            # Said out loud, because a nightly quietly dropping Studio and one
+            # that quietly stopped running it look identical in the summary.
+            echo "::notice title=Studio is not in this kernel::this run selects legs explicitly, and the Studio payload rides the wired set only. Its coverage comes from the per-PR runs."
+            # And the Studio reporter is told, rather than left to work it out
+            # from an absence. With no `studio-gpu` report to filter down to,
+            # own_verdict answers `partial` and renders "Unsloth GPU smoke:
+            # PARTIAL" carrying the NOTEBOOK kernel's reason -- a section
+            # describing a payload that was never aboard, on every nightly.
+            echo "studio=false" >> "$GITHUB_OUTPUT"
+          fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
             --out kernel \
@@ -975,10 +1009,8 @@ jobs:
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref '${{ steps.pins.outputs.zoo_ref }}' \
             --smoke-args "--max-steps $MAX_STEPS" \
-            --with-studio \
-            --studio-args "--max-steps 8" \
+            "${STUDIO[@]}" \
             --per-run-timeout 3900 \
-            $STUDIO_CONCURRENT \
             $SHARED_WHEELS \
             $SKIP
 
@@ -1148,8 +1180,12 @@ jobs:
       #
       # Its exit code is the same contract as the T4 reporter's: red only for a
       # payload that ran and failed its assertions.
+      # Only when the kernel actually carried Studio. A leg-list dispatch does
+      # not, and this reporter answers an empty report set with `partial`
+      # rather than silence, so without the gate every nightly would print an
+      # "Unsloth GPU smoke: PARTIAL" section about a payload it never ran.
       - name: Report Studio
-        if: always() && steps.recheck.outputs.should_run == 'true'
+        if: always() && steps.recheck.outputs.should_run == 'true' && steps.build.outputs.studio == 'true'
         run: |
           python .github/scripts/kaggle_studio_ci/report.py \
             --evidence kaggle_evidence

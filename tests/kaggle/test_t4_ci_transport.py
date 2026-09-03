@@ -2532,6 +2532,20 @@ def test_two_dispatches_can_hold_the_two_kaggle_slots_at_once():
         assert block["cancel-in-progress"] is False, scope
 
 
+def _build_step_body(source):
+    """The `Build the kernel notebooks` step, sliced by its NAME.
+
+    This used to slice from the first occurrence of the string
+    "build_kernel.py" anywhere in the file, which meant a comment mentioning
+    the script by name moved the window and the rules below started reading a
+    block of prose. That is a rule going red on a comment while the behaviour
+    it guards is untouched, and it is the shape that gets a check deleted
+    rather than read. The step's name is the stable anchor, and it is what
+    test_the_build_step_actually_packs_studio_in already uses.
+    """
+    return source.split("- name: Build the kernel notebooks")[1].split("- name:")[0]
+
+
 def test_the_shared_wheel_build_is_opt_in():
     """Measured once, attributable to nothing, so it ships behind a flag.
 
@@ -2546,7 +2560,7 @@ def test_the_shared_wheel_build_is_opt_in():
     workflow = yaml.safe_load(source)
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
     assert inputs["shared_wheels"].get("default") is False, inputs["shared_wheels"]
-    build = source.split("build_kernel.py")[1].split("- name:")[0]
+    build = _build_step_body(source)
     assert "$SHARED_WHEELS" in build, build
     assert "'--shared-wheels'" in source
 
@@ -2600,7 +2614,7 @@ def test_the_workflow_can_actually_reach_studio_concurrent():
         "asking for the two-card coverage would silently get the shared shape"
     )
 
-    build = source.split("build_kernel.py")[1].split("- name:")[0]
+    build = _build_step_body(source)
     assert "$STUDIO_CONCURRENT" in build, (
         "the build command does not interpolate STUDIO_CONCURRENT, so the "
         "input cannot reach the kernel no matter what it is set to"
