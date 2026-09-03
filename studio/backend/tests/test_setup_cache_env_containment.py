@@ -413,6 +413,52 @@ def test_an_unused_managed_home_still_defers_to_a_legacy_dir(tmp_path):
     assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
 
 
+def test_an_unreadable_managed_home_keeps_its_pin(monkeypatch, tmp_path):
+    # An inspection failure is not evidence of an empty home. Reading it as one
+    # drops the pin, and the launch then runs against ~/.data-designer with the
+    # recipes and generated datasets under the managed tree hidden.
+    managed = tmp_path / "studio" / "data-designer"
+    _use_data_designer(managed)
+    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
+    sr = _load_storage_roots()
+
+    real_iterdir = Path.iterdir
+
+    def deny(self):
+        if self in (managed, managed / "managed-assets"):
+            raise PermissionError(13, "Permission denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", deny)
+    sr._setup_cache_env()
+
+    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
+    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(managed / "managed-assets")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason = "chmod 000 denies neither root nor Windows",
+)
+def test_an_unreadable_managed_assets_child_keeps_its_pin(tmp_path):
+    # The same flip through the child: the home lists fine, and the walk trips
+    # on managed-assets before it reaches the model_configs.yaml beside it.
+    managed = tmp_path / "studio" / "data-designer"
+    _use_data_designer(managed)
+    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
+    sr = _load_storage_roots()
+
+    assets = managed / "managed-assets"
+    assets.chmod(0o000)
+    try:
+        sr._setup_cache_env()
+    finally:
+        assets.chmod(0o755)
+
+    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
+    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(assets)
+
+
 def test_managed_assets_follow_an_explicit_data_designer_home(monkeypatch, tmp_path):
     chosen = tmp_path / "mine" / ".data-designer"
     monkeypatch.setenv("DATA_DESIGNER_HOME", str(chosen))
@@ -590,12 +636,24 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     assert result["style"] is True
 
 
-def _fake_torch_on_path(tmp_path, label, version):
-    """A torch that has a version.py and explodes if anything imports it."""
+def _fake_torch_on_path(tmp_path, label, version, cuda = None, hip = None, debug = False):
+    """A torch that has a version.py and explodes if anything imports it.
+
+    version.py is written the way recent torch generates it, annotations and
+    all, so the parser is exercised against the real shape.
+    """
     pkg = tmp_path / label / "torch"
     pkg.mkdir(parents = True)
     (pkg / "__init__.py").write_text("raise AssertionError('torch was imported')\n")
-    (pkg / "version.py").write_text(f"__version__ = {version!r}\ncuda = None\n")
+    (pkg / "version.py").write_text(
+        "from typing import Optional\n\n"
+        f"__version__ = {version!r}\n"
+        f"debug = {debug!r}\n"
+        f"cuda: Optional[str] = {cuda!r}\n"
+        "git_version = '5811a8d7da873dd699ff6687092c225caffcf1bb'\n"
+        f"hip: Optional[str] = {hip!r}\n"
+        "xpu: Optional[str] = None\n"
+    )
     return str(tmp_path / label)
 
 
@@ -632,8 +690,8 @@ def test_torch_extension_cache_separates_incompatible_builds(tmp_path):
     sr = _load_storage_roots()
 
     tags = []
-    for label, version in (("a", "2.9.1+cu128"), ("b", "2.9.1+cu126")):
-        with _only_torch(_fake_torch_on_path(tmp_path, label, version)):
+    for label, version, cuda in (("a", "2.9.1+cu128", "12.8"), ("b", "2.9.1+cu126", "12.6")):
+        with _only_torch(_fake_torch_on_path(tmp_path, label, version, cuda = cuda)):
             tags.append(sr._torch_runtime_tag())
 
     assert tags[0] != tags[1], f"two torch builds shared one extension dir: {tags[0]}"
@@ -658,3 +716,63 @@ def test_torch_extension_tag_survives_a_missing_torch(tmp_path):
 
     abi = getattr(sys, "abiflags", "")
     assert tag == f"py{sys.version_info.major}{sys.version_info.minor}{abi}"
+
+
+def test_torch_extension_cache_separates_builds_sharing_one_version_string(tmp_path):
+    # conda-forge sets PYTORCH_BUILD_VERSION to the bare release, so its CPU and
+    # CUDA packages of one version carry the same __version__ and differ only in
+    # a conda build string. Reading only __version__ files them together.
+    sr = _load_storage_roots()
+
+    tags = []
+    for label, cuda in (("cpu", None), ("cu126", "12.6"), ("cu128", "12.8")):
+        with _only_torch(_fake_torch_on_path(tmp_path, label, "2.9.1", cuda = cuda)):
+            tags.append(sr._torch_runtime_tag())
+
+    assert len(set(tags)) == 3, f"builds with different CUDA ABIs shared one dir: {tags}"
+    prefix = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
+    assert tags[0] == f"{prefix}_cpu_2.9.1"
+    assert tags[1] == f"{prefix}_cu126_2.9.1"
+    assert tags[2] == f"{prefix}_cu128_2.9.1"
+
+
+def test_torch_extension_cache_separates_a_rocm_build_from_a_cpu_build(tmp_path):
+    # torch's own folder names a ROCm build 'cpu', because version.cuda is unset
+    # there. main prioritises ROCm, so hip has to be read first.
+    sr = _load_storage_roots()
+
+    tags = []
+    for label, hip in (("cpu", None), ("rocm", "6.4.43484-123eb5128")):
+        with _only_torch(_fake_torch_on_path(tmp_path, label, "2.9.1", hip = hip)):
+            tags.append(sr._torch_runtime_tag())
+
+    assert tags[0] != tags[1], f"a ROCm build shared the CPU extension dir: {tags[0]}"
+    assert "rocm6.4.43484-123eb5128" in tags[1]
+
+
+def test_torch_extension_cache_separates_a_debug_build(tmp_path):
+    # A debug build keeps the soname of a release one but not its ABI.
+    sr = _load_storage_roots()
+
+    tags = []
+    for label, debug in (("release", False), ("debug", True)):
+        entry = _fake_torch_on_path(tmp_path, label, "2.9.1+cu128", cuda = "12.8", debug = debug)
+        with _only_torch(entry):
+            tags.append(sr._torch_runtime_tag())
+
+    assert tags[0] != tags[1], f"a debug build shared the release extension dir: {tags[0]}"
+    assert tags[1].endswith("_debug")
+
+
+def test_torch_runtime_tag_never_imports_torch(tmp_path):
+    # This runs before torch exists in a fresh venv, and importing it on the
+    # startup path would cost seconds and pull CUDA in. The fake package raises
+    # on import, so an import here is a failure, not a skip.
+    sr = _load_storage_roots()
+    entry = _fake_torch_on_path(tmp_path, "guard", "2.9.1+cu128", cuda = "12.8")
+
+    with _only_torch(entry):
+        tag = sr._torch_runtime_tag()
+        assert "torch" not in sys.modules, "torch was imported to build the cache tag"
+
+    assert "cu128" in tag
