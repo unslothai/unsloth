@@ -326,7 +326,13 @@ assert_eq "install.sh lowercases _torch_index_leaf" "yes" "$_has_lc_ok"
 # and gfx120x-all get the floor, while non-2.11 leaves keep the default.
 run_floor_case() {
     _url="$1"
+    _os="${2:-linux}"
+    _pym="${3:-13}"   # interpreter minor version; 3.13 is the installer default
+    _glibcm="${4:-39}"  # glibc minor; 2.39 is Ubuntu 24.04, comfortably over the floor
     bash -c '
+        OS="$2"
+        _PY_MINOR_FOR_TORCH="$3"
+        _GLIBC_MINOR_FOR_TORCH="$4"
         TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
         TORCHVISION_CONSTRAINT="torchvision"
         TORCHAUDIO_CONSTRAINT="torchaudio"
@@ -339,9 +345,17 @@ run_floor_case() {
                 TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
                 TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
                 ;;
+            cpu)
+                if [ "$OS" != "macos" ] && [ "${_PY_MINOR_FOR_TORCH:-99}" -ge 10 ] 2>/dev/null \
+                   && [ "${_GLIBC_MINOR_FOR_TORCH:-0}" -ge 28 ] 2>/dev/null; then
+                    TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+                    TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+                    TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+                fi
+                ;;
         esac
         echo "$TORCH_CONSTRAINT"
-    ' _ "$_url"
+    ' _ "$_url" "$_os" "$_pym" "$_glibcm"
 }
 
 assert_eq "gfx120X-all (capital) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
@@ -362,8 +376,84 @@ assert_eq "rocm6.4 -> default (no floor)" "torch>=2.4,<2.11.0" \
     "$(run_floor_case 'https://download.pytorch.org/whl/rocm6.4')"
 assert_eq "cu128 -> default (no floor)" "torch>=2.4,<2.11.0" \
     "$(run_floor_case 'https://download.pytorch.org/whl/cu128')"
-assert_eq "cpu -> default (no floor)" "torch>=2.4,<2.11.0" \
-    "$(run_floor_case 'https://download.pytorch.org/whl/cpu')"
+# cpu leaf: Linux/WSL take the 2.11 trio, macOS keeps the default window (it resolves
+# through this same leaf on Darwin and has had no smoke pass).
+assert_eq "cpu (linux) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux)"
+assert_eq "cpu (wsl) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' wsl)"
+assert_eq "cpu (macos) -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' macos)"
+assert_eq "cpu trailing slash (linux) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu/' linux)"
+# A mirror whose BASE path contains cpu but whose leaf does not must not be floored.
+assert_eq "cpu-private leaf -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://mirror.example/whl/cpu/cpu-private' linux)"
+
+# The 2.11 cpu wheels are cp310-cp314. The installer defaults to 3.13, but --python /
+# UNSLOTH_PYTHON take any version and a venv from an older install is reused as is, and
+# on 3.9 a bare 2.11 floor makes the resolve fail outright rather than fall back --
+# measured: "No solution found", where the default window still yields torch 2.8.0+cpu.
+assert_eq "cpu (linux, py3.9) -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 9)"
+assert_eq "cpu (linux, py3.10) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 10)"
+assert_eq "cpu (linux, py3.13) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 13)"
+assert_eq "cpu (wsl, py3.9) -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' wsl 9)"
+# An unreadable interpreter must not silently drop the floor.
+assert_eq "cpu (linux, unreadable py) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 99)"
+
+# The glibc floor. The 2.11 cpu wheels are manylinux_2_28 only, while the window they
+# replace reaches down to torch 2.6.0, which still shipped manylinux_2_17 -- so below
+# glibc 2.28 the floor does not select an older wheel, it leaves NO candidate and the
+# resolve dies with "No solution found". Measured against the live cpu index at
+# x86_64-manylinux_2_17 (main: torch 2.6.0+cpu, floored: no solution) for cp310-cp313,
+# with the flip exactly at 2_28. install.sh bootstraps uv on x86_64 from glibc 2.17 up,
+# so this range is supported, not hypothetical: CentOS 7 (2.17), Debian 9 (2.24),
+# Amazon Linux 2 (2.26), Ubuntu 18.04 (2.27).
+assert_eq "cpu (glibc 2.17) -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 13 17)"
+assert_eq "cpu (glibc 2.26, Amazon Linux 2) -> default" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 13 26)"
+assert_eq "cpu (glibc 2.27, Ubuntu 18.04) -> default" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 13 27)"
+assert_eq "cpu (glibc 2.28 boundary) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 13 28)"
+assert_eq "cpu (glibc 2.39, Ubuntu 24.04) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 13 39)"
+# musl or an unreadable ldd reads as 0. Unlike the interpreter probe, this one fails
+# SAFE: those hosts get the window they get today rather than a floor whose wheels may
+# not exist for them.
+assert_eq "cpu (musl/unreadable glibc) -> default" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' linux 13 0)"
+assert_eq "cpu (wsl, glibc 2.27) -> default" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu' wsl 13 27)"
+# The glibc gate must not reach any other leaf: the per-gfx and rocm7.2 indexes publish
+# their own wheels and were never keyed on it.
+assert_eq "rocm7.2 unaffected by old glibc" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/rocm7.2' linux 13 17)"
+assert_eq "gfx1151 unaffected by old glibc" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://repo.amd.com/rocm/whl/gfx1151' linux 13 17)"
+
+# Structural: install.sh really reads glibc and really gates the cpu arm on it, so the
+# replicated snippet above cannot drift away from the source.
+_glibc_probe=$(grep -c '_GLIBC_MINOR_FOR_TORCH=$(_uv_glibc_minor' "$INSTALL_SH" || true)
+assert_eq "install.sh probes glibc for the torch floor" "yes" \
+    "$([ "$_glibc_probe" -ge 1 ] && echo yes || echo no)"
+_glibc_gate=$(grep -c '"${_GLIBC_MINOR_FOR_TORCH:-0}" -ge 28' "$INSTALL_SH" || true)
+assert_eq "cpu floor is gated on glibc >= 2.28" "yes" \
+    "$([ "$_glibc_gate" -ge 1 ] && echo yes || echo no)"
+
+# Structural: the cpu arm exists and is gated so macOS is untouched.
+_cpu_case=$(grep -c '^    cpu)$' "$INSTALL_SH" || true)
+_has_cpu_case=$([ "$_cpu_case" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "cpu index case adjusts TORCH_CONSTRAINT" "yes" "$_has_cpu_case"
+_cpu_mac_gate=$(grep -c 'if \[ "\$OS" != "macos" \] && \[ "\${_PY_MINOR_FOR_TORCH:-99}" -ge 10 \]' "$INSTALL_SH" || true)
+_has_mac_gate=$([ "$_cpu_mac_gate" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "cpu floor is gated off macOS" "yes" "$_has_mac_gate"
 
 # ======================================================================
 # Summary
