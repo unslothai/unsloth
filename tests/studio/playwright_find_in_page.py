@@ -133,7 +133,12 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
 
     # Re-pressing the chord keeps the search open and returns focus to its field.
     page.evaluate("() => document.activeElement?.blur()")
-    check(engine, mode, "the field can lose focus while the bar stays open", state(page).get("focused") is False)
+    check(
+        engine,
+        mode,
+        "the field can lose focus while the bar stays open",
+        state(page).get("focused") is False,
+    )
     page.keyboard.press(f"{mod}+f")
     page.wait_for_timeout(200)
     check(
