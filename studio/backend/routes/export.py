@@ -47,9 +47,7 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-def _export_hub_token(
-    hf_token: Optional[str], allow_ambient_token: bool
-) -> HfTokenArg:
+def _export_hub_token(hf_token: Optional[str], allow_ambient_token: bool) -> HfTokenArg:
     """Resolve a body token under the same caller boundary as Hub reads."""
     return hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
 
