@@ -757,15 +757,31 @@ UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
 # (storage_roots.unsloth_home, setup.sh's _setup_portable_mode, scripts/uninstall.sh) only
 # tests existence -- so losing a trailing newline in the round trip changes nothing.
 #
-# The portable launcher rolls back the same way, on the pair below it. One slot: only a
-# normal reinstall over a nested portable install has one to move, and it has exactly one.
+# The launcher a conversion displaces rolls back the same way, on the pairs below. Three
+# conversions displace one, and they need TWO pairs, for the same reason the marker needs two
+# slots -- both spellings can be present at once:
+#   normal -> portable   the shim block renames its wrapper over whatever is at $_LOCAL_BIN
+#                        (flat: the normal install's own symlink). Portable mode only.
+#   portable -> normal, nested   _clear_stale_portable_marker retires <root>/bin/unsloth,
+#                        which the new shim under <root>/studio/bin does NOT land on.
+#   portable -> normal, flat     `ln -sfn` lands on <root>/bin/unsloth itself, so there is
+#                        nothing to retire but everything to preserve.
+# The first is portable-only and the other two are normal-only, so the first shares a pair
+# with the second. The second and third are BOTH normal-mode and both can fire in one run:
+# <root>/studio can carry its own flat marker while <root> carries the parent one (the shape
+# tests/sh/test_install_portable_marker_rollback.sh calls D3), and then <root>/bin/unsloth
+# and <root>/studio/bin/unsloth are two different launchers for the same venv. One pair would
+# silently drop one of them, so the flat conversion gets its own. Order matters below: blockM
+# in the tests ends at _PORTABLE_SHIM_BACKUP, so that line stays last.
 # Moved aside rather than snapshotted into a variable, the way the venv is: the copy keeps
-# the executable bit and the exact bytes, and a run killed outright leaves the copy on disk
-# instead of nothing at all.
+# the executable bit and the exact bytes (a symlink stays a symlink), and a run killed
+# outright leaves the copy on disk instead of nothing at all.
 _PORTABLE_MARKER_PATH_1=""
 _PORTABLE_MARKER_PRIOR_1=""
 _PORTABLE_MARKER_PATH_2=""
 _PORTABLE_MARKER_PRIOR_2=""
+_PORTABLE_FLAT_SHIM_PATH=""
+_PORTABLE_FLAT_SHIM_BACKUP=""
 _PORTABLE_SHIM_PATH=""
 _PORTABLE_SHIM_BACKUP=""
 
@@ -847,6 +863,36 @@ _clear_stale_portable_marker() {
             _PORTABLE_MARKER_PRIOR_1="y$(cat -- "$_PORTABLE_MARKER_PATH_1" 2>/dev/null)"
             if rm -f -- "$STUDIO_HOME/$_spm_name" 2>/dev/null; then
                 substep "removed the stale portable marker in $STUDIO_HOME"
+                # The flat root's own launcher. <root>/bin IS the bin this reinstall writes
+                # into, so `ln -sfn` further down replaces the wrapper in place: nothing to
+                # retire, unlike the nested case below, but the same thing to preserve. The
+                # marker two lines up rolls back on failure, and without this the tree it
+                # comes back to reads as portable through a launcher that no longer exports
+                # UNSLOTH_HOME, UNSLOTH_PORTABLE or any cache root -- the half-restored state
+                # the marker rollback exists to prevent. Nested inside the removal on purpose:
+                # an ordinary reinstall has no flat marker and never reaches this at all, so
+                # nothing here can touch the shim path every normal install takes. Ownership
+                # is the same behavioural probe the nested retirement uses -- a regular file,
+                # not a symlink, exporting UNSLOTH_PORTABLE=1 and exec'ing THIS STUDIO_HOME's
+                # venv -- so a user's own script, another install's launcher, a symlink or a
+                # directory is left alone. Its own slot, not the nested one: both arms can
+                # fire in the same run. Inline, not a helper, so this block still runs when
+                # lifted out on its own.
+                _spm_flat_shim="$STUDIO_HOME/bin/unsloth"
+                _spm_flat_venv=$(printf '%s' "$STUDIO_HOME/unsloth_studio/bin/unsloth" | sed "s/'/'\\\\''/g")
+                if [ -f "$_spm_flat_shim" ] && [ ! -L "$_spm_flat_shim" ] \
+                    && grep -qxF "export UNSLOTH_PORTABLE=1" "$_spm_flat_shim" 2>/dev/null \
+                    && grep -qxF "exec '$_spm_flat_venv' \"\$@\"" "$_spm_flat_shim" 2>/dev/null; then
+                    _PORTABLE_FLAT_SHIM_PATH="$_spm_flat_shim"
+                    _PORTABLE_FLAT_SHIM_BACKUP="$STUDIO_HOME/bin/.unsloth-flat-shim.$$"
+                    if mv -f "$_spm_flat_shim" "$_PORTABLE_FLAT_SHIM_BACKUP" 2>/dev/null; then
+                        substep "replacing the portable launcher at $_spm_flat_shim"
+                    else
+                        _PORTABLE_FLAT_SHIM_PATH=""
+                        _PORTABLE_FLAT_SHIM_BACKUP=""
+                        substep "could not move $_spm_flat_shim aside; a failed reinstall cannot put it back" "$C_WARN"
+                    fi
+                fi
             else
                 _PORTABLE_MARKER_PATH_1=""
                 _PORTABLE_MARKER_PRIOR_1=""
@@ -1128,18 +1174,56 @@ _restore_portable_marker_slot() {  # path prior
     return 0
 }
 
-# The portable launcher _clear_stale_portable_marker moved aside, put back with the marker
-# it belongs to: a conversion that fails restores the portable install, and the command that
-# install's summary printed has to work again, still carrying the environment that keeps it
-# contained. Never over a file that is back already, for the same reason the marker is not.
-_restore_portable_shim() {
-    [ -n "$_PORTABLE_SHIM_PATH" ] || return 0
-    if [ -e "$_PORTABLE_SHIM_BACKUP" ] && [ ! -e "$_PORTABLE_SHIM_PATH" ] \
-        && mv -f "$_PORTABLE_SHIM_BACKUP" "$_PORTABLE_SHIM_PATH" 2>/dev/null; then
-        rollback_substep "restored the portable launcher at $_PORTABLE_SHIM_PATH"
+# The launcher a conversion moved aside, put back with the marker it belongs to: a
+# conversion that fails restores the install that was there, and the command that install's
+# summary printed has to work again, still carrying the environment that kept it contained.
+# Never over a path something else has taken back, for the same reason a marker that is back
+# already is left alone -- but "taken back" depends on the direction, so each slot says which
+# extra shape IT is allowed to overwrite, and anything else is refused:
+#   ''         nothing. The nested retirement writes its new shim under <root>/studio/bin,
+#              so <root>/bin/unsloth is simply free by the time this runs.
+#   wrapper    the wrapper this run generated, recognized by the line the shim block writes
+#              two lines into every one of them. Normal -> portable renames onto the SAME
+#              path, so its own wrapper is sitting there and nothing else may be.
+#   symlink    the symlink `ln -sfn` writes. The flat retirement renames onto the same path
+#              too, and `ln -sfn` is the only thing that puts a symlink there. Deliberately
+#              not "-ef this venv": at rollback time the venv restore has already run, and
+#              demanding that it resolve would make this inert exactly when the previous tree
+#              could not be put back -- the case that most needs its launcher returned.
+# -e or -L on both sides, never -e alone: the flat conversions move a SYMLINK aside, and -e
+# follows it to a target the venv rollback may have just deleted.
+_restore_portable_shim_slot() {  # path backup extra-shape
+    [ -n "$1" ] || return 0
+    _rps_free=false
+    if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+        _rps_free=true
+    elif [ "$3" = symlink ]; then
+        if [ -L "$1" ]; then _rps_free=true; fi
+    elif [ "$3" = wrapper ]; then
+        if [ -f "$1" ] && [ ! -L "$1" ] \
+            && grep -qxF "# Generated by install.sh --portable. Keeps every Unsloth path inside" \
+                "$1" 2>/dev/null; then
+            _rps_free=true
+        fi
     fi
+    if [ "$_rps_free" = true ] \
+        && { [ -e "$2" ] || [ -L "$2" ]; } \
+        && mv -f "$2" "$1" 2>/dev/null; then
+        rollback_substep "restored the previous launcher at $1"
+    fi
+    return 0
+}
+
+_restore_portable_shim() {
+    # The shared pair: the nested retirement leaves the path free, the portable conversion
+    # leaves its own wrapper on it, and the two cannot both run (one is normal-mode only,
+    # the other portable-mode only), so one shape rule covers both.
+    _restore_portable_shim_slot "$_PORTABLE_SHIM_PATH" "$_PORTABLE_SHIM_BACKUP" wrapper
+    _restore_portable_shim_slot "$_PORTABLE_FLAT_SHIM_PATH" "$_PORTABLE_FLAT_SHIM_BACKUP" symlink
     _PORTABLE_SHIM_PATH=""
     _PORTABLE_SHIM_BACKUP=""
+    _PORTABLE_FLAT_SHIM_PATH=""
+    _PORTABLE_FLAT_SHIM_BACKUP=""
     return 0
 }
 
@@ -1161,14 +1245,20 @@ _commit_portable_marker() {
     _PORTABLE_MARKER_PRIOR_1=""
     _PORTABLE_MARKER_PATH_2=""
     _PORTABLE_MARKER_PRIOR_2=""
-    # The conversion stands, so the old portable launcher stays gone; drop the copy that
-    # was only there to put it back. An `if`, not `[ ... ] && rm`: set -e is on and the
-    # false branch of that AND-list would end the install right here.
+    # The conversion stands, so the launcher it displaced stays displaced -- retired in one
+    # direction, renamed over in the other; drop the copy that was only there to put it back.
+    # An `if`, not `[ ... ] && rm`: set -e is on and the false branch of that AND-list would
+    # end the install right here.
     if [ -n "$_PORTABLE_SHIM_BACKUP" ]; then
         rm -f "$_PORTABLE_SHIM_BACKUP" 2>/dev/null || true
     fi
+    if [ -n "$_PORTABLE_FLAT_SHIM_BACKUP" ]; then
+        rm -f "$_PORTABLE_FLAT_SHIM_BACKUP" 2>/dev/null || true
+    fi
     _PORTABLE_SHIM_PATH=""
     _PORTABLE_SHIM_BACKUP=""
+    _PORTABLE_FLAT_SHIM_PATH=""
+    _PORTABLE_FLAT_SHIM_BACKUP=""
     return 0
 }
 
@@ -6444,6 +6534,30 @@ if [ "$_PORTABLE_MODE" = true ]; then
     _shim_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
     _shim_studio=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
     _shim_venv=$(printf '%s' "$VENV_DIR" | sed "s/'/'\\\\''/g")
+    # A conversion the other way lands on the path the tree already launches through.
+    # UNSLOTH_STUDIO_HOME=DIR puts the normal install's symlink at DIR/bin/unsloth, and
+    # README tells that user to add portable mode to contain the caches; --portable over
+    # the same DIR resolves _LOCAL_BIN to DIR/bin as well, so the rename below replaces
+    # that symlink. The setup.sh gate is hundreds of lines further down, so a conversion
+    # that dies there restored the previous environment and dropped the marker it had
+    # published, yet left this wrapper in front of the restored install exporting
+    # UNSLOTH_HOME and UNSLOTH_PORTABLE=1 for good. Moved aside on the same pair the
+    # opposite conversion uses -- the two cannot both fire, _clear_stale_portable_marker
+    # returns immediately in portable mode -- so _restore_portable_shim puts it back with
+    # the marker and _commit_portable_marker drops the copy once the install stands.
+    # Whatever is on the path is kept, not only our own shape: this preserves what the
+    # rename would destroy, it never deletes anything the rename would have left. The copy
+    # lands in $_LOCAL_BIN, which is inside the root in portable mode, so it is not a write
+    # outside it. Inline, not a helper, so this block still runs when lifted out on its own.
+    if [ -z "${_PORTABLE_SHIM_PATH:-}" ] \
+        && { [ -e "$_shim_path" ] || [ -L "$_shim_path" ]; }; then
+        _PORTABLE_SHIM_PATH="$_shim_path"
+        _PORTABLE_SHIM_BACKUP="$_LOCAL_BIN/.unsloth-portable-shim.$$"
+        if ! mv -f "$_shim_path" "$_PORTABLE_SHIM_BACKUP" 2>/dev/null; then
+            _PORTABLE_SHIM_PATH=""
+            _PORTABLE_SHIM_BACKUP=""
+        fi
+    fi
     if {
         printf '%s\n' "#!/bin/sh" \
             "# Generated by install.sh --portable. Keeps every Unsloth path inside" \
