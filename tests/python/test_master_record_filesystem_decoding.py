@@ -121,7 +121,12 @@ def _run(prefix: bytes, home: bytes) -> dict:
     return merged
 
 
-def _nested(master: bytes, *, record: bytes | None, mode: int = 0o775) -> bytes:
+def _nested(
+    master: bytes,
+    *,
+    record: bytes | None,
+    mode: int = 0o775,
+) -> bytes:
     """What `install.sh --root <master>` leaves behind, nested layout.
 
     0o775 by default: what `umask 002` produces on a multi-user box, where the
