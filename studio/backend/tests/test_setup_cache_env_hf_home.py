@@ -211,6 +211,61 @@ def test_portable_mode_without_an_explicit_hf_home_still_contains_them(monkeypat
     assert os.environ["HF_ASSETS_CACHE"].startswith(str(master))
 
 
+@pytest.mark.parametrize("hub_variable", ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"])
+def test_a_hub_only_override_still_contains_the_xet_cache(monkeypatch, tmp_path, hub_variable):
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME and never from
+    # HF_HUB_CACHE, so naming a hub cache leaves the chunk and shard caches
+    # unconfigured. Deriving them from the host home instead would keep a
+    # portable install writing Xet data, and hf_xet's logs, outside the volume.
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "home" / ".cache"))
+    master = _portable_install(monkeypatch, tmp_path)
+    chosen = tmp_path / "bigdisk" / "hub"
+    monkeypatch.setenv(hub_variable, str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_HUB_CACHE"] == str(chosen)
+    assert os.environ["HF_XET_CACHE"].startswith(str(master))
+
+
+def test_an_explicit_xet_cache_outranks_the_portable_default(monkeypatch, tmp_path):
+    # The containment above must not collapse into "always redirect": a named
+    # Xet cache is the one place the user asked for.
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _portable_install(monkeypatch, tmp_path)
+    mine = tmp_path / "bigdisk" / "xet"
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "bigdisk" / "hub"))
+    monkeypatch.setenv("HF_XET_CACHE", str(mine))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_XET_CACHE"] == str(mine)
+
+
+def test_a_normal_install_leaves_the_xet_cache_in_the_host_home(monkeypatch, tmp_path):
+    # Containment is portable mode's promise alone. A normal install keeps the
+    # platform default so chunks shared with plain huggingface_hub still hit.
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "bigdisk" / "hub"))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_XET_CACHE"] == str(tmp_path / "xdg" / "huggingface" / "xet")
+
+
 def test_the_libraries_really_derive_these_caches_from_hf_home(monkeypatch, tmp_path):
     # Leaving the variables unset is only correct if huggingface_hub and datasets
     # derive them from HF_HOME. Ask a fresh interpreter, since both snapshot

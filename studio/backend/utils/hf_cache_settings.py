@@ -92,7 +92,13 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     default_home = _default_cache_home()
     hf_home = _canonical(explicit_home) if explicit_home else default_home
     hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
-    xet = _canonical(explicit_xet) if explicit_xet else hf_home / "xet"
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE,
+    # so naming only a hub cache says nothing about where the chunk and shard
+    # caches go and would leave them in the host home a portable install is meant
+    # to stay out of. Same test _portable_cache_defaults already applies to the
+    # assets and datasets caches, which are derived from HF_HOME the same way.
+    xet_home = hf_home if explicit_home else (_portable_cache_home() or hf_home)
+    xet = _canonical(explicit_xet) if explicit_xet else xet_home / "xet"
     controlling = next(
         key
         for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME")
