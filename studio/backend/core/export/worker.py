@@ -565,12 +565,15 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     # Runs before huggingface_hub is imported: it reads HF_HUB_DISABLE_IMPLICIT_TOKEN once, into
     # a module constant. Every later Hub read in this worker and its children inherits this env.
-    # A caller's own token does not make the operator's harmless: get_token() reads HF_TOKEN and
-    # HUGGING_FACE_HUB_TOKEN, so any call left at token=None would still authenticate as the
-    # operator. Scrub whenever the policy is non-ambient, token or no token.
+    #
+    # Fully anonymous, even when this caller sent a token. Two credentials must stay out of the
+    # environment: the operator's, which get_token() would hand to any call left at token=None
+    # (HF_TOKEN and HUGGING_FACE_HUB_TOKEN are both read); and this caller's own, because the
+    # worker outlives the load and later serves export commands from other callers, who would
+    # then inherit it. A credential belongs to one request, so it travels as an argument.
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env
-        apply_token_to_child_env(os.environ, config.get("hf_token") or False)
+        apply_token_to_child_env(os.environ, False)
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):

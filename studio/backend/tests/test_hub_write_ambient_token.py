@@ -364,13 +364,15 @@ def test_worker_scrubs_ambient_token_when_allow_ambient_false(monkeypatch, worke
     assert seen_env.get("passed_token") is None
 
 
-def test_worker_scrubs_operator_aliases_when_the_caller_sent_its_own_token(
+def test_worker_env_holds_no_credential_at_all_when_the_caller_sent_its_own_token(
     monkeypatch, worker_in_process
 ):
-    """A caller token does not make the operator's harmless.
+    """A caller token does not make the operator's harmless, and does not belong here either.
 
     get_token() reads HF_TOKEN and HUGGING_FACE_HUB_TOKEN, so leaving the operator's in place
-    would let every in-worker Hub call still at token=None authenticate as the operator.
+    would let every in-worker Hub call still at token=None authenticate as the operator. Putting
+    this caller's token there instead just inverts the leak: the worker outlives the load and
+    goes on serving export commands from other callers. It travels as an argument instead.
     """
     import os
 
@@ -390,6 +392,7 @@ def test_worker_scrubs_operator_aliases_when_the_caller_sent_its_own_token(
         seen_env["HUGGING_FACE_HUB_TOKEN"] = os.environ.get("HUGGING_FACE_HUB_TOKEN")
         seen_env["HUGGINGFACEHUB_API_TOKEN"] = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
         seen_env["DISABLE_IMPLICIT"] = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
+        seen_env["passed_token"] = token
         raise SystemExit(0)
 
     monkeypatch.setattr(worker, "_activate_transformers_version", _fake_activate)
@@ -407,12 +410,13 @@ def test_worker_scrubs_operator_aliases_when_the_caller_sent_its_own_token(
             config = config,
         )
 
-    # The caller's own credential is the only one left, and implicit lookup is re-enabled for it.
-    assert seen_env.get("HF_TOKEN") == "hf_caller_own_token"
+    assert seen_env.get("HF_TOKEN") is None
     assert seen_env.get("HF_HUB_TOKEN") is None
     assert seen_env.get("HUGGING_FACE_HUB_TOKEN") is None
     assert seen_env.get("HUGGINGFACEHUB_API_TOKEN") is None
-    assert seen_env.get("DISABLE_IMPLICIT") == "0"
+    assert seen_env.get("DISABLE_IMPLICIT") == "1"
+    # Not lost, just not ambient: this load still runs under the credential it was given.
+    assert seen_env.get("passed_token") == "hf_caller_own_token"
 
 
 def test_worker_preserves_ambient_token_when_allow_ambient_true(monkeypatch, worker_in_process):
