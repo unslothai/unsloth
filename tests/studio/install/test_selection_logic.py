@@ -99,6 +99,10 @@ def load_studio_run_module(monkeypatch):
     paths.__path__ = []
     storage_roots = types.ModuleType("utils.paths.storage_roots")
     storage_roots.studio_root = lambda: PACKAGE_ROOT / ".studio-test-root"
+    # Imported at module scope too, so the stub has to carry it. None keeps these tests on
+    # the legacy-default path they were written for: a master root would make run.py export
+    # UNSLOTH_STUDIO_HOME and pin a llama.cpp path, neither of which this file is about.
+    storage_roots.unsloth_home = lambda: None
     paths.storage_roots = storage_roots
     monkeypatch.setitem(sys.modules, "utils.paths", paths)
     monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage_roots)
