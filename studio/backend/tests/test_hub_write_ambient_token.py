@@ -21,7 +21,6 @@ from auth.authentication import (
 )
 from routes import export as export_routes
 from routes.data_recipe import jobs as data_recipe_jobs_routes
-from utils.models.model_config import _detect_audio_from_tokenizer
 
 
 async def _fake_ensure_export_supported():
@@ -309,9 +308,26 @@ def test_load_checkpoint_passes_explicit_token_for_api_key(monkeypatch):
     assert call_kwargs["allow_ambient"] is False
 
 
-def test_worker_scrubs_ambient_token_when_allow_ambient_false(monkeypatch):
-    import os
+@pytest.fixture
+def worker_in_process(monkeypatch):
+    """Let run_export_process run here without it taking over the pytest process.
+
+    _setup_log_capture dup2s pipes over fds 1 and 2 and rebinds sys.stdout/sys.stderr with no
+    teardown: it is written for the dedicated subprocess, so in-process it swallows every later
+    line pytest prints. The offline probe is a live Hub request, and the code's own env opt-out
+    keeps it out of a unit test.
+    """
     from core.export import worker
+
+    monkeypatch.setattr(worker, "_setup_log_capture", lambda resp_queue: None)
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
+    return worker
+
+
+def test_worker_scrubs_ambient_token_when_allow_ambient_false(monkeypatch, worker_in_process):
+    import os
+
+    worker = worker_in_process
 
     monkeypatch.setenv("HF_TOKEN", "hf_operator_secret_123")
     monkeypatch.setenv("HF_HUB_TOKEN", "hf_hub_secret_456")
@@ -348,9 +364,61 @@ def test_worker_scrubs_ambient_token_when_allow_ambient_false(monkeypatch):
     assert seen_env.get("passed_token") is None
 
 
-def test_worker_preserves_ambient_token_when_allow_ambient_true(monkeypatch):
+def test_worker_scrubs_operator_aliases_when_the_caller_sent_its_own_token(
+    monkeypatch, worker_in_process
+):
+    """A caller token does not make the operator's harmless.
+
+    get_token() reads HF_TOKEN and HUGGING_FACE_HUB_TOKEN, so leaving the operator's in place
+    would let every in-worker Hub call still at token=None authenticate as the operator.
+    """
     import os
-    from core.export import worker
+
+    worker = worker_in_process
+
+    monkeypatch.setenv("HF_TOKEN", "hf_operator_secret_123")
+    monkeypatch.setenv("HF_HUB_TOKEN", "hf_hub_secret_456")
+    monkeypatch.setenv("HUGGING_FACE_HUB_TOKEN", "hf_hub_secret_789")
+    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "hf_legacy_secret_012")
+    monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising = False)
+
+    seen_env = {}
+
+    def _fake_activate(path, token):
+        seen_env["HF_TOKEN"] = os.environ.get("HF_TOKEN")
+        seen_env["HF_HUB_TOKEN"] = os.environ.get("HF_HUB_TOKEN")
+        seen_env["HUGGING_FACE_HUB_TOKEN"] = os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        seen_env["HUGGINGFACEHUB_API_TOKEN"] = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+        seen_env["DISABLE_IMPLICIT"] = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(worker, "_activate_transformers_version", _fake_activate)
+
+    config = {
+        "checkpoint_path": "/tmp/model",
+        "allow_ambient": False,
+        "hf_token": "hf_caller_own_token",
+    }
+
+    with pytest.raises(SystemExit):
+        worker.run_export_process(
+            cmd_queue = MagicMock(),
+            resp_queue = MagicMock(),
+            config = config,
+        )
+
+    # The caller's own credential is the only one left, and implicit lookup is re-enabled for it.
+    assert seen_env.get("HF_TOKEN") == "hf_caller_own_token"
+    assert seen_env.get("HF_HUB_TOKEN") is None
+    assert seen_env.get("HUGGING_FACE_HUB_TOKEN") is None
+    assert seen_env.get("HUGGINGFACEHUB_API_TOKEN") is None
+    assert seen_env.get("DISABLE_IMPLICIT") == "0"
+
+
+def test_worker_preserves_ambient_token_when_allow_ambient_true(monkeypatch, worker_in_process):
+    import os
+
+    worker = worker_in_process
 
     monkeypatch.setenv("HF_TOKEN", "hf_operator_secret_123")
     monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising = False)

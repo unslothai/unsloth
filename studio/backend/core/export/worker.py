@@ -557,16 +557,15 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     checkpoint_path = config["checkpoint_path"]
 
-    if not config.get("allow_ambient", True) and not config.get("hf_token"):
-        for env_var in (
-            "HF_TOKEN",
-            "HF_HUB_TOKEN",
-            "HUGGING_FACE_HUB_TOKEN",
-            "HUGGINGFACE_HUB_TOKEN",
-            "HUGGINGFACEHUB_API_TOKEN",
-        ):
-            os.environ.pop(env_var, None)
-        os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    # Runs before huggingface_hub is imported: it reads HF_HUB_DISABLE_IMPLICIT_TOKEN once, into
+    # a module constant. Every later Hub read in this worker and its children inherits this env.
+    # A caller's own token does not make the operator's harmless: get_token() reads HF_TOKEN and
+    # HUGGING_FACE_HUB_TOKEN, so any call left at token=None would still authenticate as the
+    # operator. Scrub whenever the policy is non-ambient, token or no token.
+    if not config.get("allow_ambient", True):
+        from hub.utils.hf_tokens import apply_token_to_child_env
+
+        apply_token_to_child_env(os.environ, config.get("hf_token") or False)
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
