@@ -31715,9 +31715,21 @@ class LlamaCppBackend:
                     conversation, None, self.markup_profile
                 )
                 if _carried_partial is not None:
-                    # Already neutralized where the candidate was built, so it is
-                    # appended after the pass above rather than through it.
-                    stream_payload["messages"].append(_carried_partial)
+                    # Copied first: the sweep above hands back the SAME list when nothing
+                    # needed rewriting, so putting the partial in place would grow
+                    # `conversation` itself and every later reader of it.
+                    _refit_messages = list(stream_payload["messages"])
+                    # Already neutralized where the candidate was built, so it goes in
+                    # after the pass above rather than through it, and under the rule
+                    # `append_assistant_turn` used there: a trailing assistant turn it
+                    # would have merged into is ALREADY inside the carried partial, so
+                    # appending as well replays a caller's prefill twice across two
+                    # consecutive assistant turns.
+                    if trailing_assistant_text(_refit_messages) is None:
+                        _refit_messages.append(_carried_partial)
+                    else:
+                        _refit_messages[-1] = _carried_partial
+                    stream_payload["messages"] = _refit_messages
                     # The fit above priced `conversation` alone, so the partial is
                     # room the replacement window has not been asked about. Same two
                     # steps the continuation took when it was first committed, now

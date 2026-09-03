@@ -433,6 +433,67 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
     assert replayed["add_generation_prompt"] is False
 
 
+def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
+    """A caller prefill is inside the carried partial, not something to append beside it.
+
+    `continue_final_message` is a parameter of this call, so `conversation` can already end
+    on the assistant turn the caller wants extended. `append_assistant_turn` merged that
+    prefill into the continuation candidate, so putting the candidate back beside a refitted
+    conversation that still ends on the prefill sends it twice, over two consecutive
+    assistant turns. llama-server does not catch that pair -- its "2 or more assistant
+    messages" guard only runs when no continuation was asked for -- so it renders.
+    """
+
+    prefill = "Here is the beginning of my answer: "
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
+
+    def _respawned() -> bool:
+        backend._effective_context_length = 2048
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    prefilled = [
+        {"role": "user", "content": "Show me the HTML inline"},
+        {"role": "assistant", "content": prefill},
+    ]
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = prefilled,
+            tools = [],
+            max_tool_iterations = 0,
+            continue_final_message = True,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    replayed = payloads[-1]
+    assert [message["role"] for message in replayed["messages"]] == ["user", "assistant"]
+    assert json.dumps(replayed["messages"]).count(prefill) == 1
+    assert replayed["messages"][-1]["content"].startswith(prefill)
+    assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][-1]["content"]
+
+
 def test_the_final_continuation_is_capped(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
