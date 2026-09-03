@@ -54,6 +54,13 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
+    find: {
+      label: "ページ内検索",
+      previous: "前の一致",
+      next: "次の一致",
+      close: "検索を閉じる",
+      truncated: "このページは長すぎるため、全体を検索できません。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ja = {
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       actions: {
+        findInPage: {
+          label: "ページ内検索",
+          description: "このページ内のテキストを検索します",
+        },
         openSettings: {
           label: "設定を開く",
           description: "設定ダイアログを開きます",
@@ -1214,7 +1225,7 @@ export const ja = {
       description:
         "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
       intro:
-        "は Claude Code、Codex、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+        "は Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
       readDocs: "ドキュメントを読む",
       copy: "コピー",
       copied: "コピーしました",

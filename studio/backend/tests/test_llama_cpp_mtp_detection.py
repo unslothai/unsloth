@@ -112,14 +112,16 @@ def _write_minimal_gguf(
     arch: str,
     nextn: int | None,
     extra_uint32: dict[str, int] | None = None,
+    nextn_first: bool = False,
 ) -> Path:
     """Header-only GGUF with arch + optional nextn_predict_layers."""
     extra_uint32 = dict(extra_uint32 or {})
-    body = _enc_kv_string("general.architecture", arch)
-    kv_count = 1
-    if nextn is not None:
-        body += _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn)
-        kv_count += 1
+    arch_entry = _enc_kv_string("general.architecture", arch)
+    nextn_entry = (
+        _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn) if nextn is not None else b""
+    )
+    body = nextn_entry + arch_entry if nextn_first else arch_entry + nextn_entry
+    kv_count = 1 + int(nextn is not None)
     for k, v in extra_uint32.items():
         body += _enc_kv_uint32(k, v)
         kv_count += 1
@@ -726,6 +728,19 @@ def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn)
     backend = LlamaCppBackend()
     backend._read_gguf_metadata(str(gguf))
     assert backend._nextn_predict_layers == nextn
+
+
+def test_read_gguf_metadata_captures_nextn_before_architecture(tmp_path):
+    gguf = _write_minimal_gguf(
+        tmp_path / "reversed.gguf",
+        arch = "qwen35",
+        nextn = 1,
+        nextn_first = True,
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._architecture == "qwen35"
+    assert backend._nextn_predict_layers == 1
 
 
 def test_read_gguf_metadata_leaves_nextn_unset_for_non_mtp_arch(tmp_path):
@@ -1955,6 +1970,40 @@ def test_auto_keeps_embedded_mtp(monkeypatch):
     assert backend.spec_fallback_reason is None
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_spec_type"),
+    [
+        ("auto", "draft-mtp"),
+        ("mtp", "draft-mtp"),
+        ("mtp+ngram", "ngram-mod,draft-mtp"),
+    ],
+)
+def test_embedded_mtp_ignores_discovered_root_sidecar(
+    monkeypatch, tmp_path, mode, expected_spec_type
+):
+    backend = _resolver_backend(monkeypatch)
+    backend._nextn_predict_layers = 1
+    sidecar = tmp_path / "mtp-RVN.gguf"
+    sidecar.write_bytes(b"draft")
+
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "0bserverx/Qwen3.8-27B-GGUF",
+        model_path = str(tmp_path / "RVN-Q6_K-mtp.gguf"),
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = str(sidecar),
+        dspark_draft_path = None,
+    )
+
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == expected_spec_type
+    assert "--model-draft" not in parsed
+    assert backend.spec_fallback_reason is None
+
+
 def test_auto_does_not_promote_dspark_on_a_binary_that_cannot_run_it(monkeypatch, tmp_path):
     """_download_dspark still reports a cached sidecar an incapable binary cannot
     launch. Promoting there would turn Auto's fallback into no speculation at all,
@@ -2200,10 +2249,8 @@ def test_auto_non_mla_embedded_mtp_keeps_draft_mtp(monkeypatch):
     assert backend.spec_fallback_reason is None
 
 
-def test_auto_mla_separate_drafter_keeps_mtp(monkeypatch):
-    # Auto + MLA + a separate drafter (mtp_draft_path) -> the drafter exemption
-    # wins over the MLA gate: still draft-mtp (Gemma-style external drafter is
-    # not the slow embedded MLA/DSA path).
+def test_auto_mla_embedded_head_ignores_separate_drafter(monkeypatch):
+    # Embedded NextN metadata wins: -md would replace the head and bypass MLA's gate.
     backend = _mla_resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
         speculative_type = "auto",
@@ -2216,9 +2263,10 @@ def test_auto_mla_separate_drafter_keeps_mtp(monkeypatch):
         mtp_draft_path = "/fake/mtp-draft.gguf",
     )
     parsed = _flags_dict(flags)
-    assert parsed.get("--spec-type") == "draft-mtp"
-    assert backend.speculative_type == "draft-mtp"
-    assert backend.spec_fallback_reason is None
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
 
 
 def test_auto_non_mtp_mla_model_unaffected(monkeypatch):

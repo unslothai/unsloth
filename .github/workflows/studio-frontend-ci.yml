@@ -25,6 +25,7 @@ on:
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
+      - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -434,6 +435,19 @@ jobs:
       - name: Browser smoke for keyboard shortcuts
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_keyboard_shortcuts.py
+
+      # The node suite reaches the flatten, the offset map and the search, which are pure.
+      # A Range has no geometry off a document, CSS.highlights paints nothing, and a chord
+      # the browser owns cannot be taken from it in a unit test, so the count, the walk and
+      # the teardown are only answerable here. The run also degrades the engine three ways:
+      # no highlight registry, a checkVisibility that honours only the historic option
+      # names, and no checkVisibility at all, which between them are Firefox below 140,
+      # Chrome 105-120, and the WebKitGTK the desktop build is handed. Chromium here
+      # because that is what this job installs; SMOKE_ENGINES=chromium,firefox,webkit
+      # runs all three locally.
+      - name: Browser smoke for find in page
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_find_in_page.py
 
       - name: Browser smoke for tool activity collapse
         working-directory: ${{ github.workspace }}

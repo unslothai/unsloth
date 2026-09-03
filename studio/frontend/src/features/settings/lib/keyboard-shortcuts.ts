@@ -45,6 +45,7 @@ export type ShortcutId =
   | "switchToAudio"
   | "switchToExport"
   // Panels and app-level actions
+  | "findInPage"
   | "toggleApiMonitor"
   | "toggleSidebar"
   | "openMcpServers"
@@ -200,6 +201,11 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   ...WORKSPACE_DEFS,
 
   // -- Panels and app-level actions ---------------------------------------
+  // The one default that deliberately takes a chord the browser owns, because the browser's own
+  // find is what it replaces: that one cannot reach a message the mount window has not committed,
+  // counts the sidebar and composer as page, and does not exist on the desktop build. The chord is
+  // cancellable in every engine this ships on, so the handler wins it; Settings still flags it.
+  def("findInPage", "Mod+KeyF"),
   // ⌥⌘U is view source on macOS, so U keeps its mnemonic on ⌃⇧ there instead,
   // the same swap the composer pair below makes. Off macOS it gives U up
   // altogether: three actions wanted that letter and only two chords carry it
@@ -313,6 +319,9 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+KeyW",
   "Mod+Shift+KeyW",
   "Mod+KeyL",
+  // Find in page, on every engine. Unsloth ships its own on it anyway (see the note by the
+  // default); this is what warns a web user before they rebind onto it.
+  "Mod+KeyF",
   "Mod+KeyR",
   "Mod+Shift+KeyR",
   "Mod+KeyP",
