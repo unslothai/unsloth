@@ -86,6 +86,10 @@ _SYNTHESIS_MAX_TOKENS = 16_384
 # What the client sends for a model it has no published cap for
 # (EXTERNAL_MAX_OUTPUT_TOKENS in features/chat/provider-capabilities.ts).
 _EXTERNAL_MAX_OUTPUT_TOKENS = 32_768
+# Providers whose thinking answers truncate below a floor; mirrors
+# EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER in the same client module.
+_EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER = {"kimi": 16_000}
+_EXTERNAL_MIN_OUTPUT_TOKENS = 64
 # Below this loaded context the prompt scaffolding alone fills the window, so grounding is skipped.
 _AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
 # OFF by default (UNSLOTH_RESEARCH_AUTO_SCRAPE=1): benchmarking showed no reliable accuracy gain
@@ -440,14 +444,27 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
         # The client resolved this against the run's own model, but the run is durable: the
         # connection's cap can have been lowered since it was created, and the saved row is
         # the current truth about what the user allows this connection to spend.
-        return min(resolved, saved) if saved else resolved
-    # A run created before the client sent its resolved ceiling falls back to here. The saved
-    # cap belongs to the connection, not to this run's model -- one connection fronts many
-    # models, and the client bounds it by that model's documented ceiling before sending it,
-    # using a table this side does not have. Bound it instead by what the client itself sends
-    # for a model nothing documents, so a cap set for a 256k-output model cannot become this
-    # run's budget.
-    return min(saved, _EXTERNAL_MAX_OUTPUT_TOKENS) if saved else _SYNTHESIS_MAX_TOKENS
+        budget = min(resolved, saved) if saved else resolved
+    else:
+        # A run created before the client sent its resolved ceiling falls back to here. The
+        # saved cap belongs to the connection, not to this run's model -- one connection
+        # fronts many models, and the client bounds it by that model's documented ceiling
+        # before sending it, using a table this side does not have. Bound it instead by what
+        # the client itself sends for a model nothing documents, so a cap set for a
+        # 256k-output model cannot become this run's budget.
+        budget = min(saved, _EXTERNAL_MAX_OUTPUT_TOKENS) if saved else _SYNTHESIS_MAX_TOKENS
+    # The chat path never hands a connection less than its provider's floor, because below it
+    # a thinking answer is cut off before the report starts. A saved cap is allowed to lower
+    # the budget, but not past that.
+    return max(budget, _provider_output_floor(inference.get("providerType")))
+
+
+def _provider_output_floor(provider_type: object) -> int:
+    if not isinstance(provider_type, str):
+        return _EXTERNAL_MIN_OUTPUT_TOKENS
+    return _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER.get(
+        provider_type, _EXTERNAL_MIN_OUTPUT_TOKENS
+    )
 
 
 def _saved_connection_cap(provider_id: object) -> int | None:

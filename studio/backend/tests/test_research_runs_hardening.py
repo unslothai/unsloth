@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from core import research_runs
 from core.research.citations import (
@@ -377,6 +378,23 @@ def test_a_client_ceiling_stands_when_the_connection_has_no_cap(monkeypatch):
     assert _synthesis_max_tokens(inference) == 65_536
 
 
+def test_a_saved_cap_cannot_drop_a_connection_below_its_provider_floor(monkeypatch):
+    """Kimi truncates a thinking answer below 16k, so the chat path never asks for less."""
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
+    )
+    inference = {"providerType": "kimi", "providerId": "p1", "maxOutputTokens": 32_768}
+    assert _synthesis_max_tokens(inference) == 16_000
+
+
+def test_a_provider_without_a_floor_keeps_the_saved_cap(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
+    assert _synthesis_max_tokens(inference) == 8_000
+
+
 def test_a_local_run_keeps_the_default_report_budget():
     assert _synthesis_max_tokens({"model": "local-model"}) == research_runs._SYNTHESIS_MAX_TOKENS
 
@@ -619,6 +637,23 @@ def test_budgets_reject_a_boolean_instead_of_reading_it_as_unlimited():
     assert _make_payload(budgets = {"modelTimeoutSeconds": 0}).budgets == {
         "modelTimeoutSeconds": 0,
     }
+
+
+def test_sanitize_config_rejects_a_non_integer_report_ceiling():
+    for bad in (True, 64.9, float("inf"), float("nan"), "32768"):
+        with pytest.raises(HTTPException):
+            _sanitize_config(
+                _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": bad}),
+                {"modelId": "m"},
+            )
+
+
+def test_sanitize_config_keeps_a_strict_integer_report_ceiling():
+    config = _sanitize_config(
+        _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": 32_768}),
+        {"modelId": "m"},
+    )
+    assert config["inferenceRequest"]["maxOutputTokens"] == 32_768
 
 
 def test_sanitize_config_rejects_nested_inference_credential():

@@ -285,8 +285,13 @@ def _sanitize_config(
             if not 1 <= request["maxTokens"] <= 8192:
                 raise ValueError
         if "maxOutputTokens" in request:
-            request["maxOutputTokens"] = int(request["maxOutputTokens"])
-            if not 1 <= request["maxOutputTokens"] <= MAX_JSON_SAFE_INTEGER:
+            # Strict, like the saved-connection schema this mirrors: bool is an int subclass,
+            # and int() would silently truncate a float or raise OverflowError on a non-finite
+            # one, which is a 500 rather than the 400 an invalid field deserves.
+            budget = request["maxOutputTokens"]
+            if isinstance(budget, bool) or not isinstance(budget, int):
+                raise ValueError
+            if not 1 <= budget <= MAX_JSON_SAFE_INTEGER:
                 raise ValueError
         if "enableThinking" in request and not isinstance(request["enableThinking"], bool):
             raise ValueError
