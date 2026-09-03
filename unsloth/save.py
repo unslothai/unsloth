@@ -2107,16 +2107,11 @@ def save_to_gguf(
         print("Unsloth: llama.cpp found in the system. Skipping installation.")
     except:
         print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
-        if IS_KAGGLE_ENVIRONMENT:
-            quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False, print_output = print_output
-            )
-        else:
-            # Kaggle: no CUDA support due to environment limitations.
-            quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False,
-                print_output = print_output,
-            )
+        # GGUF conversion does not need CUDA, and Kaggle cannot build with it anyway.
+        quantizer_location, converter_location = install_llama_cpp(
+            gpu_support = False,
+            print_output = print_output,
+        )
 
     print("Unsloth: Preparing converter script...")
     with use_local_gguf():
