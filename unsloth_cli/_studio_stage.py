@@ -45,12 +45,43 @@ def stage_root(studio_home: Path) -> Path:
     return studio_home / STAGE_DIR_NAME
 
 
+def _cli_master_root() -> Optional[Path]:
+    """Master root of this install per the CLI's resolver, or None.
+
+    Lazily imported: unsloth_cli.commands.studio imports this module, so a
+    top-level import would be a cycle. By the time stage() runs, that module is
+    already in sys.modules and this is a dict lookup.
+    """
+    try:
+        from unsloth_cli.commands.studio import _portable_master_root
+    except ImportError:
+        return None
+    try:
+        return _portable_master_root()
+    except (OSError, ValueError):
+        return None
+
+
 def managed_helper_root(studio_home: Path) -> Path:
+    """Directory holding node / llama.cpp / whisper.cpp for *studio_home*.
+
+    A portable install keeps the three native runtimes BESIDE studio/ at the
+    master root, so deriving them from the Studio root is one level too deep and
+    stage() then clones nothing into the update tree. Delegates to the CLI's
+    master-root resolver rather than repeating its marker lookups; the
+    containment check keeps a caller that passed some OTHER root off this
+    process' master root.
+    """
+    master = _cli_master_root()
     legacy = Path.home() / ".unsloth" / "studio"
     try:
-        is_legacy = studio_home.resolve() == legacy.resolve()
+        resolved = studio_home.resolve()
+        is_legacy = resolved == legacy.resolve()
     except (OSError, ValueError):
+        resolved = studio_home
         is_legacy = studio_home == legacy
+    if master is not None and master in (resolved, resolved.parent):
+        return master
     return studio_home.parent if is_legacy else studio_home
 
 

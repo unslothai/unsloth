@@ -6774,11 +6774,26 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 
 def default_managed_llama_dir() -> Path:
     """The managed llama.cpp install root, mirroring setup.sh and the updater:
-    the UNSLOTH_LLAMA_CPP_PATH override, else <custom studio home>/llama.cpp,
-    else the legacy ~/.unsloth/llama.cpp."""
+    the UNSLOTH_LLAMA_CPP_PATH override, else <master root>/llama.cpp, else
+    <custom studio home>/llama.cpp, else the legacy ~/.unsloth/llama.cpp.
+
+    UNSLOTH_HOME outranks the Studio home because a portable install puts the
+    native runtimes BESIDE studio/ at the master root: setup.sh derives
+    LLAMA_CPP_DIR from UNSLOTH_HOME, so <studio home>/llama.cpp is one level too
+    deep there and this would report no installed runtime at all.
+
+    The variable rather than storage_roots.unsloth_home(): that module's own
+    imports are spelled against studio/backend, and putting that directory on
+    sys.path from a standalone installer rebinds top-level `utils` and `core`
+    for the whole process. UNSLOTH_HOME is the spelling install.sh, setup.sh and
+    the CLI all publish the master root in, so reading it adds no second
+    inference."""
     override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
     if override:
         return Path(override).expanduser()
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        return Path(master).expanduser() / "llama.cpp"
     home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
     if home:
         root = Path(home).expanduser()

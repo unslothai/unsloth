@@ -372,32 +372,50 @@ def managed_install_root() -> Path:
     from a user-supplied one (SD_CLI_PATH / UNSLOTH_SD_CPP_PATH / PATH / an in-tree build).
 
     Only a copy under this root may be reinstalled over: replacing anything else would delete
-    a build the user chose. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
+    a build the user chose. Resolves the same Studio root the rest of the backend does, so
     side-by-side Unsloth instances stay isolated.
 
-    ``<studio home>/stable-diffusion.cpp``, which is where every other managed component lives
-    (``default_managed_llama_dir``, ``managed_whisper_dir``, ``managed_node_dir`` all place their
-    tree *under* the Unsloth home). The legacy default home ``~/.unsloth/studio`` keeps mapping to
+    ``<Studio root>/stable-diffusion.cpp``. Unlike llama.cpp, node and whisper.cpp, which setup.sh
+    hangs off the master root as siblings of studio/, sd.cpp installs under the Studio root itself
+    (#8226). The legacy default root ``~/.unsloth/studio`` keeps mapping to
     ``~/.unsloth/stable-diffusion.cpp`` so existing installs are still found."""
     return _studio_component_root("stable-diffusion.cpp")
 
 
 def _studio_component_root(name: str) -> Path:
-    """``<studio home>/<name>``, or the legacy ``~/.unsloth/<name>`` when no custom home is set
-    (or the home *is* the legacy ``~/.unsloth/studio``). The home is expanded and made absolute
-    first: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the root relative, because the
-    process' working directory can change and would silently move the managed tree."""
-    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    """``<Studio root>/<name>``, or the legacy ``~/.unsloth/<name>`` when the Studio root is the
+    legacy ``~/.unsloth/studio``.
+
+    Resolved through ``studio_root()`` and NOT through the master root: sd.cpp is the one managed
+    component that installs UNDER the Studio root (#8226), while llama.cpp, node and whisper.cpp
+    are siblings of it at the master root. So for a nested portable install this is
+    ``<master>/studio/stable-diffusion.cpp``, matching install_sd_cpp_prebuilt.default_install_dir.
+
+    Delegating rather than reading UNSLOTH_STUDIO_HOME / STUDIO_HOME here, because those are only
+    set for a process that came through run.py or main.py; anything else fell back to ``~/.unsloth``
+    and claimed a tree belonging to a different install.
+
+    Lazy import, mirroring ``managed_node_dir``: a degraded environment where utils.paths will not
+    load keeps the env-only derivation, whose absolute() guards a relative UNSLOTH_STUDIO_HOME."""
     legacy = Path.home() / ".unsloth" / name
-    if not home:
-        return legacy
-    root = Path(home).expanduser()
+    try:
+        from utils.paths.storage_roots import studio_root
+
+        root = studio_root()
+    except (ImportError, OSError, ValueError):
+        home = (
+            os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+        ).strip()
+        if not home:
+            return legacy
+        try:
+            root = Path(home).expanduser().resolve()
+        except (OSError, ValueError):
+            root = Path(home).expanduser().absolute()
     legacy_studio = Path.home() / ".unsloth" / "studio"
     try:
-        root = root.resolve()
-        is_legacy = root == legacy_studio.resolve()
+        is_legacy = root.resolve() == legacy_studio.resolve()
     except (OSError, ValueError):
-        root = root.absolute()
         is_legacy = root == legacy_studio
     return legacy if is_legacy else root / name
 
