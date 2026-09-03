@@ -556,8 +556,8 @@ def publish_job_dataset(
     repo_id = payload.repo_id.strip()
     description = payload.description.strip()
     # Same three-state token as Hub reads: an API key with no body token must
-    # not inherit the operator's HF_TOKEN. `hf_token or None` would launder
-    # the sentinel back into ambient access.
+    # not inherit the operator's HF_TOKEN. Collapsing the sentinel with `or`
+    # would restore ambient access.
     hf_token = hf_token_arg(
         payload.hf_token.strip() if isinstance(payload.hf_token, str) else None,
         allow_ambient_token = allow_ambient_token,
