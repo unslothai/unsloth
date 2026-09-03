@@ -1173,6 +1173,58 @@ _clear_stale_portable_marker() {
     # leave a folded `Studio` on the path and derive the wrong parent.
     _spm_parent="${STUDIO_HOME%/*}"
     [ -n "$_spm_parent" ] || _spm_parent="/"
+    # ...and the parent has to be THIS install's master root, not merely a directory
+    # with a `studio` child. The leaf test above matches a NAME, and a name is not
+    # ownership. <parent> can be a FLAT portable install in its own right -- its venv
+    # directly at <parent>/unsloth_studio, its marker at <parent>/.unsloth-portable-root,
+    # its launcher at <parent>/bin/unsloth -- and a normal install pointed at
+    # <parent>/studio is then a SEPARATE tree that arrived through UNSLOTH_STUDIO_HOME.
+    # Removing the marker there converts nothing: it de-portables the neighbour, which
+    # keeps its venv, its share/studio.conf and its wrapper and simply stops resolving
+    # as portable, so its HF caches and projects root move back under $HOME on the next
+    # launch. The legitimate case is the mirror image -- a NESTED portable install keeps
+    # its venv at <parent>/studio/unsloth_studio and has nothing at
+    # <parent>/unsloth_studio, so the marker at <parent> is the one THIS tree is read
+    # through and retiring it is the entire point of this function.
+    #
+    # The two are told apart by the one question that separates them: does the parent
+    # own a venv DIRECTLY? Same four ownership tests, same order, as the flat-layout
+    # selector in _resolve_studio_destinations and the venv-replacement guard, against
+    # the parent's own paths. The two sentinels that live outside the venv have to NAME
+    # it rather than merely exist, for the reason they do there: `unsloth` is an ordinary
+    # word, and a bare bin/unsloth beside a bare unsloth_studio is somebody's own pair as
+    # often as it is one of ours. Deliberately WITHOUT that selector's already-nested
+    # exclusion: a nested child under the flat parent is exactly the shape this case has,
+    # so excluding on it would answer "not flat" for the wrong reason and delete the
+    # marker all over again. storage_roots._parent_portable_root declines on the same
+    # question, through _flat_venv_is_owned, so the installer and the resolvers agree
+    # about whose marker this is instead of one erasing what the other honours.
+    # Inline, not a helper, so this block still runs when lifted out on its own.
+    _spmp_flat_venv="$_spm_parent/unsloth_studio"
+    _spmp_flat_owned=false
+    if [ -d "$_spmp_flat_venv" ]; then
+        _spmp_flat_exe=$(printf '%s' "$_spmp_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+        if [ -f "$_spmp_flat_venv/.unsloth-studio-owned" ]; then
+            _spmp_flat_owned=true
+        elif grep -qxF "UNSLOTH_EXE='$_spmp_flat_exe'" \
+                "$_spm_parent/share/studio.conf" 2>/dev/null; then
+            _spmp_flat_owned=true
+        elif [ -L "$_spm_parent/bin/unsloth" ] \
+             && [ "$_spm_parent/bin/unsloth" -ef "$_spmp_flat_venv/bin/unsloth" ] 2>/dev/null; then
+            _spmp_flat_owned=true
+        elif grep -qxF "exec '$_spmp_flat_exe' \"\$@\"" \
+                "$_spm_parent/bin/unsloth" 2>/dev/null; then
+            _spmp_flat_owned=true
+        fi
+    fi
+    if [ "$_spmp_flat_owned" = true ]; then
+        # Everything below this point in the function belongs to the same conversion, so
+        # it stops here too: the wrapper at <parent>/bin/unsloth is the flat install's
+        # own launcher, and moving it aside would break the command that install told its
+        # user to run.
+        substep "portable marker kept: $_spm_parent is a flat install of its own" "$C_WARN"
+        return 0
+    fi
     if [ -f "$_spm_parent/$_spm_name" ]; then
         # Snapshot before the removal, as above.
         _PORTABLE_MARKER_PATH_2="$_spm_parent/$_spm_name"

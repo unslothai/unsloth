@@ -143,6 +143,65 @@ printf '%s\n' "$H6/vol" > "$H6/vol/.unsloth-portable-root"
 run_install "$H6" "UNSLOTH_STUDIO_HOME=$H6/vol/other" --
 check "a sibling install keeps the portable root's marker" present "$(marker_state "$H6/vol")"
 
+# ── 6b. The other half of the same scoping question, and the one the name test
+# cannot answer: the child really IS called `studio`, but the parent is a FLAT
+# portable install in its own right -- venv directly at <parent>/unsloth_studio,
+# marker at <parent>, launcher at <parent>/bin/unsloth -- so a normal install
+# pointed at <parent>/studio is a SEPARATE tree that arrived through
+# UNSLOTH_STUDIO_HOME. Removing the marker converts nothing; it de-portables the
+# neighbour, which keeps its venv, its conf and its wrapper and simply stops
+# resolving as portable. Each of the four ownership sentinels answers on its own,
+# the same four the flat-layout selector accepts.
+flat_parent() { # dir : a genuine flat portable install at $1, minus the sentinel
+    mkdir -p "$1/unsloth_studio/bin" "$1/share" "$1/bin" "$1/studio"
+    printf '#!/bin/sh\nexit 0\n' > "$1/unsloth_studio/bin/unsloth"
+    chmod +x "$1/unsloth_studio/bin/unsloth"
+    printf '%s\n' "$1" > "$1/.unsloth-portable-root"
+}
+H6b="$(new_home)"
+flat_parent "$H6b/vol"
+: > "$H6b/vol/unsloth_studio/.unsloth-studio-owned"
+run_install "$H6b" "UNSLOTH_STUDIO_HOME=$H6b/vol/studio" --
+check "a flat parent vouched for by its in-venv marker keeps it" present "$(marker_state "$H6b/vol")"
+
+H6c="$(new_home)"
+flat_parent "$H6c/vol"
+printf "UNSLOTH_EXE='%s'\n" "$H6c/vol/unsloth_studio/bin/unsloth" > "$H6c/vol/share/studio.conf"
+run_install "$H6c" "UNSLOTH_STUDIO_HOME=$H6c/vol/studio" --
+check "a flat parent named by share/studio.conf keeps it" present "$(marker_state "$H6c/vol")"
+
+H6d="$(new_home)"
+flat_parent "$H6d/vol"
+ln -s "$H6d/vol/unsloth_studio/bin/unsloth" "$H6d/vol/bin/unsloth"
+run_install "$H6d" "UNSLOTH_STUDIO_HOME=$H6d/vol/studio" --
+check "a flat parent whose bin/unsloth links its venv keeps it" present "$(marker_state "$H6d/vol")"
+
+H6e="$(new_home)"
+flat_parent "$H6e/vol"
+{
+    printf '#!/bin/sh\n'
+    printf 'export UNSLOTH_PORTABLE=1\n'
+    printf "exec '%s' \"\$@\"\n" "$H6e/vol/unsloth_studio/bin/unsloth"
+} > "$H6e/vol/bin/unsloth"
+chmod +x "$H6e/vol/bin/unsloth"
+run_install "$H6e" "UNSLOTH_STUDIO_HOME=$H6e/vol/studio" --
+check "a flat parent whose wrapper execs its venv keeps it" present "$(marker_state "$H6e/vol")"
+check "and that install's launcher is left where it is" present \
+    "$([ -f "$H6e/vol/bin/unsloth" ] && printf present || printf gone)"
+
+# ── 6f. The guard must not collapse into never clearing. A parent holding a STRAY
+# unsloth_studio -- an empty leftover, or somebody's dev venv, with nothing naming
+# it -- is still the master root of the nested install being converted, so its
+# marker is this tree's own and has to go. Same for sentinels that name a
+# DIFFERENT venv: existence is not ownership in either direction.
+H6f="$(new_home)"
+mkdir -p "$H6f/vol/studio/unsloth_studio" "$H6f/vol/unsloth_studio/bin" "$H6f/vol/share" "$H6f/vol/bin"
+printf '#!/bin/sh\nexit 0\n' > "$H6f/vol/bin/unsloth"
+printf "UNSLOTH_EXE='%s'\n" "$H6f/vol/studio/unsloth_studio/bin/unsloth" > "$H6f/vol/share/studio.conf"
+printf '%s\n' "$H6f/vol" > "$H6f/vol/.unsloth-portable-root"
+run_install "$H6f" "UNSLOTH_STUDIO_HOME=$H6f/vol/studio" --
+check "an unowned stray venv beside the master root still converts" gone "$(marker_state "$H6f/vol")"
+
 # ── 7. Nothing to remove is not an error (fresh machine, set -e still on).
 H7="$(new_home)"
 run_install "$H7" --
@@ -188,6 +247,20 @@ PYEOF
     check "and UNSLOTH_PORTABLE=0 cannot turn it off" true "$(probe "$H8" UNSLOTH_PORTABLE=0)"
     run_install "$H8" --
     check "after a normal reinstall the runtime reads as non-portable" false "$(probe "$H8")"
+
+    # ── 9. The runtime half of case 6b, which is what makes that one more than a
+    # file that stayed put: the flat install next door has to still resolve as
+    # portable after the normal install at its studio/ child has run. This is the
+    # failure the guard exists for -- nothing about the neighbour changes except
+    # that its caches and projects root silently move back under $HOME.
+    H9="$(new_home)"
+    flat_parent "$H9/vol"
+    : > "$H9/vol/unsloth_studio/.unsloth-studio-owned"
+    check "the flat install reads as portable to begin with" true \
+        "$(probe "$H9" "UNSLOTH_STUDIO_HOME=$H9/vol")"
+    run_install "$H9" "UNSLOTH_STUDIO_HOME=$H9/vol/studio" --
+    check "and still does after a normal install at its studio/ child" true \
+        "$(probe "$H9" "UNSLOTH_STUDIO_HOME=$H9/vol")"
 else
     printf '  SKIP  storage_roots probe (no python3)\n'
 fi
