@@ -170,9 +170,7 @@ def test_login_jsx_declares_exactly_one_password_input():
 
 def test_auth_flow_routes_do_not_mount_global_settings():
     root = (FRONTEND / "app/routes/__root.tsx").read_text(encoding = "utf-8")
-    mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(
-        encoding = "utf-8"
-    )
+    mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
     assert "<SettingsDialogMount active={!isAuthFlowRoute} />" in root
     assert "if (!active || !mounted) return null;" in mount
     assert "useSettingsDialogStore.getState().closeDialog();" in root
