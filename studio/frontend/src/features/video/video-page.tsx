@@ -84,6 +84,12 @@ import { NegativePromptField } from "@/components/negative-prompt-field";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import {
+  familyOverrideArtifactKind,
+  familyOverrideForPick,
+  resolvedFamilyOverrideSelection,
+} from "@/features/model-picker/components/model-selector/family-override-local-candidate";
+import { familyOverrideOptions } from "@/features/model-picker/components/model-selector/family-override-options";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
@@ -125,6 +131,11 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import {
+  diffusionPipelineStagingEntries,
+  diffusionPipelineLoadTarget,
+  diffusionPipelineTargetIsOnDevice,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -202,6 +213,16 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {
   const id = repoId.toLowerCase();
   return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+}
+
+function defaultsKeyFor(
+  repoId: string,
+  familyOverride: string | null | undefined,
+): string {
+  const id = repoId.toLowerCase();
+  if (MODEL_DEFAULTS.some((entry) => id.includes(entry.match))) return repoId;
+  const family = familyOverride?.trim();
+  return family && family.toLowerCase() !== "auto" ? family : repoId;
 }
 
 // Resolution presets offered before a model is loaded. Once loaded, status.defaults.resolution_presets replaces these.
@@ -760,6 +781,7 @@ type VideoLoadOptions = {
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
   h3Task?: H3Task;
+  displayRepoId?: string;
 };
 /** A pick held back while the user chooses the H3 partition. It carries what the deferred
  *  loadOrStage call would otherwise have been given inline, so the choice only adds `h3Task`:
@@ -770,6 +792,7 @@ type PendingH3Load = {
   opts: VideoLoadOptions;
   source: ModelSelectorChangeMeta["source"];
   token: number;
+  familyOverrideRequired: boolean;
 };
 
 const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
@@ -784,8 +807,13 @@ const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
  *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
  *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
  *  is read off its filename elsewhere. */
-function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+function isH3PipelinePick(
+  repoId: string,
+  kind: VideoLoadOptions["kind"],
+  familyOverride?: string,
+): boolean {
   if (kind !== "pipeline") return false;
+  if (familyOverride?.trim().toLowerCase() === "minimax-h3") return true;
   const id = repoId.toLowerCase();
   if (id === H3_BF16_REPO.toLowerCase()) return true;
   const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
@@ -814,6 +842,7 @@ type VideoLoadAdvanced = Pick<
   | "attention_backend"
   | "transformer_cache"
   | "transformer_quant"
+  | "family_override"
   | "gpu_ids"
 >;
 
@@ -988,6 +1017,7 @@ function VideoGenerator({
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
+  const [familyOverride, setFamilyOverride] = useState("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
@@ -1000,6 +1030,19 @@ function VideoGenerator({
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
+  const overrideArtifactKind = useMemo(
+    () =>
+      familyOverrideArtifactKind(
+        familyOverride,
+        "video",
+        status?.modular_families,
+      ),
+    [familyOverride, status?.modular_families],
+  );
+  const selectorModelId =
+    status?.loaded && status.repo_id
+      ? (status.display_repo_id ?? status.repo_id)
+      : undefined;
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
@@ -1333,7 +1376,7 @@ function VideoGenerator({
   const claimVideoRecipe = videoPresets.claimRecipe;
   const videoFormClaimId = videoPresets.formClaimId;
   const applyVideoModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, effectiveFamilyOverride = familyOverride) => {
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimVideoRecipe();
@@ -1344,7 +1387,7 @@ function VideoGenerator({
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(repoId);
+      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1359,7 +1402,7 @@ function VideoGenerator({
       modelSeeded.current = true;
       familySeeded.current = true;
     },
-    [claimVideoRecipe, videoFormClaimId],
+    [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
   useEffect(() => {
@@ -1484,6 +1527,10 @@ function VideoGenerator({
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;
+    const restoredFamily = resolvedFamilyOverrideSelection(
+      record.family_override,
+    );
+    if (restoredFamily) setFamilyOverride(restoredFamily);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
       // The engaged value spells "no quant" as "off"; the select's option for it is "none".
       (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
@@ -2008,6 +2055,32 @@ function VideoGenerator({
     };
   }, [active, ensureSrc, loadGallery, onInitialReady, refreshStatus]);
 
+  // A resident pipeline can outlive this component (browser refresh, route remount, or a load
+  // started by another client). Rebuild the complete Reapply target from backend-owned state just
+  // as Images does. GGUF and single-file status carries no checkpoint filename, so those remain
+  // intentionally ineligible until the user picks them again.
+  useEffect(() => {
+    const repoId = status?.loaded ? status.repo_id : null;
+    if (!repoId || lastLoad.current || status?.model_kind !== "pipeline") return;
+    const h3Task =
+      status.h3_task === "fl2va" || status.h3_task === "ref2va"
+        ? status.h3_task
+        : undefined;
+    lastLoad.current = {
+      repoId,
+      kind: "pipeline",
+      displayRepoId: status.display_repo_id ?? undefined,
+      h3Task,
+    };
+    setCanReapply(true);
+  }, [
+    status?.display_repo_id,
+    status?.h3_task,
+    status?.loaded,
+    status?.model_kind,
+    status?.repo_id,
+  ]);
+
   // Ejected from the loaded models indicator, which does not run handleUnload:
   // without this the controls keep offering to generate on a freed runtime, and
   // Reapply still points at the model that was just ejected. The runtime is
@@ -2260,6 +2333,7 @@ function VideoGenerator({
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
     selectedGpu,
     gpuChoices,
   });
@@ -2269,11 +2343,15 @@ function VideoGenerator({
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
     selectedGpu,
     gpuChoices,
   };
   const currentLoadAdvanced = useCallback(
-    (kind: "gguf" | "single_file" | "pipeline"): VideoLoadAdvanced => {
+    (
+      kind: "gguf" | "single_file" | "pipeline",
+      familyOverrideRequired = true,
+    ): VideoLoadAdvanced => {
       const controls = loadControlsRef.current;
       return {
         memory_mode: controls.memoryMode === "auto" ? undefined : controls.memoryMode,
@@ -2286,6 +2364,10 @@ function VideoGenerator({
           kind === "pipeline" && controls.transformerQuant !== "auto"
             ? controls.transformerQuant
             : undefined,
+        family_override: familyOverrideForPick(
+          controls.familyOverride,
+          familyOverrideRequired,
+        ),
         // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
         gpu_ids:
           controls.selectedGpu !== "auto" &&
@@ -2299,7 +2381,7 @@ function VideoGenerator({
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
       if (!meta.ggufFilename) return null;
-      const advanced = currentLoadAdvanced("gguf");
+      const advanced = currentLoadAdvanced("gguf", false);
       const plan = await getVideoDownloadPlan({
         model_path: repoId,
         gguf_filename: meta.ggufFilename,
@@ -2307,6 +2389,7 @@ function VideoGenerator({
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
         memory_mode: advanced.memory_mode,
+        family_override: advanced.family_override,
         // The plan sizes its file set against the card the load will use, so it needs the pick.
         gpu_ids: advanced.gpu_ids,
       });
@@ -2364,6 +2447,7 @@ function VideoGenerator({
         // Returns immediately; the load runs in the background and we poll.
         const startRequest = loadVideoModel({
           model_path: repoId,
+          display_repo_id: opts.displayRepoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
@@ -2372,6 +2456,7 @@ function VideoGenerator({
           attention_backend: advanced.attention_backend,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
+          family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick, so it stays on opts rather
           // than joining the pinned set.
           h3_task: opts.h3Task,
@@ -2498,6 +2583,7 @@ function VideoGenerator({
       opts: VideoLoadOptions,
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
+      familyOverrideRequired = false,
     ): Promise<boolean> => {
       // Every Hub pick needs the plan, not just an undownloaded one: a cached checkpoint can
       // still be missing its base repo's text encoder or VAE, and only the plan can see that.
@@ -2515,16 +2601,18 @@ function VideoGenerator({
       stagedQuantRevert.current = null;
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
-
-      const advanced = currentLoadAdvanced(opts.kind);
+      const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
+      if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
+      // A pinned Hub row loads from its exact snapshot, but its logical repo still
+      // owns download planning and task-specific companion discovery.
+      const planRepoId = opts.displayRepoId ?? repoId;
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
       const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it, as on the images page.
       let incompatible: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
-          model_path: repoId,
+          model_path: planRepoId,
           gguf_filename: opts.filename,
           model_kind: opts.kind,
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the plan drops the companion entry, so the load pulls those files inline.
@@ -2532,6 +2620,7 @@ function VideoGenerator({
           // The route preflights the same values used by the eventual load.
           transformer_quant: advanced.transformer_quant,
           memory_mode: advanced.memory_mode,
+          family_override: advanced.family_override,
           // And the partition, for the same reason: the two H3 denoisers are separate downloads,
           // so a plan asked without it stages the default fl2va weights for a References pick.
           h3_task: opts.h3Task,
@@ -2547,6 +2636,36 @@ function VideoGenerator({
         // the contract rather than a live path -- keep it, or a future one lands unguarded.
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
+          const stagedEntries = plan.entries.map((e) => ({
+            repoId: e.repo_id,
+            files: e.files,
+            bytes: e.bytes,
+            ggufFilename: e.gguf_filename,
+            // The entry carrying the picked checkpoint file, so the panel can label it without
+            // guessing: filenames cannot tell the two apart once a checkpoint ships as
+            // .safetensors like its companions do. Repo identity alone is not enough, because a
+            // checkpoint that shares its repo with the companions and is already cached leaves an
+            // entry of companion files only. A pipeline pick has no one file: the repo IS it.
+            // The backend's own answer wins: a gated pipeline is staged from an ungated MIRROR,
+            // so its entry no longer carries the id we picked and the id test below reads the
+            // whole selected model as companion assets. `??`, not `||`: a planner that says false
+            // is answering, and the fallback exists only for a backend too old to send the key.
+            checkpoint:
+              e.checkpoint ??
+              (opts.filename
+                ? e.files.includes(opts.filename)
+                : e.repo_id === planRepoId),
+          }));
+          const entriesToStage = diffusionPipelineStagingEntries(
+            repoId,
+            planRepoId,
+            stagedEntries,
+          );
+          // A logical plan may point at a newer Hub revision. Never substitute it for the exact
+          // snapshot we inspected; stage external companions only and keep the physical target.
+          if (entriesToStage.length === 0) {
+            return handleLoadRef.current(repoId, opts, advanced);
+          }
           pendingStagedLoad.current = {
             repoId,
             opts,
@@ -2554,28 +2673,7 @@ function VideoGenerator({
             token: token ?? pickGuard.claim(),
           };
           stagedQuantRevert.current = ownRevert;
-          stage(
-            plan.entries.map((e) => ({
-              repoId: e.repo_id,
-              files: e.files,
-              bytes: e.bytes,
-              ggufFilename: e.gguf_filename,
-              // The entry carrying the picked checkpoint file, so the panel can label it without
-              // guessing: filenames cannot tell the two apart once a checkpoint ships as
-              // .safetensors like its companions do. Repo identity alone is not enough, because a
-              // checkpoint that shares its repo with the companions and is already cached leaves an
-              // entry of companion files only. A pipeline pick has no one file: the repo IS it.
-              // The backend's own answer wins: a gated pipeline is staged from an ungated MIRROR,
-              // so its entry no longer carries the id we picked and the id test below reads the
-              // whole selected model as companion assets. `??`, not `||`: a planner that says false
-              // is answering, and the fallback exists only for a backend too old to send the key.
-              checkpoint:
-                e.checkpoint ??
-                (opts.filename
-                  ? e.files.includes(opts.filename)
-                  : e.repo_id === repoId),
-            })),
-          );
+          stage(entriesToStage);
           return true;
         }
       } catch {
@@ -2600,6 +2698,7 @@ function VideoGenerator({
       quantHint: string | null,
       source: ModelSelectorChangeMeta["source"] = "hub",
       localPath?: string | null,
+      effectiveFamilyOverride = familyOverride,
     ): Promise<boolean> => {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
@@ -2621,7 +2720,7 @@ function VideoGenerator({
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           // Filename-qualified like the expander branch: the LTX variant lives in the checkpoint name, not the repo id.
-          applyVideoModelDefaults(`${repoId}/${filename}`);
+          applyVideoModelDefaults(`${repoId}/${filename}`, effectiveFamilyOverride);
         },
         onNotStarted: () => {
           if (quantRevert.current === revert) {
@@ -2686,6 +2785,9 @@ function VideoGenerator({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    // Routed Hub picks are normally detectable. Do not carry an override restored
+    // from an opaque resident pipeline into this new model.
+    setFamilyOverride("auto");
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
     const token = pickGuard.claim();
     void navigateSelf({ to: "/video", search: {}, replace: true });
@@ -2694,7 +2796,7 @@ function VideoGenerator({
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedLabel, "hub"),
+        loadGgufRepoPick(wanted, routedLabel, "hub", null, "auto"),
       );
       return;
     }
@@ -2706,7 +2808,9 @@ function VideoGenerator({
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
+      void Promise.resolve().then(() =>
+        loadGgufRepoPick(pick.repoId, null, "hub", null, "auto"),
+      );
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
@@ -2716,6 +2820,7 @@ function VideoGenerator({
     setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
     applyVideoModelDefaults(
       pick.opts.filename ? `${pick.repoId}/${pick.opts.filename}` : pick.repoId,
+      "auto",
     );
     // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
     if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
@@ -2724,6 +2829,7 @@ function VideoGenerator({
         opts: pick.opts,
         source: "hub",
         token,
+        familyOverrideRequired: false,
       });
       return;
     }
@@ -2763,6 +2869,7 @@ function VideoGenerator({
         { ...pending.opts, h3Task: task },
         pending.source,
         pending.token,
+        pending.familyOverrideRequired,
       ).then((started) => {
         // One slot, so only the pick that set the label may take it back.
         if (!started && revert && quantRevert.current === revert && pickGuard.holds(pending.token)) {
@@ -2790,6 +2897,7 @@ function VideoGenerator({
         kind: l.kind,
         filename: l.filename,
         h3Task: l.h3Task,
+        displayRepoId: l.displayRepoId,
       });
     }
   }, [handleLoad]);
@@ -2814,6 +2922,14 @@ function VideoGenerator({
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging never
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
+      const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
+      const familyOverrideRequired = meta.familyOverrideRequired === true;
+      const nextFamilyOverride = familyOverrideRequired ? familyOverride : "auto";
+      if (!familyOverrideRequired) setFamilyOverride("auto");
+      const displayRepoId =
+        pipelineTarget.repoId !== pipelineTarget.displayRepoId
+          ? pipelineTarget.displayRepoId
+          : undefined;
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -2828,20 +2944,30 @@ function VideoGenerator({
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
         // Without it these distilled entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the 8-step schedule.
-        applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id);
-        if (isH3PipelinePick(id, spec.kind)) {
+        applyVideoModelDefaults(
+          spec.filename ? `${id}/${spec.filename}` : id,
+          nextFamilyOverride,
+        );
+        if (
+          isH3PipelinePick(
+            id,
+            spec.kind,
+            familyOverrideRequired ? familyOverride : undefined,
+          )
+        ) {
           setPendingH3Load({
-            repoId: id,
-            opts: { kind: spec.kind, filename: spec.filename },
-            source: meta.source,
+            repoId: pipelineTarget.repoId,
+            opts: { kind: spec.kind, filename: spec.filename, displayRepoId },
+            source: pipelineTarget.source,
             token,
+            familyOverrideRequired,
           });
           return;
         }
         void loadOrStage(
-          id,
-          { kind: spec.kind, filename: spec.filename },
-          meta.source,
+          pipelineTarget.repoId,
+          { kind: spec.kind, filename: spec.filename, displayRepoId },
+          pipelineTarget.source,
           token,
         ).then((started) => {
             if (!started && pickGuard.holds(token)) {
@@ -2857,7 +2983,7 @@ function VideoGenerator({
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
-        applyVideoModelDefaults(`${id}/${meta.ggufFilename}`);
+        applyVideoModelDefaults(`${id}/${meta.ggufFilename}`, nextFamilyOverride);
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -2886,14 +3012,19 @@ function VideoGenerator({
             meta.ggufVariant ?? null,
             meta.source,
             meta.source === "local" ? id : null,
+            nextFamilyOverride,
           );
           return;
         }
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyVideoModelDefaults(id);
-        void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
+        applyVideoModelDefaults(id, nextFamilyOverride);
+        void handleLoad(
+          dir,
+          { kind: "gguf", filename },
+          currentLoadAdvanced("gguf", false),
+        ).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -2910,8 +3041,12 @@ function VideoGenerator({
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        applyVideoModelDefaults(id);
-        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
+        applyVideoModelDefaults(id, nextFamilyOverride);
+        void handleLoad(
+          dir,
+          { kind: "single_file", filename },
+          currentLoadAdvanced("single_file", false),
+        ).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -2928,11 +3063,15 @@ function VideoGenerator({
           spec?.filename ?? meta.ggufVariant ?? null,
           meta.source,
           meta.source === "local" ? id : null,
+          nextFamilyOverride,
         );
         return;
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the family bases, or on-device paths.
-      if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+      if (
+        !diffusionPipelineTargetIsOnDevice(pipelineTarget) &&
+        !id.toLowerCase().startsWith("unsloth/")
+      ) {
         toast.error("Only unsloth or on-device video models can be loaded here");
         abandonPick();
         return;
@@ -2942,19 +3081,32 @@ function VideoGenerator({
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyVideoModelDefaults(id);
+      applyVideoModelDefaults(id, nextFamilyOverride);
       // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
       // it needs the same partition question: without it the load silently takes fl2va.
-      if (isH3PipelinePick(id, "pipeline")) {
+      if (
+        isH3PipelinePick(
+          id,
+          "pipeline",
+          familyOverrideRequired ? familyOverride : undefined,
+        )
+      ) {
         setPendingH3Load({
-          repoId: id,
-          opts: { kind: "pipeline" },
-          source: meta.source,
+          repoId: pipelineTarget.repoId,
+          opts: { kind: "pipeline", displayRepoId },
+          source: pipelineTarget.source,
           token,
+          familyOverrideRequired,
         });
         return;
       }
-      void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
+      void loadOrStage(
+        pipelineTarget.repoId,
+        { kind: "pipeline", displayRepoId },
+        pipelineTarget.source,
+        token,
+        familyOverrideRequired,
+      ).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
           quantRevert.current = null;
@@ -2966,7 +3118,9 @@ function VideoGenerator({
       applyVideoModelDefaults,
       beginPick,
       busy,
+      currentLoadAdvanced,
       handleLoad,
+      familyOverride,
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
@@ -3184,6 +3338,14 @@ function VideoGenerator({
   const advancedControls = (
     <>
       <AdvancedSelect
+        label="Family"
+        hint="Architecture family. Auto detects it from the repository or pipeline metadata. Choose one only for a custom Diffusers pipeline whose metadata does not identify a supported family."
+        badge={<ResolvedBadge status={status} controlKey="family_override" />}
+        value={familyOverride}
+        onValueChange={setFamilyOverride}
+        options={familyOverrideOptions(status?.supported_families)}
+      />
+      <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
         badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
@@ -3383,7 +3545,8 @@ function VideoGenerator({
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
             models={videoModels}
-            value={status?.loaded ? status.repo_id ?? undefined : undefined}
+            value={selectorModelId}
+            loadedModelIdOverride={selectorModelId}
             activeGgufVariant={quant}
             onValueChange={handleModelSelect}
             resolveDownloadFootprint={resolveDownloadFootprint}
@@ -3392,6 +3555,7 @@ function VideoGenerator({
             className="!h-[34px]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
+            opaqueKind={overrideArtifactKind}
             placeholder="Select video model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}

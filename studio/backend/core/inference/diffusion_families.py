@@ -1114,6 +1114,7 @@ def family_prequant_filename(
 # the release where diffusers' own requires-python went ">= 3.10.0", making 0.36.0 the newest a supported Python 3.9
 # host can resolve
 _DIFFUSERS_DROPPED_PY39 = "0.37.0"
+_MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
 # First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at the upstream tags and
 # cross-checked against each release's requires-python on PyPI. An unlisted class gets a version-free "a newer
@@ -1178,6 +1179,317 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     if minimum is None:
         return None, False
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
+
+
+def _read_local_pipeline_manifest(root: Path | str, filename: str) -> Optional[dict]:
+    if filename not in {"model_index.json", "modular_model_index.json"}:
+        return None
+    try:
+        path = Path(root).expanduser() / filename
+        if not path.is_file() or path.stat().st_size > _MAX_PIPELINE_MANIFEST_BYTES:
+            return None
+        # Match pipeline_class_from_index: PowerShell commonly writes hand-authored JSON with a
+        # UTF-8 BOM, which Diffusers can otherwise load and must not disappear at inventory or
+        # preflight.
+        payload = json.loads(path.read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
+    """Whether a local Diffusers manifest has a valid root-level load contract."""
+    payload = _read_local_pipeline_manifest(root, filename)
+    if payload is None:
+        return False
+    class_name = payload.get("_class_name")
+    if not isinstance(class_name, str) or not class_name.strip():
+        return False
+    if filename == "modular_model_index.json":
+        blocks_class = payload.get("_blocks_class_name")
+        if isinstance(blocks_class, str) and blocks_class.strip():
+            return True
+    return any(
+        not str(name).startswith("_")
+        and isinstance(spec, (list, tuple))
+        and len(spec) >= 2
+        and spec[0] is not None
+        and spec[1] is not None
+        for name, spec in payload.items()
+    )
+
+
+_LOCAL_PIPELINE_BASE_WEIGHT_INDEXES = (
+    "diffusion_pytorch_model.safetensors.index.json",
+    "model.safetensors.index.json",
+    "diffusion_pytorch_model.bin.index.json",
+    "pytorch_model.bin.index.json",
+)
+_LOCAL_PIPELINE_WEIGHT_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|model|pytorch_model)(?:\.[A-Za-z0-9_-]+)?\.(?:safetensors|bin)$"
+)
+_LOCAL_PIPELINE_WEIGHT_INDEX_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|model|pytorch_model)\.(?:safetensors|bin)\.index"
+    r"(?:\.[A-Za-z0-9_-]+)?\.json$"
+)
+_LOCAL_PIPELINE_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
+_MAX_PIPELINE_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
+_LOCAL_PIPELINE_METADATA_CONFIGS = (
+    (("tokenizer",), ("tokenizer_config.json",)),
+    (("scheduler",), ("scheduler_config.json",)),
+    (("guider", "guidance"), ("guider_config.json",)),
+    (("featureextractor", "imageprocessor"), ("preprocessor_config.json",)),
+    (("processor",), ("processor_config.json", "preprocessor_config.json")),
+)
+_LOCAL_PIPELINE_SELF_CONTAINED_TOKENIZER_ASSETS = (
+    "tokenizer.json",
+    "vocab.txt",
+    "spiece.model",
+    "tokenizer.model",
+    "sentencepiece.bpe.model",
+)
+
+
+def _local_json_object_is_valid(path: Path, *, max_bytes: int) -> bool:
+    try:
+        return (
+            path.is_file()
+            and 0 < path.stat().st_size <= max_bytes
+            and isinstance(json.loads(path.read_text(encoding = "utf-8-sig")), dict)
+        )
+    except (OSError, ValueError, RecursionError):
+        return False
+
+
+def _local_weight_index_is_complete(component: Path, index: Path) -> bool:
+    """Whether a selected sharded checkpoint index names files present under its component."""
+    if not index.is_file():
+        return False
+    try:
+        if not 0 < index.stat().st_size <= _MAX_PIPELINE_WEIGHT_INDEX_BYTES:
+            return False
+        payload = json.loads(index.read_text(encoding = "utf-8-sig"))
+        weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+        shards = (
+            {str(value) for value in weight_map.values() if value}
+            if isinstance(weight_map, dict)
+            else set()
+        )
+        if not shards:
+            return False
+        for shard in shards:
+            # Weight maps are POSIX-relative even on Windows. Reject alternate separators and
+            # drive prefixes before converting to the host Path, or ``..\\outside`` / ``C:`` can
+            # escape the component only on the platform where the pipeline is eventually loaded.
+            if "\\" in shard or ":" in shard:
+                return False
+            relative = PurePosixPath(shard)
+            if relative.is_absolute() or ".." in relative.parts:
+                return False
+            shard_path = component / Path(*relative.parts)
+            if not shard_path.is_file() or shard_path.stat().st_size <= 0:
+                return False
+        return True
+    except (OSError, ValueError, AttributeError, RecursionError):
+        return False
+
+
+def _local_model_component_is_complete(component: Path) -> bool:
+    # Diffusers treats a matching index as authoritative. A corrupt/partial index must not fall
+    # through to an unrelated unsharded file that the loader will never choose.
+    indexes = [
+        child
+        for child in component.iterdir()
+        if _LOCAL_PIPELINE_WEIGHT_INDEX_RE.fullmatch(child.name)
+    ]
+    for index_name in _LOCAL_PIPELINE_BASE_WEIGHT_INDEXES:
+        index = component / index_name
+        if index.exists():
+            return _local_weight_index_is_complete(component, index)
+    if indexes:
+        return any(_local_weight_index_is_complete(component, index) for index in indexes)
+    return any(
+        _LOCAL_PIPELINE_WEIGHT_RE.fullmatch(child.name)
+        and not _LOCAL_PIPELINE_SHARD_RE.search(child.name)
+        and child.is_file()
+        and child.stat().st_size > 0
+        for child in component.iterdir()
+    )
+
+
+def _local_metadata_component_is_complete(component: Path, class_name: str) -> Optional[bool]:
+    """Completeness for known config-only Diffusers/Transformers component classes.
+
+    ``None`` means the component is not known to be metadata-only and must take the model-weight
+    path. That conservative default covers extension libraries such as LTX2, whose connector and
+    vocoder components carry ordinary config plus safetensors weights.
+    """
+    identity = class_name.replace("_", "").lower()
+    for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
+        if not any(token in identity for token in tokens):
+            continue
+        if not any(
+            _local_json_object_is_valid(
+                component / config_name, max_bytes = _MAX_PIPELINE_MANIFEST_BYTES
+            )
+            for config_name in config_names
+        ):
+            return False
+        if tokens not in (("tokenizer",), ("processor",)):
+            return True
+        # ByT5 constructs its byte vocabulary in code and intentionally ships no vocab asset.
+        if "byt5tokenizer" in identity:
+            return True
+        try:
+            if any(
+                (component / asset).is_file() and (component / asset).stat().st_size > 0
+                for asset in _LOCAL_PIPELINE_SELF_CONTAINED_TOKENIZER_ASSETS
+            ):
+                return True
+            # A byte-level BPE's vocab and merges are a pair; neither file is useful alone.
+            return all(
+                (component / asset).is_file() and (component / asset).stat().st_size > 0
+                for asset in ("vocab.json", "merges.txt")
+            )
+        except OSError:
+            return False
+    return None
+
+
+def _local_pipeline_component_is_complete(
+    component: Path, class_name: str, *, config_only_model_components: bool
+) -> bool:
+    try:
+        if not component.is_dir():
+            return False
+        metadata_complete = _local_metadata_component_is_complete(component, class_name)
+        if metadata_complete is not None:
+            return metadata_complete
+        if not _local_json_object_is_valid(
+            component / "config.json", max_bytes = _MAX_PIPELINE_MANIFEST_BYTES
+        ):
+            return False
+        return config_only_model_components or _local_model_component_is_complete(component)
+    except OSError:
+        return False
+
+
+def _external_pipeline_component_is_complete(
+    base: Path, class_name: str, source_spec: object, *, config_only_model_components: bool
+) -> Optional[bool]:
+    """Completeness at a modular component's explicit source, or ``None`` for no source.
+
+    A Hub id is a loadable external contract but cannot be inspected without network access, so
+    it is accepted here just as a remote pipeline id is. Explicit local sources are checked at
+    their actual subfolder; missing path-shaped sources and escaping subfolders fail closed.
+    """
+    if not isinstance(source_spec, dict):
+        return None
+    source = source_spec.get("pretrained_model_name_or_path") or source_spec.get("repo")
+    if not isinstance(source, str) or not source.strip():
+        return None
+    source = source.strip()
+    subfolder = source_spec.get("subfolder")
+    if subfolder is not None and not isinstance(subfolder, str):
+        return False
+    relative = PurePosixPath((subfolder or "").strip())
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or "\\" in str(subfolder or "")
+        or ":" in str(subfolder or "")
+    ):
+        return False
+    try:
+        raw_source = Path(source).expanduser()
+        rooted_source = raw_source if raw_source.is_absolute() else base / raw_source
+        if rooted_source.exists():
+            component = rooted_source / Path(*relative.parts) if relative.parts else rooted_source
+            return _local_pipeline_component_is_complete(
+                component,
+                class_name,
+                config_only_model_components = config_only_model_components,
+            )
+    except OSError:
+        return False
+    path_shaped = source.startswith(("/", "\\", "~", ".")) or "\\" in source or ":" in source
+    return False if path_shaped else True
+
+
+def local_pipeline_components_are_complete(
+    root: Path | str,
+    filename: str,
+    *,
+    excluded_components: Sequence[str] = (),
+    config_only_model_components: bool = False,
+) -> bool:
+    """Whether every component declared by a local pipeline can be opened from that root.
+
+    A valid manifest alone is not a loadable pipeline: interrupted copies commonly leave the
+    index but omit one component directory, model config, weight, or shard. Inventory and both
+    media preflights use this same conservative, import-free check so no row can be advertised and
+    then evict the resident model before failing in ``from_pretrained``. A companion base may
+    exclude the denoiser component supplied by a separately selected GGUF/safetensors checkpoint;
+    every remaining declared component is still checked, and at least one must remain. Modular
+    manifests may explicitly source a component from another local root or Hub repository.
+
+    ``config_only_model_components`` permits model weights to come from a whole-pipeline
+    single-file checkpoint while keeping component and metadata configs strict.
+
+    Saved modular pipelines also declare their components alongside ``_blocks_class_name``. A
+    block-only file is not enough evidence that the local snapshot is hydrated, so it is rejected
+    just like a conventional manifest with no components.
+    """
+    payload = _read_local_pipeline_manifest(root, filename)
+    if payload is None or not local_pipeline_manifest_is_valid(root, filename):
+        return False
+    base = Path(root).expanduser()
+    declared: list[tuple[str, str, object]] = []
+    for name, spec in payload.items():
+        if (
+            not isinstance(name, str)
+            or name.startswith("_")
+            or not isinstance(spec, (list, tuple))
+            or len(spec) < 2
+            or spec[0] is None
+            or spec[1] is None
+        ):
+            continue
+        # Component keys are pipeline constructor arguments and therefore one local directory,
+        # never a path. Refusing separators also prevents a hand-authored manifest escaping root.
+        if name in {"", ".", ".."} or Path(name).name != name or "/" in name or "\\" in name:
+            return False
+        if name not in excluded_components:
+            source_spec = (
+                spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
+            )
+            declared.append((name, str(spec[1]), source_spec))
+
+    if not declared:
+        return False
+
+    try:
+        for name, class_name, source_spec in declared:
+            external_complete = _external_pipeline_component_is_complete(
+                base,
+                class_name,
+                source_spec,
+                config_only_model_components = config_only_model_components,
+            )
+            if external_complete is not None:
+                if not external_complete:
+                    return False
+                continue
+            component = base / name
+            if not _local_pipeline_component_is_complete(
+                component,
+                class_name,
+                config_only_model_components = config_only_model_components,
+            ):
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
@@ -1392,6 +1704,29 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     if installed is None:
         return True
     return _installed_at_least(installed, minimum)
+
+
+def family_pipeline_strictly_available(fam: Optional[DiffusionFamily]) -> bool:
+    """Whether a selector may promise that this family can load through Diffusers here."""
+    if fam is None:
+        return False
+    pipeline_class = family_probe_class(fam)
+    if not pipeline_class:
+        return False
+    try:
+        assert_pipeline_class_available(pipeline_class, fam.name, strict = True)
+    except ValueError:
+        return False
+    return True
+
+
+def pipeline_available_family_names() -> tuple[str, ...]:
+    """Family overrides whose diffusers pipeline can be built on this host.
+
+    Unlike ``supported_family_names()``, this is suitable for a selector that reveals opaque
+    pipeline roots: every name it advertises must survive the loader's pipeline-class gate.
+    """
+    return tuple(fam.name for fam in _FAMILIES if family_pipeline_strictly_available(fam))
 
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { BaseModelSource } from "./api";
+import type { BaseModelSource, LocalArtifactKind } from "./api";
 import type { InventoryHintKind, LocalSource } from "./constants";
 
 export type ModelInventoryFormat =
@@ -43,6 +43,7 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
+  artifact: LocalArtifactKind;
   runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
@@ -88,6 +89,7 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
+  artifact: LocalArtifactKind;
   runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;

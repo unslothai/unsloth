@@ -33502,6 +33502,7 @@ async def load_diffusion_model_gated(
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
+                display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
                 # from the outside, and this is what makes that promise the loader's own rule
                 local_files_only = not user_initiated,
@@ -33551,7 +33552,7 @@ async def load_diffusion_model_gated(
             extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
             user_action = user_initiated,
         )
-        return DiffusionStatusResponse(**annotate_status(status_dict))
+        return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
@@ -34026,13 +34027,13 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
         DIFFUSION,
         lambda: not engine.loading_repo_ids() and not engine.is_loaded,
     )
-    return DiffusionStatusResponse(**annotate_status(status_dict))
+    return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
 
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import active_status
-    return DiffusionStatusResponse(**active_status())
+    return DiffusionStatusResponse(**(await asyncio.to_thread(active_status)))
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)

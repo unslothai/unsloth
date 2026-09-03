@@ -13,6 +13,7 @@ from typing import List, Literal, Optional
 from urllib.parse import quote
 
 from hub.schemas.inventory import (
+    LocalArtifactKind,
     LocalModelCapabilities,
     LocalModelInfo,
     ModelFormat,
@@ -102,13 +103,36 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
-def _is_diffusers_pipeline_dir(path: Path) -> bool:
+def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArtifactKind]:
+    """Return the root-manifest contract for a Diffusers pipeline directory.
+
+    Conventional and Modular Diffusers manifests are not interchangeable: the image loader
+    requires ``model_index.json``, while some video loaders require
+    ``modular_model_index.json``. A directory may deliberately publish both compatibility
+    contracts, so preserve that third structural state instead of discarding one capability.
+    Keep the distinction in inventory rather than making each consumer re-probe the filesystem
+    (which cached rows cannot do in the frontend).
+    """
+    if path is None:
+        return None
     try:
-        return (path / "model_index.json").is_file() or (
-            path / "modular_model_index.json"
-        ).is_file()
+        from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+        conventional = local_pipeline_components_are_complete(path, "model_index.json")
+        modular = local_pipeline_components_are_complete(path, "modular_model_index.json")
+        if conventional and modular:
+            return "diffusers_dual_pipeline"
+        if conventional:
+            return "diffusers_pipeline"
+        if modular:
+            return "diffusers_modular_pipeline"
     except OSError:
-        return False
+        pass
+    return None
+
+
+def _is_diffusers_pipeline_dir(path: Path) -> bool:
+    return _diffusers_pipeline_artifact_kind(path) is not None
 
 
 def _local_inventory_id(
@@ -810,6 +834,7 @@ def _local_model_info(
     load_path: Path,
     source: LocalModelSource,
     model_format: ModelFormat,
+    artifact_kind: Optional[LocalArtifactKind] = None,
     display_name: Optional[str] = None,
     model_id: Optional[str] = None,
     updated_at: Optional[float] = None,
@@ -830,6 +855,17 @@ def _local_model_info(
         else str(load_path)
     )
     semantic_id = model_id or str(load_path)
+    if artifact_kind is None:
+        if model_format == "gguf":
+            artifact_kind = "gguf"
+        elif model_format == "adapter":
+            artifact_kind = "adapter"
+        elif model_format in {"safetensors", "checkpoint"}:
+            artifact_kind = (
+                "single_file_checkpoint" if scan_path.is_file() else "transformers_model"
+            )
+        else:
+            artifact_kind = "unknown"
     return LocalModelInfo(
         id = load_id,
         inventory_id = _local_inventory_id(
@@ -852,6 +888,7 @@ def _local_model_info(
         updated_at = updated_at,
         partial = partial,
         model_format = model_format,
+        artifact_kind = artifact_kind,
         runtime = _runtime_for_format(model_format),
         format_variant = format_variant,
         capabilities = _capabilities_for_format(
@@ -904,6 +941,7 @@ def _classify_local_path(
                 load_path = load_path,
                 source = source,
                 model_format = "gguf",
+                artifact_kind = "gguf",
                 display_name = display_name,
                 model_id = model_id,
                 updated_at = updated_at,
@@ -993,6 +1031,9 @@ def _classify_local_path(
                 load_path = load_path,
                 source = source,
                 model_format = fallback_format,
+                artifact_kind = (
+                    _diffusers_pipeline_artifact_kind(scan_path) if scan_path.is_dir() else None
+                ),
                 display_name = display_name,
                 model_id = model_id,
                 updated_at = updated_at,

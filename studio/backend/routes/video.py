@@ -150,6 +150,7 @@ async def video_download_plan(
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             base_repo = request.base_repo,
             transformer_quant = request.transformer_quant,
@@ -186,6 +187,7 @@ async def video_download_plan(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so
@@ -261,6 +263,7 @@ async def load_video_model_gated(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
@@ -307,6 +310,7 @@ async def load_video_model_gated(
             # network-free.
             return backend.begin_load(
                 request.model_path,
+                display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
                 # from the outside, and this makes that promise the loader's own rule
                 local_files_only = not user_initiated,
@@ -507,7 +511,7 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
 @router.get("/video/status", response_model = VideoStatusResponse)
 async def video_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoStatusResponse(**get_video_backend().status())
+    return VideoStatusResponse(**(await asyncio.to_thread(get_video_backend().status)))
 
 
 @router.post("/video/unload", response_model = VideoStatusResponse)

@@ -1880,7 +1880,7 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
         lambda repo_path, _snapshot = None: {"_hidden_stt": "custom-whisper" in str(repo_path)},
     )
 
-    rows = cache_inventory._scan_cached_models()
+    rows = cache_inventory._scan_cached_models(active_hub_cache = curated_path.parent)
 
     rows_by_repo = {row["repo_id"]: row for row in rows}
     assert set(rows_by_repo) == {"unsloth/whisper-tiny", "Org/custom-whisper"}
@@ -1952,7 +1952,7 @@ def _diffusion_scan(
         return task
 
     monkeypatch.setattr(cache_inventory, "_cached_row_task", row_task)
-    rows = cache_inventory._scan_cached_models()
+    rows = cache_inventory._scan_cached_models(active_hub_cache = tmp_path / "hub")
     assert len(rows) == 1
     assert selected_snapshots == ([snapshot] if expect_task_classification else [])
     return rows[0]
@@ -1999,6 +1999,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
 
     assert row["partial"] is False
     assert row["single_file"] is False
+    assert row["load_id"] == "Org/Pipeline-Complete"
 
 
 def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch, tmp_path):
@@ -2021,6 +2022,10 @@ def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch,
     assert row["task"] == "text-to-speech"
     assert row["audio_type"] == "minimax_music3"
     assert row["capabilities"]["can_chat"] is False
+    assert row["artifact_kind"] == "diffusers_modular_pipeline"
+    assert row["load_id"] == str(
+        tmp_path / "hub/models--MiniMaxAI--MiniMax-Music3/snapshots" / _SNAPSHOT_SHA
+    )
     assert row["partial"] is False
     assert row["single_file"] is False
 
@@ -6604,7 +6609,13 @@ def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_enc
     (MiniMax-H3, HunyuanVideo, Qwen-Image, HiDream) has exactly this shape."""
     root.mkdir(parents = True, exist_ok = True)
     (root / "model_index.json").write_text(
-        json.dumps({"_class_name": "MiniMaxH3Pipeline", "_diffusers_version": "0.39.0"}),
+        json.dumps(
+            {
+                "_class_name": "MiniMaxH3Pipeline",
+                "_diffusers_version": "0.39.0",
+                "transformer": ["diffusers", "MiniMaxH3Transformer3DModel"],
+            }
+        ),
         encoding = "utf-8",
     )
     for name in components:
@@ -6728,13 +6739,27 @@ def test_a_modular_pipeline_root_is_recognised(tmp_path):
     walk descend into it and offer ``transformer`` / ``vae`` as separate, unusable models."""
     root = tmp_path / "modular"
     root.mkdir()
-    (root / "modular_model_index.json").write_text("{}")
+    (root / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "ModularPipeline",
+                "_blocks_class_name": "TestPipelineBlocks",
+            }
+        )
+    )
     (root / "transformer").mkdir()
     assert local_inventory._is_diffusers_pipeline_dir(root) is True
 
     conventional = tmp_path / "conventional"
     conventional.mkdir()
-    (conventional / "model_index.json").write_text("{}")
+    (conventional / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "DiffusionPipeline",
+                "transformer": ["diffusers", "Transformer2DModel"],
+            }
+        )
+    )
     assert local_inventory._is_diffusers_pipeline_dir(conventional) is True
 
     neither = tmp_path / "neither"

@@ -26,8 +26,8 @@ from core.inference.memory_contract import (
     project_kv_cache_estimate,
 )
 from core.inference.model_ids import display_model_name
+from hub.schemas.inventory import LocalArtifactKind
 from hub.services.models import catalog_classification as _catalog_classification
-from utils import gguf_archs as _gguf_archs
 from hub.services.models.catalog_classification import (
     _cached_repo_task,
     _is_sd_cpp_companion_repo,
@@ -36,6 +36,8 @@ from hub.services.models.catalog_classification import (
     _repo_has_pipeline_index,
     _repo_is_diffusers,
 )
+from hub.services.models.common import _diffusers_pipeline_artifact_kind
+from utils import gguf_archs as _gguf_archs
 
 # Compatibility aliases: these moved to catalog_classification, but callers and tests still
 # resolve them from routes.models. Assigned through the module rather than re-imported, since
@@ -101,6 +103,8 @@ class CachedModelRepo(BaseModel):
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
+    # Root-manifest contract; declared here or FastAPI's response model drops it.
+    artifact_kind: Optional[LocalArtifactKind] = None
     # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
     # True for an image/video diffusion repo. Not the same question as task, which says only
@@ -5341,8 +5345,24 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": row_task,
                     }
-                    # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
-                    if model_load_id:
+                    # This is a structural load contract, not family detection: a root manifest
+                    # proves the selected snapshot is a Diffusers pipeline artifact even when
+                    # its name/card leaves task unknown. A missing selected snapshot cannot
+                    # establish that snapshot-scoped contract from a sibling revision.
+                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    if pipeline_artifact_kind is not None:
+                        row["artifact_kind"] = pipeline_artifact_kind
+                    # A structural family override is a narrow trust exception. Pin the exact
+                    # snapshot whose manifest earned it even in the active cache; refs/main may
+                    # otherwise move between inventory and load. Ordinary rows retain the bare id
+                    # whenever it resolves to the selected copy.
+                    if (
+                        row_task is None
+                        and pipeline_artifact_kind is not None
+                        and selected is not None
+                    ):
+                        row["load_id"] = str(selected)
+                    elif model_load_id:
                         row["load_id"] = model_load_id
                     model_format = _repo_model_format(repo_info, selected)
                     if model_format:

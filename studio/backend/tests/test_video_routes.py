@@ -110,6 +110,7 @@ class _FakeBackend(video_module.VideoBackend):
         gguf_filename = None,
         base_repo = None,
         family_override = None,
+        display_repo_id = None,
         model_kind = None,
         transformer_quant = None,
         text_encoder_quant = None,

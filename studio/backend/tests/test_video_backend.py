@@ -8,6 +8,7 @@ stack loads."""
 
 import builtins
 import contextlib
+import json
 import dataclasses
 import sys
 import threading
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+import core.inference.video as video_module
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
     VideoBackend,
@@ -34,7 +36,11 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     tests are about the load/plan decisions; the capability is covered in
     test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
+
     monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    video_module._video_family_capabilities.cache_clear()
+    yield
+    video_module._video_family_capabilities.cache_clear()
 
 
 class _FakeDtype:
@@ -720,10 +726,71 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     # A local dir missing model_index.json is not a loadable pipeline; it must fail preflight BEFORE eviction.
     with pytest.raises(ValueError, match = "model_index.json"):
         backend.validate_load_request(str(d), family_override = "ltx-2")
-    # With a model_index.json it is a valid local pipeline pick and passes preflight.
+    # A malformed index is still rejected before eviction.
     (d / "model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(d), family_override = "ltx-2")
+    # With a valid model_index.json it is a valid local pipeline pick and passes preflight.
+    (d / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+            }
+        )
+    )
+    (d / "transformer" / "config.json").write_text("{}")
     fam = backend.validate_load_request(str(d), family_override = "ltx-2")
     assert fam.name == "ltx-2"
+
+
+def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtime, monkeypatch):
+    backend = VideoBackend()
+    root = tmp_path / "opaque-h3"
+    root.mkdir()
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+            }
+        )
+    )
+
+    original_import = builtins.__import__
+
+    def _no_diffusers_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as no_diffusers:
+        no_diffusers.delitem(sys.modules, "diffusers")
+        no_diffusers.setattr(builtins, "__import__", _no_diffusers_import)
+        with pytest.raises(ValueError, match = "modular_model_index.json"):
+            backend.validate_load_request(str(root), family_override = "minimax-h3")
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.ModularPipeline = _FakeModularPipeline
+    diffusers.MiniMaxH3Transformer3DModel = _FakeTransformer
+    (root / "modular_model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid modular_model_index.json"):
+        backend.validate_load_request(str(root), family_override = "minimax-h3")
+    (root / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "ModularPipeline",
+                "_blocks_class_name": "HunyuanVideo15PipelineBlocks",
+                "transformer": ["diffusers", "MiniMaxH3Transformer3DModel"],
+            }
+        )
+    )
+    (root / "transformer").mkdir()
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert (
+        backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
+    )
 
 
 def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
@@ -747,8 +814,18 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A local base_repo that IS a real pipeline dir passes the gate.
-    (bad_base / "model_index.json").write_text("{}")
+    # A transformer-only checkpoint supplies the denoiser, so the companion base may omit it.
+    (bad_base / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
+                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+            }
+        )
+    )
+    (bad_base / "scheduler").mkdir()
+    (bad_base / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/LTX-2.3-GGUF",
         gguf_filename = "x.gguf",
@@ -756,6 +833,9 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
         base_repo = str(bad_base),
     )
     assert fam.name == "ltx-2"
+
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(bad_base), model_kind = "pipeline", family_override = "ltx-2")
 
 
 def test_validate_rejects_gguf_repo_as_pipeline():
@@ -780,6 +860,27 @@ def test_detect_load_family_filename_fallback():
     fam = _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "ltxv")
     assert fam is not None and fam.name == "ltx-2"
     assert _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "bogus") is None
+
+
+def test_detect_load_family_uses_logical_id_for_an_opaque_pinned_snapshot():
+    # A complete cached Hub pipeline loads from its exact revision directory. That physical
+    # identity can be only a commit hash, while the picker still carries the logical repo id.
+    fam = _detect_load_family(
+        "/cache/snapshots/deadbeef",
+        None,
+        None,
+        "MiniMaxAI/MiniMax-H3",
+    )
+    assert fam is not None and fam.name == "minimax-h3"
+
+    # The logical identity outranks incidental tokens in a cache parent directory.
+    fam = _detect_load_family(
+        "/cache/wan2.2/snapshots/deadbeef",
+        None,
+        None,
+        "Lightricks/LTX-2",
+    )
+    assert fam is not None and fam.name == "ltx-2"
 
 
 def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
@@ -1481,6 +1582,7 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     backend = VideoBackend()
     status = backend.load_pipeline(
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        display_repo_id = "Org/pinned-hv15",
         model_kind = "pipeline",
     )
     assert status["family"] == "hunyuanvideo-1.5"
@@ -1498,6 +1600,36 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     assert pipe.scheduler.calls == 4
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
     assert result["num_frames"] == 9 and result["has_audio"] is False
+    assert result["repo_id"] == "Org/pinned-hv15"
+
+
+def test_pipeline_load_uses_logical_identity_for_a_commit_named_snapshot(fake_runtime, tmp_path):
+    snapshot = tmp_path / "deadbeef"
+    snapshot.mkdir()
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTXPipeline",
+                "transformer": ["diffusers", "LTXVideoTransformer3DModel"],
+            }
+        )
+    )
+    (snapshot / "transformer").mkdir()
+    (snapshot / "transformer" / "config.json").write_text("{}")
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        str(snapshot),
+        display_repo_id = "Lightricks/LTX-2-Distilled",
+        model_kind = "pipeline",
+    )
+
+    assert status["family"] == "ltx-2"
+    assert status["repo_id"] == str(snapshot)
+    assert status["display_repo_id"] == "Lightricks/LTX-2-Distilled"
+    assert status["defaults"]["steps"] == 8
+    assert status["defaults"]["guidance"] == 1.0
 
 
 def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
@@ -1706,6 +1838,29 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
         is None
     )
     backend.unload()
+
+
+def test_video_status_family_capabilities_are_probed_once(monkeypatch):
+    calls = []
+    available = (
+        types.SimpleNamespace(name = "ltx-2", modular_workflow = False),
+        types.SimpleNamespace(name = "minimax-h3", modular_workflow = True),
+    )
+    monkeypatch.setattr(
+        video_module,
+        "pipeline_available_video_families",
+        lambda *, device: calls.append(device) or available,
+    )
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cpu"),
+    )
+    backend = VideoBackend()
+
+    assert backend.status()["supported_families"] == ["ltx-2", "minimax-h3"]
+    assert backend.status()["modular_families"] == ["minimax-h3"]
+    assert calls == ["cpu"]
 
 
 def test_video_status_response_carries_gguf_variant():
@@ -5805,10 +5960,12 @@ def test_h3_native_generate_records_the_build_it_ran_on(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
+    object.__setattr__(backend._state, "display_repo_id", "Org/pinned-h3")
 
     result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
 
     state = backend._state
+    assert result["repo_id"] == "Org/pinned-h3"
     assert result["model_kind"] == state.kind == "gguf"
     assert result["gguf_filename"] == state.gguf_filename
     assert result["memory_mode"] == state.memory_mode
@@ -5958,6 +6115,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
         torch = torch,
         fam = fam,
         repo_id = "MiniMaxAI/MiniMax-H3",
+        display_repo_id = "MiniMaxAI/MiniMax-H3",
         base = fam.base_repo,
         kind = "pipeline",
         dtype = torch.bfloat16,
@@ -5971,6 +6129,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
     assert "workflow" not in seen["from_pretrained"]
     assert seen["load_components"]["workflow"] == "fl2va"
     assert status["supports_keyframes"] is True
+    assert status["display_repo_id"] == "MiniMaxAI/MiniMax-H3"
     assert status["defaults"]["canvas_short_edge"] == 768
 
 

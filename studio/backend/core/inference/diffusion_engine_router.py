@@ -20,6 +20,7 @@ Env knobs:
 
 from __future__ import annotations
 
+import functools
 import os
 import threading
 from typing import Any, Callable, Optional
@@ -29,6 +30,7 @@ from core.inference.diffusion_families import (
     DiffusionFamily,
     family_pipeline_available,
     family_sd_cpp_supported,
+    pipeline_available_family_names,
 )
 from core.inference.sd_cpp_backend import (
     _install_allowed,
@@ -316,11 +318,23 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
         return False
 
 
+@functools.lru_cache(maxsize = 1)
+def _supported_family_capabilities() -> tuple[str, ...]:
+    """Process-static Diffusers capability snapshot used by status responses.
+
+    The strict probes can force Diffusers and Torch lazy modules to import. Cache the answer so a
+    status poll never repeats that work; the async route runs the one cold call off the event-loop
+    thread. Installed runtime capabilities do not change without restarting this process.
+    """
+    return tuple(pipeline_available_family_names())
+
+
 def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     """Tag a backend status dict with the active engine + any fallback reason."""
     out = dict(status)
     out["engine"] = _active_engine_name
     out["fallback_reason"] = _fallback_reason
+    out["supported_families"] = list(_supported_family_capabilities())
     return out
 
 

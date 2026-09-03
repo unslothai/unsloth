@@ -654,7 +654,7 @@ def test_variant_expander_refreshes_after_delete():
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
-    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows", src, re.S)
+    memo = re.search(r"const localModels = useMemo\(.*?\[\s*inventory\.localRows", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
 
@@ -1423,6 +1423,18 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
         assert "diffusionRoutePick(" in src, f"{rel}: route pick not derived"
         # And the derived pick is what gets loaded, not the raw search params.
         assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
+
+
+def test_video_reapply_recovers_a_resident_pipeline_target_after_remount():
+    """The backend keeps a loaded video pipeline across a browser refresh, while React refs do
+    not. Reapply must therefore reconstruct the physical target, logical picker identity, and H3
+    partition from status instead of requiring the user to select a 100+ GB model again."""
+    src = _read("features/video/video-page.tsx")
+    assert 'status?.model_kind !== "pipeline"' in src
+    assert "displayRepoId: status.display_repo_id ?? undefined," in src
+    assert 'status.h3_task === "fl2va" || status.h3_task === "ref2va"' in src
+    assert "lastLoad.current = {" in src
+    assert "setCanReapply(true);" in src
 
 
 def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():

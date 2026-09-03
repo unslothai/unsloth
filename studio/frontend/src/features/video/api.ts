@@ -48,7 +48,12 @@ export interface VideoGenerationDefaults {
 export interface VideoStatus {
   loaded: boolean;
   repo_id: string | null;
+  /** Logical Hub identity when repo_id is an exact local snapshot. */
+  display_repo_id?: string | null;
   family: string | null;
+  supported_families?: string[];
+  /** Pipeline-capable families whose loader accepts a Modular Diffusers manifest on this host. */
+  modular_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
@@ -108,6 +113,8 @@ export interface VideoLoadProgress {
 
 export interface VideoLoadRequest {
   model_path: string;
+  /** Logical Hub identity to publish while model_path remains the physical load target. */
+  display_repo_id?: string;
   // Required for the gguf / single_file kinds, omitted for a full pipeline (a diffusers repo loaded via from_pretrained).
   gguf_filename?: string;
   // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file" (safetensors transformer) or

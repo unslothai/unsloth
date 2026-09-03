@@ -100,6 +100,22 @@ def test_loaded_repo_ids_includes_native_companions():
     assert b.loaded_repo_ids() == ()
 
 
+def test_native_status_preserves_the_logical_picker_identity():
+    import dataclasses
+
+    b = _loaded_backend()
+    b._state = dataclasses.replace(
+        b._state,
+        repo_id = "/cache/models--unsloth--Z-Image-Turbo-GGUF/snapshots/abc",
+        display_repo_id = "unsloth/Z-Image-Turbo-GGUF",
+    )
+    status = b.status()
+    assert status["repo_id"].endswith("/snapshots/abc")
+    assert status["display_repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+    result = b.generate(prompt = "logical identity", steps = 1, seed = 1)
+    assert result["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+
+
 def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
     # A local *klein-9B*.gguf carries the variant keyword only in the basename, so loaded_repo_ids() must include the filename or the guard protects the wrong repo.
     b = SdCppDiffusionBackend(engine = _FakeEngine())
@@ -1400,6 +1416,7 @@ def _run_server_load(
     fam_name = "z-image",
     device = "cpu",
     gguf_filename = "z.gguf",
+    family_override = None,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1428,6 +1445,7 @@ def _run_server_load(
         gguf_filename = gguf_filename,
         base = fam.base_repo,
         fam = fam,
+        family_override = family_override,
         hf_token = None,
         _load_token = 1,
     )
@@ -1441,6 +1459,21 @@ def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     assert servers[0].started is not None  # the model is loaded once, at spawn
     assert b._state is not None and b._state.mode == "server" and b._state.server is servers[0]
     assert b.status()["native_mode"] == "server"
+
+
+def test_server_status_preserves_explicit_family_provenance(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, family_override = "z-image")
+
+    family = b.status()["resolved"]["family_override"]
+    assert family == {
+        "value": "z-image",
+        "requested": "z-image",
+        "source": "explicit",
+        "status": "applied",
+        "reason": "requested",
+    }
 
 
 def test_server_status_reports_selected_gguf_quant(monkeypatch):
