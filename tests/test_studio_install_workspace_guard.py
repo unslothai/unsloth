@@ -106,12 +106,18 @@ def _run_install_guard(
     py = venv_dir / "bin" / "python"
     py.write_text("#!/bin/sh\nexit 0\n")
     py.chmod(0o755)
+    # A sentinel outside the venv has to name the venv it vouches for, in the shape the
+    # installer writes, or any stray file called `unsloth` would hand over someone else's
+    # environment to be moved aside and deleted.
+    venv_exe = venv_dir / "bin" / "unsloth"
     if create_share_conf:
         (studio_home / "share").mkdir(parents = True, exist_ok = True)
-        (studio_home / "share" / "studio.conf").write_text("")
+        (studio_home / "share" / "studio.conf").write_text(f"UNSLOTH_EXE='{venv_exe}'\n")
     if create_bin_shim:
         (studio_home / "bin").mkdir(parents = True, exist_ok = True)
-        (studio_home / "bin" / "unsloth").write_text("")
+        shim = studio_home / "bin" / "unsloth"
+        shim.write_text(f"#!/bin/sh\nexec '{venv_exe}' \"$@\"\n")
+        shim.chmod(0o755)
     if create_venv_marker:
         (venv_dir / ".unsloth-studio-owned").write_text("")
     script = _build_install_guard_script(studio_home, redirect)
@@ -217,7 +223,9 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
     py.write_text("#!/bin/sh\nexit 0\n")
     py.chmod(0o755)
     (studio_home / "bin").mkdir(parents = True)
-    target = studio_home / "bin" / "unsloth-real"
+    # The installer writes `ln -sfn "$VENV_DIR/bin/unsloth"`, so the link has to resolve
+    # into this venv; a link to some other file beside it proves nothing about ownership.
+    target = venv / "bin" / "unsloth"
     target.write_text("#!/bin/sh\nexit 0\n")
     target.chmod(0o755)
     (studio_home / "bin" / "unsloth").symlink_to(target)
@@ -1973,3 +1981,43 @@ def test_install_ps1_rollback_tests_the_path_not_the_link_target():
         assert (
             "Test-StudioPathPresent" in src[start:end]
         ), f"{fn} must test the backup path itself, not the link target"
+
+
+def test_env_mode_blocks_sentinels_naming_another_venv(tmp_path):
+    """A sentinel that names some other venv is not evidence about this one.
+
+    `unsloth` is an ordinary word, so a reused root holding an unrelated
+    environment and any file of that name used to select the flat layout, pass
+    this guard, and have that environment moved aside and its rollback copy
+    deleted on success.
+    """
+    studio_home = tmp_path / "ws"
+    venv_dir = studio_home / "unsloth_studio"
+    (venv_dir / "bin").mkdir(parents = True)
+    py = venv_dir / "bin" / "python"
+    py.write_text("#!/bin/sh\nexit 0\n")
+    py.chmod(0o755)
+
+    stranger = tmp_path / "somebody-else" / "unsloth_studio"
+    (stranger / "bin").mkdir(parents = True)
+    (studio_home / "share").mkdir(parents = True)
+    (studio_home / "share" / "studio.conf").write_text(
+        f"UNSLOTH_EXE='{stranger / 'bin' / 'unsloth'}'\n"
+    )
+    (studio_home / "bin").mkdir(parents = True)
+    shim = studio_home / "bin" / "unsloth"
+    shim.write_text(f"#!/bin/sh\nexec '{stranger / 'bin' / 'unsloth'}' \"$@\"\n")
+    shim.chmod(0o755)
+
+    script = _build_install_guard_script(studio_home, "env")
+    res = subprocess.run(
+        ["bash", "-c", script],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+
+    assert res.returncode != 0, (
+        f"sentinels naming another venv must not adopt this one; stdout={res.stdout!r}"
+    )
+    assert (venv_dir / "bin" / "python").is_file()
