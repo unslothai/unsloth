@@ -1146,7 +1146,9 @@ def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_
     snap = tmp_path / "models--meta-llama--Llama-3.1-8B-Instruct" / "snapshots" / "abc123"
     snap.mkdir(parents = True)
 
-    assert export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
+    assert (
+        export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
+    )
     assert export_backend_module._remote_load_targets(str(snap)) == [
         "meta-llama/Llama-3.1-8B-Instruct"
     ]
