@@ -89,7 +89,7 @@ def test_workspace_thread_carries_the_subject_without_leaking_it():
     seen = []
     token = set_workspace_subject("alice")
     try:
-        thread = workspace_thread(target=lambda: seen.append(current_workspace_subject()))
+        thread = workspace_thread(target = lambda: seen.append(current_workspace_subject()))
     finally:
         reset_workspace_subject(token)
     thread.start()
