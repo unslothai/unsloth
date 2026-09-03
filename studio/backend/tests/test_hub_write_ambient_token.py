@@ -449,3 +449,121 @@ def test_worker_preserves_ambient_token_when_allow_ambient_true(monkeypatch, wor
     assert seen_env.get("HF_TOKEN") == "hf_operator_secret_123"
     assert seen_env.get("DISABLE_IMPLICIT") is None
     assert seen_env.get("passed_token") is None
+
+
+@pytest.mark.parametrize(
+    "allow_ambient,caller_token,expected",
+    [
+        (False, None, False),
+        (False, "hf_caller_own_token", "hf_caller_own_token"),
+        (True, None, None),
+    ],
+)
+def test_worker_load_preflight_sees_the_callers_credential(
+    monkeypatch, allow_ambient, caller_token, expected
+):
+    """The flag crosses the process boundary, but the preflight helpers read the token.
+
+    model_config.py's shared-cache guards are gated on is_anonymous(), so a plain None would
+    let an API-key caller read the operator's cached private snapshots even with the env
+    scrubbed. _handle_load has to hand them the sentinel.
+    """
+    from core.export import worker
+    from utils import security as security_pkg
+    from utils.models import model_config
+
+    seen = {}
+
+    class _Decision:
+        blocked = False
+
+    def _record(key, value, result):
+        seen[key] = value
+        return result
+
+    monkeypatch.setattr(
+        model_config,
+        "get_base_model_from_lora_identifier",
+        lambda path, token: _record("lora_base", token, None),
+    )
+    monkeypatch.setattr(
+        security_pkg,
+        "security_load_subdirs",
+        lambda target, token: _record("load_subdirs", token, ()),
+    )
+    monkeypatch.setattr(security_pkg, "load_scan_target", lambda target, subdirs: (target, subdirs))
+    monkeypatch.setattr(
+        security_pkg,
+        "evaluate_file_security",
+        lambda target, hf_token, load_subdirs: _record("file_security", hf_token, _Decision()),
+    )
+
+    backend = MagicMock()
+    backend.load_checkpoint.return_value = (True, "Checkpoint loaded")
+    backend.is_vision = False
+    backend.is_peft = False
+
+    worker._handle_load(
+        backend,
+        {
+            "checkpoint_path": "someone/private-model",
+            "load_in_4bit": False,
+            "hf_token": caller_token,
+            "allow_ambient": allow_ambient,
+        },
+        MagicMock(),
+    )
+
+    assert seen["lora_base"] == expected
+    assert seen["load_subdirs"] == expected
+    assert seen["file_security"] == expected
+    assert backend.load_checkpoint.call_args.kwargs["hf_token"] == expected
+
+
+@pytest.mark.parametrize(
+    "hf_token,expected_probe,expected_loader",
+    [(False, False, None), ("hf_caller_own_token", "hf_caller_own_token", "hf_caller_own_token")],
+)
+def test_export_backend_probes_anonymously_but_never_logs_in_with_the_sentinel(
+    monkeypatch, hf_token, expected_probe, expected_loader
+):
+    """detect_audio_type and is_vision_model gate their cache reads on is_anonymous().
+
+    The weight loader must not see the sentinel: unsloth's hf_login() only short-circuits on
+    None, so False would reach huggingface_hub's login().
+    """
+    from core.export import export as export_backend_module
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _fake_detect(model_id, hf_token, local_files_only):
+        seen["audio_probe"] = hf_token
+        return None
+
+    def _fake_is_vision(model_id, hf_token, local_files_only):
+        seen["vision_probe"] = hf_token
+        return False
+
+    class _FakeLoader:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            seen["loader"] = kwargs["token"]
+            raise _Stop()
+
+    monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
+    monkeypatch.setattr(export_backend_module, "is_vision_model", _fake_is_vision)
+    monkeypatch.setattr(export_backend_module, "FastLanguageModel", _FakeLoader)
+
+    backend = export_backend_module.ExportBackend()
+    success, _message = backend.load_checkpoint(
+        checkpoint_path = "someone/private-model",
+        hf_token = hf_token,
+    )
+
+    assert success is False
+    assert seen["audio_probe"] == expected_probe
+    assert seen["vision_probe"] == expected_probe
+    assert seen["loader"] == expected_loader

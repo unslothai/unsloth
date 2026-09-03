@@ -25,6 +25,7 @@ except Exception as _unsloth_exc:
     _UNSLOTH_IMPORT_ERROR = _unsloth_exc
 
 from huggingface_hub import HfApi, ModelCard
+from hub.utils.hf_tokens import HfTokenArg, normalize_token
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
@@ -465,7 +466,7 @@ class ExportBackend:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
@@ -475,10 +476,16 @@ class ExportBackend:
         checkpoints, matching the token the worker used for the security preflight
         (otherwise a gated repo passes scanning then 401s at from_pretrained).
 
+        The ``False`` sentinel means the caller was denied the ambient token. The
+        detection probes have to see it: their shared-cache reads are gated on
+        is_anonymous(), not on the environment. The loaders below take ``None``
+        instead, since hf_login() would try to log in with the sentinel.
+
         Returns:
             Tuple of (success: bool, message: str)
         """
-        token = hf_token if hf_token and hf_token.strip() else None
+        probe_token = normalize_token(hf_token)
+        token = probe_token or None
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -510,10 +517,10 @@ class ExportBackend:
             # skip.
             with _offline_window_if(local_files_only):
                 self._audio_type = detect_audio_type(
-                    model_id, hf_token = token, local_files_only = local_files_only
+                    model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
                 self.is_vision = not self._audio_type and is_vision_model(
-                    model_id, hf_token = token, local_files_only = local_files_only
+                    model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
 
             if self._audio_type == "csm":

@@ -238,14 +238,23 @@ def _send_response(resp_queue: Any, response: dict) -> None:
 
 def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     """Handle a load_checkpoint command."""
+    from hub.utils.hf_tokens import hf_token_arg
+
     checkpoint_path = cmd["checkpoint_path"]
+    # The route carries the policy as a flag, but the preflight helpers read it off the token:
+    # the shared-cache guards in model_config.py test is_anonymous(), which a plain None fails,
+    # so a scrubbed environment alone would still serve this caller the operator's cached
+    # private snapshots. Rebuild the canonical HfTokenArg once, here, for the whole load.
+    hf_token = hf_token_arg(
+        cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True)
+    )
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
     # expert weights into unvalidated paths (same flip as the chat worker).
     if load_in_4bit:
         from utils.transformers_version import latest_tier_active_for
-        if latest_tier_active_for(checkpoint_path, cmd.get("hf_token")):
+        if latest_tier_active_for(checkpoint_path, hf_token):
             load_in_4bit = False
             logger.info(
                 "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -265,7 +274,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
             # Genuine first-party Hub repo only (not a local/spoof name starting
             # with "unsloth/"); authenticated so private repos resolve.
-            and is_trusted_org_repo(checkpoint_path, hf_token = cmd.get("hf_token"))
+            and is_trusted_org_repo(checkpoint_path, hf_token = hf_token)
         ):
             trust_remote_code = True
             logger.info(
@@ -284,16 +293,15 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
+        _base = get_base_model_from_lora_identifier(checkpoint_path, hf_token)
         if _base:
             requested_security_targets.append(_base)
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-    _hf_token = cmd.get("hf_token")
     security_targets: list[str] = []
     consent_load_subdirs: dict[str, tuple] = {}
     for requested_target in dict.fromkeys(requested_security_targets):
-        load_subdirs = security_load_subdirs(requested_target, _hf_token)
+        load_subdirs = security_load_subdirs(requested_target, hf_token)
         target, load_subdirs = load_scan_target(requested_target, load_subdirs)
         if target not in consent_load_subdirs:
             security_targets.append(target)
@@ -305,7 +313,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     for target in security_targets:
         _fs = evaluate_file_security(
             target,
-            hf_token = _hf_token,
+            hf_token = hf_token,
             load_subdirs = consent_load_subdirs[target],
         )
         if _fs.blocked:
@@ -330,7 +338,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         # Scan adapter + base as one combined unit, pinned by a single fingerprint.
         _rc = evaluate_remote_code_consent_for_targets(
             security_targets,
-            hf_token = _hf_token,
+            hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
             subject = cmd.get("subject"),
@@ -369,7 +377,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
-            hf_token = cmd.get("hf_token"),
+            hf_token = hf_token,
         )
 
         _send_response(
