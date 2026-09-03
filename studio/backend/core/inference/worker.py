@@ -167,7 +167,6 @@ def _config_hf_token(config: dict) -> str | bool | None:
 def _apply_worker_hf_token_environment(config: dict) -> None:
     """Apply the request credential policy to this spawned worker's environment."""
     from hub.utils.hf_tokens import apply_token_to_child_env
-
     apply_token_to_child_env(os.environ, _config_hf_token(config))
 
 

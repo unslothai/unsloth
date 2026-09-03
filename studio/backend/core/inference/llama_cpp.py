@@ -32409,7 +32409,9 @@ class LlamaCppBackend:
             return None
 
     def _apply_detected_audio(
-        self, detected: Optional[str], audio_codec_path: Optional[str] = None
+        self,
+        detected: Optional[str],
+        audio_codec_path: Optional[str] = None,
     ) -> bool:
         """Apply a probed audio codec under self._lock. Returns True to continue
         the load (codec inited OK, or nothing to init), False to abort (server
@@ -32515,7 +32517,11 @@ class LlamaCppBackend:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def init_audio_codec(self, audio_type: str, audio_codec_path: Optional[str] = None) -> None:
+    def init_audio_codec(
+        self,
+        audio_type: str,
+        audio_codec_path: Optional[str] = None,
+    ) -> None:
         """Load the audio codec at model load time (mirrors the non-GGUF path)."""
         import torch
         from core.inference.audio_codecs import AudioCodecManager

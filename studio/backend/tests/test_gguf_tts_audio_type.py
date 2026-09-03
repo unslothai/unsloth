@@ -111,7 +111,7 @@ def test_gguf_bicodec_load_uses_the_preflighted_repository(monkeypatch):
 
     backend.init_audio_codec("bicodec", "/captured/spark")
 
-    assert calls == [(('bicodec', 'cpu'), {'model_repo_path': '/captured/spark'})]
+    assert calls == [(("bicodec", "cpu"), {"model_repo_path": "/captured/spark"})]
     llama_cpp.LlamaCppBackend._codec_mgr = None
 
 

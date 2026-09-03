@@ -1458,8 +1458,7 @@ def test_load_retry_keeps_the_captured_cache_environment(monkeypatch):
     assert [config["disable_xet"] for config, _environment in spawned] == [False, True]
     assert all(config["anonymous_hf_access"] for config, _environment in spawned)
     assert all(
-        config["audio_codec_path"] == "/old/hub/snapshots/codec"
-        for config, _environment in spawned
+        config["audio_codec_path"] == "/old/hub/snapshots/codec" for config, _environment in spawned
     )
 
 

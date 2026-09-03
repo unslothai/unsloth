@@ -164,7 +164,11 @@ class AudioCodecManager:
 
     # ── Lazy loaders ─────────────────────────────────────────────
 
-    def _load_snac(self, device: str, model_repo_path: Optional[str] = None) -> None:
+    def _load_snac(
+        self,
+        device: str,
+        model_repo_path: Optional[str] = None,
+    ) -> None:
         if self._snac_model is not None:
             return
         from snac import SNAC
@@ -203,7 +207,11 @@ class AudioCodecManager:
         self._codec_devices["bicodec"] = device
         logger.info(f"Loaded BiCodec tokenizer from {tokenizer_path}")
 
-    def _load_dac(self, device: str, audio_codec_path: Optional[str] = None) -> None:
+    def _load_dac(
+        self,
+        device: str,
+        audio_codec_path: Optional[str] = None,
+    ) -> None:
         if self._dac_audio_codec is not None:
             return
         outetts_code_dir = ensure_outetts_source()

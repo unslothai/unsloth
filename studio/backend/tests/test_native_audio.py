@@ -79,9 +79,7 @@ def test_worker_environment_contains_only_the_request_token_policy(
 
     present = {key: os.environ[key] for key in token_keys if key in os.environ}
     assert present == ({"HF_TOKEN": expected_token} if expected_token else {})
-    assert os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == (
-        "1" if expected_token is None else "0"
-    )
+    assert os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == ("1" if expected_token is None else "0")
 
 
 @pytest.mark.parametrize(

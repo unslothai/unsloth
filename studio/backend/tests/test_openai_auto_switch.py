@@ -3951,9 +3951,7 @@ def test_higgs_preflight_is_explicitly_anonymous_without_a_caller_token(tmp_path
         lambda _repo, **kwargs: tokens.append(("snapshot", kwargs["token"])) or str(codec),
     )
 
-    inference_route._preflight_speech_codec_for_switch(
-        "higgs_tts2", "/local/higgs", False
-    )
+    inference_route._preflight_speech_codec_for_switch("higgs_tts2", "/local/higgs", False)
 
     assert tokens == [("metadata", False), ("snapshot", False)]
 
@@ -4160,9 +4158,7 @@ def test_bicodec_preflight_is_explicitly_anonymous_without_a_caller_token(monkey
         lambda path, **kwargs: calls.append((path, kwargs)) or "/captured/spark",
     )
 
-    inference_route._preflight_speech_codec_for_switch(
-        "bicodec", "/local/model.gguf", True
-    )
+    inference_route._preflight_speech_codec_for_switch("bicodec", "/local/model.gguf", True)
 
     assert calls == [
         (
