@@ -106,6 +106,26 @@ def portable_mode() -> bool:
     return unsloth_home() is not None
 
 
+# studio_root() backs the cache, output and database helpers, so it runs many
+# times per request. Reported once per distinct pair of roots rather than once
+# per call, since both variables can be rebound inside one process.
+_warned_root_conflicts: set[tuple[str, str]] = set()
+
+
+def _warn_root_conflict(resolved: Path, master: Path) -> None:
+    key = (str(resolved), str(master))
+    if key in _warned_root_conflicts:
+        return
+    _warned_root_conflicts.add(key)
+    # Not fatal: failing here would break a resolver called at import time.
+    logger.warning(
+        "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
+        "install is not self-contained.",
+        resolved,
+        master,
+    )
+
+
 def studio_root() -> Path:
     """Unsloth install root.
 
@@ -123,13 +143,7 @@ def studio_root() -> Path:
         # Path.parents excludes the path itself, so the supported flat layout
         # (both naming one root) would otherwise warn on every call.
         if master is not None and master != resolved and master not in resolved.parents:
-            # Not fatal: failing here would break a resolver called at import time.
-            logger.warning(
-                "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
-                "install is not self-contained.",
-                resolved,
-                master,
-            )
+            _warn_root_conflict(resolved, master)
         return resolved
     master = unsloth_home()
     if master is not None:
@@ -424,6 +438,21 @@ def well_known_model_dirs() -> list[Path]:
     return _existing_dirs(candidates, resolve = True)
 
 
+def _user_set_hf_home() -> bool:
+    """Whether HF_HOME was set by the user rather than seeded by Unsloth.
+
+    initialize_hf_cache_environment fills a blank HF_HOME with the platform
+    default before this runs, so os.environ always holds one by then. The
+    snapshot hf_cache_settings takes at import is the only record of who chose
+    it, and it is what decides the hub and xet caches too.
+    """
+    try:
+        from utils.hf_cache_settings import _EXPLICIT_CACHE_ENV
+    except ImportError:
+        return False
+    return bool(_EXPLICIT_CACHE_ENV.get("HF_HOME"))
+
+
 def _portable_cache_defaults(root: Path) -> dict[str, str]:
     """Cache vars that only move under the root in portable mode, since they hold
     shared user data or large re-downloads. The hub and xet caches are handled
@@ -432,6 +461,13 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
     """
     if not portable_mode():
         return {}
+    if _user_set_hf_home():
+        # hf_cache_settings keeps the hub and xet caches under an explicit
+        # HF_HOME, and huggingface_hub derives assets from it while datasets
+        # derives its own cache from it. Pinning either here would split one
+        # deliberately chosen cache across two volumes. Their dedicated
+        # variables still win, via the blank-counts-as-unset guard below.
+        return {"TORCH_HOME": str(root / "torch")}
     return {
         "HF_DATASETS_CACHE": str(root / "huggingface" / "datasets"),
         # Derived as <HF_HOME>/assets otherwise, which is the host copy we leave
@@ -513,6 +549,23 @@ def _matplotlib_defaults(root: Path) -> dict[str, str]:
     return {"MPLCONFIGDIR": str(root / "matplotlib")}
 
 
+def _data_designer_in_use(home: Path) -> bool:
+    """Whether the managed Data Designer home holds work worth keeping.
+
+    _setup_cache_env creates this directory and its managed-assets child on the
+    first launch, so existence alone would pin a home nobody has written to.
+    """
+    try:
+        for entry in home.iterdir():
+            if entry.name != "managed-assets" or not entry.is_dir():
+                return True
+            if any(entry.iterdir()):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _data_designer_defaults(root: Path) -> dict[str, str]:
     """Data Designer's home, unless the user already has one.
 
@@ -524,16 +577,24 @@ def _data_designer_defaults(root: Path) -> dict[str, str]:
     """
     if (os.environ.get("DATA_DESIGNER_HOME") or "").strip():
         return {}
+    home = root.parent / "data-designer"
+    pinned = {
+        "DATA_DESIGNER_HOME": str(home),
+        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(home / "managed-assets"),
+    }
+    # The legacy probe is re-run every launch, so on its own it would hand the
+    # recipes and assets written here to a ~/.data-designer created later by a
+    # standalone run, and hand them back if that directory were deleted. Our own
+    # populated home is the record of the first choice, and keeping it is the
+    # same "pin only when there is nothing to strand" rule read the other way.
+    if _data_designer_in_use(home):
+        return pinned
     try:
         if (Path.home() / ".data-designer").exists():
             return {}
     except (OSError, RuntimeError):
         pass
-    home = root.parent / "data-designer"
-    return {
-        "DATA_DESIGNER_HOME": str(home),
-        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(home / "managed-assets"),
-    }
+    return pinned
 
 
 def _setup_cache_env() -> None:

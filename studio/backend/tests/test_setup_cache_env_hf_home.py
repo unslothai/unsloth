@@ -26,6 +26,10 @@ _STORAGE_ROOTS_PATH = Path(__file__).resolve().parent.parent / "utils/paths/stor
 def _isolate_studio_home(monkeypatch, tmp_path):
     # Keep _setup_cache_env's UV/VLLM mkdirs out of the real ~/.unsloth/studio.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    # _setup_cache_env writes os.environ directly, so a portable test would
+    # otherwise leave these behind for whichever test pytest runs next.
+    for key in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "TORCH_HOME"):
+        monkeypatch.delenv(key, raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -62,8 +66,24 @@ def _load_storage_roots():
 
 
 def _clear_hf_env(monkeypatch):
-    for key in ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "HUGGINGFACE_HUB_CACHE"):
+    for key in (
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HF_XET_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_DATASETS_CACHE",
+        "HF_ASSETS_CACHE",
+    ):
         monkeypatch.delenv(key, raising = False)
+
+
+def _portable_install(monkeypatch, tmp_path):
+    """Turn the fixture's studio home into a portable one and return its root."""
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    return master
 
 
 def test_custom_hf_home_seeds_hub_and_xet(monkeypatch, tmp_path):
@@ -134,6 +154,98 @@ def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
 
     assert os.environ["HF_HOME"] == str(tmp_path / "xdg" / "huggingface")
     assert os.environ["HF_HUB_CACHE"] == str(tmp_path / "xdg" / "huggingface" / "hub")
+
+
+def test_explicit_hf_home_keeps_the_datasets_and_assets_caches(monkeypatch, tmp_path):
+    # A user who names one HF_HOME gets one Hugging Face cache. huggingface_hub
+    # derives HF_ASSETS_CACHE from it and datasets derives HF_DATASETS_CACHE from
+    # it, so pinning either under the portable root splits the cache the user
+    # chose across two volumes and re-downloads what is already on the other one.
+    _clear_hf_env(monkeypatch)
+    master = _portable_install(monkeypatch, tmp_path)
+    chosen = tmp_path / "bigdisk" / "huggingface"
+    monkeypatch.setenv("HF_HOME", str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_HUB_CACHE"] == str(chosen / "hub")
+    assert os.environ["HF_XET_CACHE"] == str(chosen / "xet")
+    assert "HF_DATASETS_CACHE" not in os.environ
+    assert "HF_ASSETS_CACHE" not in os.environ
+    # Containment is only given up for the root the user named.
+    assert os.environ["TORCH_HOME"].startswith(str(master))
+
+
+def test_a_dedicated_cache_var_still_outranks_an_explicit_hf_home(monkeypatch, tmp_path):
+    _clear_hf_env(monkeypatch)
+    _portable_install(monkeypatch, tmp_path)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "bigdisk" / "huggingface"))
+    mine = tmp_path / "mine" / "datasets"
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(mine))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_DATASETS_CACHE"] == str(mine)
+
+
+def test_portable_mode_without_an_explicit_hf_home_still_contains_them(monkeypatch, tmp_path):
+    # The other side of the rule: with no HF_HOME of the user's own, both caches
+    # derive from the host copy Unsloth deliberately leaves behind, so they are
+    # the HF roots that would still write outside the volume.
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    master = _portable_install(monkeypatch, tmp_path)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_DATASETS_CACHE"].startswith(str(master))
+    assert os.environ["HF_ASSETS_CACHE"].startswith(str(master))
+
+
+def test_the_libraries_really_derive_these_caches_from_hf_home(monkeypatch, tmp_path):
+    # Leaving the variables unset is only correct if huggingface_hub and datasets
+    # derive them from HF_HOME. Ask a fresh interpreter, since both snapshot
+    # their constants at import time.
+    pytest.importorskip("datasets")
+    _clear_hf_env(monkeypatch)
+    _portable_install(monkeypatch, tmp_path)
+    chosen = tmp_path / "bigdisk" / "huggingface"
+    monkeypatch.setenv("HF_HOME", str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    import json
+    import os
+    import subprocess
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, huggingface_hub.constants as c, datasets.config as d;"
+            "print(json.dumps({'assets': c.HF_ASSETS_CACHE, 'hub': c.HF_HUB_CACHE,"
+            "'datasets': str(d.HF_DATASETS_CACHE)}))",
+        ],
+        env = dict(os.environ),
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    result = json.loads(probe.stdout.strip().splitlines()[-1])
+
+    assert Path(result["assets"]) == chosen / "assets"
+    assert Path(result["datasets"]) == chosen / "datasets"
+    assert Path(result["hub"]) == chosen / "hub"
 
 
 def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):

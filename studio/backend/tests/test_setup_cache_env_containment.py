@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -258,6 +259,51 @@ def test_accepted_spellings_are_silent(monkeypatch, value):
     assert recorder.warnings == []
 
 
+def test_conflicting_roots_are_reported_once_per_conflict(monkeypatch, tmp_path):
+    # studio_root() backs the cache, output and database helpers and runs many
+    # times per request, so a per-call warning turns one configuration mistake
+    # into a flooded log plus synchronous log I/O for the life of the backend.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere" / "studio"))
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
+    sr = _load_storage_roots()
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(sr, "logger", recorder)
+
+    for _ in range(200):
+        sr.studio_root()
+
+    assert len(recorder.warnings) == 1
+    assert str(tmp_path / "elsewhere" / "studio") in recorder.warnings[0]
+    assert str(tmp_path / "portable") in recorder.warnings[0]
+
+    # A different pair of roots is a different mistake and must still be heard.
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "other-portable"))
+    for _ in range(200):
+        sr.studio_root()
+
+    assert len(recorder.warnings) == 2
+    assert str(tmp_path / "other-portable") in recorder.warnings[1]
+
+
+@pytest.mark.parametrize("layout", ("nested", "flat"))
+def test_a_self_contained_layout_never_warns(monkeypatch, tmp_path, layout):
+    # Both supported shapes: studio/ under the master root, and one root naming
+    # itself. Silencing the repeat must not silence the whole diagnostic.
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    monkeypatch.setenv(
+        "UNSLOTH_STUDIO_HOME", str(master / "studio") if layout == "nested" else str(master),
+    )
+    sr = _load_storage_roots()
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(sr, "logger", recorder)
+
+    for _ in range(50):
+        sr.studio_root()
+
+    assert recorder.warnings == []
+
+
 def test_explicit_env_beats_the_pinned_default(monkeypatch, tmp_path):
     chosen = tmp_path / "elsewhere" / "inductor"
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(chosen))
@@ -303,6 +349,64 @@ def test_an_existing_data_designer_home_is_left_where_it_is(tmp_path):
     (legacy / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
     sr = _load_storage_roots()
 
+    sr._setup_cache_env()
+
+    assert "DATA_DESIGNER_HOME" not in os.environ
+    assert "DATA_DESIGNER_MANAGED_ASSETS_PATH" not in os.environ
+
+
+def _use_data_designer(home: Path) -> None:
+    """Write what a Studio Data Designer session leaves behind."""
+    (home / "managed-assets").mkdir(parents = True, exist_ok = True)
+    (home / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
+    (home / "managed-assets" / "seeds.parquet").write_bytes(b"PAR1")
+
+
+def test_a_used_managed_home_survives_a_legacy_dir_appearing_later(tmp_path):
+    # The legacy probe re-runs every launch, so without this a standalone Data
+    # Designer run creating ~/.data-designer hands the recipes and generated
+    # data written under the Studio root to a freshly seeded default instead.
+    managed = tmp_path / "studio" / "data-designer"
+    _use_data_designer(managed)
+    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
+
+    sr = _load_storage_roots()
+    sr._setup_cache_env()
+
+    assert os.environ["DATA_DESIGNER_HOME"] == str(managed)
+    assert os.environ["DATA_DESIGNER_MANAGED_ASSETS_PATH"] == str(managed / "managed-assets")
+
+
+def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_path):
+    # Deleting and recreating ~/.data-designer used to toggle the active home,
+    # so which dataset a run reads depended on whether that directory existed.
+    managed = tmp_path / "studio" / "data-designer"
+    _use_data_designer(managed)
+    legacy = tmp_path / "home" / ".data-designer"
+
+    seen = []
+    for exists in (False, True, False, True):
+        if exists:
+            legacy.mkdir(parents = True, exist_ok = True)
+        elif legacy.exists():
+            shutil.rmtree(legacy)
+        for key in ("DATA_DESIGNER_HOME", "DATA_DESIGNER_MANAGED_ASSETS_PATH"):
+            os.environ.pop(key, None)
+        sr = _load_storage_roots()
+        sr._setup_cache_env()
+        seen.append(os.environ.get("DATA_DESIGNER_HOME"))
+
+    assert seen == [str(managed)] * 4
+
+
+def test_an_unused_managed_home_still_defers_to_a_legacy_dir(tmp_path):
+    # _setup_cache_env creates the managed home on the first launch, so its mere
+    # existence must not claim a user's Data Designer data. Nothing is stranded
+    # while it is empty, which is the same rule the legacy probe applies.
+    (tmp_path / "studio" / "data-designer" / "managed-assets").mkdir(parents = True)
+    (tmp_path / "home" / ".data-designer").mkdir(parents = True)
+
+    sr = _load_storage_roots()
     sr._setup_cache_env()
 
     assert "DATA_DESIGNER_HOME" not in os.environ
