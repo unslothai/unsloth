@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,7 @@ def helper():
     names = (_HELPER, "_nvidia_smi_gpu_name", "_cuda_visible_devices_hides_nvidia")
     wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert _HELPER in [n.name for n in wanted]
-    namespace = {"subprocess": subprocess, "os": os}
+    namespace = {"subprocess": subprocess, "os": os, "sys": sys}
     exec(compile(ast.Module(body = wanted, type_ignores = []), str(_GPU_INIT), "exec"), namespace)
     return namespace[_HELPER]
 
@@ -92,6 +93,10 @@ def test_hint_repairs_the_whole_torch_trio(helper, monkeypatch):
 
     command = next(line for line in str(excinfo.value).splitlines() if "pip install" in line)
     assert "torchvision" in command and "torchaudio" in command
+    # This interpreter, not install.sh: that builds its own Studio venv under
+    # $STUDIO_HOME and would leave the environment that raised the error untouched.
+    assert command.strip().startswith(f"{sys.executable} -m pip install")
+    assert "install.sh" not in str(excinfo.value)
     # No concrete family: cu128/cu130 have no kernels for pre-Turing cards.
     assert "/cuXXX" in command
     assert "cu126" not in command and "cu128" not in command and "cu130" not in command

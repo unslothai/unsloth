@@ -185,9 +185,10 @@ def _reraise_device_type_error_with_gpu_hint(exception):
             f"Note: CUDA_VISIBLE_DEVICES is set to {mask!r}. If that mask selects no "
             f"installed GPU, it alone explains this and no torch reinstall will help.\n"
         )
-    # All three wheels, install.sh first, no concrete cuXXX: a lone torch upgrade leaves a
-    # stale torchvision that torchvision_compatibility_check() rejects, and the newest CUDA
-    # family drops pre-Turing GPUs (install.sh `_cap_cuda_family_for_pre_turing`).
+    # sys.executable, all three wheels, no concrete cuXXX: install.sh builds its own Studio
+    # venv and would leave THIS interpreter broken, a lone torch upgrade leaves a stale
+    # torchvision that torchvision_compatibility_check() rejects, and the newest CUDA family
+    # drops pre-Turing GPUs (install.sh `_cap_cuda_family_for_pre_turing`).
     raise NotImplementedError(
         f"Unsloth: an NVIDIA GPU ({gpu_name}) is present -- nvidia-smi sees it -- but this "
         f"PyTorch build cannot use it (torch.cuda.is_available() is False).\n"
@@ -195,10 +196,8 @@ def _reraise_device_type_error_with_gpu_hint(exception):
         f"or platform, which is common on DGX Spark GB10 and other aarch64 hosts.\n"
         f"PyTorch was compiled with CUDA: {torch_cuda_build}.\n"
         f"{mask_note}"
-        f"Fix: rerun install.sh, which picks a CUDA wheel family this GPU can run and "
-        f"reinstalls torchvision and torchaudio to match. By hand, replace all three "
-        f"together:\n"
-        f"    pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cuXXX\n"
+        f"Fix: replace torch, torchvision and torchaudio together in this environment:\n"
+        f"    {sys.executable} -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cuXXX\n"
         f"choosing cuXXX at https://pytorch.org/get-started/locally/ -- the newest family is "
         f"not always the right one, since recent cu128/cu130 wheels drop pre-Turing GPUs."
     ) from exception
