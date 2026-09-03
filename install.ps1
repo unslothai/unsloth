@@ -329,12 +329,13 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
-        # -File: `exit` carries the code. Under `irm | iex` (no $PSCommandPath) `exit`
-        # would kill the user's shell, so set the var then throw: interactive shells
-        # survive it, `-Command "irm ... | iex"` automation exits 1 (return would look OK).
-        if ($PSCommandPath) {
-            exit $Code
-        }
+        # Outside Tauri mode this raises rather than exits. `exit` is flow control no
+        # caller can intercept: it tears the process down from inside the runtime-lock
+        # try/catch below, and under `irm | iex` it would take the user's own shell with
+        # it. A terminating error already exits 1 for `powershell -File` and for
+        # `-Command "irm ... | iex"` -- a plain return was what used to report success --
+        # so only the specific code is lost, which non-Tauri callers never carried.
+        # Set it anyway for `irm | iex` callers that read $LASTEXITCODE themselves.
         $global:LASTEXITCODE = $Code
         throw $Message
     }

@@ -3830,10 +3830,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "/usr/lib/wsl/lib/nvidia-smi"
                 ):
                     _smi_bin = "/usr/lib/wsl/lib/nvidia-smi"
+                # text = True alone decodes with locale.getencoding(), which is the
+                # ANSI codepage on Windows and ASCII under a C/POSIX locale, so a
+                # non-ASCII adapter name would mojibake the token match or raise.
                 _smi = _sp.run(
                     [_smi_bin, "--query-gpu=name", "--format=csv,noheader"],
                     capture_output = True,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                     timeout = 5,
                 )
                 _names_u = (_smi.stdout or "").upper()
