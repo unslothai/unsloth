@@ -364,14 +364,41 @@ def test_a_local_run_ignores_a_stray_ceiling():
     assert _synthesis_max_tokens({"maxOutputTokens": 65_536}) == research_runs._SYNTHESIS_MAX_TOKENS
 
 
+def test_a_saved_connection_cap_below_the_default_is_honoured(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 8_192},
+    )
+    inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
+    assert _synthesis_max_tokens(inference) == 8_192
+
+
 def test_a_saved_connection_reports_its_own_budget(monkeypatch):
     monkeypatch.setattr(
         research_runs.providers_db,
         "get_provider",
-        lambda _id: {"max_output_tokens": 120_000},
+        lambda _id: {"max_output_tokens": 32_768},
     )
     inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
-    assert _synthesis_max_tokens(inference) == 120_000
+    assert _synthesis_max_tokens(inference) == 32_768
+
+
+def test_a_saved_connection_cap_cannot_exceed_an_undocumented_model_ceiling(monkeypatch):
+    """The saved cap is connection-wide, so for this run's model it is a guess.
+
+    One connection fronts many models: a cap set for a 256k-output model must not become the
+    budget for a smaller one. The client bounds it by that model's documented ceiling, using a
+    table the worker does not have, so the worker bounds it by what the client sends for a
+    model nothing documents.
+    """
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 256_000},
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "externalModel": "gemini-3.6-flash"}
+    assert _synthesis_max_tokens(inference) == research_runs._EXTERNAL_MAX_OUTPUT_TOKENS
 
 
 @pytest.mark.parametrize(

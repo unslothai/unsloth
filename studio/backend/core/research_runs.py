@@ -83,6 +83,9 @@ _MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 _SYNTHESIS_MAX_TOKENS = 16_384
+# What the client sends for a model it has no published cap for
+# (EXTERNAL_MAX_OUTPUT_TOKENS in features/chat/provider-capabilities.ts).
+_EXTERNAL_MAX_OUTPUT_TOKENS = 32_768
 # Below this loaded context the prompt scaffolding alone fills the window, so grounding is skipped.
 _AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
 # OFF by default (UNSLOTH_RESEARCH_AUTO_SCRAPE=1): benchmarking showed no reliable accuracy gain
@@ -423,10 +426,9 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
     """The report's output budget: what the connection actually accepts, else the default.
 
     The client resolves the same per-model ceiling the chat path already sends to this
-    connection, so the value is one the provider is known to take; a run created before that
-    field existed falls back to the connection's saved cap. Nothing is raised on a guess,
-    because a provider that rejects an over-limit max_output_tokens rather than clamping it
-    would fail the run outright.
+    connection, so the value is one the provider is known to take. Nothing is raised on a
+    guess, because a provider that rejects an over-limit max_output_tokens rather than
+    clamping it would fail the run outright.
     """
     if not inference.get("providerType"):
         return _SYNTHESIS_MAX_TOKENS
@@ -441,7 +443,14 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
     except Exception:
         logger.debug("research.provider_cap_probe_failed", exc_info = True)
         provider = {}
-    return _positive_int_or_none(provider.get("max_output_tokens")) or _SYNTHESIS_MAX_TOKENS
+    saved = _positive_int_or_none(provider.get("max_output_tokens"))
+    # A run created before the client sent its resolved ceiling falls back to here. The saved
+    # cap belongs to the connection, not to this run's model -- one connection fronts many
+    # models, and the client bounds it by that model's documented ceiling before sending it,
+    # using a table this side does not have. Bound it instead by what the client itself sends
+    # for a model nothing documents, so a cap set for a 256k-output model cannot become this
+    # run's budget.
+    return min(saved, _EXTERNAL_MAX_OUTPUT_TOKENS) if saved else _SYNTHESIS_MAX_TOKENS
 
 
 def _normalize_completion_usage(raw: Any) -> dict[str, int] | None:
