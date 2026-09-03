@@ -107,6 +107,8 @@ RELEASE_NOTES = {
     "release_notes_url": "https://unsloth.ai/docs/new/changelog",
     "error": None,
 }
+# A successful lookup with no previewable body.
+RELEASE_NOTES_NONE = dict(RELEASE_NOTES, markdown = "", matched = False)
 LLAMA_STATUS = {
     "supported": True,
     "update_available": True,
@@ -272,6 +274,9 @@ NOTHING_STT = {
 # Short windows on the chat route: the ones where the rail used to leave its
 # corner. Two is enough, since what is being checked does not vary with size.
 INDICATOR_VIEWPORTS = [(921, 534), (768, 500)]
+
+# One roomy viewport and one capped viewport.
+NO_PREVIEW_VIEWPORTS = [(1440, 900), (921, 534)]
 
 # Where the rail actually is, against the corner it is anchored to. It was
 # placed from JS for a while, lifting clear of the boxes in the frame store,
@@ -447,6 +452,16 @@ MEASURE = """
     if (bottom <= top || right <= left) return null;
     return {top, bottom, left, right, width: right - left, height: bottom - top};
   };
+  // Measure any height the slot reserves but its surface does not paint.
+  const dead = (el) => {
+    if (!el || !el.firstElementChild) return null;
+    const a = el.getBoundingClientRect();
+    const b = el.firstElementChild.getBoundingClientRect();
+    const round = (n) => Math.round(n * 10) / 10;
+    return {above: round(b.top - a.top), below: round(a.bottom - b.bottom),
+            slot: round(a.height), painted: round(b.height),
+            minHeight: getComputedStyle(el).minHeight};
+  };
   const q = (sel) => document.querySelector(sel);
   const card = q('[data-testid="web-update-banner"]');
   const llama = q('[data-testid="llama-update-banner"]');
@@ -466,6 +481,7 @@ MEASURE = """
     // Clipped by the card, not by the rail. What the rail hides is under a
     // fold the reader can scroll to; what the card hides is gone for good.
     card: rect(card), llama: rect(llama),
+    cardDead: dead(card), llamaDead: dead(llama),
     // The same two, as much of them as the rail is SHOWING. Containment is
     // asked of these: a card the rail has folded away is not on screen at all,
     // and judging its unclipped rect against the viewport fails it for being
@@ -668,6 +684,16 @@ def measure(page, label: str) -> dict:
             f"{label}: the rail's gutter never swallows a click",
             facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
+        )
+    # A floor must not leave unpainted space around a compact card.
+    for name in ("card", "llama"):
+        hole = facts[f"{name}Dead"]
+        if hole is None:
+            continue
+        check(
+            f"{label}: the {name}'s slot reserves no height it does not paint",
+            hole["above"] <= 1.0 and hole["below"] <= 1.0,
+            f"{name}Dead={hole}",
         )
     # The notes are allowed to yield all of their height, and do; the controls
     # are not, and a card clipped to nothing is the failure being tested for.
@@ -957,6 +983,41 @@ def main() -> int:
                 f"text={facts['llamaText']!r}",
             )
             llama_payload[0] = LLAMA_STATUS
+            context.close()
+
+        # Exercise the compact app card omitted by the notes-bearing fixtures.
+        for width, height in (
+            NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS
+        ):
+            context = browser.new_context(
+                viewport = {"width": width, "height": height},
+                reduced_motion = "reduce",
+            )
+            context.add_init_script(seed_js)
+            for pattern, payload in (
+                ("**/api/studio/update-status*", UPDATE_STATUS),
+                ("**/api/studio/release-notes*", RELEASE_NOTES_NONE),
+                ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
+            ):
+                context.route(pattern, stub(payload))
+            page = context.new_page()
+            boot(page, "/")
+            panel = page.locator('[data-testid="update-release-notes-panel"]')
+            check(
+                f"{width}x{height} with no preview: the collapsed card shows no notes",
+                panel.count() == 0,
+                "the card is at its full height, so this pass proves nothing",
+            )
+            measure(page, f"{width}x{height} with no preview")
+            page.screenshot(path = str(ART / f"{width}x{height}-no-preview.png"))
+            # Expanded, the panel is back and so is the floor it pays for.
+            toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
+            if toggle.count() == 1:
+                toggle.click()
+                panel.wait_for(state = "visible", timeout = 10_000)
+                page.wait_for_timeout(SETTLED_MS)
+                measure(page, f"{width}x{height} with no preview, expanded")
             context.close()
 
         # The loaded models indicator, switched on. It is the last child of the
