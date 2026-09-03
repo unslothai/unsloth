@@ -5217,11 +5217,41 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
 " 2>/dev/null) || _torch_trio_pins=""
     case "$_torch_trio_pins" in
         torch==*)
-            _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
+            # uv resolves an override file's relative includes (-r nested.txt)
+            # against THAT file's own directory, so a merge in $TMPDIR makes uv
+            # look for them beside the temp file and the install fails. Place the
+            # merge next to the caller's override when they share one writable
+            # directory, as install.ps1 does. Falls back to mktemp when there is
+            # no caller file, when several span different directories, or when
+            # that directory is not writable.
+            _ov_dir=""
+            _ov_dir_ok=1
+            for _ov_file in ${UV_OVERRIDE:-}; do
+                [ -f "$_ov_file" ] || continue
+                _ov_this=$(CDPATH= cd -- "$(dirname -- "$_ov_file")" 2>/dev/null && pwd) || _ov_this=""
+                if [ -z "$_ov_this" ]; then
+                    _ov_dir_ok=0
+                    break
+                elif [ -z "$_ov_dir" ]; then
+                    _ov_dir=$_ov_this
+                elif [ "$_ov_dir" != "$_ov_this" ]; then
+                    _ov_dir_ok=0
+                    break
+                fi
+            done
+            _UNSLOTH_TORCH_OVERRIDES=""
+            if [ "$_ov_dir_ok" = 1 ] && [ -n "$_ov_dir" ] && [ -w "$_ov_dir" ]; then
+                _UNSLOTH_TORCH_OVERRIDES="$_ov_dir/.unsloth-torch-overrides.$$.txt"
+                : > "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || _UNSLOTH_TORCH_OVERRIDES=""
+            fi
+            [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] || _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
             printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
             # --overrides replaces any UV_OVERRIDE env file, so fold its pins in; awk drops inherited torch-trio lines and newline-terminates.
+            # tolower because package names are case-insensitive: a caller's
+            # "Torch<2.11" kept alongside the generated torch== pin resolves to
+            # the same distribution and uv calls the result unsatisfiable.
             for _ov_file in ${UV_OVERRIDE:-}; do
-                [ -f "$_ov_file" ] && awk '!/^[[:space:]]*torch(vision|audio)?([[:space:]<>=!~;@[]|$)/' "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
+                [ -f "$_ov_file" ] && awk '!(tolower($0) ~ /^[[:space:]]*torch(vision|audio)?([[:space:]<>=!~;@[]|$)/)' "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
             done
             ;;
     esac
