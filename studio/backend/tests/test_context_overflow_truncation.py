@@ -39,10 +39,13 @@ from routes.inference import (
 )
 from core.inference import context_window
 from core.inference.context_window import (
+    estimate_message_tokens,
+    estimate_message_tokens_without_unpriced_media,
+    estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
     group_turns,
-    messages_have_media,
+    messages_without_unpriced_media,
 )
 from models.inference import ChatCompletion
 import routes.inference as routes_mod
@@ -233,19 +236,96 @@ def test_rolling_truncation_keeps_task_when_a_synthetic_user_nudge_is_latest():
     assert new[-1] is nudge
 
 
-def test_rolling_media_detection_covers_image_and_audio_parts():
-    assert messages_have_media(
-        [{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]
-    )
-    assert messages_have_media(
-        [{"role": "user", "content": [{"type": "input_audio", "input_audio": {}}]}]
-    )
-    # llama.cpp's own part type; missing it would send a video prompt through a
-    # preflight that does not count its tokens.
-    assert messages_have_media(
-        [{"role": "user", "content": [{"type": "input_video", "input_video": {"data": "AAAA"}}]}]
-    )
-    assert not messages_have_media([{"role": "user", "content": "text only"}])
+@pytest.mark.parametrize(
+    "media",
+    [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+        {"type": "audio", "audio": {"data": "AAAA", "format": "wav"}},
+        {"type": "input_image", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        {"type": "input_video", "input_video": {"data": "AAAA"}},
+    ],
+)
+def test_rolling_token_count_strips_unpriced_media_without_mutating_the_request(media):
+    text = {"type": "text", "text": "describe this"}
+    messages = [{"role": "user", "content": [text, media]}]
+
+    countable = messages_without_unpriced_media(messages)
+
+    assert countable == [{"role": "user", "content": [text]}]
+    assert messages == [{"role": "user", "content": [text, media]}]
+    assert messages_without_unpriced_media([{"role": "user", "content": [media]}]) == [
+        {"role": "user", "content": ""}
+    ]
+
+
+def test_rolling_token_count_reuses_text_only_messages():
+    messages = [{"role": "user", "content": "text only"}]
+
+    assert messages_without_unpriced_media(messages) is messages
+
+
+def test_media_free_estimates_do_not_change_shared_admission_estimates():
+    message = {
+        "role": "user",
+        "content": [
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            }
+        ],
+    }
+
+    assert estimate_message_tokens(message) > 20_000
+    assert estimate_messages_tokens_dense([message]) > 20_000
+    assert estimate_message_tokens_without_unpriced_media(message) < 20
+
+
+def test_rolling_eviction_does_not_charge_protected_media_transport_bytes():
+    history = [
+        {"role": role, "content": marker * 10}
+        for marker in "abcde"
+        for role in ("user", "assistant")
+    ]
+
+    def count_text(candidate):
+        total = 0
+        for message in messages_without_unpriced_media(candidate):
+            content = message.get("content", "")
+            if isinstance(content, str):
+                total += len(content)
+            else:
+                total += sum(len(part.get("text", "")) for part in content)
+        return total
+
+    results = []
+    for payload_size in (4, 100_000):
+        latest = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "final"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "A" * payload_size, "format": "wav"},
+                },
+            ],
+        }
+        messages = [*history, latest]
+
+        fitted, truncation = fit_rolling_context(
+            messages,
+            context_length = 120,
+            max_tokens = 20,
+            count_tokens = count_text,
+            estimate_message = estimate_message_tokens_without_unpriced_media,
+        )
+
+        assert truncation and truncation["fits"]
+        assert fitted[-1] is latest
+        assert fitted[-1]["content"][-1]["input_audio"]["data"] == "A" * payload_size
+        results.append((truncation["dropped_messages"], len(fitted)))
+
+    assert results == [(2, 9), (2, 9)]
 
 
 def test_rolling_truncation_preserves_nonleading_system_messages():

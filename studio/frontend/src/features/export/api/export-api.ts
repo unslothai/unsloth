@@ -169,6 +169,7 @@ export async function exportGGUF(params: {
   imatrix?: boolean;
   imatrix_path?: string | null;
   private?: boolean;
+  gguf_shard_size?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",

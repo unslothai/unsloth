@@ -80,7 +80,8 @@ test("the adapter claims the run BEFORE admission, not after the response", () =
   // startup. The run id is the client's own (`cancelId` is passed as `runId`), so there is no
   // reason to wait for the server to hand it back.
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
-  const claim = adapter.indexOf("claimLiveGenerationRun(cancelId)");
+  // Matched without the closing paren: the call carries an options object and wraps.
+  const claim = adapter.indexOf("claimLiveGenerationRun(cancelId, resolvedThreadId!,");
   const admission = adapter.indexOf("generationRun = await createChatGenerationRunUntilAbort(");
 
   assert.ok(claim > 0, "nothing claims the run before admission");
@@ -88,6 +89,13 @@ test("the adapter claims the run BEFORE admission, not after the response", () =
   assert.ok(
     claim < admission,
     "the claim must precede the create POST, or the round trip is an open window",
+  );
+  // Provisional, so it owns recovery without marking the thread bounded: the await below
+  // can outlast the checkpoint cap, and a capped thread leaves the fallback stream with no
+  // persistence at all.
+  assert.ok(
+    adapter.slice(claim, admission).includes("provisional: true"),
+    "the pre-admission claim must not make the thread bounded",
   );
   // And the pre-admission id has to be released too, or a failed admission strands it.
   assert.ok(
@@ -100,7 +108,7 @@ test("the adapter claims the run and releases it in a finally", () => {
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
 
   assert.ok(
-    adapter.includes("claimLiveGenerationRun(generationRunId)"),
+    adapter.includes("claimLiveGenerationRun(generationRunId, resolvedThreadId!)"),
     "nothing claims the run, so the guard above can never fire",
   );
   // The release has to be inside a finally. Without that, an aborted or failed stream leaves

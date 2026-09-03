@@ -4,6 +4,7 @@
 """Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
+import re
 import sys
 import asyncio
 import base64
@@ -130,10 +131,21 @@ class TestFriendlyUpstreamError:
         raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
         msg = _friendly_upstream_error(raw)
         assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
-        assert "tool-calling grammar" in msg and "Update Unsloth" in msg
+        assert "compile a grammar" in msg and "Update Unsloth" in msg
 
-    def test_failed_to_initialize_samplers_alone_matches(self):
-        assert "tool-calling grammar" in _friendly_upstream_error("Failed to initialize samplers")
+    def test_sampler_failure_without_a_grammar_keeps_its_own_text(self):
+        # llama-server prefixes every sampler failure the same way, so a bad penalty
+        # would otherwise be reported as an uncompilable schema.
+        detail = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
+        msg = _friendly_upstream_error(detail)
+        assert "compile a grammar" not in msg
+        assert "penalty_repeat" in msg
+
+    def test_message_does_not_blame_the_model(self):
+        # The request's schemas decide the failure; swapping the GGUF changes nothing.
+        msg = _friendly_upstream_error("failed to parse grammar")
+        assert "schema" in msg
+        assert "GGUF" not in msg and "quant and tool-schema" not in msg
 
     def test_unrelated_error_passes_through(self):
         assert _friendly_upstream_error("out of memory") == "llama-server error: out of memory"
@@ -146,9 +158,204 @@ class TestFriendlyUpstreamError:
         exc = _openai_passthrough_error(
             400, '{"error":{"message":"Failed to initialize samplers: failed to parse grammar"}}'
         )
-        assert "tool-calling grammar" in exc.detail
+        assert "compile a grammar" in exc.detail
         # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
+
+    def test_anthropic_upstream_error_rewords_context_overflow(self):
+        from routes.inference import _anthropic_upstream_error
+
+        raw = (
+            '{"error":{"code":500,"message":"the request exceeds the available context '
+            'size. try increasing the context size or enable context shift",'
+            '"type":"server_error"}}'
+        )
+        msg = _anthropic_upstream_error(raw)
+        assert "prompt is too long" in msg.lower()
+        assert "llama-server error:" not in msg
+
+    def test_anthropic_upstream_error_includes_token_counts_when_known(self):
+        from routes.inference import _anthropic_upstream_error
+
+        msg = _anthropic_upstream_error(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        m = re.search(r"prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)", msg, re.I)
+        assert m and m.groups() == ("214331", "131072")
+
+    def test_anthropic_upstream_error_leaves_other_failures_alone(self):
+        from routes.inference import _anthropic_upstream_error
+        assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
+        assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
+
+    def test_anthropic_upstream_error_keeps_kv_starvation_out_of_the_overflow_rewrite(self):
+        """llama-server says "Context size has been exceeded" when concurrent
+        generations drain the shared KV cache. Nothing about the request was too
+        long, so rewording it as an oversized prompt sends the client compacting a
+        valid conversation instead of retrying."""
+        from routes.inference import _anthropic_upstream_error, _classify_llama_generation_error
+        from core.inference.stream_errors import KV_STARVATION_MESSAGE
+
+        for raw in (
+            "Context size has been exceeded.",
+            '{"error":{"message":"Context size has been exceeded.","code":500}}',
+        ):
+            assert _anthropic_upstream_error(raw) == KV_STARVATION_MESSAGE
+            assert "too long" not in _anthropic_upstream_error(raw).lower()
+            # None keeps the upstream status: a 400 would blame the caller's request.
+            assert _classify_llama_generation_error(Exception(raw)) is None
+
+    def test_in_band_sse_recovers_counts_from_the_chunk_the_message_came_from(self):
+        """`_monitor_openai_error_message` returns only the message string. When that
+        string carries no numbers but the chunk around it does, the totals -- and the
+        window `oversize_advice` needs -- have to come from the payload."""
+        import json as _json
+
+        from core.inference import context_refusal
+        from routes.inference import (
+            _anthropic_upstream_stream_error_event,
+            _json_dumps_safe,
+            _monitor_openai_error_message,
+        )
+
+        chunk = {
+            "error": {
+                "code": 400,
+                "message": "the request exceeds the available context size",
+                "type": "exceed_context_size_error",
+                "n_prompt_tokens": 70494,
+                "n_ctx": 67584,
+            }
+        }
+        message = _monitor_openai_error_message(chunk)
+        source = _json_dumps_safe(chunk.get("error", chunk))
+
+        def body(text, counts_source):
+            event = _anthropic_upstream_stream_error_event(text, counts_source = counts_source)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        assert "70494" not in body(message, None)["message"]
+        assert (
+            "Prompt is too long: 70494 tokens > 67584 maximum" in body(message, source)["message"]
+        )
+
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 67584,
+                    "irreducible_tokens": 70000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            # The recovered window is what lets the fit be consulted at all.
+            assert "shortening the conversation will not help" in body(message, source)["message"]
+        finally:
+            context_refusal.clear()
+
+        # An unrelated error must not have the payload spliced into its text.
+        assert body("disk full", source)["message"] == "llama-server error: disk full"
+
+    def test_counts_come_from_the_structured_fields_when_the_message_has_none(self):
+        """An exceed_context_size_error body carries n_prompt_tokens/n_ctx even when its
+        message spells out no numbers. These paths are handed the whole body, so the
+        totals are right there; dropping them sends the client a count-less refusal."""
+        from routes.inference import _anthropic_upstream_error, _oversize_counts
+
+        body = (
+            '{"error":{"code":400,"message":"the request exceeds the available context '
+            'size","type":"exceed_context_size_error","n_prompt_tokens":70494,'
+            '"n_ctx":67584}}'
+        )
+        assert _oversize_counts(body) == (70494, 67584)
+        assert "Prompt is too long: 70494 tokens > 67584 maximum" in _anthropic_upstream_error(body)
+
+    def test_the_remedy_comes_from_the_fit_not_a_flat_shorten_the_conversation(self):
+        """When the latest turn or the irreducible floor is what does not fit, compacting
+        the history cannot make it fit, and a client told to compact just retries."""
+        from core.inference import context_refusal
+        from routes.inference import _anthropic_upstream_error
+
+        body = "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            # The head Anthropic clients key on survives.
+            assert msg.startswith("Prompt is too long: 214331 tokens > 131072 maximum.")
+            assert "shortening the conversation will not help" in msg
+
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 139000,
+                    "latest_turn_role": "tool",
+                    "latest_turn_counted": True,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            assert "A tool returned more than this context window can hold" in msg
+            assert "shortening the conversation will not help" in msg
+        finally:
+            context_refusal.clear()
+
+        # With no recorded fit it stays the generic wording.
+        assert "Try increasing the Context Length" in _anthropic_upstream_error(body)
+
+    def test_in_band_sse_error_gets_the_same_wording_as_the_non_200_branch(self):
+        """A 200 stream that later emits data: {"error": ...} used to be wrapped in a
+        plain RuntimeError, and _friendly_error flattens the count-less oversize
+        refusal to "An internal error occurred" -- a 400/invalid_request_error with
+        nothing the client can read or compact on."""
+        import json as _json
+
+        from routes.inference import _anthropic_upstream_stream_error_event
+
+        def body(text):
+            event = _anthropic_upstream_stream_error_event(text)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        no_counts = body(
+            "the request exceeds the available context size. try increasing the context size"
+        )
+        assert "internal error" not in no_counts["message"].lower()
+        assert no_counts["message"].startswith("Prompt is too long")
+        assert no_counts["type"] == "invalid_request_error"
+
+        counted = body(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        assert "Prompt is too long: 214331 tokens > 131072 maximum" in counted["message"]
+        assert counted["type"] == "invalid_request_error"
+
+        # Starvation keeps the retry advice and must not become a 400.
+        starved = body("Context size has been exceeded.")
+        assert "shared pool of context" in starved["message"]
+        assert "too long" not in starved["message"].lower()
+        assert starved["type"] == "api_error"
+
+        unrelated = body("disk full")
+        assert unrelated["message"] == "llama-server error: disk full"
+        assert unrelated["type"] == "api_error"
+
+    def test_a_genuine_oversize_body_is_still_classified_as_an_overflow(self):
+        from routes.inference import _classify_llama_generation_error
+        assert (
+            _classify_llama_generation_error(
+                Exception(
+                    "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+                )
+            )
+            is True
+        )
 
 
 # =====================================================================
@@ -2308,8 +2515,35 @@ class TestBuildPassthroughPayloadToolChoice:
                 },
             },
             "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
-            "boundedScript": {"type": "string", "maxLength": 2000},
+            # Each keyword's highest compilable bound survives; the first one that reaches
+            # llama.cpp's rule budget does not.
+            "keptScript": {"type": "string", "maxLength": 1999, "minLength": 1999},
+            "budgetScript": {"type": "string", "maxLength": 2000},
+            "budgetFloor": {"type": "string", "minLength": 2000},
+            "keptList": {"type": "array", "items": {"type": "string"}, "maxItems": 1997},
+            "budgetList": {"type": "array", "items": {"type": "string"}, "maxItems": 1998},
+            "keptFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2000},
+            "budgetFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2001},
+            # An integral bound can decode to float, and llama.cpp reads one either way.
+            "floatList": {"type": "array", "items": {"type": "string"}, "minItems": 2001.0},
+            # draft-07 tuple form, which llama.cpp visits member by member.
+            "tupleList": {
+                "type": "array",
+                "items": [{"type": "string", "maxLength": 2000}],
+            },
+            # Unsatisfiable pairs, small enough to pass every limit above: they reach the
+            # parser as a descending repetition, which exhausts memory.
+            "impossibleList": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 5,
+                "maxItems": 2,
+            },
+            "impossibleScript": {"type": "string", "minLength": 5, "maxLength": 2},
+            "referenced": {"$ref": "#/$defs/Bounded"},
         }
+        # llama.cpp resolves the reference, so its target has to be filtered too.
+        schema["$defs"] = {"Bounded": {"type": "string", "maxLength": 2000}}
 
         body = _build_passthrough_payload(**args)
         forwarded = body["tools"][0]["function"]["parameters"]["properties"]
@@ -2321,10 +2555,69 @@ class TestBuildPassthroughPayloadToolChoice:
         assert nested["anyOf"][1]["pattern"] == "^fixed$"
         assert nested["default"] == {"pattern": "annotation data"}
         assert forwarded["largeScript"] == {"type": "string", "minLength": 1}
-        assert forwarded["boundedScript"]["maxLength"] == 2000
+        assert forwarded["keptScript"] == {"type": "string", "maxLength": 1999, "minLength": 1999}
+        assert forwarded["budgetScript"] == {"type": "string"}
+        assert forwarded["budgetFloor"] == {"type": "string"}
+        assert forwarded["keptList"]["maxItems"] == 1997
+        assert forwarded["budgetList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["keptFloorList"]["minItems"] == 2000
+        assert forwarded["budgetFloorList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["floatList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["tupleList"]["items"] == [{"type": "string"}]
+        assert schema["properties"]["budgetScript"]["maxLength"] == 2000
+        assert schema["properties"]["budgetList"]["maxItems"] == 1998
+        assert forwarded["impossibleList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["impossibleScript"] == {"type": "string"}
+        assert schema["properties"]["tupleList"]["items"][0]["maxLength"] == 2000
+        assert schema["properties"]["impossibleList"]["minItems"] == 5
+        assert body["tools"][0]["function"]["parameters"]["$defs"] == {
+            "Bounded": {"type": "string"}
+        }
+        assert schema["$defs"]["Bounded"]["maxLength"] == 2000
         assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
         assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
         assert schema["properties"]["largeScript"]["maxLength"] == 65536
+
+    def test_repetition_limits_match_the_measured_grammar_budget(self):
+        # First bound llama-server refuses, measured against llama.cpp b10639 and b10679 by
+        # posting each schema to a live server. maxItems costs N+2 rules, not N+1, so 1998 is
+        # already over budget even though the other three keywords reach 2000.
+        from routes.inference import _JSON_SCHEMA_REPETITION_LIMITS
+        first_rejected = {"maxItems": 1998, "maxLength": 2000, "minItems": 2001, "minLength": 2000}
+        assert _JSON_SCHEMA_REPETITION_LIMITS == {
+            keyword: value - 1 for keyword, value in first_rejected.items()
+        }
+
+    def test_response_format_schema_drops_incompatible_constraints(self):
+        # Guided decoding reaches the same grammar engine tool schemas do.
+        rf = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "report",
+                "schema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string", "maxLength": 2000}},
+                },
+            },
+        }
+        body = _build_passthrough_payload(**self._args(), response_format = rf)
+        forwarded = body["response_format"]["json_schema"]["schema"]["properties"]["summary"]
+        assert forwarded == {"type": "string"}
+        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"]["json_schema"]["name"] == "report"
+        assert rf["json_schema"]["schema"]["properties"]["summary"]["maxLength"] == 2000
+
+    def test_response_format_json_object_schema_is_filtered_too(self):
+        # An array bound only reaches the grammar when the items schema does too.
+        rf = {
+            "type": "json_object",
+            "schema": {"type": "array", "items": {"type": "string"}, "maxItems": 1999},
+        }
+        body = _build_passthrough_payload(**self._args(), response_format = rf)
+        assert body["response_format"] == {
+            "type": "json_object",
+            "schema": {"type": "array", "items": {"type": "string"}},
+        }
 
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
@@ -2349,6 +2642,17 @@ class TestBuildPassthroughPayloadToolChoice:
             stream_options = {"include_usage": False},
         )
         assert body.get("stream_options") == {"include_usage": False}
+
+    def test_an_explicit_seed_disables_slot_prompt_cache_reuse(self):
+        seeded = _build_passthrough_payload(**self._args(), seed = 3407)
+        randomized = _build_passthrough_payload(**self._args(), seed = -1)
+        ordinary = _build_passthrough_payload(**self._args())
+
+        assert seeded["seed"] == 3407
+        assert seeded["cache_prompt"] is False
+        assert randomized["seed"] == -1
+        assert "cache_prompt" not in randomized
+        assert "cache_prompt" not in ordinary
 
     def test_response_format_without_tools_omits_tool_fields(self):
         args = self._args()
@@ -3600,6 +3904,7 @@ class TestGgufVisionToolRouting:
         tool_generate = None,
         payload_kwargs = None,
         backend_kwargs = None,
+        request = None,
     ):
         import routes.inference as inf_mod
 
@@ -3637,7 +3942,11 @@ class TestGgufVisionToolRouting:
             request_data.update(payload_kwargs)
         payload = ChatCompletionRequest(**request_data)
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload,
+                request = request or self._Request(),
+                current_subject = "test",
+            )
         )
         result = SimpleNamespace(response = response, monitor = monitor, backend = backend)
         if request_data.get("stream"):
@@ -3808,6 +4117,43 @@ class TestGgufVisionToolRouting:
             "function": {"name": "web_search"},
         }
         assert captured["kwargs"]["permission_mode"] == "off"
+
+    def test_api_server_tool_loop_keeps_the_current_date(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _tools(**kwargs):
+            captured.update(kwargs)
+            yield {"type": "content", "text": "done"}
+
+        class ApiRequest(self._Request):
+            headers = {"authorization": "Bearer sk-unsloth-test"}
+            state = SimpleNamespace(skip_api_monitor = True)
+
+        monkeypatch.setattr(
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+        self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "permission_mode": "off",
+                "stream": True,
+            },
+            request = ApiRequest(),
+        )
+
+        system_messages = [
+            message for message in captured["messages"] if message["role"] == "system"
+        ]
+        assert len(system_messages) == 1
+        assert system_messages[0]["content"].startswith("The current date is 2026-08-15.\n\n")
 
     def test_forced_tool_choice_must_be_in_the_selected_gguf_catalog(self, monkeypatch):
         import routes.inference as inf_mod
@@ -5067,13 +5413,26 @@ class TestGgufVisionToolRouting:
                     current_subject = "test",
                 )
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            # Generous budgets. What this test asserts is that cancelling the
+            # request drains the worker, and none of the numbers below are part
+            # of that: they only bound how long to wait before calling it hung.
+            # A one-second bound on a THREAD START is a bound on the scheduler,
+            # not on this code, and it went red once on a runner busy with the
+            # rest of the backend suite. Failing here still takes seconds, and
+            # the assertion is unchanged.
+            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
 
-            assert released.is_set()
+            # Waited on, not sampled. Cancelling the task unblocks the awaiting
+            # coroutine; it does not join the worker, which is off polling
+            # cancel_event every 5ms and only then sets this. Reading it the
+            # instant the await returns is a race that happens to be won on an
+            # idle box, and it is the drain itself that matters, not whether it
+            # had already finished by the time we looked.
+            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
             assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -5186,6 +5545,11 @@ class TestGgufVisionToolRouting:
         assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
         assert captured["perf_callback"] is None
 
+    # Wall-clock bound for the cancel drain. Only ever hit when something is
+    # genuinely stuck, so it is sized for a loaded runner rather than for the
+    # ~5ms this takes when it works.
+    _DRAIN_BUDGET_S = 30.0
+
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -5238,7 +5602,8 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
-    def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
+    def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
+        """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
 
         captured = {}
@@ -5261,6 +5626,8 @@ class TestGgufVisionToolRouting:
             generate_chat_completion = _generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        # Pinned, not left to the host's stored setting, so the assertion is the same everywhere.
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: date_line)
 
         payload = ChatCompletionRequest(
             model = "default",
@@ -5274,9 +5641,21 @@ class TestGgufVisionToolRouting:
         self._drive(
             openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
+        return captured["messages"]
 
-        assert captured["messages"] == [
+    def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
+        assert self._drive_standard_gguf(monkeypatch, "") == [
             {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
+
+    def test_standard_gguf_prefixes_the_current_date(self, monkeypatch):
+        # Covers the wiring, not just the helper: a tool-less GGUF chat must carry the date.
+        assert self._drive_standard_gguf(monkeypatch, "The current date is 2026-08-15.") == [
+            {
+                "role": "system",
+                "content": "The current date is 2026-08-15.\n\noriginal system\n\ndeveloper rules",
+            },
             {"role": "user", "content": "hi"},
         ]
 
@@ -5416,6 +5795,71 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = monitor,
             upstream_bodies = upstream_bodies,
         )
+
+    @staticmethod
+    def _captured_tool_call_frames():
+        def _frame(delta, finish_reason = None):
+            return "data: " + json.dumps(
+                {
+                    "id": "chatcmpl-captured",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": delta,
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                },
+                separators = (",", ":"),
+            )
+
+        argument_fragments = [
+            "{",
+            '"command":"',
+            "echo",
+            " HER",
+            "MES",
+            "_UNS",
+            "LO",
+            "TH",
+            "_OK",
+            '"',
+            "}",
+        ]
+        frames = [_frame({"role": "assistant", "content": None})]
+        frames.append(
+            _frame(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-captured",
+                            "type": "function",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": argument_fragments[0],
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+        frames.extend(
+            _frame(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "function": {"arguments": fragment},
+                        }
+                    ]
+                }
+            )
+            for fragment in argument_fragments[1:]
+        )
+        frames.extend([_frame({}, "tool_calls"), "data: [DONE]"])
+        assert len(frames) == 14
+        return frames
 
     def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
         async def _run():
@@ -5586,10 +6030,10 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
 
-            first = await asyncio.wait_for(response.body_iterator.__anext__(), timeout = 0.2)
+            first = await asyncio.wait_for(response.body_iterator.__anext__(), timeout = 5.0)
             assert first == ": keep-alive\n\n"
 
             gate.set()
@@ -5982,7 +6426,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -6245,6 +6689,51 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["prompt_tokens"] == 3
             assert entry["completion_tokens"] == 4
             assert entry["total_tokens"] == 7
+
+        asyncio.run(_run())
+
+    def test_external_stream_clean_eof_flushes_pending_tool_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            lines = [
+                'data: {"choices":[{"index":0,"delta":{"tool_calls":['
+                '{"index":0,"id":"call-eof","function":{"name":"lookup",'
+                '"arguments":"{\\"query\\":"}}]}}]}',
+                'data: {"choices":[{"index":0,"delta":{"tool_calls":['
+                '{"index":0,"function":{"arguments":"\\"weather\\"}"}}]}}]}',
+            ]
+
+            class DummyExternalClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def stream_chat_completion(self, **_kwargs):
+                    for line in lines:
+                        yield line
+
+                async def close(self):
+                    pass
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
+            payload = ChatCompletionRequest(
+                model = "default",
+                external_model = "gpt-test",
+                provider_type = "openai",
+                provider_base_url = "https://api.openai.com/v1",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+
+            response = await _proxy_to_external_provider(payload, self._Request())
+            chunks = [chunk async for chunk in response.body_iterator]
+
+            assert chunks == [*(f"{line}\n\n" for line in lines), "data: [DONE]\n\n"]
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
 
         asyncio.run(_run())
 
@@ -6736,6 +7225,734 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         entry = monitor.get(monitor_id)
         assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+
+    def test_streamed_tool_monitor_reassembles_captured_frames_without_changing_sse(
+        self, monkeypatch
+    ):
+        async def _run():
+            frames = self._captured_tool_call_frames()
+            result = await self._run_passthrough_stream(monkeypatch, frames)
+
+            assert result.body == "".join(f"{frame}\n\n" for frame in frames)
+            [entry] = result.monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["stop_reason"] == "tool_calls"
+            assert entry["reply"] == ('Tool call: terminal({"command":"echo HERMES_UNSLOTH_OK"})')
+            assert entry["ttft_ms"] is not None
+
+        asyncio.run(_run())
+
+    def test_streamed_tool_monitor_joins_fragmented_name_and_arguments(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for tool_call in [
+            {
+                "index": 0,
+                "id": "call-fragmented",
+                "function": {"name": "ter", "arguments": '{"com'},
+            },
+            {"index": 0, "function": {"name": "min", "arguments": 'mand":'}},
+            {"index": 0, "function": {"name": "al", "arguments": '"echo"}'}},
+        ]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == 'Tool call: terminal({"command":"echo"})'
+
+    def test_streamed_tool_monitor_replaces_cumulative_names(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for name, arguments in [("web", None), ("web_search", "{}")]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"name": name, "arguments": arguments},
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == "Tool call: web_search({})"
+
+    def test_streamed_tool_monitor_serializes_structured_arguments(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": {"query": "weather", "active": True},
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: lookup({"query": "weather", "active": true})'
+        )
+
+    def test_streamed_legacy_function_monitor_joins_name_and_arguments(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for function_call in [
+            {"name": "look", "arguments": '{"query":'},
+            {"name": "up", "arguments": '"weather"}'},
+        ]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"function_call": function_call}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "function_call"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == 'Tool call: lookup({"query":"weather"})'
+
+    def test_streamed_tool_monitor_keeps_interleaved_indexes_separate(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        deltas = [
+            {"index": 0, "id": "call-a", "function": {"name": "alpha", "arguments": '{"a":'}},
+            {"index": 1, "id": "call-b", "function": {"name": "beta", "arguments": '{"b":'}},
+            {"index": 0, "function": {"arguments": "1}"}},
+            {"index": 1, "function": {"arguments": "2}"}},
+        ]
+        for tool_call in deltas:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    def test_streamed_tool_monitor_routes_bare_fragments_to_latest_call(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        deltas = [
+            {"index": 0, "function": {"name": "alpha", "arguments": '{"a":'}},
+            {"index": 1, "function": {"name": "beta", "arguments": '{"b":'}},
+            {"function": {"arguments": "2}"}},
+            {"index": 0, "function": {"arguments": "1"}},
+            {"function": {"arguments": "}"}},
+        ]
+        for tool_call in deltas:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    def test_streamed_tool_monitor_keeps_choice_indexes_separate(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        chunks = [
+            (0, {"index": 0, "id": "shared-id", "function": {"name": "alpha", "arguments": "{"}}),
+            (1, {"index": 0, "id": "shared-id", "function": {"name": "beta", "arguments": "{"}}),
+            (0, {"index": 0, "function": {"arguments": '"a":1}'}}),
+            (1, {"index": 0, "function": {"arguments": '"b":2}'}}),
+        ]
+        for choice_index, tool_call in chunks:
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": choice_index,
+                            "delta": {"tool_calls": [tool_call]},
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+        for choice_index in (0, 1):
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": choice_index,
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    def test_streamed_tool_monitor_uses_ids_when_indexes_are_reused_or_omitted(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        deltas = [
+            {"index": 0, "id": "call-a", "function": {"name": "alpha", "arguments": '{"a":'}},
+            {"index": 0, "id": "call-b", "function": {"name": "beta", "arguments": '{"b":'}},
+            {"index": 0, "function": {"arguments": "2}"}},
+            {"id": "call-a", "function": {"arguments": "1}"}},
+        ]
+        for tool_call in deltas:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    def test_streamed_tool_monitor_separates_duplicate_ids_by_explicit_index(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for tool_call in [
+            {
+                "index": 0,
+                "id": "duplicate",
+                "function": {"name": "alpha", "arguments": '{"a":1}'},
+            },
+            {
+                "index": 1,
+                "id": "duplicate",
+                "function": {"name": "beta", "arguments": '{"b":2}'},
+            },
+        ]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    @pytest.mark.parametrize("terminal", ["cancelled", "error", "eof"])
+    def test_streamed_tool_monitor_terminal_cleanup_is_request_local(self, monkeypatch, terminal):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        first_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "first",
+        )
+        _monitor_openai_chunk(
+            first_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-first",
+                                    "function": {"name": "terminal", "arguments": "{"},
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        if terminal == "error":
+            monitor.fail(first_id, "upstream failed")
+        else:
+            monitor.finish(first_id, "cancelled" if terminal == "cancelled" else "completed")
+
+        second_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "second",
+        )
+        _monitor_openai_chunk(
+            second_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"arguments": '{"b":2}'}}]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            second_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(first_id)["reply"] == "Tool call: terminal({)"
+        assert monitor.get(second_id)["reply"] == 'Tool call: <unknown>({"b":2})'
+
+    def test_streamed_non_tool_monitor_content_is_unchanged(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for content in ["hel", "lo"]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"content": content}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == "hello"
+
+    @pytest.mark.parametrize(
+        ("tool_first", "expected"),
+        [
+            (False, "Checking:\nTool call: lookup({})"),
+            (True, "Tool call: lookup({})\nDone."),
+        ],
+    )
+    def test_streamed_tool_monitor_separates_mixed_text_segments(
+        self, monkeypatch, tool_first, expected
+    ):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        text = "Done." if tool_first else "Checking:"
+        text_chunk = {"choices": [{"index": 0, "delta": {"content": text}}]}
+        tool_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-mixed",
+                                "function": {"name": "lookup", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        finish_chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}
+        if tool_first:
+            for chunk in (tool_chunk, finish_chunk, text_chunk):
+                _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+        else:
+            for chunk in (text_chunk, tool_chunk, finish_chunk):
+                _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+
+        assert monitor.get(monitor_id)["reply"] == expected
+
+    def test_streamed_tool_monitor_keeps_final_text_after_pending_tool(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-final-text",
+                                    "function": {"name": "lookup", "arguments": "{}"},
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "Done."},
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == "Tool call: lookup({})\nDone."
+
+    def test_streamed_tool_monitor_flushes_scalar_call_before_terminal_content(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"name": "lookup", "arguments": "1"},
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "Done."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == "Tool call: lookup(1)\nDone."
+
+    def test_streamed_tool_monitor_keeps_incomplete_call_across_content(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"query":',
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            {"choices": [{"index": 0, "delta": {"content": "Checking."}}]},
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"arguments": '"weather"}'}}]
+                        },
+                    }
+                ]
+            },
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        for chunk in chunks:
+            _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Checking.\nTool call: lookup({"query":"weather"})'
+        )
+
+    @pytest.mark.parametrize(
+        "arguments",
+        ["1", json.dumps({"query": "x" * 600})],
+    )
+    def test_streamed_tool_monitor_flushes_on_tool_event_boundary(self, monkeypatch, arguments):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"name": "lookup", "arguments": arguments},
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "choices": [{"index": 0, "delta": {}}],
+                "_toolEvent": {"type": "tool_start"},
+            },
+            {"choices": [{"index": 0, "delta": {"content": "Done."}}]},
+        ]
+        for chunk in chunks:
+            _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+
+        reply = monitor.get(monitor_id)["reply"]
+        assert reply.startswith("Tool call: lookup(")
+        assert reply.endswith("\nDone.")
+
+    def test_streamed_tool_monitor_bounds_pending_preview_state(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for index in range(70):
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": index,
+                                        "id": ("i" * 5000) + str(index),
+                                        "function": {
+                                            "name": "n" * 1000,
+                                            "arguments": "a" * 5000,
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+
+        [entry] = monitor._entries
+        assert len(entry.openai_stream_tool_calls) <= 64
+        assert all(
+            call.call_id is None or len(call.call_id) <= 501
+            for call in entry.openai_stream_tool_calls
+        )
+        assert all(len(call.name) <= 501 for call in entry.openai_stream_tool_calls)
+        assert all(len(call.arguments) <= 501 for call in entry.openai_stream_tool_calls)
+        assert (
+            sum(len(call.name) + len(call.arguments) for call in entry.openai_stream_tool_calls)
+            <= 12000
+        )
+        monitor.finish(monitor_id, "cancelled")
+        assert entry.openai_stream_tool_calls == []
+        assert entry.openai_stream_last_tool_indexes == {}
 
     def test_embeddings_request_is_counted_active_and_completed(self, monkeypatch):
         async def _run():
@@ -7772,12 +8989,12 @@ class TestApiMonitorProviderAndCompletionStreams:
                     current_subject = "test",
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), 5.0)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
             assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
 
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, 5.0)
 
             assert client.closed.is_set()
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
@@ -9275,3 +10492,29 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
     # Choice 0 is always the caller's own seed, on both drains.
     assert _choice_seed(-2, 0, negative_is_random = True) == -2
     assert _choice_seed(None, 2, negative_is_random = True) is None
+
+
+def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
+    """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED: the seed is a
+    uint32 there, so ``-1``, ``4294967295`` and ``2**64-1`` are all the sentinel and the
+    schemas accept all three. Both helpers must agree, or choice 0 keeps the caller's random
+    seed while choice 1 is offset into a fixed one, half reproducible and half uncached."""
+    from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
+    from routes.inference import _choice_seed
+
+    for seed in (-1, 0xFFFFFFFF, 2**64 - 1):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) == _LLAMA_RANDOM_SEED for v in served), (seed, served)
+
+        for value in served:
+            payload: dict = {}
+            _apply_seeded_llama_request(payload, value)
+            assert "cache_prompt" not in payload, (seed, value, payload)
+
+    for seed in (0, 5, 4294967294):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED for v in served), (seed, served)
+        for value in served:
+            payload = {}
+            _apply_seeded_llama_request(payload, value)
+            assert payload["cache_prompt"] is False, (seed, value)

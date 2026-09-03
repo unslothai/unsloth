@@ -103,6 +103,20 @@ def _resident_answers_exactly(resident: dict[str, Any], name: str) -> bool:
     )
 
 
+def resident_answers_media_request(
+    resident: dict[str, Any], requested_model: Optional[str], *, owner: str
+) -> bool:
+    """Whether one exact resident state still answers an auto-switch request."""
+    if not isinstance(requested_model, str) or not requested_model.strip():
+        return False
+    name = requested_model.strip()
+    if _resident_answers_exactly(resident, name):
+        return True
+    task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
+    pick = resolve_local_media_model(name, task = task)
+    return pick is not None and satisfied_by(resident, name, pick)
+
+
 async def _require_local(
     owner: str,
     pick: MediaModelPick,
@@ -310,9 +324,7 @@ async def _gated_start_load(
                     kind = kind,
                     openai_errors = openai_errors,
                 )
-            # re-resolved under the gate: a concurrent load can activate the other image engine
             backend = backend_for(owner)
-            # what the drain waited out may have been the very load this request wanted
             if satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                 return True
             if not await drain(
@@ -325,7 +337,6 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
-            # re-planned because a cache deletion during the drain sees no load to guard against
             await _require_local(
                 owner,
                 pick,
@@ -334,9 +345,10 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
                 hf_token = hf_token,
             )
-            # given its own task and waited on with a cap: a first-run native install runs for
-            # minutes before begin_load, and holding both media gates and chat's that long
-            # blocks every unrelated request. On expiry the load keeps going without them.
+            # capped, in its own task: a first-run native install runs for minutes before begin_load
+            # given its own task and waited on with a cap: a first-run native install runs for minutes before
+            # begin_load, and holding both media gates and chat's that long blocks every unrelated request. On expiry
+            # the load keeps going without them.
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
@@ -441,7 +453,6 @@ async def maybe_auto_switch_media_model(
         handed_over = False
         try:
             backend = backend_for(owner)
-            # re-read under the lock: a concurrent request may have just loaded this model
             if satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                 return
             await _require_local(
@@ -518,5 +529,6 @@ __all__ = [
     "available_media_model_ids",
     "invalidate_index",
     "maybe_auto_switch_media_model",
+    "resident_answers_media_request",
     "resolve_local_media_model",
 ]

@@ -24,6 +24,11 @@ VIDEO = "video"
 
 _lock = threading.Lock()
 _owner: Optional[str] = None
+_owner_epoch = 0
+
+
+class OwnerChangedError(RuntimeError):
+    """The outgoing GPU owner changed after a pre-handoff capacity snapshot."""
 
 
 def _evict_chat() -> None:
@@ -35,20 +40,25 @@ def _evict_chat() -> None:
     from core.inference.llama_cpp import chat_load_active
 
     llama = get_llama_cpp_backend()
-    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is not healthy. chat_load_active
-    # too, since an HF load has no process until its GGUF downloaded. unload_model sets the cancel event the download loop polls, so it aborts.
+    # is_active, not is_loaded: a model still starting holds VRAM
+    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
+    # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
+    # the cancel event the download loop polls, so it aborts.
     if llama.is_active or chat_load_active():
         llama.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
-    # An in-flight safetensors load has no active_model_name yet (published only on success), so the unload above misses it and it would finish onto
-    # the GPU we just granted away. cancel_load discards the loading marker BEFORE tearing the worker down, and runs off the lifecycle gate.
+    # An in-flight safetensors load has no active_model_name yet (published only on success), so the unload above misses
+    # it and it would finish onto the GPU we just granted away. cancel_load discards the loading marker BEFORE tearing
+    # the worker down, and runs off the lifecycle gate.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
     orchestrator._shutdown_subprocess(timeout = 5.0)
-    # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a warm handoff can transiently OOM.
+    # the driver reclaims killed VRAM asynchronously, else a warm handoff can transiently OOM
+    # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
+    # warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
 
 
@@ -63,7 +73,8 @@ def _evict_video() -> None:
     get_video_backend().unload()
 
 
-# Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner generalises to any number of owners.
+# Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner
+# generalises to any number of owners.
 _EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
 
 
@@ -79,6 +90,7 @@ def acquire_for(
     owner: str,
     register: Optional[Callable[[], Any]] = None,
     *,
+    expected_current: Optional[tuple[Optional[str], int]] = None,
     allow_evict: bool = True,
 ) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
@@ -89,25 +101,29 @@ def acquire_for(
     letting both loaders allocate VRAM at once. It must be quick and not re-enter the arbiter; if it
     raises, ownership stays with ``owner``.
     """
-    global _owner
+    global _owner, _owner_epoch
     if owner not in _EVICTORS:
         raise ValueError(f"unknown GPU owner: {owner!r}")
     with _lock:
+        if expected_current is not None and (_owner, _owner_epoch) != expected_current:
+            raise OwnerChangedError("The resident GPU model changed; retry the load.")
         if _owner is not None and _owner != owner:
             if not allow_evict:
                 raise GpuOwnerBusyError(_owner)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
         _owner = owner
+        _owner_epoch += 1
         return register() if register is not None else None
 
 
 def release(owner: str) -> None:
     """Drop ``owner``'s claim (no-op if it isn't the current owner)."""
-    global _owner
+    global _owner, _owner_epoch
     with _lock:
         if _owner == owner:
             _owner = None
+            _owner_epoch += 1
 
 
 def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
@@ -117,13 +133,19 @@ def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
     whose ``acquire_for(register=...)`` re-registers ownership under this lock; evaluating the
     predicate under the lock keeps them atomic so ``release`` never clears the newer claim.
     ``predicate`` must be quick and not re-enter the arbiter. Returns True iff ownership was dropped."""
-    global _owner
+    global _owner, _owner_epoch
     with _lock:
         if _owner != owner or not predicate():
             return False
         _owner = None
+        _owner_epoch += 1
         return True
 
 
 def current_owner() -> Optional[str]:
     return _owner
+
+
+def owner_snapshot() -> tuple[Optional[str], int]:
+    with _lock:
+        return _owner, _owner_epoch

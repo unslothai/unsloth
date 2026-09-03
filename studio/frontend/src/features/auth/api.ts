@@ -29,6 +29,22 @@ let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+const BROWSER_TIMEZONE_HEADER = "X-Unsloth-Timezone";
+const BROWSER_TIMEZONE_OFFSET_HEADER =
+  "X-Unsloth-Timezone-Offset-Minutes";
+
+function addBrowserTimezoneHeaders(headers: Headers): void {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (timezone) headers.set(BROWSER_TIMEZONE_HEADER, timezone);
+    headers.set(
+      BROWSER_TIMEZONE_OFFSET_HEADER,
+      String(new Date().getTimezoneOffset()),
+    );
+  } catch {
+    // runtimes without Intl keep the backend-local fallback.
+  }
+}
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -131,6 +147,7 @@ async function retryWithCurrentToken(
 ): Promise<Response> {
   beforeRetry?.();
   const retryHeaders = new Headers(init?.headers);
+  addBrowserTimezoneHeaders(retryHeaders);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
   // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection.
@@ -211,6 +228,7 @@ export async function authFetch(
 ): Promise<Response> {
   const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
+  addBrowserTimezoneHeaders(headers);
   const accessToken = getAuthToken();
   if (accessToken) {
     headers.set("Authorization", `Bearer ${accessToken}`);
