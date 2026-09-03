@@ -1163,6 +1163,53 @@ decide_node_source() {
     echo bundled
 }
 
+# True iff $1 is an official Node prefix (Unix tarball or Windows zip).
+# False for the leftover stub: bin/npm is `require('../lib/cli.js')` and lib/ is gone.
+_isolated_node_layout_complete() {
+    _in_dir="$1"
+    if [ -z "$_in_dir" ] || [ ! -d "$_in_dir" ]; then
+        return 1
+    fi
+    if [ ! -f "$_in_dir/bin/node" ] && [ ! -f "$_in_dir/node.exe" ]; then
+        return 1
+    fi
+    if [ ! -f "$_in_dir/lib/node_modules/npm/bin/npm-cli.js" ] \
+        && [ ! -f "$_in_dir/node_modules/npm/bin/npm-cli.js" ]; then
+        return 1
+    fi
+    # Official Unix npm is a symlink into lib/node_modules/npm.
+    # The leftover we hit is a regular file that require()s a missing ../lib/cli.js.
+    if [ -f "$_in_dir/bin/npm" ] && [ ! -L "$_in_dir/bin/npm" ]; then
+        if grep -Fq "require('../lib/cli.js')" "$_in_dir/bin/npm" 2>/dev/null \
+            && [ ! -f "$_in_dir/lib/cli.js" ]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Move an incomplete leftover aside so this script does not prepend it to PATH.
+# No sudo. If the tree is not writable (root-owned leftover), print how to fix it.
+_quarantine_broken_isolated_node() {
+    _in_dir="$1"
+    if [ -z "$_in_dir" ] || [ ! -e "$_in_dir" ]; then
+        return 0
+    fi
+    if _isolated_node_layout_complete "$_in_dir"; then
+        return 0
+    fi
+    _aside="${_in_dir}.broken.$(date +%Y%m%d%H%M%S)"
+    substep "isolated Node at $_in_dir is incomplete; moving it to $_aside"
+    if mv "$_in_dir" "$_aside" 2>/dev/null; then
+        return 0
+    fi
+    step "node" "cannot move broken isolated Node at $_in_dir" "$C_ERR"
+    substep "it is probably not writable (leftover sudo install). As the owner, run:"
+    substep "  mv \"$_in_dir\" \"$_aside\""
+    substep "then re-run the installer"
+    return 1
+}
+
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
 if [ -n "$STAGE_ROOT" ]; then
     _NODE_PARENT="$RUNTIME_ROOT"
@@ -1172,6 +1219,9 @@ else
     _NODE_PARENT="$HOME/.unsloth"
 fi
 NODE_DIR="$_NODE_PARENT/node"
+_quarantine_broken_isolated_node "$NODE_DIR" \
+    || setup_fail 1 "Broken isolated Node at $NODE_DIR could not be moved aside"
+hash -r 2>/dev/null || true
 
 _SYS_NODE_VER="$(node -v 2>/dev/null || true)"
 _SYS_NPM_VER="$(npm -v 2>/dev/null || true)"
@@ -1222,6 +1272,11 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     rm -f "$_NODE_LOG"
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
         : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    fi
+    if ! _isolated_node_layout_complete "$NODE_DIR"; then
+        step "node" "isolated Node is unusable after install" "$C_ERR"
+        substep "remove $NODE_DIR and re-run, or install Node >= 20.19 with npm >= 11"
+        setup_fail 1 "Isolated Node at $NODE_DIR is unusable after install"
     fi
     # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
     export PATH="$NODE_DIR/bin:$PATH"

@@ -3296,6 +3296,60 @@ function Get-NodeDecision {
     return "bundled"
 }
 
+function Test-IsolatedNodeLayoutComplete {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) {
+        return $false
+    }
+
+    $unixNode = Join-Path $InstallDir "bin\node"
+    $winNode = Join-Path $InstallDir "node.exe"
+    $unixCli = Join-Path $InstallDir "lib\node_modules\npm\bin\npm-cli.js"
+    $winCli = Join-Path $InstallDir "node_modules\npm\bin\npm-cli.js"
+
+    $hasNode = (Test-Path -LiteralPath $unixNode -PathType Leaf) -or (Test-Path -LiteralPath $winNode -PathType Leaf)
+    $hasCli = (Test-Path -LiteralPath $unixCli -PathType Leaf) -or (Test-Path -LiteralPath $winCli -PathType Leaf)
+    if (-not ($hasNode -and $hasCli)) {
+        return $false
+    }
+
+    $npmShim = Join-Path $InstallDir "bin\npm"
+    $libCli = Join-Path $InstallDir "lib\cli.js"
+    if ((Test-Path -LiteralPath $npmShim -PathType Leaf) -and -not (Test-Path -LiteralPath $libCli -PathType Leaf)) {
+        $item = Get-Item -LiteralPath $npmShim -ErrorAction SilentlyContinue
+        if ($item -and -not $item.LinkType) {
+            $text = Get-Content -LiteralPath $npmShim -Raw -ErrorAction SilentlyContinue
+            if ($text -and $text.Contains("require('../lib/cli.js')")) {
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
+function Move-BrokenIsolatedNode {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        return
+    }
+    if (Test-IsolatedNodeLayoutComplete -InstallDir $InstallDir) {
+        return
+    }
+
+    $stamp = Get-Date -Format "yyyyMMddHHmmss"
+    $aside = "$InstallDir.broken.$stamp"
+    substep "isolated Node at $InstallDir is incomplete; moving it to $aside"
+    try {
+        Move-Item -LiteralPath $InstallDir -Destination $aside
+    } catch {
+        Write-StudioLine "[ERROR] Cannot move broken isolated Node at $InstallDir." -ForegroundColor Red
+        Write-StudioLine "        Remove it and re-run. $($_.Exception.Message)" -ForegroundColor Yellow
+        Exit-SetupFailure "Broken isolated Node at $InstallDir could not be moved aside"
+    }
+}
+
 
 function Test-PackagedFrontend {
     param([string]$LocalInstall, [string]$IndexPath, [string]$ProjectFilePath)
@@ -3356,6 +3410,7 @@ if (-not $IsPipInstall) {
         }
     }
     $NodeDir = Join-Path $NodeParent "node"
+    Move-BrokenIsolatedNode -InstallDir $NodeDir
 
     # Probe system node/npm without letting a missing/broken command abort setup.
     # Under $ErrorActionPreference = "Stop" a bare `node -v` for an absent node
@@ -3642,6 +3697,11 @@ if ($NeedNodeForSetup) {
         }
         if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
             New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
+        }
+        if (-not (Test-IsolatedNodeLayoutComplete -InstallDir $NodeDir)) {
+            Write-StudioLine "[ERROR] Isolated Node at $NodeDir is unusable after install." -ForegroundColor Red
+            Write-StudioLine "        Remove it and re-run, or install Node >= 20.19 with npm >= 11." -ForegroundColor Yellow
+            Exit-SetupFailure "Isolated Node at $NodeDir is unusable after install"
         }
         # Windows Node zip ships node.exe + npm.cmd at the root; prepend it (this
         # process only) so node/npm/bun resolve here for the build.

@@ -27,6 +27,22 @@ HostInfo = M.HostInfo
 PrebuiltFallback = M.PrebuiltFallback
 
 
+def _assume_complete_layout(monkeypatch):
+    monkeypatch.setattr(M, "isolated_node_layout_complete", lambda *a, **k: True)
+
+
+def _write(
+    path: Path,
+    text: str,
+    *,
+    executable: bool = False,
+) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(text, encoding = "utf-8")
+    if executable:
+        path.chmod(0o755)
+
+
 def _host(node_os: str, node_arch: str) -> HostInfo:
     ext = ".zip" if node_os == "win" else ".tar.gz"
     return HostInfo(
@@ -97,6 +113,55 @@ def test_binary_layout_is_host_aware():
     assert M.node_binary_path(Path("/n"), nix) == Path("/n/bin/node")
     assert M.npm_cli_path(Path("/n"), win) == Path("/n/node_modules/npm/bin/npm-cli.js")
     assert M.npm_cli_path(Path("/n"), nix) == Path("/n/lib/node_modules/npm/bin/npm-cli.js")
+
+
+def test_isolated_node_layout_missing_dir(tmp_path: Path):
+    host = _host("linux", "x64")
+    assert M.isolated_node_layout_complete(tmp_path / "nope", host) is False
+    assert M.isolated_node_layout_complete(tmp_path, host) is False
+
+
+def test_isolated_node_layout_leftover_npm_shim(tmp_path: Path):
+    _write(
+        tmp_path / "bin" / "npm",
+        "#!/usr/bin/env node\nrequire('../lib/cli.js')\n",
+        executable = True,
+    )
+    _write(tmp_path / "bin" / "node", "#!/bin/sh\necho v24.0.0\n", executable = True)
+    host = _host("linux", "x64")
+    assert M.isolated_node_layout_complete(tmp_path, host) is False
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    assert M.existing_install_usable(tmp_path, host) is False
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+def test_isolated_node_layout_official_unix(tmp_path: Path):
+    _write(tmp_path / "bin" / "node", "#!/bin/sh\necho v24.0.0\n", executable = True)
+    _write(
+        tmp_path / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js", "console.log('11.0.0')\n"
+    )
+    (tmp_path / "bin" / "npm").symlink_to("../lib/node_modules/npm/bin/npm-cli.js")
+    assert M.isolated_node_layout_complete(tmp_path, _host("linux", "x64")) is True
+
+
+def test_isolated_node_layout_unix_cli_plus_broken_shim(tmp_path: Path):
+    _write(tmp_path / "bin" / "node", "#!/bin/sh\necho v24.0.0\n", executable = True)
+    _write(
+        tmp_path / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js", "console.log('11.0.0')\n"
+    )
+    _write(
+        tmp_path / "bin" / "npm",
+        "#!/usr/bin/env node\nrequire('../lib/cli.js')\n",
+        executable = True,
+    )
+    assert M.isolated_node_layout_complete(tmp_path, _host("linux", "x64")) is False
+
+
+def test_isolated_node_layout_official_windows(tmp_path: Path):
+    _write(tmp_path / "node.exe", "fake")
+    _write(tmp_path / "node_modules" / "npm" / "bin" / "npm-cli.js", "fake")
+    assert M.isolated_node_layout_complete(tmp_path, _host("win", "x64")) is True
+    assert M.isolated_node_layout_complete(tmp_path / "empty", _host("win", "x64")) is False
 
 
 # ── SHASUMS256.txt parsing ──
@@ -288,6 +353,7 @@ def test_existing_install_matches_false_without_metadata(tmp_path: Path):
 
 
 def test_existing_install_matches_true_when_version_and_runtime_ok(tmp_path: Path, monkeypatch):
+    _assume_complete_layout(monkeypatch)
     host = _host("linux", "x64")
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
@@ -299,6 +365,7 @@ def test_existing_install_matches_true_when_version_and_runtime_ok(tmp_path: Pat
 
 
 def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, monkeypatch):
+    _assume_complete_layout(monkeypatch)
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     version = M.pinned_default_version(M.load_pins())  # == INDEX's newest LTS
@@ -321,6 +388,7 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
 
 
 def test_existing_install_usable_is_version_agnostic(tmp_path: Path, monkeypatch):
+    _assume_complete_layout(monkeypatch)
     host = _host("linux", "x64")
     assert M.existing_install_usable(tmp_path, host) is False  # no metadata
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
@@ -339,6 +407,7 @@ def _offline(*a, **k):
 
 
 def test_install_prebuilt_keeps_existing_when_index_unreachable(tmp_path: Path, monkeypatch):
+    _assume_complete_layout(monkeypatch)
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
@@ -412,6 +481,7 @@ def test_install_prebuilt_rejects_explicit_below_floor(tmp_path: Path, monkeypat
 
 def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, monkeypatch):
     # Archive download fails but a usable older Node is on disk -> keep it.
+    _assume_complete_layout(monkeypatch)
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "x", sha256 = "y")
@@ -578,6 +648,7 @@ def test_allow_unverified_node_reads_env(monkeypatch, value, expected):
 
 def test_install_prebuilt_default_channel_resolves_pinned_version(tmp_path: Path, monkeypatch):
     # Default channel installs the pinned version with no index.json round-trip.
+    _assume_complete_layout(monkeypatch)
     pins = M.load_pins()
     version = M.pinned_default_version(pins)
     install_dir = tmp_path / "node"
@@ -718,6 +789,7 @@ def test_pins_manifest_is_declared_in_package_data():
 def test_existing_install_matches_enforces_expected_sha(tmp_path: Path, monkeypatch):
     # The short-circuit must not keep a version-matching install whose recorded digest
     # is not the pin (old remote-SHASUMS install or a tampered artifact).
+    _assume_complete_layout(monkeypatch)
     host = _host("linux", "x64")
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "aa")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
