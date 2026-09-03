@@ -1114,7 +1114,7 @@ def test_recovered_supervisor_waits_for_actual_server_port(research_home):
     with pytest.raises(RuntimeError, match = "server port"):
         supervisor._endpoint()
 
-    supervisor.note_request_port(SimpleNamespace(scope = {"server": ("127.0.0.1", 4321)}))
+    supervisor.note_request_address(SimpleNamespace(scope = {"server": ("127.0.0.1", 4321)}))
     assert supervisor._endpoint() == "http://127.0.0.1:4321/v1/chat/completions"
 
 

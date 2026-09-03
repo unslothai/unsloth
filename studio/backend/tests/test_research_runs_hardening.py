@@ -2570,3 +2570,107 @@ def test_a_cancel_during_the_rate_limit_wait_is_not_held_for_the_retry_after(mon
 
     assert ended, "the wait never re-checked the run"
     assert ended[0] - started[0] <= research_runs._MODEL_WAIT_POLL_SECONDS
+
+
+# ── self-call endpoint address ───────────────────────────────────────
+
+
+def _endpoint_supervisor(**state) -> ResearchSupervisor:
+    return ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 8889, **state)))
+
+
+@pytest.mark.parametrize(
+    "bound_host, expected_authority",
+    [
+        ("192.168.1.239", "192.168.1.239:8889"),
+        ("127.0.0.1", "127.0.0.1:8889"),
+        ("::1", "[::1]:8889"),
+        ("fe80::1234%eth0", "[fe80::1234%eth0]:8889"),
+    ],
+)
+def test_endpoint_dials_the_address_the_server_is_bound_to(bound_host, expected_authority):
+    supervisor = _endpoint_supervisor(server_request_host = bound_host)
+    assert supervisor._endpoint() == f"http://{expected_authority}/v1/chat/completions"
+
+
+def test_endpoint_falls_back_to_the_noted_request_host():
+    supervisor = _endpoint_supervisor(research_request_host = "10.1.2.3")
+    assert supervisor._endpoint() == "http://10.1.2.3:8889/v1/chat/completions"
+
+
+def test_endpoint_prefers_the_bound_host_over_a_noted_one():
+    supervisor = _endpoint_supervisor(
+        server_request_host = "192.168.1.239",
+        research_request_host = "10.1.2.3",
+    )
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+def test_endpoint_uses_loopback_when_no_address_was_published():
+    assert _endpoint_supervisor()._endpoint() == "http://127.0.0.1:8889/v1/chat/completions"
+
+
+def test_note_server_address_records_the_accepting_address_outside_run_server():
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    assert state.research_request_host == "192.168.1.239"
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+def test_note_server_address_maps_a_wildcard_bind_back_to_loopback():
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("0.0.0.0", 8889))
+    # On the recorded address, not the endpoint: loopback is also the fallback.
+    assert state.research_request_host == "127.0.0.1"
+    assert supervisor._endpoint() == "http://127.0.0.1:8889/v1/chat/completions"
+
+
+def test_note_server_address_records_the_address_when_only_the_port_is_published():
+    # run_server publishes the port before it binds, the address only once bound.
+    state = SimpleNamespace(server_port = 8889, server_request_host = None)
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    assert state.research_request_host == "192.168.1.239"
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+@pytest.mark.parametrize(
+    "arrivals",
+    [
+        (("127.0.0.1", 8889), ("192.168.1.239", 8889)),
+        (("192.168.1.239", 8889), ("127.0.0.1", 8889)),
+    ],
+)
+def test_a_wildcard_bind_settles_on_loopback_in_either_arrival_order(arrivals):
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    for server in arrivals:
+        supervisor.note_server_address(server)
+    assert state.research_request_host == "127.0.0.1"
+    assert supervisor._endpoint() == "http://127.0.0.1:8889/v1/chat/completions"
+
+
+def test_a_single_interface_bind_still_latches_its_own_address():
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    assert state.research_request_host == "192.168.1.239"
+
+
+@pytest.mark.parametrize("server", [None, (), ("",), ("192.168.1.239",), ("", 8889), (8889,)])
+def test_note_server_address_ignores_scope_values_that_carry_no_address(server):
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(server)
+    assert getattr(state, "research_request_host", None) is None
+
+
+def test_note_server_address_defers_to_run_server_published_state():
+    state = SimpleNamespace(server_port = 8889, server_request_host = "192.168.1.239")
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("127.0.0.1", 9999))
+    assert getattr(state, "research_request_host", None) is None
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
