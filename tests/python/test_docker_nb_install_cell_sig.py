@@ -155,7 +155,7 @@ _UPSTREAM_HEAD = (
     'if "COLAB_" not in "".join(os.environ.keys()):\n'
     "    !pip install unsloth\n"
     "else:\n"
-    "    !pip install sentencepiece protobuf \"datasets==4.3.0\" hf_transfer\n"
+    '    !pip install sentencepiece protobuf "datasets==4.3.0" hf_transfer\n'
     "    !pip install --no-deps unsloth_zoo bitsandbytes accelerate peft trl triton unsloth\n"
 )
 
@@ -199,7 +199,7 @@ def test_indentation_churn_inside_the_cell_is_still_cosmetic(sig, tmp_path: Path
         "\t!pip install    unsloth\n"
         "    # keep the pin in step with the sidecar\n"
         "else:\n"
-        "\t!pip install sentencepiece protobuf \"datasets==4.3.0\"  hf_transfer\n"
+        '\t!pip install sentencepiece protobuf "datasets==4.3.0"  hf_transfer\n'
         "\t!pip install  --no-deps unsloth_zoo bitsandbytes accelerate peft trl triton unsloth\n"
     )
     assert _same(

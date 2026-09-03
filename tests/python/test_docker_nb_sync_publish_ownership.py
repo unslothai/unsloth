@@ -45,7 +45,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNC = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None or shutil.which("git") is None
+    shutil.which("bash") is None
+    or shutil.which("git") is None
     or shutil.which("sha256sum") is None,
     reason = "needs bash, git and sha256sum",
 )
@@ -77,7 +78,9 @@ V2 = _nb("model = FastLanguageModel.from_pretrained('llama-4')\n")
 def _git(*args, cwd: Path):
     subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        cwd = str(cwd), check = True, capture_output = True,
+        cwd = str(cwd),
+        check = True,
+        capture_output = True,
     )
 
 
@@ -104,7 +107,14 @@ def _world(tmp_path: Path) -> tuple[Path, Path, Path]:
     return template, dest, remote
 
 
-def _run(tmp_path: Path, template: Path, dest: Path, remote: Path, *, path_prefix = None):
+def _run(
+    tmp_path: Path,
+    template: Path,
+    dest: Path,
+    remote: Path,
+    *,
+    path_prefix = None,
+):
     env = dict(os.environ)
     env.update(
         UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
@@ -119,7 +129,11 @@ def _run(tmp_path: Path, template: Path, dest: Path, remote: Path, *, path_prefi
     if path_prefix is not None:
         env["PATH"] = str(path_prefix) + os.pathsep + env["PATH"]
     return subprocess.run(
-        ["bash", str(SYNC)], capture_output = True, text = True, env = env, timeout = 120,
+        ["bash", str(SYNC)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 120,
     )
 
 
@@ -175,6 +189,6 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
         "both must be best effort: a filesystem that refuses them must not cost "
         "the user their refresh"
     )
-    assert '[ -e "$2" ] || return 0' in block, (
-        "a brand-new notebook has no destination metadata to inherit"
-    )
+    assert (
+        '[ -e "$2" ] || return 0' in block
+    ), "a brand-new notebook has no destination metadata to inherit"
