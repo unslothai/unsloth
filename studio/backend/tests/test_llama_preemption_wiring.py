@@ -1439,3 +1439,71 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
         body = _await_resume_body(Path(llama_preemption.__file__).read_text())
         assert "too-large" in body
         assert "finishing the turn" in body
+
+
+class TestTheResumeGrantReadsTheCacheAfresh:
+    """A resume is granted against an exact figure, not one up to a second old.
+
+    The ledger adds up prompt ESTIMATES; llama-server's per-slot totals are exact, and on
+    code-heavy answers the two drift. A run overran the cache with three slots holding
+    4237 + 5400 + 7390 = 17027 tokens against 16384, and nothing recorded whether the
+    ledger had drifted low or the sweep had simply not run during prefill. Both are now
+    addressed: the drift is logged when it exceeds 256 tokens, and the grant re-reads.
+    """
+
+    def test_the_controller_can_be_given_a_probe(self):
+        from core.inference.llama_preemption import PreemptionController
+
+        controller = PreemptionController("probe")
+        controller.configure(budget = 16384, kv_unified = True)
+        calls = []
+        controller.set_residency_probe(lambda: calls.append(1))
+        controller.refresh_residency()
+        assert calls == [1]
+
+    def test_a_failing_probe_never_raises(self):
+        from core.inference.llama_preemption import PreemptionController
+
+        controller = PreemptionController("probe-boom")
+        controller.configure(budget = 16384, kv_unified = True)
+
+        def boom():
+            raise RuntimeError("slots endpoint down")
+
+        controller.set_residency_probe(boom)
+        controller.refresh_residency()  # must not raise
+
+    def test_no_probe_is_harmless(self):
+        from core.inference.llama_preemption import PreemptionController
+
+        PreemptionController("no-probe").refresh_residency()
+
+    def test_the_resume_wait_refreshes_before_it_asks(self):
+        from pathlib import Path
+
+        from core.inference import llama_preemption
+
+        body = _await_resume_body(Path(llama_preemption.__file__).read_text())
+        first_ask = body.index("while not self._controller.room_for")
+        assert body.index("refresh_residency()") < first_ask, (
+            "the first grant would be decided on a cached figure"
+        )
+
+    def test_the_route_registers_the_probe(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        assert "set_residency_probe(" in source
+        assert "force = True" in source, "the probe must bypass the one second cache"
+
+    def test_the_drift_between_the_two_figures_is_logged(self):
+        from pathlib import Path
+
+        from core.inference import llama_preemption
+
+        source = Path(llama_preemption.__file__).read_text()
+        assert "ledger-drift" in source, (
+            "a cache overrun could not be attributed to the ledger or to the sweep"
+        )

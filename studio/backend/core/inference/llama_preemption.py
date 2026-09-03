@@ -507,7 +507,7 @@ class PreemptionController:
 
     __slots__ = (
         "key", "_lock", "_participants", "_seq", "_epoch_winner", "_budget",
-        "_kv_unified", "_draft_tokens", "_slots", "_resident",
+        "_kv_unified", "_draft_tokens", "_slots", "_resident", "_residency_probe",
     )
 
     def __init__(self, key: str):
@@ -534,6 +534,9 @@ class PreemptionController:
         # could not be read. Includes the residue of FINISHED requests, which the ledger
         # cannot see and which is what kept the watermark firing too late.
         self._resident: Optional[int] = None
+        # Set by the route to a callable that re-reads GET /slots and calls
+        # note_resident. Optional: everything works from the ledger alone, less precisely.
+        self._residency_probe: Optional[Callable[[], None]] = None
 
     def configure(
         self,
@@ -696,6 +699,28 @@ class PreemptionController:
         # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
 
+    def set_residency_probe(self, probe: Optional[Callable[[], None]]) -> None:
+        """Register a way to re-read the cache on demand.
+
+        The ledger adds up prompt ESTIMATES; llama-server's per-slot totals are exact.
+        Where the two disagree the exact one must win, and the moment that matters most
+        is granting a resume: a chat comes back carrying its whole replayed partial, so
+        a reading a second old can be a thousand tokens stale by the time it is used.
+        """
+        self._residency_probe = probe
+
+    def refresh_residency(self) -> None:
+        """Re-read the cache now, if a probe was registered. Never raises."""
+        probe = self._residency_probe
+        if probe is None:
+            return
+        try:
+            probe()
+        except Exception:
+            # A failed read leaves the previous figure in place, which is what the
+            # ledger-only path already assumes.
+            _log.debug("residency probe failed", exc_info = True)
+
     def note_resident(self, resident: Optional[int]) -> None:
         """The cache as llama-server actually sees it. None means the read failed."""
         with self._lock:
@@ -849,6 +874,20 @@ class PreemptionController:
             ceiling = max(0, self._budget - buffer)
             total = self._committed_locked()
             want = max(0, int(needed or 0))
+            # The two figures the sweep is choosing between, recorded whenever they
+            # disagree. `ledger` is prompt ESTIMATES plus counted output;
+            # `resident` is llama-server's exact per-slot totals. A run that overran the
+            # cache with three slots holding 4237 + 5400 + 7390 = 17027 tokens could have
+            # been either the ledger drifting low on code-heavy prompts or the sweep never
+            # running during prefill, and nothing logged said which.
+            ledger = sum(p.tokens for p in self._participants.values() if p.holds_kv)
+            if self._resident is not None and abs(self._resident - ledger) > 256:
+                _log.info(
+                    "llama preemption ledger-drift: ledger=%s resident=%s ceiling=%s "
+                    "want=%s holders=%s",
+                    ledger, self._resident, ceiling, want,
+                    sum(1 for p in self._participants.values() if p.holds_kv),
+                )
             if total + want <= ceiling:
                 return []
             # Parked holders first: they hold KV and consume no compute, so their room is
@@ -1077,7 +1116,11 @@ class ControllerPreemptionPolicy:
         # this the queue hands a resume out on its own optimistic accounting and the next
         # watermark sweep evicts the same chat again, which is thrash, not scheduling.
         deadline = time.monotonic() + timeout
+        # Fresh reading before the first question, not just the cached one: this is the
+        # grant that lets a chat back in carrying its whole replayed partial.
+        self._controller.refresh_residency()
         while not self._controller.room_for(self._gen_id, want):
+            self._controller.refresh_residency()
             if time.monotonic() >= deadline:
                 _log.info(
                     "llama preemption gave-up: gen_id=%s want=%s (no room within %ss)",

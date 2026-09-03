@@ -20904,9 +20904,9 @@ async def produce_openai_chat_completions(
             # the interval between reports.
             _gguf_slots_seen = {"at": 0.0}
 
-            def _gguf_refresh_residency(controller) -> None:
+            def _gguf_refresh_residency(controller, *, force: bool = False) -> None:
                 now = time.monotonic()
-                if now - _gguf_slots_seen["at"] < 1.0:
+                if not force and now - _gguf_slots_seen["at"] < 1.0:
                     return
                 _gguf_slots_seen["at"] = now
                 base = str(getattr(llama_backend, "base_url", "") or "")
@@ -21136,6 +21136,23 @@ async def produce_openai_chat_completions(
                 # that had doubled in size still looked like its first round. _gguf_recost
                 # already runs at the top of every round with the live conversation, so
                 # the live figure is threaded through it.
+                # So the resume grant can re-read the cache instead of trusting a
+                # reading up to a second old. A chat comes back carrying its whole
+                # replayed partial, so a stale figure can be a thousand tokens short at
+                # exactly the moment that matters.
+                try:
+                    get_preemption_controller(
+                        str(getattr(llama_backend, "base_url", "llama-server"))
+                    ).set_residency_probe(
+                        lambda: _gguf_refresh_residency(
+                            get_preemption_controller(
+                                str(getattr(llama_backend, "base_url", "llama-server"))
+                            ),
+                            force = True,
+                        )
+                    )
+                except Exception:
+                    logger.debug("could not register the residency probe", exc_info = True)
                 _gguf_preempt_policy_hold.bind(
                     _openai_llama_preemption_arm(
                         request = request,
