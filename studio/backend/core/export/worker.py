@@ -25,6 +25,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from hub.utils.hf_tokens import HfTokenArg
+
 logger = get_logger(__name__)
 
 # Fresh spawned interpreter: re-apply the OS-trust-store injection.
@@ -165,7 +167,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
-def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
+def _activate_transformers_version(model_name: str, hf_token: HfTokenArg = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -573,19 +575,31 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # then inherit it. A credential belongs to one request, so it travels as an argument.
     #
     # The scope is the worker, not the command, and it cannot be otherwise: huggingface_hub
-    # freezes HF_HUB_DISABLE_IMPLICIT_TOKEN at import, and keeping the operator's token around
-    # to hand back to a later ambient caller would put it right back where in-process
-    # trust_remote_code can read it. So an export runs under the identity that loaded the
-    # checkpoint. A UI export after an API-key load gets no ambient fallback; reloading the
-    # checkpoint spawns a fresh worker (the orchestrator always does) and restores it.
+    # freezes HF_HUB_DISABLE_IMPLICIT_TOKEN at import, so a later command cannot re-enable
+    # implicit lookup by restoring the variable. So an export runs under the identity that
+    # loaded the checkpoint. A UI export after an API-key load gets no ambient fallback;
+    # reloading spawns a fresh worker (the orchestrator always does) and restores it.
+    #
+    # This bounds implicit use, not the operator's credential: get_token() also reads
+    # ~/.cache/huggingface/token, which nothing here removes. That is why every call in this
+    # worker has to be handed the sentinel rather than left at None.
+    from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg
+
     if not config.get("allow_ambient", True):
-        from hub.utils.hf_tokens import apply_token_to_child_env
         apply_token_to_child_env(os.environ, False)
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
+            # The sentinel, not None: `or None` would ask the tier probe to go find a
+            # credential, and _probe_autoconfig scrubs its child only for the sentinel.
+            _activate_transformers_version(
+                checkpoint_path,
+                hf_token_arg(
+                    config.get("hf_token"),
+                    allow_ambient_token = config.get("allow_ambient", True),
+                ),
+            )
         except Exception as exc:
             _send_response(
                 resp_queue,

@@ -477,16 +477,18 @@ class ExportBackend:
         checkpoints, matching the token the worker used for the security preflight
         (otherwise a gated repo passes scanning then 401s at from_pretrained).
 
-        The ``False`` sentinel means the caller was denied the ambient token. The
-        detection probes have to see it: their shared-cache reads are gated on
-        is_anonymous(), not on the environment. The loaders below take ``None``
-        instead, since hf_login() would try to log in with the sentinel.
+        The ``False`` sentinel means the caller was denied the ambient token, and it has to
+        travel all the way down. ``None`` is not anonymous to this stack: it is the request
+        to go and find a credential. unsloth spells that ``if token is None: get_token()``
+        (``save.py``, and ``hf_login`` at ``models/_utils.py:4106``), and ``get_token()``
+        reads the operator's stored login from ``~/.cache/huggingface/token``, which no
+        amount of environment scrubbing touches. The detection probes need it for a second
+        reason: their shared-cache reads are gated on is_anonymous().
 
         Returns:
             Tuple of (success: bool, message: str)
         """
-        probe_token = normalize_token(hf_token)
-        token = probe_token or None
+        token = normalize_token(hf_token)
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -511,12 +513,22 @@ class ExportBackend:
             # environment does not help: nothing authenticates. Same rule the capability
             # probes apply (utils/models/model_config.py:1074, 1267), refused here instead,
             # because the load has no anonymous answer to fall back to.
-            if local_files_only and is_anonymous(probe_token) and not is_local_path(model_id):
+            #
+            # On checkpoint_path, NOT model_id: for a locally trained adapter model_id is the
+            # base named in adapter_config.json, so testing it would refuse every offline
+            # export of a local LoRA (Studio's main flow, and MCP is always non-ambient) over
+            # a base the caller never named. That leaves reading a private base through a
+            # crafted local adapter_config, which needs a separate write onto this host.
+            if (
+                local_files_only
+                and is_anonymous(token)
+                and not is_local_path(checkpoint_path)
+            ):
                 return (
                     False,
-                    f"Cannot load '{model_id}' without a Hugging Face token while the Hub is "
-                    "unreachable: the local cache is the server operator's and is not served "
-                    "to API callers. Supply hf_token, or retry when the Hub is reachable.",
+                    f"Cannot load '{checkpoint_path}' without a Hugging Face token while the "
+                    "Hub is unreachable: the local cache is the server operator's and is not "
+                    "served to API callers. Supply hf_token, or retry when the Hub is reachable.",
                 )
 
             # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
@@ -531,10 +543,10 @@ class ExportBackend:
             # skip.
             with _offline_window_if(local_files_only):
                 self._audio_type = detect_audio_type(
-                    model_id, hf_token = probe_token, local_files_only = local_files_only
+                    model_id, hf_token = token, local_files_only = local_files_only
                 )
                 self.is_vision = not self._audio_type and is_vision_model(
-                    model_id, hf_token = probe_token, local_files_only = local_files_only
+                    model_id, hf_token = token, local_files_only = local_files_only
                 )
 
             if self._audio_type == "csm":

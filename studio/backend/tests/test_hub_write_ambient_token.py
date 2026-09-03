@@ -361,7 +361,8 @@ def test_worker_scrubs_ambient_token_when_allow_ambient_false(monkeypatch, worke
     assert seen_env.get("HF_TOKEN") is None
     assert seen_env.get("HF_HUB_TOKEN") is None
     assert seen_env.get("DISABLE_IMPLICIT") == "1"
-    assert seen_env.get("passed_token") is None
+    # The sentinel, not None: None asks the tier probe to go and find a credential.
+    assert seen_env.get("passed_token") is False
 
 
 def test_worker_env_holds_no_credential_at_all_when_the_caller_sent_its_own_token(
@@ -525,57 +526,6 @@ def test_worker_load_preflight_sees_the_callers_credential(
 
 
 @pytest.mark.parametrize(
-    "hf_token,expected_probe,expected_loader",
-    [(False, False, None), ("hf_caller_own_token", "hf_caller_own_token", "hf_caller_own_token")],
-)
-def test_export_backend_probes_anonymously_but_never_logs_in_with_the_sentinel(
-    monkeypatch, hf_token, expected_probe, expected_loader
-):
-    """detect_audio_type and is_vision_model gate their cache reads on is_anonymous().
-
-    The weight loader must not see the sentinel: unsloth's hf_login() only short-circuits on
-    None, so False would reach huggingface_hub's login().
-    """
-    from core.export import export as export_backend_module
-
-    seen = {}
-
-    class _Stop(Exception):
-        pass
-
-    def _fake_detect(model_id, hf_token, local_files_only):
-        seen["audio_probe"] = hf_token
-        return None
-
-    def _fake_is_vision(model_id, hf_token, local_files_only):
-        seen["vision_probe"] = hf_token
-        return False
-
-    class _FakeLoader:
-        @staticmethod
-        def from_pretrained(**kwargs):
-            seen["loader"] = kwargs["token"]
-            raise _Stop()
-
-    monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
-    monkeypatch.setattr(export_backend_module, "is_vision_model", _fake_is_vision)
-    monkeypatch.setattr(export_backend_module, "FastLanguageModel", _FakeLoader)
-    # This case is the online path; the offline refusal has its own test below.
-    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
-
-    backend = export_backend_module.ExportBackend()
-    success, _message = backend.load_checkpoint(
-        checkpoint_path = "someone/private-model",
-        hf_token = hf_token,
-    )
-
-    assert success is False
-    assert seen["audio_probe"] == expected_probe
-    assert seen["vision_probe"] == expected_probe
-    assert seen["loader"] == expected_loader
-
-
-@pytest.mark.parametrize(
     "endpoint,method_name,payload",
     [
         (
@@ -694,20 +644,31 @@ def test_export_backend_forwards_the_sentinel_into_the_gguf_lora_conversion(
 
 
 @pytest.mark.parametrize(
-    "model_id,hf_token,offline,should_refuse",
+    "checkpoint,hf_token,offline,should_refuse",
     [
         ("someone/private-model", False, True, True),
         ("someone/private-model", False, False, False),
         ("someone/private-model", "hf_caller_own_token", True, False),
         ("someone/private-model", None, True, False),
         ("/tmp/local-checkpoint", False, True, False),
+        # The regression the model_id form caused: a locally trained adapter names a Hub base,
+        # so testing the resolved id refused every offline export of a local LoRA, which is
+        # Studio's main flow and always non-ambient over MCP.
+        ("<local-lora-adapter>", False, True, False),
     ],
 )
 def test_offline_anonymous_load_will_not_read_the_operators_cache(
-    monkeypatch, model_id, hf_token, offline, should_refuse
+    monkeypatch, tmp_path, checkpoint, hf_token, offline, should_refuse
 ):
     """Offline, nothing authenticates, so the shared cache would serve whatever the operator
-    downloaded. The scrubbed environment cannot help; only a refusal can."""
+    downloaded. The scrubbed environment cannot help; only a refusal can. It has to key on what
+    the caller named, though, not on what that resolves to."""
+    if checkpoint == "<local-lora-adapter>":
+        (tmp_path / "adapter_config.json").write_text(
+            '{"base_model_name_or_path": "unsloth/llama-3.2-1B-Instruct", "peft_type": "LORA"}'
+        )
+        (tmp_path / "adapter_model.safetensors").touch()
+        checkpoint = str(tmp_path)
     from core.export import export as export_backend_module
 
     reached = {}
@@ -721,7 +682,7 @@ def test_offline_anonymous_load_will_not_read_the_operators_cache(
     monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
 
     backend = export_backend_module.ExportBackend()
-    success, message = backend.load_checkpoint(checkpoint_path = model_id, hf_token = hf_token)
+    success, message = backend.load_checkpoint(checkpoint_path = checkpoint, hf_token = hf_token)
 
     assert success is False
     if should_refuse:
@@ -729,3 +690,62 @@ def test_offline_anonymous_load_will_not_read_the_operators_cache(
         assert "probe" not in reached, "refused loads must not touch the cache at all"
     else:
         assert reached.get("probe"), f"expected the load to proceed, got: {message}"
+
+
+@pytest.mark.parametrize(
+    "hf_token,expected",
+    [
+        # None is not anonymous to unsloth: hf_login(None) calls get_token(), which reads the
+        # operator's stored ~/.cache/huggingface/token and logs in with it. Only False is.
+        (False, False),
+        ("hf_caller_own_token", "hf_caller_own_token"),
+        (None, None),
+    ],
+)
+def test_weight_loader_never_gets_none_for_an_anonymous_caller(monkeypatch, hf_token, expected):
+    from core.export import export as export_backend_module
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _FakeLoader:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            seen["loader"] = kwargs["token"]
+            raise _Stop()
+
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
+    monkeypatch.setattr(
+        export_backend_module,
+        "detect_audio_type",
+        lambda model_id, hf_token, local_files_only: seen.setdefault("audio", hf_token) and None,
+    )
+    monkeypatch.setattr(
+        export_backend_module,
+        "is_vision_model",
+        lambda model_id, hf_token, local_files_only: bool(seen.setdefault("vision", hf_token))
+        and False,
+    )
+    monkeypatch.setattr(export_backend_module, "FastLanguageModel", _FakeLoader)
+
+    backend = export_backend_module.ExportBackend()
+    backend.load_checkpoint(checkpoint_path = "someone/private-model", hf_token = hf_token)
+
+    assert seen["audio"] == expected
+    assert seen["vision"] == expected
+    assert seen["loader"] == expected
+
+
+def test_hf_login_treats_none_as_fetch_the_operators_stored_token():
+    """The upstream contract the sentinel exists for; if this flips, the threading is moot."""
+    import inspect
+
+    from unsloth.models._utils import hf_login
+
+    src = inspect.getsource(hf_login)
+    assert "if token is None:" in src and "get_token()" in src
+    # False must not be routed into the get_token() branch.
+    assert hf_login(False) is False
