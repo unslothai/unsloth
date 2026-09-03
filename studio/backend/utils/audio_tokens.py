@@ -116,6 +116,20 @@ def classify_audio_tokens(tok_config: dict) -> Optional[str]:
 # Keep the two in step; the GGUF gate reads this from the header instead of a live server.
 SNAC_PROBE_TOKEN_IDS = (128258, 128259)
 
+GGUF_AUDIO_CLASSIFIER_TOKENS = frozenset(
+    {
+        "<|AUDIO|>",
+        "<|audio_eos|>",
+        "<|startoftranscript|>",
+        "<audio_soft_token>",
+        "<|audio|>",
+        "<|bicodec_semantic_0|>",
+        "<|bicodec_global_0|>",
+        "<|c1_0|>",
+        "<|c2_0|>",
+    }
+)
+
 
 def classify_gguf_vocab_audio_type(tokens: set, snac_probe_is_codes: bool) -> Optional[str]:
     """The audio_type llama.cpp will report for a GGUF whose vocabulary is *tokens*."""

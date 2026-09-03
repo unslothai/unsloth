@@ -173,6 +173,18 @@ def test_oversized_vocabulary_arrays_are_rejected_before_allocation(tmp_path, ke
     assert gguf_metadata._parse_gguf_marker_tokens(str(path)) is None
 
 
+def test_generic_angle_bracket_tokens_are_not_accumulated_as_audio_markers(tmp_path):
+    path = _write_gguf(tmp_path / "generic-markers.gguf", ["<"] * 50_000)
+    markers, snac_probe = gguf_metadata._parse_gguf_marker_tokens(path)
+    assert markers == []
+    assert snac_probe is False
+
+
+def test_repeated_audio_markers_are_rejected_without_accumulation(tmp_path):
+    path = _write_gguf(tmp_path / "repeated-markers.gguf", ["<|AUDIO|>"] * 50_000)
+    assert gguf_metadata._parse_gguf_marker_tokens(path) is None
+
+
 def test_the_switch_probe_reads_the_variant_the_load_will_open(tmp_path, monkeypatch):
     import routes.inference as inference_route
     from utils.models import model_config

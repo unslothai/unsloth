@@ -625,7 +625,9 @@ _MAX_GGUF_VOCAB_ENTRIES = 2_000_000
 
 def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
     """(marker tokens, whether the ids the SNAC probe detokenizes are codec codes)."""
-    from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
+    from utils.audio_tokens import GGUF_AUDIO_CLASSIFIER_TOKENS, SNAC_PROBE_TOKEN_IDS
+
+    marker_bytes = {token.encode("utf-8"): token for token in GGUF_AUDIO_CLASSIFIER_TOKENS}
 
     try:
         with open(path, "rb") as f:
@@ -635,7 +637,7 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
             magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
             if magic != _GGUF_MAGIC:
                 return None
-            marker_tokens: list[tuple[int, str]] = []
+            marker_tokens: dict[str, int] = {}
             token_types: Optional[bytes] = None
             snac_probe: Optional[dict[int, bool]] = None
             for _ in range(kv_count):
@@ -689,19 +691,18 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
                         # Substring, not prefix: the detector asks what the id decodes
                         # to, and a tokenizer decoration would sit in front of the marker.
                         snac_probe[index] = b"<custom_token_" in raw
-                    if raw[:1] != b"<":
-                        continue
-                    try:
-                        marker_tokens.append((index, raw.decode("utf-8")))
-                    except UnicodeDecodeError:
-                        continue
+                    marker = marker_bytes.get(raw)
+                    if marker is not None:
+                        if marker in marker_tokens:
+                            return None
+                        marker_tokens[marker] = index
             if snac_probe is None:
                 return None
             # llama.cpp's parse-special path does not treat plain NORMAL
             # vocabulary membership as a one-token capability marker.
             markers = [
                 token
-                for index, token in marker_tokens
+                for token, index in marker_tokens.items()
                 if token_types is not None
                 and 4 * (index + 1) <= len(token_types)
                 and struct.unpack_from("<i", token_types, 4 * index)[0] in {2, 3, 4}
