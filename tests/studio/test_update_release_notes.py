@@ -62,8 +62,13 @@ def _split_variants(token: str) -> tuple[tuple[str, ...], str]:
     return tuple(parts[:-1]), parts[-1]
 
 
+def _tokens(source: str) -> list[tuple[tuple[str, ...], str]]:
+    """Every class token in `source`, as (variants, utility)."""
+    return [_split_variants(token) for token in re.findall(r"""[^\s"'`]+""", source)]
+
+
 def _applies(source: str, utility: str, *variants: str) -> bool:
-    """Is `utility` written anywhere in `source` under all of `variants`?
+    """Is `utility` written anywhere in `source` under at least `variants`?
 
     Token-wise, not as a substring. These assertions used to name a run of
     classes verbatim, so gating a rule (`max-[383px]:has-[...]:min-h-[calc]`)
@@ -72,18 +77,52 @@ def _applies(source: str, utility: str, *variants: str) -> bool:
     A utility is the last top-level segment, so a longer utility that merely
     ends with this one does not count, and variant order is Tailwind's business
     rather than this test's.
+
+    Name no variants and this asks whether the utility is there under any gate
+    or none, which is what a check for a rule's *absence* wants. A check that a
+    rule is in force needs `_unconditional`.
     """
-    for token in re.findall(r"""[^\s"'`]+""", source):
-        token_variants, token_utility = _split_variants(token)
+    for token_variants, token_utility in _tokens(source):
         if token_utility == utility and set(variants) <= set(token_variants):
             return True
     return False
 
 
-def _class_string(source: str, anchor: str) -> str:
-    """The class string opened by `anchor`, up to its closing quote."""
-    at = source.index(anchor)
-    return source[at : source.index('"', at + len(anchor))]
+def _unconditional(source: str, utility: str) -> bool:
+    """Is `utility` written with no variant at all?
+
+    Not `_applies` with an empty variant list: that is a subset test, and the
+    empty set is a subset of every token's variants, so `max-[383px]:shrink-0`
+    would have answered a question about an ungated `shrink-0` and the card
+    would have been squeezable at every width but one.
+    """
+    return any(
+        token_utility == utility and not token_variants
+        for token_variants, token_utility in _tokens(source)
+    )
+
+
+def _class_const(source: str, name: str) -> str:
+    """The class string of an exported `const NAME = "..."`."""
+    match = re.search(rf'\b{re.escape(name)}\b\s*=\s*\n?\s*"([^"]*)"', source)
+    assert match, f"{name} is not an exported class constant"
+    return match.group(1)
+
+
+def _class_on_testid(source: str, testid: str) -> str:
+    """The literal class string of the element carrying `data-testid=testid`.
+
+    Anchored on the attribute that names the element rather than on a run of
+    its classes. An anchor built from classes cannot survive one of them being
+    inserted or reordered, which is the failure this file is being fixed for,
+    and it fails by raising rather than by reporting a missing rule.
+    """
+    at = source.index(f'data-testid="{testid}"')
+    opening = source[source.rindex("<", 0, at) : at]
+    key = 'className="'
+    assert key in opening, f"{testid} carries no literal class string"
+    at_class = source.rindex("<", 0, at) + opening.index(key) + len(key)
+    return source[at_class : source.index('"', at_class)]
 
 
 def _assert_classes(class_string: str, *rules: str) -> None:
@@ -1143,7 +1182,7 @@ def test_only_the_notes_region_scrolls(banner):
     # The painted surface: capped, clipping, and able to give up height itself
     # so that the region inside it is the one that scrolls.
     _assert_classes(
-        _class_string(src, "relative flex max-h-[calc(100dvh_-_2rem)] "),
+        _card_surface(src),
         "flex",
         "max-h-[calc(100dvh_-_2rem)]",
         "min-h-0",
@@ -1152,7 +1191,7 @@ def test_only_the_notes_region_scrolls(banner):
     )
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     _assert_classes(
-        _class_string(layout, "mt-3 flex min-h-0 "),
+        _class_const(layout, "UPDATE_NOTES_ROOT_CLASS"),
         "flex",
         "min-h-0",
         "flex-1",
@@ -1162,7 +1201,7 @@ def test_only_the_notes_region_scrolls(banner):
     panel = PANEL.read_text(encoding = "utf-8")
     assert "UPDATE_NOTES_EXPANDED_SCROLL_CLASS" in panel
     _assert_classes(
-        _class_string(layout, "hover-scrollbar max-h-64 "),
+        _class_const(layout, "UPDATE_NOTES_EXPANDED_SCROLL_CLASS"),
         "max-h-64",
         "min-h-0",
         "flex-1",
@@ -1171,7 +1210,7 @@ def test_only_the_notes_region_scrolls(banner):
     # The collapsed summary scrolls too: without it the bullets were painted
     # over the row of buttons once the card's slot for them got small.
     _assert_classes(
-        _class_string(panel, "hover-scrollbar min-h-0 flex-1 space-y-1"),
+        _class_on_testid(panel, "update-release-notes-summary"),
         "min-h-0",
         "flex-1",
         "space-y-1",
@@ -1385,16 +1424,33 @@ _NOTES_GATE = "has-[[data-slot=update-release-notes]]"
 _COMMENT = re.compile(r"//[^\n]*")
 
 
+_BANNER_ROOT = re.compile(r'data-testid="(?:web|tauri)-update-banner"')
+
+
 def _card_slot(source: str) -> str:
     """The rail-facing root of an update card, comments stripped.
 
     Not one string literal: the root is a `cn()` of several, so an assertion
-    anchored on the first of them cannot see the floor at all. Comments go
-    because they name the very classes under test in prose, and a rule that a
+    anchored on the first of them cannot see the floor at all. Anchored on the
+    `data-testid` that names the card and the `cn(` before it, so no class has
+    to keep its place for the root to be found. Comments go because both files
+    name the very classes under test in prose beside them, and a rule that a
     comment can satisfy is not being tested.
     """
-    at = source.index("pointer-events-auto flex ")
-    return _COMMENT.sub("", source[at : source.index("data-testid", at)])
+    match = _BANNER_ROOT.search(source)
+    assert match, "the update card has lost its data-testid"
+    return _COMMENT.sub(
+        "", source[source.rindex("className={cn(", 0, match.start()) : match.start()]
+    )
+
+
+def _card_surface(source: str) -> str:
+    """The painted surface: the first element inside the card's root."""
+    match = _BANNER_ROOT.search(source)
+    assert match, "the update card has lost its data-testid"
+    key = 'className="'
+    at = source.index(key, match.end()) + len(key)
+    return source[at : source.index('"', at)]
 
 
 def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
@@ -1409,7 +1465,9 @@ def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
         root, narrow, _NOTES_GATE, _NARROW
     ), f"the {card} card's floor misses the narrow card's extra button row"
     # With no notes rendered there is no floor, so this is what holds the row.
-    assert _applies(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
+    assert _unconditional(
+        root, "shrink-0"
+    ), f"the rail can squeeze the {card} card with no notes open"
     assert _applies(
         root, "shrink", _NOTES_GATE
     ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
@@ -1434,6 +1492,29 @@ def _capped_rails(provider: str) -> int:
     them, so the gutter is not spent on the cards. See overlay-shadow-gutter.
     """
     return sum(1 for rail in _corner_rails(provider) if "max-h-[calc(100dvh_-_8px)]" in rail)
+
+
+def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
+    """The floor assertions are only as strong as these, so they are tested.
+
+    A matcher that quietly says yes is how this file went wrong the first time:
+    the checks read as layout guarantees and were substring searches.
+    """
+    gated = "max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(1px+2px)]"
+    assert _split_variants(gated) == (
+        ("max-[383px]", "has-[[data-slot=update-release-notes]]"),
+        "min-h-[calc(1px+2px)]",
+    ), "a bracketed variant's own colon splits the token"
+    # A variant that is asked for must be there, and the rest may be in any order.
+    assert _applies(gated, "min-h-[calc(1px+2px)]", "max-[383px]")
+    assert _applies(gated, "min-h-[calc(1px+2px)]", "max-[383px]", "has-[[data-slot=x]]") is False
+    assert _applies("min-h-[calc(1px+2px)]", "min-h-[calc(1px+2px)]", "max-[383px]") is False
+    # A utility is the whole last segment, not a suffix of one.
+    assert _applies("min-h-0", "h-0") is False
+    # And a gate cannot answer for a rule that has to hold everywhere.
+    assert _applies("md:shrink-0", "shrink-0"), "the absence check must see a gated rule"
+    assert _unconditional("md:shrink-0", "shrink-0") is False
+    assert _unconditional("flex shrink-0 flex-col", "shrink-0")
 
 
 def test_the_overlay_stack_fits_the_viewport():
