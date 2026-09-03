@@ -201,6 +201,14 @@ _REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstal
 # upgrade every dep of a kept target; dropping it falls back to only-if-needed.
 _DROP_VALUE_FLAGS = {"--upgrade-strategy"}
 
+# Value flags that ARE the install target: they name packages to install without
+# any package appearing on the command line. Without these, `pip install --group
+# test` scans to no target and the shim no-ops while printing "ok", so the
+# notebook's install cell silently does nothing. pip documents --group as
+# "Install a named dependency-group from a pyproject.toml file" and
+# --requirements-from-script as installing a script's PEP 723 dependencies.
+_TARGET_VALUE_FLAGS = {"--group", "--upgrade-group", "--requirements-from-script"}
+
 
 # Source-distribution / archive suffixes pip accepts as an install target.
 _ARCHIVE_EXTS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar", ".zip")
@@ -697,6 +705,8 @@ def main():
                         has_target = True
             else:
                 keep_args.append(tok)
+                if prev_flag in _TARGET_VALUE_FLAGS:
+                    has_target = True
             skip_next = False
             prev_flag = None
             continue
@@ -735,7 +745,9 @@ def main():
                         if _flag in _EDITABLE_FLAGS:
                             has_target = True
                 else:
-                    keep_args.append(tok)  # option with inline value, not a target
+                    keep_args.append(tok)  # option with inline value
+                    if _flag in _TARGET_VALUE_FLAGS:
+                        has_target = True
                 continue
         # Attached short value-flag form (-rreqs.txt, -cX, -epath, -Pname as ONE
         # token). Split flag from value and reuse the separated-form handling,

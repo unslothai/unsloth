@@ -208,3 +208,43 @@ def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path
 
     recorded = state.read_text(encoding = "utf-8").split("  ", 1)[0]
     assert recorded == strip._sha256(str(path))
+
+
+def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
+    """Third site of the publish-metadata hazard on this branch.
+
+    unsloth_sync_notebooks.sh records a bind-mounted notebook that matches the
+    baked template as managed WITHOUT copying it, precisely so the host user
+    keeps owning it. os.replace swaps the directory entry, so a staged tmp file
+    written by root would hand that notebook back root-owned and unwritable.
+    """
+    import os
+    import stat as _stat
+
+    nb_path = tmp_path / "Managed.ipynb"
+    nb_path.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {
+                        "cell_type": "markdown",
+                        "source": ["To run this, press *Runtime* > Run all\n"],
+                    }
+                ],
+                "metadata": {},
+                "nbformat": 4,
+                "nbformat_minor": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # a mode a fresh root-written tmp file would NOT have under the usual umask
+    os.chmod(nb_path, 0o640)
+    before = _stat.S_IMODE(os.stat(nb_path).st_mode)
+    assert before == 0o640
+
+    assert strip.strip_notebook(str(nb_path)) is True
+    after = _stat.S_IMODE(os.stat(nb_path).st_mode)
+    assert after == before, f"cleanup changed the mode {oct(before)} -> {oct(after)}"
+    # the strip really happened
+    assert "To run this" not in nb_path.read_text(encoding="utf-8")

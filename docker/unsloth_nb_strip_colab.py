@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
 
 # Stable identifier for the offending line (all GPU/Cloud variants).
@@ -51,6 +52,31 @@ def _is_intro_line(line):
     if low.startswith("<!--") and stripped.endswith("-->"):
         return stripped[4:-3].strip().lower().startswith(_INTRO_PREFIX)
     return False
+
+
+def _stage_metadata(staged, dest):
+    """Give the staged file the metadata `dest` must keep, before os.replace.
+
+    The third site of this hazard on this branch, after unsloth_run.py and
+    unsloth_sync_notebooks.sh. os.replace swaps the directory entry, so the
+    staged inode's root owner and mode become the published file's, and the sync
+    script deliberately records a bind-mounted notebook matching the baked
+    template as managed WITHOUT copying it precisely so the host user keeps
+    owning it. Cleaning it must not undo that. Best effort: a filesystem that
+    refuses chmod/chown must not cost the user the cleanup.
+    """
+    try:
+        st = os.stat(dest)
+    except OSError:
+        return
+    try:
+        os.chmod(staged, stat.S_IMODE(st.st_mode))
+    except OSError:
+        pass
+    try:
+        os.chown(staged, st.st_uid, st.st_gid)
+    except (OSError, AttributeError):
+        pass
 
 
 def _strip_lines(lines):
@@ -172,6 +198,7 @@ def strip_notebook(path, staged = None):
         if _sha256(path) != before:
             os.remove(tmp)
             return False
+        _stage_metadata(tmp, path)
         os.replace(tmp, path)
         # Hand the caller the STAGED hash: rehashing `path` after the replace
         # would adopt a save that landed in that window and record the user's own

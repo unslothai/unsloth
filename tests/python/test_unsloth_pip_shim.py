@@ -918,3 +918,33 @@ def test_normalization_does_not_merge_distinct_distributions(shim):
     # torch-directml / torch_tensorrt / torchsde are NOT torch and must pass through.
     for token in ("torch-directml==0.2", "torch_tensorrt==2.0", "torchsde==0.2"):
         assert shim._canon(token) not in shim._KEEP, token
+
+
+# pip documents --group as "Install a named dependency-group from a pyproject.toml
+# file" and --requirements-from-script as installing a script's PEP 723 deps, so
+# each IS the install target with no package on the command line. Treating them as
+# ordinary option/value pairs left the scan with no target, and the shim then
+# no-op'd while printing "ok" -- the cell silently installed nothing.
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--group", "test"],
+        ["--group=test"],
+        ["--group", "sub/pyproject.toml:dev"],
+        ["--requirements-from-script", "demo.py"],
+        ["--requirements-from-script=demo.py"],
+    ],
+)
+def test_dependency_group_flags_are_install_targets(shim, args):
+    execd = _execd_full(shim, "pip", args)
+    for tok in args:
+        assert tok in execd, (args, execd)
+
+
+@pytest.mark.parametrize("args", [["--no-deps"], ["--quiet"], ["torch"]])
+def test_flag_only_or_fully_protected_cells_still_no_op(shim, args):
+    """The guard must keep no-op'ing where there really is nothing to install."""
+    argv = ["pip", "install", *args]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(shim.sys, "argv", argv)
+        shim.main()  # returns instead of exec'ing
