@@ -752,10 +752,20 @@ def test_weight_loader_never_gets_none_for_an_anonymous_caller(monkeypatch, hf_t
 
 
 def test_hf_login_treats_none_as_fetch_the_operators_stored_token():
-    """The upstream contract the sentinel exists for; if this flips, the threading is moot."""
+    """The upstream contract the sentinel exists for; if this flips, the threading is moot.
+
+    unsloth imports torch, and a torch-less install is supported here (core/export/export.py
+    degrades to "PyTorch is not installed" rather than failing to import), so this pins the
+    contract only where it can be read.
+    """
     import inspect
 
-    from unsloth.models._utils import hf_login
+    # Not importorskip: that only skips on ModuleNotFoundError, and unsloth raises a plain
+    # ImportError ("Unsloth: torch not found") when torch is absent.
+    try:
+        from unsloth.models._utils import hf_login
+    except ImportError as exc:
+        pytest.skip(f"unsloth needs torch, which this install does not ship: {exc}")
 
     src = inspect.getsource(hf_login)
     assert "if token is None:" in src and "get_token()" in src
