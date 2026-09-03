@@ -37,7 +37,8 @@ out["portable"] = sr.portable_mode()
 out["projects"] = str(sr.project_workspaces_root())
 out["documents"] = str(sr.documents_root())
 for k in ("UNSLOTH_COMPILE_LOCATION", "UV_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR",
-          "TRITON_HOME", "TRITON_CACHE_DIR", "MPLCONFIGDIR", "NUMBA_CACHE_DIR",
+          "TRITON_HOME", "TRITON_CACHE_DIR", "TRITON_DUMP_DIR",
+          "MPLCONFIGDIR", "NUMBA_CACHE_DIR",
           "CUDA_CACHE_PATH", "TORCH_EXTENSIONS_DIR", "DATA_DESIGNER_HOME",
           "HF_HOME", "HF_HUB_CACHE", "HF_DATASETS_CACHE", "TORCH_HOME",
           "UNSLOTH_STUDIO_PROJECTS_HOME"):
@@ -91,12 +92,18 @@ def inside(child: str, parent: str) -> bool:
         return False
 
 
+# Triton is represented by TRITON_CACHE_DIR and TRITON_DUMP_DIR, not TRITON_HOME.
+# TRITON_HOME is the parent Triton derives the cache, dump AND override dirs
+# from, so pinning it would drag ~/.triton/override -- hand-written kernels,
+# user files rather than a cache -- onto the volume too. Both regenerable dirs
+# still have to land under the root, which is what these lists check; see
+# TRITON_HOME_UNPINNED below for the other half.
 CONTAINED = (
     "UNSLOTH_COMPILE_LOCATION",
     "UV_CACHE_DIR",
     "TORCHINDUCTOR_CACHE_DIR",
-    "TRITON_HOME",
     "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
     "MPLCONFIGDIR",
     "NUMBA_CACHE_DIR",
     "CUDA_CACHE_PATH",
@@ -112,14 +119,19 @@ ALWAYS = (
     "UNSLOTH_COMPILE_LOCATION",
     "UV_CACHE_DIR",
     "TORCHINDUCTOR_CACHE_DIR",
-    "TRITON_HOME",
     "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
     "MPLCONFIGDIR",
     "NUMBA_CACHE_DIR",
     "CUDA_CACHE_PATH",
     "TORCH_EXTENSIONS_DIR",
     "DATA_DESIGNER_HOME",
 )
+
+# The variable we must NOT set, at any root shape. Asserted alongside every
+# containment check so "contain Triton's cache" can never be satisfied again by
+# reaching for its parent.
+TRITON_HOME_UNPINNED = "TRITON_HOME"
 
 
 def main() -> int:
@@ -173,6 +185,11 @@ def main() -> int:
         v = r.get(key)
         check(f"{key} inside the root", bool(v) and inside(v, str(root)), f"got {v}")
     check(
+        "TRITON_HOME is left alone so ~/.triton/override still applies",
+        r[TRITON_HOME_UNPINNED] is None,
+        f"got {r[TRITON_HOME_UNPINNED]}",
+    )
+    check(
         "HF_HOME stays out of the root (owns the token)",
         bool(r["HF_HOME"]) and not inside(r["HF_HOME"], str(root)),
         f"got {r['HF_HOME']}",
@@ -207,6 +224,11 @@ def main() -> int:
         "TORCH_HOME is not pinned on a default install",
         r["TORCH_HOME"] is None,
         str(r["TORCH_HOME"]),
+    )
+    check(
+        "TRITON_HOME is not pinned on a default install either",
+        r[TRITON_HOME_UNPINNED] is None,
+        str(r[TRITON_HOME_UNPINNED]),
     )
     for key in ALWAYS:
         v = r.get(key)
@@ -297,6 +319,15 @@ def main() -> int:
     check("explicit projects home beats portable", r["projects"] == str(chosen), r["projects"])
     r = run({"UNSLOTH_HOME": str(root), "MPLCONFIGDIR": "   "}, home)
     check("blank counts as unset", inside(r["MPLCONFIGDIR"], str(root)), str(r["MPLCONFIGDIR"]))
+    # A user who moved the whole .triton tree meant the cache with it, and
+    # TRITON_CACHE_DIR outranks the derivation from TRITON_HOME, so filling it
+    # here would quietly overrule the move rather than defer to it.
+    r = run({"UNSLOTH_HOME": str(root), "TRITON_HOME": str(chosen)}, home)
+    check(
+        "an explicit TRITON_HOME is left to derive its own cache dir",
+        r["TRITON_CACHE_DIR"] is None and r["TRITON_DUMP_DIR"] is None,
+        f"cache={r['TRITON_CACHE_DIR']} dump={r['TRITON_DUMP_DIR']}",
+    )
 
     print("\n[7] hostile install roots")
     cases = {
@@ -318,13 +349,15 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - the point is to report, not raise
             check(f"root with {label}", False, repr(exc)[:200])
             continue
-        ok = all(inside(r.get(k) or "", str(root)) for k in CONTAINED)
+        wrong = {k: r.get(k) for k in CONTAINED if not inside(r.get(k) or "", str(root))}
+        # A stray TRITON_HOME counts as wrong too: reaching for the parent would
+        # satisfy the containment above while dragging ~/.triton/override along.
+        if r.get(TRITON_HOME_UNPINNED):
+            wrong[TRITON_HOME_UNPINNED] = r.get(TRITON_HOME_UNPINNED)
         check(
             f"root with {label} contains everything",
-            ok,
-            json.dumps({k: r.get(k) for k in CONTAINED if not inside(r.get(k) or "", str(root))})[
-                :200
-            ],
+            not wrong,
+            json.dumps(wrong)[:200],
         )
 
     home = tmp / "h_slash"
