@@ -27557,11 +27557,7 @@ async def _responses_stream(
 
         # Healing changes a natural stop into tool_calls, but it must not erase
         # an authoritative truncation or failure reason from the upstream model.
-        if (
-            healer is not None
-            and healer.healed
-            and stream_finish_reason in (None, "stop")
-        ):
+        if healer is not None and healer.healed and stream_finish_reason in (None, "stop"):
             stream_finish_reason = "tool_calls"
 
         truncated = stream_finish_reason == "length"
