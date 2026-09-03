@@ -194,16 +194,33 @@ async def get_download_progress(
 @router.get("/cached-gguf", response_model = CachedGgufResponse)
 async def list_cached_gguf(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
+    """Local filesystem inventory of cached GGUF repos.
+
+    An API key is denied the ambient token and must not learn which private
+    repos, sizes, or absolute cache paths sit on this host. UI sessions keep
+    the full listing. The in-process CLI catalog still scans disk directly.
+    """
+    if not allow_ambient_token:
+        return CachedGgufResponse(cached = [], scan_confirmed = True)
     return await cache_inventory.list_cached_gguf_response(hf_token)
 
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
+    """Local filesystem inventory of cached non-GGUF repos.
+
+    Same caller boundary as ``/cached-gguf``: API keys get an empty list,
+    UI sessions get the host scan.
+    """
+    if not allow_ambient_token:
+        return CachedModelsResponse(cached = [], scan_confirmed = True)
     return await cache_inventory.list_cached_models_response(hf_token)
 
 
