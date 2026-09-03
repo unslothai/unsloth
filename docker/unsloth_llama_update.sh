@@ -60,12 +60,17 @@ case "$(uname -m)" in
     *) echo "unsloth-llama-update: unsupported arch $(uname -m)" >&2; exit 1;;
 esac
 
+# Read the FULL release identity ("release_tag", e.g. b10715-mix-86bd2d3), because
+# that is what --check compares against resolve_latest_tag's tag_name. The marker's
+# "tag" is the normalized base build (b10715), so preferring it reported "an update
+# is available" forever on any install written by the in-app updater, which records
+# the two fields separately.
 installed_tag() {
     "$PY" - "$INSTALL_DIR" <<'PY' 2>/dev/null || echo "unknown"
 import json, os, sys
 p = os.path.join(sys.argv[1], "UNSLOTH_PREBUILT_INFO.json")
 try:
-    d = json.load(open(p)); print(d.get("tag") or d.get("release_tag") or d.get("upstream_tag") or "unknown")
+    d = json.load(open(p)); print(d.get("release_tag") or d.get("tag") or d.get("upstream_tag") or "unknown")
 except Exception:
     print("unknown")
 PY

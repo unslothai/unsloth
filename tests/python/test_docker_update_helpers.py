@@ -178,11 +178,11 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
 # --- unsloth-llama-update -----------------------------------------------------
 
 
-def _llama_env(tmp_path: Path, *, latest: str | None) -> dict:
+def _llama_env(tmp_path: Path, *, latest: str | None, marker: str = '{"tag": "b1111-old"}') -> dict:
     install = tmp_path / "llama.cpp"
     install.mkdir(parents = True)
     (install / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        '{"tag": "b1111-old"}\n',
+        marker + "\n",
         encoding = "utf-8",
     )
     fetcher = tmp_path / "fetch_llama_prebuilt.py"
@@ -199,8 +199,8 @@ def _llama_env(tmp_path: Path, *, latest: str | None) -> dict:
     return env
 
 
-def _llama_check(tmp_path: Path, latest):
-    env = _llama_env(tmp_path, latest = latest)
+def _llama_check(tmp_path: Path, latest, **kwargs):
+    env = _llama_env(tmp_path, latest = latest, **kwargs)
     return _run(LLAMA_UPDATE, ["--check"], env)
 
 
@@ -214,6 +214,38 @@ def test_llama_check_reports_up_to_date(tmp_path: Path):
     res = _llama_check(tmp_path, "b1111-old")
     assert res.returncode == 0, res.stderr
     assert "up to date" in res.stdout
+
+
+def test_llama_check_reads_the_full_release_tag_not_the_base_build(tmp_path: Path):
+    # A marker written by the in-app updater (studio/install_llama_prebuilt.py) splits
+    # the two: "tag" is the normalized base build, "release_tag" the full release. The
+    # latest pointer is always the full tag_name, so reading "tag" first compared
+    # b10715 against b10715-mix-86bd2d3 and offered an update on an install that was
+    # already current -- forever, since applying it never changed the answer.
+    res = _llama_check(
+        tmp_path,
+        "b10715-mix-86bd2d3",
+        marker = '{"tag": "b10715", "release_tag": "b10715-mix-86bd2d3"}',
+    )
+    assert res.returncode == 0, res.stderr
+    assert "up to date" in res.stdout, (
+        "the installed release IS the latest release; reporting an update here nags "
+        "forever because applying it cannot change the comparison:\n" + res.stdout
+    )
+    assert "installed:   b10715-mix-86bd2d3" in res.stdout, (
+        "the reported installed version must be the full release identity it is "
+        "compared against:\n" + res.stdout
+    )
+
+
+def test_llama_check_still_offers_a_genuinely_newer_release(tmp_path: Path):
+    res = _llama_check(
+        tmp_path,
+        "b10800-mix-aaaaaaa",
+        marker = '{"tag": "b10715", "release_tag": "b10715-mix-86bd2d3"}',
+    )
+    assert res.returncode == 0, res.stderr
+    assert "an update is available" in res.stdout
 
 
 def test_llama_check_does_not_claim_up_to_date_when_it_could_not_look(tmp_path: Path):
@@ -327,3 +359,34 @@ def test_llama_rollback_keeps_every_old_file_when_the_drain_is_interrupted(tmp_p
     survivors = sorted(p.name for p in install.rglob("*") if p.is_file())
     for name in old:
         assert name in survivors, f"{name} was lost during an interrupted drain: {survivors}"
+
+
+# --- fetch_llama_prebuilt.py marker schema ------------------------------------
+
+
+def _fetcher_module():
+    """Import the build-time fetcher by path; it is stdlib-only and has a __main__ guard."""
+    import importlib.util
+
+    path = REPO_ROOT / "docker" / "fetch_llama_prebuilt.py"
+    spec = importlib.util.spec_from_file_location("_fetch_llama_prebuilt", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "release_tag, expected",
+    [
+        ("b10715-mix-86bd2d3", "b10715"),
+        ("b10715", "b10715"),
+        ("  b9596-mix-e6f2453  ", "b9596"),
+        ("not-a-build-tag", "not-a-build-tag"),
+    ],
+)
+def test_fetcher_normalizes_the_base_build_for_the_marker_tag(release_tag, expected):
+    # The baked marker must use the same "tag" = base build / "release_tag" = full
+    # release split that studio/install_llama_prebuilt.py writes. Baking the full mix
+    # tag into "tag" made the image and the in-app updater disagree, so Studio's
+    # installed-version display changed shape depending on which one ran last.
+    assert _fetcher_module().base_build_tag(release_tag) == expected

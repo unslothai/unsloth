@@ -34,6 +34,7 @@ Usage (in the Dockerfile):
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,18 @@ import tempfile
 import urllib.request
 
 RELEASE_REPO = "unslothai/llama.cpp"
+
+
+def base_build_tag(tag: str) -> str:
+    """Normalized upstream build out of a release tag: b10715 from b10715-mix-86bd2d3.
+
+    Studio's marker schema (studio/install_llama_prebuilt.py) records the base build
+    in "tag" and the full release in "release_tag", and its freshness check reads the
+    two differently (base for display, full for the up-to-date comparison). Mirrors
+    llama_cpp_freshness.parse_base_build; a tag that is not bNNNN is left alone.
+    """
+    match = re.match(r"b(\d+)", tag.strip())
+    return f"b{match.group(1)}" if match else tag.strip()
 
 
 def resolve_latest_tag(repo: str) -> str:
@@ -150,19 +163,28 @@ def main() -> None:
     # off upstream_tag/source_repo, but the reader wants tag/release_tag/
     # published_repo (the install_llama_prebuilt.py schema). setdefault() leaves an
     # already-populated tarball untouched; no timestamp, so layers stay identical.
+    # "tag" is the NORMALIZED BASE build and "release_tag" the full release, the same
+    # split install_llama_prebuilt.py writes (llama_tag = bundle.upstream_tag vs
+    # bundle.release_tag). Writing the full mix tag into "tag" here made the two
+    # installers disagree, so Studio's installed-version display changed shape
+    # depending on whether the image bake or the in-app updater had run last.
     marker_path = os.path.join(install_dir, "UNSLOTH_PREBUILT_INFO.json")
     try:
         with open(marker_path) as f:
             marker = json.load(f)
     except (OSError, ValueError):
         marker = {}
-    marker.setdefault("tag", tag)
+    llama_tag = base_build_tag(marker.get("upstream_tag") or tag)
+    marker.setdefault("tag", llama_tag)
     marker.setdefault("release_tag", tag)
     marker.setdefault("published_repo", RELEASE_REPO)
     with open(marker_path, "w") as f:
         json.dump(marker, f, indent = 2)
         f.write("\n")
-    print(f"marker augmented for freshness: tag={tag} published_repo={RELEASE_REPO}")
+    print(
+        f"marker augmented for freshness: tag={marker['tag']} "
+        f"release_tag={marker['release_tag']} published_repo={RELEASE_REPO}"
+    )
 
     # Mirror the install into build/bin/ via hardlinks (zero extra bytes) so
     # Studio's setup.sh treats it as a complete local build and skips its
