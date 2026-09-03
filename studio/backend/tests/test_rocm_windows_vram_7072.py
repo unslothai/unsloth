@@ -57,7 +57,10 @@ def _fake_torch(
             self.gcnArchName = gfx
 
     def get_device_properties(i):
-        name, total, *arch = dev[i]
+        entry = dev[i]
+        if isinstance(entry, Exception):
+            raise entry
+        name, total, *arch = entry
         return _Props(name, total, arch[0] if arch else "")
 
     def mem_get_info(i):
@@ -110,10 +113,11 @@ def win_rocm(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw.sys, "platform", "win32")
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi disabled
-    # Capacity-ranking path by default: without this a Windows dev box reads its
-    # own registry here and the LUID join answers instead. The LUID tests below
-    # opt in with their own map.
+    # Capacity-ranking path by default: without these a Windows dev box asks its
+    # own HIP runtime and reads its own registry, and an identity join answers
+    # instead. The identity tests below opt in with their own map.
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", lambda ordinals, names: None)
     # Visible set via HIP mask so we don't shell out to amd-smi for the count.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -879,6 +883,281 @@ def test_a_driver_without_adapter_family_still_gives_the_name(on_windows, monkey
 def test_registry_read_is_windows_only(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     assert hw._windows_amd_adapter_records_by_luid() == {}
+
+
+# ----------------------------------------------------------------------------- #
+# HIP's own LUID (idea and the R0600 route from @pablo86gr in #8793)
+#
+# The exact key: hipDeviceProp_tR0600 carries the same DXGI LUID the counters
+# are named after, so the join needs nothing about the card, only the card.
+# Tried before the DirectX record, which falls back to matching on what the two
+# sides say about it and so cannot separate two of one model.
+# ----------------------------------------------------------------------------- #
+TWIN_CARDS = [("AMD Radeon RX 7900 XTX", 24 * GB, "gfx1100")] * 2
+TWIN_ADAPTERS = [
+    ("luid_0x00000000_0x0000aaaa_phys_0", 10 * GB),
+    ("luid_0x00000000_0x0000bbbb_phys_0", 4 * GB),
+]
+
+
+def _hip_ids(*identities):
+    """Stand in for the ctypes probe: (luid, node_mask) per queried ordinal."""
+
+    def probe(ordinals, names):
+        probe.asked = list(ordinals)
+        return [identities[o] for o in ordinals]
+
+    probe.asked = []
+    return probe
+
+
+def test_hip_luid_separates_two_of_one_model(win_rocm, monkeypatch):
+    """What the DirectX join cannot do: one Description and one arch for both
+    cards leaves it the aggregate only, while the LUIDs are still distinct."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total = True))
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(TWIN_ADAPTERS))
+    )
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0), (0xBBBB, 0)))
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["used_gb"] for d in devices] == [
+        pytest.approx(10.0, abs = 0.01),
+        pytest.approx(4.0, abs = 0.01),
+    ]
+    assert aggregate == pytest.approx(14.0, abs = 0.01)
+
+
+def test_hip_is_asked_about_the_ordinal_that_answered(win_rocm, monkeypatch):
+    """dev_meta is compacted when a device fails to probe, so its positions are
+    not HIP ordinals. Asking by position would hand ordinal 0's LUID to the
+    card that survived at ordinal 1."""
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch(
+            [RuntimeError("ordinal 0 will not probe"), TWIN_CARDS[1]], free_equals_total = True
+        ),
+    )
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(TWIN_ADAPTERS))
+    )
+    probe = _hip_ids((0xAAAA, 0), (0xBBBB, 0))
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", probe)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert probe.asked == [1]
+    # Ordinal 1 is the 0xBBBB counter, not the 0xAAAA one its position would name.
+    assert devices[0]["used_gb"] == pytest.approx(4.0, abs = 0.01)
+    assert aggregate == pytest.approx(4.0, abs = 0.01)
+
+
+def test_linked_nodes_keep_the_aggregate_but_not_per_device(win_rocm, monkeypatch):
+    """Two ordinals behind one LUID. The counters index the adapter's nodes as
+    phys_N and nothing says which ordinal owns which, so the sum survives and
+    the pairing does not."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total = True))
+    adapters = [
+        ("luid_0x00000000_0x0000aaaa_phys_0", 10 * GB),
+        ("luid_0x00000000_0x0000aaaa_phys_1", 4 * GB),
+    ]
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+    )
+    monkeypatch.setattr(
+        hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0b01), (0xAAAA, 0b10))
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["used_gb"] for d in devices] == [None, None]
+    assert aggregate == pytest.approx(14.0, abs = 0.01)
+
+
+def test_a_node_the_visible_ordinals_do_not_own_declines(win_rocm, monkeypatch):
+    """One ordinal holding one node of a two-node adapter. The second node's
+    usage is on hardware HIP is not showing, so it is not this card's to claim,
+    and the node mask is what says so."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch([TWIN_CARDS[0]], free_equals_total = True))
+    adapters = [
+        ("luid_0x00000000_0x0000aaaa_phys_0", 3 * GB),
+        ("luid_0x00000000_0x0000aaaa_phys_1", 9 * GB),
+    ]
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+    )
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0b01)))
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["used_gb"] is None
+    assert aggregate is None
+
+
+def test_hip_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
+    dev_meta = [
+        {
+            "visible_ordinal": 0,
+            "name": "AMD Radeon RX 9060 XT",
+            "gfx": "gfx1200",
+            "total_bytes": 16 * GB,
+        }
+    ]
+    join = hw._match_adapter_used_by_hip_luid
+
+    # The runtime cannot be asked (not Windows, DLL not loaded, symbol absent).
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", lambda ordinals, names: None)
+    assert join(SOLO_ADAPTERS, dev_meta) is None
+
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0)))
+    # One physical node cannot report twice; summing would double-count it.
+    assert join([SOLO_ADAPTERS[0], SOLO_ADAPTERS[0]], dev_meta) is None
+    # A visible card with no counter of its own.
+    assert join([("luid_0x00000000_0x00099999_phys_0", 2 * GB)], dev_meta) is None
+    # A usage above the card's own capacity.
+    assert join([("luid_0x00000000_0x00015369_phys_0", 20 * GB)], dev_meta) is None
+    # And the resolvable case still resolves, so the declines above are the reason.
+    assigned, aggregate = join(SOLO_ADAPTERS, dev_meta)
+    assert assigned[0] == pytest.approx(3 * GB)
+    assert aggregate == pytest.approx(3 * GB)
+
+
+def test_hip_luid_join_bounds_the_counter_by_the_carve_out(win_rocm, monkeypatch):
+    """A unified APU is shown the whole driver pool as its total, so bounding
+    with that admits any reading at all. The carve-out is what the counter
+    fills, and the DirectX join already declines this."""
+    apu = [
+        {
+            "visible_ordinal": 0,
+            "name": "AMD Radeon(TM) 8060S Graphics",
+            "gfx": "gfx1151",
+            "total_bytes": 96 * GB,
+            "dedicated_bytes": 0.5 * GB,
+        }
+    ]
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0)))
+    over = [("luid_0x00000000_0x00015369_phys_0", 2 * GB)]
+    assert hw._match_adapter_used_by_hip_luid(over, apu) is None
+    assert hw._attribute_adapter_useds_by_key({"k": [2 * GB]}, {"k": [0]}, apu) is None
+
+    # Inside the carve-out still resolves, so the decline above is the bound.
+    under = [("luid_0x00000000_0x00015369_phys_0", 0.25 * GB)]
+    assigned, aggregate = hw._match_adapter_used_by_hip_luid(under, apu)
+    assert assigned[0] == pytest.approx(0.25 * GB)
+    assert aggregate == pytest.approx(0.25 * GB)
+
+
+class _Callable:
+    """A ctypes function pointer: callable, and argtypes/restype are settable."""
+
+    def __init__(self, fn):
+        self._fn = fn
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self._fn(*args)
+
+
+def _r0600_blob(
+    name,
+    luid,
+    node_mask = 0,
+):
+    """The documented prefix of hipDeviceProp_tR0600: name[256], uuid[16],
+    luid[8], luidDeviceNodeMask[4]."""
+    return (
+        name.encode("utf-8").ljust(256, b"\x00")
+        + bytes(16)
+        + luid.to_bytes(8, "little")
+        + node_mask.to_bytes(4, "little")
+    )
+
+
+def _fake_ctypes(
+    blobs,
+    *,
+    loaded = ("amdhip64_7.dll",),
+    has_symbol = True,
+    rc = 0,
+):
+    """A `ctypes` whose loaded amdhip64 answers with ``blobs[ordinal]``."""
+
+    class _Buffer:
+        def __init__(self, size):
+            self.data = bytes(size)
+
+        def __bytes__(self):
+            return self.data
+
+    class _Hip:
+        def __getattr__(self, symbol):
+            if not has_symbol:
+                raise AttributeError(symbol)
+
+            def get_properties(buffer, ordinal):
+                if rc:
+                    return rc
+                buffer.data = blobs[ordinal].ljust(len(buffer.data), b"\x00")
+                return 0
+
+            return _Callable(get_properties)
+
+    kernel32 = types.SimpleNamespace(
+        GetModuleHandleW = _Callable(lambda name: 0x1234 if name in loaded else None)
+    )
+    mod = types.ModuleType("ctypes")
+    mod.WinDLL = lambda name, handle = None, use_last_error = False: (
+        kernel32 if name == "kernel32" else _Hip()
+    )
+    mod.create_string_buffer = _Buffer
+    mod.byref = lambda buffer: buffer
+    mod.c_wchar_p = mod.c_void_p = mod.c_int = object()
+    return mod
+
+
+@pytest.fixture
+def hip_probe_host(monkeypatch):
+    """Windows with torch's HIP 7 runtime loaded, so the probe runs for real."""
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE))
+    return monkeypatch
+
+
+NINE_SIXTY = "AMD Radeon RX 9060 XT"
+
+
+def test_hip_probe_reads_the_luid_and_node_mask(hip_probe_host, monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "ctypes", _fake_ctypes([_r0600_blob(NINE_SIXTY, 0x14AD4, node_mask = 0b11)])
+    )
+    assert hw._rocm_windows_hip_adapter_ids([0], [NINE_SIXTY]) == [(0x14AD4, 0b11)]
+
+
+def test_hip_probe_needs_the_name_to_read_back(hip_probe_host, monkeypatch):
+    """The R0600 suffix is the ABI version, so the prefix is fixed by the same
+    contract that named it, but the offsets here are still hardcoded. Reading
+    the name back is what catches a layout that ever moved."""
+    monkeypatch.setitem(
+        sys.modules, "ctypes", _fake_ctypes([_r0600_blob("Some Other Struct", 0x14AD4)])
+    )
+    assert hw._rocm_windows_hip_adapter_ids([0], [NINE_SIXTY]) is None
+
+
+def test_hip_probe_declines_what_it_cannot_answer(hip_probe_host, monkeypatch):
+    blob = [_r0600_blob(NINE_SIXTY, 0x14AD4)]
+    for label, fake in (
+        ("no LUID for this device", _fake_ctypes([_r0600_blob(NINE_SIXTY, 0)])),
+        ("the ordinal will not answer", _fake_ctypes(blob, rc = 1)),
+        ("the runtime is not in this process", _fake_ctypes(blob, loaded = ())),
+        ("the versioned symbol is absent", _fake_ctypes(blob, has_symbol = False)),
+    ):
+        monkeypatch.setitem(sys.modules, "ctypes", fake)
+        assert hw._rocm_windows_hip_adapter_ids([0], [NINE_SIXTY]) is None, label
+
+
+def test_hip_probe_is_windows_only(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    assert hw._rocm_windows_hip_adapter_ids([0], [NINE_SIXTY]) is None
 
 
 # ----------------------------------------------------------------------------- #
