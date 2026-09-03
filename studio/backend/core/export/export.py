@@ -65,7 +65,6 @@ def _remote_load_targets(checkpoint_path: str) -> List[str]:
     targets = [checkpoint_path]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
-
         base = get_base_model_from_lora_identifier(checkpoint_path, False)
     except Exception as exc:
         logger.debug("Could not resolve a base for '%s': %s", checkpoint_path, exc)

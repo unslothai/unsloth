@@ -1021,9 +1021,7 @@ def test_a_remote_adapters_base_is_authorized_too(monkeypatch):
     )
 
     backend = export_backend_module.ExportBackend()
-    ok, message = backend.load_checkpoint(
-        checkpoint_path = "owner/public-adapter", hf_token = False
-    )
+    ok, message = backend.load_checkpoint(checkpoint_path = "owner/public-adapter", hf_token = False)
 
     assert ok is False
     assert message == "refused"
