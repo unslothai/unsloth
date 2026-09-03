@@ -909,6 +909,53 @@ _studio_override_var=""
 # Whitespace stripped before the fallback so " " is treated as unset (matches
 # Python .strip()) instead of masking a real STUDIO_HOME.
 _setup_trim_ws() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+# Absolute + symlink-resolved form of "$1", without requiring it to exist:
+# setup.sh legitimately runs before the tree does. Resolves through the deepest
+# existing ancestor, the same trick the llama.cpp local-dir compare uses below.
+_setup_abs_path() {
+    _sap_path="$1"
+    case "$_sap_path" in
+        /*) ;;
+        *) _sap_path="$(pwd -P)/$_sap_path" ;;
+    esac
+    # Trailing slashes would leave an empty leaf below; "/" itself is already canonical.
+    while :; do
+        case "$_sap_path" in
+            /) printf '%s' "/"; return 0 ;;
+            */) _sap_path="${_sap_path%/}" ;;
+            *) break ;;
+        esac
+    done
+    if _sap_out="$(CDPATH= cd -P -- "$_sap_path" 2>/dev/null && pwd -P)"; then
+        printf '%s' "$_sap_out"
+        return 0
+    fi
+    _sap_parent="$(dirname -- "$_sap_path")"
+    if _sap_out="$(CDPATH= cd -P -- "$_sap_parent" 2>/dev/null && pwd -P)"; then
+        case "$_sap_out" in
+            /) printf '/%s' "$(basename -- "$_sap_path")" ;;
+            *) printf '%s/%s' "$_sap_out" "$(basename -- "$_sap_path")" ;;
+        esac
+        return 0
+    fi
+    printf '%s' "$_sap_path"
+}
+# UNSLOTH_HOME is the portable master root, and node/, llama.cpp/ and whisper.cpp/
+# hang off it further down. install.sh trims, tilde-expands and resolves the same
+# variable, and storage_roots.py strips it, but setup.sh read it raw: a
+# whitespace-only value passed -n and installed those runtimes into a directory
+# literally named " " in the working directory, and a relative one landed them
+# under the working directory too (a different one for Node and llama.cpp, since
+# `cd "$SCRIPT_DIR"` runs between the two). Normalize once, here, ahead of the
+# portable-marker probe below and both derivations later on.
+UNSLOTH_HOME=$(_setup_trim_ws "${UNSLOTH_HOME:-}")
+case "$UNSLOTH_HOME" in
+    "~") UNSLOTH_HOME="$HOME" ;;
+    "~/"*) UNSLOTH_HOME="$HOME/${UNSLOTH_HOME#'~/'}" ;;
+esac
+if [ -n "$UNSLOTH_HOME" ]; then
+    UNSLOTH_HOME=$(_setup_abs_path "$UNSLOTH_HOME")
+fi
 _studio_override=$(_setup_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
