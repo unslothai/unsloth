@@ -305,14 +305,19 @@ def _host_can_serve_minimax_music3() -> bool:
     """Mirror the native loader's fail-fast platform and dependency gates."""
     import sys
     from importlib.util import find_spec
+    from importlib.metadata import version
+    from packaging.version import Version
 
     try:
+        from core.inference.audio_device import audio_device_forces_cpu
         from utils.hardware import hardware as hw
         return (
             sys.version_info >= (3, 10)
             and hw.DEVICE == hw.DeviceType.CUDA
             and not hw.IS_ROCM
+            and not audio_device_forces_cpu(None)
             and find_spec("diffusers") is not None
+            and Version(version("diffusers")) >= Version("0.40.0")
         )
     except Exception:
         return False
@@ -321,6 +326,7 @@ def _host_can_serve_minimax_music3() -> bool:
 def _native_audio_pipeline_is_servable_here(load_dir) -> bool:
     """Whether a local modular pipeline is a supported built-in native-audio model."""
     from core.inference.native_audio import (
+        _MINIMAX_DOWNLOAD_COMPONENTS,
         minimax_music3_local_components_complete,
         native_audio_type_from_local_path,
     )
@@ -332,10 +338,14 @@ def _native_audio_pipeline_is_servable_here(load_dir) -> bool:
         or not minimax_music3_local_components_complete(load_dir)
     ):
         return False
-    for name in REMOTE_CODE_CONFIG_FILES:
-        config = _read_json(load_dir / name)
-        if isinstance(config, dict) and config.get("auto_map"):
-            return False
+    for directory in (
+        load_dir,
+        *(load_dir / component for component in _MINIMAX_DOWNLOAD_COMPONENTS),
+    ):
+        for name in REMOTE_CODE_CONFIG_FILES:
+            config = _read_json(directory / name)
+            if isinstance(config, dict) and config.get("auto_map"):
+                return False
     return not any((load_dir / name).is_file() for name in (*_ADAPTER_MARKERS, "modules.json"))
 
 

@@ -92,27 +92,35 @@ def _minimax_lyrics_for_pipeline(lyrics: str) -> str:
     return "\n".join(normalized)
 
 
-_MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
-    (
-        "condition_encoder",
-        "language_model",
-        "rvq_depth_decoder",
-        "scheduler",
-        "tokenizer",
-        "transformer",
-        "vocoder",
-    )
-)
+_MINIMAX_COMPONENT_SPECS = {
+    "condition_encoder": ("diffusers", "MiniMaxMusic3ConditionEncoder", "diffusion_pytorch_model"),
+    "language_model": ("transformers", "Qwen3ForCausalLM", "model"),
+    "rvq_depth_decoder": (
+        "diffusers",
+        "MiniMaxMusic3RVQDepthDecoder",
+        "diffusion_pytorch_model",
+    ),
+    "scheduler": ("diffusers", "FlowMatchEulerDiscreteScheduler", None),
+    "tokenizer": ("transformers", "Qwen2Tokenizer", None),
+    "transformer": (
+        "diffusers",
+        "MiniMaxMusic3Transformer1DModel",
+        "diffusion_pytorch_model",
+    ),
+    "vocoder": ("diffusers", "MiniMaxMusic3Vocoder", "diffusion_pytorch_model"),
+}
+_MINIMAX_DOWNLOAD_COMPONENTS = frozenset(_MINIMAX_COMPONENT_SPECS)
 _MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
 _MOSS_NANO_SAVE_LOCK = threading.Lock()
 _MAX_AUDIO_METADATA_BYTES = 1_000_000
 _MAX_MINIMAX_TOKENIZER_BYTES = 32 * 1024 * 1024
 
 
-def _minimax_component_has_weights(directory: Path) -> bool:
+def _minimax_component_has_weights(directory: Path, weight_stem: str) -> bool:
     """Whether a component has one whole tensor file or a complete shard index."""
     try:
-        indexes = tuple(directory.glob("*.safetensors.index.json"))
+        index_path = directory / f"{weight_stem}.safetensors.index.json"
+        indexes = (index_path,) if index_path.is_file() else ()
     except OSError:
         return False
     for index_path in indexes:
@@ -153,12 +161,8 @@ def _minimax_component_has_weights(directory: Path) -> bool:
     if indexes:
         return False
     try:
-        return any(
-            path.is_file()
-            and path.stat().st_size > 0
-            and re.search(r"-\d+-of-\d+\.safetensors$", path.name, re.IGNORECASE) is None
-            for path in directory.glob("*.safetensors")
-        )
+        weights = directory / f"{weight_stem}.safetensors"
+        return weights.is_file() and weights.stat().st_size > 0
     except OSError:
         return False
 
@@ -170,9 +174,9 @@ def minimax_music3_local_components_complete(model_path) -> bool:
         if root.is_file():
             root = root.parent
         index = _read_local_audio_metadata(root, "modular_model_index.json")
-        weighted = _MINIMAX_DOWNLOAD_COMPONENTS - {"scheduler", "tokenizer"}
         for component in _MINIMAX_DOWNLOAD_COMPONENTS:
             entry = index.get(component)
+            expected_library, expected_class, weight_stem = _MINIMAX_COMPONENT_SPECS[component]
             metadata = (
                 next(
                     (part for part in entry if isinstance(part, dict)),
@@ -181,13 +185,19 @@ def minimax_music3_local_components_complete(model_path) -> bool:
                 if isinstance(entry, list)
                 else None
             )
-            if not isinstance(metadata, dict) or metadata.get("subfolder") != component:
+            if (
+                not isinstance(entry, list)
+                or len(entry) < 3
+                or entry[:2] != [expected_library, expected_class]
+                or not isinstance(metadata, dict)
+                or metadata.get("subfolder") != component
+            ):
                 return False
             directory = root / component
-            if component in weighted:
+            if weight_stem is not None:
                 if not _read_local_audio_metadata(directory, "config.json", reject_oversized = True):
                     return False
-                if not _minimax_component_has_weights(directory):
+                if not _minimax_component_has_weights(directory, weight_stem):
                     return False
             elif component == "scheduler":
                 if not _read_local_audio_metadata(

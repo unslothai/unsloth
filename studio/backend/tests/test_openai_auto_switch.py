@@ -8,6 +8,8 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import importlib.metadata
+import importlib.util
 import json
 import os
 import threading
@@ -140,6 +142,7 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     # gate that auto-switch already owns, so it calls the impl directly).
     monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", lambda *_a: None)
 
 
 async def _noop_reject(*_args, **_kwargs):
@@ -3713,6 +3716,177 @@ def test_require_speech_allows_a_speech_target(monkeypatch):
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_speech = True)
     )
     assert len(rec.calls) == 1
+
+
+def test_missing_speech_codec_assets_are_rejected_before_switch(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
+    monkeypatch.setattr(
+        inference_route,
+        "_preflight_speech_codec_for_switch",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("codec unavailable")),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF", object(), "t", require_speech = True
+            )
+        )
+
+    assert exc.value.status_code == 503
+    assert "codec assets" in json.dumps(exc.value.detail)
+    assert rec.calls == []
+
+
+def test_snac_codec_preflight_stages_the_active_cache(monkeypatch):
+    import huggingface_hub
+    from utils import hf_cache_settings, utils
+
+    calls = []
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: "/active/cache")
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda repo_id, **kwargs: calls.append((repo_id, kwargs)),
+    )
+
+    inference_route._preflight_speech_codec_for_switch("snac", "/local/model", False)
+
+    assert calls == [
+        (
+            "hubertsiuzdak/snac_24khz",
+            {"cache_dir": "/active/cache", "local_files_only": True},
+        )
+    ]
+
+
+def test_gguf_bicodec_preflight_stages_weights_and_pinned_source(monkeypatch):
+    from core.inference import audio_codecs
+    from utils import utils
+
+    calls = []
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(
+        audio_codecs,
+        "resolve_bicodec_repo_path",
+        lambda path, **kwargs: calls.append((path, kwargs)),
+    )
+
+    inference_route._preflight_speech_codec_for_switch("bicodec", "/local/model.gguf", True)
+
+    assert calls == [
+        (None, {"hf_token": os.environ.get("HF_TOKEN"), "local_files_only": False}),
+    ]
+
+
+def test_bicodec_resolver_uses_the_active_cache(tmp_path, monkeypatch):
+    import huggingface_hub
+    from core.inference import audio_codecs
+    from utils import hf_cache_settings, security
+
+    repo = tmp_path / "spark"
+    (repo / "BiCodec").mkdir(parents = True)
+    (repo / "BiCodec" / "config.yaml").write_text("model: bicodec")
+    (repo / "BiCodec" / "model.safetensors").write_bytes(_safetensors_bytes())
+    calls = []
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: "/active/cache")
+    monkeypatch.setattr(security, "load_scan_target", lambda repo_id, _subdirs: (repo_id, ()))
+    monkeypatch.setattr(audio_codecs, "ensure_spark_tts_source", lambda path: calls.append(path))
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda repo_id, **kwargs: calls.append((repo_id, kwargs)) or str(repo),
+    )
+
+    resolved = audio_codecs.resolve_bicodec_repo_path(local_files_only = True)
+
+    assert resolved == os.path.abspath(repo)
+    assert calls == [
+        (
+            "unsloth/Spark-TTS-0.5B",
+            {
+                "token": None,
+                "cache_dir": "/active/cache",
+                "local_files_only": True,
+            },
+        ),
+        repo,
+    ]
+
+
+def test_bicodec_resolver_stages_a_merged_exports_recorded_base(tmp_path, monkeypatch):
+    import huggingface_hub
+    from core.inference import audio_codecs
+    from utils import hf_cache_settings, security
+
+    export = tmp_path / "merged-export"
+    export.mkdir()
+    (export / "export_metadata.json").write_text(json.dumps({"base_model": "org/spark"}))
+    repo = tmp_path / "downloaded-base"
+    (repo / "BiCodec").mkdir(parents = True)
+    (repo / "BiCodec" / "config.yaml").write_text("model: bicodec")
+    (repo / "BiCodec" / "model.safetensors").write_bytes(_safetensors_bytes())
+    calls = []
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: "/active/cache")
+    monkeypatch.setattr(security, "load_scan_target", lambda repo_id, _subdirs: (repo_id, ()))
+    monkeypatch.setattr(audio_codecs, "ensure_spark_tts_source", lambda path: calls.append(path))
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda repo_id, **kwargs: calls.append((repo_id, kwargs)) or str(repo),
+    )
+
+    resolved = audio_codecs.resolve_bicodec_repo_path(
+        str(export), hf_token = "test-token", local_files_only = True
+    )
+
+    assert resolved == os.path.abspath(repo)
+    assert calls == [
+        (
+            "org/spark",
+            {
+                "token": "test-token",
+                "cache_dir": "/active/cache",
+                "local_files_only": True,
+            },
+        ),
+        repo,
+    ]
+
+
+def test_bicodec_resolver_rejects_an_incomplete_local_export(tmp_path):
+    from core.inference import audio_codecs
+
+    export = tmp_path / "merged-export"
+    export.mkdir()
+
+    with pytest.raises(RuntimeError, match = "no complete BiCodec assets"):
+        audio_codecs.resolve_bicodec_repo_path(str(export), local_files_only = True)
+
+
+def test_dac_codec_preflight_stages_source_and_verified_weights(monkeypatch):
+    from utils import third_party_source, utils
+
+    calls = []
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(third_party_source, "ensure_outetts_source", lambda: calls.append("source"))
+    monkeypatch.setattr(
+        third_party_source, "ensure_dac_speech_weights", lambda: calls.append("weights")
+    )
+
+    inference_route._preflight_speech_codec_for_switch("dac", "/local/model", False)
+
+    assert calls == ["source", "weights"]
 
 
 def test_an_explicitly_empty_audio_model_still_restores_the_stash(monkeypatch):
@@ -9277,11 +9451,20 @@ def _complete_minimax_pipeline(root):
         "transformer",
         "vocoder",
     )
+    component_specs = {
+        "condition_encoder": ("diffusers", "MiniMaxMusic3ConditionEncoder"),
+        "language_model": ("transformers", "Qwen3ForCausalLM"),
+        "rvq_depth_decoder": ("diffusers", "MiniMaxMusic3RVQDepthDecoder"),
+        "scheduler": ("diffusers", "FlowMatchEulerDiscreteScheduler"),
+        "tokenizer": ("transformers", "Qwen2Tokenizer"),
+        "transformer": ("diffusers", "MiniMaxMusic3Transformer1DModel"),
+        "vocoder": ("diffusers", "MiniMaxMusic3Vocoder"),
+    }
     index = {
         "_class_name": "MiniMaxMusic3ModularPipeline",
         "_blocks_class_name": "MiniMaxMusic3Blocks",
         **{
-            component: ["diffusers", "Component", {"subfolder": component}]
+            component: [*component_specs[component], {"subfolder": component}]
             for component in components
         },
     }
@@ -9302,7 +9485,8 @@ def _complete_minimax_pipeline(root):
             )
         else:
             (directory / "config.json").write_text(json.dumps({"_class_name": "Component"}))
-            (directory / "model.safetensors").write_bytes(_safetensors_bytes())
+            stem = "model" if component == "language_model" else "diffusion_pytorch_model"
+            (directory / f"{stem}.safetensors").write_bytes(_safetensors_bytes())
     return pipeline
 
 
@@ -9330,7 +9514,7 @@ def test_an_incomplete_minimax_pipeline_is_not_switchable(tmp_path, monkeypatch)
     from types import SimpleNamespace
 
     pipeline = _complete_minimax_pipeline(tmp_path)
-    (pipeline / "vocoder" / "model.safetensors").unlink()
+    (pipeline / "vocoder" / "diffusion_pytorch_model.safetensors").unlink()
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
     monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
     info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
@@ -9417,7 +9601,7 @@ def test_invalid_minimax_weight_indexes_do_not_prove_component_completeness(tmp_
     component.mkdir()
     (component / "model.safetensors.index.json").write_text(payload)
     (component / "empty.safetensors").write_bytes(b"")
-    assert native_audio._minimax_component_has_weights(component) is False
+    assert native_audio._minimax_component_has_weights(component, "model") is False
 
 
 def test_a_lone_minimax_weight_shard_without_its_index_is_incomplete(tmp_path):
@@ -9426,7 +9610,36 @@ def test_a_lone_minimax_weight_shard_without_its_index_is_incomplete(tmp_path):
     component = tmp_path / "component"
     component.mkdir()
     (component / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
-    assert native_audio._minimax_component_has_weights(component) is False
+    assert native_audio._minimax_component_has_weights(component, "model") is False
+
+
+def test_an_unrecognized_minimax_safetensors_file_is_not_a_loadable_component(tmp_path):
+    from core.inference import native_audio
+
+    component = tmp_path / "component"
+    component.mkdir()
+    (component / "optimizer.safetensors").write_bytes(_safetensors_bytes())
+    assert native_audio._minimax_component_has_weights(component, "model") is False
+
+
+@pytest.mark.parametrize(
+    ("component", "wrong_stem"),
+    (
+        ("language_model", "diffusion_pytorch_model"),
+        ("condition_encoder", "model"),
+    ),
+)
+def test_minimax_components_require_their_own_loader_weight_name(
+    tmp_path, component, wrong_stem
+):
+    from core.inference import native_audio
+
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    directory = pipeline / component
+    next(directory.glob("*.safetensors")).unlink()
+    (directory / f"{wrong_stem}.safetensors").write_bytes(_safetensors_bytes())
+
+    assert native_audio.minimax_music3_local_components_complete(pipeline) is False
 
 
 def test_a_minimax_music_pipeline_is_hidden_on_an_unsupported_host(tmp_path, monkeypatch):
@@ -9445,6 +9658,54 @@ def test_a_minimax_music_pipeline_is_hidden_on_an_unsupported_host(tmp_path, mon
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
     monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: False)
     info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_minimax_music_pipeline_is_hidden_when_audio_is_forced_to_cpu(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    monkeypatch.setattr(hw, "IS_ROCM", False, raising = False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setenv("UNSLOTH_AUDIO_DEVICE", "cpu")
+
+    assert resolver._host_can_serve_minimax_music3() is False
+
+
+def test_a_minimax_music_pipeline_is_hidden_with_diffusers_before_040(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    monkeypatch.setattr(hw, "IS_ROCM", False, raising = False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.39.0")
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+
+    assert resolver._host_can_serve_minimax_music3() is False
+
+
+def test_a_minimax_music_pipeline_is_available_with_diffusers_040(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    monkeypatch.setattr(hw, "IS_ROCM", False, raising = False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.40.0")
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+
+    assert resolver._host_can_serve_minimax_music3() is True
+
+
+def test_minimax_component_remote_code_is_not_switchable(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    (pipeline / "language_model" / "config.json").write_text(
+        json.dumps({"auto_map": {"AutoModel": "modeling.CustomModel"}})
+    )
+    monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
+    info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
+
     assert resolver.local_servable_model(info) is None
 
 

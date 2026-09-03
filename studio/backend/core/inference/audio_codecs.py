@@ -7,10 +7,13 @@ Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 """
 
 import io
+import json
+import os
 import re
 import wave
 import structlog
 from loggers import get_logger
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -26,6 +29,80 @@ from utils.third_party_source import (
 )
 
 logger = get_logger(__name__)
+_SPARK_TTS_REPO = "unsloth/Spark-TTS-0.5B"
+_MAX_SPARK_EXPORT_METADATA_BYTES = 1_000_000
+
+
+def _bicodec_assets_complete(repo_path: Path) -> bool:
+    try:
+        config = repo_path / "BiCodec" / "config.yaml"
+        weights = repo_path / "BiCodec" / "model.safetensors"
+        return (
+            config.is_file()
+            and config.stat().st_size > 0
+            and weights.is_file()
+            and weights.stat().st_size > 0
+        )
+    except OSError:
+        return False
+
+
+def resolve_bicodec_repo_path(
+    model_repo_path: Optional[str] = None,
+    *,
+    hf_token: Optional[str] = None,
+    local_files_only: Optional[bool] = None,
+) -> str:
+    """Resolve and stage the Spark repository that owns the BiCodec assets."""
+    from huggingface_hub import snapshot_download
+    from utils.hf_cache_settings import active_hf_hub_cache
+    from utils.utils import canonical_model_repo_id, hf_env_offline
+
+    source = str(model_repo_path or _SPARK_TTS_REPO).strip()
+    local = Path(source).expanduser()
+    if local.is_dir():
+        root = local.parent if local.name.lower() == "llm" else local
+        if _bicodec_assets_complete(root):
+            ensure_spark_tts_source(root)
+            return os.path.abspath(root)
+
+        metadata = local / "export_metadata.json"
+        base_model = None
+        try:
+            if metadata.is_file() and metadata.stat().st_size <= _MAX_SPARK_EXPORT_METADATA_BYTES:
+                value = json.loads(metadata.read_text(encoding = "utf-8-sig"))
+                candidate = value.get("base_model") if isinstance(value, dict) else None
+                if isinstance(candidate, str) and candidate.strip():
+                    base_model = candidate.strip()
+        except (OSError, UnicodeError, TypeError, ValueError):
+            pass
+        if base_model is None:
+            raise RuntimeError("The local Spark-TTS model has no complete BiCodec assets")
+        source = base_model
+        local = Path(source).expanduser()
+        if local.is_dir():
+            root = local.parent if local.name.lower() == "llm" else local
+            if not _bicodec_assets_complete(root):
+                raise RuntimeError("The recorded Spark-TTS base has incomplete BiCodec assets")
+            ensure_spark_tts_source(root)
+            return os.path.abspath(root)
+
+    from utils.security import load_scan_target
+
+    repo_id, _load_subdirs = load_scan_target(canonical_model_repo_id(source), ())
+    repo_id = repo_id or source
+    root = Path(
+        snapshot_download(
+            repo_id,
+            token = hf_token.strip() if hf_token and hf_token.strip() else None,
+            cache_dir = active_hf_hub_cache(),
+            local_files_only = hf_env_offline() if local_files_only is None else local_files_only,
+        )
+    )
+    if not _bicodec_assets_complete(root):
+        raise RuntimeError("The staged Spark-TTS repository has incomplete BiCodec assets")
+    ensure_spark_tts_source(root)
+    return os.path.abspath(root)
 
 
 def _numpy_to_wav_bytes(waveform: np.ndarray, sample_rate: int) -> bytes:

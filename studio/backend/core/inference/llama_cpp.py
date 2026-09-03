@@ -32528,11 +32528,10 @@ class LlamaCppBackend:
 
         # BiCodec needs a repo with BiCodec/ weights -- download canonical SparkTTS
         if audio_type == "bicodec":
-            from huggingface_hub import snapshot_download
-            import os
+            from core.inference.audio_codecs import resolve_bicodec_repo_path
+            from utils.utils import hf_env_offline
 
-            repo_path = snapshot_download("unsloth/Spark-TTS-0.5B")
-            model_repo_path = os.path.abspath(repo_path)
+            model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")

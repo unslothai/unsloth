@@ -413,19 +413,16 @@ class InferenceBackend:
                     self.models[model_name]["processor"] = processor
                 elif audio_type == "bicodec":
                     import os
+                    from core.inference.audio_codecs import resolve_bicodec_repo_path
                     from unsloth import FastModel
 
                     if config.is_lora and config.base_model:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
                         base_path = config.base_model
-                        if os.path.isdir(base_path):
-                            abs_repo_path = os.path.abspath(os.path.dirname(base_path))
-                        else:
-                            # base_model is an HF ID — download it.
-                            from huggingface_hub import snapshot_download
-                            repo_path = snapshot_download(base_path)
-                            abs_repo_path = os.path.abspath(repo_path)
+                        abs_repo_path = resolve_bicodec_repo_path(
+                            base_path, hf_token = hf_token
+                        )
 
                         logger.info(
                             f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}"
@@ -449,57 +446,21 @@ class InferenceBackend:
                         llm_path = os.path.join(config.path, "LLM")
                         if not os.path.isdir(llm_path):
                             llm_path = config.path
-                        base_repo = None
-                        try:
-                            meta_path = Path(config.path) / "export_metadata.json"
-                            if meta_path.exists():
-                                base_repo = json.loads(
-                                    meta_path.read_text(encoding = "utf-8-sig")
-                                ).get("base_model")
-                        except Exception:
-                            base_repo = None
-                        if base_repo and os.path.isdir(base_repo):
-                            # A base recorded as .../Spark-TTS-0.5B/LLM keeps BiCodec in its parent.
-                            abs_repo_path = os.path.abspath(
-                                os.path.dirname(base_repo)
-                                if os.path.basename(base_repo.rstrip("/\\")) == "LLM"
-                                else base_repo
-                            )
-                        elif base_repo:
-                            from huggingface_hub import snapshot_download
-
-                            # Registry alias ("Spark-TTS-0.5B/LLM") names a load
-                            # subdirectory, not a repo, so snapshot_download rejects it.
-                            # Same resolver the capability probe and the trainer preflight
-                            # use, rather than a second copy of the mapping.
-                            from utils.security import load_scan_target
-                            from utils.utils import canonical_model_repo_id
-
-                            hf_repo, _load_subdirs = load_scan_target(
-                                canonical_model_repo_id(base_repo), ()
-                            )
-                            hf_repo = hf_repo or base_repo
-                            # Same token as the load below: a private or gated base would
-                            # otherwise 401 here while resolving the BiCodec assets.
-                            abs_repo_path = os.path.abspath(
-                                snapshot_download(
-                                    hf_repo,
-                                    token = hf_token if hf_token and hf_token.strip() else None,
-                                )
-                            )
-                        else:
-                            abs_repo_path = os.path.abspath(config.path)
+                        abs_repo_path = resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         logger.info(
                             f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
                         )
                     else:
                         # Base model: download full HF repo, load from /LLM subfolder
-                        from huggingface_hub import snapshot_download
-
-                        repo_path = snapshot_download(config.path)
-                        abs_repo_path = os.path.abspath(repo_path)
+                        abs_repo_path = resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         llm_path = os.path.join(abs_repo_path, "LLM")
-                        logger.info(f"Spark-TTS: repo at {repo_path}, loading LLM from {llm_path}")
+                        logger.info(
+                            f"Spark-TTS: repo at {abs_repo_path}, loading LLM from {llm_path}"
+                        )
 
                     if not (config.is_lora and config.base_model):
                         # Shared by the merged-export and repo-root branches above: both resolve

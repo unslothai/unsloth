@@ -7301,6 +7301,33 @@ def _target_speech_audio_type(
         return None
 
 
+def _preflight_speech_codec_for_switch(audio_type: str, load_path: str, is_gguf: bool) -> None:
+    """Stage codec assets that the post-load speech path otherwise fetches too late."""
+    from utils.utils import hf_env_offline
+
+    offline = hf_env_offline()
+    if audio_type == "snac":
+        from huggingface_hub import snapshot_download
+        from utils.hf_cache_settings import active_hf_hub_cache
+        snapshot_download(
+            "hubertsiuzdak/snac_24khz",
+            cache_dir = active_hf_hub_cache(),
+            local_files_only = offline,
+        )
+    elif audio_type == "bicodec":
+        from core.inference.audio_codecs import resolve_bicodec_repo_path
+
+        resolve_bicodec_repo_path(
+            None if is_gguf else load_path,
+            hf_token = os.environ.get("HF_TOKEN"),
+            local_files_only = offline,
+        )
+    elif audio_type == "dac":
+        from utils.third_party_source import ensure_dac_speech_weights, ensure_outetts_source
+        ensure_outetts_source()
+        ensure_dac_speech_weights()
+
+
 _AUDIO_IMAGE_INPUT_DETAIL = (
     "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
@@ -8538,6 +8565,26 @@ async def _maybe_auto_switch_model(
             and (target_is_gguf or not require_audio_input)
         ):
             await _preflight_image_for_switch(image_preflight, target_is_gguf)
+        if speech_type is not None:
+            try:
+                await asyncio.to_thread(
+                    _preflight_speech_codec_for_switch,
+                    speech_type,
+                    target_id,
+                    target_is_gguf,
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code = 503,
+                    detail = openai_error_body(
+                        "The requested model's codec assets are unavailable. Connect this "
+                        "server to the network once to download them, or install them in the "
+                        "active cache before retrying.",
+                        status = 503,
+                        code = "codec_unavailable",
+                        param = "model",
+                    ),
+                ) from None
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
