@@ -43,13 +43,13 @@ SENTINEL = "UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"
 ORIGINAL_THREADS = 32  # what determine_compile_threads() returns on a 32+ core host
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def gpu_init_source() -> str:
     assert GPU_INIT.is_file(), f"missing {GPU_INIT}"
-    return GPU_INIT.read_text(encoding="utf-8")
+    return GPU_INIT.read_text(encoding = "utf-8")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def guard_block(gpu_init_source: str) -> str:
     """The `if <sentinel> == "1":` block, verbatim from the shipped file."""
     start = re.search(
@@ -106,7 +106,7 @@ def _install_fake_zoo(monkeypatch) -> dict:
 
     common.determine_compile_threads = _fake_determine_compile_threads
     common.torch_compile_options = shared
-    common.torch_compile = functools.partial(lambda *a, **k: None, options=shared)
+    common.torch_compile = functools.partial(lambda *a, **k: None, options = shared)
     gpt_oss.fused_torch_compile_options = fused
     gpt_oss.no_combo_fused_torch_compile_options = no_combo
     loss_utils.torch_compile_options = shared  # same object, re-exported
@@ -128,11 +128,11 @@ def _install_fake_zoo(monkeypatch) -> dict:
 def _run_guard(guard_block: str, monkeypatch) -> dict:
     state = _install_fake_zoo(monkeypatch)
     monkeypatch.setenv(SENTINEL, "1")
-    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising=False)
+    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising = False)
 
     fake_torch = types.SimpleNamespace(
-        _inductor=types.SimpleNamespace(
-            config=types.SimpleNamespace(compile_threads=ORIGINAL_THREADS)
+        _inductor = types.SimpleNamespace(
+            config = types.SimpleNamespace(compile_threads = ORIGINAL_THREADS)
         )
     )
     namespace = {
@@ -178,12 +178,12 @@ def test_guard_leaves_non_zoo_modules_alone(guard_block: str, monkeypatch):
 
 def test_guard_is_a_no_op_when_the_user_opted_out(guard_block: str, monkeypatch):
     state = _install_fake_zoo(monkeypatch)
-    monkeypatch.delenv(SENTINEL, raising=False)
-    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising=False)
+    monkeypatch.delenv(SENTINEL, raising = False)
+    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising = False)
 
     fake_torch = types.SimpleNamespace(
-        _inductor=types.SimpleNamespace(
-            config=types.SimpleNamespace(compile_threads=ORIGINAL_THREADS)
+        _inductor = types.SimpleNamespace(
+            config = types.SimpleNamespace(compile_threads = ORIGINAL_THREADS)
         )
     )
     exec(

@@ -166,7 +166,12 @@ def test_an_unpublishable_result_is_kept_and_its_location_printed(
     out = tmp_path / "out.ipynb"
     monkeypatch.setattr(runner.os, "replace", _replace_raising(errno.EBUSY))
 
-    def _no_open(path, mode = "r", *args, **kwargs):
+    def _no_open(
+        path,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
         if str(path) == str(out) and "w" in mode:
             raise OSError(errno.EACCES, os.strerror(errno.EACCES))
         return _real_open(path, mode, *args, **kwargs)

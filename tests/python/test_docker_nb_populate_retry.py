@@ -47,9 +47,7 @@ def _template(tmp_path: Path) -> Path:
     (template / "sub").mkdir(parents = True)
     (template / "a.ipynb").write_text("A", encoding = "utf-8")
     (template / "sub" / "b.ipynb").write_text("B", encoding = "utf-8")
-    (template / ".unsloth_template_commit").write_text(
-        TEMPLATE_COMMIT + "\n", encoding = "utf-8"
-    )
+    (template / ".unsloth_template_commit").write_text(TEMPLATE_COMMIT + "\n", encoding = "utf-8")
     return template
 
 
@@ -114,9 +112,7 @@ def test_a_failed_copy_leaves_the_commit_unstamped_and_retries_next_start(tmp_pa
     assert (dest / "sub" / "b.ipynb").read_text(encoding = "utf-8") == "B"
     assert _state(dest)["sub/b.ipynb"] == _sha256(dest / "sub" / "b.ipynb")
     assert _state(dest)["a.ipynb"] == _sha256(dest / "a.ipynb")
-    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == (
-        TEMPLATE_COMMIT
-    )
+    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == (TEMPLATE_COMMIT)
     assert not (dest / ".unsloth_sync_partial").exists()
 
 
@@ -128,9 +124,7 @@ def test_a_clean_populate_stamps_the_commit_and_does_not_re_run(tmp_path: Path):
     dest.mkdir()
 
     assert _run(tmp_path, template, dest).returncode == 0
-    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == (
-        TEMPLATE_COMMIT
-    )
+    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == (TEMPLATE_COMMIT)
     assert not (dest / ".unsloth_sync_partial").exists()
     before = _state(dest)
     assert set(before) == {"a.ipynb", "sub/b.ipynb"}
