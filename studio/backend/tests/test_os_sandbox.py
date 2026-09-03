@@ -199,6 +199,10 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     assert argv[argv.index("--cap-drop") + 1] == "ALL"
     assert ("--proc", "/proc") == argv[argv.index("--proc") : argv.index("--proc") + 2]
     assert ("--dev", "/dev") == argv[argv.index("--dev") : argv.index("--dev") + 2]
+    assert ("--remount-ro", "/") == argv[
+        argv.index("--remount-ro") : argv.index("--remount-ro") + 2
+    ]
+    assert argv.index("--remount-ro") < argv.index("--tmpfs")
     assert "/tmp" in _mount_sources(argv, "--tmpfs")
     assert "/dev/shm" in _mount_sources(argv, "--tmpfs")
     assert _mount_sources(argv, "--bind") == [os.path.realpath(workdir)]

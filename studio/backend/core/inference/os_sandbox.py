@@ -514,9 +514,9 @@ class LinuxBubblewrapBackend:
             "/proc",
             "--dev",
             "/dev",
-            "--tmpfs",
+            "--dir",
             "/dev/shm",
-            "--tmpfs",
+            "--dir",
             "/tmp",
             "--dir",
             "/etc",
@@ -535,6 +535,8 @@ class LinuxBubblewrapBackend:
             if _lexically_contained(path, "/nix/store"):
                 continue
             argv.extend(("--ro-bind", path, path))
+        argv.extend(("--dir", workdir, "--remount-ro", "/"))
+        argv.extend(("--tmpfs", "/dev/shm", "--tmpfs", "/tmp"))
         argv.extend(("--bind", workdir, workdir, "--chdir", workdir))
         argv.extend(("--setenv", "HOME", workdir, "--setenv", "TMPDIR", "/tmp"))
         wrapper = _NPROC_WRAPPER.format(limit = _nproc_limit())
