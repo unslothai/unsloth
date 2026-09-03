@@ -1975,12 +1975,14 @@ test("an odd run of regional indicators displaces the whole run after a cut", ()
       ]),
     ]),
   );
-  // Every indicator in the resumed run, not just the first.
-  assert.deepEqual(
-    [...index.unsafe],
-    [MAX_NODE_CHARS + 1, MAX_NODE_CHARS + 3, MAX_NODE_CHARS + 5],
-  );
+  // Every indicator in the resumed run, not just the first: the ones the text reads as boundaries
+  // are inside a flag, and the boundary between them is where the page really breaks.
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS + 1, MAX_NODE_CHARS + 5]);
+  assert.deepEqual([...index.shifted], [MAX_NODE_CHARS + 3]);
+  // No indicator here stands alone on the page, so none is findable on its own either way.
   assert.deepEqual(findMatches(index, at(0x1f1e7), 10), []);
+  // The flag the displacement makes, which the run being called unknown used to throw away.
+  assert.equal(findMatches(index, at(0x1f1e6) + at(0x1f1e7), 10).length, 1);
 });
 
 test("a cut whose context outran its window does not outlive the cut", () => {
@@ -2148,6 +2150,37 @@ test("a query that matches everywhere stops seeking the segmenter per candidate"
     { encoding: "utf8" },
   );
   assert.equal(run.status, 0, run.stderr);
+});
+
+test("a run resuming after an odd cut keeps the flags it really shows", () => {
+  // A cut that drops an odd number of indicators leaves the run behind it pairing off one early,
+  // so the flags on the page sit between the ones the index text would find. Calling the whole
+  // resumed run unknown is safe and loses every flag in it, which on a page of them is the lot.
+  const flag = (at: number) => String.fromCodePoint(0x1f1e6 + at);
+  const dropped = flag(0);
+  const rest = flag(1) + flag(2) + flag(3) + flag(4) + flag(5);
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [text("a".repeat(MAX_NODE_CHARS) + dropped), text(rest)]),
+    ]),
+  );
+  assert.equal(index.truncated, true);
+  // The page pairs the dropped indicator with the first of the run, so these two are whole flags.
+  assert.equal(findMatches(index, flag(2) + flag(3), 10).length, 1);
+  assert.equal(findMatches(index, flag(4) + flag(5), 10).length, 1);
+  // And these are not: each straddles two flags on the page, however it reads in the index.
+  assert.equal(findMatches(index, flag(1) + flag(2), 10).length, 0);
+  assert.equal(findMatches(index, flag(3) + flag(4), 10).length, 0);
+  // An even drop shifts nothing, so the run reads as it looks and no offset is in doubt.
+  const even = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS) + flag(0) + flag(1)),
+        text(rest),
+      ]),
+    ]),
+  );
+  assert.equal(findMatches(even, flag(1) + flag(2), 10).length, 1);
 });
 
 test("a run of regional indicators is measured once, not once per offset", () => {

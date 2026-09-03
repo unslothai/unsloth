@@ -134,6 +134,10 @@ export interface FindTextIndex {
    *  carries on across them. A cut in the middle of the document leaves two, on each side of the
    *  separator standing in for what was dropped; one at the end of the walk leaves one. */
   unsafe: ReadonlySet<number>;
+  /** Offsets that begin a grapheme even though the text alone says otherwise. A cut that drops an
+   *  odd run of regional indicators leaves the run behind it pairing off one indicator early, so
+   *  the flags a reader can see sit between the ones the index would find. */
+  shifted: ReadonlySet<number>;
 }
 
 export const EMPTY_TEXT_INDEX: FindTextIndex = {
@@ -141,6 +145,7 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
   segments: [],
   truncated: false,
   unsafe: new Set(),
+  shifted: new Set(),
 };
 
 /** The only code point whose `toLowerCase` grows. Mapped to the Turkic fold, a bare `i`, since one
@@ -278,7 +283,7 @@ export function buildTextIndex(
    *  does, and readable here and nowhere later. Null at a real boundary. */
   let pendingClip: ClipContext | null = null;
   /** Where a run of regional indicators resumes after a cut that fell inside one. */
-  const regionalCuts: number[] = [];
+  const regionalCuts: { from: number; known: boolean }[] = [];
   /** The ceiling, the only thing that stops the walk. */
   let full = false;
   let ceiling =
@@ -361,7 +366,10 @@ export function buildTextIndex(
               regionals > 0 &&
               (pendingClip?.partial === true || regionals % 2 === 1)
             ) {
-              regionalCuts.push(length);
+              regionalCuts.push({
+                from: length,
+                known: pendingClip?.partial === false && regionals % 2 === 1,
+              });
             }
           }
           pendingClip = null;
@@ -418,17 +426,23 @@ export function buildTextIndex(
     visit(extra, false);
   }
   const joined = parts.join("");
-  for (const from of regionalCuts) {
+  const shifted = new Set<number>();
+  for (const cut of regionalCuts) {
     for (
-      let at = from;
+      let at = cut.from;
       REGIONAL_INDICATOR_PATTERN.test(joined.slice(at, at + 2));
       at += 2
     ) {
-      unsafe.add(at);
+      // Parity known: the run pairs off one indicator early, so the boundaries are the offsets
+      // between the ones the text reads, and the ones it reads are inside a flag. Unknown, and
+      // there is no answer for any of them.
+      if (!cut.known) unsafe.add(at);
+      else if (((at - cut.from) / 2) % 2 === 0) unsafe.add(at);
+      else shifted.add(at);
     }
   }
   // Folded once over the joined document: a fold is context-sensitive and cannot go node at a time.
-  return { text: foldText(joined), segments, truncated, unsafe };
+  return { text: foldText(joined), segments, truncated, unsafe, shifted };
 }
 
 /** Null when the query cannot match: empty, or carrying the separator (only a paste can). */
@@ -861,6 +875,7 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
   const text = index.text;
   // Decided where the text was dropped, since that is the only place it could be seen.
   if (index.unsafe.has(at)) return false;
+  if (index.shifted.has(at)) return true;
   if (at === 0 || at === text.length) return true;
   const platform = graphemeSegmenter();
   if (platform === null) {
