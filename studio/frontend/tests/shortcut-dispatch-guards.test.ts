@@ -241,7 +241,7 @@ test("route shortcuts stay idle while Settings is open", async () => {
   );
   assert.match(
     sourceText,
-    /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
+    /const routeShortcutEnabled = !\(isAuthFlowRoute \|\| settingsDialogOpen\);/,
   );
 });
 

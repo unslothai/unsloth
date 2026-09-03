@@ -32,7 +32,7 @@ function SettingsDialogLoading({ active }: { active: boolean }) {
   return null;
 }
 
-export function SettingsDialogMount() {
+export function SettingsDialogMount({ active }: { active: boolean }) {
   const t = useT();
   const open = useSettingsDialogStore((state) => state.open);
   const [mounted, setMounted] = useState(false);
@@ -41,7 +41,7 @@ export function SettingsDialogMount() {
     if (open) setMounted(true);
   }, [open]);
 
-  if (!mounted) return null;
+  if (!active || !mounted) return null;
   return (
     <LazyImportBoundary
       fallback={

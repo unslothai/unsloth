@@ -347,7 +347,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     root,
-    /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
+    /const routeShortcutEnabled = !\(isAuthFlowRoute \|\| settingsDialogOpen\);/,
   );
   assert.match(
     root,

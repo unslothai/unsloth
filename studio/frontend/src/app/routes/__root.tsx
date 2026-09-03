@@ -530,7 +530,6 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
-      {!isAuthFlowRoute && <SettingsDialogMount />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
@@ -671,6 +670,7 @@ function RootLayout() {
 
   return (
     <AppProvider>
+      <SettingsDialogMount active={!isAuthFlowRoute} />
       {isAuthFlowRoute ? (
         content
       ) : (
