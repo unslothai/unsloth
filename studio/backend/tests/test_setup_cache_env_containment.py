@@ -38,8 +38,10 @@ _ALWAYS_PINNED = (
     "DATA_DESIGNER_MANAGED_ASSETS_PATH",
 )
 
-# Shared user data / large re-downloads: portable mode only.
-_PORTABLE_ONLY = ("HF_DATASETS_CACHE", "HF_ASSETS_CACHE", "TORCH_HOME")
+# Shared user data / large re-downloads: portable mode only. PIP_CACHE_DIR is here rather than
+# in _ALWAYS_PINNED for the same reason TORCH_HOME is -- ~/.cache/pip is shared with every other
+# tool on the machine, so a normal install must keep using it.
+_PORTABLE_ONLY = ("HF_DATASETS_CACHE", "HF_ASSETS_CACHE", "TORCH_HOME", "PIP_CACHE_DIR")
 
 _HF_ENV = ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "HUGGINGFACE_HUB_CACHE")
 
