@@ -3,7 +3,7 @@
 
 """Regression tests for the Windows-on-ARM / WSL2 CUDA provisioning review follow-ups.
 
-Six independent bugs, each with a behavioural test where the shell allows one and a
+Seven independent bugs, each with a behavioural test where the shell allows one and a
 source-level assert where it does not:
 
 1. provision_llama_cuda.sh read the driver's CUDA major from a "CUDA Version:"-only
@@ -22,6 +22,11 @@ source-level assert where it does not:
    then provisioned CUDA (apt/sudo + a full source build) inside a staged update.
 6. install.sh's UNSLOTH_INSTALL_REF branch dropped the torch --overrides file that
    every other with-dependencies branch passes.
+7. install.ps1 ran the nested WSL install.sh on the console it inherited, so install.sh
+   saw a tty and asked "Start Unsloth Studio now? [Y/n]". The default answer execs the
+   server in the foreground, and UNSLOTH_SKIP_AUTOSTART was not forwarded (Windows env
+   vars need WSLENV to cross), so the outer installer never reached the torch.cuda
+   check, the shim, the shortcuts or the background llama.cpp build.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 PROVISION_SH = PACKAGE_ROOT / "studio" / "scripts" / "provision_llama_cuda.sh"
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 INSTALL_SH = PACKAGE_ROOT / "install.sh"
+INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 
 
 def _provision_src() -> str:
@@ -310,6 +316,114 @@ def test_every_with_deps_unsloth_install_passes_the_torch_overrides():
         if "--no-deps" in block or "--torch-backend=auto" in block:
             continue
         assert "_UNSLOTH_TORCH_OVERRIDES" in block, f"missing --overrides in:\n{block}"
+
+
+# ── 7. the nested WSL install.sh must not stop on the autostart prompt ───────
+
+
+def _autostart_gate_harness() -> str:
+    """install.sh's real autostart gate, lifted verbatim, with the launch replaced.
+
+    Reproduces exactly the three lines that decide whether the question is asked --
+    the `_SKIP_AUTOSTART` seed, the `UNSLOTH_SKIP_AUTOSTART` env override and the
+    `[ -t 1 ]` gate -- plus `_can_read_tty`. Only the body is swapped: the real one
+    execs `unsloth studio -p 8888` in the foreground, which is the whole problem.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
+
+    def one(prefix: str) -> str:
+        return next(ln for ln in src if ln.strip().startswith(prefix)).strip()
+
+    start = src.index("_can_read_tty() {")
+    return "\n".join(
+        [
+            one("_SKIP_AUTOSTART=false"),
+            one('case "${UNSLOTH_SKIP_AUTOSTART:-}"'),
+            "\n".join(src[start : src.index("}", start) + 1]),
+            one('if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then'),
+            "    if _can_read_tty; then",
+            # Stands in for `printf "  Start Unsloth Studio now? [Y/n] "` and the
+            # foreground `exec unsloth studio` that the default answer runs.
+            '        echo "WOULD_PROMPT_AND_BLOCK"',
+            "    fi",
+            "fi",
+            'echo "REACHED_END"',
+        ]
+    )
+
+
+def _run_on_a_pty(script: str, env: dict[str, str]) -> str:
+    """Run `script` with a controlling terminal, as wsl.exe gives the inner install.sh."""
+    import pty
+
+    pid, fd = pty.fork()
+    if pid == 0:  # pragma: no cover - the child is replaced by execve
+        try:
+            os.execve("/bin/sh", ["/bin/sh", "-c", script], env)
+        finally:
+            os._exit(127)
+    chunks = []
+    while True:
+        try:
+            data = os.read(fd, 4096)
+        except OSError:  # EIO once the child side closes
+            break
+        if not data:
+            break
+        chunks.append(data)
+    os.close(fd)
+    os.waitpid(pid, 0)
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "needs a POSIX pty and /bin/sh")
+def test_autostart_prompt_fires_on_a_console_and_skip_env_silences_it():
+    """The premise: on a terminal install.sh asks, and only the env var stops it."""
+    harness = _autostart_gate_harness()
+    base = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/root"),
+    }
+
+    on_console = _run_on_a_pty(harness, base)
+    if "WOULD_PROMPT_AND_BLOCK" not in on_console:
+        pytest.skip(f"no usable controlling terminal here: {on_console!r}")
+    assert "REACHED_END" in on_console
+
+    silenced = _run_on_a_pty(harness, {**base, "UNSLOTH_SKIP_AUTOSTART": "1"})
+    assert "WOULD_PROMPT_AND_BLOCK" not in silenced, (
+        "UNSLOTH_SKIP_AUTOSTART=1 must suppress the prompt; without it the nested "
+        "install.sh blocks on a foreground `unsloth studio`"
+    )
+    assert "REACHED_END" in silenced
+
+
+def test_install_ps1_forwards_skip_autostart_into_the_wsl_install():
+    """install.ps1 must export it: Windows env vars need WSLENV to cross on their own.
+
+    `& wsl.exe ... bash -lc $wslInstall` runs unredirected, so wsl.exe hands the Linux
+    side the console this script inherited. install.sh then sees `[ -t 1 ]`, asks
+    "Start Unsloth Studio now? [Y/n]", and the default answer execs the server in the
+    FOREGROUND -- the outer installer never reaches the torch.cuda check, the shim, the
+    shortcuts or the background llama.cpp build. This path returns before install.ps1's
+    own launch prompt, so suppressing the inner one loses nothing.
+    """
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    wsl_call = "& wsl.exe -d $distro --cd /root -u root -- bash -lc $wslInstall"
+
+    # The forwarded-env block, bounded by the call that consumes it.
+    fwd = src[src.index("$_fwdEnv = ''") : src.index(wsl_call)]
+    assert (
+        "export UNSLOTH_SKIP_AUTOSTART=1;" in fwd
+    ), "the nested install.sh autostart prompt blocks the rest of install.ps1"
+
+    # The name has to be the one install.sh reads, and the call has to stay
+    # unredirected (the premise above): redirected, it would get pipes and never ask.
+    assert 'case "${UNSLOTH_SKIP_AUTOSTART:-}"' in INSTALL_SH.read_text(encoding = "utf-8")
+    call_line = next(ln for ln in src.splitlines() if wsl_call in ln)
+    assert (
+        "*>" not in call_line and "2>" not in call_line
+    ), "if this call is ever redirected, revisit the comment above -- not the export"
 
 
 if __name__ == "__main__":

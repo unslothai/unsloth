@@ -5697,6 +5697,14 @@ exit 0
         # location under WSL2 GPU-PV; without it install.sh picks CPU torch wheels and the
         # torch.cuda probe fails. Appended (not prepended) so a PATH nvidia-smi still wins.
         $_fwdEnv += 'export PATH="$PATH:/usr/lib/wsl/lib"; '
+        # Suppress the inner install.sh launch prompt. The run below is unredirected, so
+        # wsl.exe hands install.sh the console this script inherited and its `[ -t 1 ]` gate
+        # passes; the prompt defaults to yes and execs the server in the FOREGROUND, so the
+        # `& wsl.exe` never returns and the torch.cuda check, shim, shortcuts and background
+        # llama.cpp build below are all stranded. An export is needed because env vars do not
+        # cross into WSL on their own. Nothing is lost: this branch returns before the
+        # Windows-side prompt, and the shortcuts it creates are how WSL Studio is launched.
+        $_fwdEnv += 'export UNSLOTH_SKIP_AUTOSTART=1; '
         # Forward a non-default --package (validated at parse time, so splicing is safe);
         # previously it was silently dropped and the user got stock unsloth.
         $_shArgs = ''
