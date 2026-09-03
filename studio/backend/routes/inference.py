@@ -11290,25 +11290,27 @@ def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
     return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
 
 
-def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool) -> Optional[int]:
-    """The window a load naming no Context Length would be fitted to, or None for the ceiling.
-
-    The load's own fit, asked of the files instead of a resident model, so the panel and the load
-    reach the same length rather than two figures that happen to be close.
-    """
-    from core.inference.mlx_inference import mlx_fit_to_memory
+def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits):
+    """The window a load naming no Context Length would be fitted to, and the KV width it runs
+    at -- the load's own fit, asked of the files instead of a resident model. ``(None, kv_bits)``
+    where nothing is fitted: the ceiling is served, carrying no bound to spend the request on."""
+    from core.inference.mlx_inference import mlx_fit_to_memory, mlx_kv_quant_is_refused
 
     ceiling = _mlx_estimate_ceiling(model_dir)
     if not ceiling:
-        return None
-    return mlx_fit_to_memory(
+        return None, kv_bits
+    window, applied, _bounded = mlx_fit_to_memory(
         model_dir,
         ceiling,
         load_in_4bit = load_in_4bit,
         # Only the text path keeps a prompt history between turns, and the fit reserves room
         # for one that will be kept.
         retains_history = not getattr(config, "is_vision", False),
+        kv_bits = kv_bits,
+        # Asked only where the answer matters: it builds the architecture.
+        applies = lambda: not mlx_kv_quant_is_refused(model_dir),
     )
+    return window, applied
 
 
 def _mlx_estimate_available() -> bool:
@@ -15734,28 +15736,38 @@ async def estimate_memory(
             model_dir = _local_mlx_model_dir(config)
             if not model_dir:
                 return EstimateMemoryResponse(available = False, reason = "not_downloaded")
-            from core.inference.mlx_inference import mlx_bound_would_be_enforced
+            from core.inference.mlx_inference import (
+                mlx_bound_displaces_quantization,
+                mlx_bound_would_be_enforced,
+                mlx_kv_quant_is_refused,
+            )
             from core.inference.mlx_memory import mlx_memory_breakdown
 
             mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
+            mlx_kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_bits)
             # /load takes an MLX context from max_seq_length ALONE, so n_ctx -- llama.cpp's field
             # -- is not a pin here. A caller sending only n_ctx would otherwise be told its load
             # opens at that length and is fitted to nothing, while the load it describes is
             # unpinned and fits to whatever this machine holds.
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_fitted_ctx = (
-                None
-                if mlx_named_ctx
-                else _mlx_estimate_fitted_context(config, model_dir, mlx_load_in_4bit)
-            )
-            # Only a bound the load will actually install displaces the requested quantization.
-            # An architecture building its own cache is handed no window, and whether what it
-            # builds happens to cap itself is the model's business -- so the answer is probed
-            # rather than assumed. Where nothing is bounded the load quantizes as asked, and
-            # pricing full width would overstate the cache and make the KV control look inert.
-            mlx_bound = bool(mlx_fitted_ctx) and mlx_bound_would_be_enforced(
-                model_dir, mlx_fitted_ctx
-            )
+            mlx_fitted_ctx = None
+            if mlx_named_ctx:
+                # A pin instructs memory too, so a bound the cache can carry spends the request
+                # there as well -- probed, since the architecture may cap itself or not.
+                if mlx_bound_displaces_quantization(
+                    instructed = True,
+                    bounded = mlx_bound_would_be_enforced(model_dir, mlx_named_ctx),
+                ):
+                    mlx_kv_bits = None
+                # Asked only where the bound rule left a width standing: it builds the tower.
+                if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir):
+                    mlx_kv_bits = None
+            else:
+                # Fitted to the width the load will really run at, so the KV width moves the
+                # reported length too. The fit answers both; asking again could only disagree.
+                mlx_fitted_ctx, mlx_kv_bits = _mlx_estimate_fitted_context(
+                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+                )
             mlx_breakdown = mlx_memory_breakdown(
                 model_dir,
                 # Naming nothing is what a load does when the user pins nothing, and such a load
@@ -15768,7 +15780,7 @@ async def estimate_memory(
                     or _DEFAULT_MLX_ESTIMATE_CTX
                 ),
                 # The load refuses to quantize a bounded cache, so such a window is priced full.
-                kv_bits = None if mlx_bound else _mlx_estimate_kv_bits(request.mlx_kv_bits),
+                kv_bits = mlx_kv_bits,
                 # /load quantizes an unquantized checkpoint by default and does not always honour the request.
                 load_in_4bit = mlx_load_in_4bit,
             )

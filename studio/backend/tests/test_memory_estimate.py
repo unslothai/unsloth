@@ -1157,11 +1157,18 @@ class TestEstimateMemoryRoute:
         write = (tmp_path / "config.json").write_text
         write(json.dumps({"max_position_embeddings": 262_144}))
         self._mlx_target(monkeypatch, str(tmp_path))
-        asked, fit = {}, {"answer": 24_576}
+        asked, fit = {}, {"answer": (24_576, None, True)}
         monkeypatch.setattr(
             mlx_inference,
             "mlx_fit_to_memory",
-            lambda model_dir, ceiling, **kw: asked.update(kw, ceiling = ceiling, dir = model_dir)
+            lambda model_dir, ceiling, **kw: asked.update(
+                kw,
+                ceiling = ceiling,
+                dir = model_dir,
+                # Recorded before the question is put, catching a route that answered ahead.
+                probes_before = len(widths),
+                refused = kw["applies"]() if fit.get("ask", True) else None,
+            )
             or fit["answer"],
         )
         seen = self._record_breakdown(
@@ -1173,41 +1180,84 @@ class TestEstimateMemoryRoute:
             gpu_bytes = 3,
         )
         # n_ctx is llama.cpp's field, so a caller sending one is not naming an MLX length.
-        probed = []
+        probed, widths = [], []
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_kv_quant_is_refused",
+            lambda *a: widths.append(a) or False,
+        )
         monkeypatch.setattr(
             mlx_inference,
             "mlx_bound_would_be_enforced",
             lambda *a: probed.append(a) or True,
         )
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
-        # Asked about the checkpoint the route resolved and the window it would install, since a
-        # verdict about some other model or some other length decides nothing here.
-        assert probed == [(str(tmp_path), 24_576)]
-        # A bound the load will install displaces the quantization, and the fit was priced
-        # without it. Where no bound is installed the load quantizes as asked, so the width the
-        # caller chose has to survive -- and whether one is installed is probed, not assumed.
+        assert probed == []
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, None, 24_576)
-        for unenforced in (False, None):
-            monkeypatch.setattr(
-                mlx_inference, "mlx_bound_would_be_enforced", lambda *a, v = unenforced: v
-            )
-            resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
-            assert (seen["kv_bits"], resp.context_fitted) == (4, 24_576)
-        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: True)
-        # On the dir the route resolved, not the name it was asked about.
+        # The refusal question travels into the fit rather than being answered ahead of it.
+        assert asked.pop("probes_before") == 0 and widths == [(str(tmp_path),)]
+        assert asked.pop("applies")() is True
         assert asked == {
             "ceiling": 262_144,
             "retains_history": True,
             "dir": str(tmp_path),
+            "kv_bits": 4,
             "load_in_4bit": seen["load_in_4bit"],
+            "refused": True,
         }
+        widths.clear()
+        fit["ask"] = False
+        _estimate(model_path = "org/model", mlx_kv_bits = 4)
+        assert (asked["probes_before"], asked["refused"], widths) == (0, None, [])
+        fit["ask"] = True
 
-        # A named length is the user's: nothing is fitted, and the quantization stands.
+        # With no bound installed the load quantizes as asked, so the panel prices that width.
+        fit["answer"] = (12_288, 4, False)
+        resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (12_288, 4, 12_288)
+
+        # A refused width is never applied on any path, pinned included -- but it is asked
+        # about only where a width still stands.
+        widths.clear()
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_kv_quant_is_refused",
+            lambda *a: widths.append(a) or True,
+        )
         resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
-        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (8192, 4, None)
+        assert widths == []
+        assert (seen["n_ctx"], seen["kv_bits"]) == (8192, None)
+        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: False)
+        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert widths == [(str(tmp_path),)]
+        assert (seen["n_ctx"], seen["kv_bits"]) == (8192, None)
+        widths.clear()
+        monkeypatch.setattr(
+            mlx_inference, "mlx_bound_would_be_enforced", lambda *a: probed.append(a) or True
+        )
+        _estimate(model_path = "org/model", mlx_kv_bits = 4)
+        assert asked["kv_bits"] == 4 and asked["refused"] is False
+        # Not known to refuse is not a refusal: the load finds what only conversion can say.
+        monkeypatch.setattr(mlx_inference, "mlx_kv_quant_is_refused", lambda *a: False)
+        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: False)
+        _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert seen["kv_bits"] == 4
+        monkeypatch.setattr(mlx_inference, "mlx_kv_quant_is_refused", lambda *a: False)
 
-        # With no fit the declared window stands, held to what /load accepts; then the default.
-        fit["answer"] = None
+        # A named length is fitted to nothing, but a bound it can carry still displaces the width.
+        probed.clear()
+        monkeypatch.setattr(
+            mlx_inference, "mlx_bound_would_be_enforced", lambda *a: probed.append(a) or True
+        )
+        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert probed == [(str(tmp_path), 8192)]
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (8192, None, None)
+        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: False)
+        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert (seen["n_ctx"], seen["kv_bits"]) == (8192, 4)
+
+        # With no fit the declared window stands, held to what /load accepts, then the default.
+        fit["answer"] = (None, 4, None)
         write(json.dumps({"max_position_embeddings": MAX_REQUESTABLE_CONTEXT * 4}))
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
         assert resp.context_fitted is None

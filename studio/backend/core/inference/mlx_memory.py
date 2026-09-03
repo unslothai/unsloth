@@ -1167,10 +1167,9 @@ def mlx_fit_context(
 ) -> Optional[int]:
     """Largest context whose estimated footprint stays inside ``budget_bytes``.
 
-    None means nothing should be fitted, which is three different situations deliberately answered
-    the same way: the load cannot be sized, ``max_ctx`` already fits, or not even ``min_ctx`` does.
-    The last covers the weights-dominated load, where no context is small enough to help and
-    serving the shortest one would hide that rather than fix it.
+    None means nothing should be fitted, and answers four situations alike: the load cannot be
+    sized, ``max_ctx`` already fits, not even ``min_ctx`` does, or a length could not be priced
+    and the search stopped. None promises affordability; telling them apart needs a price.
 
     The search assumes the total does not fall as the context grows. That is a property of the
     terms, not something this arithmetic can enforce, so a test sweeps it at 256-token steps on a
