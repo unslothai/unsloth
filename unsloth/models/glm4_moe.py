@@ -43,7 +43,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 from ..kernels import fast_rms_layernorm
 
-# grouped_gemm expects its parent dir on sys.path
+# grouped_gemm expects its parent dir on sys.path.
 HAS_GROUPED_GEMM = False
 try:
     import sys
@@ -55,8 +55,8 @@ try:
     if _moe_path not in sys.path:
         sys.path.insert(0, _moe_path)
 
-    # Import first to apply the TMA compatibility shim (patches triton.language
-    # for both old and new TMA API names)
+    # Import first to apply the TMA compatibility shim, which patches triton.language for both old and
+    # new TMA API names.
     import grouped_gemm  # noqa: F401 - triggers TMA compatibility shim
 
     from grouped_gemm.interface import grouped_gemm
@@ -72,7 +72,6 @@ except ImportError as e:
     warnings.warn(f"Grouped GEMM not available: {e}. MoE will use fallback implementation.")
 
 
-# Import transformers GLM4 MoE Lite classes
 try:
     from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import (
         Glm4MoeLiteAttention,
@@ -89,7 +88,7 @@ try:
 except ImportError:
     HAS_GLM4_MOE = False
 
-    # Create dummy classes for type checking
+    # Dummy classes for type checking.
     class Glm4MoeLiteAttention:
         pass
 
@@ -137,7 +136,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
 
     router_logits = self.gate(hidden_states)  # [num_tokens, n_routed_experts]
     topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
-    # Sigmoid router returns fp32; cast weights to hidden_states dtype (e.g. bf16)
+    # The sigmoid router returns fp32; cast weights to the hidden_states dtype.
     topk_weights = topk_weights.to(hidden_states.dtype)
 
     with torch.no_grad():
@@ -146,7 +145,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
         )
 
     if HAS_GROUPED_GEMM:
-        # Under autocast hidden_states may be fp32 while weights are bf16
+        # Under autocast hidden_states may be fp32 while weights are bf16.
         hidden_states = hidden_states.to(self.experts.gate_up_proj.dtype)
 
         # gate_up_proj: [num_tokens, hidden_dim] -> [total_tokens, 2*intermediate_dim]
@@ -162,7 +161,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
             is_first_gemm = True,
         )
 
-        # Activation: SiLU(gate) * up
+        # SiLU(gate) * up.
         gate, up = intermediate.chunk(2, dim = -1)
         intermediate = torch_nn_functional_silu(gate) * up
 
@@ -179,7 +178,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
             is_first_gemm = False,
         )
 
-        # Merge topk weights: [num_tokens, top_k, hidden_dim] -> [num_tokens, hidden_dim]
+        # Merge topk weights: [num_tokens, top_k, hidden_dim] -> [num_tokens, hidden_dim].
         hidden_states = (
             expert_output.view(num_tokens, self.top_k, hidden_dim) * topk_weights.unsqueeze(-1)
         ).sum(dim = 1)
@@ -242,10 +241,9 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
     with torch.no_grad():
         token_counts_by_expert, gather_indices = get_routing_indices(top_k_index, self.num_experts)
 
-    # Under autocast hidden_states may be fp32 while weights are bf16
+    # Under autocast hidden_states may be fp32 while weights are bf16.
     hidden_states = hidden_states.to(self.gate_up_proj.dtype)
 
-    # First grouped GEMM: gate_up_proj
     intermediate = grouped_gemm(
         X = hidden_states,
         W = self.gate_up_proj,
@@ -262,7 +260,6 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
     gate, up = intermediate.chunk(2, dim = -1)
     intermediate = self.act_fn(gate) * up
 
-    # Second grouped GEMM: down_proj
     expert_output = grouped_gemm(
         X = intermediate,
         W = self.down_proj,
@@ -315,13 +312,11 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # MLP/MoE
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     else:
-        # Training path
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, _ = self.self_attn(
@@ -336,7 +331,6 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # MLP/MoE
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
@@ -370,15 +364,13 @@ class FastGLM47Model(FastLlamaModel):
                 "Please upgrade with: pip install --upgrade transformers"
             )
 
-        # Patch MoE forward with grouped GEMM (TMA compat handled by
-        # grouped_gemm/__init__.py)
+        # Patch MoE forward with grouped GEMM; TMA compat is handled by grouped_gemm/__init__.py.
         if HAS_GROUPED_GEMM:
             Glm4MoeLiteNaiveMoe.forward = Glm4MoeLiteNaiveMoe_fast_forward
             Glm4MoeLiteMoE.forward = Glm4MoeLiteMoE_fast_forward
 
-        # Attention/rope/decoder/model forwards are NOT patched: GLM4 uses MLA
-        # with different projection names and lacks extend_rope_embedding, so the
-        # Llama-compatible infrastructure doesn't apply.
+        # Attention/rope/decoder/model forwards are NOT patched: GLM4 uses MLA with different projection
+        # names and lacks extend_rope_embedding, so the Llama-compatible infrastructure does not apply.
 
         return
 
@@ -397,7 +389,7 @@ class FastGLM47Model(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
-        # Used by loader, not passed to model
+        # Used by the loader, not passed to the model.
         kwargs.pop("unsloth_force_compile", None)
 
         return FastLlamaModel.from_pretrained(

@@ -1834,6 +1834,7 @@ _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sa
 # decides prompting, and fails closed: anything not provably read-only asks.
 
 # Read-only commands allowed to run without confirmation in auto mode.
+# ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
     {
         "ls",

@@ -41,63 +41,57 @@ from enum import Enum
 
 GIB = float(1024**3)
 
-# Reference host (192 cores, one B200), dense FFN spilled in 16/32/48/65-block
-# steps: least-squares fit gives 5.544 ms per GiB, intercept -0.10 ms. The
-# near-zero intercept means partial spilling is LINEAR, so spill the minimum.
+# Reference host (192 cores, one B200), dense FFN spilled in 16/32/48/65-block steps: least-squares fit gives 5.544 ms
+# per GiB, intercept -0.10 ms. The near-zero intercept means partial spilling is LINEAR, so spill the minimum.
 REFERENCE_CONTIGUOUS_MS_PER_GIB = 5.544
 
-# Reference host thread count the rate above was measured at.
+# reference host thread count the rate above was measured at
 REFERENCE_HOST_THREADS = 192
 
-# Generation penalty vs threads, ms per GiB = a / threads + b. Least squares over
-# 39.81 / 15.86 / 7.248 / 5.498 ms per GiB at 4 / 16 / 64 / 192 threads (full
-# dense FFN spilled) gives a = 138.4, b = 5.57, every point within 14%. Amdahl,
-# not a power law: ``a`` is the CPU backend's parallel quantised matmul, ``b`` the
-# floor (host bandwidth, graph-split sync, non-overlapping GPU work), so 4x the
-# cores buys much less than 4x the speed.
+# Generation penalty vs threads, ms per GiB = a / threads + b. Least squares over 39.81 / 15.86 / 7.248 / 5.498 ms per
+# GiB at 4 / 16 / 64 / 192 threads (full dense FFN spilled) gives a = 138.4, b = 5.57, every point within 14%. Amdahl,
+# not a power law: ``a`` is the CPU backend's parallel quantised matmul, ``b`` the floor (host bandwidth, graph-split
+# sync, non-overlapping GPU work), so 4x the cores buys much less than 4x the speed.
 _THREAD_PARALLEL_MS_PER_GIB = 138.4
 _THREAD_SERIAL_MS_PER_GIB = 5.57
 
-# The fit above varies threads on ONE machine; across DIFFERENT machines the
-# slope is steeper (12 cloud vCPUs are ~6 physical cores on one memory
-# controller). Least squares over dense Q4 on 12 and 48 vCPU hosts (24.21 and
-# 6.82 ms per GiB) gives a = 278.2, b = 1.03. Neither fit dominates -- at 192
-# threads cross-machine predicts 2.48 vs 5.498 measured, at 12 one-machine
-# predicts 17.1 vs 24.21 -- so take whichever is MORE expensive: optimism quotes
-# a spill that runs several times slower than promised.
+# across DIFFERENT machines the slope is steeper (12 cloud vCPUs are ~6 physical cores on one memory controller)
+# The fit above varies threads on ONE machine; across DIFFERENT machines the slope is steeper (12 cloud vCPUs are ~6
+# physical cores on one memory controller). Least squares over dense Q4 on 12 and 48 vCPU hosts (24.21 and 6.82 ms per
+# GiB) gives a = 278.2, b = 1.03. Neither fit dominates -- at 192 threads cross-machine predicts 2.48 vs 5.498 measured,
+# at 12 one-machine predicts 17.1 vs 24.21 -- so take whichever is MORE expensive: optimism quotes a spill that runs
+# several times slower than promised.
 _CROSS_HOST_PARALLEL_MS_PER_GIB = 278.2
 _CROSS_HOST_SERIAL_MS_PER_GIB = 1.03
 
-# Residual model/measured over 70 runs on T4, L4, A100 and RTX PRO 6000 (2, 8,
-# 12, 48 vCPU), Qwen3.8-27B and Qwen3.6-35B-A3B at Q2_K_XL / Q4_K_XL / Q8_K_XL:
-# medians 1.09 (48 cpu), 0.59 (12), 0.24 (8), 0.24 (2).
-#
-# One case stays materially under-priced: DENSE Q2_K on a very small host. Cost
-# per spilled GiB tracks dequant complexity, not byte count -- at 12 vCPU Q2_K
-# 84.17, Q4_K 24.21, Q8 19.96 ms per GiB (Q8 cheapest despite being largest),
-# compressing to 8.70 / 6.82 / 6.29 at 48 vCPU. A quant multiplier would itself
-# move with core count (3.5x at 12 vCPU, 1.3x at 48), so fitting it from two core
-# counts would be overfitting. Left unmodelled deliberately.
+# residual model/measured over 70 runs (T4, L4, A100, RTX PRO 6000 at 2-48 vCPU)
 
 
+# Residual model/measured over 70 runs on T4, L4, A100 and RTX PRO 6000 (2, 8, 12, 48 vCPU), Qwen3.8-27B and
+# Qwen3.6-35B-A3B at Q2_K_XL / Q4_K_XL / Q8_K_XL: medians 1.09 (48 cpu), 0.59 (12), 0.24 (8), 0.24 (2). One case stays
+# materially under-priced: DENSE Q2_K on a very small host. Cost per spilled GiB tracks dequant complexity, not byte
+# count -- at 12 vCPU Q2_K 84.17, Q4_K 24.21, Q8 19.96 ms per GiB (Q8 cheapest despite being largest), compressing to
+# 8.70 / 6.82 / 6.29 at 48 vCPU. A quant multiplier would itself move with core count (3.5x at 12 vCPU, 1.3x at 48), so
+# fitting it from two core counts would be overfitting. Left unmodelled.
 class Access(str, Enum):
     """How a tensor group is read, which sets its cost per byte."""
 
-    #: Dense FFN: large contiguous matmuls, best case for the CPU backend.
+    # : Dense FFN: large contiguous matmuls, best case for the CPU backend.
     CONTIGUOUS = "contiguous"
-    #: lm_head: one tall matvec, usually higher-bit. Parallelises worse than 64
-    #: independent FFN blocks and dequantises more bytes per output element.
+    # : lm_head: one tall matvec; parallelises worse than 64 independent FFN blocks and dequantises more bytes per
+    # output element.
+    # : lm_head: one tall matvec, usually higher-bit. Parallelises worse than 64 : independent FFN blocks and
+    # dequantises more bytes per output element.
     SINGLE_MATVEC = "single_matvec"
-    #: MoE experts: 8-of-256 scattered small matmuls per layer per token.
+    # : MoE experts: 8-of-256 scattered small matmuls per layer per token.
     SCATTERED = "scattered"
-    #: The attention cache. By far the worst thing to move off the device.
+    # : The attention cache. By far the worst thing to move off the device.
     KV_CACHE = "kv_cache"
 
 
-# Cost per activated byte, relative to CONTIGUOUS. Derived in the plan doc:
-#   lm_head 10.51 / 5.955 = 1.77;  MoE expert 14.80 / 5.955 = 2.49
-#   KV cache 119.7 / 5.955 = 20.1 (20.4 from 121.2 on a structurally different
-#   model -- agreeing to 1.3%, the strongest single calibration point here)
+# Cost per activated byte, relative to CONTIGUOUS. Derived in the plan doc: lm_head 10.51 / 5.955 = 1.77;  MoE expert
+# 14.80 / 5.955 = 2.49 KV cache 119.7 / 5.955 = 20.1 (20.4 from 121.2 on a structurally different model -- agreeing to
+# 1.3%, the strongest single calibration point here)
 _RATE_RATIOS: dict[Access, float] = {
     Access.CONTIGUOUS: 1.00,
     Access.SINGLE_MATVEC: 1.77,
@@ -105,13 +99,13 @@ _RATE_RATIOS: dict[Access, float] = {
     Access.KV_CACHE: 20.1,
 }
 
-# Prefill streaming bandwidth, GiB/s. Bracketed by the two measurements (dense
-# 49.4, MoE 66.9); that spread is why this is a coarse constant, not a curve.
+# bracketed by the two measurements (dense 49.4, MoE 66.9)
+# Prefill streaming bandwidth, GiB/s. Bracketed by the two measurements (dense 49.4, MoE 66.9); that spread is why this
+# is a coarse constant, not a curve.
 PREFILL_STREAM_GIB_S = 55.0
 
-# Spilling several groups costs MORE than the sum of each alone -- contention,
-# not amortisation. Measured 6% for the dense FFN + lm_head pair. The "costs are
-# sub-additive" reading compares throughput percentages instead of times.
+# Spilling several groups costs MORE than the sum of each alone -- contention, not amortisation. Measured 6% for the
+# dense FFN + lm_head pair. The "costs are sub-additive" reading compares throughput percentages instead of times.
 MULTI_GROUP_CONTENTION = 0.06
 
 
@@ -122,8 +116,8 @@ class TensorGroup:
     name: str
     bytes_total: int
     access: Access
-    #: Fraction of ``bytes_total`` read per token during GENERATION. 1.0 for
-    #: dense weights; ``n_expert_used / n_expert`` for MoE experts.
+    # : Fraction of ``bytes_total`` read per token during GENERATION. 1.0 for : dense weights; ``n_expert_used /
+    # n_expert`` for MoE experts.
     activation_fraction: float = 1.0
 
     @property
@@ -141,8 +135,8 @@ class HostProfile:
     """
 
     threads: int = REFERENCE_HOST_THREADS
-    #: Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU) where
-    #: "spilling" moves nothing, because the two pools are one pool.
+    # : Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU) where : "spilling" moves nothing, because the
+    # two pools are one pool.
     unified_memory: bool = False
 
     @property
@@ -172,8 +166,8 @@ class Placement:
     """A candidate: which groups sit in host memory, and where the cache is."""
 
     host_groups: list[TensorGroup] = field(default_factory = list)
-    #: Bytes of attention cache forced to host RAM. Only ``--no-kv-offload``
-    #: puts anything here; ``-ot`` leaves it resident, ``-ngl`` drags it off.
+    # : Bytes of attention cache forced to host RAM. Only ``--no-kv-offload`` : puts anything here; ``-ot`` leaves it
+    # resident, ``-ngl`` drags it off.
     kv_host_bytes: int = 0
 
 
@@ -231,12 +225,10 @@ def prefill_penalty_ms_per_token(
     host = host or HostProfile()
     if host.unified_memory:
         return 0.0
-    # kv_host_bytes counts here too: leaving it out made a cache-offloaded
-    # placement prefill FOR FREE while generation_penalty_ms charged it.
-    # UNCALIBRATED lower bound -- counts the cache as streamed once per ubatch
-    # like the weights, though attention re-reads it and the read grows with
-    # depth. No production path builds kv_host_bytes > 0; this only stops rank()
-    # calling a cache spill free.
+    # kv_host_bytes counts here too: leaving it out made a cache-offloaded placement prefill FOR FREE while
+    # generation_penalty_ms charged it. UNCALIBRATED lower bound -- counts the cache as streamed once per ubatch like
+    # the weights, though attention re-reads it and the read grows with depth. No production path builds kv_host_bytes >
+    # 0; this only stops rank() calling a cache spill free.
     host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
     if host_bytes <= 0 or n_ubatch <= 0:
         return 0.0

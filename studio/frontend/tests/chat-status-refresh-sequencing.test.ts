@@ -83,3 +83,71 @@ test("the eviction branch is behind the same guard", () => {
   const guardAt = SYNC.indexOf("superseded()");
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
 });
+
+test("residency is deferred only while a settlement wait is outstanding", () => {
+  assert.doesNotMatch(
+    SYNC,
+    /if \(statusLoading\) return;/,
+    "the lifecycle bus owns settlement itself; generic hydration must still publish residency",
+  );
+  // Shared with the send-path poll, so both get it. Behaviour is pinned in
+  // tests/studio/test_chat_mount_cli_load_adoption.py.
+  assert.match(SYNC, /if \(statusLoading && serverModelWaitOutstanding\(\)\) return;/);
+  // Up before the sync is issued: a refresh issued later can answer first.
+  const handoff = SOURCE.slice(
+    SOURCE.indexOf("async function refreshAndWaitForServerModel("),
+    SOURCE.indexOf("* Reconcile the UI after the SERVER unloaded"),
+  );
+  assert.ok(
+    handoff.indexOf("beginServerModelWait(signal)") <
+      handoff.indexOf("await syncInferenceStatusToStore(options);"),
+  );
+  assert.match(handoff, /await waitForServerModel\(signal\);/);
+  assert.match(handoff, /\} finally \{\s*release\(\);\s*\}/);
+});
+
+test("a completed UI load still publishes residency while holding its lease", () => {
+  const selectionGuard = SYNC.slice(
+    SYNC.indexOf("const selectionChanged"),
+    SYNC.indexOf("const chatActiveModel"),
+  );
+  assert.match(selectionGuard, /selectedCheckpoint !== selectedAtStart/);
+  assert.doesNotMatch(
+    selectionGuard,
+    /modelLoading/,
+    "the load lease must not suppress the successful load's own settled refresh",
+  );
+
+  const activeBranch = SYNC.slice(
+    SYNC.indexOf("if (\n      chatActiveModel"),
+    SYNC.indexOf("} else if (", SYNC.indexOf("if (\n      chatActiveModel")),
+  );
+  assert.match(activeBranch, /applyActiveModelStatusToStore\(statusRes,/);
+});
+
+test("the mount observer adopts only a settled model", () => {
+  const wait = SOURCE.slice(
+    SOURCE.indexOf("async function waitForServerModel("),
+    SOURCE.indexOf("function parseTrailingEpoch("),
+  );
+  assert.match(
+    wait,
+    /if \(!loading && status\.active_model\) \{\s*await tryAdoptServerActiveModel\(\{ status \}\);/,
+  );
+  assert.match(
+    wait,
+    /!useChatRuntimeStore\.getState\(\)\.params\.checkpoint &&\s*!useChatRuntimeStore\.getState\(\)\.modelLoading/,
+  );
+  // Into the request, and capped: a stalled read would otherwise outlive both the unmount
+  // that aborted it and the two caps below.
+  assert.match(wait, /const poll = statusPollSignal\(signal\);/);
+  assert.match(wait, /await getInferenceStatus\(poll\.signal\)/);
+  assert.match(wait, /\} finally \{\s*poll\.dispose\(\);\s*\}/);
+});
+
+test("normal startup status adoption owns the resident model's globals", () => {
+  assert.match(
+    SYNC,
+    /adoptingExistingServerModel: selectedCheckpoint === ""/,
+  );
+});

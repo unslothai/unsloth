@@ -11,10 +11,15 @@ import { installLocalStorageFake } from "./helpers/kit.ts";
 installLocalStorageFake();
 register("./store-settings-resolver.mjs", import.meta.url);
 
-const { applyQwenThinkingParams, resolveQwenThinkingParams } =
-  await import("../src/features/chat/utils/qwen-params.ts");
-const { useChatRuntimeStore } =
-  await import("../src/features/chat/stores/chat-runtime-store.ts");
+const { applyQwenThinkingParams } = await import(
+  "../src/features/chat/utils/qwen-params.ts"
+);
+const { resolveQwenThinkingParams } = await import(
+  "../src/features/chat/utils/qwen-sampling-table.ts"
+);
+const { useChatRuntimeStore } = await import(
+  "../src/features/chat/stores/chat-runtime-store.ts"
+);
 
 test("the Qwen3.8 frontend table matches the backend recommendations", () => {
   const defaults = JSON.parse(
