@@ -177,6 +177,13 @@ export class OffsetRuns {
     return false;
   }
 
+  /** Whether anything is in doubt at all, without counting what. `size` walks every run, and the
+   *  hot path asks this per candidate: a cut through an odd indicator run leaves one run per pair,
+   *  which is a million of them at the ceiling and a minute of frozen tab for one search. */
+  get empty(): boolean {
+    return this.bounds.length === 0;
+  }
+
   /** How many runs it took to say that, which is the thing that costs memory. */
   get runs(): number {
     this.settle();
@@ -450,7 +457,12 @@ export function buildTextIndex(
           pendingClip = null;
         }
         // A share, not all: one huge node given the rest leaves out everything after it.
-        const take = Math.min(ceiling - length, MAX_NODE_CHARS);
+        let take = Math.min(ceiling - length, MAX_NODE_CHARS);
+        // Never between the halves of a pair: keeping the leading one leaves a code unit that is
+        // not a character, which reads as a grapheme of its own and lets a match end against it,
+        // inside what the page draws as one. Dropping it instead makes the cut a real boundary.
+        if (take > 0 && take < data.length && isPairedHalf(data, take))
+          take -= 1;
         if (take <= 0) {
           truncated = true;
           if (!separated) unsafe.add(length);
@@ -991,7 +1003,7 @@ function alignsToGraphemes(
 ): boolean {
   const text = index.text;
   const cut =
-    index.unsafe.size > 0 && (index.unsafe.has(start) || index.unsafe.has(end));
+    !index.unsafe.empty && (index.unsafe.has(start) || index.unsafe.has(end));
   // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
   // far more than looking. Nothing below U+0300 joins a grapheme: the lowest combining mark is
   // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and

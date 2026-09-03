@@ -2264,6 +2264,62 @@ test("the chain a cut leaves is followed past the seam, not only to it", () => {
   assert.equal(findMatches(index, "a", MAX_MATCHES).length > 0, true);
 });
 
+test("a cut never falls between the halves of a pair", () => {
+  // Keeping the leading half leaves a code unit that is not a character. It reads as a grapheme of
+  // its own, so a match could end against it, inside what the page draws as one thing: a node
+  // ending in a base and a skin tone, cut between the tone's halves, matched the base alone.
+  const tone = String.fromCodePoint(0x1f3fb);
+  const index = buildTextIndex(
+    el("DIV", [el("P", [text("z".repeat(MAX_NODE_CHARS - 2) + `a${tone}`)])]),
+  );
+  // One short of the ceiling, because the pair went whole rather than half.
+  assert.equal(index.text.length, MAX_NODE_CHARS - 1);
+  assert.equal(/[\ud800-\udbff]$/.test(index.text), false);
+  // And the base is not findable on its own, since the page joins it to the tone that was dropped.
+  assert.deepEqual(findMatches(index, "a", 10), []);
+  // A cut that does not land inside a pair still takes its whole share.
+  const clean = buildTextIndex(
+    el("DIV", [el("P", [text("z".repeat(MAX_NODE_CHARS + 10))])]),
+  );
+  assert.equal(clean.text.length, MAX_NODE_CHARS);
+});
+
+test("asking whether anything is in doubt does not count what", () => {
+  // Every candidate asks, and a cut through an odd indicator run leaves one run per pair, so
+  // counting them made the search quadratic. Compared against the same text with no cut in it
+  // rather than against a clock: same length, same matches, same machine, and the only difference
+  // is the runs, so the ratio says whether their number is being walked.
+  const flag = (at: number) => String.fromCodePoint(0x1f1e6 + (at % 26));
+  let run = "";
+  for (let at = 0; at < MAX_NODE_CHARS / 2; at += 1) run += flag(at + 3);
+  const build = (cut: boolean) => {
+    const head = "a".repeat(MAX_NODE_CHARS - 2);
+    const nodes = [text(cut ? head + flag(0) + flag(1) + flag(2) : head)];
+    for (let at = 0; at < 12; at += 1) nodes.push(text(run));
+    return buildTextIndex(el("DIV", [el("P", nodes)]));
+  };
+  const measure = (index: ReturnType<typeof buildTextIndex>) => {
+    const started = performance.now();
+    findMatches(index, flag(4) + flag(5), MAX_MATCHES);
+    return performance.now() - started;
+  };
+  const cut = build(true);
+  const uncut = build(false);
+  // The shape really does make a run per pair, or the comparison is measuring nothing.
+  assert.equal(cut.unsafe.runs > 100_000, true);
+  assert.equal(uncut.unsafe.runs, 0);
+  // Warm both, so the first one through does not carry the compile for the other.
+  measure(cut);
+  measure(uncut);
+  const ratio = measure(cut) / Math.max(measure(uncut), 1);
+  // A hundredfold when the runs are counted, and about one when they are not.
+  assert.equal(
+    ratio < 10,
+    true,
+    `cut costs ${ratio.toFixed(1)}x the same text uncut`,
+  );
+});
+
 test("doubt over a whole node is one run, not an entry per character", () => {
   // The per-node bound stops one sibling filling memory; it does not stop forty of them filling it
   // to the index ceiling. Held as offsets that was millions of entries for a document whose length
