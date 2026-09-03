@@ -100,17 +100,21 @@ def test_a_part_with_no_type_is_still_a_validation_error():
         _request({"role": "user", "content": [{"text": "hi"}]})
 
 
-def _count_tokens_client():
-    """The real /chat/count_tokens route, with only the auth dependency stubbed."""
+def _route_client(prefix = ""):
+    """The real inference router, with only the auth dependency stubbed."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from auth.authentication import get_current_subject
     import routes.inference as inference_route
 
     app = FastAPI()
-    app.include_router(inference_route.router)
+    app.include_router(inference_route.router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: "test"
     return TestClient(app, raise_server_exceptions = False)
+
+
+def _count_tokens_client():
+    return _route_client()
 
 
 def test_the_count_route_refuses_an_audio_part_the_way_it_refuses_the_field():
@@ -135,6 +139,49 @@ def test_the_count_route_refuses_an_unmodelled_part_like_the_completion_does():
             "/chat/count_tokens",
             json = {
                 "model": "default",
+                "messages": [
+                    {"role": "user", "content": [{"type": "file", "file": {"file_id": "file_abc"}}]}
+                ],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "'file'" in response.json()["detail"]["error"]["message"]
+
+
+def test_a_string_content_message_passes_through_the_lift_untouched():
+    """Only list content carries parts; a plain-string turn must not be rewritten."""
+    payload = _request({"role": "system", "content": "be terse"}, _audio_message())
+
+    _normalise_chat_content_parts(payload)
+
+    assert payload.messages[0].content == "be terse"
+    assert payload.audio_base64 == AUDIO_B64
+
+
+def test_the_completion_route_takes_the_documented_audio_part():
+    """The defect itself: the part used to be refused at body validation, before any model ran.
+
+    What happens after validation depends on which models the host has, so this pins the only
+    part that is about the union: the request is no longer rejected as an unknown tag.
+    """
+    with _route_client("/v1") as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json = {"model": "local", "messages": [_audio_message()]},
+        )
+
+    assert response.status_code != 422
+    assert "union_tag_invalid" not in response.text
+
+
+def test_the_completion_route_refuses_an_unmodelled_part():
+    """Raised at the normalisation call site, so it lands before any model resolution."""
+    with _route_client("/v1") as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json = {
+                "model": "local",
                 "messages": [
                     {"role": "user", "content": [{"type": "file", "file": {"file_id": "file_abc"}}]}
                 ],
