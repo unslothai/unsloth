@@ -963,7 +963,11 @@ def test_anonymous_access_check_reads_the_gated_flag(monkeypatch, gated, private
     info.private = private
 
     class _Api:
-        def model_info(self, repo_id, token = None):
+        def model_info(
+            self,
+            repo_id,
+            token = None,
+        ):
             assert token is False, "the check must ask anonymously"
             if raises:
                 raise RuntimeError("401")
