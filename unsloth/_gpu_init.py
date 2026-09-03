@@ -185,13 +185,14 @@ def _reraise_device_type_error_with_gpu_hint(exception):
             f"Note: CUDA_VISIBLE_DEVICES is set to {mask!r}. If that mask selects no "
             f"installed GPU, it alone explains this and no torch reinstall will help.\n"
         )
-    # The documented install rather than a hand-rolled pip line, which kept being wrong in a
-    # new way each round: it left torchvision, torchaudio and xformers built for the old
-    # torch, `--upgrade` could cross unsloth's supported ceiling, a hardcoded cuXXX drops
-    # pre-Turing GPUs, and an interpolated sys.executable breaks on a path with a space.
-    # `--torch-backend=auto` reads the installed driver and picks the index (uv docs,
-    # "Using uv with PyTorch"); unsloth's own metadata bounds the versions. install.sh is
-    # NOT the answer here: it builds its own Studio venv and leaves this interpreter broken.
+    # Diagnosis here, remedy in the install docs. Every copy-pasteable repair command tried
+    # was wrong a different way: it left torchvision, torchaudio and xformers built for the
+    # old torch; `--upgrade` crossed unsloth's supported ceiling; a hardcoded cuXXX and uv's
+    # `--torch-backend=auto` both misroute pre-Turing GPUs, since auto reads only the driver
+    # and not compute capability; `uv pip` targets the CWD's venv, not this interpreter; an
+    # interpolated sys.executable needs shell-specific quoting; and `unsloth` carries no
+    # torch dependency at all, so reinstalling it does not touch torch. install.sh and
+    # install.ps1 exist to compute that matrix.
     raise NotImplementedError(
         f"Unsloth: an NVIDIA GPU ({gpu_name}) is present -- nvidia-smi sees it -- but this "
         f"PyTorch build cannot use it (torch.cuda.is_available() is False).\n"
@@ -199,11 +200,13 @@ def _reraise_device_type_error_with_gpu_hint(exception):
         f"or platform, which is common on DGX Spark GB10 and other aarch64 hosts.\n"
         f"PyTorch was compiled with CUDA: {torch_cuda_build}.\n"
         f"{mask_note}"
-        f"Fix: reinstall torch in the environment that raised this ({sys.executable}). "
-        f"Unsloth's documented install picks the CUDA build from your driver and repairs "
-        f"torchvision, torchaudio and xformers with it:\n"
-        f"    uv pip install --reinstall unsloth --torch-backend=auto\n"
-        f"Setup and non-uv instructions: https://github.com/unslothai/unsloth#-install"
+        f"Fix: replace this PyTorch with a build that matches this machine, in the "
+        f"environment that raised the error ({sys.executable}). Follow the install "
+        f"instructions for your GPU:\n"
+        f"    https://github.com/unslothai/unsloth#-install\n"
+        f"Picking the wheels by hand is what install.sh and install.ps1 exist to compute: "
+        f"the newest CUDA family drops pre-Turing GPUs, and torchvision, torchaudio and "
+        f"xformers have to be replaced together with torch."
     ) from exception
 
 

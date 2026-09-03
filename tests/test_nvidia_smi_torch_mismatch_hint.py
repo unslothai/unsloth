@@ -9,9 +9,9 @@
   `_cvd_hides_nvidia`). Other masks can resolve to nothing too, so the message names them.
 - No answer from nvidia-smi: the probe returns None, so the re-raise happens outside the
   handler and no probe traceback lands ahead of the real error.
-- The printed command, which points at the documented install instead of a hand-rolled
-  pip line that kept leaving one of torchvision, torchaudio, xformers or the version
-  ceiling wrong.
+- The remedy, which is a link and not a command: no copy-pasteable line survived review
+  (companion wheels, version ceiling, pre-Turing routing, which venv uv targets, shell
+  quoting, and `unsloth` having no torch dependency to reinstall).
 """
 
 from __future__ import annotations
@@ -88,23 +88,20 @@ def test_generic_failure_gets_the_reinstall_hint(helper, monkeypatch, message):
     assert excinfo.value.__cause__ is original
 
 
-def test_hint_points_at_the_documented_install(helper, monkeypatch):
-    """A hand-rolled pip line was wrong in a new way every round. The documented install
-    resolves the whole set from the driver, so the message carries no versions, no CUDA
-    family and no interpolated path inside the command."""
+def test_hint_diagnoses_and_links_rather_than_printing_a_command(helper, monkeypatch):
+    """No copy-pasteable repair line survives review: it goes stale on the companion wheels
+    and xformers, `--upgrade` crosses unsloth's ceiling, a fixed cuXXX and uv's driver-only
+    `--torch-backend=auto` misroute pre-Turing GPUs, `uv pip` targets the CWD's venv, and
+    `unsloth` has no torch dependency to reinstall. The message owns the diagnosis only."""
     _smi(monkeypatch)
 
     with pytest.raises(NotImplementedError) as excinfo:
         helper(NotImplementedError(_NO_ACCELERATOR))
 
     message = str(excinfo.value)
-    command = next(line for line in message.splitlines() if "pip install" in line).strip()
-    assert command == "uv pip install --reinstall unsloth --torch-backend=auto"
-    # install.sh builds its own Studio venv and would leave this interpreter broken, so the
-    # message names the interpreter instead, as prose the shell never has to quote.
-    assert "install.sh" not in message
-    assert sys.executable in message and sys.executable not in command
-    assert not re.search(r"cu\d{3}|torch[<>=]", command)
+    assert "https://github.com/unslothai/unsloth#-install" in message
+    assert sys.executable in message
+    assert not re.search(r"pip install|cu\d{3}|--torch-backend|torch[<>=]", message)
 
 
 def test_rocm_advice_passes_through_without_probing(helper, monkeypatch):
