@@ -638,9 +638,6 @@ print('FILESYSTEM_BOUNDARY_OK')
 """
         try:
             completed = _run_native(workdir, code)
-            udp.settimeout(0.05)
-            with pytest.raises((TimeoutError, socket.timeout)):
-                udp.recvfrom(256)
         finally:
             os.close(high_fd)
         _assert_native_ok(completed)
@@ -744,6 +741,9 @@ else:
 print('NETWORK_BOUNDARY_OK')
 """
             completed = _run_native(workdir, code)
+            udp.settimeout(0.05)
+            with pytest.raises((TimeoutError, socket.timeout)):
+                udp.recvfrom(256)
         finally:
             for server in host_unix_servers:
                 server.close()
