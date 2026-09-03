@@ -92,11 +92,9 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     default_home = _default_cache_home()
     hf_home = _canonical(explicit_home) if explicit_home else default_home
     hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
-    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE,
-    # so naming only a hub cache says nothing about where the chunk and shard
-    # caches go and would leave them in the host home a portable install is meant
-    # to stay out of. Same test _portable_cache_defaults already applies to the
-    # assets and datasets caches, which are derived from HF_HOME the same way.
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE, so a hub-only
+    # override would leave the chunk and shard caches in the host home. Same test
+    # _portable_cache_defaults applies to the assets and datasets caches.
     xet_home = hf_home if explicit_home else (_portable_cache_home() or hf_home)
     xet = _canonical(explicit_xet) if explicit_xet else xet_home / "xet"
     controlling = next(
@@ -116,17 +114,13 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 
 
 def _stored_cache_home() -> Optional[Path]:
-    # get_app_setting CREATES and migrates studio.db, so reading unconditionally
-    # built one on machines that had never opened Studio. No file and no imported
-    # db module means there is no stored setting to find anyway.
-    # os.stat, not Path.exists: only a positively observed absence may skip the
-    # read. From 3.14 the path predicates answer through os.path, which reports
-    # EACCES and EIO as False, so a database we merely could not inspect would
-    # read as "no setting stored" and silently drop the user's chosen cache home
-    # back to the default or portable one. stat, not lstat as _nothing_at uses:
-    # the question here is whether sqlite would find a database, and it follows
-    # symlinks, so a dangling link is still absent rather than a reason to open
-    # the connection that would create the file behind it.
+    # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
+    # machines that had never opened Studio.
+    # os.stat, not Path.exists: only a positively observed absence may skip the read. From 3.14
+    # the predicates answer through os.path, which reports EACCES and EIO as False, so a database
+    # we merely could not inspect would read as "no setting stored" and drop the chosen cache home.
+    # stat, not lstat: sqlite follows symlinks, so a dangling link is absent rather than a file to
+    # open the creating connection against.
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
@@ -173,10 +167,9 @@ def configured_cache_key() -> str:
 
 
 def _portable_cache_home() -> Optional[Path]:
-    """The HF cache home a portable install uses, or None. A normal install keeps
-    the platform default so models shared with other tools are not re-downloaded.
-    Imported lazily: storage_roots reaches into this module during startup.
-    """
+    """The HF cache home a portable install uses, else None: a normal install keeps the platform
+    default so models shared with other tools are not re-downloaded. Imported lazily, since
+    storage_roots reaches into this module during startup."""
     try:
         from utils.paths.storage_roots import cache_root, portable_mode
     except ImportError:
@@ -202,8 +195,7 @@ def get_hf_cache_paths() -> HuggingFaceCachePaths:
             _canonical(xet) if xet else stored / "xet",
             "studio",
         )
-    # Below an explicit env var and the user's Settings choice: portable mode is
-    # an install-time default, not an instruction to override either.
+    # Ranks below env vars and Settings: portable mode is a default, not an override.
     home = _portable_cache_home() or _default_cache_home()
     xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
     return HuggingFaceCachePaths(

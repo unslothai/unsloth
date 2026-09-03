@@ -1889,8 +1889,8 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_DG_SHIM",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
-    // storage_roots.py fills these only when blank, so a relative one the user
-    // set is kept as written and would name a different folder after the move.
+    // storage_roots.py fills these only when blank, so a relative value the user set is kept as
+    // written and would name a different folder after the move.
     "TORCH_EXTENSIONS_DIR",
     "TORCH_HOME",
     "TRITON_HOME",

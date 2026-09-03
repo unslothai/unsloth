@@ -7548,9 +7548,8 @@ class LlamaCppBackend:
                 unsloth_home as _uh,
             )
 
-            # llama.cpp is a sibling of studio/ under the master root, which is
-            # the path run.py and main.py export, so a portable install is never
-            # the legacy layout.
+            # llama.cpp is a sibling of studio/ under the master root, the path run.py and
+            # main.py export, so a portable install is never the legacy layout.
             master = _uh()
             if master is not None:
                 return master, False

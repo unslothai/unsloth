@@ -56,7 +56,6 @@ def managed_node_dir() -> Path:
         from utils.paths.storage_roots import studio_root, unsloth_home
 
         # setup.sh installs Node at <master root>/node, beside studio/.
-        # Non-portable installs get None here and keep the derivation below.
         master = unsloth_home()
         if master is not None:
             return master / "node"

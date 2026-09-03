@@ -153,8 +153,7 @@ def test_search_roots_keeps_custom_when_resolve_fails(tmp_path):
 
 
 def test_search_roots_follow_the_master_root(tmp_path):
-    # llama.cpp is a sibling of studio/ there, and resolve() failing must not
-    # drop back to a root the installer never wrote to.
+    # llama.cpp is a sibling of studio/ there; a failing resolve() must not drop the master root.
     home = tmp_path / "home"
     home.mkdir()
     master = tmp_path / "portable"
