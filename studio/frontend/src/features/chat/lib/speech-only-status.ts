@@ -11,19 +11,15 @@ export type SpeechOnlyStatusInput = {
 };
 
 /**
- * Whether the resident model emits speech. The Audio page loads these into the single
- * slot chat reads, and openai_chat_completions answers a turn on one by SYNTHESIZING
- * the prompt, so chat must never adopt one.
+ * Whether the resident audio model cannot answer a normal text-chat turn. The Audio
+ * page loads both speech generators and Whisper/STT checkpoints into the single slot
+ * chat reads, so chat must never adopt either kind.
  *
- * The same condition that route branches on, plus audio_vlm: Gemma 3n should never set
- * `is_audio`, and misreading one would lock a real chat model out of chat.
+ * Audio VLMs remain eligible: Gemma 3n should never set `is_audio`, and treating a
+ * defensive true as non-chat would lock a real multimodal model out of chat.
  */
 export function isSpeechOnlyStatus(status: SpeechOnlyStatusInput): boolean {
-  return (
-    Boolean(status.is_audio) &&
-    status.audio_type !== "whisper" &&
-    status.audio_type !== "audio_vlm"
-  );
+  return Boolean(status.is_audio) && status.audio_type !== "audio_vlm";
 }
 
 export function isIdleUnloadedStatus(

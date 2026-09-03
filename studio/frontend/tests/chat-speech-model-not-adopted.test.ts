@@ -36,11 +36,12 @@ test("an ordinary chat model is not speech-only", () => {
   assert.equal(isSpeechOnlyStatus(status({ is_audio: false })), false);
 });
 
-// Whisper answers with transcripts, and the chat route branches on it separately.
-test("whisper is not speech-only", () => {
+// Whisper answers with transcripts rather than normal assistant text, so chat must not
+// adopt the Audio page's resident STT checkpoint.
+test("whisper is speech-only from text chat's perspective", () => {
   assert.equal(
     isSpeechOnlyStatus(status({ is_audio: true, audio_type: "whisper" })),
-    false,
+    true,
   );
 });
 
