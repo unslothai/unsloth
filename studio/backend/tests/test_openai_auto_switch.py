@@ -9331,9 +9331,7 @@ def test_an_incomplete_minimax_pipeline_is_not_switchable(tmp_path, monkeypatch)
     assert resolver.local_servable_model(info) is None
 
 
-def test_a_minimax_pipeline_with_a_missing_weight_shard_is_not_switchable(
-    tmp_path, monkeypatch
-):
+def test_a_minimax_pipeline_with_a_missing_weight_shard_is_not_switchable(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     pipeline = _complete_minimax_pipeline(tmp_path)
@@ -9367,9 +9365,7 @@ def test_a_minimax_pipeline_with_a_missing_weight_shard_is_not_switchable(
         '{"weight_map":{"layer":"empty.safetensors"}}',
     ),
 )
-def test_invalid_minimax_weight_indexes_do_not_prove_component_completeness(
-    tmp_path, payload
-):
+def test_invalid_minimax_weight_indexes_do_not_prove_component_completeness(tmp_path, payload):
     from core.inference import native_audio
 
     component = tmp_path / "component"
