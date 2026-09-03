@@ -105,6 +105,53 @@ def extracted_root(extract_dir: str) -> str:
     return extract_dir
 
 
+def sanity_check_binaries(install_dir, build_bin):
+    """Run each shipped binary once and refuse to publish a broken one.
+
+    A module-level function rather than inline in main() so the regression test
+    can drive it against stub binaries without exec'ing a slice of this file.
+    """
+    checks = (
+        # llama-server DOES have --version, so a healthy run exits 0. The exit
+        # code is load-bearing here, not decoration: the loader's own failure
+        # message is `<binary>: libc.so.6: version `GLIBC_2.38' not found
+        # (required by ...)`, which contains the word this looks for, so the
+        # substring alone accepted a server that cannot reach main. Studio chat
+        # depends on it, so a broken one must not ship.
+        (os.path.join(install_dir, "llama-server"), "version", True),
+        # llama-quantize has no --version: healthy run prints usage (rc 0),
+        # loader failure rc 127. The exit code is not asserted for these two
+        # because an unknown flag is not required to exit 0 across builds; the
+        # "usage" banner is what a working binary produces and a loader failure
+        # never does.
+        (os.path.join(install_dir, "llama-quantize"), "usage", False),
+        (os.path.join(build_bin, "llama-quantize"), "usage", False),
+    )
+    for binary, expect, require_zero_exit in checks:
+        out = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+        banner = (out.stdout + out.stderr).strip()
+        print(
+            os.path.relpath(binary, install_dir),
+            "->",
+            banner.splitlines()[0] if banner else "(no output)",
+        )
+        if expect not in banner:
+            raise SystemExit(
+                f"FAIL: {binary} did not print '{expect}': rc={out.returncode}\n{banner[:400]}"
+            )
+        if require_zero_exit and out.returncode != 0:
+            raise SystemExit(
+                f"FAIL: {binary} --version exited {out.returncode}; the banner text is "
+                f"not enough on its own because a dynamic-loader failure prints "
+                f"\"version `GLIBC_...' not found\" too\n{banner[:400]}"
+            )
+
+
 def main() -> None:
     tag, target_arch, install_dir = sys.argv[1], sys.argv[2] or "amd64", sys.argv[3]
     if tag in ("", "latest"):
@@ -211,30 +258,7 @@ def main() -> None:
     # Sanity: the server must run on a GPU-less host (CUDA backend is a dlopen'd
     # plugin). Check the quantizer from both roots: setup.sh relinks the root copy
     # to build/bin, so build/bin must resolve standalone.
-    checks = (
-        # llama-quantize has no --version: healthy run prints usage (rc 0),
-        # loader failure rc 127.
-        (os.path.join(install_dir, "llama-server"), "version"),
-        (os.path.join(install_dir, "llama-quantize"), "usage"),
-        (os.path.join(build_bin, "llama-quantize"), "usage"),
-    )
-    for binary, expect in checks:
-        out = subprocess.run(
-            [binary, "--version"],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-        )
-        banner = (out.stdout + out.stderr).strip()
-        print(
-            os.path.relpath(binary, install_dir),
-            "->",
-            banner.splitlines()[0] if banner else "(no output)",
-        )
-        if expect not in banner:
-            raise SystemExit(
-                f"FAIL: {binary} did not print '{expect}': rc={out.returncode}\n{banner[:400]}"
-            )
+    sanity_check_binaries(install_dir, build_bin)
     for required in (
         "llama-quantize",
         "convert_hf_to_gguf.py",

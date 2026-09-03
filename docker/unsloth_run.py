@@ -138,6 +138,41 @@ def _scan(nb):
     return pin, model
 
 
+def _makedirs_as_host(path):
+    """Create `path` owned by the nearest existing ancestor's owner.
+
+    mkdir(2) gives the new directory the CALLER's uid/gid; only the setgid bit
+    carries anything down from the parent. The container runs as root while
+    `-v $PWD:/workspace` is the host user's own tree, so `--out sub/dir/x.ipynb`
+    into a directory that does not exist yet leaves them a root-owned directory
+    they cannot write. _stage_metadata then derives the OUTPUT's owner from that
+    same just-created directory, so the notebook is root-owned too and both ends
+    of the path are unusable from the host.
+    """
+    path = os.path.abspath(path)
+    missing = []
+    probe = path
+    while not os.path.isdir(probe):
+        missing.append(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    os.makedirs(path, exist_ok = True)
+    if not missing:
+        return
+    try:
+        anchor = os.stat(probe)
+    except OSError:
+        return
+    # Outermost first, so a partial failure still fixes what it can.
+    for created in reversed(missing):
+        try:
+            os.chown(created, anchor.st_uid, anchor.st_gid)
+        except (OSError, AttributeError):
+            pass
+
+
 def _stage_metadata(staged, dest):
     """Give the staged output the metadata the destination must end up with.
 
@@ -201,7 +236,7 @@ def main():
     if args.out:
         out_path = os.path.abspath(args.out)
         out_dir = os.path.dirname(out_path) or "."
-        os.makedirs(out_dir, exist_ok = True)
+        _makedirs_as_host(out_dir)
         fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
         with os.fdopen(fd, "w") as f:
             json.dump(nb, f)

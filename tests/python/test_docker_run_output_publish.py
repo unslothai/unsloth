@@ -123,6 +123,72 @@ def test_no_staging_files_are_left_behind(runner, monkeypatch, tmp_path, noteboo
     assert not leftovers, leftovers
 
 
+# --- creating the output directory --------------------------------------------
+
+
+def test_every_created_level_is_chowned_to_the_nearest_existing_ancestor(
+    runner, monkeypatch, tmp_path
+):
+    # mkdir(2) uses the CALLER's uid, so root creating `sub/dir` inside the host
+    # user's bind-mounted tree leaves them a directory they cannot write, and
+    # _stage_metadata then hands the OUTPUT that same root owner. Recorded
+    # rather than observed because chowning to another uid needs root.
+    anchor = os.stat(tmp_path)
+    chowned = []
+    monkeypatch.setattr(
+        runner.os, "chown", lambda p, u, g: chowned.append((str(p), u, g))
+    )
+
+    runner._makedirs_as_host(str(tmp_path / "sub" / "dir"))
+
+    assert [p for p, _, _ in chowned] == [
+        str(tmp_path / "sub"),
+        str(tmp_path / "sub" / "dir"),
+    ], "both created levels must be fixed, outermost first"
+    assert {(u, g) for _, u, g in chowned} == {(anchor.st_uid, anchor.st_gid)}
+
+
+def test_the_ancestor_is_the_nearest_one_that_exists(runner, monkeypatch, tmp_path):
+    # The owner must come from the deepest EXISTING directory, not from the
+    # mount root: a user can own /workspace/host/projectA without owning
+    # everything above it.
+    base = tmp_path / "exists"
+    base.mkdir()
+    chowned = []
+    monkeypatch.setattr(runner.os, "chown", lambda p, u, g: chowned.append(str(p)))
+
+    runner._makedirs_as_host(str(base / "a" / "b"))
+
+    assert chowned == [str(base / "a"), str(base / "a" / "b")]
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason = "chown to another uid needs root")
+def test_the_output_in_a_created_directory_is_not_root_owned(
+    runner, monkeypatch, tmp_path, notebook
+):
+    host = tmp_path / "host"
+    host.mkdir()
+    os.chown(host, 1000, 1000)
+    out = host / "results" / "run" / "out.ipynb"
+
+    _run(runner, monkeypatch, notebook, out)
+
+    for path in (host / "results", host / "results" / "run", out):
+        st = os.stat(path)
+        assert (st.st_uid, st.st_gid) == (1000, 1000), path
+
+
+def test_an_existing_output_directory_is_left_alone(runner, tmp_path):
+    existing = tmp_path / "already"
+    existing.mkdir()
+    before = os.stat(existing)
+    runner._makedirs_as_host(str(existing))
+    after = os.stat(existing)
+    assert (after.st_uid, after.st_gid, after.st_mode) == (
+        before.st_uid, before.st_gid, before.st_mode,
+    )
+
+
 # --- publishing onto a single-file bind mount ---------------------------------
 # `-v $PWD/out.ipynb:/workspace/out.ipynb` makes the destination a mount point.
 # rename(2) onto one returns EBUSY (fs/namei.c refuses to rename over a mounted
