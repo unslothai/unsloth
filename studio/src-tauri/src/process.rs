@@ -1895,6 +1895,7 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "TORCH_HOME",
     "TRITON_HOME",
     "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
     "CUDA_CACHE_PATH",
     "MPLCONFIGDIR",
     "NUMBA_CACHE_DIR",
