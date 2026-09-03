@@ -931,7 +931,11 @@ def test_live_symlink_virtualenv_interpreter_runs_inside_sandbox(
     assert venv_python.is_symlink()
     backend_root = str(Path(__file__).resolve().parents[1])
     helper = f"""
-import os, subprocess, sys
+import os, subprocess, sys, types
+logger = types.SimpleNamespace(warning=lambda *args, **kwargs: None)
+loggers = types.ModuleType('loggers')
+loggers.get_logger = lambda name: logger
+sys.modules['loggers'] = loggers
 from core.inference import os_sandbox
 
 assert os.path.abspath(sys.executable) == {str(venv_python)!r}
