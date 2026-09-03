@@ -2171,7 +2171,13 @@ def _openai_llama_preemption_arm(
     # Whoever has to stop so this one fits. Setting the signal is all that happens here;
     # the victims notice at their own next safe point, which is the only place a pause
     # is allowed to land.
-    victims = controller.plan_preemptions(needed = charged)
+    # `needed = 0`, not `needed = charged`. register() has just put this generation in the
+    # ledger carrying exactly `charged`, so asking for `charged` more room on top charges
+    # the arriving chat twice and preempts somebody to make space that is already booked.
+    # Its growth is not forgotten by dropping the second charge: the watermark sweep runs
+    # every 32 generated tokens and at every round boundary, which is what admission
+    # overcommitting on purpose requires and is how vLLM handles the same problem.
+    victims = controller.plan_preemptions(needed = 0)
     snapshot = controller.snapshot()
     _llama_preemption_log(
         "armed",

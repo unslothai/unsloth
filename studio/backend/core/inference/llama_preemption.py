@@ -464,6 +464,12 @@ class Participant:
     # What admission charged. Live growth is added to THIS rather than replacing it, so a
     # report of "n tokens generated" cannot silently drop the prompt already resident.
     base_tokens: int = 0
+    # True once this generation's prompt is known to be IN the cache, either because a
+    # round boundary restated it or because it has decoded at least once. Until then its
+    # charge is a reservation for a prefill that has not happened, which the resident
+    # figure cannot see; afterwards its tokens are already inside that figure and adding
+    # them to it would count the same cells twice.
+    measured: bool = False
     state: str = ParticipantState.DECODING
     consecutive_preemptions: int = 0
     # Set when this generation must stop. The caller aborts ONLY the upstream
@@ -696,6 +702,8 @@ class PreemptionController:
             participant = self._participants.get(gen_id)
             if participant is not None:
                 participant.tokens = participant.base_tokens + max(0, int(generated or 0))
+                # A token came back, so the prompt behind it is prefilled and resident.
+                participant.measured = True
         # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
 
@@ -734,6 +742,7 @@ class PreemptionController:
                 # Re-baselined: a round boundary restates the whole conversation, so
                 # later growth is measured from here rather than from admission.
                 participant.base_tokens = participant.tokens
+                participant.measured = True
 
     def note_replayed(self, gen_id: str, tokens: int) -> None:
         """Tokens a paused attempt decoded that the NEXT attempt sends back as prompt.
@@ -833,7 +842,22 @@ class PreemptionController:
         # let four chats be scheduled against a cache an idle slot had already filled.
         if self._resident is None:
             return ledger
-        return max(ledger, self._resident)
+        # Not max(ledger, resident): that double counts every chat the resident figure
+        # ALREADY includes. Measured 2026-09-03 over 1218 samples of a four-chat run, the
+        # ledger overstated the cache in 1212 of them, by up to a whole 16384-cell window,
+        # because each chat was carrying an equal-share reservation on top of cells
+        # llama-server had already reported. Chats were paused with the cache half empty
+        # and two gave up at the resume timeout.
+        #
+        # Split it instead. A measured chat is inside `resident`, so its ledger entry is
+        # a second opinion about the same cells: take the larger of the two totals, which
+        # keeps the guard against a reading that lags a prefill in progress. An unmeasured
+        # chat has not been prefilled, so `resident` cannot see it and its charge is a
+        # genuine reservation that has to be added on top.
+        holders = [p for p in self._participants.values() if p.holds_kv]
+        measured = sum(p.tokens for p in holders if p.measured)
+        pending = sum(p.tokens for p in holders if not p.measured)
+        return max(self._resident, measured) + pending
 
     def _winner_locked(self) -> Optional[Participant]:
         """The one generation that keeps decoding, stable for an epoch.

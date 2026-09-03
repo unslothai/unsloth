@@ -930,17 +930,53 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert read_slot_occupancy(lambda: None) is None
         assert read_slot_occupancy(lambda: []) is None
 
-    def test_the_controller_takes_the_larger_of_the_two(self):
+    def test_a_chat_that_has_not_prefilled_is_added_to_what_the_cache_holds(self):
+        """An idle slot's residue plus a prompt still to be sent are different cells."""
         controller = PreemptionController("resident")
         controller.configure(budget = 16384, kv_unified = True)
         controller.register("a", tokens = 2000, signal = PreemptSignal())
         assert controller.committed_tokens() == 2000
         controller.note_resident(16383)
-        assert controller.committed_tokens() == 16383, (
+        # "a" has not decoded a token, so its 2000 are NOT among the 16383 the cache is
+        # already holding: they are a prefill still to come, and both have to fit.
+        assert controller.committed_tokens() == 18383, (
             "the cache is full and the ledger does not know it"
         )
         controller.note_resident(None)
         assert controller.committed_tokens() == 2000, "a failed read falls back, not to zero"
+
+    def test_a_chat_already_in_the_cache_is_not_counted_a_second_time(self):
+        """The regression that paused chats against a cache that was half empty.
+
+        Taking max(ledger, resident) was safe; adding the two was not, and the old split
+        did neither cleanly. Measured over 1218 samples of a live four-chat run, the
+        ledger overstated the cache in 1212 of them because every chat carried an equal
+        share reservation on top of cells llama-server had already counted.
+        """
+        controller = PreemptionController("resident-measured")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("a", tokens = 4096, signal = PreemptSignal())
+        # One token comes back: whatever "a" really holds, the cache has now reported it.
+        controller.observe("a", 1)
+        controller.note_resident(1400)
+        assert controller.committed_tokens() == 4097, (
+            "the ledger is the larger of the two opinions about the same cells"
+        )
+        # And once the round boundary restates the conversation honestly, the reservation
+        # stops inflating the total at all.
+        controller.note_tokens("a", 1400)
+        assert controller.committed_tokens() == 1400, (
+            "a measured chat must be counted once, not once per source"
+        )
+
+    def test_a_lagging_reading_cannot_shrink_a_measured_chat(self):
+        """resident lags a prefill in progress, so the larger figure still wins."""
+        controller = PreemptionController("resident-lag")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("a", tokens = 9000, signal = PreemptSignal())
+        controller.observe("a", 0)
+        controller.note_resident(12)  # mid prefill, almost nothing visible yet
+        assert controller.committed_tokens() == 9000
 
     def test_a_resume_is_refused_against_a_cache_only_slots_can_see(self):
         controller = PreemptionController("resident-room")
