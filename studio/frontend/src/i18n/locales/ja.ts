@@ -495,6 +495,13 @@ export const ja = {
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
+        sttDeviceLabel: "読み込み先",
+        sttDeviceAuto: "GPU（利用できる場合）",
+        sttDeviceCpu: "CPU メモリ",
+        sttDeviceAutoDescription:
+          "GPU があれば GPU を、なければ CPU を使用します。",
+        sttDeviceCpuDescription:
+          "モデルをシステムメモリに保持します。文字起こしは遅くなりますが、GPU メモリを使いません。",
         sttModelSearchPlaceholder: "モデルを検索",
         sttModelSearching: "Hugging Face を検索中…",
         sttModelValidating: "Whisper との互換性を確認中…",
@@ -1225,7 +1232,7 @@ export const ja = {
       description:
         "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
       intro:
-        "は Claude Code、Codex、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+        "は Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
       readDocs: "ドキュメントを読む",
       copy: "コピー",
       copied: "コピーしました",

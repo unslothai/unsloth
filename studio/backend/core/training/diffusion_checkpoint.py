@@ -1054,7 +1054,8 @@ def _prune_staging(root: Path) -> None:
     except OSError:
         return
 
-    # Newest first, so a stacked slot gets its immediate predecessor back rather than whichever
+    # Newest first, so a stacked slot gets its immediate predecessor back rather than whichever entry the filesystem
+    # happened to list first.
     def _written_at(path: Path) -> float:
         try:
             return path.stat().st_mtime

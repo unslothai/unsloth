@@ -495,6 +495,13 @@ export const ptBR = {
         sttModelLabel: "Modelo de reconhecimento de fala",
         sttModelDescription:
           "Escolha ou busque um modelo STT para executar localmente.",
+        sttDeviceLabel: "Carregar em",
+        sttDeviceAuto: "GPU quando disponível",
+        sttDeviceCpu: "RAM da CPU",
+        sttDeviceAutoDescription:
+          "Usar a GPU quando houver uma e, caso contrário, a CPU.",
+        sttDeviceCpuDescription:
+          "Manter o modelo na RAM do sistema. A transcrição fica mais lenta, mas não usa memória da GPU.",
         sttModelSearchPlaceholder: "Buscar modelo",
         sttModelSearching: "Buscando no Hugging Face…",
         sttModelValidating: "Verificando a compatibilidade com o Whisper…",
@@ -1254,7 +1261,7 @@ export const ptBR = {
       description:
         "Conecte agentes de código como Claude Code e Codex a um modelo local com unsloth start.",
       intro:
-        "conecta Claude Code, Codex, Hermes, OpenClaw, OpenCode e outros agentes a um modelo servido localmente pelo Unsloth, totalmente offline. Ele executa um servidor compatível com a API da OpenAI e nunca altera os arquivos de configuração do seu agente.",
+        "conecta Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode e outros agentes a um modelo servido localmente pelo Unsloth, totalmente offline. Ele executa um servidor compatível com a API da OpenAI e nunca altera os arquivos de configuração do seu agente.",
       readDocs: "Ler a documentação",
       copy: "Copiar",
       copied: "Copiado",

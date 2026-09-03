@@ -492,6 +492,13 @@ export const ko = {
           "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
+        sttDeviceLabel: "로드 위치",
+        sttDeviceAuto: "GPU(사용 가능할 때)",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU가 있으면 GPU를, 없으면 CPU를 사용합니다.",
+        sttDeviceCpuDescription:
+          "모델을 시스템 RAM에 유지합니다. 변환은 느리지만 GPU 메모리를 쓰지 않습니다.",
         sttModelSearchPlaceholder: "모델 검색",
         sttModelSearching: "Hugging Face에서 검색 중…",
         sttModelValidating: "Whisper 호환성 확인 중…",
@@ -1239,7 +1246,7 @@ export const ko = {
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
       intro:
-        "명령은 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
+        "명령은 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",
