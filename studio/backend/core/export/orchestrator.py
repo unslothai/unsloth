@@ -196,6 +196,9 @@ class ExportOrchestrator:
                 proc.join(timeout = 3)
             except Exception:
                 pass
+        # _run_export swallows the RuntimeError this kill produces and returns without
+        # shutting down, so neither _shutdown_subprocess cleanup runs on a cancel.
+        self._discard_token_store()
         return True
 
     # ------------------------------------------------------------------

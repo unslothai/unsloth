@@ -680,13 +680,17 @@ def test_offline_anonymous_load_will_not_read_the_operators_cache(
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: offline)
     monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
+    # Isolate the offline branch; the online authorization check has its own tests.
+    monkeypatch.setattr(
+        export_backend_module, "_anonymous_access_allowed", lambda repo, off: (not off, "refused")
+    )
 
     backend = export_backend_module.ExportBackend()
     success, message = backend.load_checkpoint(checkpoint_path = checkpoint, hf_token = hf_token)
 
     assert success is False
     if should_refuse:
-        assert "is not served to API callers" in message
+        assert "refused" in message or "not served to API callers" in message
         assert "probe" not in reached, "refused loads must not touch the cache at all"
     else:
         assert reached.get("probe"), f"expected the load to proceed, got: {message}"
@@ -718,6 +722,9 @@ def test_weight_loader_never_gets_none_for_an_anonymous_caller(monkeypatch, hf_t
 
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
+    monkeypatch.setattr(
+        export_backend_module, "_anonymous_access_allowed", lambda repo, off: (True, "")
+    )
     monkeypatch.setattr(
         export_backend_module,
         "detect_audio_type",
@@ -900,3 +907,80 @@ def test_token_store_is_removed_when_the_worker_is_already_dead(monkeypatch):
     o._proc = None
     assert o._shutdown_subprocess() is True
     assert not os.path.exists(store)
+
+
+def test_cancelling_an_export_discards_the_token_store():
+    """cancel_export kills the worker directly and _run_export swallows the error, so neither
+    _shutdown_subprocess cleanup path runs."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+    with open(os.path.join(store, "token"), "w") as fh:
+        fh.write("hf_caller_own_token")
+
+    class _Proc:
+        pid = 1234
+
+        def __init__(self):
+            self._alive = True
+
+        def is_alive(self):
+            return self._alive
+
+        def terminate(self):
+            self._alive = False
+
+        def join(self, timeout = None):
+            pass
+
+    o._proc = _Proc()
+    assert o.cancel_export() is True
+    assert not os.path.exists(store)
+
+
+@pytest.mark.parametrize(
+    "gated,private,raises,allowed",
+    [
+        (False, False, False, True),
+        ("manual", False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+    ],
+)
+def test_anonymous_access_check_reads_the_gated_flag(monkeypatch, gated, private, raises, allowed):
+    """A gated repo's metadata is public and only its files are held back, so model_info
+    succeeding is not access."""
+    from core.export import export as export_backend_module
+
+    class _Info:
+        pass
+
+    info = _Info()
+    info.gated = gated
+    info.private = private
+
+    class _Api:
+        def model_info(self, repo_id, token = None):
+            assert token is False, "the check must ask anonymously"
+            if raises:
+                raise RuntimeError("401")
+            return info
+
+    monkeypatch.setattr(export_backend_module, "HfApi", _Api)
+    ok, _why = export_backend_module._anonymous_access_allowed("owner/repo", offline = False)
+    assert ok is allowed
+
+
+def test_anonymous_access_check_refuses_when_it_cannot_ask(monkeypatch):
+    from core.export import export as export_backend_module
+
+    def _boom(*a, **kw):
+        pytest.fail("offline must not reach the Hub")
+
+    monkeypatch.setattr(export_backend_module, "HfApi", _boom)
+    ok, why = export_backend_module._anonymous_access_allowed("owner/repo", offline = True)
+    assert ok is False
+    assert "Hub is unreachable" in why

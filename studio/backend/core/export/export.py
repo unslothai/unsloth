@@ -55,6 +55,37 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 
+def _anonymous_access_allowed(repo_id: str, offline: bool) -> Tuple[bool, str]:
+    """Whether an anonymous caller may be served a cache-backed load of *repo_id*.
+
+    The question is not whether the files are on disk; it is whether this caller could have
+    fetched them itself. One anonymous metadata call answers it. A private repo raises. A
+    gated one does NOT: its metadata is public and only the files are held back, so the
+    ``gated`` flag has to be read rather than inferred from the call succeeding. Offline
+    there is no way to ask at all, so the answer is no.
+    """
+    if offline:
+        return False, (
+            f"Cannot load '{repo_id}' without a Hugging Face token while the Hub is "
+            "unreachable: the local cache is the server operator's and is not served to API "
+            "callers unauthenticated. Supply hf_token, or retry when the Hub is reachable."
+        )
+    try:
+        info = HfApi().model_info(repo_id, token = False)
+    except Exception as exc:
+        logger.info("Anonymous access check refused '%s': %s", repo_id, exc)
+        return False, (
+            f"'{repo_id}' is not publicly readable, so it cannot be loaded without a Hugging "
+            "Face token. Supply hf_token."
+        )
+    if getattr(info, "gated", False) or getattr(info, "private", False):
+        return False, (
+            f"'{repo_id}' is gated or private, so it cannot be loaded without a Hugging Face "
+            "token that has been granted access. Supply hf_token."
+        )
+    return True, ""
+
+
 def _export_runtime_available() -> bool:
     """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
     return bool(_IS_MLX) or (FastLanguageModel is not None)
@@ -508,24 +539,23 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
-            # A cache read never reauthorizes, so offline the shared cache would hand this
-            # caller whatever the operator downloaded, private repos included. The scrubbed
-            # environment does not help: nothing authenticates. Same rule the capability
-            # probes apply (utils/models/model_config.py:1074, 1267), refused here instead,
-            # because the load has no anonymous answer to fall back to.
+            # The shared cache is not partitioned by credential, and it answers without
+            # reauthorizing: measured against a cached gated repo, hf_hub_download and
+            # transformers' cached_file both serve the operator's snapshot for token=False,
+            # online as much as offline. So an anonymous caller has to be authorized against
+            # the repo before a cache-backed load of it, the way the capability probes are
+            # (utils/models/model_config.py:1074, 1267, 1394). Only a caller denied the
+            # ambient token is checked; a UI session is the operator.
             #
             # On checkpoint_path, NOT model_id: for a locally trained adapter model_id is the
-            # base named in adapter_config.json, so testing it would refuse every offline
-            # export of a local LoRA (Studio's main flow, and MCP is always non-ambient) over
-            # a base the caller never named. That leaves reading a private base through a
-            # crafted local adapter_config, which needs a separate write onto this host.
-            if local_files_only and is_anonymous(token) and not is_local_path(checkpoint_path):
-                return (
-                    False,
-                    f"Cannot load '{checkpoint_path}' without a Hugging Face token while the "
-                    "Hub is unreachable: the local cache is the server operator's and is not "
-                    "served to API callers. Supply hf_token, or retry when the Hub is reachable.",
-                )
+            # base named in adapter_config.json, so testing it would refuse every export of a
+            # local LoRA (Studio's main flow, and MCP is always non-ambient) over a base the
+            # caller never named. That leaves reading a private base through a crafted local
+            # adapter_config, which needs a separate write onto this host.
+            if is_anonymous(token) and not is_local_path(checkpoint_path):
+                allowed, why = _anonymous_access_allowed(checkpoint_path, local_files_only)
+                if not allowed:
+                    return False, why
 
             # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
             _device_map_kw = (
