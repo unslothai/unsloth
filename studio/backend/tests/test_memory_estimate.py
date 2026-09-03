@@ -3445,6 +3445,7 @@ class TestMlxEstimateKvBits:
 # ---------------------------------------------------------------------------
 
 import glob  # noqa: E402
+from dataclasses import replace  # noqa: E402
 
 from core.inference import mlx_memory as mm  # noqa: E402
 
@@ -4265,3 +4266,89 @@ def test_the_caption_names_a_width_the_real_conversion_reaches(kv_bits, caption)
         kv_bits = kv_bits,
     )
     assert breakdown is not None and breakdown.cache_type_kv == caption
+
+
+class TestTheContextSearch:
+    """The search itself, priced by a stub so it runs where MLX and the checkpoints do not."""
+
+    @staticmethod
+    def _linear(monkeypatch, unpriceable = ()):
+        """A byte per token, so every expected answer below is readable off the budget."""
+
+        def _priced(sizing, n_ctx):
+            return None if n_ctx in unpriceable else SimpleNamespace(total_bytes = n_ctx)
+
+        monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: object())
+        monkeypatch.setattr(mm, "_priced_at", _priced)
+
+    def test_the_answer_is_the_largest_whole_block_under_budget(self, monkeypatch):
+        self._linear(monkeypatch)
+        assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) == 6912
+
+    def test_a_floor_between_blocks_rounds_up_rather_than_under_the_minimum(self, monkeypatch):
+        # 4,100 rounds to 4,352, so a budget holding 4,096 but not 4,352 is not a fit.
+        self._linear(monkeypatch)
+        assert mm.mlx_fit_context("x", budget_bytes = 4200, max_ctx = 8192, min_ctx = 4100) is None
+        assert mm.mlx_fit_context("x", budget_bytes = 5000, max_ctx = 8192, min_ctx = 4100) == 4864
+
+    def test_a_context_that_cannot_be_priced_abandons_the_fit(self, monkeypatch):
+        # 6,144 is the first midpoint. Searching past it would discard the half above and answer
+        # with a context that is not the largest one that fits.
+        self._linear(monkeypatch, unpriceable = (6144,))
+        assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) is None
+
+    def test_a_ceiling_that_already_fits_is_left_alone(self, monkeypatch):
+        self._linear(monkeypatch)
+        assert mm.mlx_fit_context("x", budget_bytes = 9000, max_ctx = 8192) is None
+
+    def test_a_load_that_cannot_be_sized_is_not_fitted(self, monkeypatch):
+        monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: None)
+        assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) is None
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("budget_gib, fitted", [(6, 18_432), (12, 61_952), (24, 149_504)])
+def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
+    # Exact on both sides against the estimate the panel shows: what it returns fits and the next
+    # block does not, which is what makes it a fit rather than a guess with headroom.
+    _on_bfloat16_chip()
+    snapshot = _local_snapshot("unsloth/Qwen3-4B-Thinking-2507")
+    budget = budget_gib * 1024**3
+    assert (
+        mm.mlx_fit_context(snapshot, budget_bytes = budget, max_ctx = 262_144, load_in_4bit = True)
+        == fitted
+    )
+    priced = mm.mlx_memory_breakdown(snapshot, n_ctx = fitted, load_in_4bit = True)
+    over = mm.mlx_memory_breakdown(snapshot, n_ctx = fitted + mm.MLX_KV_BLOCK, load_in_4bit = True)
+    assert priced.total_bytes <= budget < over.total_bytes
+    # And a context that is not a number is refused rather than raised out of the guard.
+    assert mm.mlx_memory_breakdown(snapshot, n_ctx = float("nan"), load_in_4bit = True) is None
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize(
+    "repo, kv_bits, whole_prompt",
+    [
+        ("unsloth/Qwen3-4B-Thinking-2507", 4, False),
+        ("unsloth/Qwen3-4B-Thinking-2507", None, True),
+        ("unsloth/gemma-3-270m-it", None, False),
+        ("unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit", None, False),
+    ],
+)
+def test_the_total_never_falls_as_the_context_grows(repo, kv_bits, whole_prompt):
+    # What the search rests on, across a dense, a windowed and a hybrid shape. The fourth row is
+    # not a checkpoint that declines to chunk -- none is cached here -- but the same Qwen sizing
+    # with that fact flipped, which is the only way to reach the branch from this disk.
+    sizing = mm._size_load(_local_snapshot(repo), kv_bits, None, None, True)
+    if whole_prompt:
+        forced = replace(sizing, facts = {**sizing.facts, "whole_prompt": True})
+        # And the flip has to reach the arithmetic: charging the whole prompt as one chunk costs
+        # more than charging it in 2,048-token steps, so a lost conditional shows up here.
+        assert mm._priced_at(forced, 32_768).total_bytes > mm._priced_at(sizing, 32_768).total_bytes
+        sizing = forced
+    # Every block to the ceiling a fit is given, which costs under a tenth of a second. A sample,
+    # not a proof: the terms are piecewise, and a whole-prompt sizing charges compute per token,
+    # so this catches a term that falls with the context rather than establishing that none can.
+    steps = range(mm.MLX_KV_BLOCK, 262_145, mm.MLX_KV_BLOCK)
+    totals = [mm._priced_at(sizing, n).total_bytes for n in steps]
+    assert totals == sorted(totals)

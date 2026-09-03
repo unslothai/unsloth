@@ -25,9 +25,11 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 __all__ = [
+    "MLX_FIT_MIN_CONTEXT",
     "MLX_KV_BLOCK",
     "MLX_PREFILL_CHUNK",
     "MlxMemoryBreakdown",
+    "mlx_fit_context",
     "mlx_memory_breakdown",
     "mlx_shard_files",
     "mlx_weight_bytes",
@@ -43,6 +45,9 @@ _PROBE_LONG = 40
 # What a load prefills at on a host where the runtime cannot be asked; the live value comes
 # from the loader, which reads it off the runtime that would run the generation.
 MLX_PREFILL_CHUNK = 2048
+
+# Shorter than this and a fitted context is not worth serving; see mlx_fit_context.
+MLX_FIT_MIN_CONTEXT = 4096
 _KV_GROUP_SIZE = 64
 
 # Live activations inside one attention block at its widest, and the allocator floor.
@@ -1032,17 +1037,28 @@ def _refused_by_its_own_tensors(model_dir: str, config: dict) -> Optional[str]:
     return None
 
 
-def mlx_memory_breakdown(
+@dataclass
+class _MlxSizing:
+    """What a load costs before a context is named, so a search over contexts probes once."""
+
+    weights: int
+    dtype: object
+    plan: list
+    quant_start: Optional[int]
+    facts: dict
+    widths: tuple
+    chunk: int
+    kv_bits: Optional[int]
+
+
+def _size_load(
     model_dir: str,
-    *,
-    n_ctx: int,
-    kv_bits: Optional[int] = None,
-    kv_group_size: Optional[int] = None,
-    prefill_chunk: Optional[int] = None,
-    load_in_4bit: bool = False,
-) -> Optional[MlxMemoryBreakdown]:
-    """Price an MLX load, or None when it cannot honestly be sized: a total assembled around an
-    unread cache is a confident number for a load nobody measured."""
+    kv_bits: Optional[int],
+    kv_group_size: Optional[int],
+    prefill_chunk: Optional[int],
+    load_in_4bit: bool,
+) -> Optional[_MlxSizing]:
+    """Everything about a load that does not move with the context, or None if it cannot be sized."""
     config = _snapshot_config(model_dir)
     if config is None:
         return None
@@ -1064,36 +1080,123 @@ def mlx_memory_breakdown(
         plan, quant_start, facts = _cache_plan(
             config, dtype, kv_bits, kv_group_size or loaded_group
         )
-        whole_prompt = facts["whole_prompt"]
-        context = max(int(n_ctx or 0), 1)
-        # A runtime that declines to chunk sizes every "per chunk" term per PROMPT.
-        chunk = context if whole_prompt else (prefill_chunk or loaded_chunk)
-        kv, quant_boundary = _kv_bytes(plan, context, quant_start, chunk, whole_prompt)
         # Per FIELD: a tower can state its hidden size and not its block width.
         widths = tuple(
             tower or checkpoint
             for tower, checkpoint in zip(facts["widths"], _config_widths(config))
         )
-        compute = _compute_bytes(widths, dtype.size, chunk, plan, context, quant_boundary)
+        chunk = prefill_chunk or loaded_chunk
     except Exception as exc:
         logger.debug(
-            "MLX estimate could not size %s (%s): %s",
-            model_dir,
-            config.get("model_type"),
-            exc,
+            "MLX estimate could not size %s (%s): %s", model_dir, config.get("model_type"), exc
         )
         return None
-    total = weights + kv + compute
+    return _MlxSizing(
+        weights = weights,
+        dtype = dtype,
+        plan = plan,
+        quant_start = quant_start,
+        facts = facts,
+        widths = widths,
+        chunk = chunk,
+        kv_bits = kv_bits,
+    )
+
+
+def _priced_at(sizing: _MlxSizing, n_ctx: int) -> Optional[MlxMemoryBreakdown]:
+    try:
+        context = max(int(n_ctx or 0), 1)
+        whole_prompt = sizing.facts["whole_prompt"]
+        # A runtime that declines to chunk sizes every "per chunk" term per PROMPT.
+        chunk = context if whole_prompt else sizing.chunk
+        kv, quant_boundary = _kv_bytes(
+            sizing.plan, context, sizing.quant_start, chunk, whole_prompt
+        )
+        compute = _compute_bytes(
+            sizing.widths, sizing.dtype.size, chunk, sizing.plan, context, quant_boundary
+        )
+    except Exception as exc:
+        logger.debug("MLX estimate could not price %s tokens: %s", n_ctx, exc)
+        return None
+    total = sizing.weights + kv + compute
     return MlxMemoryBreakdown(
-        weights_bytes = weights,
+        weights_bytes = sizing.weights,
         kv_bytes = kv,
         compute_bytes = compute,
         total_bytes = total,
         gpu_bytes = total,
         n_ctx = context,
-        layer_count = facts["layers"],
+        layer_count = sizing.facts["layers"],
         # What the cache is held at, not what was asked for. Never llama.cpp's vocabulary.
         cache_type_kv = _cache_width_name(
-            plan, kv_bits, quant_boundary is not None, _width_name(dtype), context, chunk
+            sizing.plan,
+            sizing.kv_bits,
+            quant_boundary is not None,
+            _width_name(sizing.dtype),
+            context,
+            chunk,
         ),
     )
+
+
+def mlx_memory_breakdown(
+    model_dir: str,
+    *,
+    n_ctx: int,
+    kv_bits: Optional[int] = None,
+    kv_group_size: Optional[int] = None,
+    prefill_chunk: Optional[int] = None,
+    load_in_4bit: bool = False,
+) -> Optional[MlxMemoryBreakdown]:
+    """Price an MLX load, or None when it cannot honestly be sized: a total assembled around an
+    unread cache is a confident number for a load nobody measured."""
+    sizing = _size_load(model_dir, kv_bits, kv_group_size, prefill_chunk, load_in_4bit)
+    return None if sizing is None else _priced_at(sizing, n_ctx)
+
+
+def mlx_fit_context(
+    model_dir: str,
+    *,
+    budget_bytes: int,
+    max_ctx: int,
+    min_ctx: int = MLX_FIT_MIN_CONTEXT,
+    kv_bits: Optional[int] = None,
+    kv_group_size: Optional[int] = None,
+    prefill_chunk: Optional[int] = None,
+    load_in_4bit: bool = False,
+) -> Optional[int]:
+    """Largest context whose estimated footprint stays inside ``budget_bytes``.
+
+    None means nothing should be fitted, which is three different situations deliberately answered
+    the same way: the load cannot be sized, ``max_ctx`` already fits, or not even ``min_ctx`` does.
+    The last covers the weights-dominated load, where no context is small enough to help and
+    serving the shortest one would hide that rather than fix it.
+
+    The search assumes the total does not fall as the context grows. That is a property of the
+    terms, not something this arithmetic can enforce, so a test sweeps it at 256-token steps on a
+    dense, a windowed and a hybrid checkpoint and on a sizing that charges the whole prompt.
+    """
+    sizing = _size_load(model_dir, kv_bits, kv_group_size, prefill_chunk, load_in_4bit)
+    if sizing is None:
+        return None
+    ceiling = max(int(max_ctx or 0), MLX_KV_BLOCK)
+    at_ceiling = _priced_at(sizing, ceiling)
+    if at_ceiling is None or at_ceiling.total_bytes <= budget_bytes:
+        return None
+    floor = max(-(-int(min_ctx or 0) // MLX_KV_BLOCK) * MLX_KV_BLOCK, MLX_KV_BLOCK)
+    low, high, best = floor, ceiling, None
+    while low <= high:
+        middle = (low + high) // 2
+        priced = _priced_at(sizing, middle)
+        if priced is None:
+            # Not "does not fit": a bounded entry drives a real cache class to find its peak, so
+            # one context can fail where its neighbours priced. Searching on would discard the
+            # half above it and answer with a context that is not the largest one that fits.
+            return None
+        if priced.total_bytes <= budget_bytes:
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    # Down to a whole block, which is what the cache grows in anyway.
+    return None if best is None else (best // MLX_KV_BLOCK) * MLX_KV_BLOCK
