@@ -198,8 +198,12 @@ def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
     legacy = home / ".unsloth" / "studio"
     legacy.mkdir(parents = True)
     result = _main_probe(
-        {"HOME": str(home), "USERPROFILE": str(home),
-         "UNSLOTH_HOME": str(legacy), "UNSLOTH_STUDIO_HOME": str(legacy)}
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "UNSLOTH_HOME": str(legacy),
+            "UNSLOTH_STUDIO_HOME": str(legacy),
+        }
     )
 
     assert result["exported"] == str(legacy / "llama.cpp")

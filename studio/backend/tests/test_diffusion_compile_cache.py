@@ -398,9 +398,7 @@ def test_migrated_bundle_serves_the_next_run_without_the_legacy_root(
     assert ctx.hit is True
 
 
-def test_load_only_mode_reads_legacy_without_writing_to_it(
-    monkeypatch, tmp_path, fake_megacache
-):
+def test_load_only_mode_reads_legacy_without_writing_to_it(monkeypatch, tmp_path, fake_megacache):
     legacy, _ = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
     monkeypatch.setenv(cc._ENV_SAVE, "0")
 
