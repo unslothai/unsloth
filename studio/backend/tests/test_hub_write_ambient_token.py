@@ -861,6 +861,7 @@ def test_orchestrator_owns_the_token_store_so_a_kill_cannot_orphan_it(monkeypatc
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
     assert os.path.isdir(store)
 
     # Whatever the loader persisted there goes with it.
@@ -872,7 +873,9 @@ def test_orchestrator_owns_the_token_store_so_a_kill_cannot_orphan_it(monkeypatc
 
     # A second load replaces the first store rather than accumulating them.
     first = o._new_token_store()
+    o._attach_token_store()
     second = o._new_token_store()
+    o._attach_token_store()
     assert first != second
     assert not os.path.exists(first)
     o._discard_token_store()
@@ -921,6 +924,7 @@ def test_token_store_is_removed_when_the_worker_is_already_dead(monkeypatch):
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
     with open(os.path.join(store, "token"), "w") as fh:
         fh.write("hf_caller_own_token")
 
@@ -938,6 +942,7 @@ def test_cancelling_an_export_discards_the_token_store():
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
     with open(os.path.join(store, "token"), "w") as fh:
         fh.write("hf_caller_own_token")
 
@@ -1060,6 +1065,7 @@ def test_a_worker_surviving_cancellation_keeps_its_token_store():
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
 
     class _Immortal:
         pid = 99
@@ -1124,6 +1130,7 @@ def test_cancellation_does_not_delete_a_replacement_workers_store():
 
     o = orch.ExportOrchestrator()
     cancelled_store = o._new_token_store()
+    o._attach_token_store()
 
     class _Proc:
         pid = 7
@@ -1211,6 +1218,7 @@ def test_a_worker_that_dies_mid_export_has_its_token_store_reaped():
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
     with open(os.path.join(store, "token"), "w") as fh:
         fh.write("hf_caller_own_token")
 
@@ -1291,6 +1299,7 @@ def test_cancelling_an_ambient_worker_leaves_a_replacement_store_alone():
         def join(self, timeout = None):
             nonlocal replacement
             replacement = o._new_token_store()
+            o._attach_token_store()
 
         def kill(self):
             pass
@@ -1346,6 +1355,7 @@ def test_a_worker_that_dies_while_idle_is_reaped_by_the_next_liveness_check():
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
     with open(os.path.join(store, "token"), "w") as fh:
         fh.write("hf_caller_own_token")
 
@@ -1367,6 +1377,7 @@ def test_cancelling_an_already_dead_worker_still_removes_its_store():
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
     with open(os.path.join(store, "token"), "w") as fh:
         fh.write("hf_caller_own_token")
 
@@ -1427,6 +1438,7 @@ def test_discarding_a_store_does_not_orphan_a_replacement_installed_mid_removal(
 
     o = orch.ExportOrchestrator()
     doomed = o._new_token_store()
+    o._attach_token_store()
     replacement = os.path.join(os.path.dirname(doomed), "replacement-store")
     os.makedirs(replacement, exist_ok = True)
 
@@ -1459,16 +1471,18 @@ def test_a_store_that_could_not_be_removed_is_kept_for_the_next_attempt(monkeypa
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
     with open(os.path.join(store, "token"), "w") as fh:
         fh.write("hf_caller_own_token")
 
     monkeypatch.setattr("shutil.rmtree", lambda *a, **kw: None)  # the silent-failure case
     o._discard_token_store()
-    assert o._token_store == store, "an unremoved store must stay tracked"
+    assert store in o._owned_token_stores, "an unremoved store must stay owned for a retry"
+    assert os.path.exists(store)
 
     monkeypatch.undo()
     o._discard_token_store()
-    assert o._token_store is None and not os.path.exists(store)
+    assert store not in o._owned_token_stores and not os.path.exists(store)
 
 
 def test_the_public_liveness_method_reaps_too():
@@ -1480,6 +1494,7 @@ def test_the_public_liveness_method_reaps_too():
 
     o = orch.ExportOrchestrator()
     store = o._new_token_store()
+    o._attach_token_store()
 
     class _Dead:
         def is_alive(self):
@@ -1612,6 +1627,7 @@ def test_reaping_does_not_clear_a_replacement_worker():
 
     o = orch.ExportOrchestrator()
     replacement = o._new_token_store()
+    o._attach_token_store()
 
     class _Live:
         def is_alive(self):
@@ -1634,3 +1650,58 @@ def test_reaping_does_not_clear_a_replacement_worker():
     finally:
         o._proc = None
         o._discard_token_store()
+
+
+def test_a_pending_store_is_not_treated_as_a_dead_workers_leftovers():
+    """Between allocation and spawn there is no process yet, so a lock-free canceller sees
+    proc None and the new store as current; deleting it would hand the worker a path it
+    would recreate untracked."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    o._proc = None
+    pending = o._new_token_store()  # published, but no worker spawned against it yet
+    try:
+        assert o.cancel_export() is False
+        assert os.path.isdir(pending), "a pending store must survive a lock-free cancel"
+        assert o._token_store == pending
+
+        # Once its worker is up it is ordinary again, and cleanup takes it.
+        o._attach_token_store()
+        o._discard_token_store()
+        assert not os.path.exists(pending)
+    finally:
+        o._proc = None
+        o._discard_token_store()
+
+
+def test_a_store_that_will_not_delete_does_not_block_the_next_allocation(monkeypatch):
+    """The stuck one stays owned and gets retried; it must not hold the pointer hostage."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    stuck = o._new_token_store()
+    o._attach_token_store()
+    with open(os.path.join(stuck, "token"), "w") as fh:
+        fh.write("hf_previous_caller")
+
+    monkeypatch.setattr("shutil.rmtree", lambda *a, **kw: None)
+    o._discard_token_store()
+    assert stuck in o._owned_token_stores
+
+    # A new load allocates regardless, and the stuck one is still tracked for a retry.
+    fresh = o._new_token_store()
+    assert fresh != stuck
+    assert stuck in o._owned_token_stores, "the undeleted store must not be forgotten"
+
+    monkeypatch.undo()
+    o._sweep_token_stores()
+    assert not os.path.exists(stuck)
+    assert stuck not in o._owned_token_stores
+    o._token_store = None
+    o._token_store_pending = False
+    o._sweep_token_stores()

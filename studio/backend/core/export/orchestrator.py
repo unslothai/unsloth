@@ -49,6 +49,15 @@ class ExportOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
+
+        # The private Hugging Face token directory a non-ambient worker runs against, and
+        # every such directory this process has created and not yet confirmed removed. Three
+        # states have to stay apart, because one scalar conflating them is a race per state:
+        # the live worker's store, a store allocated for a worker that has not spawned yet,
+        # and a store whose deletion failed and must be retried.
+        self._token_store: Optional[str] = None
+        self._token_store_pending: bool = False
+        self._owned_token_stores: set = set()
         # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
@@ -368,43 +377,68 @@ class ExportOrchestrator:
         The worker points HF_TOKEN_PATH here so the operator's stored login is out of its
         reach and any token the loader persists lands somewhere disposable. The parent holds
         the path so it can delete it even when the worker is killed rather than exiting.
+
+        Published as *pending* until a worker is actually spawned against it: until then a
+        lock-free canceller must not mistake it for a dead worker's leftovers.
         """
         import tempfile
 
-        self._discard_token_store()
-        self._token_store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
-        return self._token_store
+        self._sweep_token_stores()
+        store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
+        if not hasattr(self, "_owned_token_stores"):
+            self._owned_token_stores = set()
+        self._owned_token_stores.add(store)
+        self._token_store = store
+        self._token_store_pending = True
+        return store
+
+    def _attach_token_store(self) -> None:
+        """Mark the pending store as belonging to the worker that just spawned."""
+        self._token_store_pending = False
+
+    def _sweep_token_stores(self, keep: Optional[str] = None) -> None:
+        """Remove every store this process owns, except *keep*, retrying past failures.
+
+        A directory that will not delete, a file locked on Windows say, stays owned so the
+        next sweep tries again; it does not have to hold the current pointer hostage to be
+        retried, which is what lets allocation proceed while a stale one lingers.
+        """
+        import os
+        import shutil
+
+        for path in list(getattr(self, "_owned_token_stores", ())):
+            if path == keep:
+                continue
+            shutil.rmtree(path, ignore_errors = True)
+            if os.path.exists(path):
+                logger.warning("Could not remove the export token store %s; will retry", path)
+                continue
+            self._owned_token_stores.discard(path)
 
     def _discard_token_store(self, only: Any = _UNPINNED) -> None:
-        """Remove the worker's private token directory, credential and all.
+        """Retire the current worker's private token directory, credential and all.
 
         *only* pins the removal to one store, for a caller holding no lock: if a reload has
         already installed a replacement, that one belongs to the live worker, not to us.
         Pinning to ``None`` is meaningful, and means the cancelled worker had no store, so
         there is nothing of ours to remove; that is why the default is a separate sentinel.
         """
-        import os
-        import shutil
-
+        # getattr throughout: an orchestrator built without __init__ (the shutdown tests do
+        # exactly that) has none of these yet.
         store = getattr(self, "_token_store", None)
-        if only is not _UNPINNED and store != only:
-            if only:
-                shutil.rmtree(only, ignore_errors = True)
-            return
-        if store:
-            shutil.rmtree(store, ignore_errors = True)
-            if os.path.exists(store):
-                # ignore_errors hid the failure (a locked file on Windows, say). Keep the
-                # pointer so the next shutdown or reap retries rather than losing the path
-                # to a directory that may hold a caller's token.
-                logger.warning("Could not remove the export token store %s; keeping it", store)
+        if only is not _UNPINNED:
+            if store != only:
+                # Not the current store any more. Still ours to remove if we made it.
+                if only in getattr(self, "_owned_token_stores", ()):
+                    self._sweep_token_stores(keep = store)
                 return
-        # Compare and clear: rmtree can block, and a reload may have installed a replacement
-        # while it ran. Nulling unconditionally would orphan that live worker's store.
-        # getattr: the attribute is created lazily, so a never-loaded orchestrator reaching
-        # here through atexit has none yet.
-        if getattr(self, "_token_store", None) is store:
-            self._token_store = None
+            if getattr(self, "_token_store_pending", False):
+                # A load published this store but its worker has not spawned yet, so it is
+                # not a dead worker's leftovers and a lock-free caller must leave it alone.
+                return
+        self._token_store = None
+        self._token_store_pending = False
+        self._sweep_token_stores()
 
     def _ensure_subprocess_alive(self) -> bool:
         """Check if subprocess is alive, reaping it if it is not.
@@ -590,6 +624,7 @@ class ExportOrchestrator:
                 logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
                 try:
                     self._spawn_subprocess(sub_config)
+                    self._attach_token_store()
                 except Exception:
                     # A stale current_checkpoint would make the Export page claim a loaded checkpoint the next op then
                     # fails on.
