@@ -986,9 +986,7 @@ def main() -> int:
             context.close()
 
         # Exercise the compact app card omitted by the notes-bearing fixtures.
-        for width, height in (
-            NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS
-        ):
+        for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
