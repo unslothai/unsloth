@@ -297,7 +297,8 @@ def write_manifest(
     # `unsloth studio update` would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
-    # The FLAVOR, never the index URL it came from: a pinned index can carry a token
+    # The FLAVOR, never the index URL it came from: a pinned index can carry a token in its userinfo, query or fragment,
+    # and this file lives in the venv and is read back by verify-install, desktop-capabilities and the setup fast path.
     if expected_torch_tag:
         payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
     # Whether that flavor was NAMED by whoever ran the install, or merely what the selection
