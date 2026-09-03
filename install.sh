@@ -130,7 +130,23 @@ case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART
 # Stripped and case-folded first: storage_roots.portable_mode() and install.ps1 both do,
 # so UNSLOTH_PORTABLE=True read as off here would write the normal roots while the runtime
 # believes the install is contained. tr, not ${var,,}: this script is POSIX sh.
-case "$(_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in 1|true|yes|on) _PORTABLE_MODE=true ;; esac
+# Anything on neither list is refused rather than guessed. portable_mode() reads every value
+# except ""/0/false/off/no as ON, so `enabled`, or a typo like `flase`, would install the
+# normal roots with no marker while the backend in the same environment redirected the HF
+# caches and the projects root, reverting again on the next launch that carries no such
+# variable. Neither guess is safe on its own: reading it as ON relocates the tree of someone
+# who meant off, reading it as OFF is that split. install.ps1 already fails the install for
+# exactly these values.
+case "$(_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) _PORTABLE_MODE=true ;;
+    ''|0|false|off|no) ;;
+    *)
+        echo "ERROR: UNSLOTH_PORTABLE='${UNSLOTH_PORTABLE:-}' is not a recognized value." >&2
+        echo "       Use 1, true, yes or on to keep the whole install in one directory," >&2
+        echo "       or 0, false, off, no (or leave it unset) for a normal install." >&2
+        exit 1
+        ;;
+esac
 [ "$_next_is_root" = true ] && { echo "ERROR: --root requires a path argument." >&2; exit 1; }
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
