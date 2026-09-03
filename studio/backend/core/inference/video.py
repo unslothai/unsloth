@@ -79,6 +79,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     raise_on_unified_memory_shortfall,
+    reclaim_offload_host_memory,
     settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -1422,7 +1423,7 @@ class VideoBackend:
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
-        # This load's own event: a later load replaces self._cancel_event rather than clearing it
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         # An API-initiated load promises to download NOTHING: it may only open what is already cached. Read once here
         # and threaded into every helper below -- the metadata probes as much as the fetches, since a model_info call
@@ -2039,7 +2040,7 @@ class VideoBackend:
             base or str(getattr(fam, "base_repo", "") or ""),
             te_quant_mode = text_encoder_quant,
             # The selected card: an fp8 encoder the default card cannot take is still hosted pre-cast for the one this
-            # load lands on
+            # load lands on, and vice versa.
             target = (
                 resolve_diffusion_device_target()
                 if gpu_ordinal is None
@@ -3463,8 +3464,7 @@ class VideoBackend:
             # Same fence unload() takes, raised BEFORE the barrier: a queued generation holds no cancel event, so the
             # signal above cannot reach it and it would slip through the moment the barrier released _generate_lock.
             self._teardown_waiters += 1
-        # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free
-        # while the clip still holds it. Teardown runs INSIDE the barrier: releasing first would hand out one last clip.
+        # Barrier: wait for the signalled generation to exit before teardown, or two models coexist in VRAM.
         with self._generate_lock:
             with self._lock:
                 try:
@@ -5712,6 +5712,15 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
+                # Deregister under cancel_generate's own lock before the trim: it blocks for a few
+                # hundred ms after the last is_set() check, so a Stop landing there would be
+                # answered true while this clip is still returned and persisted.
+                with self._lock:
+                    if cancel.is_set():
+                        raise RuntimeError(VIDEO_CANCELLED_MSG)
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
                     "seed": int(seed),

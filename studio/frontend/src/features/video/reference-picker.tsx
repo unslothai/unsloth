@@ -11,15 +11,17 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  CHAT_AUDIO_DROP_ACCEPT,
-  CHAT_VIDEO_DROP_ACCEPT,
-} from "@/features/native-intents/drop-paths";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-import { createReferenceSelectionGate, readReferenceFile } from "./reference-budget";
+import {
+  REFERENCE_DROP_ACCEPT,
+  REFERENCE_PICKER_ACCEPT,
+  createReferenceSelectionGate,
+  readReferenceFile,
+} from "./reference-budget";
+import { classifiedAttachmentFile } from "@/lib/video-utils";
 
 /** One staged reference file: the data URL the request carries, plus its name for the chip. */
 export interface ReferenceMedia {
@@ -91,9 +93,13 @@ export function ReferenceMediaPicker({
   }, [value, gate]);
 
   const readFile = useCallback(
-    (file: File | undefined | null) => {
-      if (!file) return;
+    async (picked: File | undefined | null) => {
+      if (!picked) return;
       const claim = gate.begin();
+      // A .3gp is a recording or a clip and its name says neither, so read the
+      // container's tracks before the kind check, as chat and compare do.
+      const file = await classifiedAttachmentFile(picked);
+      if (!claim.isCurrent()) return;
       readReferenceFile(kind, file, {
         onLoaded: (dataUrl) => {
           if (!claim.isCurrent()) return;
@@ -119,8 +125,8 @@ export function ReferenceMediaPicker({
   // Tauri suppresses the webview's own drop events, so the handlers below never
   // fire on the desktop app; this claims the OS drop for the button (#9036).
   const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
-    onFiles: (files) => readFile(files[0]),
-    accept: kind === "video" ? CHAT_VIDEO_DROP_ACCEPT : CHAT_AUDIO_DROP_ACCEPT,
+    onFiles: (files) => void readFile(files[0]),
+    accept: REFERENCE_DROP_ACCEPT[kind],
     multiple: false,
   });
 
@@ -184,9 +190,9 @@ export function ReferenceMediaPicker({
       <input
         ref={inputRef}
         type="file"
-        accept={`${kind}/*`}
+        accept={REFERENCE_PICKER_ACCEPT[kind]}
         className="hidden"
-        onChange={(e) => readFile(e.target.files?.[0])}
+        onChange={(e) => void readFile(e.target.files?.[0])}
       />
     </button>
   );

@@ -5489,7 +5489,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.1}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.2}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving

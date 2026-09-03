@@ -2740,8 +2740,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 )
             extra_args += max_length_check
 
-    # Sync chat_template from processing_class to vLLM's tokenizer This fixes base models that have custom chat
-    # templates applied after loading
+    # Enable for training and move padding side of tokenizer to right
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"

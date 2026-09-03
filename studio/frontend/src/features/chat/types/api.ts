@@ -136,6 +136,9 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** Native audio (TTS / music) only: "cpu" holds the weights in system RAM
+   *  rather than the GPU. Ignored for every non-audio model. */
+  audio_device?: "auto" | "cpu" | "gpu";
 }
 
 export interface ValidateModelResponse {

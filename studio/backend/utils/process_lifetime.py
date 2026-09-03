@@ -498,7 +498,8 @@ def _pid_identity(pid: int) -> Optional[str]:
         except Exception:
             return None
     if _is_windows():
-        # Creation time, so a recycled pid is never mistaken for the child
+        # Creation time, so a recycled pid is never mistaken for the child that was recorded. Same purpose as starttime
+        # on Linux.
         try:
             import ctypes
             from ctypes import wintypes

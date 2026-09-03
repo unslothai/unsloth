@@ -100,6 +100,7 @@ from .diffusion_memory import (
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
+    reclaim_offload_host_memory,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -232,7 +233,7 @@ def _gated_in_chain(exc: BaseException) -> Optional[BaseException]:
         seen.add(id(exc))
         if any(cls.__name__ == "GatedRepoError" for cls in type(exc).__mro__):
             return exc
-        # `raise ... from None` means the raiser already wrote a better message (the base-repo preflight does)
+        # `raise ... from None` means the raiser already wrote a better message (the base-repo preflight does), so stop.
         exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
     return None
 
@@ -789,7 +790,7 @@ def _assert_base_repo_accessible(
     except Exception:  # noqa: BLE001 - offline / transient: the download surfaces any real error
         return None
     # Nothing to carry: model_info answered, so the size estimate lists the base files and the prefetch resolves each
-    # through whichever root holds it
+    # through whichever root holds it.
     if not gated or _already_downloaded():
         return None
     try:
@@ -1893,7 +1894,7 @@ class DiffusionBackend:
         if kind in ("gguf", "single_file"):
             if not gguf_filename:
                 raise ValueError(f"a single-file checkpoint name is required for a '{kind}' load.")
-            # Fail a kind/extension mismatch before the handoff: gguf needs .gguf, single_file must not
+            # Fail a kind/extension mismatch before the handoff: gguf needs .gguf, single_file must not.
             is_gguf_name = gguf_filename.lower().endswith(".gguf")
             if kind == "gguf" and not is_gguf_name:
                 raise ValueError("a 'gguf' load requires a .gguf checkpoint name.")
@@ -3732,7 +3733,8 @@ class DiffusionBackend:
                             replanned = _replan_candidate()
                             if (
                                 replanned.offload_policy != OFFLOAD_NONE
-                                # Explicit balanced/low_vram picks offload BY MODE, so a fresh snapshot cannot change it
+                                # Explicit balanced/low_vram picks offload BY MODE, so a fresh snapshot cannot change
+                                # it.
                                 and normalize_memory_mode(memory_mode)
                                 not in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM)
                                 and plan_fits_total_capacity(replanned)
@@ -6214,6 +6216,9 @@ class DiffusionBackend:
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+
+                # Components are offloaded and transfer copies dropped; return the pages now.
+                reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
                 return {

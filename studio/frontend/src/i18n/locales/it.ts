@@ -462,6 +462,13 @@ export const it = {
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
+        sttDeviceLabel: "Carica in",
+        sttDeviceAuto: "GPU quando disponibile",
+        sttDeviceCpu: "RAM della CPU",
+        sttDeviceAutoDescription:
+          "Usa la GPU quando c'è, altrimenti la CPU.",
+        sttDeviceCpuDescription:
+          "Tieni il modello nella RAM di sistema. La trascrizione è più lenta, ma non usa memoria GPU.",
         sttModelSearchPlaceholder: "Cerca un modello",
         sttModelSearching: "Ricerca su Hugging Face…",
         sttModelValidating: "Verifica della compatibilità con Whisper…",
@@ -1238,7 +1245,7 @@ export const it = {
       description:
         "Collega agenti di programmazione come Claude Code e Codex a un modello locale con unsloth start.",
       intro:
-        "collega Claude Code, Codex, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
+        "collega Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
       readDocs: "Leggi la documentazione",
       copy: "Copia",
       copied: "Copiato",
