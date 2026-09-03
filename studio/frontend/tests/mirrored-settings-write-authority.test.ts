@@ -87,16 +87,37 @@ test("hydration backfills only from an authoritative read", () => {
     "hydratePersistedSettings: async () => {",
     "\n  beginModelLoading:",
   );
+  // Extra destructured fields are fine; fromServer is the one that gates backfill.
   assert.match(
     hydrate,
-    /const \{ settings, fromServer \} = await loadChatSettingsWithLegacyImport\(\);/,
+    /const \{[\s\S]*?\bsettings,[\s\S]*?\bfromServer,?[\s\S]*?\} = await loadChatSettingsWithLegacyImport\(\);/,
   );
   assert.match(
     hydrate,
-    /if \(fromServer\) backfillMirroredSettings\(settings\);/,
+    /if \(fromServer\) backfillMirroredSettings\(hydratedSettings\);/,
   );
   // An ungated call is the bug: a failed GET would push this browser's stale values.
   assert.doesNotMatch(hydrate, /\n\s*backfillMirroredSettings\(settings\);/);
+});
+
+test("a missing Deep Research timeout keeps the finite default", () => {
+  const loadTimeout = slice(
+    store,
+    "function loadResearchModelTimeoutSeconds(): number {",
+    "\n}\n\nfunction loadResearchWebsitePolicy",
+  );
+  assert.match(
+    loadTimeout,
+    /const raw = window\.localStorage\.getItem\(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY\);/,
+  );
+  assert.match(
+    loadTimeout,
+    /if \(raw === null\) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;/,
+  );
+  assert.match(
+    loadTimeout,
+    /catch \{\s*return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;\s*\}/,
+  );
 });
 
 test("only the legacy-storage fallback is non-authoritative", () => {
@@ -110,7 +131,7 @@ test("only the legacy-storage fallback is non-authoritative", () => {
   // ...and it is the branch that never saw a server answer.
   assert.match(
     slice(loader, "} catch (error) {", "\n  const legacySettings"),
-    /return \{ settings: legacySettings, fromServer: false \};/,
+    /return \{ settings: legacySettings, fromServer: false,[^}]*\};/,
   );
   // Every other exit reports an answered GET, so absence stays meaningful.
   assert.ok((loader.match(/fromServer: true/g) ?? []).length >= 4);

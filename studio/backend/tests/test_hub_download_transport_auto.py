@@ -86,6 +86,15 @@ def test_auto_reports_http_when_hf_xet_is_missing(monkeypatch):
     assert "hf_xet" in reason
 
 
+def test_capabilities_carry_the_partial_resume_verdict(monkeypatch):
+    """The card labels a partial from this. huggingface_hub >= 1.18 refetches an interrupted file
+    from zero, so a byte-resume must not be offered there."""
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: False)
+    assert download_registry.get_download_transport_capabilities().partials_resumable is False
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: True)
+    assert download_registry.get_download_transport_capabilities().partials_resumable is True
+
+
 def test_auto_is_not_a_real_transport():
     """ "auto" is a request preference: the .transport marker must keep naming the writer that
     produced a partial, or a resume picks the wrong strategy."""
@@ -157,7 +166,7 @@ def test_xet_worker_is_sized_from_the_machine(monkeypatch):
 
 
 def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
-    """Studio used to force the flag off here. Two copies of one rule drifted, and on a 2TB host the
+    """Unsloth used to force the flag off here. Two copies of one rule drifted, and on a 2TB host the
     worker ended up with a 24GB laptop's buffer, 3.4x slower than the machine's own setting."""
     import utils.hf_xet_fallback as shim
 
@@ -189,7 +198,7 @@ def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
 def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch):
     """An unsloth_zoo with no `hf_xet_tuning` is exactly the version that sets
     HF_XET_HIGH_PERFORMANCE=1 at import, so routing the clear through the (then empty) overrides
-    would hand the worker a 64GB buffer ceiling on the installs Studio alone cannot fix."""
+    would hand the worker a 64GB buffer ceiling on the installs Unsloth alone cannot fix."""
     import utils.hf_xet_fallback as shim
 
     monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
@@ -555,3 +564,336 @@ def test_the_worker_never_gets_the_flag_and_our_caps_together(monkeypatch):
     flag_on = env.get("HF_XET_HIGH_PERFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
     sized = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE" in env
     assert not (flag_on and sized), f"worst of both: flag on with our sizing still applied ({env})"
+
+
+# --- free-RAM transport gate (issue #9032) -------------------------------------------------------
+
+
+def test_auto_picks_http_when_free_ram_is_below_the_xet_floor(monkeypatch):
+    """The zoo already refuses Xet under MIN_XET_RAM_BYTES, but asks TOTAL RAM, which cannot see a
+    loaded 27B GGUF. Same rule, asked of free RAM."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    use_xet, reason = dl.resolve_auto_use_xet()
+    assert use_xet is False
+    assert "2.0GB RAM free" in reason, "the user needs to read why their download changed transport"
+
+
+def test_free_ram_gate_leaves_a_machine_with_room_alone(monkeypatch):
+    """The gate is for the pressured case only: with headroom the health verdict still decides, so
+    no download drops to the slower sequential writer for nothing."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.free_ram_pressure_reason = lambda: None
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (True, "Xet")
+
+
+def test_free_ram_gate_never_decides_the_transport_by_failing(monkeypatch):
+    """An unmeasurable machine, or a shim too old to expose the probe, is not evidence of pressure."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    for probe in (
+        None,  # older shim: attribute missing entirely
+        lambda: None,  # psutil absent: RAM unmeasurable
+        lambda: (_ for _ in ()).throw(RuntimeError()),  # probe itself raises
+    ):
+        fake = _types.ModuleType("utils.hf_xet_fallback")
+        fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+        if probe is not None:
+            fake.free_ram_pressure_reason = probe
+        monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+        assert dl.resolve_auto_use_xet() == (True, "Xet")
+
+
+def test_a_demoted_health_verdict_is_not_second_guessed(monkeypatch):
+    """The gate only demotes. A machine already on HTTP keeps the zoo's reason, so the user reads
+    the real cause instead of a free-RAM number that was never the problem."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = False, reason = "Xet stalled twice")
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 1.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (False, "Xet stalled twice")
+
+
+def test_the_auto_probe_carries_the_free_ram_verdict(monkeypatch):
+    """The UI never sends "auto": effectiveTransportMode() resolves it through this probe and submits
+    the answer as an explicit xet/http, which resolve_requested_use_xet honours without consulting
+    resolve_auto_use_xet. So the gate has to live here or the primary flow never sees it."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2.0GB RAM free" in caps.auto_reason
+
+
+def test_a_browse_poll_never_reads_free_ram(monkeypatch):
+    """probe=False is the read-only poll behind opening Hub. It must stay off the zoo, so the free-RAM
+    reading is probe-only like the health verdict it rides along with."""
+    called: list[str] = []
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: called.append("read") or "HTTP: pressured"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities()
+    assert called == [], "a browse poll measured RAM"
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+
+
+def test_the_probe_does_not_override_a_health_demotion(monkeypatch):
+    """Health already said HTTP; the free-RAM read is skipped and its reason does not replace one the
+    user is better served by."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(
+        use_xet = False, reason = "Xet failed 2 times in a row on this machine"
+    )
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2 times" in caps.auto_reason
+
+
+def test_the_probe_survives_a_shim_without_the_free_ram_helper(monkeypatch):
+    """An older shim has no free_ram_pressure_reason; the probe keeps the health verdict."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert caps.auto_reason == "Xet"
+
+
+def test_the_gate_runs_when_health_has_no_verdict(monkeypatch):
+    """Health lives in unsloth_zoo.hf_xet_health, free RAM in unsloth_zoo.hf_xet_tuning. A zoo too
+    old for the first says nothing about the second, so "no opinion" must not skip the RAM read."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: None
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (False, "HTTP: only 2.0GB RAM free")
+
+
+def test_the_gate_runs_when_the_health_probe_raises(monkeypatch):
+    """Same for a health module that blows up: the failure is evidence about health, not about RAM."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    def _boom(**kw):
+        raise RuntimeError("no")
+
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = _boom
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (False, "HTTP: only 2.0GB RAM free")
+
+
+def test_no_health_and_no_pressure_still_reads_as_xet(monkeypatch):
+    """The optimistic default survives when neither probe objects, including its wording."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    def _boom(**kw):
+        raise RuntimeError("no")
+
+    for health_fn, expected in (
+        (lambda **kw: None, "Xet"),
+        (_boom, "Xet (health check unavailable)"),
+    ):
+        fake = _types.ModuleType("utils.hf_xet_fallback")
+        fake.xet_health = health_fn
+        fake.free_ram_pressure_reason = lambda: None
+        monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+        assert dl.resolve_auto_use_xet() == (True, expected)
+
+
+def test_the_probe_reads_free_ram_even_when_health_raises(monkeypatch):
+    """Registry mirror of the above: the RAM read sits outside the health try, so a raising health
+    module cannot take the free-RAM verdict down with it."""
+
+    def _boom(**kw):
+        raise RuntimeError("no")
+
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = _boom
+    fake.xet_health = _boom
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2.0GB RAM free" in caps.auto_reason
+
+
+def test_spawn_binds_the_ram_reservation_to_the_worker(monkeypatch):
+    """The sizing reserves RAM for a spawn that has not happened yet. spawn_worker has to hand that
+    reservation the worker's pid, or it ages out and siblings oversubscribe the machine."""
+    import utils.hf_xet_fallback as shim
+
+    bound = []
+    monkeypatch.setattr(shim, "bind_worker_budget", lambda pid: bound.append(pid))
+    _spawn_env(monkeypatch, use_xet = True)
+    assert bound == [4242], "the worker's pid never reached the reservation"
+
+    bound.clear()
+    _spawn_env(monkeypatch, use_xet = False)
+    assert bound == [], "an HTTP worker allocates no Xet buffers, so it reserves nothing"
+
+
+def test_a_failed_spawn_releases_its_reservation(monkeypatch):
+    """Popen raising must drop the reservation rather than pin RAM until it ages out."""
+    import utils.hf_xet_fallback as shim
+
+    bound = []
+    monkeypatch.setattr(shim, "bind_worker_budget", lambda pid: bound.append(pid))
+
+    def _boom(*a, **k):
+        raise OSError("no fork for you")
+
+    paths = _types.SimpleNamespace(child_env = lambda *a, **k: {})
+    fake_settings = _types.ModuleType("utils.hf_cache_settings")
+    fake_settings.get_hf_cache_paths = lambda: paths
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", fake_settings)
+    monkeypatch.setattr(dl.subprocess, "Popen", _boom)
+
+    with pytest.raises(OSError):
+        dl.spawn_worker(["--repo-id", "a/b"], None, use_xet = True)
+    assert bound == [None], "a spawn that never produced a process must release, not leak"
+
+
+def test_the_force_xet_escape_hatch_still_wins_over_the_free_ram_gate(monkeypatch):
+    """`UNSLOTH_FORCE_XET=1` is an operator override, not a measurement.
+
+    `unsloth_zoo.hf_xet_health` stamps `source = "forced"` on both env verdicts, and the OFF
+    switches already win (the `not health.use_xet` return above). Without the same stand-down for
+    the ON switch the pair is asymmetric: the zoo's own log tells the operator to "set
+    UNSLOTH_FORCE_XET=1 to override", and the new RAM gate would ignore it. Buffers are still
+    clamped to free RAM, so forcing costs the transport choice, not the memory bound."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    forced = _types.SimpleNamespace(
+        use_xet = True, reason = "Xet forced by environment", source = "forced"
+    )
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: forced
+    fake.xet_health_is_forced = lambda h: getattr(h, "source", "") == "forced"
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 1.0GB RAM free (Xet wants 4GB)"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (True, "Xet forced by environment")
+
+    # The OFF switch keeps winning, and keeps its own reason.
+    off = _types.SimpleNamespace(
+        use_xet = False, reason = "Xet disabled by environment", source = "forced"
+    )
+    fake.xet_health = lambda **kw: off
+    assert dl.resolve_auto_use_xet() == (False, "Xet disabled by environment")
+
+    # An ordinary measured verdict is still gated by free RAM.
+    measured = _types.SimpleNamespace(use_xet = True, reason = "Xet", source = "probe")
+    fake.xet_health = lambda **kw: measured
+    used, reason = dl.resolve_auto_use_xet()
+    assert used is False and "RAM free" in reason
+
+
+def test_the_capabilities_probe_agrees_about_a_forced_verdict(monkeypatch):
+    """The probe is where the UI's Auto is actually resolved, so it must stand down identically or
+    the picker and the API caller disagree about what UNSLOTH_FORCE_XET means."""
+    forced = _types.SimpleNamespace(
+        use_xet = True, reason = "Xet forced by environment", source = "forced"
+    )
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: forced
+    fake.xet_health = lambda **kw: forced
+    fake.xet_health_is_forced = lambda h: getattr(h, "source", "") == "forced"
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 1.0GB RAM free (Xet wants 4GB)"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert caps.auto_reason == "Xet forced by environment"
+
+    # A shim too old to answer "is this forced" must not cost the health verdict, and must leave
+    # the RAM gate in force rather than silently forcing Xet.
+    del fake.xet_health_is_forced
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "RAM free" in (caps.auto_reason or "")
+
+
+def test_the_ram_gate_can_be_asked_for_without_the_probe(monkeypatch):
+    """The settings row states what the NEXT download will pick, and the download path probes.
+    Without this it read the health cache but skipped the free-RAM half, so it said "Auto is
+    using Xet" on a machine whose next download resolves to HTTP."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(ram_gate = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2.0GB RAM free" in caps.auto_reason
+
+    # And the default is unchanged: an ordinary poll still must not read free RAM.
+    assert (
+        download_registry.get_download_transport_capabilities().auto_resolves_to
+        == download_registry.TRANSPORT_XET
+    )
+
+
+def test_the_ram_gate_loads_health_instead_of_reading_an_empty_cache(monkeypatch):
+    """A fresh backend has no cached verdict, so the cache reads as the optimistic Xet while the
+    next download loads a persisted unhealthy one and picks HTTP. The settings row states what
+    that download will do, so it has to load the same verdict -- without the live probe."""
+    seen: list[tuple[str, bool]] = []
+
+    class _Health:
+        use_xet = False
+        reason = "persisted: CAS unreachable"
+
+    def _cached(*, probe = True):
+        seen.append(("cached", probe))
+        return None
+
+    def _loading(*, probe = True):
+        seen.append(("loading", probe))
+        return _Health()
+
+    stub = _types.ModuleType("utils.hf_xet_fallback")
+    stub.cached_xet_health = _cached
+    stub.xet_health = _loading
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", stub)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(ram_gate = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    # Loaded, but NOT probed: the live check stays with a real download start.
+    assert seen == [("loading", False)]

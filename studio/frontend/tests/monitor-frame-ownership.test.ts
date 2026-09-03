@@ -160,7 +160,7 @@ test("two publishers are dodged together, not one at a time", () => {
   assert.deepEqual(
     published(),
     [corner(300), { left: 300, top: 780, right: 1100, bottom: 860 }],
-    "both are kept, apart, for stackGeometry to fold one at a time",
+    "both are kept, apart, for panel-placement to dodge one at a time",
   );
 });
 

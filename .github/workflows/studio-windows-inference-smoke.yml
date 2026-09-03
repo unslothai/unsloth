@@ -28,6 +28,8 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
       - 'tests/studio_setup_ps1/**'
       # The PowerShell unit tests this workflow runs live here. Without this a
@@ -68,8 +70,10 @@ jobs:
   # ~3.8 min of tests, so setup dominates and sharing it once saves ~14
   # runner-minutes and 2 of the 60 concurrent-job slots. The same trade is NOT
   # worth making on ubuntu (studio-inference-smoke.yml), where setup is ~1.9 min
-  # against ~3.0 min of tests: there the added sequential wall time costs more
-  # feedback latency than the slots are worth.
+  # against ~3.0 min of tests. That last claim no longer holds and ubuntu is now
+  # bundled too: it assumed the three jobs start together, and measured on main
+  # they usually do not (median 175s between a run's first and last job start
+  # across 18 recent multi-job runs). See that file's header for the numbers.
   #
   # Each phase keeps its own model cache directory, HF_HOME, server port, server
   # log, uploaded artifact and step timeouts, and each is gated on the SHARED
@@ -189,6 +193,18 @@ jobs:
       # jobs. Gating it on `!cancelled()` would install onto a runner whose
       # pinned Python or Node never materialised, and every phase below gates on
       # assert-prebuilt, which would then pass and hide the real failure.
+
+      # 96s of a ~257s install on Windows (`[72s] building frontend...` -> `[168s]
+      # frontend built`, 37% of it), spent in five Windows jobs on every commit to
+      # produce byte-identical output. The key hashes exactly the paths
+      # studio/setup.ps1:3526-3549 checks before rebuilding, so a hit means the build
+      # inputs are byte-identical; the action's own reasoning, and the assertion that
+      # a hit was actually REUSED rather than rebuilt, live in
+      # .github/actions/frontend-dist-restore and -save.
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
       - name: Install Unsloth (--local, --no-torch)
         id: install
         timeout-minutes: 25
@@ -204,8 +220,30 @@ jobs:
           # [Console]::Out and skips Tee-Object. See studio-windows-ui-smoke.yml
           # for the full explanation.
           $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
-          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 | Tee-Object -FilePath logs/install.log
+          # Elapsed-seconds prefix, added to the STEP LOG only. Tee-Object writes
+          # logs/install.log upstream of this filter, so the artifact keeps exactly
+          # what install.ps1 produced and the readers of it are unaffected.
+          #
+          # install.ps1 and studio/setup.ps1 are deliberately untouched. This is a
+          # display filter over a stream the step already pipes, so there is no
+          # switch for the installer to interpret and no way for a real user's
+          # install to behave differently from this one. The install costs 268-292s
+          # here against 88s for the same install on Linux, and nothing in its
+          # output says where that goes.
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 |
+            Tee-Object -FilePath logs/install.log |
+            ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: asserts the hit was reused (a `building
+      # frontend` line after a hit fails the job -- otherwise the cache costs a
+      # download, saves nothing, and still reports a hit), then saves on main only.
+      - name: Save the built frontend
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         id: assert-prebuilt
@@ -238,7 +276,7 @@ jobs:
       # key on THIS step rather than on assert-prebuilt. shim only runs when
       # assert-prebuilt succeeded, so `steps.shim.outcome == 'success'` implies
       # the assertion passed and additionally catches a missing shim, which
-      # would otherwise let all three phases boot a Studio that is not on PATH.
+      # would otherwise let all three phases boot an Unsloth that is not on PATH.
       - name: Add Unsloth shim to GITHUB_PATH
         id: shim
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
@@ -257,7 +295,12 @@ jobs:
         id: sdks
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         timeout-minutes: 10
-        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: python -m pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       # Phase 1's environment and model cache sit HERE, after the shared
       # preamble, not before it. They used to run before the installer, which is
@@ -322,12 +365,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -384,13 +430,27 @@ jobs:
           # the whole job. The Unsloth backend's _wait_for_health now
           # catches httpx.ReadError too; this retry layer covers the
           # cases the backend can't recover from on its own.
+          #
+          # speculative_type=off and n_parallel=1 are what make the determinism
+          # assertion in the next step answerable. llama-server's README: "the
+          # logits are not guaranteed to be bit-for-bit identical for different
+          # batch" sizes. A non-MTP GGUF otherwise takes the --spec-default branch,
+          # which is live n-gram drafting, not the absence of a drafter: the server
+          # logs "draft acceptance = 0.46875 (30 accepted / 64 generated)". Its
+          # draft pool is built from text the server has already seen, so the FIRST
+          # turn-1 request after a load drafts nothing and decodes one token at a
+          # time while every later one verifies a ~32-token draft in one batch, and
+          # check(runner(), runner()) always compares the cold replay against a warm
+          # one. n_parallel=1 also drops --kv-unified, whose shared-pool occupancy is
+          # a second input to the batch. The other phases of this workflow keep both
+          # defaults, so the shipped path stays covered.
           LOAD_OK=0
           for attempt in 1 2 3; do
             HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
               -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
               -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
               --max-time 600 \
-              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048,\"speculative_type\":\"off\",\"n_parallel\":1}")
             if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
             echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
             cat /tmp/load.json || true
@@ -424,7 +484,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -661,7 +721,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
@@ -717,7 +789,19 @@ jobs:
                                   if delta.get("content"):
                                       parts.append(delta["content"])
                       return "".join(parts)
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       # Text already streamed is a valid signal -- keep it
@@ -892,7 +976,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -1103,7 +1187,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
@@ -1269,7 +1365,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -1514,7 +1610,20 @@ jobs:
           # them; $ProgressPreference is a preference variable and does not,
           # which is why this passes -Command rather than -File.
           $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
-          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 | Tee-Object -FilePath logs/install.log
+          # Elapsed-seconds prefix, added to the STEP LOG only. Tee-Object writes
+          # logs/install.log upstream of this filter, so the artifact keeps exactly
+          # what install.ps1 produced and the readers of it are unaffected.
+          #
+          # install.ps1 and studio/setup.ps1 are deliberately untouched. This is a
+          # display filter over a stream the step already pipes, so there is no
+          # switch for the installer to interpret and no way for a real user's
+          # install to behave differently from this one. The install costs 268-292s
+          # here against 88s for the same install on Linux, and nothing in its
+          # output says where that goes.
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 |
+            Tee-Object -FilePath logs/install.log |
+            ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
 
       - name: Assert prebuilt used AND no build tools were installed
@@ -1636,12 +1745,56 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Job B: the GPU (CUDA) prebuilt path is also VS-free (resolve/availability)
   # ─────────────────────────────────────────────────────────────────────
-  no-vs-gpu-resolve:
-    name: GPU prebuilt resolves without Visual Studio
-    runs-on: windows-latest
-    timeout-minutes: 15
+  # ── One box per Windows IMAGE, instead of one box per check ──────────────
+  # These were six separate Windows job-runs (pester, no-vs-gpu-resolve, and the
+  # two cells each of vs-integration and vcredist-clean-box) whose EXECUTION times
+  # are 16-34s. Measured over recent main runs, every Windows job in this repo
+  # waits 2600-3400s in the queue before it starts, whatever it then does: the
+  # VS 2022 detection cell averages 16s of execution behind 2606s of queueing.
+  # On Windows the scarce resource is the slot, not the minute, so six slots
+  # delivering 155s of total work is the expensive part -- and the queue those
+  # slots create is what Chat UI Tests (1108s exec, 3164s queue) waits in.
+  #
+  # Grouped by runner image, because the image IS the thing under test and a
+  # check must never move off the platform it validates. windows-2022 keeps its
+  # own box for VS 2022 detection; windows-2025-vs2026 keeps its own for VS 2026.
+  # Six job-runs become three, and no check changes what it runs on.
+  #
+  # Ordering inside a box is load-bearing: the VC++ round-trip literally
+  # uninstalls the runtime and restores the registry in a `finally`, so it runs
+  # LAST everywhere. The phases before it install a PowerShell module and pip
+  # packages and build a simulated no-build-tools tree under the workspace; none
+  # of them writes the VC++ registry keys the round-trip reads as ground truth,
+  # so its clean-box precondition still holds when it starts.
+  small-checks:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: setup.ps1 units, no-VS resolve, VC++ round-trip (windows-latest)
+            phases: ' pester no-vs-gpu vcredist '
+          - os: windows-2025-vs2026
+            name: real-VS detection + VC++ round-trip (VS 2026)
+            phases: ' vs-detect vcredist '
+            label: 'VS 2026'
+            expectGen: 'Visual Studio 18 2026'
+            expectToolset: 'v180'
+          - os: windows-2022
+            name: real-VS detection (VS 2022)
+            phases: ' vs-detect '
+            label: 'VS 2022'
+            expectGen: 'Visual Studio 17 2022'
+            expectToolset: 'v170'
+    runs-on: ${{ matrix.os }}
+    # 15 + 15 + 20 as three jobs. They share one checkout now and the phases are
+    # tens of seconds each; 30 bounds a hang without hiding one.
+    timeout-minutes: 30
     defaults:
       run:
+        # One step in the no-VS resolve phase relies on this default. Every other
+        # step below declares its own shell.
         shell: bash
     env:
       PYTHONIOENCODING: utf-8
@@ -1651,113 +1804,80 @@ jobs:
         with:
           persist-credentials: false
 
+      # Needed by the pester and no-VS resolve phases only; the detection and
+      # round-trip phases are pure PowerShell against the runner image.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        if: ${{ contains(matrix.phases, ' pester ') || contains(matrix.phases, ' no-vs-gpu ') }}
         with:
           python-version: '3.12'
 
-      - name: Prepare no-build-tools simulation
+      - name: Detect the real Visual Studio with setup.ps1 functions
+        if: ${{ !cancelled() && contains(matrix.phases, ' vs-detect ') }}
         shell: pwsh
+        env:
+          EXPECT_GEN: ${{ matrix.expectGen }}
+          EXPECT_TOOLSET: ${{ matrix.expectToolset }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
-          $pf = Join-Path $root 'ProgramFiles'
-          $pfx86 = Join-Path $root 'ProgramFilesx86'
-          New-Item -ItemType Directory -Force -Path $pf, $pfx86 | Out-Null
+          . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
+          foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Get-VcBuildCustomizationsDir', 'Find-VsBuildTools')) {
+              . ([scriptblock]::Create((Get-FunctionSource -Path $setup -Name $fn)))
+          }
 
-          $blocked = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-          foreach ($tool in @('cmake', 'cl.exe')) {
-            foreach ($cmd in (Get-Command $tool -All -ErrorAction SilentlyContinue)) {
-              if ($cmd.Source) {
-                $dir = Split-Path -Parent $cmd.Source
-                if ($dir) { [void] $blocked.Add($dir) }
+          # Ground truth from the real vswhere (independent of our code), for visibility.
+          $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vsw) {
+              $year = (& $vsw -latest -property catalog_productLineVersion 2>$null | Select-Object -First 1)
+              $path = (& $vsw -latest -property installationPath 2>$null | Select-Object -First 1)
+              Write-Host "Real vswhere: productLineVersion='$year'  installPath='$path'"
+          } else {
+              Write-Host "vswhere not present at $vsw (relying on filesystem fallback)"
+          }
+
+          # Our detection must find the real VS and report the expected generator.
+          $r = Find-VsBuildTools
+          if (-not $r) { throw "Find-VsBuildTools returned null on a host with real $env:EXPECT_GEN" }
+          Write-Host "Find-VsBuildTools -> Generator='$($r.Generator)' Source='$($r.Source)' InstallPath='$($r.InstallPath)'"
+          if ($r.Generator -ne $env:EXPECT_GEN) {
+              throw "Detection mismatch: got '$($r.Generator)', expected '$env:EXPECT_GEN'"
+          }
+          if (-not (Test-Path $r.InstallPath)) { throw "Detected InstallPath does not exist: $($r.InstallPath)" }
+
+          # Toolset path derivation must match the expected v-number...
+          $bc = Get-VcBuildCustomizationsDir -VsInstallPath $r.InstallPath -Generator $r.Generator
+          $derived = Split-Path (Split-Path $bc -Parent) -Leaf   # e.g. v170 / v180
+          Write-Host "Get-VcBuildCustomizationsDir -> '$bc' (toolset='$derived')"
+          if ($derived -ne $env:EXPECT_TOOLSET) {
+              throw "Toolset mismatch: derived '$derived', expected '$env:EXPECT_TOOLSET'"
+          }
+
+          # ...and that v-number is a real folder on the VS install (where CUDA's
+          # BuildCustomizations would land).
+          $vcRoot = Join-Path $r.InstallPath 'MSBuild\Microsoft\VC'
+          if (Test-Path $vcRoot) {
+              $realToolsets = @((Get-ChildItem -Path $vcRoot -Directory -ErrorAction SilentlyContinue).Name)
+              Write-Host "Real VC toolset dirs: $($realToolsets -join ', ')"
+              if ($realToolsets -notcontains $derived) {
+                  throw "Derived toolset '$derived' is not present on the real $env:EXPECT_GEN install (have: $($realToolsets -join ', '))"
               }
-            }
+              Write-Host "OK: toolset '$derived' exists on the real VS install."
+          } else {
+              Write-Warning "VC MSBuild root absent ($vcRoot) - C++ workload not installed; skipping on-disk toolset check."
           }
 
-          $pathParts = $env:Path -split [IO.Path]::PathSeparator |
-            Where-Object { $_ -and -not $blocked.Contains($_) }
-          $noBuildToolsPath = $pathParts -join [IO.Path]::PathSeparator
+          Write-Host "PASS: real $env:EXPECT_GEN detected correctly with toolset '$derived'."
 
-          "NO_BUILD_TOOLS_PROGRAMFILES=$pf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "NO_BUILD_TOOLS_PROGRAMFILES_X86=$pfx86" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "NO_BUILD_TOOLS_PATH<<NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          $noBuildToolsPath | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Windows CUDA and ROCm prebuilts exist in unslothai/llama.cpp (what GPU users download, no VS)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/unslothai/llama.cpp/releases/latest" > /tmp/rel.json
-          echo "release: $(jq -r .tag_name /tmp/rel.json)"
-          ASSETS=$(jq -r '.assets[].name' /tmp/rel.json)
-          echo "$ASSETS" | grep -iE 'windows-x64-cuda[0-9]' || {
-            echo "::error::no Windows x64 CUDA prebuilt asset found in unslothai/llama.cpp latest release"
-            echo "$ASSETS"; exit 1; }
-          # AMD parity: hosted runners have no AMD GPU, so the resolver step below
-          # can't exercise the ROCm path (it resolves to CPU). Pin the per-gfx
-          # Windows ROCm bundles here so a release that drops them fails loudly --
-          # the AMD no-VS guarantee otherwise rides only on shared resolver code.
-          echo "$ASSETS" | grep -iE 'windows-x64-rocm-gfx' || {
-            echo "::error::no Windows x64 ROCm (per-gfx) prebuilt asset found in unslothai/llama.cpp latest release"
-            echo "$ASSETS"; exit 1; }
-          echo "Windows CUDA and ROCm prebuilts are available -- GPU users get them without compiling."
-
-      - name: The prebuilt resolver runs without Visual Studio
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # pwsh: bash cannot export `ProgramFiles(x86)`; set in-script so the
-          # python child inherits the overrides.
-          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
-          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
-          $env:Path = $env:NO_BUILD_TOOLS_PATH
-          # Resolver-only (no GPU on hosted runners, so the host resolves to the
-          # CPU bundle). The point is that resolution needs no compiler/VS.
-          python -m pip install --upgrade huggingface_hub
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::pip install huggingface_hub failed"; exit 1 }
-          python studio/install_llama_prebuilt.py --resolve-prebuilt latest --output-format json > resolve.json
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::resolver exited non-zero"
-            if (Test-Path resolve.json) { Get-Content resolve.json }
-            exit 1
-          }
-          Get-Content resolve.json
-          Write-Host "Prebuilt resolver ran with no Visual Studio present."
-
-      - name: Clean no-build-tools simulation
-        if: always()
-        shell: pwsh
-        run: |
-          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'no-build-tools') -Recurse -Force -ErrorAction SilentlyContinue
-
-  # ── folded from studio-setup-ps1-vs2026.yml: setup.ps1 unit tests + real-VS detection + vcredist ──
-  pester:
-    name: setup.ps1 unit tests (VS 2026 / CMake guard)
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      # This workflow is in its own `paths` filter, so editing the bootstrap below
-      # always runs this job. No pytest workflow filters on this file, so running the
-      # guard here is what makes it fire on a workflow-only change.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
 
       - name: Guard the Pester bootstrap
+        if: ${{ !cancelled() && contains(matrix.phases, ' pester ') }}
         shell: bash
         run: |
           python -m pip install --quiet pyyaml pytest
           python -m pytest tests/studio/test_pester_bootstrap_hardening.py -q
 
       - name: Install Pester v5
+        if: ${{ !cancelled() && contains(matrix.phases, ' pester ') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1825,6 +1945,7 @@ jobs:
           $loaded | Select-Object Name, Version | Format-Table
 
       - name: Run Pester suite
+        if: ${{ !cancelled() && contains(matrix.phases, ' pester ') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1844,102 +1965,100 @@ jobs:
           Invoke-Pester -Configuration $cfg
 
       - name: Upload Pester results
-        if: always()
+        if: ${{ always() && contains(matrix.phases, ' pester ') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: pester-results-setup-ps1
           path: pester-results.xml
           if-no-files-found: warn
 
-  vs-integration:
-    # Real detection against the VS installed on the runner image (no mocks).
-    name: real-VS detection (${{ matrix.label }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-2022,        label: 'VS 2022', expectGen: 'Visual Studio 17 2022', expectToolset: 'v170' }
-          - { os: windows-2025-vs2026, label: 'VS 2026', expectGen: 'Visual Studio 18 2026', expectToolset: 'v180' }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
 
-      - name: Detect the real Visual Studio with setup.ps1 functions
+      - name: Prepare no-build-tools simulation
+        if: ${{ !cancelled() && contains(matrix.phases, ' no-vs-gpu ') }}
         shell: pwsh
-        env:
-          EXPECT_GEN: ${{ matrix.expectGen }}
-          EXPECT_TOOLSET: ${{ matrix.expectToolset }}
         run: |
           $ErrorActionPreference = 'Stop'
-          . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
-          $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
-          foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Get-VcBuildCustomizationsDir', 'Find-VsBuildTools')) {
-              . ([scriptblock]::Create((Get-FunctionSource -Path $setup -Name $fn)))
-          }
+          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
+          $pf = Join-Path $root 'ProgramFiles'
+          $pfx86 = Join-Path $root 'ProgramFilesx86'
+          New-Item -ItemType Directory -Force -Path $pf, $pfx86 | Out-Null
 
-          # Ground truth from the real vswhere (independent of our code), for visibility.
-          $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vsw) {
-              $year = (& $vsw -latest -property catalog_productLineVersion 2>$null | Select-Object -First 1)
-              $path = (& $vsw -latest -property installationPath 2>$null | Select-Object -First 1)
-              Write-Host "Real vswhere: productLineVersion='$year'  installPath='$path'"
-          } else {
-              Write-Host "vswhere not present at $vsw (relying on filesystem fallback)"
-          }
-
-          # Our detection must find the real VS and report the expected generator.
-          $r = Find-VsBuildTools
-          if (-not $r) { throw "Find-VsBuildTools returned null on a host with real $env:EXPECT_GEN" }
-          Write-Host "Find-VsBuildTools -> Generator='$($r.Generator)' Source='$($r.Source)' InstallPath='$($r.InstallPath)'"
-          if ($r.Generator -ne $env:EXPECT_GEN) {
-              throw "Detection mismatch: got '$($r.Generator)', expected '$env:EXPECT_GEN'"
-          }
-          if (-not (Test-Path $r.InstallPath)) { throw "Detected InstallPath does not exist: $($r.InstallPath)" }
-
-          # Toolset path derivation must match the expected v-number...
-          $bc = Get-VcBuildCustomizationsDir -VsInstallPath $r.InstallPath -Generator $r.Generator
-          $derived = Split-Path (Split-Path $bc -Parent) -Leaf   # e.g. v170 / v180
-          Write-Host "Get-VcBuildCustomizationsDir -> '$bc' (toolset='$derived')"
-          if ($derived -ne $env:EXPECT_TOOLSET) {
-              throw "Toolset mismatch: derived '$derived', expected '$env:EXPECT_TOOLSET'"
-          }
-
-          # ...and that v-number is a real folder on the VS install (where CUDA's
-          # BuildCustomizations would land).
-          $vcRoot = Join-Path $r.InstallPath 'MSBuild\Microsoft\VC'
-          if (Test-Path $vcRoot) {
-              $realToolsets = @((Get-ChildItem -Path $vcRoot -Directory -ErrorAction SilentlyContinue).Name)
-              Write-Host "Real VC toolset dirs: $($realToolsets -join ', ')"
-              if ($realToolsets -notcontains $derived) {
-                  throw "Derived toolset '$derived' is not present on the real $env:EXPECT_GEN install (have: $($realToolsets -join ', '))"
+          $blocked = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($tool in @('cmake', 'cl.exe')) {
+            foreach ($cmd in (Get-Command $tool -All -ErrorAction SilentlyContinue)) {
+              if ($cmd.Source) {
+                $dir = Split-Path -Parent $cmd.Source
+                if ($dir) { [void] $blocked.Add($dir) }
               }
-              Write-Host "OK: toolset '$derived' exists on the real VS install."
-          } else {
-              Write-Warning "VC MSBuild root absent ($vcRoot) - C++ workload not installed; skipping on-disk toolset check."
+            }
           }
 
-          Write-Host "PASS: real $env:EXPECT_GEN detected correctly with toolset '$derived'."
+          $pathParts = $env:Path -split [IO.Path]::PathSeparator |
+            Where-Object { $_ -and -not $blocked.Contains($_) }
+          $noBuildToolsPath = $pathParts -join [IO.Path]::PathSeparator
 
-  vcredist-clean-box:
-    # Validate Test-VCRedistInstalled + Ensure-VCRedist on a throwaway runner:
-    # present on the stock image, fires on a clean box (signals removed restorably),
-    # then a literal uninstall/reinstall round trip. Always restored before the end.
-    name: VC++ runtime detect + install round-trip (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, windows-2025-vs2026]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
+          "NO_BUILD_TOOLS_PROGRAMFILES=$pf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PROGRAMFILES_X86=$pfx86" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH<<NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $noBuildToolsPath | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Windows CUDA and ROCm prebuilts exist in unslothai/llama.cpp (what GPU users download, no VS)
+        if: ${{ !cancelled() && contains(matrix.phases, ' no-vs-gpu ') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/unslothai/llama.cpp/releases/latest" > /tmp/rel.json
+          echo "release: $(jq -r .tag_name /tmp/rel.json)"
+          ASSETS=$(jq -r '.assets[].name' /tmp/rel.json)
+          echo "$ASSETS" | grep -iE 'windows-x64-cuda[0-9]' || {
+            echo "::error::no Windows x64 CUDA prebuilt asset found in unslothai/llama.cpp latest release"
+            echo "$ASSETS"; exit 1; }
+          # AMD parity: hosted runners have no AMD GPU, so the resolver step below
+          # can't exercise the ROCm path (it resolves to CPU). Pin the per-gfx
+          # Windows ROCm bundles here so a release that drops them fails loudly --
+          # the AMD no-VS guarantee otherwise rides only on shared resolver code.
+          echo "$ASSETS" | grep -iE 'windows-x64-rocm-gfx' || {
+            echo "::error::no Windows x64 ROCm (per-gfx) prebuilt asset found in unslothai/llama.cpp latest release"
+            echo "$ASSETS"; exit 1; }
+          echo "Windows CUDA and ROCm prebuilts are available -- GPU users get them without compiling."
+
+      - name: The prebuilt resolver runs without Visual Studio
+        if: ${{ !cancelled() && contains(matrix.phases, ' no-vs-gpu ') }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # pwsh: bash cannot export `ProgramFiles(x86)`; set in-script so the
+          # python child inherits the overrides.
+          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
+          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
+          $env:Path = $env:NO_BUILD_TOOLS_PATH
+          # Resolver-only (no GPU on hosted runners, so the host resolves to the
+          # CPU bundle). The point is that resolution needs no compiler/VS.
+          python -m pip install --upgrade huggingface_hub
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::pip install huggingface_hub failed"; exit 1 }
+          python studio/install_llama_prebuilt.py --resolve-prebuilt latest --output-format json > resolve.json
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::resolver exited non-zero"
+            if (Test-Path resolve.json) { Get-Content resolve.json }
+            exit 1
+          }
+          Get-Content resolve.json
+          Write-Host "Prebuilt resolver ran with no Visual Studio present."
+
+      - name: Clean no-build-tools simulation
+        if: ${{ always() && contains(matrix.phases, ' no-vs-gpu ') }}
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'no-build-tools') -Recurse -Force -ErrorAction SilentlyContinue
+
+  # ── folded from studio-setup-ps1-vs2026.yml: setup.ps1 unit tests + real-VS detection + vcredist ──
 
       - name: Detect present, fire on a clean box, and round-trip the install
+        if: ${{ !cancelled() && contains(matrix.phases, ' vcredist ') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'

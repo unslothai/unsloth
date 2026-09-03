@@ -468,7 +468,7 @@ def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
     import routes.chat_history as chat_history
 
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "__LOCALID_bulk111"}])
-    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: ([], []))
+    monkeypatch.setattr(chat_history, "clear_chat_history", lambda **_kwargs: ([], [], []))
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
 
     import asyncio
@@ -746,7 +746,8 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
 
 def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     """Its scratch script lives outside the sandbox, so a chat whose tools only
-    printed is still an empty folder and removable without the opt-in."""
+    printed holds just our bookkeeping and the empty TMPDIR dir, and is
+    removable without the opt-in."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
@@ -754,10 +755,36 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    assert [p.name for p in workdir.iterdir()] == [tools._SANDBOX_MARKER]
+    assert sorted(p.name for p in workdir.iterdir()) == [
+        tools._SANDBOX_MARKER,
+        tools._SANDBOX_TEMP_DIRNAME,
+    ]
+    assert list((workdir / tools._SANDBOX_TEMP_DIRNAME).iterdir()) == []
 
     assert tools.remove_session_sandbox("__LOCALID_scratch") is True
     assert not workdir.exists()
+
+
+def test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal(tmp_path, monkeypatch):
+    """On Windows the scratch dir is what /tmp resolves to, so /tmp/report.csv
+    lands here and has to keep its listing and its delete prompt."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_scratch3"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "report.csv").write_text("x")
+
+    assert inference._sandbox_listing_names(str(workdir)) == [
+        f"{tools._SANDBOX_TEMP_DIRNAME}/report.csv"
+    ]
+    assert tools.session_sandbox_has_files(session) is True
+    assert tools.remove_session_sandbox(session) is False
+    assert (scratch / "report.csv").is_file()
 
 
 def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
@@ -773,6 +800,62 @@ def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
 
     assert tools.remove_session_sandbox("__LOCALID_keepit") is False
     assert (workdir / "sales.csv").is_file()
+
+
+def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path, monkeypatch):
+    """The card and the route enforce the same segment cap, so the route has to
+    discount the scratch container exactly as the snapshot walk does."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes.inference import _contained_sandbox_path
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "a/b/c").mkdir(parents = True)
+    (scratch / "a/b/c/result.csv").write_bytes(b"x")
+
+    _, path = _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/result.csv")
+    assert Path(path) == scratch / "a/b/c/result.csv"
+    with pytest.raises(HTTPException):
+        _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/d/toodeep.csv")
+
+
+def test_only_the_real_scratch_dir_skips_a_path_segment(tmp_path, monkeypatch):
+    """The walks read the stored spelling off os.walk and never follow links, so
+    the discount is the resolved directory's, not the name's. A model-made link
+    would otherwise serve a file neither walk lists, as a wrong-case entry does
+    on NTFS or APFS."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth2"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "out/a/b/c").mkdir(parents = True)
+    (workdir / "out/a/b/c/deep.csv").write_bytes(b"x")
+    (workdir / "out/a/b/shallow.csv").write_bytes(b"x")
+    try:
+        (workdir / tools._SANDBOX_TEMP_DIRNAME).symlink_to(
+            workdir / "out", target_is_directory = True
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    name = tools._SANDBOX_TEMP_DIRNAME
+    assert f"{name}/a/b/c/deep.csv" not in inference._sandbox_listing_names(str(workdir))
+    with pytest.raises(HTTPException):
+        inference._contained_sandbox_path(session, f"{name}/a/b/c/deep.csv")
+    # Only the extra segment is withdrawn; four still resolve through the link.
+    inference._contained_sandbox_path(session, f"{name}/a/b/shallow.csv")
 
 
 def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):
@@ -859,7 +942,7 @@ def test_a_directory_of_plain_python_files_is_not_a_cache(tmp_path, monkeypatch)
 
 
 def test_a_marked_directory_is_cleared(tmp_path, monkeypatch):
-    """Studio writes the marker when it creates the location."""
+    """Unsloth writes the marker when it creates the location."""
     cache = tmp_path / "compiled_cache"
     cache.mkdir()
     (cache / "helper.py").write_text("print(1)\n")
@@ -969,7 +1052,7 @@ def test_a_shared_compile_location_keeps_preserved_patterns(tmp_path, monkeypatc
 
 
 def test_a_marked_shared_directory_is_still_cleared_whole(tmp_path, monkeypatch):
-    """The marker means Studio made the directory, so the old behaviour stands."""
+    """The marker means Unsloth made the directory, so the old behaviour stands."""
     cache = tmp_path / "marked"
     cache.mkdir()
 
@@ -1185,7 +1268,7 @@ def test_the_marker_survives_a_cache_clear(tmp_path, monkeypatch):
 
 
 def test_an_unrelated_cache_named_folder_in_the_cwd_is_not_ours(tmp_path, monkeypatch):
-    """Studio is launched from wherever the shell happens to be, so the name
+    """Unsloth is launched from wherever the shell happens to be, so the name
     alone cannot license an rmtree."""
     launch_dir = tmp_path / "someproject"
     cache = launch_dir / "unsloth_compiled_cache"
@@ -1233,7 +1316,9 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # The executor left nothing of its own behind.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -1324,7 +1409,9 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # Only the user's file is left; the executor cleaned up after itself.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
@@ -1439,7 +1526,7 @@ def test_a_pre_existing_compile_directory_is_never_marked_as_ours(tmp_path, monk
     from utils import cache_cleanup
     from utils.paths import storage_roots
 
-    # Where Studio would pin it, already there and holding someone else's files.
+    # Where Unsloth would pin it, already there and holding someone else's files.
     pinned = Path(storage_roots.cache_root()).parent / "compiled_cache"
     pinned.mkdir(parents = True)
     (pinned / "someones_notes.txt").write_text("keep me")
@@ -1735,7 +1822,7 @@ def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_foreign_tool_result_keeps_its_own_fields():
-    """Studio's wrapper always carries images; anything else with text and
+    """Unsloth's wrapper always carries images; anything else with text and
     sessionId is someone else's result and must not be reduced to its text."""
     # The predicate lives beside the rest of the sandbox contract, and the
     # adapter and both tool cards share that one copy.
@@ -2469,13 +2556,15 @@ def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
     from routes import chat_history
     from storage import studio_db
 
-    source = inspect.getsource(studio_db.clear_chat_history)
+    # The body lives in the _with_replay_status variant; clear_chat_history drops its
+    # third element for callers that do not need it. Same transaction either way.
+    source = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM chat_threads" in source
     assert source.index("SELECT id FROM chat_threads") < source.index("DELETE FROM chat_threads")
-    assert "return removed, active_runs" in source
+    assert "return removed, active_runs, False" in source
 
     route = inspect.getsource(chat_history.clear_history)
-    assert "cleared, cleared_runs = clear_chat_history()" in route
+    assert "cleared, cleared_runs, cleared_chat_runs = clear_chat_history(" in route
     assert "cleared" in route.split("_remove_sandboxes(", 1)[1].split(")", 1)[0]
 
 
@@ -2499,7 +2588,7 @@ def test_a_symlinked_cache_marker_does_not_license_a_delete(tmp_path, monkeypatc
 
 
 def test_a_real_cache_marker_still_counts(tmp_path):
-    """The other half: a directory Studio made is still cleaned out."""
+    """The other half: a directory Unsloth made is still cleaned out."""
     from utils import cache_cleanup
 
     ours = tmp_path / "unsloth_compiled_cache"
@@ -2606,9 +2695,6 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
     import routes.chat_history as chat_history
 
     cancelled = []
-    monkeypatch.setattr(chat_history, "delete_chat_threads", lambda ids: None)
-    monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
-
     from state import active_generations
 
     monkeypatch.setattr(active_generations, "cancel_thread", lambda tid: cancelled.append(tid) or 1)
@@ -3193,9 +3279,9 @@ def test_a_chat_started_during_the_clear_is_cancelled_too():
 
     source = inspect.getsource(chat_history.clear_history)
     assert "late" in source
-    assert source.index("cleared, cleared_runs = clear_chat_history()") < source.index(
-        "_cancel_active_generations(late)"
-    )
+    assert source.index(
+        "cleared, cleared_runs, cleared_chat_runs = clear_chat_history("
+    ) < source.index("_cancel_active_generations(late)")
     assert source.index("_cancel_active_generations(late)") < source.index("_remove_sandboxes(")
 
 
@@ -4240,7 +4326,7 @@ def test_clearing_every_chat_cancels_the_research_it_removed():
     from routes import chat_history
     from storage import studio_db
 
-    storage = inspect.getsource(studio_db.clear_chat_history)
+    storage = inspect.getsource(studio_db.clear_chat_history_with_replay_status)
     assert "SELECT id FROM research_runs" in storage
     assert storage.index("SELECT id FROM research_runs") < storage.index("DELETE FROM chat_threads")
 
@@ -6217,6 +6303,28 @@ class _WholeSecondMtime:
 
     def __getattr__(self, name):
         return getattr(self._stat, name)
+
+
+def test_session_in_flight_does_not_swallow_tool_exceptions(tmp_path, monkeypatch):
+    """A tool that raises must surface, not be reported as an unknown tool."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    session = "__LOCALID_raises1"
+    with pytest.raises(ValueError, match = "boom"):
+        with tools._session_in_flight(session):
+            raise ValueError("boom")
+
+    assert tools._session_key(session) not in tools._active_sessions
+
+
+def test_execute_tool_reports_a_bad_arg_instead_of_unknown_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    with pytest.raises(AttributeError):
+        tools.execute_tool("python", {"code": 42}, session_id = "__LOCALID_badarg1")
 
 
 if __name__ == "__main__":

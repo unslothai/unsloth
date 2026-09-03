@@ -57,7 +57,10 @@ def export(
         None, "--repo-id", help = "HuggingFace repo ID (username/model-name)."
     ),
     hf_token: Optional[str] = typer.Option(
-        None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token."
+        None,
+        "--hf-token",
+        envvar = "HF_TOKEN",
+        help = "HuggingFace token, for gated or private checkpoints and Hub pushes.",
     ),
     private: bool = typer.Option(False, "--private", help = "Make the HuggingFace repo private."),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
@@ -85,6 +88,7 @@ def export(
         checkpoint_path = str(checkpoint),
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
+        hf_token = hf_token,
     )
     if not success:
         typer.echo(f"Error: {message}", err = True)
@@ -118,6 +122,7 @@ def export(
             push_to_hub = push_to_hub,
             repo_id = repo_id,
             hf_token = hf_token,
+            private = private,
         )
     elif format == "lora":
         success, message, output_path = backend.export_lora_adapter(

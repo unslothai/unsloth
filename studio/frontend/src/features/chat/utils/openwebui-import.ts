@@ -2,10 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Converts Open WebUI exports to Studio conversations. `history.messages` is
+ * Converts Open WebUI exports to Unsloth conversations. `history.messages` is
  * the authoritative DAG and `currentId` selects its active branch; flat
  * `messages` is a legacy fallback. Both modern output items and legacy details
- * blocks are converted to Studio message parts.
+ * blocks are converted to Unsloth message parts.
  */
 
 import type { MessageRecord, ParsedConversation } from "../types";
@@ -634,7 +634,7 @@ export function openWebUIRecordToConversation(
     Date.now();
 
   const messages: MessageRecord[] = [];
-  // Studio sorts stored messages by createdAt, so the timeline has to be
+  // Unsloth sorts stored messages by createdAt, so the timeline has to be
   // strictly increasing or the depth-first order above would not survive a
   // reload. Real timestamps are kept whenever they already increase.
   let previousTs = createdAt - 1;

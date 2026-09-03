@@ -56,6 +56,14 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 # Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
+# settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
+# transient tenant on a live card has time to clear. Under test the snapshots are stubs
+# whose answers do not change with time, so the wait buys nothing and the max() over the
+# reads -- which is what the retry is actually for -- is unaffected. Measured on the
+# backend suite: 142s of test_diffusion_backend.py's 328s went here, in tests reaching it
+# through _plan_memory, which has no way to pass delay_s. setdefault, so a test that wants
+# the production spacing can still set it.
+os.environ.setdefault("UNSLOTH_SETTLE_DELAY_S", "0")
 
 
 @pytest.fixture(scope = "session")
@@ -70,6 +78,27 @@ def _studio_home_root(tmp_path_factory):
 
 
 _studio_home_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
+    """Mechanism: tests/_shared/installer_venv_root.py.
+
+    A separate pytest root, so it cannot poison the AMD fast-path probe (another job), but
+    it has the same defect: test_torchao_select.py drives install_python_stack() in process,
+    so it deletes and rewrites the manifest of the venv running the tests.
+    """
+    for _up in _iso.parents:
+        _shared = _up / "tests" / "_shared"
+        if (_shared / "installer_venv_root.py").is_file():
+            if str(_shared) not in sys.path:
+                sys.path.insert(0, str(_shared))
+            break
+    else:
+        return
+    from installer_venv_root import contain_installer_venv_root
+
+    contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
 @pytest.fixture(autouse = True)
@@ -247,7 +276,7 @@ def _empty_hf_hub_cache(tmp_path_factory):
 def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     """Point BOTH hub-cache roots at an empty dir, so the suite is host independent.
 
-    Studio pins its live setting out of this env snapshot; huggingface_hub falls back to
+    Unsloth pins its live setting out of this env snapshot; huggingface_hub falls back to
     ``constants.HF_HUB_CACHE``. A dev holding FLUX.1-dev otherwise watches its files leave a
     download plan AND the mirror swap decline. Pinned at the ROOT, not by stubbing a probe: that
     reaches only one of the four cache reads, and ``_upstream_is_cached`` walks the tree itself.
@@ -913,3 +942,28 @@ def real_prequant_safe_globals(monkeypatch):
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
     return resolver
+
+
+@pytest.fixture(autouse = True)
+def _no_carried_over_hardware_measurements():
+    """Both hardware caches start empty for every test, as they do in a fresh process.
+
+    The torch build snapshot and the physical GPU inventory are module globals with a
+    60 second TTL, so one test's host -- a suite that makes `import torch` fail, say --
+    would otherwise answer for every test that ran within a minute of it. Cleared
+    afterwards as well, so a test that warms one deliberately does not leak either.
+    """
+    from utils.hardware import hardware as _hw
+
+    def _clear():
+        # Under the locks: a non-blocking read hands the refresh to a daemon thread that holds
+        # these while it writes, so clearing without waiting lets a previous test's REAL host land
+        # in the cache a moment later. Torch lock FIRST, then the inventory lock, because that is
+        # the order the background refresh takes them in.
+        with _hw._torch_build_snapshot_lock, _hw._physical_gpu_inventory_lock:
+            _hw._torch_build_snapshot_cache = None
+            _hw._physical_gpu_inventory_cache = None
+
+    _clear()
+    yield
+    _clear()

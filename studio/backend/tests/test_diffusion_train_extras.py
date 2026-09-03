@@ -315,7 +315,7 @@ def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
 
 
 def test_source_revision_reads_the_active_hub_cache(tmp_path, monkeypatch):
-    """Studio can move its HF cache mid-session and loading follows the live setting, but
+    """Unsloth can move its HF cache mid-session and loading follows the live setting, but
     huggingface_hub's HF_HUB_CACHE constant is a snapshot from import time. Reading only that left
     the marker unresolved (or pinned to the old root), so pulling a new revision of the same
     checkpoint stopped invalidating the conditioning cache and a warm run reused stale latents."""
@@ -350,7 +350,7 @@ def test_hub_cache_roots_puts_the_active_studio_cache_first(monkeypatch, tmp_pat
 
 
 def test_hub_cache_roots_survives_without_studio_settings(monkeypatch, tmp_path):
-    # The trainer subprocess may run without Studio's settings module importable, so the env and the library constant still have to work.
+    # The trainer subprocess may run without Unsloth's settings module importable, so the env and the library constant still have to work.
     import builtins
 
     from core.training import diffusion_train_extras as extras

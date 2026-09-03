@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import run_pwsh
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 CLI_INIT = REPO_ROOT / "unsloth_cli" / "__init__.py"
@@ -146,7 +148,11 @@ def test_install_ps1_under_system_root(path: str, expected: str):
         f"{_extract_helper()}"
         f"\"RESULT=$(Test-UnderSystemRoot '{path}')\"\n"
     )
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: Test-UnderSystemRoot only reports a verdict if pwsh
+    # lived long enough to print one, and an interpreter that aborted at startup would
+    # read here as the containment check answering wrongly for this path.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -221,7 +227,10 @@ def _run_relocation_block(
             "HOMEPATH": tail,
         }
     )
-    return subprocess.run(
+    # run_pwsh, not subprocess.run: every relocation case below reads this run's exit code
+    # to tell "moved out of System32" from "routed through Exit-InstallFailure", and a pwsh
+    # killed by a signal is neither. See tests/_shared/unsloth_pwsh_runner.py.
+    return run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -505,7 +514,10 @@ def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_pa
     message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = str(profile))
     assert message is not None
     command = _cd_line(message, "PowerShell")
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: this is the call whose stderr caught the crash in the
+    # first place ('Stack overflow.' from a bare cd), and blaming the advertised recovery
+    # command for it is exactly the wrong reading. See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"{command}; (Get-Location).Path"],
         capture_output = True,
         text = True,
@@ -679,7 +691,7 @@ def test_cli_guard_fails_closed_when_the_chdir_fails():
 
 
 def test_cli_guard_fails_closed_when_the_work_dir_cannot_be_created():
-    """Studio has to write under the home anyway, and the Rust half stops here too."""
+    """Unsloth has to write under the home anyway, and the Rust half stops here too."""
     _, colour, chdir_calls = _guard_outcome(
         r"C:\Windows\System32",
         argv = ["unsloth", "studio", "--api-only"],
@@ -825,7 +837,7 @@ def test_cli_guard_keeps_working_when_nothing_looks_like_windows():
 
 
 def test_cli_guard_pins_a_relative_studio_home_before_moving():
-    """Studio resolves the override with Path.resolve(), which anchors a relative
+    """Unsloth resolves the override with Path.resolve(), which anchors a relative
     value to the working directory, so moving first would retarget it."""
     environ_out: dict[str, str] = {}
     _, colour, chdir_calls = _guard_outcome(
@@ -1017,7 +1029,7 @@ def test_cli_guard_refuses_to_move_when_a_drive_relative_override_cannot_be_reso
 
 
 def test_cli_guard_pins_every_storage_root_override_studio_reads():
-    """storage_roots.py owns the Studio folders, and each of its overrides is a
+    """storage_roots.py owns the Unsloth folders, and each of its overrides is a
     plain user-supplied path, so a relative one must be pinned before the move.
     Reading them from the module keeps the guard honest as roots are added."""
     storage_roots = REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py"
@@ -1104,7 +1116,7 @@ def test_cli_guard_leaves_values_the_working_directory_does_not_resolve():
 
 
 def test_cli_guard_expands_a_cache_override_before_deciding():
-    r"""huggingface_hub expands %LOCALAPPDATA% in HF_HOME and Studio's own
+    r"""huggingface_hub expands %LOCALAPPDATA% in HF_HOME and Unsloth's own
     hf_cache_settings does not, so leaving the value as written sends the two
     readers to different folders once the process moves. Expanding here settles
     it; a variable this machine does not set stays literal and is anchored."""
@@ -1373,7 +1385,7 @@ def test_cli_guard_restores_the_real_sys_path_when_the_move_fails():
 
 def test_cli_guard_pins_the_model_paths_llama_server_reads_for_itself():
     r"""llama-server resolves LLAMA_ARG_MODEL, LLAMA_ARG_MMPROJ and the draft
-    spellings against its own working directory, and Studio reads them back when
+    spellings against its own working directory, and Unsloth reads them back when
     it sizes a launch, so a relative one has to move with the process. The URL
     spelling names no local file and is left alone."""
     environ_out: dict[str, str] = {}

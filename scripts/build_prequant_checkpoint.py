@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build a pre-quantized transformer checkpoint for the Studio diffusion fast path.
+"""Build a pre-quantized transformer checkpoint for the Unsloth diffusion fast path.
 
 Quantise a model's dense bf16 DiT transformer ONCE and save the quantized state dict, so
 the backend can load the already-quantized weights at runtime (meta-init +
@@ -231,7 +231,7 @@ def main(argv = None) -> int:
         metadata["fp8_granularity"] = FP8_GRANULARITY
     metadata.update(rotation)
     ckpt = {
-        # v2 when a rotation is baked in, so a Studio predating the online half refuses the file
+        # v2 when a rotation is baked in, so an Unsloth predating the online half refuses the file
         # rather than running the rotated weights against unrotated activations.
         "format": prequant_format_for(metadata),
         "metadata": metadata,

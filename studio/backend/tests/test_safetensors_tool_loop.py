@@ -3661,6 +3661,16 @@ class TestGGUFSafetensorsHealingParity:
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not all direct intent.
             "I will know the answer after I search the web",
+            # the sign-offs only count when nothing follows them; named work keeps the plan reading.
+            "I'll dig into the source now and report back.",
+            "I'll dig in and search the web for the latest numbers.",
+            "I'll dig in, then run the numbers.",
+            "I'll dig in. Starting with a web search.",
+            "I'll dig in.\nStarting with a web search.",
+            "I'll help analyze the sales data now.",
+            # "let me assist" names work without a "to", so only the sign-offs skip that gate.
+            "Let me assist by searching the web now.",
+            "Let me assist with checking the documentation.",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3678,6 +3688,10 @@ class TestGGUFSafetensorsHealingParity:
             "I'll never call that tool.",
             # Hands control back rather than announcing an action.
             "Let me know if you need anything else.",
+            # #8907: a question to the user, signed off with an action that names no work.
+            "Let me know what you're after and I'll dig in.",
+            'Could you clarify what "it" means? Let me know and I\'ll help analyze!',
+            "Tell me what you are after and let me dig in.",
             "First, the answer is 42",
             "First, the result is 3.",
             "First, it is 42",
@@ -3688,6 +3702,12 @@ class TestGGUFSafetensorsHealingParity:
             "First class is available",
             # Advice to the user, not work for this turn.
             "First, install the package.",
+            # Same for "create"/"parse" leading a numbered walkthrough. Only
+            # this loop and the hosted one consume the signal without the GGUF
+            # artifact guard, so a verb widened here regenerates their finished
+            # instructional answers outright.
+            "First, create a virtual environment:\n1. Run python -m venv .venv.\n2. Activate it.",
+            "First, parse the CSV header:\n1. Open the file.\n2. Read the first line.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
@@ -4387,7 +4407,10 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
-    def test_explicit_nudge_off_is_not_reprompted(self):
+    def test_explicit_nudge_off_is_not_reprompted(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
@@ -4401,9 +4424,10 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
-    def test_omitted_nudge_flag_is_not_reprompted(self):
-        # The retry is new on this loop: API callers who do not send the flag
-        # must keep today's behavior. Unsloth opts in explicitly.
+    def test_omitted_nudge_flag_follows_disabled_process_default(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
@@ -4415,6 +4439,21 @@ class TestPlanWithoutActionReprompt:
         texts = [e["text"] for e in events if e["type"] == "content"]
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_omitted_nudge_flag_follows_enabled_process_default(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SECOND TURN"],
+            ],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("SECOND TURN" in t for t in texts)
 
     def test_rag_autoinject_counts_as_executed_tool(self, monkeypatch):
         # Autoinject already ran a KB search outside the controller; a short

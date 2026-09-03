@@ -45,6 +45,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    echo_browser_errors,
     start_vite,
     stop_process,
     wait_for_smoke_page,
@@ -140,6 +141,7 @@ def run() -> dict:
             lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
         )
         page = context.new_page()
+        echo_browser_errors(page, info)
         page.goto(f"{BASE}/smoke-autoscroll.html", wait_until = "domcontentloaded")
         page.wait_for_function("() => Boolean(window.__autoscroll)", timeout = 30_000)
         cdp = context.new_cdp_session(page)

@@ -4,7 +4,7 @@
 # Focused PR gate for the MLX dispatch surface, running on a real
 # Apple Silicon runner.
 #
-# Runner: macos-15 (M1, 3 vCPU / 7 GB / Apple Silicon standard runner
+# Runner: macos-26 (Apple Silicon standard runner, 3 vCPU / 7 GB
 # -- FREE for public repositories per the GitHub Actions billing
 # reference; larger -large/-xlarge variants are paid so
 # we deliberately avoid those).
@@ -92,6 +92,7 @@ on:
       # change would burn a slot from the 5-job account-wide macOS cap to run
       # nothing related. studio-backend-ci.yml covers both on ubuntu-latest and
       # already triggers on them.
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -111,6 +112,7 @@ on:
       - 'studio/backend/core/inference/mlx_inference.py'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -133,7 +135,34 @@ permissions:
 jobs:
   dispatch:
     name: dispatch
-    runs-on: macos-15
+    # macos-26, not macos-15, on a measurement rather than a preference. Both are
+    # free Apple Silicon standard runners, so this is the same class of machine.
+    #
+    # studio-mac-install-matrix runs both images from ONE matrix, so their queues
+    # can be compared on identical commits and identical triggers. Over 163 jobs
+    # per leg:
+    #
+    #                   exec med   exec p90   queue p90
+    #     macos-15          160s       713s      20667s
+    #     macos-26          176s       597s       3866s
+    #
+    # The medians say the two are the same machine. The queue p90 says they are
+    # not the same pool: macos-15 is 5.3x worse in the tail, five and a half hours
+    # against one. That tail is what sets this repo's wall clock -- the census
+    # behind it found every commit's last finisher to be this job, minutes of work
+    # behind hours of waiting -- and the median hides it completely, because the
+    # median wait on both images is zero.
+    #
+    # The likely cause is the macos-14 retirement (brownouts 2026-10-05, removal
+    # 2026-11-02): everything migrated onto macos-15, including this job, and
+    # macos-26 was left comparatively empty. That also means this is a fact about
+    # today's pool and not a property of the image, so it is worth re-measuring
+    # rather than assuming. The comparison above is one query against the install
+    # matrix and can be re-run whenever the queue looks wrong again.
+    #
+    # Not macos-14 for the retirement above; all three are Apple Silicon, so the
+    # arm64 paths are still what gets tested.
+    runs-on: macos-26
     # 40 min: dispatch + spoofed matrix + 7-step real LoRA training is
     # under 2 min; GGUF export builds llama.cpp via cmake on Apple
     # Silicon (~5-7 min), so we budget headroom. The capability-verdict
@@ -147,7 +176,7 @@ jobs:
       # runners. Keep this job in audit while its egress destinations are
       # observed, then graduate it to a reviewed block-mode allowlist.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -158,7 +187,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: mlx
+          key-files: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       # macOS install ladder, validated locally against a Linux
       # mac-sim venv (platform spoofed + mlx_simulation shim + real
@@ -288,6 +325,16 @@ jobs:
           python -m pytest -v --tb=short \
             tests/studio/test_mlx_training_worker_behaviors.py
 
+      # The inference backend's numerical tests importorskip mlx, so they skip on
+      # studio-backend-ci.yml's ubuntu runner and only ever execute here. Run from
+      # studio/backend: its conftest puts that directory on sys.path.
+      - name: MLX inference backend tests
+        working-directory: studio/backend
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short tests/test_mlx_inference_backend.py
+
       # Real MLX training + inference smoke test. Trains
       # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
       # (batch_size=2, gradient_accumulation_steps=3) on a single
@@ -389,7 +436,7 @@ jobs:
       # Three boots, one per step: the self-heal is once per process, so the
       # opted-out and the in-flight cases cannot share a server.
       # ---------------------------------------------------------------
-      - name: Provision a Studio venv for the capability-verdict boots
+      - name: Provision an Unsloth venv for the capability-verdict boots
         run: |
           set -euo pipefail
           # `unsloth studio` re-execs into $STUDIO_HOME/unsloth_studio and refuses to
@@ -534,3 +581,12 @@ jobs:
             exit 1
           fi
           echo "OK: Unsloth prebuilt llama.cpp on Mac M1 + GGUF /completion works"
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+

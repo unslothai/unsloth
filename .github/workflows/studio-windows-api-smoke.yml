@@ -19,6 +19,8 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/workflows/studio-windows-api-smoke.yml'
@@ -102,12 +104,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -146,6 +151,17 @@ jobs:
             }
           }
 
+      # 96s of a ~257s install on Windows (`[72s] building frontend...` -> `[168s]
+      # frontend built`, 37% of it), spent in five Windows jobs on every commit to
+      # produce byte-identical output. The key hashes exactly the paths
+      # studio/setup.ps1:3526-3549 checks before rebuilding, so a hit means the build
+      # inputs are byte-identical; the action's own reasoning, and the assertion that
+      # a hit was actually REUSED rather than rebuilt, live in
+      # .github/actions/frontend-dist-restore and -save.
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
       - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
@@ -159,8 +175,30 @@ jobs:
           # [Console]::Out and skips Tee-Object. See studio-windows-ui-smoke.yml
           # for the full explanation.
           $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
-          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 | Tee-Object -FilePath logs/install.log
+          # Elapsed-seconds prefix, added to the STEP LOG only. Tee-Object writes
+          # logs/install.log upstream of this filter, so the artifact keeps exactly
+          # what install.ps1 produced and the readers of it are unaffected.
+          #
+          # install.ps1 and studio/setup.ps1 are deliberately untouched. This is a
+          # display filter over a stream the step already pipes, so there is no
+          # switch for the installer to interpret and no way for a real user's
+          # install to behave differently from this one. The install costs 268-292s
+          # here against 88s for the same install on Linux, and nothing in its
+          # output says where that goes.
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 |
+            Tee-Object -FilePath logs/install.log |
+            ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: asserts the hit was reused (a `building
+      # frontend` line after a hit fails the job -- otherwise the cache costs a
+      # download, saves nothing, and still reports a hit), then saves on main only.
+      - name: Save the built frontend
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Eager vs online preparation, measured through Studio's real training path.
+"""Eager vs online preparation, measured through Unsloth's real training path.
 
 Drives ``UnslothTrainer.load_model`` -> ``prepare_model_for_training`` ->
 ``load_and_format_dataset`` -> ``start_training``, so the integrated gating is
@@ -169,7 +169,7 @@ def main() -> int:
     started = trainer.start_training(
         dataset = dataset,
         eval_dataset = eval_dataset,
-        output_dir = f"ab_{args.arm}",  # resolved under Studio's outputs root
+        output_dir = f"ab_{args.arm}",  # resolved under Unsloth's outputs root
         num_epochs = 1,
         max_steps = args.max_steps,
         batch_size = args.batch_size,
@@ -222,7 +222,7 @@ def main() -> int:
         "step_times": probe.step_times,
         "prewarm_batches": decision,
         "observed": observed,
-        # Studio's chat-template render, which BOTH arms do eagerly.
+        # Unsloth's chat-template render, which BOTH arms do eagerly.
         "format_seconds": round(
             marks.get("dataset_formatted", 0.0) - marks.get("model_ready", 0.0), 4
         ),

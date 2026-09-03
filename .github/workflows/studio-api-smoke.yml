@@ -27,6 +27,7 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/workflows/studio-api-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -35,6 +36,11 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
   push:
     branches: [main]
   workflow_dispatch:
@@ -54,7 +60,10 @@ jobs:
   api-smoke:
     name: Unsloth API & Auth Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # Sized for the apt step's bounded worst case (13m) plus the smoke itself.
+    # Raised from 12, where the job budget was smaller than the retries the step
+    # authorises, so the job timeout would have fired first and reported nothing.
+    timeout-minutes: 20
     env:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
@@ -67,10 +76,22 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -79,7 +100,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
       # Linux, macOS and Windows, so the key carries no `runner.os`, and
@@ -112,12 +132,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:

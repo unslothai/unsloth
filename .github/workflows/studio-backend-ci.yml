@@ -98,6 +98,13 @@ jobs:
     # this one waits until those dependencies are found and fixed individually. Raising the
     # limit costs nothing until a job actually needs it, and a cancelled leg costs the whole
     # 30 minutes anyway.
+    #
+    # This cap is the last line, not the first one. It reports the word "cancelled" and
+    # names nothing, which is how a single deadlocked test held main red for forty hours
+    # (run 32385375389 onward) while the step timings said the suite itself still finished
+    # its work in six minutes. The per-test --timeout below is what actually names a hang;
+    # this stays as the backstop for a wedge the per-test timer cannot see, such as one in
+    # collection or in a worker that never comes up.
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -146,8 +153,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '${{ matrix.python }}'
-          cache: 'pip'
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: studio-backend
+          key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
 
@@ -163,14 +175,18 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' pytest pytest-asyncio pytest-xdist httpx \
+            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx \
             soundfile librosa
+          # pytest-timeout: see the --timeout flags below. Without it a test that never
+          # returns is indistinguishable from a slow suite, and the job reports only
+          # "cancelled".
           # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
           # them the no-torchcodec decode path is silently untested here.
           # Torch CPU + transformers are required by a chunk of the backend test
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            'torch>=2.4,<2.11' 'torchaudio<2.11'
           pip install 'transformers>=4.51,<5.5'
           # peft: core/inference/inference.py imports it at module scope, and it is listed
           # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
@@ -236,8 +252,32 @@ jobs:
         # serialising all of them would give back most of what this change buys. The
         # isolation guard scans for the tight ones, so a new test below the threshold
         # fails that guard instead of flaking here.
+        #
+        # test_media_auto_switch has a 0.4s budget that xdist scheduling can exceed.
+        #
+        # --timeout: a per-test wall-clock cap, so a test that never returns fails with its
+        # own name in the summary instead of taking the job's 45 minutes down with it and
+        # reporting "cancelled". 330s comes off the measured distribution rather than taste:
+        # the slowest legitimate test in this suite is
+        # test_conversation_archive.py::test_the_newest_revision_survives_a_tied_run_LONGER_than_the_cap
+        # at 82.5s (measured under -n 4 on a contended box; 75.4s serially), and the next
+        # ones down are 76s and 25s, so the cap is 4x the worst real test. Nothing here is
+        # near it, and a deadlock is caught in minutes rather than never.
+        #
+        # --timeout arms inside each xdist worker, so a stuck CONTROLLER escapes it: when a
+        # worker wedges holding the pipe, the session waits forever and no per-test cap is
+        # consulted. On the #9473 branch this step sat silent from 95% for 36.8 minutes,
+        # three runs running, each burning the whole 45 minute budget and reporting
+        # "cancelled" -- unreadable against ordinary concurrency supersession.
+        #
+        # So bound the session from outside, where a wedged worker cannot defeat it. SIGINT
+        # first so pytest dumps where it was stuck, SIGKILL 60s later if it will not.
+        # Reproduced with a test forking a child that never exits: unwrapped it hangs
+        # silently, wrapped it exits 124 through execnet safe_terminate -> workerpool.waitall.
+        # Expect a stuck FRAME, not always a test name. 1500s is ~3x the 8-10 minute norm.
         run: |
-          python -m pytest tests/ -q --tb=short -n 4 \
+          timeout --signal=INT --kill-after=60 1500 \
+          python -m pytest tests/ -q --tb=short -n 4 --timeout=330 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -250,6 +290,7 @@ jobs:
             --ignore=tests/test_scan_loras_off_event_loop.py \
             --ignore=tests/test_anthropic_messages.py \
             --ignore=tests/test_profile_stats.py \
+            --ignore=tests/test_media_auto_switch.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -258,7 +299,7 @@ jobs:
         # Relative timing against a reference measured in the same process. Serial, so the
         # comparison is between two implementations rather than between two schedulings.
         run: |
-          python -m pytest -q --tb=short \
+          python -m pytest -q --tb=short --timeout=330 \
             tests/test_streaming_stripper.py \
             tests/test_llama_cpp_wait_for_vram_settle.py \
             tests/test_tool_xml_strip.py \
@@ -269,7 +310,8 @@ jobs:
             tests/test_tunnel_safe_long_post.py \
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
-            tests/test_profile_stats.py
+            tests/test_profile_stats.py \
+            tests/test_media_auto_switch.py
 
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
@@ -286,10 +328,18 @@ jobs:
         # being old. Roughly 40 tests in under ten seconds, beside the full leg rather
         # than in front of it, so the critical path is the full leg either way.
         run: |
-          python -m pytest -q --tb=short \
+          python -m pytest -q --tb=short --timeout=330 \
             tests/test_third_party_source.py \
             tests/test_recommended_folders_permission.py \
             tests/test_hf_cache_settings.py
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by
@@ -311,8 +361,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: repo-cpu-tests
+          key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
 
@@ -338,7 +393,7 @@ jobs:
             'numpy<3' pytest pytest-asyncio pytest-xdist httpx
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
+            'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           pip install 'transformers>=4.51,<5.5'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.
@@ -402,6 +457,7 @@ jobs:
             --ignore=tests/studio/test_hardware_dispatch_matrix.py \
             --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
             --ignore=tests/studio/test_xpu_spoof_pipeline.py \
+            --ignore=tests/studio/test_mlx_context_platform_matrix.py \
             --ignore=tests/vllm_compat \
             --ignore=tests/version_compat \
             -m 'not server and not e2e' \
@@ -422,21 +478,25 @@ jobs:
           python -m pytest -q --tb=short \
             tests/studio/test_hardware_dispatch_matrix.py \
             tests/studio/test_is_mlx_dispatch_gate.py \
-            tests/studio/test_xpu_spoof_pipeline.py
+            tests/studio/test_xpu_spoof_pipeline.py \
+            tests/studio/test_mlx_context_platform_matrix.py
 
       - name: Event-loop latency tests (wall clock, run without CPU contention)
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These drive a live uvicorn server and assert upper bounds on real
-        # elapsed time: a /health burst must stay under 250 ms while a 600 ms
-        # blocking probe runs, and a 100-request burst under 350 ms. That is the
-        # actual contract (the route hands the blocking call to a thread), so the
-        # bounds cannot be relaxed without the test ceasing to test anything.
-        # A descheduled worker inflates them, so they run alone. Measured under
-        # 3x CPU oversubscription the margin is wide (8 ms against 250, 38 ms
-        # against 350), but a runner core is several times slower than the box
-        # that measured it, which puts the 350 ms one within reach.
+        # These drive a live uvicorn server and assert upper bounds on real elapsed
+        # time: 50 concurrent probes under 15s, a fast-shim probe under 2s, five
+        # sequential probes under 10s, and a not-loaded short circuit under 50 ms.
+        # A descheduled worker inflates them, so they run alone.
+        #
+        # The two tightest bounds this step used to carry, 250 ms for a /health burst
+        # and 350 ms for a 100-request burst, are gone. Both were proxies for one
+        # property, that the route hands its blocking call to a thread and leaves the
+        # event loop free, and both could be falsified by a descheduled thread with the
+        # code entirely correct. Those two tests now hold the blocking call open on an
+        # event and require /health to answer while it is held, which asserts the
+        # property itself and does not move with load.
         # 20s serially, against the ~10 minutes -n 4 saves on this job.
         run: python -m pytest tests/studio/load_freeze -q --tb=short
 
@@ -477,3 +537,10 @@ jobs:
           [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
           echo "ran $found shell installer test files"
 
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}

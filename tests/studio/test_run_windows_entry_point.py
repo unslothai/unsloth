@@ -247,5 +247,5 @@ def test_the_windows_existence_gate_accepts_a_quarantined_venv():
     }
     assert "_managed_cli_package_present" in fallbacks, (
         "a missing console script must fall back to the installed package, or a "
-        "quarantined Windows install cannot start Studio"
+        "quarantined Windows install cannot start Unsloth"
     )

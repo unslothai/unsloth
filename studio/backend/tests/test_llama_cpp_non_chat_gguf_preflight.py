@@ -395,3 +395,38 @@ def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
             _arch_to_task("wan", name_hints = (identifier, name)) == "text-to-video"
         ) is page_named
         assert ("Open it from the Video page" in message) is page_named, message
+
+
+def test_speech_arch_names_the_audio_page(tmp_path):
+    _, message = _refusal(tmp_path, arch = "llama-csm", name = "sesame-csm-backbone.gguf")
+    assert message is not None
+    assert "Audio page" in message
+    assert "Images page" not in message
+
+
+def test_every_name_the_video_preflight_imports_from_routes_still_resolves():
+    """The preflight reaches into routes.models for the Video page's own buildability rule.
+
+    That import sits inside ``except Exception: return True``, so when a helper moves out of
+    routes.models without a compatibility alias the ImportError is swallowed and the probe
+    answers "yes, the page can build it" for a GGUF the loader cannot assemble. Nothing else
+    fails, which is why this is asserted rather than left to the arch tests: the names are
+    read out of the source so a newly added import is covered the day it lands.
+    """
+    import ast
+    import pathlib
+
+    import routes.models as models_route
+
+    source = pathlib.Path(__file__).resolve().parents[1] / "core" / "inference" / "llama_cpp.py"
+    wanted: set[str] = set()
+    for node in ast.walk(ast.parse(source.read_text(encoding = "utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.module == "routes.models":
+            wanted.update(alias.name for alias in node.names)
+
+    assert wanted, "llama_cpp.py no longer imports from routes.models; drop this test"
+    missing = sorted(name for name in wanted if not hasattr(models_route, name))
+    assert not missing, (
+        f"core/inference/llama_cpp.py imports {missing} from routes.models, but routes.models "
+        f"does not bind them. The probe's broad except turns that into a silent fail-open."
+    )

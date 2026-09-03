@@ -459,18 +459,37 @@ class TestPendingOwnership:
         # back and the route reads it before is_active. The release belongs to the
         # lock, not the call: overlapping /load calls hand the lock over before the
         # first returns, so clearing on the way out would discard the queued marker.
+        import ast
         import inspect
+        import textwrap
 
         import core.inference.llama_cpp as lc
 
-        code = [
-            line
-            for line in inspect.getsource(lc.LlamaCppBackend._serial_load_scope).splitlines()
-            if not line.strip().startswith("#")
-        ]
-        compact = "".join("".join(code).split())
-        assert "withself._serial_load_lock:try:yieldfinally:" in compact
-        assert compact.endswith("self._vram_fraction_pending=None")
+        # The finalizer as a scope, not as text after "finally:": a substring also passes
+        # on a clear moved below the `with`, which an exception through the yield skips.
+        # Position in the finalbody is free, as are siblings (#9292's _binary_revision_pending).
+        scope = ast.parse(
+            textwrap.dedent(inspect.getsource(lc.LlamaCppBackend._serial_load_scope))
+        ).body[0]
+        # Defaulted, so a rewritten scope fails on what it lost, not on a StopIteration.
+        held = next((n for n in scope.body if isinstance(n, (ast.With, ast.AsyncWith))), None)
+        assert held is not None, "the scope no longer takes the load lock in a with"
+        assert ast.unparse(held.items[0].context_expr) == "self._serial_load_lock"
+        guarded = next((n for n in held.body if isinstance(n, ast.Try)), None)
+        assert guarded is not None, "the yield is no longer wrapped in try/finally"
+        assert any(
+            isinstance(node, ast.Expr) and isinstance(node.value, ast.Yield)
+            for node in guarded.body
+        )
+        cleared = {
+            ast.unparse(target)
+            for node in guarded.finalbody
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value is None
+            for target in node.targets
+        }
+        assert "self._vram_fraction_pending" in cleared
         # And the load has to go through it, or the scope guards nothing.
         load = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
         assert "withself._serial_load_scope():" in load
@@ -625,7 +644,7 @@ class TestFitTarget:
     """The budget has to reach llama.cpp's own fitter on the --fit fallback.
 
     ``--fit-target`` is documented by the bundled llama-server as the "target
-    margin per device for --fit ... default: 1024". Studio passes a tighter 512
+    margin per device for --fit ... default: 1024". Unsloth passes a tighter 512
     under Manual + Auto and nothing at all on the legacy auto path, so a lowered
     budget stopped at the planner and the fitter still packed to its own margin.
     """

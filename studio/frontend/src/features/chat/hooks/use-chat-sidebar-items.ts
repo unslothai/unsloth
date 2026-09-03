@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
@@ -165,8 +165,16 @@ export function useChatSidebarItems(options?: {
     };
   }, [enabled, options?.projectId, requireMessages]);
 
-  const items = groupThreads(allThreads ?? []);
-  const archivedItems = groupThreads(allThreads ?? [], true);
+  // Memoised for identity as much as for the work. These arrays are the root
+  // of every derived sidebar list, so rebuilding them on each render leaves
+  // each of those with a new identity too, and an effect that depends on one
+  // re-runs every render. Where such an effect also sets state, React
+  // re-renders once to find the bail-out, rebuilds these, and never settles.
+  const items = useMemo(() => groupThreads(allThreads ?? []), [allThreads]);
+  const archivedItems = useMemo(
+    () => groupThreads(allThreads ?? [], true),
+    [allThreads],
+  );
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
   return { items, archivedItems, canCompare, loaded };
@@ -200,20 +208,30 @@ export async function renameChatItem(
   );
 }
 
-export async function archiveChatItem(
-  item: SidebarItem,
+async function collectItemThreadIds(
+  items: SidebarItem[],
+  args: { includeArchived?: boolean } = {},
+): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.type === "single") {
+      ids.add(item.id);
+      continue;
+    }
+    const pair = await listStoredChatThreads({ pairId: item.id, ...args });
+    for (const thread of pair) ids.add(thread.id);
+  }
+  return Array.from(ids);
+}
+
+export async function archiveChatItems(
+  items: SidebarItem[],
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
 ): Promise<void> {
-  const threadIds: string[] =
-    item.type === "single"
-      ? [item.id]
-      : (
-          await listStoredChatThreads({
-            pairId: item.id,
-            includeArchived: true,
-          })
-        ).map((t) => t.id);
+  const threadIds = await collectItemThreadIds(items, {
+    includeArchived: true,
+  });
 
   requestPromptQueueStop(threadIds);
 
@@ -225,12 +243,20 @@ export async function archiveChatItem(
     threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
   );
 
-  if (activeId === item.id) {
+  if (activeId !== undefined && items.some((item) => item.id === activeId)) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }
 
   notifyChatHistoryUpdated();
+}
+
+export async function archiveChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+): Promise<void> {
+  return archiveChatItems([item], activeId, onSelect);
 }
 
 export async function archiveAllChatItems(
@@ -246,9 +272,21 @@ export async function archiveAllChatItems(
   requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
-  await Promise.all(
-    toArchive.map((t) => updateStoredChatThread(t.id, { archived: true })),
+  // allSettled, not all: Promise.all rejects while slower siblings are still writing silently.
+  const writes = await Promise.allSettled(
+    toArchive.map((t) =>
+      updateStoredChatThread(t.id, { archived: true }, { notify: false }),
+    ),
   );
+  const failure = writes.find(
+    (write): write is PromiseRejectedResult => write.status === "rejected",
+  );
+  if (failure) {
+    // Silent updates mean a partial batch announces itself nowhere, so whatever did
+    // archive would stay listed here and in every other tab until some later change.
+    notifyChatHistoryUpdated();
+    throw failure.reason;
+  }
 
   // Reset only when this action archived the active single thread or compare
   // pair. An already-archived chat opened from the archive is not in
@@ -286,16 +324,13 @@ export async function unarchiveChatItem(item: SidebarItem): Promise<void> {
   notifyChatHistoryUpdated();
 }
 
-export async function deleteChatItem(
-  item: SidebarItem,
+export async function deleteChatItems(
+  items: SidebarItem[],
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
   args: { deleteFiles?: boolean } = {},
 ) {
-  const threadIds: string[] =
-    item.type === "single"
-      ? [item.id]
-      : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+  const threadIds = await collectItemThreadIds(items);
 
   // Stop queued prompts and in-flight streams before deleting.
   requestPromptQueueStop(threadIds);
@@ -315,7 +350,7 @@ export async function deleteChatItem(
   markChatThreadsDeleted(threadIds);
   notifyChatHistoryUpdated();
 
-  if (activeId === item.id) {
+  if (activeId !== undefined && items.some((item) => item.id === activeId)) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }
@@ -331,4 +366,13 @@ export async function deleteChatItem(
     notifyChatHistoryUpdated();
     throw error;
   }
+}
+
+export async function deleteChatItem(
+  item: SidebarItem,
+  activeId: string | undefined,
+  onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+  args: { deleteFiles?: boolean } = {},
+) {
+  return deleteChatItems([item], activeId, onSelect, args);
 }

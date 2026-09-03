@@ -44,4 +44,13 @@ test("stop stays available when the running composer can queue", async () => {
     /aria-label="Queue message"/,
     "the queue action must remain available when the draft is queueable",
   );
+  const stopButton = controls.match(
+    /<Button[\s\S]*?aria-label="Stop generating"[\s\S]*?>/,
+  );
+  assert.ok(stopButton, "the running composer must render a stop button");
+  assert.doesNotMatch(
+    stopButton[0],
+    /onClick=\{stop\}/,
+    "stopping the active generation must not discard the prompt queue",
+  );
 });

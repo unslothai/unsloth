@@ -6,7 +6,7 @@
 #7016 added `Open Unsloth Studio in your default browser after launch?
 [Y/n]` and had to be reverted in #8040: extra questions stall a piped
 install and persist an answer nobody can find again. The only preference
-setup may ask about is whether to start Studio when it finishes.
+setup may ask about is whether to start Unsloth when it finishes.
 
 Allowlist, not a ban: every prompt in the tree is listed in
 `APPROVED_PROMPTS` with its reason, so a new one fails with instructions
@@ -60,7 +60,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
 # entry just to turn a build green: decide the prompt is wanted first.
 APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ("install.sh", "start unsloth studio now?"): (
-        "The one sanctioned preference prompt: launch Studio after install."
+        "The one sanctioned preference prompt: launch Unsloth after install."
     ),
     ("install.ps1", "start unsloth studio now?"): (
         "Windows half of the sanctioned launch prompt above."

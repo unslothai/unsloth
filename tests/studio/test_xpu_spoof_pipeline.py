@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Full Intel XPU spoof pipeline: fake torch.xpu on a GPU-less/NVIDIA runner so
-Studio's hardware selection + training-device path (detect -> select -> apply ->
+Unsloth's hardware selection + training-device path (detect -> select -> apply ->
 device_map -> cache clear) runs exactly as the CUDA path does, with no real
 Intel hardware. The XPU sibling of tests/_zoo_aggressive_cuda_spoof.py.
 
-State-sensitive: it fresh-imports the Studio hardware module under the spoof and
+State-sensitive: it fresh-imports the Unsloth hardware module under the spoof and
 mutates its module globals, so studio-backend-ci.yml runs it in the isolated
 "Hardware-spoof tests" step (never alongside tests that import hardware).
 
@@ -81,7 +81,7 @@ def _make_fake_xpu(
 
 
 def _import_studio_hardware_module():
-    """Fresh-import Studio's hardware module so detect_hardware re-runs under the
+    """Fresh-import Unsloth's hardware module so detect_hardware re-runs under the
     current spoofs (mirrors test_hardware_dispatch_matrix.py)."""
     if str(STUDIO_BACKEND) not in sys.path:
         sys.path.insert(0, str(STUDIO_BACKEND))

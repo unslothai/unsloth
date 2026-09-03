@@ -46,10 +46,10 @@ def _rms_layernorm_forward(
     r += row_idx * r_row_stride
 
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row = tl.load(W + col_offsets, mask = mask, other = 0)  # .to(tl.float32)
+    W_row = tl.load(W + col_offsets, mask = mask, other = 0)
 
     row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
-    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm
+    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm.
     eps_f32 = tl.full((), eps, tl.float32)
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
@@ -70,7 +70,6 @@ def _rms_layernorm_backward(
     W_row_stride: tl.constexpr,
     r,
     r_row_stride: tl.constexpr,
-    # dW, dW_row_stride,
     n_cols: tl.constexpr,
     eps: tl.constexpr,
     GEMMA: tl.constexpr,
@@ -134,9 +133,8 @@ def _gemma_rms_layernorm_forward(
     eps: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    # Copies https://github.com/google-deepmind/gemma/blob/main/gemma/layers.py#L31
-    # and https://github.com/keras-team/keras-nlp/blob/v0.8.2/keras_nlp/models/gemma/rms_normalization.py#L33
-    # exactly. Essentially all in float32!
+    # Copies google-deepmind/gemma layers.py#L31 and keras-nlp gemma/rms_normalization.py#L33 exactly:
+    # essentially all in float32.
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
@@ -149,7 +147,7 @@ def _gemma_rms_layernorm_forward(
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
-    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm
+    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm.
     eps_f32 = tl.full((), eps, tl.float32)
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
@@ -214,7 +212,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows: int
         n_cols: int
         n_rows, n_cols = dY.shape
-        # dW = X
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
 
         with torch_gpu_device(dY.device):
@@ -229,7 +226,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 W.stride(0),
                 r,
                 r.stride(0),
-                # dW, dW.stride(0),
                 n_cols,
                 ctx.eps,
                 GEMMA = ctx.GEMMA,
@@ -240,7 +236,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         return dX, None, None, None
 
 
-# [TODO] Unsure why RMS Layernorm is not torch.compiling properly
+# RMS Layernorm does not torch.compile properly; reason unknown.
 @torch.compiler.disable
 def fast_rms_layernorm(
     layernorm,
@@ -320,7 +316,6 @@ def test_rms_layernorm(
     YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
     Y.backward(YY)
     correct_grad = X.grad.clone()
-    # from unsloth.kernels import fast_rms_layernorm
     Y = fast_rms_layernorm(layernorm, XX)
     Y.backward(YY)
     assert torch.amax(correct_grad - XX.grad).item() <= 0.05
