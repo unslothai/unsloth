@@ -4139,11 +4139,17 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
         "dir": str(tmp_path),
     }
 
-    # Pricing builds real cache classes that draw from the global PRNG, so both ways out of
-    # the pricing itself rewind it -- the answer, and a raise that never produced one.
+    # Pricing builds cache classes drawing from the key, so both ways out of it rewind.
     rewound = []
-    monkeypatch.setattr(mlx_inference, "_mlx_rng_key_words", lambda: ("key",))
+    monkeypatch.setattr(
+        mlx_inference, "_mlx_rng_key_words", lambda: rewound.append("held") or ("key",)
+    )
     monkeypatch.setattr(mlx_inference, "_restore_mlx_rng_key", rewound.append)
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.mlx_memory",
+        types.SimpleNamespace(mlx_fit_context = lambda *_a, **_k: rewound.append("priced") or 24_576),
+    )
     assert fit(str(tmp_path), load_in_4bit = True, retains_history = True) == 24_576
     monkeypatch.setitem(
         sys.modules,
@@ -4153,7 +4159,7 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
         ),
     )
     assert fit(str(tmp_path), load_in_4bit = True, retains_history = True) is None
-    assert rewound == [("key",), ("key",)]
+    assert rewound == ["held", "priced", ("key",), "held", ("key",)]
 
     # Nothing is priced where the machine cannot be measured, or where the name has no files
     # on disk -- and nothing is rewound either, since no cache class was ever built.
@@ -4284,3 +4290,109 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
             **kwargs,
         )
         assert not asked
+
+
+def test_the_bound_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
+    """An architecture can offer several towers and the sizing takes the first whose forward pass
+    runs, so judging one it would reject answers for a cache the load never builds."""
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from core.inference import mlx_inference
+
+    class Tower:
+        def __init__(
+            self,
+            kind,
+            runs = True,
+        ):
+            self.kind, self.runs = kind, runs
+            self.selected_with = None
+
+        def __call__(
+            self,
+            *_a,
+            cache = None,
+            **_k,
+        ):
+            # Selection has to happen on the cache the sizing selects on: the one with no window.
+            self.selected_with = cache
+            if not self.runs:
+                raise ValueError("this tower cannot run")
+
+        @property
+        def make_cache(self):
+            if self.kind == "plain":
+                raise AttributeError("make_cache")
+            entries = {"bounded": [RotatingKVCache(1024)], "unbounded": [KVCache()], "empty": []}
+            return lambda: entries[self.kind]
+
+    def make_prompt_cache(model, max_kv_size = None):
+        builder = getattr(model, "make_cache", None)
+        if builder is not None:
+            return builder()
+        return [RotatingKVCache(max_kv_size)] if max_kv_size else [KVCache()]
+
+    def offering(*towers):
+        monkeypatch.setitem(
+            sys.modules,
+            "core.inference.mlx_memory",
+            types.SimpleNamespace(
+                _PROBE_SHORT = 8,
+                _runtime_dtype = lambda: None,
+                _snapshot_config = lambda _d: {"model_type": "x"},
+                _probe_models = lambda *_a: iter(
+                    [
+                        (lambda t = t: rewound.append("built") or t, make_prompt_cache, None)
+                        for t in towers
+                    ]
+                ),
+            ),
+        )
+
+    # Building towers draws from the key an unseeded generation samples from, so the question
+    # leaves it where it was found: captured before any build, restored on every way out.
+    rewound = []
+    monkeypatch.setattr(
+        mlx_inference, "_mlx_rng_key_words", lambda: rewound.append("held") or ("key",)
+    )
+    monkeypatch.setattr(mlx_inference, "_restore_mlx_rng_key", rewound.append)
+
+    def verdict(*towers):
+        offering(*towers)
+        marks = len(rewound)
+        answer = mlx_inference.mlx_bound_would_be_enforced("/d", 4096)
+        # Ordering, not just arrival: a boundary drawn below the build would still restore. The
+        # build count is the verdict's other half -- a probe reading past the tower it accepted
+        # would answer for one the sizing never prices.
+        tried = next((n for n, tower in enumerate(towers) if tower.runs), len(towers) - 1) + 1
+        assert rewound[marks:] == ["held", *["built"] * tried, ("key",)]
+        return answer
+
+    # An architecture with no builder of its own is bounded only because the window reaches it.
+    plain = Tower("plain")
+    assert verdict(plain) is True
+    assert [getattr(entry, "max_size", None) for entry in plain.selected_with] == [None]
+    # One that owns a builder is handed no window, so whether it caps itself is its own business.
+    assert verdict(Tower("bounded")) is True
+    assert verdict(Tower("unbounded")) is False
+    # A cache with no entries caps nothing: `all` over nothing would say otherwise.
+    assert verdict(Tower("empty")) is False
+    # The first tower that runs is the answer: reading on past it would answer for one the
+    # sizing never reaches.
+    assert verdict(Tower("bounded"), Tower("unbounded")) is True
+    # The tower the sizing would reject is skipped, in both directions.
+    assert verdict(Tower("bounded", runs = False), Tower("unbounded")) is False
+    assert verdict(Tower("unbounded", runs = False), Tower("bounded")) is True
+    # Nothing that runs is "not confirmed" rather than "no".
+    assert verdict(Tower("bounded", runs = False)) is None
+    # A probe that cannot even ask the question still leaves the PRNG as it found it.
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.mlx_memory",
+        types.SimpleNamespace(
+            _snapshot_config = lambda _d: (_ for _ in ()).throw(RuntimeError("no")),
+        ),
+    )
+    marks = len(rewound)
+    assert mlx_inference.mlx_bound_would_be_enforced("/d", 4096) is None
+    assert rewound[marks:] == ["held", ("key",)]

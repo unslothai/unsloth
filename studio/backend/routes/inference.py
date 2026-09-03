@@ -15734,6 +15734,7 @@ async def estimate_memory(
             model_dir = _local_mlx_model_dir(config)
             if not model_dir:
                 return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+            from core.inference.mlx_inference import mlx_bound_would_be_enforced
             from core.inference.mlx_memory import mlx_memory_breakdown
 
             mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
@@ -15747,6 +15748,14 @@ async def estimate_memory(
                 if mlx_named_ctx
                 else _mlx_estimate_fitted_context(config, model_dir, mlx_load_in_4bit)
             )
+            # Only a bound the load will actually install displaces the requested quantization.
+            # An architecture building its own cache is handed no window, and whether what it
+            # builds happens to cap itself is the model's business -- so the answer is probed
+            # rather than assumed. Where nothing is bounded the load quantizes as asked, and
+            # pricing full width would overstate the cache and make the KV control look inert.
+            mlx_bound = bool(mlx_fitted_ctx) and mlx_bound_would_be_enforced(
+                model_dir, mlx_fitted_ctx
+            )
             mlx_breakdown = mlx_memory_breakdown(
                 model_dir,
                 # Naming nothing is what a load does when the user pins nothing, and such a load
@@ -15758,15 +15767,8 @@ async def estimate_memory(
                     or _mlx_estimate_ceiling(model_dir)
                     or _DEFAULT_MLX_ESTIMATE_CTX
                 ),
-                # A fitted window is installed as a cache bound, and the load refuses to quantize
-                # a bounded cache, so the fit is priced at full width and the window it returns
-                # must be too. Whether the bound is actually installed cannot be read from the
-                # files -- it depends on whether the model builds its own cache -- so this is the
-                # enforceable load's figure. Where the bound turns out unenforceable the load
-                # reports the same length and installs nothing, and a conversation is then free to
-                # grow past it; that gap is the known cost of partial architecture coverage, and
-                # the load reports it separately rather than being priced for here.
-                kv_bits = None if mlx_fitted_ctx else _mlx_estimate_kv_bits(request.mlx_kv_bits),
+                # The load refuses to quantize a bounded cache, so such a window is priced full.
+                kv_bits = None if mlx_bound else _mlx_estimate_kv_bits(request.mlx_kv_bits),
                 # /load quantizes an unquantized checkpoint by default and does not always honour the request.
                 load_in_4bit = mlx_load_in_4bit,
             )

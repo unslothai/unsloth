@@ -1165,12 +1165,35 @@ class TestEstimateMemoryRoute:
             or fit["answer"],
         )
         seen = self._record_breakdown(
-            monkeypatch, weights_bytes = 1, kv_bytes = 1, compute_bytes = 1, total_bytes = 3, gpu_bytes = 3
+            monkeypatch,
+            weights_bytes = 1,
+            kv_bytes = 1,
+            compute_bytes = 1,
+            total_bytes = 3,
+            gpu_bytes = 3,
         )
         # n_ctx is llama.cpp's field, so a caller sending one is not naming an MLX length.
+        probed = []
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_bound_would_be_enforced",
+            lambda *a: probed.append(a) or True,
+        )
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
-        # The bound displaces the quantization, and the fit was priced without it.
+        # Asked about the checkpoint the route resolved and the window it would install, since a
+        # verdict about some other model or some other length decides nothing here.
+        assert probed == [(str(tmp_path), 24_576)]
+        # A bound the load will install displaces the quantization, and the fit was priced
+        # without it. Where no bound is installed the load quantizes as asked, so the width the
+        # caller chose has to survive -- and whether one is installed is probed, not assumed.
         assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, None, 24_576)
+        for unenforced in (False, None):
+            monkeypatch.setattr(
+                mlx_inference, "mlx_bound_would_be_enforced", lambda *a, v = unenforced: v
+            )
+            resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
+            assert (seen["kv_bits"], resp.context_fitted) == (4, 24_576)
+        monkeypatch.setattr(mlx_inference, "mlx_bound_would_be_enforced", lambda *a: True)
         # On the dir the route resolved, not the name it was asked about.
         assert asked == {
             "ceiling": 262_144,

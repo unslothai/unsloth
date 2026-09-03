@@ -623,8 +623,8 @@ def _mlx_rng_key_words():
     if len(words) != 2:
         logger.warning(
             "MLX exposes a %d-word random key; Unsloth can only rewind the "
-            "two-word form, so the KV quantization probe will not restore the "
-            "PRNG and sampling after a load may differ from an unprobed run.",
+            "two-word form, so sizing a load will not restore the PRNG and "
+            "sampling after a load may differ from an unsized run.",
             len(words),
         )
         return None
@@ -635,16 +635,16 @@ def _as_uint32_pair(high, low):
     """Both words as uint32, or None if either is not a 32-bit word at all.
 
     mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would
-    land in the probe's finally and replace the probe's own outcome. So the words
-    are range-checked here rather than passed through, which is what lets the
+    land in the rewind and replace the outcome of whatever it was guarding. So the
+    words are range-checked here rather than passed through, which is what lets the
     rewind below stay unguarded.
 
     Range-checked and not simply masked, though. A negative reads as the two's
     complement of the uint32 mlx stores, so reinterpreting it loses nothing. A
     value at or above 2**32 is not a 32-bit word under any reading, and masking
     it would turn a key we cannot represent into a plausible wrong one: (2**32, 0)
-    would restore as (0, 0), the probe would report success, and sampling would
-    silently diverge from an unprobed run. Decline instead, which is the outcome
+    would restore as (0, 0), the rewind would report success, and sampling would
+    silently diverge from an unsized run. Decline instead, which is the outcome
     the caller already handles.
     """
     converted = []
@@ -652,8 +652,8 @@ def _as_uint32_pair(high, low):
         if not -(2**31) <= word < 2**32:
             logger.warning(
                 "MLX exposed a random key word of %d, which is not a 32-bit "
-                "word; the KV quantization probe will not restore the PRNG and "
-                "sampling after a load may differ from an unprobed run.",
+                "word; sizing a load will not restore the PRNG and sampling "
+                "after a load may differ from an unsized run.",
                 word,
             )
             return None
@@ -680,6 +680,18 @@ def _restore_mlx_rng_key(words):
     if pair is None:
         return
     mx.random.seed((pair[0] << 32) | pair[1])
+
+
+@contextmanager
+def mlx_rng_preserved():
+    """Leave the PRNG where it was found, around builds drawing from the key an unseeded
+    generation samples from. The key is thread-local, so this protects sizing that runs where
+    generation runs. Best-effort: an unreadable key is warned about, not restored."""
+    rng_key = _mlx_rng_key_words()
+    try:
+        yield
+    finally:
+        _restore_mlx_rng_key(rng_key)
 
 
 def _kv_quant_probe(
@@ -716,8 +728,7 @@ def _kv_quant_probe(
         return 0, 0, "it uses a bounded sliding window", True
 
     # The forward pass below draws random numbers, so keep sampled output stable.
-    rng_key = _mlx_rng_key_words()
-    try:
+    with mlx_rng_preserved():
         try:
             language_model(mx.array([[0]]), cache = entries)
             mx.eval([getattr(entry, "state", None) for entry in entries])
@@ -741,8 +752,6 @@ def _kv_quant_probe(
             if retainable and _kv_entry_nbytes(quantized) is None:
                 retainable = False
         return converted, skipped, None, retainable
-    finally:
-        _restore_mlx_rng_key(rng_key)
 
 
 # A no-argument mx.synchronize() waits on the default stream, which generation does not
@@ -1168,25 +1177,21 @@ def mlx_fit_to_memory(model_dir, ceiling, *, load_in_4bit: bool, retains_history
     budget = mlx_memory_budget(retains_history = retains_history)
     if budget is None or not ceiling or not model_dir:
         return None
-    # Pricing builds real cache classes, whose layers draw from the same global PRNG an unseeded
-    # generation samples from, so rewind it the way the KV quantization probe does.
-    rng_key = _mlx_rng_key_words()
-    try:
-        from core.inference.mlx_memory import mlx_fit_context
+    with mlx_rng_preserved():
+        try:
+            from core.inference.mlx_memory import mlx_fit_context
 
-        fitted = mlx_fit_context(
-            model_dir,
-            budget_bytes = budget,
-            max_ctx = int(ceiling),
-            load_in_4bit = load_in_4bit,
-        )
-        logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
-        return fitted
-    except Exception as exc:
-        logger.debug("MLX context fit unavailable for %s: %s", model_dir, exc)
-        return None
-    finally:
-        _restore_mlx_rng_key(rng_key)
+            fitted = mlx_fit_context(
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                load_in_4bit = load_in_4bit,
+            )
+            logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
+            return fitted
+        except Exception as exc:
+            logger.debug("MLX context fit unavailable for %s: %s", model_dir, exc)
+            return None
 
 
 def _fitted_context(model, model_name: str, ceiling, *, load_in_4bit: bool, retains_history: bool):
@@ -1217,10 +1222,56 @@ def _kv_window_enforced(model, is_vlm, window):
             entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
         # Inside the guard with the build: an unjudgeable shape must read as unknown,
         # since load_model calls this unguarded and a raise would fail the load.
-        flattened = list(_flatten_kv_entries(entries))
-        return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
+        return _kv_entries_are_bounded(entries, window)
     except Exception as exc:
         logger.debug("MLX context limit probe failed: %s", exc)
+        return None
+
+
+def _kv_entries_are_bounded(entries, window) -> bool:
+    """Whether every leaf of a built cache caps itself at *window*. Nothing built is not bounded."""
+    flattened = list(_flatten_kv_entries(entries))
+    return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
+
+
+def mlx_bound_would_be_enforced(model_dir, window) -> Optional[bool]:
+    """Whether installing *window* at this checkpoint would bound every cache entry.
+
+    The question `_kv_window_enforced` asks of a resident model, asked of the architecture alone:
+    the sizing already builds this model weightless to probe cache growth, and both runtimes defer
+    to a model's own make_cache and ignore max_kv_size there. None where nothing could be built to
+    judge, which callers read the way the load does -- as "not confirmed", not as "no".
+
+    A tower is accepted on the same terms the sizing accepts one -- its forward pass runs -- because
+    an architecture offering several can construct a cache from one it would then price from
+    another, and the two need not agree about being bounded.
+    """
+    with mlx_rng_preserved():
+        try:
+            import mlx.core as mx
+
+            from core.inference.mlx_memory import (
+                _PROBE_SHORT,
+                _probe_models,
+                _runtime_dtype,
+                _snapshot_config,
+            )
+
+            config = _snapshot_config(model_dir)
+            if config is None:
+                return None
+            for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
+                model = build()
+                try:
+                    model(
+                        mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
+                        cache = make_prompt_cache(model),
+                    )
+                except Exception:
+                    continue
+                return _kv_entries_are_bounded(make_prompt_cache(model, max_kv_size = window), window)
+        except Exception as exc:
+            logger.debug("MLX bound probe unavailable for %s: %s", model_dir, exc)
         return None
 
 
