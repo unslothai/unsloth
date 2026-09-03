@@ -122,16 +122,11 @@ def detect_dflash_file(
             lower = candidate.name.lower()
             if not lower.endswith(".gguf"):
                 continue
-            # Prefix form only, deliberately. The shared companion predicates
-            # (_drafter_path_kind, is_mtp_drafter_path) know DFlash by the
-            # dflash- prefix, so accepting <model>-dflash.gguf here would let one
-            # file be a drafter for discovery AND a selectable Q8_0 main model in
-            # the quant picker, and choosing that variant would hand llama-server
-            # the drafter as the target. Teaching the predicate the suffix
-            # instead would hide a real model whose name merely ends in DFlash,
-            # which is the case #7811 exists to protect, so detection gives the
-            # form up rather than the picker giving up a model. No published
-            # DFlash sidecar uses it; the shipped one is dflash-kquant.gguf.
+            # Prefix form only: the shared predicates know DFlash by the dflash- prefix, so accepting
+            # <model>-dflash.gguf would make one file both a drafter and a selectable main model (#7811).
+            # The predicates are _drafter_path_kind / is_mtp_drafter_path, and the accepted file would also be a
+            # selectable Q8_0 main model. No published DFlash sidecar uses the suffix form; the shipped one is dflash-
+            # kquant.gguf.
             if not lower.startswith("dflash-"):
                 # Every other GGUF in the folder is a weight some sidecar could
                 # be naming. Recorded so a sidecar belonging to a NEIGHBOUR can
@@ -141,11 +136,9 @@ def detect_dflash_file(
             try:
                 # Collapse a split copy to shard 1 before ranking.
                 launch = _local_gguf_load_path(candidate)
-                # is_file() follows the link, so this also drops a dangling
-                # snapshot symlink and a directory named like a sidecar. Without
-                # it --model-draft gets a path llama-server cannot open, which
-                # fails the whole load rather than falling back to no
-                # speculation (detect_dspark_file guards the same way).
+                # is_file() follows the link, so this also drops a dangling snapshot symlink and a directory named like
+                # a sidecar, which --model-draft cannot open and which fails the whole load.
+                # detect_dspark_file guards the same way.
                 if not (launch.is_file() and _drafter_split_is_complete(launch)):
                     continue
                 resolved = launch.resolve()
@@ -156,18 +149,11 @@ def detect_dflash_file(
             seen.add(resolved)
             candidates.append(launch)
 
-    # A sidecar naming a family that belongs to a NEIGHBOUR weight is that
-    # neighbour's drafter, not a generic one. _drafter_matches_weight is False
-    # both for it and for a sidecar naming no family (dflash-kquant.gguf), so
-    # ranking alone bucketed the two together and precision could float the
-    # foreign one to the top: loading model B beside dflash-model-A-Q8_0.gguf
-    # and dflash-kquant.gguf launched model A's drafter for model B. Both carry
-    # a real dflash header, so the architecture check behind the ranking cannot
-    # catch it. _drafter_names_other_weight decides against the weights actually
-    # present, which keeps the published unpaired sidecar eligible (its stem,
-    # "kquant", names no file here) without hardcoding which stems are precision
-    # tokens. Shared with the remote paths through dflash_repo_preference_key,
-    # so a download and a local scan agree on which sidecar belongs here.
+    # A sidecar naming a NEIGHBOUR weight's family is that neighbour's drafter: ranking alone floated the foreign one to
+    # the top, launching model A's drafter for model B.
+    # Loading model B beside dflash-model-A-Q8_0.gguf and dflash-kquant.gguf launched model A's drafter for model B, and
+    # both carry a real dflash header, so the architecture check cannot catch it. _drafter_names_other_weight decides
+    # against the weights actually present and is shared with the remote paths through dflash_repo_preference_key.
     if weight_name is not None and other_weights:
         kept: list[Path] = []
         for candidate in candidates:
@@ -181,12 +167,8 @@ def detect_dflash_file(
         candidates = kept
 
     for candidate in sorted(candidates, key = _rank):
-        # Resolve and validate before opening anything. A dflash-*.gguf in a
-        # directory reached through a native grant can be a symlink whose target
-        # sits outside the lease, and ``accept`` is what decides that; reading the
-        # header first opened the target before the answer arrived, which a later
-        # rejection cannot undo. Callers without a grant pass accept = None and
-        # see the same candidates in the same order as before.
+        # Resolve and validate before opening anything: a dflash-*.gguf reached through a native grant can be a symlink
+        # outside the lease, and reading the header first cannot be undone.
         try:
             launch = _drafter_launch_path(candidate)
         except OSError:

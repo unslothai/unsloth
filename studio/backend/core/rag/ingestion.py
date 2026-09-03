@@ -21,16 +21,15 @@ from . import captioner, chunking, config, embeddings, job_leases, parsers, stor
 
 logger = logging.getLogger(__name__)
 
-# Per-job event queues, drained by job_events; ``None`` ends the stream.
+# Per-job event queues, drained by job_events; None ends the stream.
 _jobs: dict[str, "queue.Queue"] = {}
 _workers: dict[str, threading.Thread] = {}
 _jobs_lock = threading.Lock()
 
-_EMBED_BATCH = 64  # bounds peak memory
+_EMBED_BATCH = 64
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
-# Poll with a timeout so the generator wakes periodically to detect a gone
-# client or a terminal job whose worker died without the None sentinel.
+# Poll with a timeout so the generator notices a gone client or a worker that died without the None sentinel.
 _SSE_POLL_SECONDS = 1.0
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -240,14 +239,13 @@ def _run(
         caption_on = config.CAPTION_IMAGES if caption is None else caption
         # Skip all figure work (PDF rasterization included) without a vision model.
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
-            # Tile figure pages, transcribe+describe each tile, then merge/dedup/splice
-            # into the page text so small labels and every sub-figure are captured.
+            # Tile figure pages, transcribe+describe each tile, then merge/dedup/splice into the page text so
+            # small labels and every sub-figure are captured.
             try:
                 fig_pages = parsers.pages_with_figures(
                     stored_path,
                     max_pages = config.CAPTION_MAX_PAGES,
-                    # Skip only pages OCR actually transcribed (it covers them whole); a
-                    # scanned figure page past the OCR cap or with empty OCR still tiles.
+                    # Skip only pages OCR actually transcribed; a scanned figure page past the OCR cap still tiles.
                     exclude_pages = ocred,
                 )
                 tiles = (
@@ -281,8 +279,8 @@ def _run(
             count = count,
         )
         if not chunks:
-            # An empty parse still completes the document and retires the one it replaces, so it
-            # needs the same guard as the chunk write below.
+            # An empty parse still completes the document and retires the one it replaces, so it needs the same
+            # guard as the chunk write.
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
             # inside the write transaction the guard opened, as _progress does
@@ -295,8 +293,8 @@ def _run(
             return
 
         _progress(conn, job_id, "embedding", 0.5)
-        # An ST encode failure swaps the process to llama-server, so the embedder that
-        # produced these vectors is only known once they exist.
+        # An ST encode failure swaps the process to llama-server, so the embedder that produced these
+        # vectors is only known once they exist.
         vectors, identity = _embed_all([c.text for c in chunks], model_name)
         store.set_document_embedding_model(conn, document_id, identity)
 
@@ -314,8 +312,8 @@ def _run(
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
-        # add_chunks commits, which releases the lock taken above, so retake it before reporting
-        # success: a delete landing in that gap must not be recorded as a completed ingestion.
+        # add_chunks commits and releases the lock, so retake it: a delete landing in that gap must not be
+        # recorded as a completed ingestion.
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
@@ -382,27 +380,20 @@ def start_ingestion(
     sha = content_hash or _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
-        # Named before the transaction opens, because naming the embedder on a fresh
-        # process is slow work that touches no database: it searches for the
-        # llama-server binary, runs nvidia-smi under a ten second timeout, and on a
-        # host without it imports torch. Under BEGIN IMMEDIATE that is a RESERVED
-        # lock held for all of it, and connections wait only busy_timeout (5s) for
-        # one, so a concurrent ingest or job heartbeat fails with "database is
-        # locked" instead of queueing.
+        # Name the embedder before BEGIN IMMEDIATE: it runs nvidia-smi and may import torch, and holding a
+        # RESERVED lock that long fails concurrent writers with "database is locked".
         effective_model = model_name or config.effective_embedding_model()
         effective_identity = embeddings.embedding_identity(effective_model)
-        # Serialize admission with durable scope retirement across backend
-        # processes. The job lease is committed in the same transaction as the
-        # document, so cleanup never observes an unowned in-flight document.
+        # The job lease is committed in the same transaction as the document, so cleanup never observes an
+        # unowned in-flight document.
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute(
             "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
         ).fetchone():
             conn.rollback()
             raise RuntimeError("Owning scope is being deleted")
-        # (old_document_id, old_stored_path) replaced by this upload; deleted by
-        # the worker only after the replacement completes, so a failed re-index
-        # never destroys the still-searchable original.
+        # (old_document_id, old_stored_path) replaced by this upload; deleted by the worker only after the
+        # replacement completes, so a failed re-index never destroys the still-searchable original.
         replaces: tuple[str, str | None] | None = None
         existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
@@ -410,10 +401,9 @@ def start_ingestion(
             empty_completed = (
                 doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
             )
-            # Vectors from a different embedder are stale; re-uploading must
-            # re-index, not dedupe. NULL (legacy rows) is assumed current. Only
-            # completed rows are replaceable: a pending/running duplicate has a
-            # live worker whose writes must not land on a deleted document.
+            # Vectors from a different embedder are stale, so re-uploading must re-index; NULL (legacy rows)
+            # is assumed current. Only completed rows are replaceable, since a running duplicate's writes must
+            # not land on a deleted document.
             stale_model = (
                 doc is not None
                 and doc.get("status") == "completed"
@@ -422,9 +412,7 @@ def start_ingestion(
                 )
             )
             if empty_completed or stale_model:
-                # A prior ingest of identical bytes yielded zero chunks (e.g. a scanned
-                # PDF uploaded before a vision model loaded), or was embedded with a
-                # different model. Re-ingest, don't dedupe.
+                # Zero chunks previously, or a different embedder: re-ingest rather than dedupe.
                 replaces = (existing, doc.get("stored_path"))
             else:
                 job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
@@ -480,9 +468,8 @@ def start_ingestion(
             return document_id, job_id
         worker = threading.Thread(
             target = _run,
-            # effective_model (not the raw model_name) pins the embedder for the
-            # whole job: a Settings change mid-ingestion must not switch tokenizer
-            # or embedder between batches of one document.
+            # effective_model, not the raw model_name, pins the embedder for the whole job: a Settings change
+            # mid-ingestion must not switch tokenizer or embedder between batches.
             args = args,
             daemon = True,
         )
@@ -630,11 +617,8 @@ def job_events(job_id: str):
                 try:
                     row = get_job_status(job_id)
                 except Exception:  # noqa: BLE001
-                    # A transient status read (e.g. the DB momentarily locked) must
-                    # not abort the stream: routes/rag.py would turn the raised
-                    # exception into a terminal {type: error} frame and the UI would
-                    # drop a document whose worker is still running. Heartbeat and
-                    # retry on the next poll instead.
+                    # A transient status read must not abort the stream: routes/rag.py would turn it into a terminal
+                    # error frame and the UI would drop a document whose worker is still running.
                     logger.warning(
                         "job_events status read failed for %s; continuing", job_id, exc_info = True
                     )
@@ -651,19 +635,14 @@ def job_events(job_id: str):
                 break
             yield event
     finally:
-        # Drop the queue once nothing more will be emitted into it: either a
-        # terminal exit, or a disconnect after the job already finished (the UI
-        # stops on the terminal event, before [DONE], so terminal is still False
-        # here -- _run writes the terminal DB status before emitting it). Keep it
-        # only while the worker is still running, so an early disconnect can
-        # reconnect and resume its events.
+        # Keep the queue while the worker runs so an early disconnect can reconnect and resume; terminal is
+        # still False at disconnect, since _run writes the DB status before emitting it.
         if not terminal:
             try:
                 row = get_job_status(job_id)
                 terminal = row is None or row.get("status") in _TERMINAL_JOB_STATUSES
             except Exception:  # noqa: BLE001
-                # Can't confirm terminality (transient DB error) -- keep the queue so
-                # a reconnect can resume rather than orphaning a live worker's events.
+                # Cannot confirm terminality, so keep the queue rather than orphan a live worker's events.
                 terminal = False
         if terminal:
             with _jobs_lock:

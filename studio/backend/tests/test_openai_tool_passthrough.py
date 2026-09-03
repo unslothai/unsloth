@@ -4,6 +4,7 @@
 """Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
+import re
 import sys
 import asyncio
 import base64
@@ -160,6 +161,201 @@ class TestFriendlyUpstreamError:
         assert "compile a grammar" in exc.detail
         # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
+
+    def test_anthropic_upstream_error_rewords_context_overflow(self):
+        from routes.inference import _anthropic_upstream_error
+
+        raw = (
+            '{"error":{"code":500,"message":"the request exceeds the available context '
+            'size. try increasing the context size or enable context shift",'
+            '"type":"server_error"}}'
+        )
+        msg = _anthropic_upstream_error(raw)
+        assert "prompt is too long" in msg.lower()
+        assert "llama-server error:" not in msg
+
+    def test_anthropic_upstream_error_includes_token_counts_when_known(self):
+        from routes.inference import _anthropic_upstream_error
+
+        msg = _anthropic_upstream_error(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        m = re.search(r"prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)", msg, re.I)
+        assert m and m.groups() == ("214331", "131072")
+
+    def test_anthropic_upstream_error_leaves_other_failures_alone(self):
+        from routes.inference import _anthropic_upstream_error
+        assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
+        assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
+
+    def test_anthropic_upstream_error_keeps_kv_starvation_out_of_the_overflow_rewrite(self):
+        """llama-server says "Context size has been exceeded" when concurrent
+        generations drain the shared KV cache. Nothing about the request was too
+        long, so rewording it as an oversized prompt sends the client compacting a
+        valid conversation instead of retrying."""
+        from routes.inference import _anthropic_upstream_error, _classify_llama_generation_error
+        from core.inference.stream_errors import KV_STARVATION_MESSAGE
+
+        for raw in (
+            "Context size has been exceeded.",
+            '{"error":{"message":"Context size has been exceeded.","code":500}}',
+        ):
+            assert _anthropic_upstream_error(raw) == KV_STARVATION_MESSAGE
+            assert "too long" not in _anthropic_upstream_error(raw).lower()
+            # None keeps the upstream status: a 400 would blame the caller's request.
+            assert _classify_llama_generation_error(Exception(raw)) is None
+
+    def test_in_band_sse_recovers_counts_from_the_chunk_the_message_came_from(self):
+        """`_monitor_openai_error_message` returns only the message string. When that
+        string carries no numbers but the chunk around it does, the totals -- and the
+        window `oversize_advice` needs -- have to come from the payload."""
+        import json as _json
+
+        from core.inference import context_refusal
+        from routes.inference import (
+            _anthropic_upstream_stream_error_event,
+            _json_dumps_safe,
+            _monitor_openai_error_message,
+        )
+
+        chunk = {
+            "error": {
+                "code": 400,
+                "message": "the request exceeds the available context size",
+                "type": "exceed_context_size_error",
+                "n_prompt_tokens": 70494,
+                "n_ctx": 67584,
+            }
+        }
+        message = _monitor_openai_error_message(chunk)
+        source = _json_dumps_safe(chunk.get("error", chunk))
+
+        def body(text, counts_source):
+            event = _anthropic_upstream_stream_error_event(text, counts_source = counts_source)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        assert "70494" not in body(message, None)["message"]
+        assert (
+            "Prompt is too long: 70494 tokens > 67584 maximum" in body(message, source)["message"]
+        )
+
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 67584,
+                    "irreducible_tokens": 70000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            # The recovered window is what lets the fit be consulted at all.
+            assert "shortening the conversation will not help" in body(message, source)["message"]
+        finally:
+            context_refusal.clear()
+
+        # An unrelated error must not have the payload spliced into its text.
+        assert body("disk full", source)["message"] == "llama-server error: disk full"
+
+    def test_counts_come_from_the_structured_fields_when_the_message_has_none(self):
+        """An exceed_context_size_error body carries n_prompt_tokens/n_ctx even when its
+        message spells out no numbers. These paths are handed the whole body, so the
+        totals are right there; dropping them sends the client a count-less refusal."""
+        from routes.inference import _anthropic_upstream_error, _oversize_counts
+
+        body = (
+            '{"error":{"code":400,"message":"the request exceeds the available context '
+            'size","type":"exceed_context_size_error","n_prompt_tokens":70494,'
+            '"n_ctx":67584}}'
+        )
+        assert _oversize_counts(body) == (70494, 67584)
+        assert "Prompt is too long: 70494 tokens > 67584 maximum" in _anthropic_upstream_error(body)
+
+    def test_the_remedy_comes_from_the_fit_not_a_flat_shorten_the_conversation(self):
+        """When the latest turn or the irreducible floor is what does not fit, compacting
+        the history cannot make it fit, and a client told to compact just retries."""
+        from core.inference import context_refusal
+        from routes.inference import _anthropic_upstream_error
+
+        body = "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            # The head Anthropic clients key on survives.
+            assert msg.startswith("Prompt is too long: 214331 tokens > 131072 maximum.")
+            assert "shortening the conversation will not help" in msg
+
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 139000,
+                    "latest_turn_role": "tool",
+                    "latest_turn_counted": True,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            assert "A tool returned more than this context window can hold" in msg
+            assert "shortening the conversation will not help" in msg
+        finally:
+            context_refusal.clear()
+
+        # With no recorded fit it stays the generic wording.
+        assert "Try increasing the Context Length" in _anthropic_upstream_error(body)
+
+    def test_in_band_sse_error_gets_the_same_wording_as_the_non_200_branch(self):
+        """A 200 stream that later emits data: {"error": ...} used to be wrapped in a
+        plain RuntimeError, and _friendly_error flattens the count-less oversize
+        refusal to "An internal error occurred" -- a 400/invalid_request_error with
+        nothing the client can read or compact on."""
+        import json as _json
+
+        from routes.inference import _anthropic_upstream_stream_error_event
+
+        def body(text):
+            event = _anthropic_upstream_stream_error_event(text)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        no_counts = body(
+            "the request exceeds the available context size. try increasing the context size"
+        )
+        assert "internal error" not in no_counts["message"].lower()
+        assert no_counts["message"].startswith("Prompt is too long")
+        assert no_counts["type"] == "invalid_request_error"
+
+        counted = body(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        assert "Prompt is too long: 214331 tokens > 131072 maximum" in counted["message"]
+        assert counted["type"] == "invalid_request_error"
+
+        # Starvation keeps the retry advice and must not become a 400.
+        starved = body("Context size has been exceeded.")
+        assert "shared pool of context" in starved["message"]
+        assert "too long" not in starved["message"].lower()
+        assert starved["type"] == "api_error"
+
+        unrelated = body("disk full")
+        assert unrelated["message"] == "llama-server error: disk full"
+        assert unrelated["type"] == "api_error"
+
+    def test_a_genuine_oversize_body_is_still_classified_as_an_overflow(self):
+        from routes.inference import _classify_llama_generation_error
+        assert (
+            _classify_llama_generation_error(
+                Exception(
+                    "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+                )
+            )
+            is True
+        )
 
 
 # =====================================================================
@@ -2446,6 +2642,17 @@ class TestBuildPassthroughPayloadToolChoice:
             stream_options = {"include_usage": False},
         )
         assert body.get("stream_options") == {"include_usage": False}
+
+    def test_an_explicit_seed_disables_slot_prompt_cache_reuse(self):
+        seeded = _build_passthrough_payload(**self._args(), seed = 3407)
+        randomized = _build_passthrough_payload(**self._args(), seed = -1)
+        ordinary = _build_passthrough_payload(**self._args())
+
+        assert seeded["seed"] == 3407
+        assert seeded["cache_prompt"] is False
+        assert randomized["seed"] == -1
+        assert "cache_prompt" not in randomized
+        assert "cache_prompt" not in ordinary
 
     def test_response_format_without_tools_omits_tool_fields(self):
         args = self._args()
@@ -5206,13 +5413,26 @@ class TestGgufVisionToolRouting:
                     current_subject = "test",
                 )
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            # Generous budgets. What this test asserts is that cancelling the
+            # request drains the worker, and none of the numbers below are part
+            # of that: they only bound how long to wait before calling it hung.
+            # A one-second bound on a THREAD START is a bound on the scheduler,
+            # not on this code, and it went red once on a runner busy with the
+            # rest of the backend suite. Failing here still takes seconds, and
+            # the assertion is unchanged.
+            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
 
-            assert released.is_set()
+            # Waited on, not sampled. Cancelling the task unblocks the awaiting
+            # coroutine; it does not join the worker, which is off polling
+            # cancel_event every 5ms and only then sets this. Reading it the
+            # instant the await returns is a race that happens to be won on an
+            # idle box, and it is the drain itself that matters, not whether it
+            # had already finished by the time we looked.
+            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
             assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -5324,6 +5544,11 @@ class TestGgufVisionToolRouting:
 
         assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
         assert captured["perf_callback"] is None
+
+    # Wall-clock bound for the cancel drain. Only ever hit when something is
+    # genuinely stuck, so it is sized for a loaded runner rather than for the
+    # ~5ms this takes when it works.
+    _DRAIN_BUDGET_S = 30.0
 
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         async def _run():
@@ -5805,10 +6030,10 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
 
-            first = await asyncio.wait_for(response.body_iterator.__anext__(), timeout = 0.2)
+            first = await asyncio.wait_for(response.body_iterator.__anext__(), timeout = 5.0)
             assert first == ": keep-alive\n\n"
 
             gate.set()
@@ -6201,7 +6426,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -8764,12 +8989,12 @@ class TestApiMonitorProviderAndCompletionStreams:
                     current_subject = "test",
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), 5.0)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
             assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
 
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, 5.0)
 
             assert client.closed.is_set()
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
@@ -10267,3 +10492,29 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
     # Choice 0 is always the caller's own seed, on both drains.
     assert _choice_seed(-2, 0, negative_is_random = True) == -2
     assert _choice_seed(None, 2, negative_is_random = True) is None
+
+
+def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
+    """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED: the seed is a
+    uint32 there, so ``-1``, ``4294967295`` and ``2**64-1`` are all the sentinel and the
+    schemas accept all three. Both helpers must agree, or choice 0 keeps the caller's random
+    seed while choice 1 is offset into a fixed one, half reproducible and half uncached."""
+    from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
+    from routes.inference import _choice_seed
+
+    for seed in (-1, 0xFFFFFFFF, 2**64 - 1):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) == _LLAMA_RANDOM_SEED for v in served), (seed, served)
+
+        for value in served:
+            payload: dict = {}
+            _apply_seeded_llama_request(payload, value)
+            assert "cache_prompt" not in payload, (seed, value, payload)
+
+    for seed in (0, 5, 4294967294):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED for v in served), (seed, served)
+        for value in served:
+            payload = {}
+            _apply_seeded_llama_request(payload, value)
+            assert payload["cache_prompt"] is False, (seed, value)

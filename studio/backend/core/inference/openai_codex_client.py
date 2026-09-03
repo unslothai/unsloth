@@ -232,8 +232,9 @@ _MODELS_CACHE_MAX_ENTRIES = 32
 _models_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Outlives the cache TTL: a slug listed for this plan stays saveable afterwards.
 _offered_models: dict[str, dict[str, dict[str, Any]]] = {}
-# Which ChatGPT account each cached catalog belongs to; a reauthorization can rebind
-# a connection to a different account whose plan lists different slugs.
+# a reauthorization can rebind a connection to a different account whose plan lists different slugs
+# Which ChatGPT account each cached catalog belongs to; a reauthorization can rebind a connection to a different account
+# whose plan lists different slugs.
 _catalog_accounts: dict[str, str] = {}
 
 
@@ -246,9 +247,11 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
     display_name = item.get("display_name")
     context_window = item.get("context_window")
     modalities = item.get("input_modalities")
-    # Every other field here tolerates whatever upstream sends, and this one has to as
-    # well: `or []` only covers a falsy value, so a scalar raised TypeError out of the
-    # whole call and cost the catalog every other entry too, not just this one.
+    # `or []` only covers a falsy value, so a scalar raised TypeError out of the whole call and cost the catalog every
+    # other entry too
+    # Every other field here tolerates whatever upstream sends, and this one has to as well: `or []` only covers a falsy
+    # value, so a scalar raised TypeError out of the whole call and cost the catalog every other entry too, not just
+    # this one.
     levels = item.get("supported_reasoning_levels")
     efforts = [
         level["effort"]
@@ -258,8 +261,8 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
     return {
         "id": slug,
         "display_name": display_name if isinstance(display_name, str) and display_name else slug,
-        # bool is a subclass of int, so a JSON `true` would otherwise be reported to the
-        # picker as a context length of its own.
+        # bool is a subclass of int, so a JSON `true` would otherwise be reported to the picker as a context length of
+        # its own.
         "context_length": (
             context_window
             if isinstance(context_window, int) and not isinstance(context_window, bool)
@@ -267,10 +270,10 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
         ),
         "vision": "image" in modalities if isinstance(modalities, list) else None,
         "reasoning_efforts": efforts,
-        # "hide" marks a slug no picker should offer (codex-auto-review, and models that
-        # age out of the list). It is a presentation flag, not a revocation: the account
-        # can still call one it already saved, so the entry is kept and marked instead of
-        # dropped, which is what lets callers tell "not offered" from "not on this plan".
+        # "hide" is a presentation flag, not a revocation
+        # "hide" marks a slug no picker should offer (codex-auto-review, and models that age out of the list). It is a
+        # presentation flag, not a revocation: the account can still call one it already saved, so the entry is kept and
+        # marked instead of dropped, which is what lets callers tell "not offered" from "not on this plan".
         "listed": item.get("visibility") == "list",
     }
 
@@ -296,21 +299,21 @@ def offered_subscription_model_ids(provider_id: str) -> set[str]:
     }
 
 
-# Connections whose catalog was dropped because the account behind them changed. The
-# absence is deliberate, so it must not read as "nothing fetched yet" and license the
-# previous account's saved slugs.
+# the absence is deliberate, so it must not read as "nothing fetched yet" and license the previous account's saved slugs
+# Connections whose catalog was dropped because the account behind them changed. The absence is deliberate, so it must
+# not read as "nothing fetched yet" and license the previous account's saved slugs.
 _stale_catalogs: set[str] = set()
 
 
-# The ticket the newest catalog read for each connection is holding, so a read that was
-# overtaken (by a rebind, a disconnect, or a newer read) cannot commit its result over
-# the one that replaced it.
+# the ticket the newest catalog read holds
+# The ticket the newest catalog read for each connection is holding, so a read that was overtaken (by a rebind, a
+# disconnect, or a newer read) cannot commit its result over the one that replaced it.
 _catalog_requests: dict[str, int] = {}
-# Tickets are drawn from one counter shared by every connection rather than counting up
-# per connection. Nothing reads the number itself, only whether it still matches, and a
-# value that is never reissued is what lets forget_subscription_models drop the entry
-# instead of leaving a larger one behind: a read still in flight then finds no ticket at
-# all, and the next read draws a number no earlier read can be holding.
+# one shared counter, not per connection: nothing reads the number, only whether it still matches
+# Tickets are drawn from one counter shared by every connection rather than counting up per connection. Nothing reads
+# the number itself, only whether it still matches, and a value that is never reissued is what lets
+# forget_subscription_models drop the entry instead of leaving a larger one behind: a read still in flight then finds no
+# ticket at all, and the next read draws a number no earlier read can be holding.
 _catalog_request_serial = 0
 
 
@@ -368,9 +371,8 @@ def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any
 
 
 def forget_subscription_models(provider_id: str) -> None:
-    # Retire any read still in flight: its result describes what was just dropped. The
-    # ticket is dropped rather than bumped, so this releases the entry instead of
-    # replacing it; see the counter above for why that is still safe.
+    # Retire any read still in flight: its result describes what was just dropped. The ticket is dropped rather than
+    # bumped, so this releases the entry instead of replacing it; see the counter above for why that is still safe.
     _catalog_requests.pop(provider_id, None)
     _models_cache.pop(provider_id, None)
     _offered_models.pop(provider_id, None)
@@ -390,8 +392,8 @@ async def list_subscription_models(
     rolled out since the last fetch is exactly what that click is asking about.
     """
     if _catalog_accounts.get(provider_id) not in (None, account_id):
-        # Reauthorized against a different account: the previous plan's catalog says
-        # nothing about this one, and nothing else clears it on the reconnect path.
+        # Reauthorized against a different account: the previous plan's catalog says nothing about this one, and nothing
+        # else clears it on the reconnect path.
         forget_subscription_models(provider_id)
     if not force:
         cached = cached_subscription_models(provider_id)
@@ -418,10 +420,9 @@ async def list_subscription_models(
             params = {"client_version": OPENAI_CODEX_CLIENT_VERSION},
         )
         if response.status_code == 401:
-            # Upstream can reject a token before its recorded expiry while the refresh
-            # credential is still good. The responses transport spends one forced refresh
-            # on that; without the same here the editor cannot load a catalog for a
-            # connection whose chats recover fine.
+            # Upstream can reject a token before its recorded expiry while the refresh credential is still good. The
+            # responses transport spends one forced refresh on that; without the same here the editor cannot load a
+            # catalog for a connection whose chats recover fine.
             try:
                 access_token, account_id = await codex_auth.resolve_access(
                     provider_id,
@@ -434,10 +435,10 @@ async def list_subscription_models(
                     status = 401,
                 ) from exc
             except Exception as exc:
-                # The refresh did not get an answer, which is retryable. Calling it a
-                # reauthorization would send the user to reconnect a connection whose
-                # credentials are probably fine, and the responses transport treats the
-                # same failure as transient.
+                # the refresh got no answer, which is retryable
+                # The refresh did not get an answer, which is retryable. Calling it a reauthorization would send the
+                # user to reconnect a connection whose credentials are probably fine, and the responses transport treats
+                # the same failure as transient.
                 raise CodexTransportError("Could not refresh ChatGPT authorization.") from exc
             response = await client.get(
                 url,
@@ -445,13 +446,11 @@ async def list_subscription_models(
                 params = {"client_version": OPENAI_CODEX_CLIENT_VERSION},
             )
         if response.status_code == 401:
-            # A freshly refreshed token was rejected too, so the connection really is
-            # done. Record it against that token the way the streaming path does, or
-            # auth_status keeps reporting connected, the editor never offers Reconnect
-            # and every later catalog load repeats this.
-            # Under the same guard the streaming error path uses: the read and the write
-            # inside are one step, so a rotation landing between them cannot be undone by
-            # writing the rejected bundle back with the marker on it.
+            # A freshly refreshed token was rejected too, so the connection really is done. Record it against that token
+            # the way the streaming path does, or auth_status keeps reporting connected, the editor never offers
+            # Reconnect and every later catalog load repeats this. Under the same guard the streaming error path uses:
+            # the read and the write inside are one step, so a rotation landing between them cannot be undone by writing
+            # the rejected bundle back with the marker on it.
             async with codex_auth.provider_oauth_write_guard(provider_id):
                 codex_auth.mark_reauthorization_required(
                     provider_id, expected_access_token = access_token
@@ -484,35 +483,28 @@ async def list_subscription_models(
         if model is None:
             continue
         if model["id"] in seen_slugs:
-            # A slug repeated in one payload describes itself twice, and the list and the
-            # by-id map built from it below disagree about which description won: the
-            # route offers what the first entry said while the chat gate judges by the
-            # last, so a duplicate whose second entry is hidden had the picker offering a
-            # model every send then refused. First wins, so both read the same entry.
+            # A slug repeated in one payload describes itself twice, and the list and the by-id map built from it below
+            # disagree about which description won: the route offers what the first entry said while the chat gate
+            # judges by the last, so a duplicate whose second entry is hidden had the picker offering a model every send
+            # then refused. First wins, so both read the same entry.
             continue
         seen_slugs.add(model["id"])
         models.append(model)
     if not any(model.get("listed") for model in models):
-        # Nothing offerable came back. The route answers with the curated seed for this,
-        # so committing it as a known catalog would leave the picker offering models that
-        # validation and chat, reading that same empty catalog, would then refuse.
         return models
     if _catalog_requests.get(provider_id) != ticket:
-        # Overtaken while this request was out. Committing now would reinstate a catalog
-        # for an account this connection may no longer be on, and clear the mark that
-        # says so, so hand the caller the models without storing them.
+        # Overtaken while this request was out. Committing now would reinstate a catalog for an account this connection
+        # may no longer be on, and clear the mark that says so, so hand the caller the models without storing them.
         return models
-    # That counter only sees this process. Rebinding travels through the installation DB,
-    # so ask it who owns the connection now before recording this as its catalog.
+    # that counter only sees this process, and rebinding travels through the installation DB
     current_bundle = codex_auth.load_oauth_bundle(provider_id)
     if current_bundle and current_bundle.get("account_id") != account_id:
         return models
     if len(_models_cache) >= _MODELS_CACHE_MAX_ENTRIES:
-        # Only the TTL response cache is bounded here. The per-account authorization
-        # evidence deliberately outlives it: dropping it would make every other
-        # connection look cold and license saved slugs their account no longer carries.
-        # It is keyed by connection and released by forget_subscription_models, so it is
-        # bounded by the connections that exist rather than by fetches.
+        # Only the TTL response cache is bounded here. The per-account authorization evidence outlives it: dropping it
+        # would make every other connection look cold and license saved slugs their account no longer carries. It is
+        # keyed by connection and released by forget_subscription_models, so it is bounded by the connections that exist
+        # rather than by fetches.
         _models_cache.clear()
     _models_cache[provider_id] = (time.time() + _MODELS_CACHE_TTL_SECONDS, models)
     _offered_models[provider_id] = {model["id"]: model for model in models}
@@ -536,18 +528,14 @@ async def ensure_subscription_models(provider_id: str) -> set[str]:
         access_token, account_id = await codex_auth.resolve_access(provider_id)
         models = await list_subscription_models(provider_id, access_token, account_id)
     except (codex_auth.CodexAuthError, CodexReauthorizationError):
-        # The connection needs reconnecting, which is a different answer from "this plan
-        # does not list that model". Callers turn this into the reauthorization error the
-        # user can act on instead of a misleading model-choice rejection.
+        # the connection needs reconnecting, a different answer from "this plan does not list that model"
         raise
     except Exception:
         return set()
     listed = offered_subscription_model_ids(provider_id)
     if listed:
         return listed
-    # A read overtaken by a newer one returns its models without storing them. That
-    # answer still came from upstream for the account resolved above, so use it rather
-    # than reporting an empty plan; only a rebind makes it the wrong account's.
+    # a read overtaken by a newer one still came from upstream for the account resolved above
     current_bundle = codex_auth.load_oauth_bundle(provider_id)
     if current_bundle and current_bundle.get("account_id") == account_id:
         return {model["id"] for model in models if model.get("listed")}
@@ -574,8 +562,8 @@ def _quota_metadata(response: httpx.Response, *, terminal: bool = False) -> dict
     }
     metadata = {key: value for key, value in values.items() if value}
     if terminal:
-        # Exhausted, not throttled. Both leave as a 429, so without this a client waits out
-        # a delay that no wait can clear.
+        # Exhausted, not throttled. Both leave as a 429, so without this a client waits out a delay that no wait can
+        # clear.
         metadata["terminal"] = True
     return metadata
 
@@ -606,8 +594,8 @@ async def _upstream_error_code(response: httpx.Response) -> str | None:
     """The structured error's code or type. _upstream_error_detail prefers the display message
     and drops these, which hides a terminal code behind a generic "slow down" sentence."""
     try:
-        # Same read-then-parse as the sibling above, so this does not depend on being called
-        # after it. A body whose read already failed raises StreamError, not HTTPError.
+        # Same read-then-parse as the sibling above, so this does not depend on being called after it. A body whose read
+        # already failed raises StreamError, not HTTPError.
         await response.aread()
         payload = response.json()
     except (ValueError, json.JSONDecodeError, httpx.HTTPError, httpx.StreamError, AttributeError):
@@ -872,9 +860,10 @@ class OpenAICodexClient:
                     "schema": schema["schema"],
                     "strict": bool(schema.get("strict", True)),
                 }
-        # Pi intentionally does not forward a token cap here. ChatGPT's Codex
-        # Responses endpoint rejects max_output_tokens even though the public
-        # Responses API accepts it; the subscription service applies its own cap.
+        # ChatGPT's Codex Responses endpoint rejects max_output_tokens even though the public Responses API accepts it;
+        # Pi intentionally does not forward a token cap here. ChatGPT's Codex Responses endpoint rejects
+        # max_output_tokens even though the public Responses API accepts it; the subscription service applies its own
+        # cap.
         if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
         if tools:

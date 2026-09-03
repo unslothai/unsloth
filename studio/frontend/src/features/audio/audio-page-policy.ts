@@ -11,6 +11,54 @@ export type AudioBusy =
   | "transcribing"
   | null;
 
+export type AudioGenerationPhase =
+  | "preparing"
+  | "generating"
+  | "stopping"
+  | "finishing"
+  | null;
+
+export type AudioGenerationPresentation = {
+  status: string;
+  actionLabel: string;
+  canStop: boolean;
+};
+
+/** Project request-lifetime phases into truthful UI copy. Audio generation has no
+ * browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+export function audioGenerationPresentation(
+  phase: AudioGenerationPhase,
+): AudioGenerationPresentation | null {
+  switch (phase) {
+    case "preparing":
+      return {
+        status: "Preparing audio…",
+        actionLabel: "Preparing…",
+        canStop: false,
+      };
+    case "generating":
+      return {
+        status: "Generating audio…",
+        actionLabel: "Stop",
+        canStop: true,
+      };
+    case "stopping":
+      return {
+        status: "Stopping audio…",
+        actionLabel: "Stopping…",
+        canStop: false,
+      };
+    case "finishing":
+      return {
+        status: "Finishing audio…",
+        actionLabel: "Finishing…",
+        canStop: false,
+      };
+    case null:
+      return null;
+  }
+}
+
 export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
 export type SttEngine = "transformers" | "gguf" | "mtmd";
@@ -185,8 +233,15 @@ export function resolveAudioPickTask(
 
 /** Generation can be cancelled as part of a mode transition. Model lifecycle
  * and transcription operations must settle before their controls disappear. */
-export function canTransitionAudioMode(busy: AudioBusy): boolean {
-  return busy === null || busy === "generating";
+export function canTransitionAudioMode(
+  busy: AudioBusy,
+  generationPhase: AudioGenerationPhase = busy === "generating"
+    ? "generating"
+    : null,
+): boolean {
+  return (
+    busy === null || (busy === "generating" && generationPhase === "generating")
+  );
 }
 
 /** A managed TTS completion owns auto-load only while the same staging generation is
@@ -210,6 +265,35 @@ export function exactGgufLoadSelector(
   meta: Pick<ModelSelectorChangeMeta, "ggufFilename" | "ggufVariant">,
 ): string | null {
   return meta.ggufFilename ?? meta.ggufVariant ?? null;
+}
+
+/** Whether a TTS pick loads through llama.cpp.
+ *
+ * A direct .gguf file and a GGUF repo id carry no variant filename, so the selector
+ * alone misses both. `meta.isGguf` wins where a caller has it; this covers the rest.
+ */
+export function isGgufTtsTarget({
+  repoId,
+  ggufFilename,
+  loadId,
+  isGguf,
+}: {
+  repoId: string;
+  ggufFilename?: string | null;
+  loadId?: string | null;
+  /** The catalog's own answer, when the caller has one. The tests below are
+   * name heuristics, blind to a GGUF repo whose ids do not spell it. */
+  isGguf?: boolean | null;
+}): boolean {
+  const endsWithGguf = (value: string | null | undefined): boolean =>
+    Boolean(value?.toLowerCase().endsWith(".gguf"));
+  return Boolean(
+    isGguf ||
+      ggufFilename ||
+      /(?:^|[-/])gguf(?:$|[-/])/i.test(repoId) ||
+      endsWithGguf(repoId) ||
+      endsWithGguf(loadId),
+  );
 }
 
 export type MacTtsPickAction = "allow" | "use-gguf-sibling" | "reject";
@@ -303,11 +387,10 @@ export function mergeGalleryPage<T extends { id: string }>(
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // No overlap with a non-empty cache means the page has moved past everything held, so
-  // stitching would render a gap as contiguous and no cursor could ever reach it.
-  if (oldestInPage === -1) {
-    const overlaps = cached.some((clip) => inPage.has(clip.id));
-    if (!overlaps && cached.length > 0) return { clips: [...page], stitched: false };
+  // Without that boundary the cache cannot prove where safe scrollback begins: an external archive
+  // can shift one unseen row into the page while every earlier row still overlaps.
+  if (oldestInPage === -1 && cached.length > 0) {
+    return { clips: [...page], stitched: false };
   }
   const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
   const tail = scrollback.filter(

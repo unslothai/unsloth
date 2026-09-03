@@ -70,6 +70,14 @@ test("reopening on Data does not drop a deep-open still in flight", () => {
   assert.equal(store.getState().archivedRequested, "images");
 });
 
+test("the audio shelf deep-opens like the other media shelves", () => {
+  reset();
+  store.getState().openArchivedMedia("audio");
+  assert.equal(store.getState().open, true);
+  assert.equal(store.getState().activeTab, "data");
+  assert.equal(store.getState().archivedRequested, "audio");
+});
+
 test("consuming it clears it, so a later visit to Data is an ordinary one", () => {
   reset();
   store.getState().openArchivedChats();

@@ -136,6 +136,9 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** Native audio (TTS / music) only: "cpu" holds the weights in system RAM
+   *  rather than the GPU. Ignored for every non-audio model. */
+  audio_device?: "auto" | "cpu" | "gpu";
 }
 
 export interface ValidateModelResponse {
@@ -179,6 +182,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
@@ -248,6 +252,7 @@ export interface LoadModelResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -365,6 +370,7 @@ export interface InferenceStatusResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
   mlx_kv_bits_requested?: number | null;
@@ -392,8 +398,8 @@ export interface InferenceStatusResponse {
   mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
-  /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
-   * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
+  /** The context the active load was invoked with (0 = let the backend choose); re-seeds
+   * the pin on hydration. Null where the serving backend records no request. */
   requested_context_length?: number | null;
   /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
