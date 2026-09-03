@@ -336,7 +336,7 @@ def _validate_runtime_paths(
         scan_roots = [existing for existing in scan_roots if not _contained(existing, root)]
         scan_roots.append(root)
 
-    if sys.platform == "linux" and not include_system_roots:
+    if sys.platform == "linux":
         for mount in _linux_mount_points():
             if any(_contained(mount, root, strict = True) for root in scan_roots):
                 raise SandboxUnavailableError(
@@ -345,23 +345,18 @@ def _validate_runtime_paths(
 
     find = "/usr/bin/find"
     if scan_roots and _trusted_linux_executable(find):
-        find_command = [find, "-P", *scan_roots]
-        if not include_system_roots:
-            find_command.append("-xdev" if sys.platform == "linux" else "-x")
-        else:
+        # Follow a symlink used as a scan root, but never links encountered below it.
+        find_command = [find, "-H", *scan_roots]
+        find_command.append("-xdev" if sys.platform == "linux" else "-x")
+        if include_system_roots:
             # Paths the sandbox UID cannot traverse cannot expose their contents.
             find_command.extend(
                 [
                     "(",
                     "-type",
                     "d",
-                    "(",
-                    "!",
-                    "-readable",
-                    "-o",
                     "!",
                     "-executable",
-                    ")",
                     ")",
                     "-prune",
                     "-o",

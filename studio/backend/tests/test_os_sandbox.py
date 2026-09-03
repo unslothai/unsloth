@@ -322,6 +322,63 @@ def test_linux_system_roots_are_scanned_for_host_ipc(monkeypatch, tmp_path):
         )
 
 
+def test_linux_system_roots_reject_nested_host_mounts(monkeypatch, tmp_path):
+    root = tmp_path / "system-root"
+    root.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    nested_mount = root / "host-volume"
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: (str(nested_mount),))
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "nested host mount"):
+        os_sandbox._validate_runtime_paths(
+            (str(root),), str(workdir), include_system_roots = True
+        )
+
+
+def test_linux_system_root_scan_does_not_prune_searchable_directory(monkeypatch, tmp_path):
+    root = tmp_path / "system-root"
+    root.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda path: True)
+    run = Mock(return_value = subprocess.CompletedProcess([], 0, stdout = "", stderr = ""))
+    monkeypatch.setattr(os_sandbox.subprocess, "run", run)
+
+    os_sandbox._validate_runtime_paths(
+        (str(root),), str(workdir), include_system_roots = True
+    )
+
+    command = run.call_args.args[0]
+    assert "-readable" not in command
+    assert command.count("-executable") == 1
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or not hasattr(socket, "AF_UNIX"),
+    reason = "POSIX directory symlinks and Unix sockets are required",
+)
+def test_linux_runtime_scan_follows_symlinked_root(monkeypatch, tmp_path):
+    target = tmp_path / "runtime-target"
+    target.mkdir()
+    runtime_link = tmp_path / "runtime-link"
+    runtime_link.symlink_to(target, target_is_directory = True)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(target / "host.sock"))
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    try:
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
+            os_sandbox._validate_runtime_paths((str(runtime_link),), str(workdir))
+    finally:
+        server.close()
+
+
 @pytest.mark.parametrize(
     ("detector_returncode", "expected"),
     [(0, "containers are not qualified"), (1, None), (2, "cannot verify")],
