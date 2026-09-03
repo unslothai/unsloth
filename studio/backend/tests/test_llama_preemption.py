@@ -732,3 +732,75 @@ class TestReplayedWorkIsStillCharged:
         )
         controller.observe("a", 0)
         assert controller.participant("a").tokens == 1700
+
+
+class TestAChatThatOutgrewTheSharedCeiling:
+    """No eviction can admit it, so waiting for room is a deadlock, not a delay.
+
+    The buffer holds back a proportional watermark plus the drafts of every slot. A chat
+    needing more than `budget - buffer` therefore cannot be admitted or resumed no matter
+    who is evicted, and the resume wait had no answer for that: it waited until its client
+    disconnected. Observed live as one chat of four open for a full 2400s deadline while
+    llama-server sat idle with every slot released and requests_processing at 0.
+
+    Simulated over the tool-heavy regime, letting such a chat take the cache alone moved
+    makespan from 166799 steps to 924 and starvation from 1.6 chats of eight to none.
+    """
+
+    def _controller_with_drafts(self, budget = 16384, drafts = 2, slots = 4):
+        from core.inference.llama_preemption import PreemptionController
+
+        controller = PreemptionController("solo-test")
+        controller.configure(
+            budget = budget, kv_unified = True, draft_tokens = drafts, slots = slots
+        )
+        return controller
+
+    def test_a_want_past_the_shared_ceiling_is_recognised(self):
+        controller = self._controller_with_drafts()
+        snapshot = controller.snapshot()
+        ceiling = snapshot.budget - snapshot.buffer
+        assert not controller.outgrew_the_shared_ceiling(ceiling)
+        assert controller.outgrew_the_shared_ceiling(ceiling + 1)
+
+    def test_it_may_resume_once_the_cache_is_its_own(self):
+        controller = self._controller_with_drafts()
+        snapshot = controller.snapshot()
+        ceiling = snapshot.budget - snapshot.buffer
+        want = ceiling + 500
+        # Alone, it fits: the reaction buffer protects concurrent growers, and there are
+        # none. This is the assertion whose absence was the hang.
+        assert controller.room_for("solo", want)
+
+    def test_it_may_not_resume_beside_anyone(self):
+        controller = self._controller_with_drafts()
+        snapshot = controller.snapshot()
+        want = snapshot.budget - snapshot.buffer + 500
+        _register(controller, "other", 3000)
+        assert not controller.room_for("solo", want)
+
+    def test_a_want_past_the_cache_itself_can_never_fit(self):
+        controller = self._controller_with_drafts()
+        assert controller.cannot_ever_fit(16384)
+        assert not controller.cannot_ever_fit(10000)
+
+    def test_the_solo_ceiling_beats_the_shared_one_by_more_than_a_rounding(self):
+        """Keeping the ratio in the solo case made this worth six tokens on a 16384
+        cache, so a chat needing 15915 still could not run and the deadlock stood."""
+        controller = self._controller_with_drafts()
+        snapshot = controller.snapshot()
+        shared = snapshot.budget - snapshot.buffer
+        # Probe the solo ceiling through the public question rather than the private one.
+        solo = next(
+            w for w in range(snapshot.budget, shared, -1) if not controller.cannot_ever_fit(w)
+        )
+        assert solo - shared > 1000, (
+            f"solo ceiling {solo} barely clears the shared {shared}; the reaction buffer "
+            f"is still being charged to a chat that has nobody to react to"
+        )
+
+    def test_none_of_this_applies_when_preemption_is_off(self):
+        controller = self._controller_with_drafts()
+        controller.configure(budget = 0, kv_unified = False)
+        assert not controller.outgrew_the_shared_ceiling(999999)
+        assert not controller.cannot_ever_fit(999999)

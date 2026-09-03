@@ -1339,3 +1339,73 @@ class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
         assert "note_resident(" in body, (
             "the controller would keep planning against the pre-erase figure"
         )
+
+
+def _await_resume_body(source: str) -> str:
+    """The adapter's await_resume, not one of the four other definitions of that name.
+
+    Splitting on the bare name picked up a Protocol stub, whose body is 53 characters and
+    contains none of what these assertions look for, so the tests failed against correct
+    code.
+    """
+    cls = source.split("class ControllerPreemptionPolicy", 1)[1]
+    return cls.split("def await_resume", 1)[1].split("\n    def ", 1)[0]
+
+
+class TestTheResumeWaitNeverWaitsForImpossibleRoom:
+    """The live hang, at its source.
+
+    A resumed run replays what it generated as prompt, so `want` grows with every pause.
+    Once it passes the shared ceiling no eviction can admit it, and once it passes the
+    cache itself nothing can. The wait loop asked neither question and simply spun until
+    its client disconnected: one chat of four open for a full 2400s deadline with
+    llama-server idle and every slot released.
+    """
+
+    def _adapter(self, *, budget = 16384, drafts = 2, slots = 4):
+        from core.inference.llama_preemption import (
+            ControllerPreemptionPolicy,
+            PreemptSignal,
+            PreemptionController,
+        )
+
+        controller = PreemptionController("resume-wait")
+        controller.configure(
+            budget = budget, kv_unified = True, draft_tokens = drafts, slots = slots
+        )
+        return controller, ControllerPreemptionPolicy, PreemptSignal
+
+    def test_the_wait_is_told_when_nothing_can_ever_fit(self):
+        controller, _, _ = self._adapter()
+        assert controller.cannot_ever_fit(controller.snapshot().budget)
+
+    def test_a_want_between_the_ceilings_is_not_impossible(self):
+        controller, _, _ = self._adapter()
+        snapshot = controller.snapshot()
+        want = snapshot.budget - snapshot.buffer + 1
+        assert controller.outgrew_the_shared_ceiling(want)
+        assert not controller.cannot_ever_fit(want), (
+            "it fits with the cache to itself, so ending the turn would be premature"
+        )
+
+    def test_both_questions_are_asked_before_the_spin(self):
+        from pathlib import Path
+
+        from core.inference import llama_preemption
+
+        body = _await_resume_body(Path(llama_preemption.__file__).read_text())
+        spin = body.index("while not self._controller.room_for")
+        assert body.index("cannot_ever_fit(") < spin, (
+            "a chat larger than the cache would spin until its client gave up"
+        )
+        assert body.index("outgrew_the_shared_ceiling(") < spin
+
+    def test_giving_up_is_reported_as_finishing_not_as_failure(self):
+        """`length` is resumable by the continuation path; a hang is not."""
+        from pathlib import Path
+
+        from core.inference import llama_preemption
+
+        body = _await_resume_body(Path(llama_preemption.__file__).read_text())
+        assert "too-large" in body
+        assert "finishing the turn" in body

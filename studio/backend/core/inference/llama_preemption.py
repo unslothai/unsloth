@@ -82,6 +82,18 @@ DEFAULT_MAX_PREEMPT_RESUMES = 32
 # longest-wins for the next epoch.
 PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
 
+# What a chat running ALONE must leave clear. The ratio buffer is reaction headroom: it
+# exists so the sweep can act before several chats growing at once overrun the pool. A
+# chat with the cache to itself has nothing to evict and no reaction to make, so the only
+# cells that must stay clear are its own drafts plus a margin for the estimate.
+#
+# This is what makes a chat that outgrew the shared ceiling runnable at all. Without it
+# such a chat can never be admitted OR resumed and waits until its client gives up, which
+# is the live hang where one chat of four stayed open for a whole 2400s deadline while
+# llama-server sat idle with every slot released. Simulated, adding it took makespan on
+# the tool-heavy regime from 166799 steps to 924 and starvation from 1.6 chats to none.
+SOLO_MARGIN_DIVISOR = 200
+
 # The reclaim barrier gives up after this long and lets the replacement in anyway. A
 # server without --metrics never answers, and blocking a conversation forever on a gauge
 # that may not exist is worse than the overrun it guards.
@@ -559,6 +571,35 @@ class PreemptionController:
             if self._epoch_winner == gen_id:
                 self._epoch_winner = None
 
+    def _solo_ceiling_locked(self) -> int:
+        """The cache less only what a lone chat's own drafts and estimate error need."""
+        margin = self._draft_tokens + max(64, self._budget // SOLO_MARGIN_DIVISOR)
+        return max(1, self._budget - margin)
+
+    def outgrew_the_shared_ceiling(self, want: int) -> bool:
+        """Whether `want` can never fit beside anyone, however much is evicted.
+
+        Such a generation must not wait: no combination of preemptions will admit it, so
+        waiting is a deadlock rather than a delay. It runs alone instead.
+        """
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return False
+            ceiling = max(0, self._budget - self._buffer_locked())
+            return int(want or 0) > ceiling
+
+    def cannot_ever_fit(self, want: int) -> bool:
+        """Whether `want` exceeds the cache itself, so not even running alone helps.
+
+        The turn ends with what it has, which llama-server reports as a `length` finish
+        and the existing continuation path resumes against a fresh window. Parking it
+        forever instead is the hang.
+        """
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return False
+            return int(want or 0) > self._solo_ceiling_locked()
+
     def room_for(self, gen_id: str, want: int) -> bool:
         """Whether a paused generation may start again yet.
 
@@ -591,7 +632,15 @@ class PreemptionController:
             if self._resident is not None:
                 mine = self._participants.get(gen_id)
                 others = max(others, self._resident - (mine.tokens if mine else 0))
-            return max(0, others) + max(0, int(want or 0)) <= ceiling
+            need = max(0, int(want or 0))
+            others = max(0, others)
+            if others + need <= ceiling:
+                return True
+            # Outgrew the shared ceiling: it can still run once it has the cache to
+            # itself, and it must, or it waits for room that no eviction can ever make.
+            if need > ceiling and others == 0:
+                return need <= self._solo_ceiling_locked()
+            return False
 
     def observe(self, gen_id: str, generated: int) -> List["Participant"]:
         """Live growth during generation, and the eviction check that follows it.
@@ -968,6 +1017,26 @@ class ControllerPreemptionPolicy:
         # Re-stated, not remembered: a resumed run carries the partial it already
         # generated, so it needs more room than it was preempted holding.
         want = max(0, int(participant.tokens or 0))
+        # Two questions the wait could not previously answer, both of which made it wait
+        # for room that no eviction could ever produce. A resumed run replays what it
+        # generated as prompt, so `want` grows with every pause and can pass the ceiling
+        # the wait is measured against.
+        if self._controller.cannot_ever_fit(want):
+            # Bigger than the cache. Ending the turn here reports `length`, which the
+            # continuation path resumes against a fresh window; waiting reports nothing
+            # and hangs until the client disconnects.
+            _log.info(
+                "llama preemption too-large: gen_id=%s want=%s (exceeds the cache; "
+                "finishing the turn)", self._gen_id, want,
+            )
+            return False
+        if self._controller.outgrew_the_shared_ceiling(want):
+            # Fits alone but beside nobody. `room_for` grants it the cache once everyone
+            # else is out, so this only has to say why the wait may be long.
+            _log.info(
+                "llama preemption needs-the-cache: gen_id=%s want=%s (past the shared "
+                "ceiling; waiting for the cache to itself)", self._gen_id, want,
+            )
         _log.info("llama preemption awaiting-room: gen_id=%s want=%s", self._gen_id, want)
         # Wait for the cache to actually have room before taking the lease back. Without
         # this the queue hands a resume out on its own optimistic accounting and the next
