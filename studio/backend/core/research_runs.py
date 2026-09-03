@@ -462,9 +462,7 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
 def _provider_output_floor(provider_type: object) -> int:
     if not isinstance(provider_type, str):
         return _EXTERNAL_MIN_OUTPUT_TOKENS
-    return _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER.get(
-        provider_type, _EXTERNAL_MIN_OUTPUT_TOKENS
-    )
+    return _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER.get(provider_type, _EXTERNAL_MIN_OUTPUT_TOKENS)
 
 
 def _saved_connection_cap(provider_id: object) -> int | None:
