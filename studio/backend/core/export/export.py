@@ -134,6 +134,11 @@ def _remote_load_targets(
         raise _BaseUnresolved(checkpoint_path)
     resolved = None
     if base:
+        if is_local_path(base) and not is_local_path(checkpoint_path):
+            # A remote adapter must not redirect its load into a server-local checkpoint:
+            # /api/models/checkpoints hands out those paths, so a small public adapter
+            # pointing at one would load the operator's weights with nothing to authorize.
+            raise _BaseUnresolved(checkpoint_path)
         resolved = _cache_snapshot_ref(base) or (None if is_local_path(base) else (base, None))
     if resolved and resolved[0] not in seen:
         yield resolved

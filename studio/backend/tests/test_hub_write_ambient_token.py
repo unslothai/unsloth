@@ -1705,3 +1705,40 @@ def test_a_store_that_will_not_delete_does_not_block_the_next_allocation(monkeyp
     o._token_store = None
     o._token_store_pending = False
     o._sweep_token_stores()
+
+
+def test_a_remote_adapter_may_not_redirect_into_a_server_local_base(monkeypatch, tmp_path):
+    """/api/models/checkpoints hands out the operator's local paths, so a small public
+    adapter pointing at one would load those weights with nothing to authorize."""
+    from core.export import export as export_backend_module
+    from utils.models import model_config
+
+    local_base = str(tmp_path / "operator-model")
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda path, token: local_base
+    )
+
+    with pytest.raises(export_backend_module._BaseUnresolved):
+        list(export_backend_module._remote_load_targets("someone/public-adapter", False))
+
+    # A local checkpoint whose base is local is the ordinary trained-here case and stays fine.
+    assert list(export_backend_module._remote_load_targets(str(tmp_path), False)) == []
+
+
+def test_a_sweep_never_takes_the_store_a_concurrent_reload_just_published():
+    """An unpinned sweep that walked every owned path would delete a replacement's pending
+    directory, and the worker would recreate it untracked."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    published = o._new_token_store()  # a reload has just published this one
+    try:
+        o._sweep_token_stores()  # an older thread's unpinned sweep
+        assert os.path.isdir(published), "the published store must survive an unpinned sweep"
+        assert published in o._owned_token_stores
+    finally:
+        o._token_store = None
+        o._token_store_pending = False
+        o._sweep_token_stores()

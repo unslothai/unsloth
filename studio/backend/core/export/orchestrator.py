@@ -58,6 +58,11 @@ class ExportOrchestrator:
         self._token_store: Optional[str] = None
         self._token_store_pending: bool = False
         self._owned_token_stores: set = set()
+        # Guards only the (process, token store) pair. Deliberately not self._lock, which an
+        # export op holds for its whole duration: is_worker_alive and cancel_export are
+        # lock-free against that one on purpose. Never held across rmtree or any other I/O,
+        # so contention is a few instructions.
+        self._state_lock = threading.Lock()
         # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
@@ -362,14 +367,29 @@ class ExportOrchestrator:
         proc = self._proc
         if proc is not None and proc.is_alive():
             return
-        store = getattr(self, "_token_store", None)
-        # Compare before clearing: a reload can install a live worker and its store between
-        # the liveness check above and these assignments, and clearing then would orphan a
-        # running GPU worker and delete the credential directory it is using.
-        if self._proc is not proc:
-            return
-        self._proc = None
-        self._discard_token_store(only = store)
+        # Compare and clear as one step: a reload can install a live worker between the
+        # liveness check and the assignment, and clearing then would orphan a running GPU
+        # worker and delete the credential directory it is using.
+        with self._state_guard():
+            if self._proc is not proc:
+                return
+            self._proc = None
+            store = self._token_store
+            if self._token_store_pending:
+                return
+            self._token_store = None
+        self._sweep_token_stores(remove = store)
+
+    def _state_guard(self) -> threading.Lock:
+        """The (process, token store) lock, created on demand.
+
+        The shutdown tests build an orchestrator with __new__ and no __init__, so every
+        accessor of this state has to tolerate its absence.
+        """
+        lock = getattr(self, "_state_lock", None)
+        if lock is None:
+            lock = self._state_lock = threading.Lock()
+        return lock
 
     def _new_token_store(self) -> str:
         """A private Hugging Face token directory for the next non-ambient worker.
@@ -383,37 +403,52 @@ class ExportOrchestrator:
         """
         import tempfile
 
-        self._sweep_token_stores()
+        # Whatever was current stops being current here, so it goes with this sweep rather
+        # than waiting for a later one to notice; it may hold the previous caller's token.
+        with self._state_guard():
+            previous = getattr(self, "_token_store", None)
+        self._sweep_token_stores(remove = previous)
         store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
-        if not hasattr(self, "_owned_token_stores"):
-            self._owned_token_stores = set()
-        self._owned_token_stores.add(store)
-        self._token_store = store
-        self._token_store_pending = True
+        with self._state_guard():
+            if not hasattr(self, "_owned_token_stores"):
+                self._owned_token_stores = set()
+            self._owned_token_stores.add(store)
+            self._token_store = store
+            self._token_store_pending = True
         return store
 
     def _attach_token_store(self) -> None:
         """Mark the pending store as belonging to the worker that just spawned."""
-        self._token_store_pending = False
+        with self._state_guard():
+            self._token_store_pending = False
 
-    def _sweep_token_stores(self, keep: Optional[str] = None) -> None:
-        """Remove every store this process owns, except *keep*, retrying past failures.
+    def _sweep_token_stores(self, remove: Optional[str] = None) -> None:
+        """Delete owned stores that no worker is using, plus *remove* if given.
 
-        A directory that will not delete, a file locked on Windows say, stays owned so the
-        next sweep tries again; it does not have to hold the current pointer hostage to be
-        retried, which is what lets allocation proceed while a stale one lingers.
+        The store currently published is never swept, pending or not: a concurrent reload
+        may have just installed it, and a sweep that took it would hand that worker a path
+        it would recreate untracked. A directory that will not delete, a file locked on
+        Windows say, stays owned so the next sweep tries again.
+
+        rmtree runs outside the state lock; only the bookkeeping is inside it.
         """
         import os
         import shutil
 
-        for path in list(getattr(self, "_owned_token_stores", ())):
-            if path == keep:
-                continue
+        with self._state_guard():
+            current = getattr(self, "_token_store", None)
+            candidates = [
+                path
+                for path in getattr(self, "_owned_token_stores", ())
+                if path != current or (remove is not None and path == remove)
+            ]
+        for path in candidates:
             shutil.rmtree(path, ignore_errors = True)
             if os.path.exists(path):
                 logger.warning("Could not remove the export token store %s; will retry", path)
                 continue
-            self._owned_token_stores.discard(path)
+            with self._state_guard():
+                self._owned_token_stores.discard(path)
 
     def _discard_token_store(self, only: Any = _UNPINNED) -> None:
         """Retire the current worker's private token directory, credential and all.
@@ -425,20 +460,26 @@ class ExportOrchestrator:
         """
         # getattr throughout: an orchestrator built without __init__ (the shutdown tests do
         # exactly that) has none of these yet.
-        store = getattr(self, "_token_store", None)
-        if only is not _UNPINNED:
-            if store != only:
-                # Not the current store any more. Still ours to remove if we made it.
-                if only in getattr(self, "_owned_token_stores", ()):
-                    self._sweep_token_stores(keep = store)
-                return
-            if getattr(self, "_token_store_pending", False):
-                # A load published this store but its worker has not spawned yet, so it is
-                # not a dead worker's leftovers and a lock-free caller must leave it alone.
-                return
-        self._token_store = None
-        self._token_store_pending = False
-        self._sweep_token_stores()
+        with self._state_guard():
+            store = getattr(self, "_token_store", None)
+            if only is not _UNPINNED:
+                if store != only:
+                    # Not the current store any more. Still ours to remove if we made it.
+                    target = only if only in getattr(self, "_owned_token_stores", ()) else None
+                    store = None
+                elif getattr(self, "_token_store_pending", False):
+                    # A load published this store but its worker has not spawned yet, so it
+                    # is not a dead worker's leftovers; a lock-free caller leaves it alone.
+                    return
+                else:
+                    target = store
+                    self._token_store = None
+                    self._token_store_pending = False
+            else:
+                target = store
+                self._token_store = None
+                self._token_store_pending = False
+        self._sweep_token_stores(remove = target)
 
     def _ensure_subprocess_alive(self) -> bool:
         """Check if subprocess is alive, reaping it if it is not.
