@@ -459,8 +459,10 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
     would ride.
 
     A (file, check) pair can hold several entries, one per revision of the matched
-    lines that a release has shipped, and only the live one has to be pinned; the
-    older evidence variants sit there keyed on `evidence_hash` alone.
+    lines that a release has shipped. compiler.py already carries four. Three of them
+    are superseded and unpinned, and those are grandfathered by evidence hash below;
+    any variant added from here on has to be pinned, because an unpinned one
+    suppresses the finding whatever the file contains.
 
     It used to also duplicate each approved digest as a literal here, which pinned
     nothing extra (whoever edits the baseline can edit this file in the same commit)
@@ -489,6 +491,21 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
     }
+    # The evidence hashes of the superseded compiler.py variants, which are already
+    # in the baseline unpinned. These are frozen by construction: an evidence hash is
+    # over code a past zoo release shipped, so unlike the live digest it can never
+    # move, and listing them here brings back no drift. They are grandfathered rather
+    # than pinned because pinning them would be pinning a file no installed zoo has.
+    #
+    # Everything else has to be pinned. `_load_baseline` keys each variant on its own
+    # evidence_hash and maps an unpinned one to None, i.e. suppress for any file
+    # contents, so appending a new unpinned variant for one of these pairs would
+    # silence the finding entirely while an older pinned variant kept this test green.
+    GRANDFATHERED_UNPINNED = {
+        "ec1875fd32d00fe885e566ebda75163e46e838ca31020abb57e0991892c2bdf7",
+        "d8dabff7099fd84e1276c932c7bb70ba273333e5708eb149fec6a6130856085d",
+        "610993c0b6f612bbbf2fa0b593591375e7b20cb5c9b516ea60b6c44a8b9430e9",
+    }
     pinned = set()
     for entry in entries:
         key = (entry.get("file"), entry.get("check"))
@@ -497,6 +514,13 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
         digest = entry.get("file_sha256")
         if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
             pinned.add(key)
+            continue
+        assert entry.get("evidence_hash") in GRANDFATHERED_UNPINNED, (
+            f"{key[0]} has a new unpinned entry for {key[1]!r} "
+            f"(evidence_hash {entry.get('evidence_hash')!r}). An unpinned variant "
+            f"suppresses that finding whatever the file contains, so a re-approval "
+            f"has to carry file_sha256 rather than ride the evidence alone."
+        )
     for key in sorted(must_be_pinned - pinned):
         raise AssertionError(
             f"{key[0]} is baselined for {key[1]!r} with no reviewed file digest, so "
