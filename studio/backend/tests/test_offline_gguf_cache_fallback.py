@@ -1127,13 +1127,17 @@ class TestSharedHubModelInfo:
         _hub_model_info("org/repo", "tok")
         assert len(hub.calls) == 2
 
-    def test_the_config_route_shares_one_read_across_its_probes(self, hub, monkeypatch):
-        """The endpoint is what establishes the scope."""
+    def test_the_config_route_opens_the_shared_read_and_the_pin(self, hub, monkeypatch):
+        """The endpoint is what establishes both request scopes, not the helpers below it."""
         import asyncio
 
         import routes.models as models_route
+        import utils.utils as uu
+
+        pinned_inside: list = []
 
         def _embedding(model_name, hf_token = None):
+            pinned_inside.append(uu._hf_reachability_pin.get() is not None)
             return _hub_model_info(model_name, hf_token).tags == ["sentence-transformers"]
 
         def _from_identifier(
@@ -1166,6 +1170,8 @@ class TestSharedHubModelInfo:
 
         assert result.is_embedding is True
         assert len(hub.calls) == 1
+        # Dropping either scope from the handler leaves every probe below it unchanged.
+        assert pinned_inside == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -3692,3 +3698,163 @@ class TestGuardsShareOneDnsLookup:
         assert _hf_unreachable() is True
         state["dead"] = False
         assert _hf_unreachable() is False  # no waiting out the TTL
+
+
+class TestPinnedReachability:
+    """One request, one reachability verdict, however long the request runs.
+
+    The memo expires on wall-clock, which is right between requests and wrong inside one: a
+    model-config request on a slow link outlives the TTL, so the guards it opens later
+    re-probe, and can reach a different verdict than the guard that admitted the request.
+    """
+
+    @pytest.fixture
+    def probe(self, monkeypatch, clean_offline_env):
+        """A reachability probe whose verdict is settable and whose calls are counted."""
+        import utils.transformers_version as tv
+        import utils.utils as uu
+
+        state = _types.SimpleNamespace(calls = 0, verdict = False)
+
+        def _probe(*_a, **_k):
+            state.calls += 1
+            return state.verdict
+
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
+        # Zero TTL: every read after the first would re-probe were the pin not holding one.
+        monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
+        uu.reset_hf_reachability_cache()
+        return state
+
+    def test_the_opt_out_verdict_pins_like_any_other(self, probe, monkeypatch):
+        """Disabling the probe answers before it runs, and that answer is still this
+        request's verdict. An empty pin sends every later guard to its own DNS lookup, which
+        is most of what the opt-out exists to avoid."""
+        import utils.utils as uu
+
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is False
+            assert uu.hf_reachability_memo() is False
+        assert probe.calls == 0
+
+    @pytest.mark.parametrize("verdict", [False, True])
+    def test_the_verdict_survives_the_memo_expiring_mid_request(self, probe, verdict):
+        import utils.utils as uu
+
+        probe.verdict = verdict
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is verdict
+            # Every later guard in this request, with the memo already stale.
+            assert uu.hf_unreachable() is verdict
+            assert uu.hf_reachability_memo() is verdict
+
+        assert probe.calls == 1
+
+    def test_a_memoised_verdict_fills_the_pin_too(self, probe, monkeypatch):
+        """The realistic entry state: the memo is warm when the request opens its first
+        guard, so nothing probes, and the pin would stay empty and let a later guard probe."""
+        import utils.utils as uu
+
+        monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 60.0)
+        assert uu.hf_unreachable() is False
+        assert probe.calls == 1
+
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is False
+            # The memo goes stale mid-request, as it does on a slow link.
+            monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
+            probe.verdict = True
+            assert uu.hf_unreachable() is False
+
+        assert probe.calls == 1
+
+    def test_the_guard_the_route_opens_reads_the_pinned_verdict(self, probe, monkeypatch):
+        """The wrapper the handler actually goes through, not only ``hf_unreachable``: it
+        answers from the memo directly, so that path has to pin like every other."""
+        import core.inference.llama_cpp as llama_cpp
+        import utils.utils as uu
+
+        monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 60.0)
+        monkeypatch.setattr(uu, "hf_dns_dead", lambda *_a, **_k: False, raising = False)
+        assert uu.hf_unreachable() is False
+        assert probe.calls == 1
+
+        with uu.pinned_hf_reachability():
+            assert llama_cpp._hf_unreachable() is False
+            monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
+            probe.verdict = True
+            assert llama_cpp._hf_unreachable() is False
+
+        assert probe.calls == 1
+
+    def test_a_later_request_probes_again(self, probe):
+        import utils.utils as uu
+
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is False
+        # Pinning must not outlive the request: the plug may have been pulled since.
+        probe.verdict = True
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is True
+
+        assert probe.calls == 2
+
+    def test_nothing_is_pinned_until_something_probes(self, probe):
+        import utils.utils as uu
+        with uu.pinned_hf_reachability():
+            # A block that never reaches the Hub pays nothing, and reports no verdict.
+            assert uu.hf_reachability_memo() is None
+
+        assert probe.calls == 0
+
+    def test_one_request_pinning_does_not_take_over_another_s(self, monkeypatch, probe):
+        """Sequenced, not raced: B pins while A holds a pin, then A reads its verdict again.
+
+        Module-global state would hand A request B's pin, and A would report B's verdict.
+        """
+        import threading
+
+        import utils.transformers_version as tv
+        import utils.utils as uu
+
+        verdicts = [False, True]
+        guard = threading.Lock()
+
+        def _probe(*_a, **_k):
+            with guard:
+                return verdicts.pop(0)
+
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
+
+        a_probed = threading.Event()
+        b_pinned = threading.Event()
+        a_done = threading.Event()
+        seen: dict = {}
+        waited: list = []
+
+        def _request_a():
+            with uu.pinned_hf_reachability():
+                seen["a"] = uu.hf_unreachable()
+                a_probed.set()
+                waited.append(b_pinned.wait(timeout = 30))
+                seen["a_again"] = uu.hf_unreachable()
+                a_done.set()
+
+        def _request_b():
+            waited.append(a_probed.wait(timeout = 30))
+            with uu.pinned_hf_reachability():
+                seen["b"] = uu.hf_unreachable()
+                b_pinned.set()
+                waited.append(a_done.wait(timeout = 30))
+
+        threads = [threading.Thread(target = _request_a), threading.Thread(target = _request_b)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout = 60)
+
+        assert [thread.is_alive() for thread in threads] == [False, False]
+        assert waited == [True, True, True]
+        assert seen["a"] is False and seen["a_again"] is False
+        assert seen["b"] is True
