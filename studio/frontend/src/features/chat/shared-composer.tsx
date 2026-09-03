@@ -44,12 +44,13 @@ import {
 } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
-  AUDIO_ACCEPT,
+  AUDIO_PICKER_ACCEPT,
+  isAudioAttachmentFile,
   fileToBase64,
   getAudioSizeError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
-import { isVideoFile } from "@/lib/video-utils";
+import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -953,8 +954,11 @@ export function SharedComposer({
   }, [text]);
 
   const addFiles = useCallback(
-    (files: FileList | readonly File[] | null) => {
-      if (!files?.length) return;
+    async (input: FileList | readonly File[] | null) => {
+      if (!input?.length) return;
+      // Compare takes audio, so an audio-only 3GP must not be read off its
+      // extension as a clip and refused with the video message.
+      const files = await classifiedAttachmentFiles(input);
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
@@ -963,7 +967,7 @@ export function SharedComposer({
         const file = files[i];
         if (!file) continue;
         // Handle audio files
-        if (file.type.match(/^audio\//i)) {
+        if (isAudioAttachmentFile(file)) {
           const sizeError = getAudioSizeError(file.size);
           if (sizeError) {
             audioSizeError ??= sizeError;
@@ -1010,16 +1014,19 @@ export function SharedComposer({
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       pasteClipboardFiles(
         event,
-        async (files) => {
+        async (pasted) => {
+          // Classify before the check, so a pasted audio-only 3GP is not read
+          // as unsupported on its extension alone.
+          const files = await classifiedAttachmentFiles(pasted);
           // Let addFiles report audio size errors.
           const supported = files.some(
             (file) =>
-              file.type.match(/^audio\//i) ||
+              isAudioAttachmentFile(file) ||
               (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
                 file.size <= MAX_IMAGE_SIZE),
           );
           if (!supported) throw new Error("Unsupported compare attachment");
-          addFiles(files);
+          await addFiles(files);
         },
         () =>
           toast.error("Could not paste files.", {
@@ -2197,7 +2204,7 @@ export function SharedComposer({
         if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(false);
-        addFiles(e.dataTransfer.files);
+        void addFiles(e.dataTransfer.files);
       }}
     >
       <PromptStorageDialog
@@ -2332,17 +2339,17 @@ export function SharedComposer({
             multiple
             className="hidden"
             onChange={(e) => {
-              addFiles(e.target.files);
+              void addFiles(e.target.files);
               e.target.value = "";
             }}
           />
           <input
             ref={audioInputRef}
             type="file"
-            accept={AUDIO_ACCEPT}
+            accept={AUDIO_PICKER_ACCEPT}
             className="hidden"
             onChange={(e) => {
-              addFiles(e.target.files);
+              void addFiles(e.target.files);
               e.target.value = "";
             }}
           />

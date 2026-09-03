@@ -247,7 +247,8 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
-            # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock
+            # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when this multithreaded backend forks and
+            # executes Python before exec.
             **windows_hidden_subprocess_kwargs(),
         )
     except Exception:  # noqa: BLE001 - no child ran, so nothing was proven
