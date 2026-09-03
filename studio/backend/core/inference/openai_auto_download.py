@@ -54,6 +54,11 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
+# Real speech GGUFs can publish no tokenizer sidecars. Their vocabulary lives near the
+# start of the selected weight, so a bounded range read can answer without staging the
+# multi-GB checkpoint first.
+_REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
+_REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
 
 @dataclass(frozen = True)
@@ -253,6 +258,31 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
     except Exception as exc:
         return hf_error_status(exc) in (401, 403)
     return False
+
+
+def _probe_remote_gguf_audio_type(
+    repo_id: str,
+    gguf_filename: str,
+    hf_token: Optional[str],
+    revision: Optional[str],
+) -> tuple[Optional[str], bool]:
+    """Read enough of one Hub GGUF to classify its vocabulary, without downloading it."""
+    try:
+        from core.inference.diffusion_compat import _read_gguf_header
+        from utils.models.gguf_metadata import classify_gguf_tts_audio_prefix
+
+        prefix = _read_gguf_header(
+            repo_id,
+            gguf_filename,
+            _hub_token(hf_token),
+            revision = revision,
+            max_bytes = _REMOTE_GGUF_SPEECH_PROBE_BYTES,
+            timeout_seconds = _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S,
+        )
+        return classify_gguf_tts_audio_prefix(prefix) if prefix else (None, False)
+    except Exception as exc:
+        logger.debug("remote GGUF speech probe failed for %s/%s: %s", repo_id, gguf_filename, exc)
+        return None, False
 
 
 def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
@@ -755,6 +785,22 @@ async def _admit_and_start(
             timeout = _CODE_PROBE_TIMEOUT_S,
             default = (None, False),
         )
+        if definitive and audio_type is None:
+            # Some valid speech GGUF repositories publish only weights. The JSON
+            # probe is definitively empty there, but the selected GGUF vocabulary is
+            # the capability source the eventual llama.cpp load will use.
+            main_files = sorted(getattr(plan, "main_filenames", ()) or ())
+            audio_type, definitive = await _bounded_probe(
+                partial(
+                    _probe_remote_gguf_audio_type,
+                    repo_id,
+                    main_files[0] if main_files else "",
+                    hf_token,
+                    getattr(info, "sha", None),
+                ),
+                timeout = _CODE_PROBE_TIMEOUT_S,
+                default = (None, False),
+            )
         if not definitive:
             _release(active)
             return AutoDownloadRefusal(

@@ -7301,7 +7301,12 @@ def _target_speech_audio_type(
         return None
 
 
-def _preflight_speech_codec_for_switch(audio_type: str, load_path: str, is_gguf: bool) -> None:
+def _preflight_speech_codec_for_switch(
+    audio_type: str,
+    load_path: str,
+    is_gguf: bool,
+    hf_token: Optional[str] = None,
+) -> Optional[dict[str, str]]:
     """Stage codec assets that the post-load speech path otherwise fetches too late."""
     from utils.utils import hf_env_offline
 
@@ -7318,13 +7323,44 @@ def _preflight_speech_codec_for_switch(audio_type: str, load_path: str, is_gguf:
         from core.inference.audio_codecs import resolve_bicodec_repo_path
         resolve_bicodec_repo_path(
             None if is_gguf else load_path,
-            hf_token = os.environ.get("HF_TOKEN"),
+            hf_token = hf_token,
             local_files_only = offline,
         )
     elif audio_type == "dac":
         from utils.third_party_source import ensure_dac_speech_weights, ensure_outetts_source
         ensure_outetts_source()
         ensure_dac_speech_weights()
+    elif audio_type == "higgs_tts2":
+        from core.inference.native_audio import (
+            higgs_tts2_codec_local_complete,
+            native_audio_security_targets,
+        )
+        from huggingface_hub import snapshot_download
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
+        companions = native_audio_security_targets(load_path, audio_type, hf_token)[1:]
+        if not companions:
+            raise RuntimeError("Higgs TTS 2 exposes no companion audio tokenizer.")
+        for companion in companions:
+            local_companion = Path(companion).expanduser()
+            staged = (
+                str(local_companion)
+                if local_companion.exists()
+                else snapshot_download(
+                    companion,
+                    token = hf_token,
+                    cache_dir = str(cache_paths.hub_cache),
+                    local_files_only = offline,
+                )
+            )
+            if not higgs_tts2_codec_local_complete(staged):
+                raise RuntimeError(f"Higgs TTS 2 companion '{companion}' is incomplete.")
+        # The worker must read from the cache proven complete above. Settings can
+        # change while this request waits for the lifecycle gate, so do not let
+        # spawn re-read the mutable active cache after the resident worker exits.
+        return cache_paths.child_env({})
+    return None
 
 
 _AUDIO_IMAGE_INPUT_DETAIL = (
@@ -8223,6 +8259,7 @@ async def _maybe_auto_switch_model(
         "generation_cancel_event",
         None,
     )
+    caller_hf_token = _auto_download_hf_token(fastapi_request)
 
     def _raise_if_generation_cancelled() -> None:
         if generation_cancel_event is not None and generation_cancel_event.is_set():
@@ -8564,13 +8601,15 @@ async def _maybe_auto_switch_model(
             and (target_is_gguf or not require_audio_input)
         ):
             await _preflight_image_for_switch(image_preflight, target_is_gguf)
+        speech_cache_environment = None
         if speech_type is not None:
             try:
-                await asyncio.to_thread(
+                speech_cache_environment = await asyncio.to_thread(
                     _preflight_speech_codec_for_switch,
                     speech_type,
                     target_id,
                     target_is_gguf,
+                    caller_hf_token,
                 )
             except Exception:
                 raise HTTPException(
@@ -8650,6 +8689,8 @@ async def _maybe_auto_switch_model(
                         load_kwargs.update(
                             model_override_load_kwargs(override, is_gguf = target_is_gguf)
                         )
+                        if caller_hf_token:
+                            load_kwargs["hf_token"] = caller_hf_token
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids
@@ -8682,13 +8723,16 @@ async def _maybe_auto_switch_model(
                                 if generation_cancel_event is not None
                                 else {}
                             )
+                            load_internal_kw = dict(durable_cancel_kw)
+                            if speech_cache_environment is not None:
+                                load_internal_kw["cache_environment"] = speech_cache_environment
                             try:
                                 await _load_model_impl(
                                     LoadRequest(**load_kwargs),
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
-                                    **durable_cancel_kw,
+                                    **load_internal_kw,
                                 )
                             except HTTPException as exc:
                                 # The pre-flight check cannot mirror every loader gpu_ids rule,
@@ -8711,7 +8755,7 @@ async def _maybe_auto_switch_model(
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
-                                    **durable_cancel_kw,
+                                    **load_internal_kw,
                                 )
                             _switch_loaded_ok = True
                             # publish the completed load before a late cancellation is observed.
@@ -13667,6 +13711,7 @@ async def _load_model_impl(
     on_reload_confirmed = None,
     allow_gpu_owner_eviction: bool = True,
     load_cancel_event: Optional[threading.Event] = None,
+    cache_environment: Optional[dict[str, str]] = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -14533,6 +14578,7 @@ async def _load_model_impl(
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
+                cache_environment = cache_environment,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()

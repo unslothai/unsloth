@@ -10,7 +10,7 @@ import pytest
 
 from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
 from utils.models import gguf_metadata
-from utils.models.gguf_metadata import read_gguf_tts_audio_type
+from utils.models.gguf_metadata import classify_gguf_tts_audio_prefix, read_gguf_tts_audio_type
 
 
 def _string(value: str) -> bytes:
@@ -63,6 +63,26 @@ def test_snac_codes_the_serving_probe_would_miss_are_not_a_speech_model(tmp_path
 def test_spark_bicodec_tokens_are_a_speech_model(tmp_path):
     tokens = ["hi", "<|bicodec_semantic_0|>", "<|bicodec_global_0|>"]
     assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "spark.gguf", tokens)) == "bicodec"
+
+
+def test_a_complete_remote_prefix_uses_the_same_speech_classifier(tmp_path):
+    _write_gguf(
+        tmp_path / "spark.gguf",
+        ["hi", "<|bicodec_semantic_0|>", "<|bicodec_global_0|>"],
+    )
+    assert classify_gguf_tts_audio_prefix((tmp_path / "spark.gguf").read_bytes()) == (
+        "bicodec",
+        True,
+    )
+
+
+def test_a_truncated_remote_prefix_is_inconclusive(tmp_path):
+    _write_gguf(
+        tmp_path / "spark.gguf",
+        ["hi", "<|bicodec_semantic_0|>", "<|bicodec_global_0|>"],
+    )
+    data = (tmp_path / "spark.gguf").read_bytes()
+    assert classify_gguf_tts_audio_prefix(data[:-1]) == (None, False)
 
 
 def test_normal_vocab_membership_is_not_a_runtime_special_token(tmp_path):

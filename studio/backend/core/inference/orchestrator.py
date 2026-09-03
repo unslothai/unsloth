@@ -26,7 +26,7 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Generator, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
 from core.inference.audio_device import audio_device_forces_cpu
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
@@ -425,7 +425,9 @@ class InferenceOrchestrator:
         finally:
             self._top_models_ready.set()
 
-    def _spawn_subprocess(self, config: dict) -> None:
+    def _spawn_subprocess(
+        self, config: dict, cache_environment: Optional[Mapping[str, str]] = None
+    ) -> None:
         """Spawn a new inference subprocess."""
         from utils.transformers_version import (
             SidecarSwapInProgress,
@@ -442,7 +444,11 @@ class InferenceOrchestrator:
         )
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-        cache_env = get_hf_cache_paths().child_env({})
+        cache_env = (
+            dict(cache_environment)
+            if cache_environment is not None
+            else get_hf_cache_paths().child_env({})
+        )
 
         with (
             child_environment_for_spawn(cache_env),
@@ -1499,6 +1505,7 @@ class InferenceOrchestrator:
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
         on_prior_worker_released: Optional[Callable[[], None]] = None,
+        cache_environment: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1645,7 +1652,10 @@ class InferenceOrchestrator:
                     ", xet disabled" if disable_xet else "",
                 )
                 sub_config["disable_xet"] = disable_xet
-                self._spawn_subprocess(sub_config)
+                if cache_environment is None:
+                    self._spawn_subprocess(sub_config)
+                else:
+                    self._spawn_subprocess(sub_config, cache_environment)
 
                 # A cancel can land after the pre-spawn recheck but while _spawn_subprocess is still creating the
                 # queues/process. cancel_load runs off the lifecycle gate, so its _shutdown_subprocess can see _proc

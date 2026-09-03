@@ -11,7 +11,7 @@ import os
 import struct
 import threading
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import BinaryIO, Dict, Optional, Tuple
 
 from loggers import get_logger
 
@@ -623,94 +623,115 @@ def _read_gguf_string(path: str, wanted_key: str) -> Optional[str]:
 _MAX_GGUF_VOCAB_ENTRIES = 2_000_000
 
 
-def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
-    """(marker tokens, whether the ids the SNAC probe detokenizes are codec codes)."""
+def _parse_gguf_marker_tokens_stream(f: BinaryIO) -> Optional[Tuple[list[str], bool]]:
+    """Parse speech markers from a GGUF stream positioned at byte zero."""
     from utils.audio_tokens import GGUF_AUDIO_CLASSIFIER_TOKENS, SNAC_PROBE_TOKEN_IDS
 
     marker_bytes = {token.encode("utf-8"): token for token in GGUF_AUDIO_CLASSIFIER_TOKENS}
 
     try:
-        with open(path, "rb") as f:
-            head = f.read(24)
-            if len(head) < 24:
+        head = f.read(24)
+        if len(head) < 24:
+            return None
+        magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+        if magic != _GGUF_MAGIC:
+            return None
+        marker_tokens: dict[str, int] = {}
+        token_types: Optional[bytes] = None
+        snac_probe: Optional[dict[int, bool]] = None
+        for _ in range(kv_count):
+            klen_bytes = f.read(8)
+            if len(klen_bytes) < 8:
                 return None
-            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
-            if magic != _GGUF_MAGIC:
+            klen = struct.unpack("<Q", klen_bytes)[0]
+            if klen > 1 << 20:
                 return None
-            marker_tokens: dict[str, int] = {}
-            token_types: Optional[bytes] = None
-            snac_probe: Optional[dict[int, bool]] = None
-            for _ in range(kv_count):
-                klen_bytes = f.read(8)
-                if len(klen_bytes) < 8:
-                    return None
-                klen = struct.unpack("<Q", klen_bytes)[0]
-                if klen > 1 << 20:
-                    return None
-                key = f.read(klen).decode("utf-8", "replace")
-                vt_bytes = f.read(4)
-                if len(vt_bytes) < 4:
-                    return None
-                vtype = struct.unpack("<I", vt_bytes)[0]
-                if key == "tokenizer.ggml.token_type" and vtype == 9:
-                    raw_header = f.read(12)
-                    if len(raw_header) != 12:
-                        return None
-                    atype, alen = struct.unpack("<IQ", raw_header)
-                    if atype != 5 or alen > _MAX_GGUF_VOCAB_ENTRIES:
-                        return None
-                    raw_types = f.read(4 * alen)
-                    if len(raw_types) != 4 * alen:
-                        return None
-                    token_types = raw_types
-                    continue
-                if key != "tokenizer.ggml.tokens" or vtype != 9:
-                    if not _skip_gguf_value(f, vtype):
-                        return None
-                    continue
+            key = f.read(klen).decode("utf-8", "replace")
+            vt_bytes = f.read(4)
+            if len(vt_bytes) < 4:
+                return None
+            vtype = struct.unpack("<I", vt_bytes)[0]
+            if key == "tokenizer.ggml.token_type" and vtype == 9:
                 raw_header = f.read(12)
                 if len(raw_header) != 12:
                     return None
                 atype, alen = struct.unpack("<IQ", raw_header)
-                if atype != 8 or alen > _MAX_GGUF_VOCAB_ENTRIES:
+                if atype != 5 or alen > _MAX_GGUF_VOCAB_ENTRIES:
                     return None
-                # The serving detector asks what these two ids detokenize to, so the
-                # vocabulary has to be read positionally, not just as a set of markers.
-                snac_probe = dict.fromkeys(SNAC_PROBE_TOKEN_IDS, False)
-                for index in range(alen):
-                    raw_length = f.read(8)
-                    if len(raw_length) != 8:
-                        return None
-                    slen = struct.unpack("<Q", raw_length)[0]
-                    if slen > 1 << 20:
-                        return None
-                    raw = f.read(slen)
-                    if len(raw) != slen:
-                        return None
-                    if index in snac_probe:
-                        # Substring, not prefix: the detector asks what the id decodes
-                        # to, and a tokenizer decoration would sit in front of the marker.
-                        snac_probe[index] = b"<custom_token_" in raw
-                    marker = marker_bytes.get(raw)
-                    if marker is not None:
-                        if marker in marker_tokens:
-                            return None
-                        marker_tokens[marker] = index
-            if snac_probe is None:
+                raw_types = f.read(4 * alen)
+                if len(raw_types) != 4 * alen:
+                    return None
+                token_types = raw_types
+                continue
+            if key != "tokenizer.ggml.tokens" or vtype != 9:
+                if not _skip_gguf_value(f, vtype):
+                    return None
+                continue
+            raw_header = f.read(12)
+            if len(raw_header) != 12:
                 return None
-            # llama.cpp's parse-special path does not treat plain NORMAL
-            # vocabulary membership as a one-token capability marker.
-            markers = [
-                token
-                for token, index in marker_tokens.items()
-                if token_types is not None
-                and 4 * (index + 1) <= len(token_types)
-                and struct.unpack_from("<i", token_types, 4 * index)[0] in {2, 3, 4}
-            ]
-            return markers, all(snac_probe.values())
+            atype, alen = struct.unpack("<IQ", raw_header)
+            if atype != 8 or alen > _MAX_GGUF_VOCAB_ENTRIES:
+                return None
+            # The serving detector asks what these two ids detokenize to, so the
+            # vocabulary has to be read positionally, not just as a set of markers.
+            snac_probe = dict.fromkeys(SNAC_PROBE_TOKEN_IDS, False)
+            for index in range(alen):
+                raw_length = f.read(8)
+                if len(raw_length) != 8:
+                    return None
+                slen = struct.unpack("<Q", raw_length)[0]
+                if slen > 1 << 20:
+                    return None
+                raw = f.read(slen)
+                if len(raw) != slen:
+                    return None
+                if index in snac_probe:
+                    # Substring, not prefix: the detector asks what the id decodes
+                    # to, and a tokenizer decoration would sit in front of the marker.
+                    snac_probe[index] = b"<custom_token_" in raw
+                marker = marker_bytes.get(raw)
+                if marker is not None:
+                    if marker in marker_tokens:
+                        return None
+                    marker_tokens[marker] = index
+        if snac_probe is None:
+            return None
+        # llama.cpp's parse-special path does not treat plain NORMAL
+        # vocabulary membership as a one-token capability marker.
+        markers = [
+            token
+            for token, index in marker_tokens.items()
+            if token_types is not None
+            and 4 * (index + 1) <= len(token_types)
+            and struct.unpack_from("<i", token_types, 4 * index)[0] in {2, 3, 4}
+        ]
+        return markers, all(snac_probe.values())
     except (OSError, struct.error) as e:
+        logger.debug(f"_parse_gguf_marker_tokens_stream: cannot read stream: {e}")
+    return None
+
+
+def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
+    """(marker tokens, whether the ids the SNAC probe detokenizes are codec codes)."""
+    try:
+        with open(path, "rb") as f:
+            return _parse_gguf_marker_tokens_stream(f)
+    except OSError as e:
         logger.debug(f"_parse_gguf_marker_tokens: cannot read {path}: {e}")
     return None
+
+
+def classify_gguf_tts_audio_prefix(data: bytes) -> Tuple[Optional[str], bool]:
+    """Classify a bounded GGUF prefix and report whether the parse was complete."""
+    from io import BytesIO
+    from utils.audio_tokens import classify_gguf_vocab_audio_type, is_tts_audio_type
+
+    parsed = _parse_gguf_marker_tokens_stream(BytesIO(data))
+    if parsed is None:
+        return None, False
+    audio_type = classify_gguf_vocab_audio_type(set(parsed[0]), parsed[1])
+    return (audio_type if is_tts_audio_type(audio_type) else None), True
 
 
 def read_gguf_tts_audio_type(path: str) -> Optional[str]:

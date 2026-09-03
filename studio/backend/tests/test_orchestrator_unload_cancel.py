@@ -1411,6 +1411,51 @@ def test_load_model_proceeds_when_not_cancelled(monkeypatch):
     assert o.active_model_name == "m"
 
 
+def test_load_retry_keeps_the_captured_cache_environment(monkeypatch):
+    from utils import hf_xet_fallback, transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = set()
+    o._proc = None
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: None)
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda _name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *_a, **_k: ([0], "sel"))
+    spawned = []
+    monkeypatch.setattr(
+        o,
+        "_spawn_subprocess",
+        lambda config, environment: spawned.append((dict(config), dict(environment))),
+    )
+    responses = iter(
+        (
+            hf_xet_fallback.DownloadStallError("stalled"),
+            {"success": True, "model_info": {"identifier": "m"}},
+        )
+    )
+
+    def wait_response(*_args, **_kwargs):
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(o, "_wait_response", wait_response)
+    cache_environment = {"HF_HUB_CACHE": "/old/hub", "HF_XET_CACHE": "/old/xet"}
+
+    assert o.load_model(
+        type("Config", (), {"identifier": "m", "gguf_variant": None})(),
+        cache_environment = cache_environment,
+    )
+    assert [environment for _config, environment in spawned] == [
+        cache_environment,
+        cache_environment,
+    ]
+    assert [config["disable_xet"] for config, _environment in spawned] == [False, True]
+
+
 def test_load_model_reaps_worker_after_inactivity_timeout(monkeypatch):
     # A quiet install can trip the inactivity timeout; the failure path must
     # still tear its worker down (#9398).
