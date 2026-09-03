@@ -1983,7 +1983,7 @@ export function ImagesPage({
     setGuidance(image.guidance);
     // Restore from the BASE batch seed, not this image's derived seed, or replaying with batch_size would advance again.
     setSeed(String(image.batch_seed ?? image.seed));
-    const restored = restorableSize(image.width, image.height);
+    const restored = restorableSize(image.width, image.height, image.workflow);
     setWidth(restored.width);
     setHeight(restored.height);
     // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.

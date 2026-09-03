@@ -11,11 +11,21 @@ export function snapDim(value: number): number {
 }
 
 /** A gallery record's size as the Create form can hold it. Scaled as a pair, so the recipe's
- *  aspect ratio survives; clamping each side alone would not. */
+ *  aspect ratio survives; clamping each side alone would not.
+ *
+ *  Transform is the exception. img2img treats the requested size as a BOX it fits the upload
+ *  inside (_fit_within, which never enlarges) rather than as the output size, so a side that was
+ *  already in range has to be left alone: growing it moves the box and the re-run produces a
+ *  different image than the one being restored. Clamping only the offending side reproduces the
+ *  record exactly there, and the shape is the upload's anyway, not the form's. */
 export function restorableSize(
   width: number,
   height: number,
+  workflow?: string | null,
 ): { width: number; height: number } {
+  if (workflow === "img2img") {
+    return { width: snapDim(width), height: snapDim(height) };
+  }
   if (
     !Number.isFinite(width) ||
     !Number.isFinite(height) ||
