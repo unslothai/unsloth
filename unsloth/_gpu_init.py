@@ -247,12 +247,20 @@ try:
     )
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
+
+# Third raise site, and the only one left once zoo has answered: unsloth's own
+# device_type.py repeats zoo's detection without zoo's UNSLOTH_ZOO_DISABLE_GPU_INIT
+# branch, so on a host with no usable accelerator zoo returns "cpu" and this one still
+# raises. Reached from studio's hf_xet_fallback, which sets that variable process-wide.
+try:
+    from .device_type import arch_lacks_bf16, hip_visible_archs
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
 del (
     _reraise_device_type_error_with_gpu_hint,
     _nvidia_smi_gpu_name,
     _cuda_visible_devices_hides_nvidia,
 )
-from .device_type import arch_lacks_bf16, hip_visible_archs
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,

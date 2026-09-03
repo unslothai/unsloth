@@ -75,6 +75,35 @@ def _raise_through_handler(helper, original):
         helper(caught)
 
 
+def test_every_raise_site_is_wrapped():
+    """Three modules can raise this: zoo's `__init__` (via `import unsloth_zoo`), zoo's
+    device_type when `__init__` skipped it, and unsloth's own device_type, which repeats
+    zoo's detection WITHOUT the UNSLOTH_ZOO_DISABLE_GPU_INIT branch and so still raises
+    after zoo answered "cpu". The helper must outlive all three, hence `del` comes last."""
+    tree = ast.parse(_GPU_INIT.read_text())
+    handlers = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ExceptHandler)
+        and isinstance(n.type, ast.Name)
+        and n.type.id == "NotImplementedError"
+        and any(
+            isinstance(c, ast.Call) and getattr(c.func, "id", None) == _HELPER for c in ast.walk(n)
+        )
+    ]
+    assert len(handlers) == 3, [h.lineno for h in handlers]
+
+    # `del (a, b, c)` is one Delete whose single target is a Tuple, so walk into it.
+    deletes = [n for n in ast.walk(tree) if isinstance(n, ast.Delete)]
+    freed = [
+        n.lineno
+        for n in deletes
+        if any(isinstance(t, ast.Name) and t.id == _HELPER for t in ast.walk(n))
+    ]
+    assert len(freed) == 1
+    assert freed[0] > max(h.lineno for h in handlers)
+
+
 @pytest.mark.parametrize("message", [_NO_ACCELERATOR, _VENDOR_LIST])
 def test_generic_failure_gets_the_reinstall_hint(helper, monkeypatch, message):
     original = NotImplementedError(message)
