@@ -21,6 +21,7 @@ import queue
 import threading
 import time
 from pathlib import Path
+from hub.utils.hf_tokens import HfTokenArg
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from utils.paths import outputs_root
 
@@ -412,7 +413,7 @@ class ExportOrchestrator:
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         allow_ambient: bool = True,
         subject: Optional[str] = None,
     ) -> Tuple[bool, str]:
@@ -511,7 +512,7 @@ class ExportOrchestrator:
         format_type: str = "16-bit (FP16)",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -534,7 +535,7 @@ class ExportOrchestrator:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -557,7 +558,7 @@ class ExportOrchestrator:
         quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
@@ -582,7 +583,7 @@ class ExportOrchestrator:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",

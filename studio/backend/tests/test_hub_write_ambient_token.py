@@ -567,3 +567,117 @@ def test_export_backend_probes_anonymously_but_never_logs_in_with_the_sentinel(
     assert seen["audio_probe"] == expected_probe
     assert seen["vision_probe"] == expected_probe
     assert seen["loader"] == expected_loader
+
+
+@pytest.mark.parametrize(
+    "endpoint,method_name,payload",
+    [
+        (
+            "/api/export/gguf",
+            "export_gguf",
+            {
+                "save_directory": "/tmp/export",
+                "push_to_hub": False,
+                "imatrix": True,
+                "quantization_method": "q4_k_m",
+                "hf_token": None,
+            },
+        ),
+        (
+            "/api/export/lora",
+            "export_lora_adapter",
+            {
+                "save_directory": "/tmp/export",
+                "push_to_hub": False,
+                "gguf": True,
+                "hf_token": None,
+            },
+        ),
+    ],
+)
+def test_local_export_stays_anonymous_for_an_api_key_caller(
+    monkeypatch, endpoint, method_name, payload
+):
+    """A local export is not a token-free export.
+
+    imatrix resolution and LoRA-GGUF base resolution both read the Hub, in a worker some other
+    caller may have loaded, so a plain None here would let this caller borrow that credential.
+    """
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", _fake_ensure_export_supported)
+    mock_backend = MagicMock()
+    getattr(mock_backend, method_name).return_value = (True, "Export successful", "/tmp/export")
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: mock_backend)
+    monkeypatch.setattr(
+        export_routes, "_export_details", lambda *args, **kwargs: {"output_path": "/tmp/export"}
+    )
+
+    app = _create_test_app(via_api_key = True)
+    response = TestClient(app).post(endpoint, json = payload)
+
+    assert response.status_code == 200
+    assert getattr(mock_backend, method_name).call_args.kwargs["hf_token"] is False
+
+
+def test_local_export_keeps_the_ambient_fallback_for_a_ui_session(monkeypatch):
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", _fake_ensure_export_supported)
+    mock_backend = MagicMock()
+    mock_backend.export_gguf.return_value = (True, "Export successful", "/tmp/export")
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: mock_backend)
+    monkeypatch.setattr(
+        export_routes, "_export_details", lambda *args, **kwargs: {"output_path": "/tmp/export"}
+    )
+
+    app = _create_test_app(via_api_key = False)
+    response = TestClient(app).post(
+        "/api/export/gguf",
+        json = {
+            "save_directory": "/tmp/export",
+            "push_to_hub": False,
+            "imatrix": True,
+            "quantization_method": "q4_k_m",
+            "hf_token": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert mock_backend.export_gguf.call_args.kwargs["hf_token"] is None
+
+
+@pytest.mark.parametrize(
+    "hf_token,expected", [(False, False), ("hf_caller_own_token", "hf_caller_own_token")]
+)
+def test_export_backend_forwards_the_sentinel_into_the_gguf_lora_conversion(
+    monkeypatch, tmp_path, hf_token, expected
+):
+    """save.py only falls back to get_token() when token is None, so False has to reach it."""
+    from core.export import export as export_backend_module
+
+    seen = {}
+
+    class _FakeModel:
+        peft_config: dict = {}
+
+        @staticmethod
+        def save_pretrained_gguf(
+            save_directory, tokenizer, save_method = None, quantization_method = None, token = None
+        ):
+            seen["token"] = token
+
+    # Another test in the suite blanks FastLanguageModel, and the runtime gate reads it.
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_IS_MLX", False)
+    monkeypatch.setattr(export_backend_module, "_apply_wsl_sudo_patch", lambda: None)
+
+    backend = export_backend_module.ExportBackend()
+    backend.current_model = _FakeModel()
+    backend.current_tokenizer = object()
+    backend.is_peft = True
+
+    success, message, _path = backend.export_lora_adapter(
+        save_directory = str(tmp_path),
+        gguf = True,
+        hf_token = hf_token,
+    )
+
+    assert success, message
+    assert seen["token"] == expected

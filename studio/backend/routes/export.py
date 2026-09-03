@@ -21,6 +21,7 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 from utils.utils import safe_error_detail
 
@@ -79,14 +80,20 @@ def _resolve_export_hf_token(
     *,
     push_to_hub: bool = False,
     allow_ambient: bool = True,
-) -> Optional[str]:
+) -> HfTokenArg:
+    """The credential this export runs under, as the anonymous-aware sentinel.
+
+    A local export still reads the Hub (imatrix resolution, a LoRA base's config), and it runs
+    in a worker another caller may have loaded, so returning a plain ``None`` here would let a
+    caller denied the ambient token borrow that worker's credential.
+    """
     token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
     if push_to_hub and not token and not allow_ambient:
         raise HTTPException(
             status_code = 400,
             detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
         )
-    return token
+    return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)

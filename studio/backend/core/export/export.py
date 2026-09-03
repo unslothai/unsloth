@@ -25,7 +25,7 @@ except Exception as _unsloth_exc:
     _UNSLOTH_IMPORT_ERROR = _unsloth_exc
 
 from huggingface_hub import HfApi, ModelCard
-from hub.utils.hf_tokens import HfTokenArg, normalize_token
+from hub.utils.hf_tokens import HfTokenArg, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
@@ -717,7 +717,7 @@ class ExportBackend:
         format_type: str = "16-bit (FP16)",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -952,7 +952,7 @@ class ExportBackend:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -1082,7 +1082,7 @@ class ExportBackend:
         quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
@@ -1137,10 +1137,12 @@ class ExportBackend:
         shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
         # push shares and names token= itself.
+        # False belongs here as much as a real token does: omitting the kwarg lets save.py fall
+        # back to get_token(), which is the operator's, and this worker may not be this caller's.
         local_token_kw = (
             {"token": hf_token}
             if imatrix_file
-            and hf_token
+            and (hf_token or is_anonymous(hf_token))
             and _supports_kwarg(self.current_model.save_pretrained_gguf, "token")
             else {}
         )
@@ -1330,7 +1332,7 @@ class ExportBackend:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
@@ -1408,8 +1410,10 @@ class ExportBackend:
                         self.current_tokenizer,
                         save_method = "lora",
                         quantization_method = outtype,
-                        # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
-                        token = hf_token or None,
+                        # Forward the token so convert_lora_to_gguf.py can fetch a gated base's
+                        # config, and forward False so a caller denied the ambient one stays
+                        # anonymous instead of inheriting this worker's get_token().
+                        token = normalize_token(hf_token),
                     )
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
