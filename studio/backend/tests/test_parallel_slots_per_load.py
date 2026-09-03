@@ -26,10 +26,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same external-dep stubs as the other llama_cpp unit tests.
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+try:
+    import loggers  # noqa: F401
+except ImportError:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
