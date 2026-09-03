@@ -75,7 +75,9 @@ def _rows(path: Path, text: str) -> str:
 
 
 @pytest.mark.parametrize("audio_type", CODEC_TYPES)
-def test_codec_branches_return_the_uploaded_eval_split(audio_trainer, tmp_path, monkeypatch, audio_type):
+def test_codec_branches_return_the_uploaded_eval_split(
+    audio_trainer, tmp_path, monkeypatch, audio_type
+):
     audio_trainer._audio_type = audio_type
     monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True)
     seen = []
@@ -102,7 +104,9 @@ def test_codec_branches_return_the_uploaded_eval_split(audio_trainer, tmp_path, 
 
 
 @pytest.mark.parametrize("audio_type", CODEC_TYPES)
-def test_no_eval_upload_still_returns_no_eval_split(audio_trainer, tmp_path, monkeypatch, audio_type):
+def test_no_eval_upload_still_returns_no_eval_split(
+    audio_trainer, tmp_path, monkeypatch, audio_type
+):
     audio_trainer._audio_type = audio_type
     monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True)
     monkeypatch.setattr(
@@ -139,7 +143,9 @@ def test_eval_args_enable_evaluation_when_eval_steps_is_set(audio_trainer):
 
 
 def test_eval_steps_zero_disables_evaluation(audio_trainer):
-    args, eval_dataset = audio_trainer._audio_eval_config({"eval_dataset": ["a"], "eval_steps": 0.0})
+    args, eval_dataset = audio_trainer._audio_eval_config(
+        {"eval_dataset": ["a"], "eval_steps": 0.0}
+    )
     assert (args, eval_dataset) == ({}, None)
 
 
