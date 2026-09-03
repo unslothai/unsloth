@@ -73,6 +73,22 @@ def _strip_comment(line):
     return line
 
 
+# A triple-quoted body is data, not code: a cell that builds a setup script or
+# documents a workaround can contain a line reading `!pip install transformers==X`
+# or a `from_pretrained("...")` that never executes. Blank those regions, keeping
+# newlines so line numbers and the continuation logic below are unaffected.
+_TRIPLE_RE = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
+
+
+def _live_source(src):
+    """Cell source with triple-quoted bodies and comments blanked out.
+
+    Single-quoted strings are deliberately left intact: the model name this scans
+    for lives inside one (`from_pretrained("unsloth/...")`)."""
+    blanked = _TRIPLE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), src)
+    return "\n".join(_strip_comment(line) for line in blanked.splitlines())
+
+
 def _install_lines(src):
     """The install-invocation text of a cell source, backslash continuations kept.
 
@@ -105,7 +121,12 @@ def _scan(nb):
     for cell in nb.get("cells", []):
         if cell.get("cell_type") != "code":
             continue
-        src = "".join(cell.get("source", []))
+        # Same reasoning as the pin: a commented-out or triple-quoted model
+        # reference names a model the notebook does not load, and the FIRST match
+        # wins, so a stale `# from_pretrained("unsloth/qwen3.5-4b")` above the real
+        # gemma-4-12b call picks the lower sidecar tier. Swapping models by
+        # commenting the old line out is the most routine notebook edit there is.
+        src = _live_source("".join(cell.get("source", [])))
         if pin is None:
             m = _PIN_RE.search(_install_lines(src))
             if m:

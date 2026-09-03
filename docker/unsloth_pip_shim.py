@@ -299,7 +299,11 @@ def _canon(token):
         return _barch
     # strip extras and any version/marker tail
     name = re.split(r"[<>=!~\[\s;@]", token, 1)[0].strip()
-    return name.lower().replace("_", "-") or None
+    # PEP 503 normalisation: any run of -, _ or . is one hyphen. Collapsing only
+    # "_" left `unsloth.zoo` and `nvidia.cublas-cu12` unmatched against _KEEP and
+    # _KEEP_PREFIX, so a protected distribution spelled that way slipped through
+    # and could replace the baked wheel.
+    return re.sub(r"[-_.]+", "-", name).lower() or None
 
 
 def _local_project_name(token):
