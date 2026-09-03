@@ -338,8 +338,8 @@ class ExportOrchestrator:
     ) -> dict:
         """Block until a response of the expected type arrives.
 
-        Export ops can take a long time — GGUF conversion for large
-        models (30B+) easily takes 20-30 minutes. Default timeout 1 hour.
+        *timeout* is an **inactivity** timeout: it resets on each log and status message, so a
+        large export survives as long as the worker keeps reporting. Matches the inference side.
         """
         deadline = time.monotonic() + timeout
 
@@ -364,6 +364,7 @@ class ExportOrchestrator:
             if rtype == "log":
                 # Forwarded stdout/stderr line from the worker.
                 self._append_log(resp)
+                deadline = time.monotonic() + timeout
                 continue
 
             if rtype == "status":
@@ -379,6 +380,7 @@ class ExportOrchestrator:
                             "ts": resp.get("ts", time.time()),
                         }
                     )
+                deadline = time.monotonic() + timeout
                 continue
 
             # Other response types during wait - skip.
@@ -388,7 +390,9 @@ class ExportOrchestrator:
                 expected_type,
             )
 
-        raise RuntimeError(f"Timeout waiting for '{expected_type}' response after {timeout}s")
+        raise RuntimeError(
+            f"Timeout waiting for '{expected_type}' response (no activity for {timeout}s)"
+        )
 
     def _drain_queue(self) -> list:
         """Drain all pending responses."""
