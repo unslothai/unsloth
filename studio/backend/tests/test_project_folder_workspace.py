@@ -626,6 +626,28 @@ def test_folder_project_edit_file_writes_inside_workspace(tmp_path, disable_sand
     assert (folder / "src" / "app.py").read_text(encoding = "utf-8") == "value = 2\n"
 
 
+def test_folder_project_edit_file_rejects_noop_without_rewriting(tmp_path):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    project = studio_db.upsert_chat_project(_folder_project("folder-edit-noop", folder))
+    target = folder / "same.txt"
+    target.write_text("unchanged\n", encoding = "utf-8")
+
+    result = tools.execute_tool(
+        "edit_file",
+        {
+            "path": "same.txt",
+            "edits": [{"old_string": "unchanged", "new_string": "unchanged"}],
+        },
+        session_id = tools.project_session_id(project["id"]),
+    )
+
+    assert result.startswith("Error:")
+    assert "identical" in result
+    assert target.read_text(encoding = "utf-8") == "unchanged\n"
+
+
+
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks are unavailable")
 @pytest.mark.parametrize("disable_sandbox", [False, True], ids = ["sandboxed", "bypass"])
 def test_folder_project_edit_file_rejects_parent_symlink_swap(
