@@ -519,11 +519,7 @@ class ExportBackend:
             # export of a local LoRA (Studio's main flow, and MCP is always non-ambient) over
             # a base the caller never named. That leaves reading a private base through a
             # crafted local adapter_config, which needs a separate write onto this host.
-            if (
-                local_files_only
-                and is_anonymous(token)
-                and not is_local_path(checkpoint_path)
-            ):
+            if local_files_only and is_anonymous(token) and not is_local_path(checkpoint_path):
                 return (
                     False,
                     f"Cannot load '{checkpoint_path}' without a Hugging Face token while the "
