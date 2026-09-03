@@ -765,7 +765,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # VLMs do not allow logits_to_keep. transformers >= 5.0 sets it itself in
     # generate(), so pre-injecting is redundant there, and the arch walk below
     # can pick a key the top-level model rejects. Skip the injection on v5+.
-    if Version(transformers_version) < Version("5.0.0.dev0"):
+    # The sentinel is the plain release, like every other v5 gate here: this
+    # Version() keeps only the leading numeric run and appends ".1" for a
+    # suffix, so "5.0.0.dev0" normalizes to 5.0.0.1 and 5.0.0 FINAL would
+    # compare below it and take the legacy branch. Prereleases still gate
+    # correctly, since 5.0.0.dev0 and 5.0.0rc1 both normalize to 5.0.0.1.
+    if Version(transformers_version) < Version("5.0.0"):
         global NUM_LOGITS_TO_KEEP
         if arch not in NUM_LOGITS_TO_KEEP:
             m = self

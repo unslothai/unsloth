@@ -176,6 +176,17 @@ def test_source_has_no_unconditional_pop():
     ), "the v5 branch must not drop caller-supplied logits_to_keep unconditionally"
 
 
+def test_the_v5_gate_uses_the_plain_release_sentinel():
+    # unsloth_zoo's Version() is not packaging's class: it keeps the leading numeric
+    # run and appends ".1" whenever the string carried a suffix, so Version("5.0.0.dev0")
+    # is 5.0.0.1 and transformers 5.0.0 FINAL sorts below it -- the gate would send the
+    # exact release it exists for down the legacy 4.x branch. The plain sentinel still
+    # catches the prereleases, since 5.0.0.dev0 and 5.0.0rc1 both normalize to 5.0.0.1.
+    src = open(VISION, encoding = "utf-8").read()
+    assert 'Version(transformers_version) < Version("5.0.0")' in src
+    assert 'Version("5.0.0.dev0")' not in src
+
+
 if __name__ == "__main__":
     test_generate_kwarg_gate()
     for name, _, _, _ in CASES:
