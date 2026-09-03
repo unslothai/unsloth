@@ -1126,7 +1126,7 @@ def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "adopt_pid", watching_adopt)
     # This test owns process-lifetime recording, not platform qualification.
     # Unsupported hosts exercise the explicit Full/Bypass launch; qualified
-    # Qualified Linux hosts exercise the native sandbox wrapper end to end.
+    # Linux hosts exercise the native sandbox wrapper end to end.
     from core.inference.os_sandbox import sandbox_capability
 
     tools._python_exec(

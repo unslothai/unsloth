@@ -27,6 +27,8 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.llama_cpp import LlamaCppBackend
+from core.inference import os_sandbox
+from core.inference import tools as tools_module
 from state.tool_policy import get_tool_policy, reset_tool_policy, set_tool_policy
 
 
@@ -130,8 +132,20 @@ def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
 
 
 @pytest.fixture(autouse = True)
-def _reset_policy():
+def _reset_policy(monkeypatch):
     reset_tool_policy()
+    if not os_sandbox.sandbox_capability().qualified:
+        monkeypatch.setattr(
+            tools_module,
+            "prepare_tool_launch",
+            lambda spec: os_sandbox.PreparedSandboxLaunch(
+                argv = spec.argv,
+                workdir = spec.workdir,
+                env = spec.env,
+                preexec_fn = spec.preexec_fn,
+                backend = "test-secure-tools-passthrough",
+            ),
+        )
     yield
     reset_tool_policy()
 
