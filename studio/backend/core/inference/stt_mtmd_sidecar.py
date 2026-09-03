@@ -59,8 +59,8 @@ from core.inference.stt_sidecar import (
 
 logger = get_logger(__name__)
 
-# A blocking unload comes from training claiming the VRAM. Bounded so training is not
-# stalled by a long recording, but long enough that a normal transcription finishes.
+# A blocking unload comes from training claiming the VRAM. Bounded so training is not stalled by a long recording, but
+# long enough that a normal transcription finishes.
 _ACTIVE_REQUEST_DRAIN_TIMEOUT = 30.0
 
 
@@ -90,19 +90,18 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         transcript_marker = "<asr_text>",
     ),
 }
-# Voxtral Mini is left out: in chat mode it answers the audio instead of
-# transcribing it, and drops sentences when it complies. Parakeet and Nemotron
-# ASR are too: llama.cpp has the audio graphs but not the text architectures.
+# Voxtral Mini is left out: in chat mode it answers the audio instead of transcribing it, and drops sentences when it
+# complies. Parakeet and Nemotron ASR are too: llama.cpp has the audio graphs but not the text architectures.
 
 _TRANSCRIBE_PROMPT = "Transcribe the audio."
-# Output cap per second of audio. Speech runs about 3 tokens a second in
-# English and more in scripts with no word boundaries, so this is deliberately
-# generous: generation stops at EOS long before it, and the cap only exists so
-# a looping model cannot run to the request timeout.
+# Speech runs about 3 tokens a second in English and more in scripts with no word boundaries Output cap per second of
+# audio. Speech runs about 3 tokens a second in English and more in scripts with no word boundaries, so this is
+# generous: generation stops at EOS long before it, and the cap only exists so a looping model cannot run to the request
+# timeout.
 _TRANSCRIPT_TOKENS_PER_SECOND = 30
 _MIN_TRANSCRIPT_TOKENS = 512
-# Well under any of these models' trained context, which also has to hold the
-# audio. llama-server is left on its default context (loaded from the model).
+# Well under any of these models' trained context, which also has to hold the audio. llama-server is left on its default
+# context (loaded from the model).
 _MAX_TRANSCRIPT_TOKENS = 16384
 
 
@@ -145,8 +144,7 @@ def is_available() -> bool:
     try:
         import av  # noqa: F401
     except Exception:
-        # No PyAV means every transcription 501s on decode, so offering a
-        # multi-gigabyte download here would be a waste.
+        # No PyAV means every transcription 501s on decode, so offering a multi-gigabyte download here would be a waste.
         return False
     return True
 
@@ -186,8 +184,7 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         logger.warning("Could not reap llama-server (pid %s): %s", process.pid, exc)
     finally:
-        # The PID is dead, so drop it before it can be reused by something else
-        # that terminate_all would then signal.
+        # the PID is dead, so drop it before it can be reused by something else that terminate_all would then signal
         forget_pid(process.pid)
 
 
@@ -262,8 +259,8 @@ def _cached_model_paths(
     return None
 
 
-# The panel polls every model every 750ms, and each answer is two hf_hub_download()
-# calls that stat the snapshot even local-only, so memoise the boolean briefly.
+# The panel polls every model every 750ms, and each answer is two hf_hub_download() calls that stat the snapshot even
+# local-only, so memoise the boolean briefly.
 _DOWNLOADED_PROBE_TTL_SECONDS = 2.0
 _downloaded_probe_lock = threading.Lock()
 _downloaded_probe: dict[str, tuple[float, bool]] = {}
@@ -322,9 +319,10 @@ class _MtmdDownloadState:
                 "model": model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # Which model the cancel applies to. "model" goes None once the worker
-                # thread stops, so a settled cancellation was indistinguishable from an
-                # unrelated one and a deferred load restarted the whole download.
+                # "model" goes None once the worker thread stops
+                # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
+                # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
+                # download.
                 "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if downloading else None,
             }
@@ -399,7 +397,6 @@ class _MtmdDownloadState:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    # Joining a cancelling run would silently download nothing.
                     if not self._cancelled:
                         return
                     raise SttModelIdError(
@@ -460,8 +457,8 @@ class _MtmdDownloadState:
                         blob_key = meta.etag,
                     )
                 )
-            # A cancel during metadata has no child to stop. Without these the
-            # run still reserves the repo and rewrites the cache after the stop.
+            # A cancel during metadata has no child to stop. Without these the run still reserves the repo and rewrites
+            # the cache after the stop.
             with self._lock:
                 if self._cancelled:
                     return
@@ -554,11 +551,11 @@ class MtmdSttSidecar:
         self._model_id: Optional[str] = None
         self._binary_path_revision: Optional[int] = None
         self._loading = False
-        # Published as soon as Popen returns, so a startup can be preempted
-        # before _process is assigned (readiness takes up to three minutes).
+        # published as soon as Popen returns, so a startup can be preempted before _process is assigned (readiness takes
+        # up to three minutes)
         self._starting_process: Optional[subprocess.Popen] = None
-        # Whether the resident server was launched with the GPU pinned off for
-        # training. Kept so a dictation after the run does not stay on CPU.
+        # Whether the resident server was launched with the GPU pinned off for training. Kept so a dictation after the
+        # run does not stay on CPU.
         self._gpu_disabled = False
         self._load_cancel_event: Optional[threading.Event] = None
         self._load_owner_cancel_event: Optional[threading.Event] = None
@@ -566,21 +563,19 @@ class MtmdSttSidecar:
         self._keep_alive_seconds = keep_alive_seconds
         self._idle_timer: Optional[threading.Timer] = None
         self._generation = 0
-        # Transcription runs outside _lock and can outlast the keep-alive, so
-        # the idle timer stays disarmed while any request is in flight.
+        # Transcription runs outside _lock and can outlast the keep-alive, so the idle timer stays disarmed while any
+        # request is in flight.
         self._active_requests = 0
 
     @property
     def loaded_model(self) -> Optional[str]:
-        # Lock-free: _lock is held across reaps and llama.cpp installs, but the status
-        # route reads this on the event loop. _process_alive() snapshots _process before
-        # poll(), so a concurrent unload is safe.
+        # Lock-free: _lock is held across reaps and llama.cpp installs, but the status route reads this on the event
+        # loop. _process_alive() snapshots _process before poll(), so a concurrent unload is safe.
         return self._model_id if self._process_alive() else None
 
     @property
     def device(self) -> Optional[str]:
-        # Derived, not a second probe: two probes can straddle the publish and
-        # report a device with no model.
+        # derived, not a second probe: two probes can straddle the publish and report a device with no model
         return "llama.cpp" if self.loaded_model else None
 
     def is_loading(self) -> bool:
@@ -621,8 +616,8 @@ class MtmdSttSidecar:
         self._generation += 1
         process = self._process
         try:
-            # Reap before clearing: a lock-free reader mid-reap must still see the
-            # model, or training starts while the dying server still holds its VRAM.
+            # Reap before clearing: a lock-free reader mid-reap must still see the model, or training starts while the
+            # dying server still holds its VRAM.
             _reap(process)
         finally:
             self._process = None
@@ -671,25 +666,23 @@ class MtmdSttSidecar:
         """
         if not wait and (self.is_loading() or self._active_requests):
             return
-        # A blocking caller is training claiming the VRAM, so this cannot wait forever, but
-        # `wait=True` still must not kill llama-server under a live transcription and throw
-        # the recording away. Bounded window, then proceed.
+        # A blocking caller is training claiming the VRAM, so this cannot wait forever, but `wait=True` still must not
+        # kill llama-server under a live transcription and throw the recording away. Bounded window, then proceed.
         drain_deadline = time.monotonic() + _ACTIVE_REQUEST_DRAIN_TIMEOUT
         if wait:
             self._drain_active_requests(drain_deadline)
-        # A startup has not assigned _process yet, so releasing alone would let
-        # it finish and republish the model that was just unloaded. Cancel and
-        # settle outside _lock: load() holds _start_lock across startup and
-        # takes _lock inside it, so holding _lock here would invert them.
+        # A startup has not assigned _process yet, so releasing alone would let it finish and republish the model that
+        # was just unloaded. Cancel and settle outside _lock: load() holds _start_lock across startup and takes _lock
+        # inside it, so holding _lock here would invert them.
         self.cancel_pending_load()
         self.wait_for_load_to_settle()
         while True:
             if not self._lock.acquire(blocking = wait):
                 return
             try:
-                # Recheck under the lock. `transcribe` claims _active_requests while holding
-                # it, so a request starting between the drain above and this acquire would
-                # otherwise have llama-server killed underneath it and lose the recording.
+                # Recheck under the lock. `transcribe` claims _active_requests while holding it, so a request starting
+                # between the drain above and this acquire would otherwise have llama-server killed underneath it and
+                # lose the recording.
                 if not self._holds_expected_model(expected_model):
                     return
                 busy = bool(self._active_requests)
@@ -707,9 +700,8 @@ class MtmdSttSidecar:
                     return
             finally:
                 self._lock.release()
-            # Drained outside the lock, then the release is retried under it. A blocking
-            # unload that found the sidecar busy only after acquiring cannot drain in
-            # place without deadlocking the request it is draining.
+            # Drained outside the lock, then the release is retried under it. A blocking unload that found the sidecar
+            # busy only after acquiring cannot drain in place without deadlocking the request it is draining.
             self._drain_active_requests(drain_deadline)
 
     def cancel_pending_load(self) -> bool:
@@ -811,8 +803,7 @@ class MtmdSttSidecar:
 
         path_revision = custom_llama_cpp_path_revision()
         binary = ensure_engine_available()
-        # Startup happens outside _lock (it is slow), so this keeps two callers
-        # from each spawning a server and orphaning the first.
+        # startup happens outside _lock, so this keeps two callers from each spawning a server and orphaning the first
         with self._start_lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -842,18 +833,15 @@ class MtmdSttSidecar:
                 and self._model_id == model_id
                 and self._binary_path_revision == path_revision
             ):
-                # Same model, so only the offload mode can differ: a server
-                # started at -ngl 0 during training would otherwise serve every
-                # later dictation on CPU. Restarting for that is an
-                # optimisation, never worth killing a running transcription
-                # for, so an in-flight request keeps the server it has and the
-                # next idle load picks the GPU back up.
+                # Same model, so only the offload mode can differ: a server started at -ngl 0 during training would
+                # otherwise serve every later dictation on CPU. Restarting for that is an optimisation, never worth
+                # killing a running transcription for, so an in-flight request keeps the server it has and the next idle
+                # load picks the GPU back up.
                 if self._gpu_disabled == training or self._active_requests:
                     self._schedule_idle_unload_locked()
                     return
-            # Announced before the slow probe and reap: is_loading() is read lock-free,
-            # so a training start would otherwise see False and wait out the startup in
-            # unload() instead of cancelling this load.
+            # Announced before the slow probe and reap: is_loading() is read lock-free, so a training start would
+            # otherwise see False and wait out the startup in unload() instead of cancelling this load.
             cancel_event = (
                 request_cancel_event if request_cancel_event is not None else threading.Event()
             )
@@ -864,11 +852,11 @@ class MtmdSttSidecar:
             try:
                 if cancel_event.is_set():
                     raise SttLoadCancelledError("Dictation model loading was cancelled.")
-                # Before the release: a 409 for a model that is not downloaded
-                # must not cost the user the server they were already using.
+                # before the release: a 409 for a model that is not downloaded must not cost the user the server they
+                # were already using
                 model_path, mmproj_path = self._ensure_model_downloaded(model_id)
-                # Only when there is a live server to protect: a request against
-                # a server that already died must not block recovery.
+                # Only when there is a live server to protect: a request against a server that already died must not
+                # block recovery.
                 if self._active_requests and self._process_alive():
                     raise SttModelBusyError(
                         "A transcription is still running on the current dictation model. "
@@ -882,11 +870,9 @@ class MtmdSttSidecar:
                     self._loading = False
                     self._load_cancel_event = None
                     self._load_owner_cancel_event = None
-            # Re-read last: _release_locked() reaps the old server, which can
-            # take seconds, and training admission that already passed its own
-            # check cannot come back to cancel this load. Publishing _loading
-            # first covers the other order, so between them every training start
-            # either cancels this load or is seen by it.
+            # Re-read last: _release_locked() reaps the old server, which can take seconds, and training admission that
+            # already passed its own check cannot come back to cancel this load. Publishing _loading first covers the
+            # other order, so between them every training start either cancels this load or is seen by it.
             training = _training_active()
         try:
             sock, port = self._reserve_free_port()
@@ -900,47 +886,43 @@ class MtmdSttSidecar:
                 "127.0.0.1",
                 "--port",
                 str(port),
-                # One short request at a time, so one slot keeps the footprint
-                # down next to a loaded chat model.
+                # one short request at a time, so one slot keeps the footprint down next to a loaded chat model
                 "--parallel",
                 "1",
-                # Keep off the accelerator during training (as whisper.cpp does)
-                # so a dictation load cannot reclaim VRAM training just freed.
+                # keep off the accelerator during training so a dictation load cannot reclaim VRAM training just freed
                 "-ngl",
                 "0" if training else "99",
             ]
             if training:
-                # -ngl 0 covers the main model only. clip.cpp offloads the
-                # projector on its own flag, which is what the chat backend's
-                # _cmd_has_gpu_companion() treats as a GPU companion whatever
-                # --gpu-layers says.
+                # -ngl 0 covers the main model only. clip.cpp offloads the projector on its own flag, which is what the
+                # chat backend's _cmd_has_gpu_companion() treats as a GPU companion whatever --gpu-layers says.
                 cmd.append("--no-mmproj-offload")
             sock.close()
             process = subprocess.Popen(
                 cmd,
-                # Nothing reads these, and an undrained pipe blocks llama-server
-                # mid-startup once its logs fill the buffer.
+                # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
+                # buffer
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
                 stdin = subprocess.DEVNULL,
-                # Bundled libs and pip CUDA runtimes on the loader path, secrets
-                # scrubbed, as the chat backend spawns the same binary.
+                # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
+                # the same binary
                 env = _llama_server_child_env(binary),
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
-            # Published before the wait, so training can preempt a startup that
-            # is already allocating; _process is not set for another 180s.
+            # Published before the wait, so training can preempt a startup that is already allocating; _process is not
+            # set for another 180s.
             with self._lock:
                 self._starting_process = process
             adopt_pid(process.pid)  # terminate_all backstop for graceful exits
             if not self._wait_for_server(process, port, cancel_event):
-                # Reap it here: _process was never assigned, so unload() cannot
-                # reach a child that ignores SIGTERM and keeps port and VRAM.
+                # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
+                # keeps port and VRAM.
                 _reap(process)
                 if cancel_event.is_set():
-                    # 409 through the route, like the other sidecars: expected
-                    # preemption, not a broken or missing runtime (501).
+                    # 409 through the route, like the other sidecars: expected preemption, not a broken or missing
+                    # runtime (501).
                     raise SttLoadCancelledError(
                         "Dictation model loading was cancelled so training could start."
                     )
@@ -1000,11 +982,10 @@ class MtmdSttSidecar:
         model_id = resolve_mtmd_model_id(model)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        # No training guard here on purpose: load() starts the server with
-        # -ngl 0 --no-mmproj-offload while a run is active, so this transcribes
-        # on CPU exactly as whisper.cpp and Transformers do. Refusing after a
-        # preload that succeeded only discarded the user's recording.
-        # Reject a missing model before decoding, matching the other sidecars.
+        # No training guard here on purpose: load() starts the server with -ngl 0 --no-mmproj-offload while a run is
+        # active, so this transcribes on CPU exactly as whisper.cpp and Transformers do. Refusing after a preload that
+        # succeeded only discarded the user's recording. Reject a missing model before decoding, matching the other
+        # sidecars.
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
@@ -1016,22 +997,20 @@ class MtmdSttSidecar:
             port = self._port
             if port is None or not self._process_alive():
                 raise SttUnavailableError("The dictation server is not running.")
-            # Another client can switch models in the gap between that load
-            # returning and this lock, and the port read here would then be its
-            # server. Refuse rather than transcribe on the wrong model.
+            # Another client can switch models in the gap between that load returning and this lock, and the port read
+            # here would then be its server. Refuse rather than transcribe on the wrong model.
             if self._model_id != model_id:
                 raise SttModelBusyError(
                     "The dictation model changed while this recording was being "
                     "prepared. Try again."
                 )
-            # Long audio can outlast the keep-alive, and _post_transcribe runs
-            # outside the lock, so disarm the timer rather than let it kill
-            # llama-server mid-request and throw the dictation away.
+            # Long audio can outlast the keep-alive, and _post_transcribe runs outside the lock, so disarm the timer
+            # rather than let it kill llama-server mid-request and throw the dictation away.
             self._active_requests += 1
             self._cancel_idle_unload_locked()
         try:
-            # Outside the lock: a held lock would block unload, including the
-            # one a training run performs, for the whole request timeout.
+            # outside the lock: a held lock would block unload, including a training run's, for the whole request
+            # timeout
             text = self._post_transcribe(
                 port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event
             )

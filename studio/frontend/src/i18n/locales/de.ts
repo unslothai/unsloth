@@ -55,6 +55,13 @@ export const de = {
     shutdown: "Herunterfahren",
   },
   shell: {
+    find: {
+      label: "Auf der Seite suchen",
+      previous: "Vorheriger Treffer",
+      next: "Nächster Treffer",
+      close: "Suche schließen",
+      truncated: "Diese Seite ist zu lang, um vollständig durchsucht zu werden.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -226,6 +233,10 @@ export const de = {
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
       actions: {
+        findInPage: {
+          label: "Auf der Seite suchen",
+          description: "Den Text auf dieser Seite durchsuchen",
+        },
         openSettings: {
           label: "Einstellungen öffnen",
           description: "Den Einstellungsdialog öffnen",
@@ -1261,7 +1272,7 @@ export const de = {
       description:
         "Verbinden Sie Coding-Agenten wie Claude Code und Codex über unsloth start mit einem lokalen Modell.",
       intro:
-        "verbindet Claude Code, Codex, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
+        "verbindet Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
       readDocs: "Dokumentation lesen",
       copy: "Kopieren",
       copied: "Kopiert",

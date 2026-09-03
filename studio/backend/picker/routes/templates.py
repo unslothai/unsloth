@@ -38,8 +38,7 @@ async def get_default_chat_template_route(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
-    # Cached repos resolve from disk, but a cache miss falls through to the hub and
-    # offline that costs one retry backoff per candidate template file.
+    # A cache miss falls through to the hub, and offline that costs one retry backoff per candidate template file.
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
     def _read():

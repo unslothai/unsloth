@@ -41,13 +41,13 @@ class LoraCatalogEntry:
 
     id: str
     display_name: str
-    source: str  # "local" | "hub"
-    fmt: str  # "safetensors" | "gguf"
+    source: str
+    fmt: str
     # Compatible family names (empty = unknown, shown but not family-gated).
     families: tuple[str, ...] = ()
-    repo_id: Optional[str] = None  # source == "hub"
+    repo_id: Optional[str] = None
     weight_name: Optional[str] = None  # file within the repo (hub)
-    local_path: Optional[str] = None  # source == "local"
+    local_path: Optional[str] = None
     size_bytes: int = 0
     weight_default: float = 1.0
 
@@ -63,9 +63,11 @@ class ResolvedLora:
     weight: float
 
 
-# Curated, family-tagged catalog of known-good diffusion LoRAs (HF repos with a single-file weight). Local discovery and any public HF LoRA repo id also work.
+# curated HF repos with a single-file weight; local discovery and any public HF LoRA repo id also work
 
 
+# Curated, family-tagged catalog of known-good diffusion LoRAs (HF repos with a single-file weight). Local discovery and
+# any public HF LoRA repo id also work.
 def _krea2_lora(style: str, display_name: str) -> LoraCatalogEntry:
     """One official krea/Krea-2-LoRA-* style adapter (single ``{style}.safetensors``, trained on
     Krea-2-Raw for Krea-2-Turbo per Krea's guidance)."""
@@ -128,7 +130,9 @@ def _scan_local() -> list[LoraCatalogEntry]:
         for p in children
         if p.is_file() and p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p)
     ]
-    # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full filename.
+    # two files sharing a stem collide on id (== stem)
+    # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full
+    # filename.
     stem_counts: dict[str, int] = {}
     for p in files:
         stem_counts[p.stem] = stem_counts.get(p.stem, 0) + 1
@@ -140,7 +144,8 @@ def _scan_local() -> list[LoraCatalogEntry]:
         except OSError:
             size = 0
         entry_id = p.name if stem_counts.get(p.stem, 0) > 1 else p.stem
-        # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so it is family-gated instead of "unknown". Best-effort.
+        # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so
+        # it is family-gated instead of "unknown". Best-effort.
         families, weight_default = _read_lora_sidecar(p)
         entries.append(
             LoraCatalogEntry(
@@ -233,7 +238,6 @@ def resolve_one(
             if not path or not os.path.exists(path):
                 raise FileNotFoundError(f"LoRA '{spec_id}' is no longer present on disk")
             return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
-        # hub catalog entry
         if not entry.repo_id or not entry.weight_name:
             raise ValueError(f"LoRA '{spec_id}' has no downloadable weight")
         path = hf_hub_download_with_xet_fallback(
@@ -246,7 +250,8 @@ def resolve_one(
         repo_id, _, weight_name = spec_id.partition(":")
         weight_name = weight_name or None
         if weight_name is not None:
-            # A client-supplied weight file must stay a plain filename inside the repo: reject traversal / absolute paths so it cannot resolve outside the HF cache dir.
+            # A client-supplied weight file must stay a plain filename inside the repo: reject traversal / absolute
+            # paths so it cannot resolve outside the HF cache dir.
             if (
                 ".." in weight_name
                 or weight_name.startswith(("/", "\\", "~"))
@@ -286,8 +291,10 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
             return f
     if safes:
         return safes[0]
-    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked
-    # here, while a .safetensors is never one, so the candidates above stay untouched.
+    # gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked here, while a .safetensors never
+    # is
+    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked here, while a .safetensors is
+    # never one, so the candidates above stay untouched.
     ggufs = [
         f
         for f in files
@@ -301,7 +308,6 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
 def _scrub_hub_url(msg: str) -> str:
     """Strip embedded http(s) URLs from a Hub error message before it hits a 400 body."""
     cleaned = re.sub(r"https?://\S+", "", msg)
-    # Collapse the whitespace the URL removal leaves behind.
     return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
@@ -391,9 +397,9 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
     must WIN over any user-typed `<lora:ALIAS:...>`, so strip ALL user tags first (unselected ones
     are dead anyway, not in the managed dir) then append the validated ones.
     """
-    # Drop every user-typed tag: unselected ones are dead, selected ones must not override the validated weight / 0-2 bounds.
+    # drop every user-typed tag: unselected ones are dead, selected ones must not override the validated weight / 0-2
+    # bounds
     cleaned = _TAG_RE.sub("", prompt)
-    # Collapse whitespace left by stripped tags.
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
     tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
     if not tags:
@@ -408,7 +414,8 @@ def _fmt_weight(w: float) -> str:
     return s or "0"
 
 
-# Families sd-cli's LoRA name-conversion supports (Qwen-Image has no branch). Matched by substring against the resolved family name.
+# Families sd-cli's LoRA name-conversion supports (Qwen-Image has no branch). Matched by substring against the resolved
+# family name.
 _NATIVE_LORA_FAMILY_TOKENS = (
     "flux.1",
     "flux.2",
@@ -419,8 +426,10 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "sd3",
     "stable-diffusion",
 )
+# LoRA path is the load-time BAKE: adapters attach on the dense transformer BEFORE torchao quantize_ + compile
 # Diffusers quant schemes whose LoRA path is the load-time BAKE: adapters attach on the dense transformer BEFORE torchao
-# quantize_ + compile (peft's TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ lacks). Verified on peft 0.18.1 / torchao 0.17 / torch 2.10: scale 0 reproduces the quantized base bit-exactly.
+# quantize_ + compile (peft's TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ lacks). Verified on
+# peft 0.18.1 / torchao 0.17 / torch 2.10: scale 0 reproduces the quantized base bit-exactly.
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
@@ -448,7 +457,6 @@ def supports_lora(
     fam = (family or "").lower()
     if engine == "sd_cpp":
         return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
-    # diffusers
     quant = (transformer_quant or "").lower()
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
         return True  # load-time bake; adapters ride inside the compiled quantized build

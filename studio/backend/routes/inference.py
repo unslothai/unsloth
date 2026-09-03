@@ -72,7 +72,11 @@ from core.inference.memory_contract import (
     build_memory_estimate,
     project_estimate_memory_response,
 )
-from core.inference.stream_errors import LlamaStreamError
+from core.inference.stream_errors import (
+    KV_STARVATION_MESSAGE,
+    LlamaStreamError,
+    is_kv_starvation,
+)
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
@@ -246,6 +250,11 @@ _LOST_CONNECTION_MSG = (
 )
 
 
+_OVERSIZE_TOKENS_RE = _re.compile(
+    r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
+)
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, httpx.ReadTimeout):
@@ -268,10 +277,7 @@ def _friendly_error(exc: Exception) -> str:
     if isinstance(exc, httpx.RequestError):
         return _LOST_CONNECTION_MSG
     msg = str(exc)
-    m = _re.search(
-        r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
-        msg,
-    )
+    m = _OVERSIZE_TOKENS_RE.search(msg)
     if m:
         # llama-server knows only the prompt total, so its "shorten the conversation" is
         # wrong for a single oversized turn: let the fit's diagnosis pick the wording.
@@ -315,6 +321,46 @@ def _friendly_upstream_error(text: str) -> str:
             "constraints known to break it, and report the schemas if it still fails."
         )
     return f"llama-server error: {text}"
+
+
+def _oversize_counts(text: str):
+    """(prompt, context) for an oversize refusal, or None.
+
+    The prose counts first, then the structured `n_prompt_tokens`/`n_ctx` that an
+    `exceed_context_size_error` body carries: these paths are handed the whole body, so
+    when the message itself has no numbers the fields in it are still the real totals.
+    """
+    m = _OVERSIZE_TOKENS_RE.search(text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return _parse_overflow_counts(text)
+
+
+def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
+    """`text` is what the client is told; `counts_source` is the fuller body it came
+    from, used only to recover token counts the message itself does not spell out."""
+    # Starvation is a shared-cache capacity failure, not an oversized prompt: the right
+    # response is to retry, so it must not be reworded into "shorten the conversation".
+    if is_kv_starvation(text):
+        return KV_STARVATION_MESSAGE
+    if _classify_llama_generation_error(Exception(text)):
+        counts = _oversize_counts(text)
+        if counts is None and counts_source:
+            counts = _oversize_counts(counts_source)
+        if counts:
+            # Anthropic's own head wording, which its clients key on to compact, paired
+            # with the fit's remedy rather than a flat "shorten the conversation": when
+            # the latest turn or the system prompt is what does not fit, compacting the
+            # history cannot help and the client would just retry it.
+            return (
+                f"Prompt is too long: {counts[0]} tokens > {counts[1]} maximum. "
+                + context_refusal.oversize_advice(counts[1])
+            )
+        return (
+            "Prompt is too long. Try increasing the Context Length in Model settings, "
+            "or shorten the conversation."
+        )
+    return _friendly_upstream_error(text)
 
 
 def _clamp_finish_reason(value) -> str:
@@ -1029,6 +1075,35 @@ def _anthropic_stream_error_event(exc, *, force: bool = False):
     )
 
 
+def _json_dumps_safe(value) -> Optional[str]:
+    """`json.dumps` for count recovery only; never raises on an odd payload."""
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _anthropic_upstream_stream_error_event(text: str, counts_source: Optional[str] = None):
+    """In-band Anthropic error event for a 200 stream that later reports an upstream failure.
+
+    Same wording and status rule as the non-200 branch. Routing the raw body through
+    `_friendly_error` instead flattens the count-less oversize refusal ("the request
+    exceeds the available context size") to "An internal error occurred", so a streaming
+    client is told 400/invalid_request_error with nothing it can read or compact on.
+    """
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
+    mark_current_response_failed()
+    over = bool(_classify_llama_generation_error(Exception(text)))
+    return build_anthropic_sse_event(
+        "error",
+        anthropic_error_body(
+            _anthropic_upstream_error(text, counts_source = counts_source),
+            status = 400 if over else 500,
+        ),
+    )
+
+
 def _drop_parallel_tool_call_deltas(chunk) -> bool:
     """In-place: drop tool_call deltas whose index >= 1 from a parsed OpenAI
     streaming chunk so only the first tool call survives (parallel_tool_calls=false
@@ -1454,6 +1529,11 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
         return True if exc.context_oversize else None
     msg = str(exc)
     msg_l = msg.lower()
+    # Same reasoning as the typed branch, which only reaches errors carrying the parsed
+    # flag. Raw upstream bodies arrive here as a plain Exception, and "Context size has
+    # been exceeded" trips the substring test below while meaning the opposite.
+    if is_kv_starvation(msg):
+        return None
     if "n_ctx" in msg_l or (
         "context" in msg_l and any(t in msg_l for t in ("exceed", "length", "window", "too long"))
     ):
@@ -5818,17 +5898,22 @@ def _monitor_anthropic_json_response(
     response,
     monitor_id: Optional[str],
     context_length = None,
+    cancel_event = None,
 ) -> None:
     if not monitor_id:
         return
+    # A cancelled non-streaming run still returns a normal 200 body built from the
+    # partial output, so the body alone cannot tell the two apart. The streaming
+    # sibling reads cancel_event for the same reason.
+    status = "cancelled" if cancel_event is not None and cancel_event.is_set() else "completed"
     body = getattr(response, "body", b"")
     try:
         data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
     except Exception:
-        api_monitor.finish(monitor_id)
+        api_monitor.finish(monitor_id, status)
         return
     if not isinstance(data, dict):
-        api_monitor.finish(monitor_id)
+        api_monitor.finish(monitor_id, status)
         return
     text = _monitor_anthropic_content_blocks(data.get("content"))
     if text:
@@ -5836,7 +5921,7 @@ def _monitor_anthropic_json_response(
     if data.get("stop_reason"):
         api_monitor.set_perf(monitor_id, stop_reason = str(data["stop_reason"]))
     _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
-    api_monitor.finish(monitor_id)
+    api_monitor.finish(monitor_id, status)
 
 
 def _monitor_anthropic_response(
@@ -5849,7 +5934,7 @@ def _monitor_anthropic_response(
         return response
     body_iterator = getattr(response, "body_iterator", None)
     if body_iterator is None:
-        _monitor_anthropic_json_response(response, monitor_id, context_length)
+        _monitor_anthropic_json_response(response, monitor_id, context_length, cancel_event)
         return response
 
     async def _monitored_body():
@@ -16325,6 +16410,7 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 
 
 # =====================================================================
+
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
 
@@ -16380,7 +16466,7 @@ async def _generate_tts_wav(
     _audio_cancel = threading.Event()
     prompt_for_budget = text
 
-    # Pick backend — both return (wav_bytes, sample_rate)
+    # Pick backend - both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
@@ -17033,6 +17119,7 @@ async def openai_audio_transcriptions(
 
 
 # =====================================================================
+
 # Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
 # =====================================================================
 
@@ -17584,6 +17671,7 @@ async def transcribe_audio_raw(
 
 
 # =====================================================================
+
 # OpenAI-Compatible Chat Completions  (/chat/completions)
 # =====================================================================
 
@@ -17870,7 +17958,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         # ── User / assistant messages ─────────────────────────
         combined_text: Optional[str] = None
         if isinstance(msg.content, str):
-            # Plain string content — pass through
+            # Plain string content - pass through
             combined_text = msg.content
         elif isinstance(msg.content, list):
             # Multimodal content parts
@@ -23529,6 +23617,7 @@ async def produce_openai_chat_completions(
 
 
 # =====================================================================
+
 # Sandbox file serving  (/sandbox/{session_id}/{filename})
 # =====================================================================
 
@@ -23854,6 +23943,7 @@ async def serve_sandbox_file(
 
 
 # =====================================================================
+
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
 # =====================================================================
 
@@ -24596,6 +24686,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
 
 
 # =====================================================================
+
 # OpenAI-Compatible Completions Proxy  (/completions → /v1/completions)
 # =====================================================================
 
@@ -24919,6 +25010,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
 
 # =====================================================================
+
 # OpenAI-Compatible Embeddings Proxy  (/embeddings → /v1/embeddings)
 # =====================================================================
 
@@ -25075,6 +25167,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
 
 # =====================================================================
+
 # OpenAI Responses API  (/responses → /v1/responses)
 # =====================================================================
 
@@ -27143,6 +27236,7 @@ async def openai_responses(
 
 
 # =====================================================================
+
 # Anthropic-Compatible Messages API  (/messages → /v1/messages)
 # =====================================================================
 
@@ -28715,6 +28809,7 @@ async def anthropic_messages(
             )
         return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
+                request,
                 _run_tool_gen,
                 message_id,
                 model_name,
@@ -28767,6 +28862,7 @@ async def anthropic_messages(
         )
     return await _admitted_anthropic(
         _anthropic_plain_non_streaming(
+            request,
             _run_plain_gen,
             message_id,
             model_name,
@@ -29331,6 +29427,7 @@ def _anthropic_tool_response_from_events(
 
 
 async def _anthropic_tool_non_streaming(
+    request,
     run_gen,
     message_id,
     model_name,
@@ -29353,12 +29450,21 @@ async def _anthropic_tool_non_streaming(
             think_provenance = think_provenance,
         )
 
-    return await _run_blocking_generation(
-        _drain_and_build,
-        cancel_event,
-        name = "anthropic-tool-nonstream",
-        daemon = True,
-    )
+    disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
+    try:
+        response = await _run_blocking_generation(
+            _drain_and_build,
+            cancel_event,
+            name = "anthropic-tool-nonstream",
+            daemon = True,
+        )
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    # The 200 is built from partial output, so unmarked the keepwarm middleware reads it
+    # as a clean completion and takes the resident model away from a preview.
+    if cancel_event is not None:
+        _mark_cancelled_json_response_failed(request, cancel_event)
+    return response
 
 
 def _anthropic_plain_response_from_events(
@@ -29408,6 +29514,7 @@ def _anthropic_plain_response_from_events(
 
 
 async def _anthropic_plain_non_streaming(
+    request,
     run_gen,
     message_id,
     model_name,
@@ -29426,14 +29533,24 @@ async def _anthropic_plain_non_streaming(
             think_provenance = think_provenance,
         )
 
-    return await _run_blocking_generation(
-        _drain_and_build,
-        cancel_event,
-        name = "anthropic-plain-nonstream",
-    )
+    disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
+    try:
+        response = await _run_blocking_generation(
+            _drain_and_build,
+            cancel_event,
+            name = "anthropic-plain-nonstream",
+        )
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    # The 200 is built from partial output, so unmarked the keepwarm middleware reads it
+    # as a clean completion and takes the resident model away from a preview.
+    if cancel_event is not None:
+        _mark_cancelled_json_response_failed(request, cancel_event)
+    return response
 
 
 # =====================================================================
+
 # Client-side tool pass-through (Anthropic-native tools field)
 # =====================================================================
 
@@ -29929,11 +30046,12 @@ async def _anthropic_passthrough_stream(
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
+                _over = bool(_classify_llama_generation_error(Exception(_err_text)))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
-                        _friendly_upstream_error(_err_text),
-                        status = resp.status_code,
+                        _anthropic_upstream_error(_err_text),
+                        status = 400 if _over else resp.status_code,
                     ),
                 )
                 return
@@ -29972,12 +30090,13 @@ async def _anthropic_passthrough_stream(
                         from core.inference.llama_keepwarm import mark_response_failed
 
                         mark_response_failed(getattr(request, "scope", None))
-                        event = _anthropic_stream_error_event(
-                            RuntimeError(error_message),
-                            force = True,
+                        # The message alone can be count-less while the chunk still
+                        # carries n_prompt_tokens/n_ctx; keep the clean message and let
+                        # the formatter recover the totals from the payload.
+                        yield _anthropic_upstream_stream_error_event(
+                            error_message,
+                            counts_source = _json_dumps_safe(chunk.get("error", chunk)),
                         )
-                        if event is not None:
-                            yield event
                         return
                 if disable_parallel_tool_use:
                     _drop_parallel_tool_call_deltas(chunk)
@@ -30139,9 +30258,11 @@ async def _anthropic_passthrough_non_streaming(
         resp = await _post(body)
 
         if resp.status_code != 200:
+            _err_text = resp.text[:500]
+            _over = bool(_classify_llama_generation_error(Exception(_err_text)))
             raise HTTPException(
-                status_code = resp.status_code,
-                detail = _friendly_upstream_error(resp.text[:500]),
+                status_code = 400 if _over else resp.status_code,
+                detail = _anthropic_upstream_error(_err_text),
             )
 
         data = resp.json()
@@ -30285,6 +30406,7 @@ async def _anthropic_passthrough_non_streaming(
 
 
 # =====================================================================
+
 # Client-side tool pass-through (OpenAI-native /v1/chat/completions)
 # =====================================================================
 
@@ -32201,6 +32323,7 @@ async def _openai_passthrough_non_streaming_upstream(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+
 # Diffusion (local text-to-image). Unsloth-only routes (studio_router is not mounted under /v1); the backend is in-process and
 # synchronous, so blocking calls are offloaded with asyncio.to_thread. Single error boundary: the backend raises, we map to HTTP.
 # ──────────────────────────────────────────────────────────────────────────
@@ -33215,6 +33338,7 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
 
 
 # ──────────────────────────────────────────────────────────────────────────
+
 # OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
 # also answers /v1/images/generations for OpenAI clients. The Unsloth Image tab uses the richer /images/generate above; this is the spec shape.
 # ──────────────────────────────────────────────────────────────────────────

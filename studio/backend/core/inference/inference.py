@@ -2151,6 +2151,7 @@ class InferenceBackend:
 
     # ── Audio (TTS) Generation ────────────────────────────────────
 
+    # ── Audio (TTS) Generation ────────────────────────────────────
     def generate_audio_response(
         self,
         text: str,

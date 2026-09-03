@@ -33,11 +33,10 @@ MANIFEST_SCHEMA = 1
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
 NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 
-# Companion to the no_torch manifest key, next to setup.ps1's .unsloth-studio-owned.
-# The manifest is deliberately dropped before every dependency pass, so it cannot
-# answer for a run killed mid-pass; this marker is written before that pass and
-# outlives it. Without it an interrupted GGUF-only install reads as a stale venv on
-# the next update, which then tries to delete the venv it is running out of.
+# The manifest is dropped before every dependency pass, so it cannot answer for a run killed mid-pass; this marker
+# outlives it, or an interrupted GGUF-only install reads as a stale venv.
+# Companion to the no_torch manifest key, next to setup.ps1's .unsloth-studio-owned; the next update then tries to
+# delete the venv it is running out of.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
@@ -288,24 +287,17 @@ def write_manifest(
         "platform": f"{sys.platform}-{platform.machine()}",
         "prefix": str(venv_root()),
         "steps_total": steps_total,
-        # The venv's own copy wins over the caller's. `verify_install` reads the
-        # installed package's requirements, so recording the installer's would
-        # compare two different trees and call a finished install stale. An
-        # editable / source install has no copy under site-packages, and there
-        # the caller's root is already the tree both sides read.
+        # The venv's own copy wins over the caller's: verify_install reads the installed package's requirements, so
+        # recording the installer's would compare two trees and call a finished install stale.
         "requirement_files": requirement_digests(installed_requirements_root(root) or req_root),
     }
-    # Additive, so MANIFEST_SCHEMA does not move and every existing manifest stays
-    # valid. Absent means "unknown", which is NOT False: only a manifest written by
-    # a build that knew about the key can answer, and callers fall back to their own
-    # detection otherwise. Recorded because install.ps1 / install.sh export
-    # UNSLOTH_NO_TORCH for their own run only -- a later `unsloth studio update`
-    # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
+    # Additive, so MANIFEST_SCHEMA does not move and existing manifests stay valid. Absent means
+    # "unknown", NOT False: only a manifest written by a build that knew the key can answer. Recorded
+    # because install.ps1 / install.sh export UNSLOTH_NO_TORCH for their own run only, so a later
+    # `unsloth studio update` would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
-    # The FLAVOR, never the index URL it came from: a pinned index can carry a token in
-    # its userinfo, query or fragment, and this file lives in the venv and is read back
-    # by verify-install, desktop-capabilities and the setup fast path.
+    # The FLAVOR, never the index URL it came from: a pinned index can carry a token
     if expected_torch_tag:
         payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
     # Whether that flavor was NAMED by whoever ran the install, or merely what the selection
@@ -327,11 +319,7 @@ def write_manifest(
 def read_manifest(root: Optional[Path] = None) -> Optional[dict]:
     try:
         raw = manifest_path(root).read_text(encoding = "utf-8")
-    # UnicodeDecodeError is a ValueError, not an OSError: a manifest re-saved as
-    # ANSI by an editor (the payload embeds the user profile path, so non-ASCII
-    # names show up there) or truncated mid-write must read as "no manifest", not
-    # raise. install_python_stack.py resolves no-torch mode through here at import,
-    # so anything escaping aborts the whole install.
+    # UnicodeDecodeError is a ValueError.
     except (OSError, ValueError):
         return None
     try:
@@ -705,8 +693,7 @@ def _scan_payload_files(
                 anchor = _venv_anchor(Path(dist.locate_file("")))
             except Exception:
                 anchor = None
-            # csv, not splitlines: a quoted field may hold a newline, and
-            # splitlines also breaks on \v, \f and the Unicode separators.
+            # csv, not splitlines: a quoted field may hold a newline
             for row in csv.reader(io.StringIO(record, newline = "")):
                 # Every row: batching this let one slow mount overrun 5s by a minute.
                 if deadline is not None and time.monotonic() > deadline:
@@ -829,8 +816,7 @@ def verify_install(
         # Install finished but the boot deps are gone: venv edited afterwards.
         reason = "studio_deps_missing"
 
-    # Last: the only check that touches the filesystem, so it must not divert a
-    # reason above. `installed` without `scan_paths` is a venv we cannot stat.
+    # Last: the only check that touches the filesystem.
     if manifest_ok and deps_ok and deep and (installed is None or scan_paths):
         # Reused, not re-read: a manifest rewritten mid-run would make the scan
         # disagree with the checks that already passed.

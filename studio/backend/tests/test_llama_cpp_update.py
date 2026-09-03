@@ -759,6 +759,130 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     assert "boom" in (job["error"] or "")
 
 
+def test_start_update_rate_limit_reports_actionable_error(monkeypatch, tmp_path):
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 403 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518; "
+        "set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits\n",
+        "windows_runtime_dirs=C:\\\\very\\\\long\\\\path\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    assert "GH_TOKEN" in (job["error"] or "")
+    assert "windows_runtime_dirs" not in (job["error"] or "")
+
+
+def test_start_update_reports_a_github_429_as_a_rate_limit(monkeypatch, tmp_path):
+    # GitHub answers an exceeded rate limit with 403 or 429.
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 429 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518; "
+        "set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    assert "GH_TOKEN" in (job["error"] or "")
+
+
+def test_start_update_tells_an_authenticated_run_to_wait_for_the_limit(monkeypatch, tmp_path):
+    # An authenticated run has spent the larger quota (or tripped a secondary
+    # limit); it already holds the token this message used to ask it to set.
+    monkeypatch.setenv("GH_TOKEN", "x")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 429 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    error = job["error"] or ""
+    assert "rate-limiting" in error
+    assert "GH_TOKEN" not in error
+    assert "Wait for the limit to reset" in error
+
+
+def test_start_update_does_not_blame_github_for_a_hugging_face_rate_limit(monkeypatch, tmp_path):
+    # The tiny validation model comes from huggingface.co, whose own rate limit
+    # also surfaces as installer exit 2. GH_TOKEN cannot fix that one.
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: validation model unavailable: "
+        "429 Client Error: Too Many Requests for url "
+        "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf "
+        "(Rate limit reached)\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    error = job["error"] or ""
+    assert "GH_TOKEN" not in error
+    assert "validation model unavailable" in error
+
+
 # --- installer-argument construction (mirrors the post-#5963 setup scripts) ---
 
 
@@ -1263,3 +1387,152 @@ def test_status_source_build_includes_update_size(monkeypatch, tmp_path):
     assert st["source_build"] is True
     assert st["update_available"] is True
     assert st["update_size_bytes"] == 77_000_000
+
+
+def test_update_changelog_uses_full_installed_release_identity(monkeypatch, tmp_path):
+    binary = _write_install(
+        tmp_path,
+        "b10698",
+        release_tag = "b10698-mix-old",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10715-mix-new",
+    )
+    seen = {}
+
+    def fake_changelog(
+        repo,
+        installed,
+        latest,
+        *,
+        force_refresh = False,
+    ):
+        seen.update(
+            repo = repo,
+            installed = installed,
+            latest = latest,
+            force_refresh = force_refresh,
+        )
+        return {
+            "changes": [{"summary": "New model", "links": []}],
+            "total_changes": 1,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/new",
+        }
+
+    monkeypatch.setattr(upd, "changelog_for_update", fake_changelog)
+
+    result = upd.get_update_changelog(force_refresh = True)
+
+    assert result["matched"] is True
+    assert result["installed_tag"] == "b10698"
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert result["changes"][0]["summary"] == "New model"
+    assert seen == {
+        "repo": "unslothai/llama.cpp",
+        "installed": "b10698-mix-old",
+        "latest": "b10715-mix-new",
+        "force_refresh": True,
+    }
+
+
+def test_update_changelog_retry_keeps_the_banner_target(monkeypatch, tmp_path):
+    # Retry must compare the pair the banner shows: the frontend rejects a response
+    # whose tags differ from the ones it asked about, leaving the panel in error.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    published = {"tag": "b10715-mix-new"}
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: published["tag"],
+    )
+    # The banner rendered this target on its last hourly status check.
+    assert freshness.latest_published_release("unslothai/llama.cpp") == "b10715-mix-new"
+    published["tag"] = "b10800-mix-newer"  # published while the banner sat open
+    monkeypatch.setattr(
+        upd,
+        "changelog_for_update",
+        lambda *_args, **_kwargs: {
+            "changes": [{"summary": "New model", "links": []}],
+            "total_changes": 1,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/new",
+        },
+    )
+
+    result = upd.get_update_changelog(force_refresh = True)
+
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert result["matched"] is True
+
+
+def test_update_changelog_answers_the_pair_the_caller_asked_about(monkeypatch, tmp_path):
+    # Another surface's forced status check advances the process-wide memo, so
+    # without the caller's pair the panel answers about a target it rejects.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10800-mix-newer",
+    )
+    seen = {}
+
+    def fake_changelog(
+        repo,
+        installed,
+        latest,
+        *,
+        force_refresh = False,
+    ):
+        seen.update(installed = installed, latest = latest)
+        return {
+            "changes": [],
+            "total_changes": 0,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/x",
+        }
+
+    monkeypatch.setattr(upd, "changelog_for_update", fake_changelog)
+
+    result = upd.get_update_changelog(installed_tag = "b10698", latest_tag = "b10715-mix-new")
+
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert seen["latest"] == "b10715-mix-new"
+    assert result["matched"] is True
+
+    # The release page offered on the failure path points at that same target.
+    monkeypatch.setattr(upd, "changelog_for_update", lambda *_a, **_k: None)
+    failed = upd.get_update_changelog(installed_tag = "b10698", latest_tag = "b10715-mix-new")
+
+    assert failed["release_url"].endswith("b10715-mix-new")
+
+
+def test_update_changelog_ignores_a_pair_from_a_different_install(monkeypatch, tmp_path):
+    # The tree was swapped underneath the caller: answer with the server's view.
+    binary = _write_install(tmp_path, "b10698", release_tag = "b10698-mix-old")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10800-mix-newer",
+    )
+    monkeypatch.setattr(
+        upd,
+        "changelog_for_update",
+        lambda *_args, **_kwargs: {
+            "changes": [],
+            "total_changes": 0,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/x",
+        },
+    )
+
+    result = upd.get_update_changelog(installed_tag = "b9000", latest_tag = "b10715-mix-new")
+
+    assert result["installed_tag"] == "b10698"
+    assert result["latest_tag"] == "b10800-mix-newer"

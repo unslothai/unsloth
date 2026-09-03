@@ -343,12 +343,23 @@ class TestDrafterDiscoveryMatchesTheLoader:
         got, _ = models_routes._resolve_mtp_drafter(str(main))
         assert got == str(nested)
 
-    def test_a_root_mirror_is_taken_by_every_architecture(self, tmp_path):
-        """Only the nested fallback is gated. A root mtp- companion beside the
-        weights says it is the one to use, which is how Gemma 4 ships."""
+    def test_an_embedded_head_ignores_a_root_compatibility_mirror(self, tmp_path):
         snap = self._snapshot(tmp_path)
-        main = _write_gguf(snap / "model-Q4_K_M.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 1})
-        companion = _write_gguf(snap / "mtp-model.gguf", _MLA_NO_HEAD)
+        main = _write_gguf(
+            snap / "RVN-Q6_K-mtp.gguf",
+            {**_MLA_NO_HEAD, "nextn_predict_layers": 1},
+            arch = "qwen35",
+        )
+        _write_gguf(snap / "mtp-RVN.gguf", _MLA_NO_HEAD)
+
+        got, size = models_routes._resolve_mtp_drafter(str(main))
+        assert got is None
+        assert size == 0
+
+    def test_a_headless_model_still_takes_a_root_drafter(self, tmp_path):
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "gemma-4-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "gemma3")
+        companion = _write_gguf(snap / "mtp-gemma-4.gguf", _MLA_NO_HEAD)
 
         got, _ = models_routes._resolve_mtp_drafter(str(main))
         assert got == str(companion)
