@@ -1158,9 +1158,10 @@ class ExportBackend:
             )
         shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
-        # push shares and names token= itself.
-        # False belongs here as much as a real token does: omitting the kwarg lets save.py fall
-        # back to get_token(), which is the operator's, and this worker may not be this caller's.
+        # push shares and names token= itself. Still gated on imatrix: forwarding a credential to
+        # a save that has no Hub work is what the two "does not forward the token" tests in
+        # test_export_gguf_discovery.py pin. False belongs here as much as a real token does,
+        # because omitting the kwarg lets save.py fall back to get_token().
         local_token_kw = (
             {"token": hf_token}
             if imatrix_file

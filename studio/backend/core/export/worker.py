@@ -167,6 +167,29 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
+def _redirect_hf_token_store() -> None:
+    """Point this worker's Hugging Face token file at a private throwaway.
+
+    Scrubbing the environment is only half of it. ``get_token()`` also reads the stored
+    login at ``~/.cache/huggingface/token``, so a non-ambient worker would still find the
+    operator's credential there, and ``hf_login`` hands it to any call left at ``None``.
+    The traffic goes the other way too: ``huggingface_hub.login()`` *saves* what it is
+    given (``_validate_and_save_token``), and unsloth's loaders call it on every
+    ``from_pretrained``, so a caller's own token would overwrite the operator's stored
+    login for the whole machine. An empty per-worker store gives neither a place to live.
+
+    Must run before huggingface_hub is imported: HF_TOKEN_PATH is read once, at import,
+    and HF_STORED_TOKENS_PATH is derived from its directory.
+    """
+    import atexit
+    import shutil
+    import tempfile
+
+    store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
+    os.environ["HF_TOKEN_PATH"] = os.path.join(store, "token")
+    atexit.register(shutil.rmtree, store, True)
+
+
 def _activate_transformers_version(model_name: str, hf_token: HfTokenArg = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on sys.path for utils imports.
@@ -228,6 +251,60 @@ def _offline_window_if_unreachable(step = "loading"):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+@contextlib.contextmanager
+def _credential_scope(hf_token: HfTokenArg):
+    """Confine an export command to its own caller's credential.
+
+    A command is not necessarily from whoever loaded the worker, and it has two ways to
+    reach a credential it was not given. The GGUF converters build their child environment
+    from ``os.environ`` (``unsloth/save.py`` ``_unsloth_save_lora_gguf``) and only overwrite
+    it for a nonempty string token; and anything that ends up at ``token=None`` calls
+    ``get_token()``, which reads the stored login file. So scope both.
+
+    Per command, unlike the worker-wide HF_HUB_DISABLE_IMPLICIT_TOKEN: a child reads the
+    environment at its own import, and ``_get_token_from_file`` reads ``HF_TOKEN_PATH`` off
+    the constants module every call rather than freezing it.
+    """
+    import shutil
+    import tempfile
+
+    keys = (
+        "HF_TOKEN",
+        "HF_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "HF_HUB_DISABLE_IMPLICIT_TOKEN",
+        "HF_TOKEN_PATH",
+    )
+    saved = {k: os.environ.get(k) for k in keys}
+    from hub.utils.hf_tokens import apply_token_to_child_env, is_anonymous
+
+    constants = sys.modules.get("huggingface_hub.constants")
+    saved_token_path = getattr(constants, "HF_TOKEN_PATH", None) if constants else None
+    store = None
+    try:
+        apply_token_to_child_env(os.environ, hf_token)
+        if is_anonymous(hf_token):
+            # An empty store, so the in-process get_token() finds nothing either.
+            store = tempfile.mkdtemp(prefix = "unsloth-export-hf-cmd-")
+            token_path = os.path.join(store, "token")
+            os.environ["HF_TOKEN_PATH"] = token_path
+            if constants is not None:
+                constants.HF_TOKEN_PATH = token_path
+        yield
+    finally:
+        if constants is not None and saved_token_path is not None:
+            constants.HF_TOKEN_PATH = saved_token_path
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if store is not None:
+            shutil.rmtree(store, ignore_errors = True)
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -587,6 +664,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     if not config.get("allow_ambient", True):
         apply_token_to_child_env(os.environ, False)
+        _redirect_hf_token_store()
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
@@ -711,7 +789,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                _handle_export(backend, cmd, resp_queue)
+                # Scoped per command, not per worker: this one may have been loaded by a
+                # different caller, and the GGUF converters read credentials out of the
+                # environment they are spawned with.
+                with _credential_scope(cmd.get("hf_token")):
+                    _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)

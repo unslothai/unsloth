@@ -749,3 +749,71 @@ def test_hf_login_treats_none_as_fetch_the_operators_stored_token():
     assert "if token is None:" in src and "get_token()" in src
     # False must not be routed into the get_token() branch.
     assert hf_login(False) is False
+
+
+def test_non_ambient_worker_gets_a_private_hf_token_store(monkeypatch, worker_in_process):
+    """Scrubbing the environment is half of it.
+
+    get_token() also reads ~/.cache/huggingface/token, and login() writes there, so a shared
+    store leaks the operator's credential in and the caller's credential out.
+    """
+    import os
+
+    worker = worker_in_process
+    monkeypatch.setenv("HF_TOKEN", "hf_operator_secret_123")
+    monkeypatch.delenv("HF_TOKEN_PATH", raising = False)
+
+    seen = {}
+
+    def _fake_activate(path, token):
+        seen["token_path"] = os.environ.get("HF_TOKEN_PATH")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(worker, "_activate_transformers_version", _fake_activate)
+
+    with pytest.raises(SystemExit):
+        worker.run_export_process(
+            cmd_queue = MagicMock(),
+            resp_queue = MagicMock(),
+            config = {"checkpoint_path": "/tmp/m", "allow_ambient": False, "hf_token": None},
+        )
+
+    path = seen["token_path"]
+    assert path and "unsloth-export-hf-" in path
+    assert not os.path.exists(path), "the private store starts empty, so get_token() finds nothing"
+
+
+@pytest.mark.parametrize(
+    "cmd_token,expect_env_token,expect_disable_implicit",
+    [
+        (False, None, "1"),
+        ("hf_caller_own_token", "hf_caller_own_token", "0"),
+        (None, "hf_operator_secret_123", None),
+    ],
+)
+def test_export_command_scopes_the_credential_it_can_reach(
+    monkeypatch, cmd_token, expect_env_token, expect_disable_implicit
+):
+    """The GGUF converters build their child env from os.environ, and anything left at
+    token=None calls get_token(), so a command inside a worker some other caller loaded has to
+    be scoped both ways."""
+    import os
+
+    from core.export import worker
+
+    monkeypatch.setenv("HF_TOKEN", "hf_operator_secret_123")
+    monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising = False)
+
+    with worker._credential_scope(cmd_token):
+        assert os.environ.get("HF_TOKEN") == expect_env_token
+        assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == expect_disable_implicit
+        if cmd_token is False:
+            import huggingface_hub.constants as hf_constants
+            from huggingface_hub import get_token
+
+            assert "unsloth-export-hf-cmd-" in hf_constants.HF_TOKEN_PATH
+            assert get_token() is None, "no stored login is reachable for an anonymous command"
+
+    # Restored, so the next command decides for itself.
+    assert os.environ.get("HF_TOKEN") == "hf_operator_secret_123"
+    assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") is None
