@@ -31635,6 +31635,32 @@ class LlamaCppBackend:
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []
+        # What this pass has put on the PAYLOAD that `conversation` never learned about:
+        # a continuation's partial, and the reasoning recovery's progress turn plus its
+        # request. Both recoveries can run in one turn, in either order, so the tail
+        # accumulates. `_refit_tail_merged` covers only its FIRST message: that one may
+        # have been folded into a turn `conversation` still holds, and then it replaces
+        # that turn rather than sitting after it.
+        _refit_tail: list = []
+        _refit_tail_merged = False
+
+        def _record_refit_tail(committed: list, added: int, merged: bool) -> None:
+            """Take the *added* newest messages of *committed* onto the refit tail.
+
+            Recorded where it is committed rather than sniffed off the payload later,
+            because only the committing site knows whether `append_assistant_turn` merged
+            its message into the turn the list already ended on -- and if it did, the
+            merged turn REPLACES what it absorbed instead of following it.
+            """
+            nonlocal _refit_tail, _refit_tail_merged
+            _new = committed[-added:]
+            if not merged:
+                _refit_tail = _refit_tail + _new
+            elif _refit_tail:
+                _refit_tail = _refit_tail[:-1] + _new
+            else:
+                _refit_tail = _new
+                _refit_tail_merged = True
 
         def _refit_final_after_respawn() -> None:
             nonlocal conversation
@@ -31693,61 +31719,60 @@ class LlamaCppBackend:
                 from core.inference import context_refusal  # noqa: PLC0415
 
                 context_refusal.record_fit(truncation)
-                # `conversation` never learned about an answer continuation -- that
-                # appended its partial to the PAYLOAD alone -- so putting it back
-                # unchanged would leave the flags describing a list that now ends on
-                # the user turn. Neither half of that can be dropped on its own:
-                # llama-server takes `continue_final_message` with no trailing
-                # assistant turn (measured on b10715) and renders the prompt with no
-                # generation prompt at all, so the model continues the USER's message
-                # instead of answering it; and dropping the flags instead restarts the
-                # answer while `cumulative` and `_last_emitted` still hold the partial,
-                # so the fresh reply is appended to it. The partial rides across.
-                _carried_partial = None
-                _prior_messages = stream_payload.get("messages") or []
-                if (
-                    stream_payload.get("continue_final_message")
-                    and _prior_messages
-                    and _prior_messages[-1].get("role") == "assistant"
-                ):
-                    _carried_partial = _prior_messages[-1]
-                stream_payload["messages"] = neutralize_control_markup_in_messages(
-                    conversation, None, self.markup_profile
+                # `conversation` never learned what this pass recovered with -- both the
+                # answer continuation and the reasoning recovery append to the PAYLOAD
+                # alone -- so putting it back unchanged sends a retry missing turns that
+                # `cumulative` and `_last_emitted` still hold, and with the flags
+                # describing a list that no longer ends where they say. Neither half can
+                # be dropped on its own: llama-server takes `continue_final_message` with
+                # no trailing assistant turn (measured on b10715) and renders the prompt
+                # with no generation prompt at all, so the model continues the USER's
+                # message instead of answering it; and dropping the flags instead
+                # restarts an answer already on screen, so the fresh reply is appended to
+                # it. The tail rides across.
+                #
+                # Copied first: the sweep hands back the SAME list when nothing needed
+                # rewriting, so writing the tail in place would grow `conversation`
+                # itself and every later reader of it.
+                _refit_messages = list(
+                    neutralize_control_markup_in_messages(
+                        conversation, None, self.markup_profile
+                    )
                 )
-                if _carried_partial is not None:
-                    # Copied first: the sweep above hands back the SAME list when nothing
-                    # needed rewriting, so putting the partial in place would grow
-                    # `conversation` itself and every later reader of it.
-                    _refit_messages = list(stream_payload["messages"])
-                    # Already neutralized where the candidate was built, so it goes in
-                    # after the pass above rather than through it, and under the rule
-                    # `append_assistant_turn` used there: a trailing assistant turn it
-                    # would have merged into is ALREADY inside the carried partial, so
-                    # appending as well replays a caller's prefill twice across two
+                if _refit_tail:
+                    # Already neutralized where the candidate was built, so the tail goes
+                    # in after the sweep rather than through it. `_refit_tail_merged`
+                    # says the first of them was folded INTO the assistant turn the list
+                    # then ended on, so it carries that turn's text and replaces it;
+                    # appending as well would replay a caller's prefill twice, across two
                     # consecutive assistant turns.
-                    if trailing_assistant_text(_refit_messages) is None:
-                        _refit_messages.append(_carried_partial)
+                    if _refit_tail_merged and trailing_assistant_text(_refit_messages) is not None:
+                        _refit_messages[-1:] = _refit_tail
                     else:
-                        _refit_messages[-1] = _carried_partial
-                    stream_payload["messages"] = _refit_messages
-                    # The fit above priced `conversation` alone, so the partial is
-                    # room the replacement window has not been asked about. Same two
-                    # steps the continuation took when it was first committed, now
-                    # against the window the respawn actually came back with.
-                    if not _continuation_would_be_served(stream_payload["messages"], True):
+                        _refit_messages.extend(_refit_tail)
+                stream_payload["messages"] = _refit_messages
+                if _refit_tail:
+                    # The fit above priced `conversation` alone, so the tail is room the
+                    # replacement window has not been asked about. Same two steps the
+                    # recovery took when it was first committed, now against the window
+                    # the respawn actually came back with.
+                    _refit_continue = bool(stream_payload.get("continue_final_message"))
+                    if not _continuation_would_be_served(
+                        stream_payload["messages"], _refit_continue
+                    ):
                         _refit_evicted = _evict_until_it_fits(
                             stream_payload["messages"],
                             None,
                             stream_payload.get("chat_template_kwargs"),
-                            True,
+                            _refit_continue,
                         )
                         if _refit_evicted is not None:
                             # Adopted whether or not it clears the gate. When it does
                             # not, nothing else will either -- what is left is the
-                            # current turn and the partial, and neither can go -- so
-                            # the smaller of the two candidates is the retry's best
-                            # chance, and llama-server's own context error names the
-                            # real numbers if it still does not fit.
+                            # current turn and the tail, and neither can go -- so the
+                            # smaller of the two candidates is the retry's best chance,
+                            # and llama-server's own context error names the real numbers
+                            # if it still does not fit.
                             stream_payload["messages"] = _refit_evicted
                 if truncation:
                     if _records_boundary(truncation):
@@ -32034,6 +32059,7 @@ class LlamaCppBackend:
                         # trailing assistant text, so handing it the cumulative value a
                         # second time yields "fragment1 + fragment1 + continuation1".
                         _candidate_messages = list(stream_payload["messages"])
+                        _merged_f = trailing_assistant_text(_candidate_messages) is not None
                         _append_assistant_turn(
                             _candidate_messages,
                             {
@@ -32071,6 +32097,10 @@ class LlamaCppBackend:
                                 _served = True
                         if _served:
                             stream_payload["messages"] = _candidate_messages
+                            # One turn past what `conversation` knows, for the respawn
+                            # refit. Read off the COMMITTED list, so an eviction above
+                            # cannot leave the refit replaying a turn that is gone.
+                            _record_refit_tail(_candidate_messages, 1, _merged_f)
                             _final_replayed_chars = len(_last_emitted)
                             stream_payload["continue_final_message"] = True
                             stream_payload["add_generation_prompt"] = False
@@ -32142,6 +32172,9 @@ class LlamaCppBackend:
                             # See the answer continuation above: spending the payload and
                             # the usage before the decision double-counted both.
                             _candidate_r = list(stream_payload["messages"])
+                            _merged_r = bool(
+                                stream_payload.get("continue_final_message")
+                            ) and trailing_assistant_text(_candidate_r) is not None
                             _append_assistant_turn(
                                 _candidate_r,
                                 {
@@ -32179,6 +32212,11 @@ class LlamaCppBackend:
                                     _served_r = True
                             if _served_r:
                                 stream_payload["messages"] = _candidate_r
+                                # Two turns past what `conversation` knows: the progress
+                                # note and the request for the answer. Both have to
+                                # survive a respawn refit, or the retry asks the original
+                                # question again with the partial still on screen.
+                                _record_refit_tail(_candidate_r, 2, _merged_r)
                                 # The retry ends on a USER turn, so the flags from any
                                 # earlier answer continuation no longer describe it.
                                 stream_payload.pop("continue_final_message", None)

@@ -494,6 +494,66 @@ def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
     assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][-1]["content"]
 
 
+def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeypatch):
+    """The recovery appends to the payload too, so it has to survive the refit as well.
+
+    A continuation that shows nothing but reasoning is recovered with a progress turn and
+    a user request for the answer, both appended to the payload alone. Rebuilding from
+    `conversation` drops them together with the partial the first attempt already put on
+    screen, so the retry answers the original question from scratch while `cumulative`
+    still holds that partial, and the two are stitched together.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
+
+    def _respawned() -> bool:
+        backend._effective_context_length = 2048
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:  # the recovery request's own open
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    _run_no_tools(backend, context_overflow = "truncate_oldest")
+
+    replayed = payloads[-1]
+    assert [message["role"] for message in replayed["messages"]] == [
+        "user",
+        "assistant",
+        "user",
+    ], "the refit dropped the recovery turns"
+    assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][1]["content"]
+    # Ends on the request, so the flags the recovery cleared still describe the list.
+    assert "continue_final_message" not in replayed
+    assert "add_generation_prompt" not in replayed
+
+
 def test_the_final_continuation_is_capped(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(
