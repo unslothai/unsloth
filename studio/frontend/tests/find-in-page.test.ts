@@ -1572,10 +1572,9 @@ test("the grapheme fences do not depend on lookbehind", async () => {
 });
 
 test("the grapheme boundary is the platform's answer, not a list of ranges", () => {
-  // Six rounds of review found six ways to land inside a cluster, each a Unicode range that had not
-  // been enumerated: Hangul Jamo, then combining marks, then Prepend, then spacing marks and skin
-  // tones. There is no end to that list, so the question now goes to `Intl.Segmenter`, which knows
-  // the whole of UAX 29. These are the cases that were wrong, one per round.
+  // Enumerating the ranges by hand kept missing one: Hangul Jamo, combining marks, Prepend,
+  // spacing marks, skin tones. The question goes to `Intl.Segmenter` instead, which knows the whole
+  // of UAX 29. These are the cases that were wrong before it did.
   const index = (body: string) =>
     buildTextIndex(el("DIV", [el("P", [text(body)])]));
   for (const [body, query] of [
@@ -1656,10 +1655,9 @@ test("text with no whitespace for hundreds of characters is still fenced", () =>
 });
 
 test("whitespace is not treated as a grapheme boundary", () => {
-  // It is not one. A combining mark joins a preceding space and a Prepend joins a following one,
-  // so anchoring the segmentation at a space cut off the very context that decides the join. The
-  // block separator is a control character, which UAX 29 breaks on either side unconditionally, so
-  // that is the only place the walk can be picked up.
+  // A combining mark joins a preceding space and a Prepend joins a following one, so anchoring at
+  // a space cut off the context that decides the join. Only the block separator can be picked up
+  // from, being a control, which UAX 29 breaks on either side unconditionally.
   const index = (body: string) =>
     buildTextIndex(el("DIV", [el("P", [text(body)])]));
   assert.deepEqual(findMatches(index("a \u0301"), "\u0301", 10), []);
@@ -1698,10 +1696,9 @@ test("a capped search does not pay twice for the same segmentation", () => {
 });
 
 test("a cluster is offered its longest spelling first", () => {
-  // `i` and `i` plus a combining dot are both spellings of the same cluster, and alternation takes
-  // the first that fits. Shortest first, the bare `i` won, the match ended between the letter and
-  // its dot, and the boundary check then threw the occurrence away rather than reaching for the
-  // longer spelling: dotted capital I, the first thing this file ever had to fold, stopped matching.
+  // Both spellings of one cluster, and alternation takes the first that fits. Shortest first, the
+  // bare `i` won, the match ended between the letter and its dot, and the fence threw the whole
+  // occurrence away rather than reaching for the longer spelling.
   const dotted = buildTextIndex(el("DIV", [el("P", [text("İstanbul")])]));
   assert.deepEqual(findMatches(dotted, "i", 10), [{ start: 0, end: 2 }]);
   assert.deepEqual(findMatches(dotted, "istanbul", 10), [{ start: 0, end: 9 }]);
@@ -1736,10 +1733,8 @@ test("the cheap boundary test does not shortcut past a clipped end", () => {
 });
 
 test("a full ceiling behind a block boundary still ends on a boundary", () => {
-  // Stopping because the index is full is not the same as stopping in the middle of a node. When a
-  // separator was already due, what is left out is behind a break and cannot reach back, so the
-  // last character indexed is still whole and still searchable. Treating the two the same threw
-  // away the last character of a full index.
+  // A separator was already due, so what is left out is behind a break and cannot reach back: the
+  // last character indexed is whole. Treating a full ceiling like a cut lost it.
   const nodes = Array.from(
     { length: MAX_INDEX_CHARS / MAX_NODE_CHARS },
     (_unused, at) =>
@@ -1761,12 +1756,9 @@ test("a full ceiling behind a block boundary still ends on a boundary", () => {
 });
 
 test("a cut in the middle of the document is unsafe on both sides", () => {
-  // The separator written where a node was cut is not the boundary it looks like: what was dropped
-  // is still on the page between the two, so it can carry on from the text before the separator
-  // into the text after. A single flag for the end of the walk forgot the cut as soon as anything
-  // else was indexed.
-  // Spelt out, not as a precomposed syllable: the cut has to fall between the vowel form and the
-  // Jamo that closes it, which is the whole point of the case.
+  // The separator a cut writes is not the boundary it looks like: what was dropped is still on the
+  // page between the two and can carry across it. One flag for the end of the walk forgot the cut
+  // as soon as anything else was indexed. Spelt out, so the cut falls inside the syllable.
   const index = buildTextIndex(
     el("DIV", [
       el("P", [
@@ -1784,10 +1776,9 @@ test("a cut in the middle of the document is unsafe on both sides", () => {
 });
 
 test("what was dropped decides the far side of a cut, not what was kept", () => {
-  // Reading the retained character alone was the wrong question. Nothing below U+0300 joins
-  // backwards, which is what made an ASCII character look safe, but a Prepend in the dropped text
-  // joins forwards into it, and the page shows the two as one grapheme. The dropped text is only
-  // visible while the index is being built, so that is where this is settled.
+  // Nothing below U+0300 joins backwards, which made an ASCII character look safe, but a Prepend
+  // in the dropped text joins forwards into it. Settled while the index is built, which is the only
+  // time the dropped text can be seen.
   const reaching = buildTextIndex(
     el("DIV", [
       el("P", [text(`${"x".repeat(MAX_NODE_CHARS)}\u0600`), text("a")]),
@@ -1806,10 +1797,9 @@ test("what was dropped decides the far side of a cut, not what was kept", () => 
 });
 
 test("the dropped tail is read back far enough to answer for itself", () => {
-  // One code point was not enough. A linker with marks after it still joins the consonant that
-  // follows, so the junction has to see back past the marks to the linker, and past a ZWJ to the
-  // pictograph it hangs from. Both chains are unbounded in UAX 29, so there is a window, and
-  // outrunning it is called unknown rather than guessed at.
+  // A linker with marks after it still joins what follows, so the junction has to see back past
+  // the marks to the linker, and past a ZWJ to its pictograph. Both chains are unbounded in UAX 29,
+  // so there is a window, and outrunning it is called unknown rather than guessed at.
   const conjunct = buildTextIndex(
     el("DIV", [
       el("P", [
@@ -1922,10 +1912,9 @@ test("no match a cut leaves behind disagrees with the page it was cut from", () 
 });
 
 test("what the dropped tail was is not the question; what it meets is", () => {
-  // Refusing on the class of the last dropped code point alone could only ever say no. A closed
-  // syllable reaches forward into another trailing Jamo and nothing else, and an even run of
-  // regional indicators pairs off among itself, so in both cases the next node begins exactly
-  // where it appears to.
+  // Refusing on the class of the last dropped code point could only ever say no. A closed syllable
+  // reaches forward into a trailing Jamo and nothing else, and an even run of indicators pairs off
+  // among itself, so the next node begins exactly where it appears to.
   const cut = (dropped: string, resumed: string) =>
     buildTextIndex(
       el("DIV", [
@@ -2017,10 +2006,9 @@ test("a cut whose context outran its window does not outlive the cut", () => {
 });
 
 test("a portal is its own surface, whatever the workspace ended on", () => {
-  // Nothing a portal paints can carry on from text cut out of the workspace behind it. The block
-  // branch clears the cut on the way out of any block tag, which covers this for a `DIV` scope and
-  // a `DIV` portal and hid it for everything else; the boundary belongs to the portal, not to the
-  // tags either side of it.
+  // Nothing a portal paints carries on from text cut out of the workspace behind it. The block
+  // branch clears the cut leaving any block tag, which covered a `DIV` scope and `DIV` portal and
+  // hid it for everything else: the boundary belongs to the portal, not to the tags either side.
   const index = buildTextIndex(
     el("SPAN", [text(`${"x".repeat(MAX_NODE_CHARS)}\u1100`)]),
     [el("SPAN", [text("\uac00 hello")])],
@@ -2158,11 +2146,10 @@ test("the time between two searches is not charged to either", () => {
 });
 
 test("what a seek is allowed to cost is time, not a number of them", () => {
-  // A seek is not one price. Into a page of Hangul it is 0.2us and into a page of flags 1236us,
-  // six thousand to one on the same length of text, so any count is far too small for one and far
-  // too large for the other. Counting let a flag-heavy page spend twenty thousand of the expensive
-  // kind on its first search, which is twenty seconds of frozen tab. Counted here, because the
-  // point is that the expensive kind stops after a handful rather than after a budgeted number.
+  // A seek is not one price: 0.2us into a page of Hangul and 1236us into a page of flags, six
+  // thousand to one on the same length of text, so any count is far too small for one and far too
+  // large for the other. Counting let a flag-heavy page spend twenty thousand of the expensive kind
+  // on its first search. Counted here, since the point is that they stop after a handful.
   const probe = `
     let seeks = 0;
     const Real = Intl.Segmenter;
@@ -2208,9 +2195,8 @@ test("what a seek is allowed to cost is time, not a number of them", () => {
 
 test("a capped search does not segment the whole index to answer its first pass", () => {
   // The scan that replaces the seeks costs a pass over the whole index, so what it is allowed to
-  // replace matters as much as that it exists. On a flat count a bounded pass reaches the
-  // threshold on a big enough index and pays for the entire document to answer ten thousand
-  // questions, which is slower than the seeks by a wide margin. Counted, not timed.
+  // replace matters as much as that it exists. On a flat count a bounded pass reaches the threshold
+  // on a big enough index and buys the whole document to answer ten thousand cheap questions.
   const probe = `
     let scans = 0;
     let seeks = 0;
@@ -2273,9 +2259,8 @@ test("a capped search does not segment the whole index to answer its first pass"
 
 test("a query that matches everywhere stops seeking the segmenter per candidate", () => {
   // `containing` seeks, which is why it replaced segmenting whole blocks, and a seek per candidate
-  // is the shape that undoes: a capped search anchored near the end walks the candidates up to
-  // three times, so a page of one repeated syllable asked for millions of them and froze the tab
-  // for seconds. Counted rather than timed, so the property is asserted and not the hardware.
+  // undoes that: a capped search anchored near the end walks the candidates up to three times, so a
+  // page of one repeated syllable asked for millions. Counted, so the assertion is not the clock.
   const probe = `
     let seeks = 0;
     const Real = Intl.Segmenter;
@@ -2381,10 +2366,9 @@ test("the chain a cut leaves is followed past the seam, not only to it", () => {
 
 test("a CRLF is one grapheme, which the fast path has to know about", () => {
   // The fast path rests on nothing below U+0300 joining, and CR before LF is the one thing there
-  // that does (GB3). I proved the rest by sweeping every code point under U+0300 and excluded the
-  // line breaks on the grounds that a collapsed newline is its own grapheme. In a `<pre>` it is
-  // not collapsed, the pair arrives intact, and all four characters the shortcut looks at are
-  // ASCII, so it answered without asking anyone.
+  // that does (GB3). The sweep that proved the rest excused the line breaks, a collapsed newline
+  // being its own grapheme. In a `<pre>` nothing is collapsed, the pair arrives intact, and every
+  // character the shortcut looks at is ASCII, so it answered without asking anyone.
   const fence = el("PRE", [text("line\r\nnext")]);
   withStyles(new Map([[fence, { whiteSpace: "pre" }]]), () => {
     const index = buildTextIndex(fence);
@@ -2406,10 +2390,9 @@ test("a CRLF is one grapheme, which the fast path has to know about", () => {
 });
 
 test("a node left out entirely still says whether the end was a boundary", () => {
-  // With one code unit of room left and a pair next, there is no room for the pair, so the whole
-  // node goes. That is not a reason to call the end unknown: the node is still there to be read,
-  // and its first code point answers it, exactly as the ceiling check above does. Assuming
-  // otherwise threw away the last match in the index.
+  // One code unit of room and a pair next means the whole node goes. That is not a reason to call
+  // the end unknown: the node is still there to be read and its first code point answers it, as in
+  // the ceiling check above. Assuming otherwise threw away the last match in the index.
   const nodes = [];
   for (
     let at = 0;
@@ -2455,9 +2438,8 @@ test("a cut never falls between the halves of a pair", () => {
 
 test("asking whether anything is in doubt does not count what", () => {
   // Every candidate asks, and a cut through an odd indicator run leaves one run per pair, so
-  // counting them made the search quadratic. Compared against the same text with no cut in it
-  // rather than against a clock: same length, same matches, same machine, and the only difference
-  // is the runs, so the ratio says whether their number is being walked.
+  // counting them made the search quadratic. Compared against the same text uncut rather than
+  // against a clock: only the number of runs differs, so the ratio says whether it is walked.
   const flag = (at: number) => String.fromCodePoint(0x1f1e6 + (at % 26));
   let run = "";
   for (let at = 0; at < MAX_NODE_CHARS / 2; at += 1) run += flag(at + 3);
@@ -2505,11 +2487,10 @@ test("doubt over a whole node is one run, not an entry per character", () => {
 });
 
 test("a chain a cut leaves ends where the block does", () => {
-  // Carrying the chain between siblings has to stop at the boundary that makes the next content
-  // independent, and a block closing is one. Left running it followed the cut into the block after
-  // and marked a consonant there that nothing on the page joins, losing a valid occurrence.
-  // Text after the block, not inside another one: a following block clears the chain as it opens,
-  // so only this shape reaches the closing boundary with it still live.
+  // Carrying the chain between siblings has to stop where the next content becomes independent,
+  // and a block closing does that. Left running, it marked a consonant past the block that nothing
+  // joins, losing an occurrence. Text after the block, not inside another one: a following block
+  // clears the chain as it opens, so only this shape reaches the closing boundary still live.
   const index = buildTextIndex(
     el("DIV", [
       el("P", [text("a".repeat(MAX_NODE_CHARS - 1) + "क्"), text("́")]),
@@ -2558,10 +2539,9 @@ test("a chain a cut leaves crosses as many siblings as it needs", () => {
 });
 
 test("a mark on a space in the query survives the space flexing", () => {
-  // Whitespace in a query matches any run of it, because a soft-wrapped paragraph renders as one
-  // line while its node holds the newline. A mark attached to that space is part of the same
-  // grapheme and was being dropped with it, so the shortened match ended inside a grapheme and the
-  // fence threw away the only occurrence of text that is on the page verbatim.
+  // Whitespace in a query matches any run of it, a soft-wrapped paragraph rendering as one line
+  // while its node holds the newline. A mark on that space is part of the same grapheme and went
+  // with it, so the match ended mid-grapheme and the fence discarded text that is on the page.
   const index = buildTextIndex(el("DIV", [el("P", [text(" ́")])]));
   assert.equal(findMatches(index, " ́", 10).length, 1);
   // The flexing itself is untouched: a plain space still matches a run of whitespace.
@@ -2570,10 +2550,9 @@ test("a mark on a space in the query survives the space flexing", () => {
 });
 
 test("the work a cut costs is bounded by the index, not by the node", () => {
-  // A node is as long as whatever produced it chose to make it, and only MAX_NODE_CHARS of one
-  // enters the index. Following the chain over the whole of it bought a set entry per code point
-  // of text that is not indexed at all, so megabytes of one combining mark from a model became
-  // seconds of frozen tab and hundreds of megabytes held.
+  // A node is as long as whatever produced it chose, and only MAX_NODE_CHARS of one is indexed.
+  // Following the chain over the whole of it bought an entry per code point of text that is not
+  // indexed at all, so megabytes of one mark from a model cost seconds and hundreds of megabytes.
   const build = (run: number) =>
     buildTextIndex(
       el("DIV", [
@@ -2592,10 +2571,9 @@ test("the work a cut costs is bounded by the index, not by the node", () => {
 });
 
 test("the chain a cut leaves is followed however long it runs", () => {
-  // Following it only as far as the backward window reaches was the wrong shape for the forward
-  // direction: the text ahead is in hand, so the run can be as long as it likes. A sibling of 32
-  // marks then the consonant put that consonant one past the window and left it findable, inside
-  // the grapheme the cut split.
+  // The backward window is the wrong bound going forward: the text ahead is in hand, so the run
+  // may be as long as it likes. A sibling of 32 marks then the consonant put that consonant one
+  // past the window and left it findable, inside the grapheme the cut split.
   for (const marks of [8, 31, 32, 64]) {
     const index = buildTextIndex(
       el("DIV", [
@@ -2733,8 +2711,7 @@ test("a carriage return keeps the line feed after it", () => {
 test("a real block boundary after a cut is still a boundary", () => {
   // The separator standing in for dropped text and the one a block writes are the same character,
   // but only the first is uncertain: a block break is one wherever the dropped text ended. The
-  // dropped tail here is a leading Jamo, which would reach into the next syllable were the two
-  // still on the same line, so this fails unless the block boundary is told apart from the cut.
+  // dropped tail is a leading Jamo, which would reach on into the next syllable on the same line.
   const index = buildTextIndex(
     el("DIV", [
       el("SPAN", [text(`${"x".repeat(MAX_NODE_CHARS)}\u1100`)]),
@@ -2916,11 +2893,10 @@ test("the end of a full index is settled by what follows, not assumed to be a cu
 });
 
 test("the fallback finds neither more nor less than the platform, over a mixed corpus", () => {
-  // The fenced list above is the cases that were once wrong; this is the standing property, and it
-  // is the one that catches a fallback which is safe but useless. Fencing too much never cuts a
-  // grapheme, so the misalignment oracle cannot see it, and it still loses matches a reader can
-  // see: taking `Mc` for SpacingMark and applying GB9c on the linker alone each did exactly that.
-  // Same corpus both ways, counts compared per body, over an alphabet of every class that chains.
+  // The list above is the cases once wrong; this is the standing property, and the one that catches
+  // a fallback which is safe but useless. Fencing too much never cuts a grapheme, so the
+  // misalignment oracle cannot see it, yet it still loses matches: taking `Mc` for SpacingMark and
+  // applying GB9c on the linker alone both did. Same corpus both ways, counts compared per body.
   const alphabet = [
     0x915, 0x937, 0x93e, 0x94d, 0x9cd, 0x995, 0x1000, 0x102c, 0x102b, 0x1038,
     0x1039, 0x1780, 0x17d2, 0x11133, 0x11103, 0x200d, 0x300, 0x903, 0xe33, 0x21,
@@ -2984,10 +2960,9 @@ test("the fallback finds neither more nor less than the platform, over a mixed c
 });
 
 test("the segmenter fallback never misaligns, checked against the platform", () => {
-  // The list above is the cases that were once wrong; this is the property behind them, held
-  // against `Intl.Segmenter` over a corpus of every shape that has caused trouble. No match the
-  // fallback returns may begin or end where the platform would not break: it may find less than
-  // the platform does, never cut a grapheme. This is what caught the missing Prepend set.
+  // The property behind the list above, held against `Intl.Segmenter` over every shape that has
+  // caused trouble: no match the fallback returns may begin or end where the platform would not
+  // break. It may find less than the platform, never cut a grapheme. This caught the Prepend set.
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const at = (code: number) => String.fromCodePoint(code);
   const pieces = [

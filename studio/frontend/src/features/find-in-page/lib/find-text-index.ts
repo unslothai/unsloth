@@ -923,9 +923,9 @@ function continuesGrapheme(text: string, at: number, runStart = -1): boolean {
 /**
  * Per cluster, because alternating whole spellings of the WHOLE query reaches only all-composed or
  * all-decomposed text, and one occurrence can be neither: joining two text nodes joins two sources,
- * so
- * `café` in one and `café` in the next make one visible word with a spelling the query
- * cannot be written in. Every engine's own find matches it. */
+ * so `café` in one and `café` in the next make one visible word with a spelling the
+ * query cannot be written in. Every engine's own find matches it.
+ */
 function canonicalSource(needle: string, dotted: boolean): string {
   let out = "";
   for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
@@ -1031,14 +1031,10 @@ function graphemeSegmenter() {
 /**
  * True when `[start, end)` begins and ends where a grapheme does.
  *
- * Asked of the platform rather than answered here. Enumerating the ranges by hand kept missing
- * ways to land inside a cluster, one more each round, and there is no end to that list; the
- * segmenter already knows the whole of UAX 29 and is kept current with it.
- *
- * Asked one offset at a time, not by segmenting anything, so neither the size of the index nor
- * where in it the match landed costs anything. Filling a table of a block's boundaries instead
- * paid 250ms per block for the one or two offsets a match asks about, and paid it again on every
- * reindex.
+ * Asked of the platform, which knows the whole of UAX 29 and is kept current with it; enumerating
+ * the ranges here kept missing one more way to land inside a cluster every round. Asked one offset
+ * at a time, so neither the size of the index nor where the match landed in it costs anything:
+ * tabulating a block's boundaries instead paid 250ms per block, and paid it again on every reindex.
  */
 function alignsToGraphemes(
   index: FindTextIndex,
@@ -1049,10 +1045,9 @@ function alignsToGraphemes(
   const cut =
     !index.unsafe.empty && (index.unsafe.has(start) || index.unsafe.has(end));
   // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
-  // far more than looking. Nothing below U+0300 joins a grapheme: the lowest combining mark is
-  // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and
-  // everything astral arrives as a surrogate. Both sides of each edge, since the query can itself
-  // begin or end with one, so Latin prose pays four comparisons.
+  // far more than looking. Nothing below U+0300 joins: the lowest combining mark is U+0300, the
+  // lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and everything
+  // astral arrives as a surrogate. Both sides of each edge, since the query can end with one.
   if (
     !cut &&
     !splitsCrlf(text, start) &&
