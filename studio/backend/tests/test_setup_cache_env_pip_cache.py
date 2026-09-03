@@ -110,9 +110,7 @@ def test_portable_direct_launch_pins_pip_cache_under_the_root(monkeypatch, tmp_p
     assert os.environ["PIP_CACHE_DIR"] == str(master / "cache" / "pip")
 
 
-def test_the_nested_layout_pins_pip_at_the_master_root_not_the_studio_root(
-    monkeypatch, tmp_path
-):
+def test_the_nested_layout_pins_pip_at_the_master_root_not_the_studio_root(monkeypatch, tmp_path):
     """install.sh exports `$UNSLOTH_ROOT/cache/pip`, which is one level ABOVE the
     Studio root under the default nested layout. Deriving it from cache_root()
     would give <root>/studio/cache/pip and split the cache in two."""
@@ -164,8 +162,9 @@ def test_the_pinned_path_matches_install_sh_and_the_cli(monkeypatch, tmp_path):
     ), "install.sh no longer exports PIP_CACHE_DIR as $UNSLOTH_ROOT/cache/pip"
 
     cli_text = _CLI_STUDIO.read_text(encoding = "utf-8", errors = "replace")
-    assert '"PIP_CACHE_DIR": str(master / "cache" / "pip")' in cli_text, \
-        "the CLI no longer derives PIP_CACHE_DIR as <master>/cache/pip"
+    assert (
+        '"PIP_CACHE_DIR": str(master / "cache" / "pip")' in cli_text
+    ), "the CLI no longer derives PIP_CACHE_DIR as <master>/cache/pip"
 
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
@@ -179,9 +178,11 @@ def test_the_runtime_pip_fallbacks_this_pin_is_for_still_exist():
     """Both live installers really do fall back to `python -m pip install`. If
     they stop, this pin protects nothing and the comment above is stale."""
     wheel_text = (_BACKEND_DIR / "utils" / "wheel_utils.py").read_text(encoding = "utf-8")
-    assert '[python_executable, "-m", "pip", "install"' in wheel_text, \
-        "wheel_utils no longer falls back to python -m pip install"
+    assert (
+        '[python_executable, "-m", "pip", "install"' in wheel_text
+    ), "wheel_utils no longer falls back to python -m pip install"
 
     worker_text = (_BACKEND_DIR / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
-    assert '[sys.executable, "-m", "pip", "install", *args]' in worker_text, \
-        "worker._pip_install_cmd no longer falls back to python -m pip install"
+    assert (
+        '[sys.executable, "-m", "pip", "install", *args]' in worker_text
+    ), "worker._pip_install_cmd no longer falls back to python -m pip install"

@@ -278,8 +278,12 @@ def main() -> int:
             venv = r / "unsloth_studio"
             (venv / "bin").mkdir(parents = True)
             (gen_conf if sentinel == "conf" else gen_portable_shim)(r, venv)
-            agree(f"an apostrophe in the root keeps the {sentinel} readable", r, home,
-                  expect_flat = True)
+            agree(
+                f"an apostrophe in the root keeps the {sentinel} readable",
+                r,
+                home,
+                expect_flat = True,
+            )
 
         print("\n[4] the nested layout install.sh builds by default")
         r = new_root("plain-nested")
