@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from models.inference import ChatCompletionRequest, InputAudioContentPart, UnknownContentPart
-from routes.inference import _normalise_chat_content_parts
+from routes.inference import _normalise_chat_content_parts, _reject_unsupported_content_parts
 
 
 AUDIO_B64 = "UklGRiQAAABXQVZF"
@@ -90,7 +90,7 @@ def test_an_unmodelled_part_type_names_itself_in_a_typed_400():
     assert isinstance(payload.messages[0].content[1], UnknownContentPart)
 
     with pytest.raises(HTTPException) as exc:
-        _normalise_chat_content_parts(payload)
+        _reject_unsupported_content_parts(payload)
     assert exc.value.status_code == 400
     assert "'file'" in str(exc.value.detail)
 
@@ -153,6 +153,7 @@ def test_a_string_content_message_passes_through_the_lift_untouched():
     """Only list content carries parts; a plain-string turn must not be rewritten."""
     payload = _request({"role": "system", "content": "be terse"}, _audio_message())
 
+    _reject_unsupported_content_parts(payload)
     _normalise_chat_content_parts(payload)
 
     assert payload.messages[0].content == "be terse"
@@ -190,3 +191,92 @@ def test_the_completion_route_refuses_an_unmodelled_part():
 
     assert response.status_code == 400
     assert "'file'" in response.json()["detail"]["error"]["message"]
+
+
+# ── The four review findings on the first two commits ──────────────────────────
+
+
+def test_a_non_string_part_type_is_a_validation_error_not_a_500():
+    """A list or dict ``type`` is unhashable against the known-tag set.
+
+    Testing membership on it raised TypeError out of the discriminator, which escaped request
+    validation as a 500 where the closed union had answered 422.
+    """
+    with _route_client("/v1") as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json = {
+                "model": "local",
+                "messages": [{"role": "user", "content": [{"type": [{"a": 1}], "x": 1}]}],
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_the_external_path_refuses_audio_rather_than_dropping_it():
+    """_build_external_messages has no input_audio case, so the part would be stripped.
+
+    The provider would then answer the text alone -- a plausible reply about a recording it
+    never received. Refused the way video is refused on the same branch.
+    """
+    with _route_client("/v1") as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json = {"model": "gpt-4o", "provider_type": "openai", "messages": [_audio_message()]},
+        )
+
+    assert response.status_code == 400
+    assert "Audio input is only supported" in str(response.json()["detail"])
+
+
+def test_the_external_path_refuses_an_unmodelled_part_rather_than_dropping_it():
+    with _route_client("/v1") as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json = {
+                "model": "gpt-4o",
+                "provider_type": "openai",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "summarise this"},
+                            {"type": "file", "file": {"file_id": "file_abc"}},
+                        ],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "'file'" in response.json()["detail"]["error"]["message"]
+
+
+def test_a_recording_from_an_earlier_turn_is_not_re_attached_to_the_follow_up():
+    """``audio_base64`` is positionless and _inject_audio_part appends to the last user turn.
+
+    Lifting an earlier turn's recording would move it onto a later question, so the model would
+    answer about the audio again instead of the follow-up.
+    """
+    payload = _request(
+        _audio_message(text = "transcribe this"),
+        {"role": "assistant", "content": "It says hello."},
+        {"role": "user", "content": [{"type": "text", "text": "now translate it to French"}]},
+    )
+
+    _normalise_chat_content_parts(payload)
+
+    assert payload.audio_base64 is None
+
+
+def test_a_recording_on_the_final_turn_is_still_lifted():
+    payload = _request(
+        _audio_message(data = "b2xk", text = "transcribe this"),
+        {"role": "assistant", "content": "It says hello."},
+        _audio_message(text = "and this one?"),
+    )
+
+    _normalise_chat_content_parts(payload)
+
+    assert payload.audio_base64 == AUDIO_B64

@@ -18607,25 +18607,54 @@ def _inject_video_part(messages: list[dict], video_b64: str) -> None:
             return
 
 
-def _normalise_chat_content_parts(payload) -> None:
-    """Lift an ``input_audio`` part onto ``audio_base64``, in place, and refuse parts we cannot serve.
+def _reject_unsupported_content_parts(payload) -> None:
+    """Refuse content parts no route can serve, before local or external routing.
 
-    Every audio check downstream reads ``audio_base64``, and an explicit one wins over a part.
-    ``getattr``, because /chat/count_tokens carries that field as an extra rather than declaring it.
+    The external proxy rebuilds messages from an allowlist, so a part left standing here is
+    dropped silently and the provider answers a prompt the caller did not send.
     """
-    lifted: Optional[str] = None
     for msg in payload.messages:
         if not isinstance(msg.content, list):
             continue
-        kept = []
         for part in msg.content:
             if isinstance(part, UnknownContentPart):
                 _raise_unsupported_openai_parameter(
                     "messages",
                     f"Message content parts of type '{part.type}' are not supported.",
                 )
+
+
+def _messages_have_input_audio(messages) -> bool:
+    return any(
+        isinstance(getattr(msg, "content", None), list)
+        and any(isinstance(part, InputAudioContentPart) for part in msg.content)
+        for msg in messages
+    )
+
+
+def _normalise_chat_content_parts(payload) -> None:
+    """Lift an ``input_audio`` part onto ``audio_base64``, in place.
+
+    Every audio check downstream reads ``audio_base64``, and an explicit one wins over a part.
+    ``getattr``, because /chat/count_tokens carries that field as an extra rather than declaring it.
+
+    Only the final user turn is lifted. That field is positionless and ``_inject_audio_part``
+    appends to the last user message, so lifting a recording from an earlier turn would re-attach
+    it to a later question -- the model would answer about the audio again instead of the follow-up.
+    A recording from an earlier turn has already been answered, so it is dropped as history.
+    """
+    last_user = None
+    for index, msg in enumerate(payload.messages):
+        if msg.role == "user":
+            last_user = index
+    lifted: Optional[str] = None
+    for index, msg in enumerate(payload.messages):
+        if not isinstance(msg.content, list):
+            continue
+        kept = []
+        for part in msg.content:
             if isinstance(part, InputAudioContentPart):
-                if msg.role == "user" and part.input_audio.data:
+                if index == last_user and part.input_audio.data:
                     lifted = part.input_audio.data
                 continue
             kept.append(part)
@@ -20423,6 +20452,11 @@ async def produce_openai_chat_completions(
             "top_logprobs", "top_logprobs is not supported for chat completions."
         )
 
+    # Before routing splits: the external proxy rebuilds messages from an allowlist and the
+    # local path flattens them, so a part neither can serve has to be refused while both are
+    # still reachable. Otherwise it is dropped in silence and the answer looks legitimate.
+    _reject_unsupported_content_parts(payload)
+
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
@@ -20449,9 +20483,17 @@ async def produce_openai_chat_completions(
                 status_code = 400,
                 detail = "Video input is only supported on a local GGUF model with video support.",
             )
+        # _build_external_messages carries no input_audio case, so the recording would be
+        # stripped and the provider would answer the text alone -- a plausible reply to a
+        # question about audio nobody heard. Refuse it the way video is refused.
+        if _messages_have_input_audio(payload.messages):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is only supported on a local model with audio support.",
+            )
         return await _proxy_to_external_provider(payload, request, current_subject)
 
-    # Local path only: an external provider takes input_audio natively.
+    # Local path only: the lift targets audio_base64, which the proxy never reads.
     _normalise_chat_content_parts(payload)
 
     # Reject a malformed function tool here: it would otherwise reach
@@ -28508,7 +28550,9 @@ async def chat_count_tokens(
     for _m in payload.messages:
         if _m.role == "developer":
             _m.role = "system"
-    # And the same lift, so the audio refusal below sees a part the way it sees the field.
+    # And the same refusal and lift, so a part this cannot price is refused the way the
+    # completion refuses it, and the audio guard below sees a part the way it sees the field.
+    _reject_unsupported_content_parts(payload)
     _normalise_chat_content_parts(payload)
     # And the same default it applies to a function tool that omits the discriminator: a
     # template serializing the whole entry renders it, so the count has to carry it too.

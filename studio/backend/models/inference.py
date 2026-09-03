@@ -1804,6 +1804,10 @@ _KNOWN_CONTENT_PART_TAGS = frozenset(
 
 def _content_part_discriminator(v):
     tag = v.get("type") if isinstance(v, dict) else getattr(v, "type", None)
+    # A list or dict tag is unhashable, so testing membership would raise TypeError out of
+    # request validation as a 500. Declining to name a member leaves pydantic to report it.
+    if not isinstance(tag, str):
+        return None
     return tag if tag in _KNOWN_CONTENT_PART_TAGS else "unknown"
 
 
