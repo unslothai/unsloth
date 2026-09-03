@@ -80,7 +80,10 @@ def test_kill_orphan_catches_oserror_from_studio_root():
 
 
 def _exec_search_roots_block(
-    home: Path, studio_root_value: Path, resolve_raises: bool, master: Path | None = None
+    home: Path,
+    studio_root_value: Path,
+    resolve_raises: bool,
+    master: Path | None = None,
 ) -> list[Path]:
     """Run _find_llama_server_binary's search_roots derivation -- plus the shared
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a

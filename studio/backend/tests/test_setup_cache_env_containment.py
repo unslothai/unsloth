@@ -159,7 +159,8 @@ def test_unsloth_portable_alone_enables_portable_mode(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "value", ("0", "false", "False", "FALSE", "off", "OFF", "no", "No", " false ", ""),
+    "value",
+    ("0", "false", "False", "FALSE", "off", "OFF", "no", "No", " false ", ""),
 )
 def test_unsloth_portable_off_values_do_not_enable_portable_mode(monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_PORTABLE", value)
@@ -174,9 +175,7 @@ _UNRECOGNIZED_PORTABLE = ("enabled", "flase", "2", "bogus", "y", "n", "disabled"
 
 
 @pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE)
-def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(
-    monkeypatch, tmp_path, value,
-):
+def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(monkeypatch, tmp_path, value):
     # The installers accept 1/true/yes/on and refuse the rest, so a value they
     # would have rejected must not put the runtime in portable mode on its own:
     # the caches would move for this launch and move back on the next one.
@@ -192,7 +191,7 @@ def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(
 
 @pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE + ("0", "false", "off", "no"))
 def test_a_portable_root_stays_portable_whatever_unsloth_portable_says(
-    monkeypatch, tmp_path, value,
+    monkeypatch, tmp_path, value
 ):
     # The root is what makes an install portable. Neither an unrecognized value
     # nor an off one may strand its caches back in the home directory.
@@ -293,7 +292,8 @@ def test_a_self_contained_layout_never_warns(monkeypatch, tmp_path, layout):
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
     monkeypatch.setenv(
-        "UNSLOTH_STUDIO_HOME", str(master / "studio") if layout == "nested" else str(master),
+        "UNSLOTH_STUDIO_HOME",
+        str(master / "studio") if layout == "nested" else str(master),
     )
     sr = _load_storage_roots()
     recorder = _RecordingLogger()
@@ -467,6 +467,7 @@ def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
     an unprivileged user can set up. Both os.stat and os.lstat are patched so the
     predicates this replaced see the same failure the fix does.
     """
+
     def denying(real):
         def deny(path, *args, **kwargs):
             if isinstance(path, (str, os.PathLike)) and Path(path) == target:
@@ -817,15 +818,17 @@ def test_only_a_positive_absence_counts_as_nothing_at_a_path(tmp_path):
     assert Path(dangling).exists() is False and sr._nothing_at(dangling) is False
 
 
-def test_nothing_at_reports_an_uninspectable_directory_as_holding_something(
-    monkeypatch, tmp_path
-):
+def test_nothing_at_reports_an_uninspectable_directory_as_holding_something(monkeypatch, tmp_path):
     sr = _load_storage_roots()
     styles = tmp_path / "stylelib"
     styles.mkdir()
     real_scandir = os.scandir
 
-    def deny(path = ".", *args, **kwargs):
+    def deny(
+        path = ".",
+        *args,
+        **kwargs,
+    ):
         if isinstance(path, (str, os.PathLike)) and Path(path) == styles:
             raise OSError(errno.EIO, "Input/output error")
         return real_scandir(path, *args, **kwargs)
@@ -836,7 +839,14 @@ def test_nothing_at_reports_an_uninspectable_directory_as_holding_something(
     assert sr._nothing_at(tmp_path / "absent", ending = ".mplstyle") is True
 
 
-def _fake_torch_on_path(tmp_path, label, version, cuda = None, hip = None, debug = False):
+def _fake_torch_on_path(
+    tmp_path,
+    label,
+    version,
+    cuda = None,
+    hip = None,
+    debug = False,
+):
     """A torch that has a version.py and explodes if anything imports it.
 
     version.py is written the way recent torch generates it, annotations and
