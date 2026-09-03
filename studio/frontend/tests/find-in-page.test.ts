@@ -2232,6 +2232,15 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["a\\u200db", "a\\u200d"],
       // GB11 wants a pictograph on both sides of the ZWJ, so this one ends its cluster.
       ["a\\u200d\\u{1f600}", "\\u{1f600}"],
+      // Category Mc that is NOT SpacingMark, so nothing here joins: taking the category for the
+      // class fenced off a cluster the platform never makes, and lost both halves of it.
+      ["\\u1000\\u102c", "\\u1000"],
+      ["\\u1000\\u102c", "\\u102c"],
+      // GB9c needs a consonant on both sides of the linker, not just a linker somewhere behind.
+      // A virama before a full stop, before a Latin letter, or with nothing anchoring it.
+      ["\\u0915\\u094d!", "!"],
+      ["\\u0915\\u094da", "a"],
+      ["!\\u094d\\u0915", "\\u0915"],
     ];
     for (const [body, query] of found) {
       if (findMatches(index(body), query, 10).length !== 1) {
@@ -2265,6 +2274,74 @@ test("nothing below U+0300 can join a grapheme, which is what the fast path rest
     }
   }
   assert.deepEqual(joiners, []);
+});
+
+test("the fallback finds neither more nor less than the platform, over a mixed corpus", () => {
+  // The fenced list above is the cases that were once wrong; this is the standing property, and it
+  // is the one that catches a fallback which is safe but useless. Fencing too much never cuts a
+  // grapheme, so the misalignment oracle cannot see it, and it still loses matches a reader can
+  // see: taking `Mc` for SpacingMark and applying GB9c on the linker alone each did exactly that.
+  // Same corpus both ways, counts compared per body, over an alphabet of every class that chains.
+  const alphabet = [
+    0x915, 0x937, 0x93e, 0x94d, 0x9cd, 0x995, 0x1000, 0x102c, 0x102b, 0x1038,
+    0x1039, 0x1780, 0x17d2, 0x11133, 0x11103, 0x200d, 0x300, 0x903, 0xe33, 0x21,
+    0x61, 0x20, 0x1f600, 0x1f1e6, 0x1100, 0x1161, 0x11a8, 0x600, 0x1f3fb,
+  ];
+  const probe = `
+    const alphabet = ${JSON.stringify(alphabet)}.map((c) => String.fromCodePoint(c));
+    if (process.env.NO_SEGMENTER === "1") delete Intl.Segmenter;
+    const { buildTextIndex, findMatches } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const el = (tagName, childNodes) => ({
+      nodeType: 1, tagName, childNodes, getAttribute: () => null,
+    });
+    const bodies = [];
+    let seed = 12345;
+    const next = () => (seed = (seed * 1103515245 + 12345) >>> 0);
+    for (let i = 0; i < 1500; i += 1) {
+      let body = "";
+      for (let k = 0, n = 2 + (next() % 6); k < n; k += 1) {
+        body += alphabet[next() % alphabet.length];
+      }
+      bodies.push(body);
+    }
+    // Every ordered pair as well, since the rules meet two characters at a time.
+    for (const a of alphabet) for (const b of alphabet) bodies.push(a + b);
+    const counts = bodies.map((body) => {
+      const index = buildTextIndex(el("DIV", [el("P", [{ nodeType: 3, data: body }])]));
+      let found = 0;
+      for (const query of alphabet) found += findMatches(index, query, 5000).length;
+      return found;
+    });
+    console.log(JSON.stringify(counts));
+  `;
+  const run = (noSegmenter: boolean) => {
+    const out = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+      {
+        encoding: "utf8",
+        env: { ...process.env, NO_SEGMENTER: noSegmenter ? "1" : "0" },
+      },
+    );
+    assert.equal(out.status, 0, out.stderr);
+    return JSON.parse(out.stdout) as number[];
+  };
+  const platform = run(false);
+  const fallback = run(true);
+  assert.ok(platform.length > 800);
+  assert.ok(platform.reduce((a, b) => a + b, 0) > 0);
+  // Per body, so a shortfall on one shape cannot be paid for by a surplus on another.
+  assert.deepEqual(
+    fallback.flatMap((n, i) =>
+      n === platform[i] ? [] : [`${i}: ${n} vs ${platform[i]}`],
+    ),
+    [],
+  );
 });
 
 test("the segmenter fallback never misaligns, checked against the platform", () => {

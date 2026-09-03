@@ -485,12 +485,26 @@ const EXTEND_PATTERN = /[\p{Grapheme_Extend}\p{Emoji_Modifier}]/u;
 const EXTENDS_LEFT_PATTERN =
   /[\p{Grapheme_Extend}\p{Emoji_Modifier}\p{Mc}\u200d\u{e33}\u{eb3}]/u;
 
+/** `Mc` is a near miss for SpacingMark, not a synonym, and these are the difference: the same
+ *  sweep, read the other way, for the ones that join nothing at all. Joining them anyway fenced
+ *  off a cluster that was never one, so on a Burmese page neither half of it could be found. The
+ *  `v` flag would subtract these inline, but it is younger than the engines this path is for. */
+const MC_NOT_SPACING_PATTERN =
+  /[\u{102b}-\u{102c}\u{1038}\u{1062}-\u{1064}\u{1067}-\u{106d}\u{1083}\u{1087}-\u{108c}\u{108f}\u{109a}-\u{109c}\u{1a61}\u{1a63}-\u{1a64}\u{aa7b}\u{aa7d}\u{11720}-\u{11721}]/u;
+
 /** The marks that join the letter after them to the one before (GB9c). No property escape has
  *  `InCB`, so this is the set the segmenter itself joins on: every mark for which a letter, that
  *  mark and the same letter make one cluster, where the two letters make two without it. The
  *  control half matters, or Thai and Lao vowels come back as linkers on pairs already joined. */
 const LINKER_PATTERN =
   /[\u{94d}\u{9cd}\u{acd}\u{b4d}\u{c4d}\u{d4d}\u{1039}\u{17d2}\u{1a60}\u{1b44}\u{1bab}\u{a9c0}\u{aaf6}\u{10a3f}\u{11133}\u{113d0}\u{1193e}\u{11a47}\u{11a99}\u{11f42}]/u;
+
+/** The letters GB9c joins, either side of the linker (InCB=Consonant). Same sweep again:
+ *  every letter that its own script's linker will bind to a copy of itself, where the two
+ *  bare copies stay apart. Without it any linker behind the boundary joined whatever came
+ *  next, so a virama before a full stop, or before a Latin letter, swallowed it. */
+const CONSONANT_PATTERN =
+  /[\u{915}-\u{939}\u{958}-\u{95f}\u{978}-\u{97f}\u{995}-\u{9a8}\u{9aa}-\u{9b0}\u{9b2}\u{9b6}-\u{9b9}\u{9dc}-\u{9dd}\u{9df}\u{9f0}-\u{9f1}\u{a95}-\u{aa8}\u{aaa}-\u{ab0}\u{ab2}-\u{ab3}\u{ab5}-\u{ab9}\u{af9}\u{b15}-\u{b28}\u{b2a}-\u{b30}\u{b32}-\u{b33}\u{b35}-\u{b39}\u{b5c}-\u{b5d}\u{b5f}\u{b71}\u{c15}-\u{c28}\u{c2a}-\u{c39}\u{c58}-\u{c5a}\u{d15}-\u{d3a}\u{1000}-\u{102a}\u{103f}\u{1050}-\u{1055}\u{105a}-\u{105d}\u{1061}\u{1065}-\u{1066}\u{106e}-\u{1070}\u{1075}-\u{1081}\u{108e}\u{1780}-\u{17b3}\u{1a20}-\u{1a54}\u{1b0b}-\u{1b0c}\u{1b13}-\u{1b33}\u{1b45}-\u{1b4c}\u{1b83}-\u{1ba0}\u{1bae}-\u{1baf}\u{1bbb}-\u{1bbd}\u{a989}-\u{a98b}\u{a98f}-\u{a9b2}\u{a9e0}-\u{a9e4}\u{a9e7}-\u{a9ef}\u{a9fa}-\u{a9fe}\u{aa60}-\u{aa6f}\u{aa71}-\u{aa73}\u{aa7a}\u{aa7e}-\u{aa7f}\u{aae0}-\u{aaea}\u{abc0}-\u{abda}\u{10a00}\u{10a10}-\u{10a13}\u{10a15}-\u{10a17}\u{10a19}-\u{10a35}\u{11103}-\u{11126}\u{11144}\u{11147}\u{11380}-\u{11389}\u{1138b}\u{1138e}\u{11390}-\u{113b5}\u{11900}-\u{11906}\u{11909}\u{1190c}-\u{11913}\u{11915}-\u{11916}\u{11918}-\u{1192f}\u{11a00}\u{11a0b}-\u{11a32}\u{11a50}\u{11a5c}-\u{11a83}\u{11f04}-\u{11f10}\u{11f12}-\u{11f33}]/u;
 
 /** How far back a dropped tail is read for context. Every rule that chains allows any number of
  *  links in the middle, so there has to be a stop somewhere; past it the junction is called
@@ -548,21 +562,29 @@ function pointBefore(text: string, end: number): [string, number] {
   return [text.slice(start, end), start];
 }
 
-/** Walk back over extenders from `end` and say whether `found` matches what they sit on: GB11 wants
- *  a pictograph on the far side of the ZWJ, GB9c a linker on the far side of the marks. */
-function reachesBack(
-  text: string,
-  end: number,
-  found: RegExp,
-  throughZwj = false,
-): boolean {
+/** Walk back over extenders from `end` and say whether `found` matches what they sit on: GB11
+ *  wants a pictograph on the far side of the ZWJ. GB9c has its own walk, which needs a linker on
+ *  the way as well as a consonant at the end. */
+function reachesBack(text: string, end: number, found: RegExp): boolean {
   for (let at = end; at > 0; ) {
     const [point, start] = pointBefore(text, at);
     if (found.test(point)) return true;
-    const chains =
-      EXTEND_PATTERN.test(point) || (throughZwj && point === "\u200d");
-    if (!chains) return false;
+    if (!EXTEND_PATTERN.test(point)) return false;
     at = start;
+  }
+  return false;
+}
+
+/** GB9c behind `at`: at least one linker, reached through extenders and a ZWJ, hanging off a
+ *  consonant. Both halves are required, or a linker with nothing behind it joins forward anyway. */
+function conjunctBack(text: string, at: number): boolean {
+  let linker = false;
+  for (let cursor = at; cursor > 0; ) {
+    const [point, start] = pointBefore(text, cursor);
+    if (linker && CONSONANT_PATTERN.test(point)) return true;
+    if (LINKER_PATTERN.test(point)) linker = true;
+    else if (!EXTEND_PATTERN.test(point) && point !== "‍") return false;
+    cursor = start;
   }
   return false;
 }
@@ -636,12 +658,13 @@ function continuesGrapheme(text: string, at: number, runStart = -1): boolean {
   // below would break between them.
   if (before === "\r" && after === "\n") return true;
   if (CONTROL_PATTERN.test(before) || CONTROL_PATTERN.test(after)) return false;
-  if (EXTENDS_LEFT_PATTERN.test(after)) return true;
-  // GB9c, as far as it can be told without the consonant sets: a linker behind, whatever it is that
-  // follows. Wrong only by declining a boundary, never by cutting a cluster. Crossing a ZWJ, which
-  // counts as an extender inside a conjunct, and asked before GB11 for that reason: a ZWJ can sit
-  // between a linker and the letter it joins, and the pictographic rule would end the cluster there.
-  if (reachesBack(text, at, LINKER_PATTERN, true)) return true;
+  if (EXTENDS_LEFT_PATTERN.test(after) && !MC_NOT_SPACING_PATTERN.test(after)) {
+    return true;
+  }
+  // GB9c, both ends: a consonant either side of the linker chain, not merely a linker somewhere
+  // behind. Asked before GB11 because a ZWJ counts as an extender inside a conjunct and can sit
+  // between the linker and the letter it joins, where the pictographic rule would end the cluster.
+  if (CONSONANT_PATTERN.test(after) && conjunctBack(text, at)) return true;
   // GB11 proper, both sides: a ZWJ joins a pictograph to a pictograph, so an emoji sequence holds
   // together while a ZWJ merely following a letter still ends its cluster.
   if (before === "\u200d") {
