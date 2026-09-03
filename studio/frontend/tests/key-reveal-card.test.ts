@@ -26,8 +26,14 @@ test("the revealed API token is a read-only input, not a button-wrapped code blo
 });
 
 test("the token field selects itself on focus and mount for manual copy", () => {
-  assert.match(source, /onFocus=\{\(event\) => event\.currentTarget\.select\(\)\}/);
-  assert.match(source, /input\.focus\(\{ preventScroll: true \}\);\s*input\.select\(\);/);
+  assert.match(
+    source,
+    /onFocus=\{\(event\) => event\.currentTarget\.select\(\)\}/,
+  );
+  assert.match(
+    source,
+    /input\.focus\(\{ preventScroll: true \}\);\s*input\.select\(\);/,
+  );
 });
 
 test("a failed automatic copy toasts and re-selects the token field", () => {

@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -65,7 +65,9 @@ export function KeyRevealCard({
           onFocus={(event) => event.currentTarget.select()}
           className="h-auto min-h-9 flex-1 rounded-md border-0 bg-transparent px-2 py-1.5 font-mono text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
           data-reload-snapshot-sensitive
-          aria-label={t("settings.apiKeys.copyAccessToken")}
+          // Not "copy access token": that is the button next to it, and a field
+          // sharing the button's name tells a screen reader it copies too.
+          aria-label={t("settings.apiKeys.newTokenCreated")}
         />
         <Button
           type="button"
@@ -74,7 +76,8 @@ export function KeyRevealCard({
           onClick={() => void handleCopy()}
           className={cn(
             "shrink-0 self-center",
-            copied && "border-emerald-500/40 text-emerald-700 dark:text-emerald-500",
+            copied &&
+              "border-emerald-500/40 text-emerald-700 dark:text-emerald-500",
           )}
           aria-label={
             copied
