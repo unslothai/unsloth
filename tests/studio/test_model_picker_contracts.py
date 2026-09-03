@@ -1962,18 +1962,20 @@ def test_staged_download_callbacks_only_answer_their_own_variant():
 
 
 def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
-    """Each gallery record's src is a blob holding the whole MP4 until the page closes, so
-    fetching a full page of them up front pinned hundreds of MB (gigabytes across "load more"
-    pages) for cards the user may never scroll to. Fetch on visibility instead, and always
-    fetch the selected clip, since that is the one the preview player plays."""
+    """A card was a <video> pointed at a signed MP4 link, so a whole page of them made WebKit build
+    a demux and decode pipeline per clip, for cards the user may never scroll to. Cards now draw a
+    still poster fetched as they near the viewport, and only the selected clip mints a playback
+    link, since that is the one the preview player plays."""
     src = _read("features/video/video-page.tsx")
     assert "new IntersectionObserver(" in src
     assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
     assert 'root.querySelectorAll("[data-clip-id]")' in src
     # rootMargin applies to the root box only, so the strip (the clipping scroller) must BE the root or the prefetch margin never reaches a clipped card.
     assert '{ root, rootMargin: "0px 600px" }' in src
-    # The only surviving whole-page fetches are the no-IntersectionObserver fallbacks.
-    eager = list(re.finditer(r"page\.videos\.forEach\(\(video\) => void ensureSrc\(video\)\)", src))
+    # A whole page of playback links is what the pipelines were built from, so no path may mint one.
+    assert not re.search(r"forEach\(\(video\) => void ensureSrc\(video\)\)", src)
+    # The only surviving whole-page fetches are the no-IntersectionObserver poster fallbacks.
+    eager = list(re.finditer(r"forEach\(\(video\) => void ensureThumbnail\(video\)\)", src))
     assert eager, "the jsdom/old-webview fallback fetch is missing"
     for match in eager:
         assert (
@@ -1981,7 +1983,8 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
             in src[max(0, match.start() - 260) : match.start()]
         )
     assert re.search(
-        r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);",
+        r"if \(!selected\) return;\s*\n\s*void ensureThumbnail\(selected\);"
+        r"\s*\n\s*void ensureSrc\(selected\);",
         src,
     )
 
