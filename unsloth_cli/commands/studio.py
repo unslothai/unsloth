@@ -65,6 +65,12 @@ _STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
 # storage_roots.MASTER_ROOT_RECORD, likewise. See _in_root_master_root.
 _MASTER_ROOT_RECORD = ".unsloth-master-root"
 
+# storage_roots._RECORD_TRIM, likewise: the whitespace install.sh's _trim_ws
+# strips from a root and nothing else, so that a path ending in U+00A0 -- which
+# sed's [[:space:]] leaves alone and the installer therefore accepts -- is not
+# read back here as a different directory.
+_RECORD_TRIM = " \t\n\r\v\f"
+
 
 def _is_flat_portable_root(master: Path) -> bool:
     """Whether *master* holds the Studio venv directly, rather than in studio/.
@@ -185,13 +191,20 @@ def _in_root_master_root(root: Path) -> Optional[Path]:
     out: install.sh refuses a root containing a newline, so anything after the
     first line was not written by our installer, and taking that line on its own
     would resolve a TRUNCATED PREFIX of the recorded path.
+
+    Bytes, decoded with filesystem semantics, for the reason storage_roots spells
+    out as well: install.sh writes the root back verbatim and a POSIX path is a
+    byte string, so a root carrying a byte that is not valid UTF-8 came back
+    through errors="replace" as U+FFFD and named nothing. This CLI exports
+    UNSLOTH_HOME into the backend, so a decline here is not merely a decline --
+    it hands the backend ~/.unsloth and loses containment for the whole install.
     """
     try:
-        with (root / _MASTER_ROOT_RECORD).open(encoding = "utf-8", errors = "replace") as handle:
+        with (root / _MASTER_ROOT_RECORD).open("rb") as handle:
             first = handle.readline(4096)
             if handle.readline(1):
                 return None
-        recorded = first.strip()
+        recorded = os.fsdecode(first).strip(_RECORD_TRIM)
     except (OSError, ValueError):
         return None
     if not recorded or not os.path.isabs(recorded):
