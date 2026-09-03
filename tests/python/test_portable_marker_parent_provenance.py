@@ -46,13 +46,19 @@ from utils.paths import storage_roots as sr
 sys.path.insert(0, os.environ["_REPO"])
 from unsloth_cli.commands import studio as cli
 
-cli._ensure_studio_env_exported()
+# Every backend value FIRST. _ensure_studio_env_exported() writes UNSLOTH_HOME and
+# UNSLOTH_STUDIO_HOME into os.environ, and storage_roots reads those before it looks at
+# disk -- so asking the backend afterwards measures the CLI twice, and case [2] below
+# passed with unsloth_home()'s parent lookup deleted outright.
 master = sr.unsloth_home()
+portable = sr.portable_mode()
+llama = str((master or sr.studio_root()) / "llama.cpp")
 cli_master = cli._portable_marker_root()
+cli._ensure_studio_env_exported()
 print("__JSON__" + json.dumps({
     "unsloth_home": None if master is None else str(master),
-    "portable": sr.portable_mode(),
-    "llama": str((master or sr.studio_root()) / "llama.cpp"),
+    "portable": portable,
+    "llama": llama,
     "cli_marker_root": None if cli_master is None else str(cli_master),
     "cli_llama": os.environ.get("UNSLOTH_LLAMA_CPP_PATH"),
 }))
