@@ -109,8 +109,6 @@ def test_no_staging_files_are_left_behind(runner, monkeypatch, tmp_path, noteboo
     assert not leftovers, leftovers
 
 
-
-
 def test_every_created_level_is_chowned_to_the_nearest_existing_ancestor(
     runner, monkeypatch, tmp_path
 ):

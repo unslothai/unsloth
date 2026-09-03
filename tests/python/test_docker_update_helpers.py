@@ -53,8 +53,6 @@ def _run(
     )
 
 
-
-
 def _studio_env(tmp_path: Path, *, import_ok: bool) -> dict:
     home = tmp_path / "studio"
     venv_bin = home / "unsloth_studio" / "bin"
@@ -154,8 +152,6 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
         "an unreachable remote must not be reported as a missing ref:\n" + res.stdout
     )
     assert "--zoo-ref" in res.stderr, "the remedy must be printed"
-
-
 
 
 def _llama_env(
@@ -332,8 +328,6 @@ def test_llama_rollback_keeps_every_old_file_when_the_drain_is_interrupted(tmp_p
     survivors = sorted(p.name for p in install.rglob("*") if p.is_file())
     for name in old:
         assert name in survivors, f"{name} was lost during an interrupted drain: {survivors}"
-
-
 
 
 def _fetcher_module():
