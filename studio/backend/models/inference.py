@@ -1769,7 +1769,9 @@ class CompactionContentPart(BaseModel):
 
 class InputAudio(BaseModel):
     data: str = Field(..., description = "Base64-encoded audio, without a data: prefix.")
-    format: Optional[str] = Field(None, description = 'Declared container, e.g. "wav"; the decoder sniffs it anyway.')
+    format: Optional[str] = Field(
+        None, description = 'Declared container, e.g. "wav"; the decoder sniffs it anyway.'
+    )
 
 
 class InputAudioContentPart(BaseModel):

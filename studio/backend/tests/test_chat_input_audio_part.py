@@ -24,7 +24,11 @@ def _request(*messages, **fields) -> ChatCompletionRequest:
     return ChatCompletionRequest(model = "local", messages = list(messages), **fields)
 
 
-def _audio_message(data = AUDIO_B64, role = "user", text = "what is said here?"):
+def _audio_message(
+    data = AUDIO_B64,
+    role = "user",
+    text = "what is said here?",
+):
     return {
         "role": role,
         "content": [
