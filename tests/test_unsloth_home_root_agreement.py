@@ -49,7 +49,9 @@ print(json.dumps({{
 
 def _probe(env_overrides: dict) -> dict:
     env = dict(os.environ)
-    for key in ("UNSLOTH_HOME", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
+    # UNSLOTH_LLAMA_CPP_PATH too, as _main_probe already does: this asserts on what the CLI
+    # exports, so inheriting the runner's value measures the runner rather than the CLI.
+    for key in ("UNSLOTH_HOME", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
         env.pop(key, None)
     env.update(env_overrides)
     env["PYTHONPATH"] = str(REPO_ROOT)
