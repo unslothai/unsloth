@@ -101,7 +101,13 @@ _owned_sd_cpp_roots() {
     _sd_cpp_sibling_bases 2>/dev/null | while IFS= read -r _root; do
         [ -n "$_root" ] || continue
         _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
-        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+        # `if`, not `[ ... ] && printf`: this loop is the last statement of the function, so a
+        # final iteration finding no marker would make the loop, and with it the function,
+        # return non-zero and abort the caller under `set -e` -- skipping the process stop
+        # for every sd.cpp already printed.
+        if [ -f "$_sd_root/.unsloth-studio-owned" ]; then
+            printf '%s\n' "$_sd_root"
+        fi
     done
 }
 
@@ -405,7 +411,12 @@ _is_unsafe_root() {
 # Print share/ dirs of known custom roots (where PID files live).
 _custom_studio_data_dirs() {
     _custom_studio_roots 2>/dev/null | while IFS= read -r _r; do
-        [ -d "$_r/share" ] && printf '%s\n' "$_r/share"
+        # `if`, not `[ ... ] && printf`: the loop is the last statement here, so a final root
+        # with no share/ would return non-zero out of the function and abort the caller under
+        # `set -e`, losing the PID files of the roots already printed.
+        if [ -d "$_r/share" ]; then
+            printf '%s\n' "$_r/share"
+        fi
     done
 }
 
@@ -437,9 +448,16 @@ _custom_studio_roots() {
         # Skipped for the lexical pass, which exists only to rebuild the path an
         # older build derived with a plain dirname (see _sd_cpp_sibling_bases).
         if [ "${_studio_roots_lexical:-}" != "lexical" ]; then
+            # `|| _canon=""` is load-bearing under `set -e`, like the identical walks in
+            # _remove_root_recording_db: an assignment takes the exit status of its command
+            # substitution, so a root that cannot be canonicalized (already deleted by hand,
+            # mistyped, or removed by this very run before the producer reached it) killed
+            # this whole subshell and silently dropped every root still to be enumerated.
             # shellcheck disable=SC1007
-            _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
-            [ -n "$_canon" ] && _r="$_canon"
+            _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P) || _canon=""
+            if [ -n "$_canon" ]; then
+                _r="$_canon"
+            fi
         fi
         case "$_r" in "$HOME/.unsloth/studio"|/|"") return 0 ;; esac
         case ":$_seen:" in *":$_r:"*) return 0 ;; esac
@@ -457,7 +475,13 @@ _custom_studio_roots() {
         # lands on the Studio root and leaves the rest of <root> behind.
         _master=$(sed -n "s/^export UNSLOTH_HOME='\(.*\)'\$/\1/p" "$1" | head -n1)
         _master=$(printf '%s' "$_master" | sed "s/'\\\\''/'/g")
-        [ -n "$_master" ] && _emit "$_master"
+        # `if`, not a trailing `[ ... ] && _emit`: that form is the last statement of this
+        # function, so under `set -e` a conf with no `export UNSLOTH_HOME` line (every
+        # non-portable install writes one) returned non-zero and aborted the caller, which
+        # dropped the default-mode conf root that is enumerated after it.
+        if [ -n "$_master" ]; then
+            _emit "$_master"
+        fi
     }
     # Mirror install.sh's precedence: master root, then UNSLOTH_STUDIO_HOME,
     # then STUDIO_HOME (ignored when both are set). Otherwise uninstalling
@@ -637,7 +661,10 @@ _unsloth_uninstall_main() {
         # carry ".." or a symlinked ancestor and slip a protected tree ("/tmp/../usr/...") past it.
         # Canonicalize a copy for the check only; the removal still uses the lexical path.
         # shellcheck disable=SC1007
-        _lex_sd_canon=$(CDPATH= cd -P -- "$_lex_sd_cpp" 2>/dev/null && pwd -P)
+        # `|| _lex_sd_canon=""` for the same reason as _emit: without it `set -e` takes the
+        # failed substitution and kills this subshell, and the fallback on the next line --
+        # written for exactly the unresolvable case -- never runs.
+        _lex_sd_canon=$(CDPATH= cd -P -- "$_lex_sd_cpp" 2>/dev/null && pwd -P) || _lex_sd_canon=""
         [ -n "$_lex_sd_canon" ] || _lex_sd_canon="$_lex_sd_cpp"
         if _is_unsafe_root "$_lex_sd_cpp" || _is_unsafe_root "$_lex_sd_canon"; then
             echo "  refusing to remove unsafe path: $_lex_sd_cpp" >&2
