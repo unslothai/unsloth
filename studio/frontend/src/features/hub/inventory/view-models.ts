@@ -9,7 +9,6 @@ import type {
   BackendModelCapabilities,
   LocalModelInfo,
   ModelInventoryFormat,
-  ModelInventoryRuntime,
 } from "./api";
 import type {
   ModelInventoryCapabilities,
@@ -86,26 +85,6 @@ export function normalizeModelFormat(
     return value;
   }
   return fallback;
-}
-
-export function normalizeRuntime(
-  value: string | null | undefined,
-  modelFormat: ModelInventoryFormat,
-): ModelInventoryRuntime {
-  if (
-    value === "llama_cpp" ||
-    value === "transformers" ||
-    value === "adapter" ||
-    value === "unknown"
-  ) {
-    return value;
-  }
-  if (modelFormat === "gguf") return "llama_cpp";
-  if (modelFormat === "adapter") return "adapter";
-  if (modelFormat === "safetensors" || modelFormat === "checkpoint") {
-    return "transformers";
-  }
-  return "unknown";
 }
 
 export function defaultCapabilities(
@@ -188,7 +167,6 @@ export function buildCachedInventoryRow(
     inventory_id?: string | null;
     load_id?: string | null;
     model_format?: ModelInventoryFormat | null;
-    runtime?: string | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
@@ -225,10 +203,6 @@ export function buildCachedInventoryRow(
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
-    runtime: normalizeRuntime(
-      inferredFromEndpoint ? null : row.runtime,
-      modelFormat,
-    ),
     formatVariant: row.format_variant ?? null,
     capabilities,
     bytes: row.size_bytes,
@@ -309,7 +283,6 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
-        runtime: normalizeRuntime(model.runtime, modelFormat),
         formatVariant: model.format_variant ?? null,
         capabilities,
         baseModel,

@@ -252,21 +252,6 @@ test("a narrow valid band between custom and elevated surfaces is not skipped", 
   assert.ok(ratio(corrected, "#212121") >= 2.5);
 });
 
-test("loaded-model stripes stay on the semantic success color", () => {
-  const hubCss = readFileSync(
-    new URL("../src/features/hub/hub.css", import.meta.url),
-    "utf8",
-  );
-  const activeBlocks = [
-    ...hubCss.matchAll(/\[data-active="true"\]\s*\{([^}]+)\}/g),
-  ];
-  assert.equal(activeBlocks.length, 4);
-  for (const [, declarations = ""] of activeBlocks) {
-    assert.match(declarations, /box-shadow:[^;]+var\(--status-success\)/);
-    assert.doesNotMatch(declarations, /var\(--primary\)/);
-  }
-});
-
 test("resize-handle glows follow the primary token", () => {
   const source = readFileSync(
     new URL("../src/components/ui/resizable.tsx", import.meta.url),

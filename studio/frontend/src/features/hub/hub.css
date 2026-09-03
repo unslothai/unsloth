@@ -48,8 +48,8 @@
 }
 
 @layer base {
-  /* Shared measure for every centered Hub column (top bar, catalog, detail,
-     settings). Container-relative, so the column tracks the width actually
+  /* Shared measure for every centered Hub column (top bar, catalog, detail).
+     Container-relative, so the column tracks the width actually
      available instead of pinning to 1100px and leaving wide empty gutters.
      The floor keeps the old measure on ~1280px laptops, the cap stops rows
      stretching on ultrawides, and `max-width` never forces overflow, so the
@@ -594,28 +594,15 @@
     box-shadow: none;
   }
 
-  /* On-device rows reuse the result-row card but carry selection/active state:
-     a neutral tint for the inspected row and a success tint with a matching
-     success edge for the model currently loaded. Discover rows never set these
-     attributes. */
+  /* On-device rows reuse the result-row card with a neutral tint for the
+     inspected row. */
   .hub-page .hub-result-row[data-selected="true"] {
     background-color: color-mix(in srgb, var(--foreground) 5%, var(--card));
-  }
-
-  .hub-page .hub-result-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 7%, var(--card));
-    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16),
-      inset 2px 0 0 0 var(--status-success);
   }
 
   html.dark .hub-page .hub-result-row[data-selected="true"] {
     background-color: color-mix(in srgb, var(--foreground) 11%, var(--background));
     box-shadow: none;
-  }
-
-  html.dark .hub-page .hub-result-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 14%, var(--background));
-    box-shadow: inset 2px 0 0 0 var(--status-success);
   }
 
   /* Recent-searches suggestion panel. The surface comes from
@@ -738,14 +725,6 @@
     background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
   }
 
-  /* Currently-loaded checkpoint: a brand-green left stripe plus a faint
-	   green wash, orthogonal to the neutral selected tint so a row that is
-	   both loaded and selected still reads as loaded. */
-  html:not(.dark) .hub-page .catalog-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 7%, transparent);
-    box-shadow: inset 2px 0 0 0 var(--status-success);
-  }
-
   html.dark .hub-page .catalog-row {
     background-color: transparent;
     border-color: transparent;
@@ -759,11 +738,6 @@
 
   html.dark .hub-page .catalog-row[data-selected="true"] {
     background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
-  }
-
-  html.dark .hub-page .catalog-row[data-active="true"] {
-    background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
-    box-shadow: inset 2px 0 0 0 var(--status-success);
   }
 }
 
@@ -1110,7 +1084,7 @@
     margin-block: 0;
   }
 
-  /* Inspector action pills (Download / Run / Train / Cancel) for the hub
+  /* Inspector action pills (Download / Update / Cancel) for the hub
 	   inspector card. Centralized so all three sections (GGUF, safetensors,
 	   datasets) stay in lock-step on type scale, padding, hover surface, and
 	   the 16px icon size — mirrors the pattern used for `.sidebar-nav-btn`.
@@ -1155,54 +1129,6 @@
   .hub-action-btn svg {
     width: 1rem;
     height: 1rem;
-    flex-shrink: 0;
-  }
-
-  /* Primary "Run" action — confirms loading/running a model. Pill shape
-	   (rounded-full) so it reads as the unmistakable CTA in a row of
-	   ghost actions and matches the live-model status-success token used
-	   elsewhere in the app. Same h-9 geometry, 13px
-	   medium type, tracking-tight, and 16px icon slot as .hub-action-btn
-	   so the height aligns with adjacent ghost buttons. */
-  .hub-run-action-btn {
-    display: inline-flex;
-    height: 2.25rem;
-    cursor: pointer;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    white-space: nowrap;
-    border-radius: 9999px;
-    background-color: var(--status-success);
-    padding-left: 1rem;
-    padding-right: 1rem;
-    font-size: calc(0.8125rem * var(--ui-font-scale, 1));
-    font-weight: 600;
-    line-height: calc(1.125rem * var(--ui-font-scale, 1));
-    letter-spacing: -0.025em;
-    color: var(--status-success-foreground);
-    transition: background-color 150ms, transform 150ms;
-    box-shadow: inset 0 1px 0
-      color-mix(in srgb, var(--status-success-foreground) 18%, transparent),
-      0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
-  }
-
-  .hub-run-action-btn:hover:not(:disabled) {
-    background-color: color-mix(in srgb, var(--status-success) 88%, black);
-  }
-
-  .hub-run-action-btn:active:not(:disabled) {
-    transform: scale(0.98);
-  }
-
-  .hub-run-action-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
-  .hub-run-action-btn svg {
-    width: 0.9rem;
-    height: 0.9rem;
     flex-shrink: 0;
   }
 

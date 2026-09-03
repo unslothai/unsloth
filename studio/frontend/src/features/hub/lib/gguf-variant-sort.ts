@@ -103,14 +103,10 @@ export function sortDownloadableGgufVariants(
 export function sortLocalGgufVariants(
   variants: readonly GgufVariantDetail[],
   options: GgufVariantResources & {
-    activeGgufVariant?: string | null;
     defaultVariant?: string | null;
   },
 ): GgufVariantDetail[] {
   return [...variants].sort((a, b) => {
-    const aActive = ggufVariantsMatch(a.quant, options.activeGgufVariant);
-    const bActive = ggufVariantsMatch(b.quant, options.activeGgufVariant);
-    if (aActive !== bActive) return aActive ? -1 : 1;
     const aDefault = ggufVariantsMatch(a.quant, options.defaultVariant);
     const bDefault = ggufVariantsMatch(b.quant, options.defaultVariant);
     if (aDefault !== bDefault) return aDefault ? -1 : 1;

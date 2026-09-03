@@ -40,8 +40,8 @@ export function residentModelMatchesPick(
   if (!status.active_model) {
     return false;
   }
-  // A standalone file has no quant to choose between, and its row carries no label
-  // (settingsGgufVariantForRow) while the backend derives one from the filename.
+  // A standalone file has no quant to choose between, and its picker entry carries
+  // no variant while the backend derives one from the filename.
   const picksItsOwnVariant = !(
     !pick.ggufVariant && isStandaloneGgufPath(pick.loadPath ?? pick.id)
   );
