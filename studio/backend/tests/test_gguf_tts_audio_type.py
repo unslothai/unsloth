@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 
 import pytest
@@ -17,12 +18,21 @@ def _string(value: str) -> bytes:
     return struct.pack("<Q", len(data)) + data
 
 
-def _write_gguf(path, tokens):
+def _write_gguf(
+    path,
+    tokens,
+    token_types = None,
+):
     metadata = _string("general.architecture") + struct.pack("<I", 8) + _string("llama")
     if tokens is not None:
         array = struct.pack("<IQ", 8, len(tokens)) + b"".join(_string(t) for t in tokens)
         metadata += _string("tokenizer.ggml.tokens") + struct.pack("<I", 9) + array
-    kv_count = 1 + (tokens is not None)
+        token_types = token_types or [3] * len(tokens)
+        types = struct.pack("<IQ", 5, len(token_types)) + struct.pack(
+            f"<{len(token_types)}i", *token_types
+        )
+        metadata += _string("tokenizer.ggml.token_type") + struct.pack("<I", 9) + types
+    kv_count = 1 + (2 if tokens is not None else 0)
     path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, kv_count) + metadata)
     return str(path)
 
@@ -53,6 +63,16 @@ def test_snac_codes_the_serving_probe_would_miss_are_not_a_speech_model(tmp_path
 def test_spark_bicodec_tokens_are_a_speech_model(tmp_path):
     tokens = ["hi", "<|bicodec_semantic_0|>", "<|bicodec_global_0|>"]
     assert read_gguf_tts_audio_type(_write_gguf(tmp_path / "spark.gguf", tokens)) == "bicodec"
+
+
+def test_normal_vocab_membership_is_not_a_runtime_special_token(tmp_path):
+    tokens = ["hi", "<|bicodec_semantic_0|>", "<|bicodec_global_0|>"]
+    assert (
+        read_gguf_tts_audio_type(
+            _write_gguf(tmp_path / "normal.gguf", tokens, token_types = [1, 1, 1])
+        )
+        is None
+    )
 
 
 def test_a_partial_bicodec_vocabulary_is_not_a_speech_model(tmp_path):
@@ -109,6 +129,33 @@ def test_the_verdict_is_cached_per_file(tmp_path, monkeypatch):
         gguf_metadata, "_parse_gguf_marker_tokens", lambda _p: pytest.fail("reparsed")
     )
     assert read_gguf_tts_audio_type(path) == "bicodec"
+
+
+def test_atomic_replacement_invalidates_a_same_size_same_mtime_verdict(tmp_path):
+    path = tmp_path / "model.gguf"
+    replacement = tmp_path / "replacement.gguf"
+    _write_gguf(path, ["<|bicodec_semantic_0|>", "<|bicodec_global_0|>"])
+    _write_gguf(replacement, ["x" * 22, "y" * 20])
+    assert path.stat().st_size == replacement.stat().st_size
+    assert read_gguf_tts_audio_type(str(path)) == "bicodec"
+    original = path.stat()
+    os.replace(replacement, path)
+    os.utime(path, ns = (path.stat().st_atime_ns, original.st_mtime_ns))
+    assert path.stat().st_size == original.st_size
+    assert path.stat().st_mtime_ns == original.st_mtime_ns
+    assert read_gguf_tts_audio_type(str(path)) is None
+
+
+def test_a_short_final_token_body_is_not_a_speech_model(tmp_path):
+    path = tmp_path / "truncated.gguf"
+    tokens = ["<|bicodec_semantic_0|>", "<|bicodec_global_0|>"]
+    metadata = _string("general.architecture") + struct.pack("<I", 8) + _string("llama")
+    token_array = struct.pack("<IQ", 8, len(tokens)) + _string(tokens[0])
+    final = tokens[1].encode()
+    token_array += struct.pack("<Q", len(final) + 4096) + final
+    metadata += _string("tokenizer.ggml.tokens") + struct.pack("<I", 9) + token_array
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 2) + metadata)
+    assert read_gguf_tts_audio_type(str(path)) is None
 
 
 def test_the_switch_probe_reads_the_variant_the_load_will_open(tmp_path, monkeypatch):

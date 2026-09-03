@@ -301,6 +301,40 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     return _is_generative_chat_config(config)
 
 
+def _host_can_serve_minimax_music3() -> bool:
+    """Mirror the native loader's fail-fast platform and dependency gates."""
+    import sys
+    from importlib.util import find_spec
+
+    try:
+        from utils.hardware import hardware as hw
+        return (
+            sys.version_info >= (3, 10)
+            and hw.DEVICE == hw.DeviceType.CUDA
+            and not hw.IS_ROCM
+            and find_spec("diffusers") is not None
+        )
+    except Exception:
+        return False
+
+
+def _native_audio_pipeline_is_servable_here(load_dir) -> bool:
+    """Whether a local modular pipeline is a supported built-in native-audio model."""
+    from core.inference.native_audio import native_audio_type_from_local_path
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
+
+    if (
+        native_audio_type_from_local_path(str(load_dir)) != "minimax_music3"
+        or not _host_can_serve_minimax_music3()
+    ):
+        return False
+    for name in REMOTE_CODE_CONFIG_FILES:
+        config = _read_json(load_dir / name)
+        if isinstance(config, dict) and config.get("auto_map"):
+            return False
+    return not any((load_dir / name).is_file() for name in (*_ADAPTER_MARKERS, "modules.json"))
+
+
 def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Build an entry for a local non-GGUF checkpoint (safetensors, MLX) the
     inference orchestrator can serve, else None.
@@ -322,6 +356,8 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         if not p.is_dir():
             return None
         load_dir = _resolve_load_dir(p)
+        if _native_audio_pipeline_is_servable_here(load_dir):
+            return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
         if not _weights_are_servable(load_dir):
             return None
         config = _read_json(load_dir / "config.json")

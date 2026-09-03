@@ -7100,14 +7100,16 @@ def _target_effective_context_length(
     gguf_variant: Optional[str] = None,
     override_id: Optional[str] = None,
     audio_type: Optional[str] = None,
+    resolved_override: Optional[dict] = None,
+    override_is_resolved: bool = False,
 ) -> Optional[int]:
     """The context the switch will actually ask this target to load with.
 
-    A saved per-model override wins, because that is what the load applies; reading the
-    declared window alone would refuse prompts a larger saved context accepts, and admit
-    prompts a smaller one cannot hold. Resolved through the same helpers as the load, so
-    the two cannot drift. A non-positive resolution means the loader decides, which is
-    not something to refuse on, so it falls back to the declared window.
+    A saved per-model override is reconciled with the target the same way the loader
+    applies it; reading the declared window alone would refuse prompts a larger saved
+    context accepts, while trusting an unclamped native override would admit prompts the
+    model cannot hold. A non-positive resolution means the loader decides, which is not
+    something to refuse on, so it falls back to the declared window.
     """
     # NativeAudioBackend._context_length discards the requested value for both MOSS
     # types and runs at the model's own window, so a saved override is not the limit
@@ -7124,7 +7126,10 @@ def _target_effective_context_length(
             resolve_override_for_load,
         )
 
-        _key, override = resolve_override_for_load(load_path, override_id, gguf_variant)
+        if override_is_resolved:
+            override = resolved_override
+        else:
+            _key, override = resolve_override_for_load(load_path, override_id, gguf_variant)
         configured = _positive_int_or_none(
             resolve_fit_max_seq_length(override, is_gguf = is_gguf) if override else None
         )
@@ -7135,6 +7140,10 @@ def _target_effective_context_length(
             from core.inference.llama_server_args import parse_ctx_override
             configured = _positive_int_or_none(parse_ctx_override(override.get("llama_extra_args")))
         if configured is not None:
+            from core.inference.native_audio import NATIVE_AUDIO_TYPES
+            if not is_gguf and audio_type in NATIVE_AUDIO_TYPES:
+                detected = _target_native_context_length(load_path, is_gguf, gguf_variant)
+                return min(configured, detected) if detected else configured
             return configured
     except Exception as exc:
         logger.debug("auto-switch: context override lookup failed for %s: %s", load_path, exc)
@@ -8356,6 +8365,7 @@ async def _maybe_auto_switch_model(
                     param = "model",
                 ),
             )
+        speech_type = None
         if require_speech and resolved is not None:
             speech_type = await asyncio.to_thread(
                 _target_speech_audio_type, target_id, target_is_gguf, variant
@@ -8455,6 +8465,34 @@ async def _maybe_auto_switch_model(
                         _override_key, override = resolve_override_for_load(
                             target_id, override_id, variant
                         )
+                        if require_speech and resolved is not None and speech_budget is not None:
+                            target_context = await asyncio.to_thread(
+                                _target_effective_context_length,
+                                target_id,
+                                target_is_gguf,
+                                variant,
+                                override_id,
+                                speech_type,
+                                override,
+                                True,
+                            )
+                            prompt_tokens = _byte_fallback_prompt_tokens(
+                                _speech_prompt_for_budget(speech_type, speech_budget)
+                            )
+                            if target_context and _speech_budget_exhausted(
+                                target_context, prompt_tokens
+                            ):
+                                raise HTTPException(
+                                    status_code = 400,
+                                    detail = openai_error_body(
+                                        f"Input is too long for the requested model's "
+                                        f"{target_context}-token context. Shorten it, or pick a model "
+                                        "with a larger context.",
+                                        status = 400,
+                                        code = "invalid_value",
+                                        param = "input",
+                                    ),
+                                )
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
                         load_kwargs.update(
                             model_override_load_kwargs(override, is_gguf = target_is_gguf)

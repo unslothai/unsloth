@@ -3,7 +3,7 @@
 
 """``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
 pair weights and projectors via ``general.base_model.0.repo_url``. ~30 ms
-per file, cached by (path, mtime, size)."""
+per file, cached by resolved path and platform file identity."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ _WANTED_GENERAL_KEYS: frozenset[str] = frozenset(
 
 
 # Cache failed parses too so a broken file is not retried each scan.
-_CacheKey = Tuple[str, int, int]
+_CacheKey = Tuple[str, int, int, int, int, int]
 _METADATA_CACHE: Dict[_CacheKey, Optional[Dict[str, str]]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX_ENTRIES = 4096
@@ -78,7 +78,14 @@ def _cache_key(path: str) -> Optional[_CacheKey]:
         resolved = str(Path(path).resolve())
     except OSError:
         resolved = str(path)
-    return (resolved, st.st_mtime_ns, st.st_size)
+    return (
+        resolved,
+        st.st_mtime_ns,
+        st.st_size,
+        int(getattr(st, "st_ctime_ns", 0)),
+        int(getattr(st, "st_dev", 0)),
+        int(getattr(st, "st_ino", 0)),
+    )
 
 
 def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
@@ -625,6 +632,9 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
             magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
             if magic != _GGUF_MAGIC:
                 return None
+            marker_tokens: list[tuple[int, str]] = []
+            token_types: Optional[tuple[int, ...]] = None
+            snac_probe: Optional[dict[int, bool]] = None
             for _ in range(kv_count):
                 klen_bytes = f.read(8)
                 if len(klen_bytes) < 8:
@@ -637,22 +647,41 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
                 if len(vt_bytes) < 4:
                     return None
                 vtype = struct.unpack("<I", vt_bytes)[0]
+                if key == "tokenizer.ggml.token_type" and vtype == 9:
+                    raw_header = f.read(12)
+                    if len(raw_header) != 12:
+                        return None
+                    atype, alen = struct.unpack("<IQ", raw_header)
+                    if atype != 5 or alen > 1 << 30:
+                        return None
+                    raw_types = f.read(4 * alen)
+                    if len(raw_types) != 4 * alen:
+                        return None
+                    token_types = struct.unpack(f"<{alen}i", raw_types)
+                    continue
                 if key != "tokenizer.ggml.tokens" or vtype != 9:
                     if not _skip_gguf_value(f, vtype):
                         return None
                     continue
-                atype, alen = struct.unpack("<IQ", f.read(12))
+                raw_header = f.read(12)
+                if len(raw_header) != 12:
+                    return None
+                atype, alen = struct.unpack("<IQ", raw_header)
                 if atype != 8 or alen > 1 << 30:
                     return None
-                markers: list[str] = []
                 # The serving detector asks what these two ids detokenize to, so the
                 # vocabulary has to be read positionally, not just as a set of markers.
                 snac_probe = dict.fromkeys(SNAC_PROBE_TOKEN_IDS, False)
                 for index in range(alen):
-                    slen = struct.unpack("<Q", f.read(8))[0]
+                    raw_length = f.read(8)
+                    if len(raw_length) != 8:
+                        return None
+                    slen = struct.unpack("<Q", raw_length)[0]
                     if slen > 1 << 20:
                         return None
                     raw = f.read(slen)
+                    if len(raw) != slen:
+                        return None
                     if index in snac_probe:
                         # Substring, not prefix: the detector asks what the id decodes
                         # to, and a tokenizer decoration would sit in front of the marker.
@@ -660,10 +689,21 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
                     if raw[:1] != b"<":
                         continue
                     try:
-                        markers.append(raw.decode("utf-8"))
+                        marker_tokens.append((index, raw.decode("utf-8")))
                     except UnicodeDecodeError:
                         continue
-                return markers, all(snac_probe.values())
+            if snac_probe is None:
+                return None
+            # llama.cpp's parse-special path does not treat plain NORMAL
+            # vocabulary membership as a one-token capability marker.
+            markers = [
+                token
+                for index, token in marker_tokens
+                if token_types is not None
+                and index < len(token_types)
+                and token_types[index] in {2, 3, 4}
+            ]
+            return markers, all(snac_probe.values())
     except (OSError, struct.error) as e:
         logger.debug(f"_parse_gguf_marker_tokens: cannot read {path}: {e}")
     return None

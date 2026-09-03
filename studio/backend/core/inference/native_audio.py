@@ -959,7 +959,7 @@ class NativeAudioBackend:
         from diffusers import ModularPipeline
 
         token_kwargs = self._token_kwargs(hf_token)
-        pipeline = ModularPipeline.from_pretrained(source, **token_kwargs)
+        pipeline = ModularPipeline.from_pretrained(source, trust_remote_code = False, **token_kwargs)
         pipeline.load_components(
             pretrained_model_name_or_path = source,
             dtype = self._dtype(),

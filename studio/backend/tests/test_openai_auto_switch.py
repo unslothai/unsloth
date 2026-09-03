@@ -566,9 +566,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -3832,6 +3832,59 @@ def test_a_saved_context_override_wins_over_the_declared_window(monkeypatch):
     assert inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0") == 32768
 
 
+def test_a_native_audio_override_is_clamped_to_the_detected_window(monkeypatch):
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(
+        settings, "resolve_override_for_load", lambda *_a: ("k", {"max_seq_length": 8192})
+    )
+    monkeypatch.setattr(inference_route, "_target_native_context_length", lambda *_a: 2048)
+    assert (
+        inference_route._target_effective_context_length(
+            "/local/higgs", False, None, "org/higgs", "higgs_tts2"
+        )
+        == 2048
+    )
+
+
+def test_speech_budget_is_rechecked_against_the_load_side_override(monkeypatch):
+    from fastapi import HTTPException
+    from utils import openai_auto_switch_settings as settings
+
+    backend = _FakeBackend("org/resident-GGUF")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/target.gguf", "Q8_0", "org/target-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
+    reads = []
+
+    def changing_override(*_args):
+        value = 8192 if not reads else 512
+        reads.append(value)
+        return "org/target-GGUF:Q8_0", {"max_seq_length": value}
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", changing_override)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/target-GGUF",
+                object(),
+                "tester",
+                require_speech = True,
+                speech_budget = {"text": "x" * 1000},
+            )
+        )
+    assert reads == [8192, 512]
+    assert exc.value.status_code == 400
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/resident-GGUF"
+
+
 def test_a_target_without_an_override_uses_the_declared_window(monkeypatch):
     from utils import openai_auto_switch_settings as settings
 
@@ -4533,12 +4586,12 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
     assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
     assert len(assistant) == 1
     content = str(assistant[0].get("content", ""))
-    assert (
-        "<tool_call>" in content
-    ) is expect_markup, "the count must render the same replayed history the completion does"
-    assert (
-        "offline_tool[ARGS]" in content
-    ), "an inactive tool name is prose in the real prompt, so the count keeps it too"
+    assert ("<tool_call>" in content) is expect_markup, (
+        "the count must render the same replayed history the completion does"
+    )
+    assert "offline_tool[ARGS]" in content, (
+        "an inactive tool name is prose in the real prompt, so the count keeps it too"
+    )
 
 
 _PASSTHROUGH_CATALOG = [
@@ -4891,9 +4944,9 @@ def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
     body = _counted_body(payload)
     assert body["input_tokens"] == 1234
     names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
-    assert (
-        "mcp__s1__lookup" in names
-    ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
+    assert "mcp__s1__lookup" in names, (
+        "a cached MCP schema is in the completion's prompt, so it must be in the count"
+    )
 
 
 def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
@@ -5222,9 +5275,9 @@ def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch
             raise
         total = None
 
-    assert (
-        total is None
-    ), "a total counted across a model change must not be published as either model's"
+    assert total is None, (
+        "a total counted across a model change must not be published as either model's"
+    )
     assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
 
 
@@ -5509,9 +5562,9 @@ def test_a_count_never_spawns_mcp_servers():
         and any(isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets)
     ]
     assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
-    assert all(
-        isinstance(v, ast.Constant) and v.value is False for v in assigned
-    ), "a count must never enable MCP discovery"
+    assert all(isinstance(v, ast.Constant) and v.value is False for v in assigned), (
+        "a count must never enable MCP discovery"
+    )
 
     called = {
         node.func.id
@@ -8776,9 +8829,9 @@ def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
     backend.is_loaded = identity is not None
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     fast = inference_route._loaded_identity_satisfies(requested)
-    assert not (
-        fast and not inference_route._loaded_satisfies(requested)
-    ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+    assert not (fast and not inference_route._loaded_satisfies(requested)), (
+        f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+    )
 
 
 def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
@@ -9196,6 +9249,70 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
     assert resolver.local_servable_model(info) is None
 
 
+def test_a_minimax_music_pipeline_is_a_servable_native_audio_model(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    pipeline = tmp_path / "MiniMax-Music3"
+    pipeline.mkdir()
+    (pipeline / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        )
+    )
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
+    info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_minimax_music_pipeline_is_hidden_on_an_unsupported_host(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    pipeline = tmp_path / "MiniMax-Music3"
+    pipeline.mkdir()
+    (pipeline / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        )
+    )
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: False)
+    info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_unrecognized_or_custom_modular_pipeline_is_not_switchable(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    pipeline = tmp_path / "custom-pipeline"
+    pipeline.mkdir()
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
+    info = SimpleNamespace(id = "org/custom", path = str(pipeline))
+    (pipeline / "modular_model_index.json").write_text(
+        json.dumps({"_class_name": "CustomPipeline", "_blocks_class_name": "CustomBlocks"})
+    )
+    assert resolver.local_servable_model(info) is None
+    (pipeline / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        )
+    )
+    (pipeline / "config.json").write_text(
+        json.dumps({"auto_map": {"AutoModel": "modeling.CustomModel"}})
+    )
+    assert resolver.local_servable_model(info) is None
+
+
 def test_a_partial_download_is_not_a_servable_chat_model(tmp_path):
     # Advertising an incomplete snapshot hands out an id whose load must fail.
     from types import SimpleNamespace
@@ -9454,9 +9571,9 @@ def test_two_scan_roots_sharing_a_basename_do_not_answer_for_each_other(monkeypa
     monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
 
     asyncio.run(inference_route._maybe_auto_switch_model("/root2/model", object(), "tester"))
-    assert [getattr(c, "model_path", None) for c in calls] == [
-        "/root2/model"
-    ], "the request named the second path and was answered by the first model"
+    assert [getattr(c, "model_path", None) for c in calls] == ["/root2/model"], (
+        "the request named the second path and was answered by the first model"
+    )
 
 
 def test_the_resident_path_still_short_circuits_its_own_request(monkeypatch):

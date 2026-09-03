@@ -620,8 +620,9 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     pipeline = Pipeline()
 
-    def from_pretrained(source, **_kwargs):
+    def from_pretrained(source, **kwargs):
         seen["source"] = source
+        seen["from_pretrained"] = kwargs
         return pipeline
 
     monkeypatch.setitem(
@@ -635,6 +636,7 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     entry = {}
     backend._load_minimax_music3(entry, "/models/minimax-custom", None)
+    assert seen["from_pretrained"]["trust_remote_code"] is False
     assert seen["components"]["pretrained_model_name_or_path"] == "/models/minimax-custom"
     assert seen["device"] == "cuda"
     assert entry["pipeline"] is pipeline
