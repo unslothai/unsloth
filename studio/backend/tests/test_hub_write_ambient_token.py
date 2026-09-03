@@ -1391,7 +1391,13 @@ def test_the_cached_revision_is_what_gets_authorized(monkeypatch):
     asked = {}
 
     class _Api:
-        def model_info(self, repo_id, revision = None, token = None, timeout = None):
+        def model_info(
+            self,
+            repo_id,
+            revision = None,
+            token = None,
+            timeout = None,
+        ):
             asked["revision"] = revision
             asked["timeout"] = timeout
 
@@ -1579,7 +1585,11 @@ def test_a_hub_that_stops_answering_does_not_pin_the_export_lock(monkeypatch):
 
     monkeypatch.setattr(export_backend_module, "_ACCESS_CHECK_TIMEOUT_S", 0.3)
 
-    def _hangs(repo_id, token = None, **kw):
+    def _hangs(
+        repo_id,
+        token = None,
+        **kw,
+    ):
         time.sleep(30)
 
     monkeypatch.setattr("huggingface_hub.auth_check", _hangs)

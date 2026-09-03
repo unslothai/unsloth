@@ -173,9 +173,7 @@ def _access_allowed(
 
         pool = ThreadPoolExecutor(max_workers = 1)
         try:
-            pool.submit(auth_check, repo_id, token = token).result(
-                timeout = _ACCESS_CHECK_TIMEOUT_S
-            )
+            pool.submit(auth_check, repo_id, token = token).result(timeout = _ACCESS_CHECK_TIMEOUT_S)
         except _FutureTimeout:
             logger.warning("Access check for '%s' timed out; refusing", repo_id)
             return False, (
