@@ -39,6 +39,16 @@ is_cuda_server() {
     return 1
 }
 
+# A numeric UNSLOTH_LLAMA_PR is an explicit "build THIS revision" request -- setup.sh
+# forces a source build for it (its existing-build reuse and both CUDA-defer blocks all
+# require an empty _LLAMA_PR), and install.ps1 deliberately bridges the var into WSL. The
+# already-provisioned fast path below would otherwise report success while keeping the
+# previously built server, so the requested PR is never built on a rerun.
+case "${UNSLOTH_LLAMA_PR:-}" in
+    ''|*[!0-9]*) _PR_PIN="" ;;
+    *)           _PR_PIN="$UNSLOTH_LLAMA_PR" ;;
+esac
+
 # 0. Already provisioned? Skip when the server links libggml-cuda directly (ldd)
 # or when a co-located libggml-cuda.so* is paired with the completion stamp this
 # script writes after its own final CUDA check. The stamp closes the one gap in
@@ -51,7 +61,7 @@ is_cuda_server() {
 # trigger a needless, thermally-dangerous source rebuild on the NVIDIA-ARM laptops this
 # targets. Trust the .so; never gamble the machine's thermals on an env-fragile probe.
 _CUDA_STAMP="$LLAMA_DIR/build/bin/.unsloth-cuda-ok"
-if is_cuda_server "$SERVER"; then
+if [ -z "$_PR_PIN" ] && is_cuda_server "$SERVER"; then
     if ldd "$SERVER" 2>/dev/null | grep -qi 'libggml-cuda' || [ -e "$_CUDA_STAMP" ]; then
         log "CUDA llama-server already present: $SERVER"
         exit 0
@@ -99,9 +109,13 @@ find_nvcc() {
 # The driver caps which CUDA major can RUN: cu13 binaries need a 580+ driver,
 # and minor-version compatibility never crosses majors, so a server built with
 # a toolkit newer than the driver loads nothing. Read the driver's supported
-# major (all recent drivers print "CUDA Version: X.Y"); unparseable stays empty
-# and keeps the previous install-13.3 behavior (Spark-class drivers all parse).
-_DRV_CUDA_MAJOR="$("$NVSMI" 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\)\..*/\1/p' | head -1)"
+# major; unparseable stays empty and keeps the previous install-13.3 behavior.
+# R580+/610.x renamed the banner field to "CUDA UMD Version: X.Y" (KMD/UMD split,
+# see issue #5812: "NVIDIA-SMI 610.47  KMD Version: 610.47  CUDA UMD Version: 13.3"),
+# so accept the optional " UMD" exactly as setup.sh's _cuda_driver_max_version does --
+# a "CUDA Version:"-only match is empty on every new driver, which silently disables
+# the stale-toolkit upgrade AND the toolkit-vs-driver sanity check below.
+_DRV_CUDA_MAJOR="$("$NVSMI" 2>/dev/null | sed -nE 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+)\..*/\2/p' | head -1)"
 case "$_DRV_CUDA_MAJOR" in *[!0-9]*) _DRV_CUDA_MAJOR="" ;; esac
 _nvcc_major_of() { "$1" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\)\..*/\1/p' | head -1; }
 _nvcc_minor_of() { "$1" --version 2>/dev/null | sed -n 's/.*release [0-9][0-9]*\.\([0-9][0-9]*\).*/\1/p' | head -1; }
@@ -298,17 +312,19 @@ else
 fi
 # Honor a UNSLOTH_LLAMA_PR pin (same var setup.sh supports) on fresh clones and
 # existing checkouts alike; best-effort -- a failed fetch keeps what's there.
-case "${UNSLOTH_LLAMA_PR:-}" in
-    ''|*[!0-9]*) ;;
-    *)
-        if git -C "$LLAMA_DIR" fetch --depth 1 origin "pull/${UNSLOTH_LLAMA_PR}/head:_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1 \
-                && git -C "$LLAMA_DIR" checkout "_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1; then
-            log "checked out llama.cpp PR #${UNSLOTH_LLAMA_PR} (UNSLOTH_LLAMA_PR)"
-        else
-            log "could not fetch llama.cpp PR #${UNSLOTH_LLAMA_PR}; building the default branch"
-        fi
-        ;;
-esac
+# Fetch to FETCH_HEAD and `checkout -B`, never "pull/N/head:_unsloth_pr_N": a rerun of
+# the same pin fails that refspec outright. Git refuses to update a branch that is
+# checked out ("refusing to fetch into branch ... checked out at", not fixable with +),
+# and after a force-push the update is rejected non-fast-forward. Either way the fetch
+# fails, the checkout never runs, and the stale PR commit is rebuilt and stamped.
+if [ -n "$_PR_PIN" ]; then
+    if git -C "$LLAMA_DIR" fetch --depth 1 origin "pull/${_PR_PIN}/head" >/dev/null 2>&1 \
+            && git -C "$LLAMA_DIR" checkout -q -B "_unsloth_pr_${_PR_PIN}" FETCH_HEAD >/dev/null 2>&1; then
+        log "checked out llama.cpp PR #${_PR_PIN} (UNSLOTH_LLAMA_PR)"
+    else
+        log "could not fetch llama.cpp PR #${_PR_PIN}; building the current checkout"
+    fi
+fi
 cd "$LLAMA_DIR" || { _restore_prev; exit 0; }
 
 # When rebuilding in-place over an existing git checkout, the whole-dir backup above

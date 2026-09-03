@@ -2894,7 +2894,11 @@ fi
 # needs; a CPU source build first would burn minutes (and thermal headroom on Spark-class
 # machines) on a binary the CUDA rebuild replaces. Provision failure still cascades to the
 # CPU-prebuilt last resort via _LLAMA_CPP_DEGRADED, so no-server states surface.
+# Never under STAGE_ROOT: clearing the flag there would slip past the background-staging
+# rejection immediately below and hand the same apt/sudo + source build to a
+# noninteractive updater -- exactly what that guard exists to refuse.
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
+        && [ -z "$STAGE_ROOT" ] \
         && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
         && [ -z "$_LLAMA_PR" ] \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
@@ -3226,15 +3230,13 @@ else
                         # Resolve the arch list before committing to a CUDA build;
                         # an empty list means CPU instead of a PTX-only binary (#5854).
                         _raw_caps=""
-                        # Resolve nvidia-smi as _setup_has_usable_nvidia_gpu does
-                        # (PATH, then /usr/bin); `command -v` alone would miss an
-                        # off-PATH binary and wrongly drop a CUDA host to CPU.
-                        _smi_bin=""
-                        if command -v nvidia-smi >/dev/null 2>&1; then
-                            _smi_bin="nvidia-smi"
-                        elif [ -x "/usr/bin/nvidia-smi" ]; then
-                            _smi_bin="/usr/bin/nvidia-smi"
-                        fi
+                        # Resolve nvidia-smi through the same helper the NVIDIA gate
+                        # uses (PATH, then /usr/lib/wsl/lib, then /usr/bin): on WSL2
+                        # GPU-PV the binary lives ONLY in /usr/lib/wsl/lib, which root
+                        # login shells drop from PATH, so an inlined `command -v` +
+                        # /usr/bin probe finds nothing and wrongly drops a CUDA host to
+                        # a CPU build that the provisioner then has to redo.
+                        _smi_bin="$(_resolve_nvsmi)" || _smi_bin=""
                         if [ -n "$_smi_bin" ]; then
                             _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
@@ -3532,6 +3534,7 @@ _have_cuda_llama_server() {
 }
 if [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && [ -z "$STAGE_ROOT" ] \
         && { ! grep -qi microsoft /proc/version 2>/dev/null || [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" != "1" ]; } \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
         && [ "${_SKIP_GGUF_BUILD:-}" != true ] \

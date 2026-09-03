@@ -5797,6 +5797,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # else would pull it in.
         substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
         run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
             "unsloth @ git+https://github.com/unslothai/unsloth@${UNSLOTH_INSTALL_REF}" unsloth-zoo
     else
