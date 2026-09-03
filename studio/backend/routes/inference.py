@@ -2067,6 +2067,9 @@ def _openai_llama_admission_tokens(
 # so reading it raw multiplied the reserve to nothing. Six is the conservative pick,
 # since over-reserving costs a little concurrency while under-reserving costs the crash.
 _OPENAI_LLAMA_DEFAULT_SPEC_DRAFT_N_MAX = 6
+# llama.cpp's own --batch-size default. Used when a load did not state one, which is
+# the common case: the launch simply omits the flag and llama-server picks this.
+_OPENAI_LLAMA_DEFAULT_N_BATCH = 2048
 
 
 def _openai_llama_speculative_draft_tokens(llama_backend) -> int:
@@ -2092,6 +2095,31 @@ def _openai_llama_speculative_draft_tokens(llama_backend) -> int:
         except (TypeError, ValueError):
             return 0
     return _OPENAI_LLAMA_DEFAULT_SPEC_DRAFT_N_MAX if active else 0
+
+
+def _openai_llama_effective_batch_tokens(llama_backend) -> int:
+    """--batch-size llama-server prefills in, which the buffer has to be able to hold.
+
+    The cache does not fail when it is full, it fails when the NEXT batch does not fit.
+    llama-server processes a prompt in chunks of this size, so a resumed chat replaying
+    5000 tokens asks for a whole chunk of free cells at once. A buffer smaller than one
+    chunk cannot prevent the decode failure that starts the shrinking-batch retry, which
+    is the path upstream #24840 throws on.
+
+    Falls back to llama.cpp's own default when the load did not state one, because the
+    unstated case is the common one and treating it as zero reserves nothing at all.
+    """
+    for attr in ("n_batch", "_n_batch", "batch_size", "_batch_size"):
+        stated = getattr(llama_backend, attr, None)
+        if stated is None:
+            continue
+        try:
+            value = int(stated)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return _OPENAI_LLAMA_DEFAULT_N_BATCH
 
 
 def _llama_preemption_log(event: str, *, level: str = "info", **fields) -> None:
@@ -2152,6 +2180,9 @@ def _openai_llama_preemption_arm(
         # where upstream #24840 throws on the speculative indices.
         draft_tokens = _openai_llama_speculative_draft_tokens(llama_backend),
         slots = _openai_llama_admission_capacity(request, llama_backend),
+        # The cache fails on the next BATCH not fitting, not on being full; see
+        # _openai_llama_effective_batch_tokens.
+        batch_tokens = _openai_llama_effective_batch_tokens(llama_backend),
     )
     if not controller.active:
         # The three reasons are worth telling apart: no shared cache, no budget, or the

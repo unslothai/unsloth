@@ -413,7 +413,9 @@ def preemption_enabled() -> bool:
     return _bool_env(PREEMPT_ENV, DEFAULT_PREEMPT_ENABLED)
 
 
-def preemption_buffer_tokens(budget: int, *, draft_tokens: int = 0, slots: int = 1) -> int:
+def preemption_buffer_tokens(
+    budget: int, *, draft_tokens: int = 0, slots: int = 1, batch_tokens: int = 0
+) -> int:
     """Tokens held clear of ``budget``. Zero for an unknown budget, which disables it.
 
     Never the whole cache. The 256-token floor is larger than a very small ``-c``, and a
@@ -453,6 +455,23 @@ def preemption_buffer_tokens(budget: int, *, draft_tokens: int = 0, slots: int =
     per_slot = _int_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_PER_SLOT", DEFAULT_PREEMPT_BUFFER_PER_SLOT)
     slot_count = max(1, int(slots or 1))
     reserve = max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, per_slot * slot_count)
+    # And room for the batch llama.cpp is actually processing, which is the term all of
+    # the above was missing. The cache does not fail when it is full of tokens, it fails
+    # when the next BATCH does not fit: llama-server prefills in chunks of --batch-size
+    # (2048 by default), so a resumed chat replaying 5000 tokens asks for 2048 free cells
+    # at once, not one at a time.
+    #
+    # Measured 2026-09-03, and it is why the watermark kept looking innocent: across 1329
+    # samples peak residency was 13540 against a 15592 ceiling, never once over, while
+    # llama-server halved its batch 19 times (2048, 1024, ... 4) and threw 4 speculative
+    # sub-batch errors. 16384 - 13540 leaves 2844 free, which one 2048 chunk fits and two
+    # concurrent ones do not. A 792 token buffer cannot cover a 2048 token chunk.
+    #
+    # max() rather than a sum: reaction headroom and batch headroom buy the same thing,
+    # space for the next step, so the larger of the two covers both.
+    reserve = max(reserve, max(0, int(batch_tokens or 0)))
+    # Drafts are additional. They are cells the drafter puts in BEFORE acceptance, on top
+    # of whatever the batch needs, and admission never sees them.
     reserve += max(0, int(draft_tokens or 0)) * slot_count
     # Still never the whole cache: a large draft window on a small -c must degrade to a
     # tight buffer, not to a ceiling of zero.
@@ -519,7 +538,8 @@ class PreemptionController:
 
     __slots__ = (
         "key", "_lock", "_participants", "_seq", "_epoch_winner", "_budget",
-        "_kv_unified", "_draft_tokens", "_slots", "_resident", "_residency_probe",
+        "_kv_unified", "_draft_tokens", "_slots", "_batch_tokens", "_resident",
+        "_residency_probe",
     )
 
     def __init__(self, key: str):
@@ -541,6 +561,8 @@ class PreemptionController:
         # Speculative drafts occupy cells no request is charged for; see
         # preemption_buffer_tokens.
         self._draft_tokens = 0
+        # --batch-size llama-server was launched with, so the buffer can cover one chunk.
+        self._batch_tokens = 0
         self._slots = 1
         # True cells resident in the cache from the last GET /slots, or None when it
         # could not be read. Includes the residue of FINISHED requests, which the ledger
@@ -557,6 +579,7 @@ class PreemptionController:
         kv_unified: Optional[bool] = None,
         draft_tokens: Optional[int] = None,
         slots: Optional[int] = None,
+        batch_tokens: Optional[int] = None,
     ) -> None:
         """Re-read the cache this backend actually allocated.
 
@@ -573,6 +596,8 @@ class PreemptionController:
                 self._draft_tokens = max(0, int(draft_tokens or 0))
             if slots is not None:
                 self._slots = max(1, int(slots or 1))
+            if batch_tokens is not None:
+                self._batch_tokens = max(0, int(batch_tokens or 0))
 
     @property
     def active(self) -> bool:
@@ -879,7 +904,10 @@ class PreemptionController:
 
     def _buffer_locked(self) -> int:
         return preemption_buffer_tokens(
-            self._budget, draft_tokens = self._draft_tokens, slots = self._slots
+            self._budget,
+            draft_tokens = self._draft_tokens,
+            slots = self._slots,
+            batch_tokens = self._batch_tokens,
         )
 
     def _prune_locked(self) -> None:

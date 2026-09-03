@@ -347,10 +347,14 @@ class TestSpeculativeDraftsAreReserved:
         snapshot = get_preemption_controller("http://127.0.0.1:9/").snapshot()
         from core.inference.llama_preemption import preemption_buffer_tokens
 
+        # batch_tokens is the launch's --batch-size, unstated here so it defaults to
+        # llama.cpp's 2048; the drafter's cells are added ON TOP of it.
         assert snapshot.buffer == preemption_buffer_tokens(
-            snapshot.budget, draft_tokens = 2, slots = 4
+            snapshot.budget, draft_tokens = 2, slots = 4, batch_tokens = 2048
         ), f"the drafter's tokens were not reserved (buffer {snapshot.buffer})"
-        assert snapshot.buffer > preemption_buffer_tokens(snapshot.budget)
+        assert snapshot.buffer > preemption_buffer_tokens(
+            snapshot.budget, slots = 4, batch_tokens = 2048
+        ), "the drafter must cost something over the same launch without one"
 
     @pytest.mark.asyncio
     async def test_a_backend_without_speculation_reserves_nothing_extra(self):
@@ -383,8 +387,60 @@ class TestSpeculativeDraftsAreReserved:
 
         snapshot = get_preemption_controller("http://127.0.0.1:10/").snapshot()
         assert snapshot.buffer == preemption_buffer_tokens(
-            snapshot.budget, slots = snapshot.slots
+            snapshot.budget, slots = snapshot.slots, batch_tokens = 2048
         )
+
+
+class TestTheBufferCanHoldOnePrefillChunk:
+    """The term every earlier buffer was missing.
+
+    The cache does not fail when it is full of tokens, it fails when the next BATCH does
+    not fit. llama-server prefills in chunks of --batch-size, so a resumed chat replaying
+    5000 tokens asks for a whole chunk of free cells at once.
+
+    Measured 2026-09-03 and it is why the watermark kept looking innocent: across 1329
+    samples peak residency was 13540 against a 15592 ceiling, never once over, while
+    llama-server halved its batch 19 times and threw 4 speculative sub-batch errors. The
+    buffer was 792 against a 2048 chunk.
+    """
+
+    def test_the_buffer_covers_the_batch(self):
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        buffer = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048)
+        assert buffer >= 2048, (
+            "a buffer smaller than one prefill chunk cannot prevent the decode failure "
+            "that starts the shrinking-batch retry"
+        )
+
+    def test_drafts_are_added_on_top_of_the_batch(self):
+        """They are cells the drafter puts in BEFORE acceptance, not part of the chunk."""
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        plain = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048)
+        drafted = preemption_buffer_tokens(
+            16384, slots = 4, batch_tokens = 2048, draft_tokens = 6
+        )
+        assert drafted == plain + 6 * 4
+
+    def test_reaction_headroom_still_wins_when_it_is_larger(self):
+        """max(), not a sum: both buy space for the next step, so the larger covers both.
+
+        A tiny --batch-size must not shrink the buffer below the reaction headroom that
+        several slots decoding at once still needs.
+        """
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        assert preemption_buffer_tokens(16384, slots = 8, batch_tokens = 64) == (
+            preemption_buffer_tokens(16384, slots = 8)
+        )
+
+    def test_a_small_cache_is_not_given_a_ceiling_of_zero(self):
+        """The batch can exceed a small -c outright; the cap has to survive it."""
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        buffer = preemption_buffer_tokens(2048, slots = 4, batch_tokens = 2048)
+        assert 0 < buffer <= 1024, buffer
 
 
 class TestTheLiveCrashOf20260901:
