@@ -45,6 +45,24 @@ def _request(**overrides) -> TrainingStartRequest:
     return TrainingStartRequest(**payload)
 
 
+@pytest.mark.parametrize("dataset_path", ["", " ", "\t"])
+def test_local_dataset_path_validation_rejects_blank_values(dataset_path):
+    route = _load_route_module("training_route_rejects_blank_local_dataset_path")
+
+    with (
+        patch.object(
+            route,
+            "resolve_dataset_path",
+            side_effect = AssertionError("blank path must be rejected before resolution"),
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        route._validate_local_dataset_paths([dataset_path], "Local eval dataset")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Local eval dataset path must not be blank"
+
+
 @pytest.mark.parametrize("repo_id", ["_team/dataset_", "dataset_"])
 def test_training_request_accepts_hugging_face_underscore_boundaries(repo_id):
     assert _request(hf_dataset = repo_id).hf_dataset == repo_id
