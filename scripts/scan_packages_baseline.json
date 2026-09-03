@@ -1828,6 +1828,14 @@
       "evidence": "Anti: L860:         time.sleep(3600)\nSubprocess: L212:         self.process = subprocess.Popen( sha256:62f622e5b17b6c6b1656b44c8ba27274f02c68c4f9d35502fb593f1d6a3af55d",
       "evidence_hash": "f760ab1ce9c086051291c29ac4e486575db6f2dac2eddba2ac31ef5c434609d8",
       "file_sha256": "695b5c1df7d0ae710451aa8904c5ef101e0c93de26a591f3e995bb9151d4c0e3"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L461:     while True: sha256:a8f95a987a45a8eb67ee78dd9d98674c7b88c97e7722f63dd446f77e3dcfe0e7",
+      "evidence_hash": "20a717b5faac68b3a57b11859f90d21959c29302e413bf3cd36e1263ccfbb00b"
     }
   ]
 }
