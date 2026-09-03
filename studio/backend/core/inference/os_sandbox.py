@@ -244,7 +244,7 @@ def _validate_workdir(workdir: str) -> str:
             f"the session workdir contains a file hard-linked outside it: {external_links[0]}"
         )
 
-    if sys.platform == "linux":
+    if sys.platform == "linux" and not include_system_roots:
         for mount in _linux_mount_points():
             if _contained(mount, wd, strict = True):
                 raise SandboxUnavailableError(
@@ -305,7 +305,9 @@ def _runtime_read_paths() -> tuple[str, ...]:
     return tuple(selected)
 
 
-def _validate_runtime_paths(paths: tuple[str, ...], workdir: str) -> None:
+def _validate_runtime_paths(
+    paths: tuple[str, ...], workdir: str, *, include_system_roots: bool = False
+) -> None:
     """User-managed runtimes may be read-only, but must not carry host IPC into the jail."""
     scan_roots: list[str] = []
     for root in paths:
@@ -313,7 +315,11 @@ def _validate_runtime_paths(paths: tuple[str, ...], workdir: str) -> None:
             raise SandboxUnavailableError(
                 f"an interpreter/runtime path is inside the writable session workdir: {root}"
             )
-        if sys.platform == "linux" and any(_contained(root, p) for p in _LINUX_SYSTEM_ROOTS):
+        if (
+            not include_system_roots
+            and sys.platform == "linux"
+            and any(_contained(root, p) for p in _LINUX_SYSTEM_ROOTS)
+        ):
             continue
         try:
             root_mode = os.stat(root).st_mode
@@ -339,30 +345,31 @@ def _validate_runtime_paths(paths: tuple[str, ...], workdir: str) -> None:
 
     find = "/usr/bin/find"
     if scan_roots and _trusted_linux_executable(find):
-        one_filesystem = "-xdev" if sys.platform == "linux" else "-x"
+        find_command = [find, "-P", *scan_roots]
+        if not include_system_roots:
+            find_command.append("-xdev" if sys.platform == "linux" else "-x")
+        find_command.extend(
+            [
+                "(",
+                "-type",
+                "s",
+                "-o",
+                "-type",
+                "p",
+                "-o",
+                "-type",
+                "b",
+                "-o",
+                "-type",
+                "c",
+                ")",
+                "-print",
+                "-quit",
+            ]
+        )
         try:
             result = subprocess.run(
-                [
-                    find,
-                    "-P",
-                    *scan_roots,
-                    one_filesystem,
-                    "(",
-                    "-type",
-                    "s",
-                    "-o",
-                    "-type",
-                    "p",
-                    "-o",
-                    "-type",
-                    "b",
-                    "-o",
-                    "-type",
-                    "c",
-                    ")",
-                    "-print",
-                    "-quit",
-                ],
+                find_command,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.PIPE,
                 text = True,
@@ -546,6 +553,19 @@ class LinuxBubblewrapBackend:
                 False,
                 f"Bubblewrap is not a root-controlled executable: {candidate}",
             )
+        system_roots = tuple(root for root in _LINUX_SYSTEM_ROOTS if os.path.exists(root))
+        try:
+            _validate_runtime_paths(
+                system_roots,
+                "/__unsloth_sandbox_probe_workdir__",
+                include_system_roots = True,
+            )
+        except SandboxUnavailableError as exc:
+            return SandboxCapability(
+                self.identity,
+                False,
+                f"a read-only Linux system root is unsafe to expose: {exc}",
+            )
         self._bwrap = candidate
         return _live_probe(self)
 
@@ -683,6 +703,14 @@ try:
 except OSError:
     pass
 assert not os.path.exists('/proc/{host_pid}/environ')
+if hasattr(socket, 'AF_VSOCK'):
+    try:
+        vsock = socket.socket(socket.AF_VSOCK)
+    except OSError:
+        pass
+    else:
+        vsock.close()
+        raise AssertionError('AF_VSOCK remained available')
 for family, address in ((socket.AF_INET, {ipv4_address!r}), (socket.AF_INET6, {ipv6_address!r})):
     s = socket.socket(family)
     s.settimeout(0.2)

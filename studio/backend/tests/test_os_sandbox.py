@@ -300,6 +300,28 @@ def test_linux_seccomp_filter_rejects_x32_syscalls_on_x86(monkeypatch):
     assert (0x45, 7, 0, 0x40000000) in instructions
 
 
+def test_linux_system_roots_are_scanned_for_host_ipc(monkeypatch, tmp_path):
+    root = tmp_path / "system-root"
+    root.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    sentinel = root / "host.sock"
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", (str(root),))
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda path: True)
+    monkeypatch.setattr(
+        os_sandbox.subprocess,
+        "run",
+        Mock(return_value = subprocess.CompletedProcess([], 0, stdout = str(sentinel), stderr = "")),
+    )
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
+        os_sandbox._validate_runtime_paths(
+            (str(root),), str(workdir), include_system_roots = True
+        )
+
+
 @pytest.mark.parametrize(
     ("detector_returncode", "expected"),
     [(0, "containers are not qualified"), (1, None), (2, "cannot verify")],
