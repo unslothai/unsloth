@@ -705,6 +705,7 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
         pytest.param("uv", "--default-index", "https://mirror/simple", id = "uv-default-index"),
         pytest.param("uv", "--exclude-newer", "2026-01-01", id = "uv-exclude-newer"),
         pytest.param("uv", "-b", "build-constraints.txt", id = "uv-build-constraints-short"),
+        pytest.param("uv", "--prerelease-package", "snac", id = "uv-prerelease-package"),
         pytest.param("pip", "--proxy", "http://proxy:3128", id = "pip-proxy"),
         pytest.param("pip", "--retries", "3", id = "pip-retries"),
         pytest.param("pip", "--trusted-host", "mirror.internal", id = "pip-trusted-host"),
@@ -735,6 +736,28 @@ def test_extra_value_is_not_a_protected_target(shim):
     # snac is not swallowed by a dangling --extra.
     execd, _ = _run(shim, "uv", ["--extra", "torch", "snac"])
     assert execd == ["--extra", "torch", "snac"], execd
+
+
+def test_uv_per_package_value_flags_classified(shim):
+    # uv spells a per-package variant of several resolver flags, and every one of
+    # them takes a value. A missing member makes the scanner read the PACKAGE NAME
+    # that follows as an install target. --prerelease-package arrived in uv 0.12
+    # next to the long-classified --prerelease and was the single omission the
+    # image build's selfcheck caught, so assert the whole family here: the next
+    # sibling upstream adds fails this test instead of the image build.
+    known = shim._VALUE_FLAGS | shim._DROP_VALUE_FLAGS
+    family = {
+        "--config-settings-package",
+        "--exclude-newer-package",
+        "--no-build-isolation-package",
+        "--no-editable-package",
+        "--no-sources-package",
+        "--prerelease-package",
+        "--refresh-package",
+        "--reinstall-package",
+        "--upgrade-package",
+    }
+    assert family <= known, sorted(family - known)
 
 
 def _value_flags_from_help(cmd):

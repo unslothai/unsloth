@@ -148,6 +148,8 @@ _VALUE_FLAGS = {
     # newer uv (0.10+):
     "--no-editable-package",
     "--upgrade-group",
+    # newer uv (0.12+):
+    "--prerelease-package",
     # pip:
     "--build-constraint",
     "--cert",
