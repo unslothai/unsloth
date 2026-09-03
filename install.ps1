@@ -5095,9 +5095,10 @@ exit 0
     function Get-CudaFamilyCappedForPreTuring {
         param([string]$Family, [string]$SmiExe)
         if ($Family -notin @('cu128', 'cu130')) { return $Family }
-        # Windows pins torch<2.11, whose cu128 still ships sm_70, so only cu130
-        # strands a Volta here. Raise to 75 when that pin reaches 2.11.
-        $legacyFloorSm = if ($Family -eq 'cu128') { 70 } else { 75 }
+        # torch 2.11.0+cu128 dropped Volta (its arch list runs sm_75..sm_120; 2.10.0+cu128
+        # still had sm_70), so now that the pin reaches 2.11 a pre-Turing host is stranded
+        # on cu128 exactly as it is on cu130. Both families take the 75 floor.
+        $legacyFloorSm = 75
         switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm) {
             'cu126' {
                 substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
@@ -5785,10 +5786,10 @@ exit 0
             # rather than abort -- the pin-only route reaches this branch on an arm64 interpreter.
             $VenvPlatform = Get-VenvPlatformTag -PythonExe $VenvPython
             $_xpuSpecs = Get-XpuTorchSpecs -Platform $VenvPlatform
-            $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0")
+            $_xpuCpuSpecs = @("torch>=2.4,<2.12.0", "torchvision>=0.19,<0.27.0", "torchaudio>=2.4,<2.12.0")
             if ($VenvPlatform -eq "win-arm64") {
                 substep "windows on arm: skipping torchaudio (upstream publishes no win_arm64 wheel)."
-                $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0")
+                $_xpuCpuSpecs = @("torch>=2.4,<2.12.0", "torchvision>=0.19,<0.27.0")
             }
             # Kept-release attempt first, as on the ROCm and CUDA routes: the pin was vetted
             # against the XPU window in the release-preservation decision above, and the kept

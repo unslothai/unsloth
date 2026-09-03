@@ -192,7 +192,11 @@ def _staleness_inputs_ps1() -> set[str]:
     """
     text = SETUP_PS1.read_text(encoding = "utf-8")
     block = re.search(
-        r'\$DistDir = Join-Path \$FrontendDir "dist"(.*?)# Provision Node when the frontend build',
+        # Terminator matched on the stable "# Provision Node" prefix rather than the whole
+        # sentence: that comment gets reworded as the Node gating grows (it now also names
+        # the OXC runtime install), and pinning the full prose makes this reader return None
+        # and every check below fail for a reason that has nothing to do with staleness.
+        r'\$DistDir = Join-Path \$FrontendDir "dist"(.*?)\n# Provision Node ',
         text,
         re.S,
     )

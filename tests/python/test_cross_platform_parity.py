@@ -534,9 +534,11 @@ class TestKnown211SetParity:
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
         # No stale 2.10-line DEFAULT remains. Checked against the default trio's own
-        # assignments rather than as a blanket "<2.11.0 appears nowhere": the XPU
-        # CPU-fallback trio and Get-XpuTorchSpecs deliberately keep a curated sub-2.11
-        # cap (mirroring install.sh's xpu case arm), and those are not the default.
+        # assignments rather than as a blanket "<2.11.0 appears nowhere": Get-XpuTorchSpecs
+        # deliberately keeps a curated sub-2.11 cap for the whl/xpu index (mirroring
+        # install.sh's xpu case arm), and that is not the default. The XPU CPU fallback is
+        # NOT part of that carve-out -- it installs from the plain whl/cpu index, the same
+        # one the ROCm-to-CPU fallback uses, so it moved to the 2.11 line with the rest.
         for _stale in (
             '$_pinTorchSpec = "torch>=2.4,<2.11.0"',
             '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"',

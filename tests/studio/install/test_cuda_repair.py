@@ -859,8 +859,10 @@ class TestExpectedTorchFlavorRepairs:
     def test_the_repair_uses_install_ps1s_bounded_trio(self):
         _ok, mock_pip = _run_flavor_invariant(repaired = "2.10.0+cu124")
         call_args = [str(a) for a in mock_pip.call_args.args]
-        # NOT the <2.12 Linux range: an unbounded trio resolves back to the 2.11 wheel.
-        for spec in ("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0"):
+        # The bounded trio install.ps1 itself repairs with, not a bare one: an unbounded
+        # trio resolves past the ceiling. Windows now shares the <2.12 window rather than
+        # capping below it, so this is the same range the Linux path uses.
+        for spec in ("torch>=2.4,<2.12.0", "torchvision>=0.19,<0.27.0", "torchaudio>=2.4,<2.12.0"):
             assert spec in call_args
 
     def test_untagged_pypi_wheel_is_repaired(self):

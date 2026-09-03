@@ -293,12 +293,14 @@ _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
 # CPU torch repair specs (see _ensure_cpu_torch): the /cpu index also serves newer torch, so a bare trio could resolve ABI-mismatched.
 _CPU_TORCH_PKG_SPEC: tuple[str, str, str] = _CUDA_TORCH_PKG_SPEC
 
-# Byte-identical to the non-XPU arm of install.ps1's $_fixSpecs, NOT _CUDA_TORCH_PKG_SPEC:
-# `studio update` must repair to the same wheels install.ps1 does.
+# Byte-identical to the non-XPU arm of install.ps1's $_fix*Spec scalars, NOT
+# _CUDA_TORCH_PKG_SPEC: `studio update` must repair to the same wheels install.ps1 does.
+# Moved to the 2.11 line (<2.12.0) with install.ps1's default trio; the xpu arm keeps its
+# own curated sub-2.11 cap in _XPU_TORCH_PKG_SPEC and is selected before this one.
 _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.11.0",
-    "torchvision>=0.19,<0.26.0",
-    "torchaudio>=2.4,<2.11.0",
+    "torch>=2.4,<2.12.0",
+    "torchvision>=0.19,<0.27.0",
+    "torchaudio>=2.4,<2.12.0",
 )
 
 # torchao's cpp extensions are pinned to ONE torch release AND CUDA major. A torch

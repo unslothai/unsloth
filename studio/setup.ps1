@@ -807,9 +807,10 @@ function Get-NvidiaCu126Verdict {
 function Get-CudaFamilyCappedForPreTuring {
     param([string]$Family, [string]$SmiExe)
     if ($Family -notin @('cu128', 'cu130')) { return $Family }
-    # Windows pins torch<2.11, whose cu128 still ships sm_70, so only cu130
-    # strands a Volta here. Raise to 75 when that pin reaches 2.11.
-    $legacyFloorSm = if ($Family -eq 'cu128') { 70 } else { 75 }
+    # torch 2.11.0+cu128 dropped Volta (its arch list runs sm_75..sm_120; 2.10.0+cu128
+    # still had sm_70), so now that the pin reaches 2.11 a pre-Turing host is stranded
+    # on cu128 exactly as it is on cu130. Both families take the 75 floor.
+    $legacyFloorSm = 75
     $verdict = Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm
     if (-not $verdict) { return $Family }
     # This runs twice per setup; announce once without polluting pipeline output.
