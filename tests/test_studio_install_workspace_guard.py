@@ -655,9 +655,9 @@ def _root_moving_env_names() -> set[str]:
     Derived rather than written down, so a fourth root variable fails this test on the commit
     that adds it instead of on the bug report that follows it.
     """
-    source = (
-        REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py"
-    ).read_text(encoding = "utf-8")
+    source = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(
+        encoding = "utf-8"
+    )
     names: set[str] = set()
     for resolver in _ROOT_CHOOSING_RESOLVERS:
         start = source.index(f"\ndef {resolver}(")
