@@ -4532,7 +4532,16 @@ def move_install_dir_aside(
             copy_tmp = dst.with_name(f"{dst.name}.copying-{counter}")
         log(f"os.replace cross-device ({exc!r}); copy+publish {src} -> {dst}")
         try:
-            shutil.copytree(src, copy_tmp)
+            # symlinks = True, matching the rollback-restore copy below. The default
+            # DEREFERENCES links inside the tree, and a Linux llama.cpp bundle is full
+            # of soname links (libllama.so.0 -> libllama.so), so the aside copy would
+            # duplicate every shared library and, restored after a failed activation,
+            # replace the install's link topology with independent files. Safe here
+            # only because copy_tmp is a fresh uniquified path: combined with
+            # dirs_exist_ok it raises FileExistsError on any name the destination
+            # already holds, which is why the three dirs_exist_ok calls in this file
+            # cannot simply be given the same flag.
+            shutil.copytree(src, copy_tmp, symlinks = True)
             os.replace(copy_tmp, dst)
         except BaseException:
             remove_tree(copy_tmp)

@@ -62,12 +62,23 @@ EOF
           && "${_view_dir}" == "${_root_dir}/"* ]]; then
         _view_rel="${_view_dir#${_root_dir}/}"
         # default_url must be set on BOTH ServerApp and LabApp, or the lab app
-        # overrides ServerApp back to /lab
-        cat >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<EOF
-c.ServerApp.default_url = "/lab/tree/${_view_rel}"
-c.LabApp.default_url = "/lab/tree/${_view_rel}"
-c.ServerApp.preferred_dir = "${_view_dir}"
-EOF
+        # overrides ServerApp back to /lab.
+        #
+        # repr() rather than interpolation into a heredoc: a double quote in the
+        # path closed the string literal and made jupyter_lab_config.py a
+        # SyntaxError, so the documented override stopped the service starting,
+        # and a backslash silently changed the path. Both are legal POSIX
+        # characters. Values arrive via the environment, like the password block
+        # above, so the shell side needs no quoting either.
+        UNSLOTH_VIEW_REL="${_view_rel}" UNSLOTH_VIEW_DIR="${_view_dir}" \
+        python - >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<'PY'
+import os
+rel  = os.environ["UNSLOTH_VIEW_REL"]
+view = os.environ["UNSLOTH_VIEW_DIR"]
+print(f"c.ServerApp.default_url = {'/lab/tree/' + rel!r}")
+print(f"c.LabApp.default_url = {'/lab/tree/' + rel!r}")
+print(f"c.ServerApp.preferred_dir = {view!r}")
+PY
     fi
 fi
 
