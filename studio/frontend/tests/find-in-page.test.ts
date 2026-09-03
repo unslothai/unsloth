@@ -2241,6 +2241,12 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["\\u0915\\u094d!", "!"],
       ["\\u0915\\u094da", "a"],
       ["!\\u094d\\u0915", "\\u0915"],
+      // Control is not just C0 and C1. A soft hyphen and a line separator break on both sides,
+      // so the mark after each is its own grapheme and both halves are findable.
+      ["\\u00ad\\u0301", "\\u00ad"],
+      ["\\u00ad\\u0301", "\\u0301"],
+      ["\\u2028\\u0903", "\\u2028"],
+      ["\\u2028\\u0903", "\\u0903"],
     ];
     for (const [body, query] of found) {
       if (findMatches(index(body), query, 10).length !== 1) {
@@ -2274,6 +2280,44 @@ test("nothing below U+0300 can join a grapheme, which is what the fast path rest
     }
   }
   assert.deepEqual(joiners, []);
+});
+
+test("the end of a full index is settled by what follows, not assumed to be a cut", () => {
+  // Filling MAX_INDEX_CHARS exactly and stopping is not a cut: the next node is still there to be
+  // read, and its first character answers the junction the same way a clip's does. Calling the end
+  // unknown regardless threw away a match that ended on it, with a space sitting right after.
+  const per = MAX_NODE_CHARS;
+  const nodes = MAX_INDEX_CHARS / per;
+  const pictograph = String.fromCodePoint(0x1f469);
+  const build = (tail: string, next: string) => {
+    const children = [];
+    for (let at = 0; at < nodes; at += 1) {
+      children.push(
+        text(
+          at === nodes - 1
+            ? "x".repeat(per - tail.length) + tail
+            : "x".repeat(per),
+        ),
+      );
+    }
+    children.push(text(next));
+    return buildTextIndex(el("DIV", [el("P", children)]));
+  };
+  for (const [tail, next, query, want] of [
+    ["needle", " rest", "needle", 1],
+    ["needle", "rest", "needle", 1],
+    ["needle", "\u0301rest", "needle", 0],
+    [`a${pictograph}`, `\u200d${pictograph}`, pictograph, 0],
+    ["x\u0915\u094d", "\u0937z", "\u0915\u094d", 0],
+  ] as [string, string, string, number][]) {
+    const index = build(tail, next);
+    assert.equal(index.truncated, true);
+    assert.equal(
+      findMatches(index, query, 10).length,
+      want,
+      `${escape(tail)} then ${escape(next)}`,
+    );
+  }
 });
 
 test("the fallback finds neither more nor less than the platform, over a mixed corpus", () => {

@@ -319,8 +319,18 @@ export function buildTextIndex(
         if (length >= ceiling) {
           truncated = true;
           // A separator was already due before this text, so what is being left out is behind a
-          // break and cannot join what the index ends on: that end is still a boundary.
-          if (!pendingSeparator) unsafe.add(length);
+          // break and cannot join what the index ends on: that end is still a boundary. Otherwise
+          // this node follows the last one directly, and its first character settles the junction
+          // exactly as a clip's does: nothing is dropped in between to have to guess about.
+          if (
+            !pendingSeparator &&
+            reaches(
+              clipContext(recentTail(parts)),
+              String.fromCodePoint(data.codePointAt(0) as number),
+            )
+          ) {
+            unsafe.add(length);
+          }
           full = true;
           return;
         }
@@ -475,8 +485,11 @@ const HANGUL_VOWEL_PATTERN = /[\u1160-\u11a7\ud7b0-\ud7c6]/;
 const PREPEND_PATTERN =
   /[\u{600}-\u{605}\u{6dd}\u{70f}\u{890}\u{891}\u{8e2}\u{d4e}\u{110bd}\u{110cd}\u{111c2}\u{111c3}\u{113d1}\u{1193f}\u{11941}\u{11a84}-\u{11a89}\u{11d46}\u{11f02}]/u;
 /** Breaks on both sides of itself, whatever that is (GB4/GB5). `BLOCK_SEPARATOR` is one, which is
- *  what makes searching across blocks safe. */
-const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+ *  what makes searching across blocks safe. Not just C0 and C1: the same sweep again, for what
+ *  a combining mark refuses to attach to, since it attaches to anything that is not a control.
+ *  The joiners sit in the gap at U+200C, and a soft hyphen or a line separator outside it. */
+const CONTROL_PATTERN =
+  /[\u{0}-\u{1f}\u{7f}-\u{9f}\u{ad}\u{61c}\u{180e}\u{200b}\u{200e}-\u{200f}\u{2028}-\u{202e}\u{2060}-\u{206f}\u{feff}\u{fff0}-\u{fffb}\u{13430}-\u{1343f}\u{1bca0}-\u{1bca3}\u{1d173}-\u{1d17a}\u{e0000}-\u{e001f}\u{e0080}-\u{e00ff}\u{e01f0}-\u{e0fff}]/u;
 /** Never begins a grapheme: Extend and ZWJ (GB9), SpacingMark (GB9a), and the trailing half of a
  *  surrogate pair. UAX 29 derives Extend as Grapheme_Extend OR Emoji_Modifier, and a skin tone is
  *  only the second: it is `Sk`, so the marks alone left one showing as its own grapheme. The last
@@ -539,6 +552,20 @@ function chainsBack(point: string): boolean {
 interface ClipContext {
   tail: string;
   partial: boolean;
+}
+
+/** The end of what has been indexed, far enough back for `clipContext` to read its whole window.
+ *  Held in pieces until the walk ends, so the tail has to be gathered from the last of them. */
+function recentTail(parts: readonly string[]): string {
+  let tail = "";
+  for (
+    let at = parts.length - 1;
+    at >= 0 && tail.length <= CLIP_CONTEXT_LIMIT * 2;
+    at -= 1
+  ) {
+    tail = parts[at] + tail;
+  }
+  return tail;
 }
 
 /** As much of the end of `dropped` as the junction can turn on: the run of things a rule chains
