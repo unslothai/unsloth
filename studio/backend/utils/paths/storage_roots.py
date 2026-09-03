@@ -61,16 +61,48 @@ def unsloth_home() -> Path | None:
     return _resolved(override) if override else None
 
 
+# The spellings install.sh and install.ps1 accept, and nothing else. Anything
+# outside both lists is a typo rather than a third meaning; see portable_mode().
+_PORTABLE_ON_VALUES = ("1", "true", "yes", "on")
+_PORTABLE_OFF_VALUES = ("0", "false", "off", "no")
+
+# portable_mode() is called from every cache-var lookup, so the notice below is
+# emitted once per process instead of once per call.
+_warned_unrecognized_portable = False
+
+
+def _warn_unrecognized_portable(raw: str) -> None:
+    global _warned_unrecognized_portable
+    if _warned_unrecognized_portable:
+        return
+    _warned_unrecognized_portable = True
+    logger.warning(
+        "Ignoring UNSLOTH_PORTABLE=%r: expected one of %s to turn portable mode "
+        "on, or one of %s to leave it off.",
+        raw,
+        "/".join(_PORTABLE_ON_VALUES),
+        "/".join(_PORTABLE_OFF_VALUES),
+    )
+
+
 def portable_mode() -> bool:
     """Whether this install keeps everything under one directory. Implied by
     UNSLOTH_HOME, and settable on its own so an existing install can opt in.
     """
     # Case-folded: UNSLOTH_PORTABLE=FALSE read as "on" would move the HF caches
     # out from under a user who asked for the opposite.
-    if (os.environ.get("UNSLOTH_PORTABLE") or "").strip().lower() not in (
-        "", "0", "false", "off", "no",
-    ):
+    raw = (os.environ.get("UNSLOTH_PORTABLE") or "").strip()
+    value = raw.lower()
+    if value in _PORTABLE_ON_VALUES:
         return True
+    if value and value not in _PORTABLE_OFF_VALUES:
+        # The installers refuse these, so a process seeing one was handed it by
+        # hand. Reading it as ON would redirect TORCH_HOME and the projects root
+        # off a typo and revert them on the next launch without the variable.
+        _warn_unrecognized_portable(raw)
+    # Unrecognized reads as no opinion, which is what an off value already means
+    # here: neither opts a normal install in, and neither vetoes a real portable
+    # one, whose root is what makes it portable.
     return unsloth_home() is not None
 
 

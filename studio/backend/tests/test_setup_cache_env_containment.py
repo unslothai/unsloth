@@ -166,6 +166,98 @@ def test_unsloth_portable_off_values_do_not_enable_portable_mode(monkeypatch, va
     assert sr.portable_mode() is False
 
 
+# Every spelling the installers refuse. "enabled" and "flase" are the shapes that
+# matter: an intent the shell never acted on, and a typo.
+_UNRECOGNIZED_PORTABLE = ("enabled", "flase", "2", "bogus", "y", "n", "disabled", "-1")
+
+
+@pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE)
+def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(
+    monkeypatch, tmp_path, value,
+):
+    # The installers accept 1/true/yes/on and refuse the rest, so a value they
+    # would have rejected must not put the runtime in portable mode on its own:
+    # the caches would move for this launch and move back on the next one.
+    monkeypatch.setenv("UNSLOTH_PORTABLE", value)
+    sr = _load_storage_roots()
+
+    assert sr.portable_mode() is False
+    sr._setup_cache_env()
+
+    for key in _PORTABLE_ONLY:
+        assert key not in os.environ, f"{key} was redirected by UNSLOTH_PORTABLE={value!r}"
+
+
+@pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE + ("0", "false", "off", "no"))
+def test_a_portable_root_stays_portable_whatever_unsloth_portable_says(
+    monkeypatch, tmp_path, value,
+):
+    # The root is what makes an install portable. Neither an unrecognized value
+    # nor an off one may strand its caches back in the home directory.
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    master = tmp_path / "portable"
+    monkeypatch.setenv("UNSLOTH_HOME", str(master))
+    monkeypatch.setenv("UNSLOTH_PORTABLE", value)
+    sr = _load_storage_roots()
+
+    assert sr.portable_mode() is True
+    assert sr.studio_root() == master / "studio"
+    sr._setup_cache_env()
+
+    for key in _PORTABLE_ONLY:
+        assert os.environ[key].startswith(str(master)), f"{key} escaped the portable root"
+
+
+@pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE)
+def test_an_on_disk_portable_root_outranks_an_unrecognized_value(monkeypatch, value):
+    # unsloth_home() also resolves from the marker install.sh leaves at the root,
+    # which is the signal a venv-activated launch carries no environment for.
+    monkeypatch.setenv("UNSLOTH_PORTABLE", value)
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr, "unsloth_home", lambda: Path("/opt/unsloth-portable"))
+
+    assert sr.portable_mode() is True
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message, *args):
+        self.warnings.append(message % args if args else message)
+
+
+def test_an_unrecognized_value_is_reported_once_not_once_per_call(monkeypatch):
+    # portable_mode() runs on every cache-var lookup, so a per-call warning is a
+    # flooded log rather than a diagnostic.
+    monkeypatch.setenv("UNSLOTH_PORTABLE", "enabled")
+    sr = _load_storage_roots()
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(sr, "logger", recorder)
+
+    for _ in range(200):
+        assert sr.portable_mode() is False
+
+    assert len(recorder.warnings) == 1
+    warning = recorder.warnings[0]
+    assert "enabled" in warning
+    # Naming only the rejection leaves the user guessing at the spelling.
+    for accepted in ("1", "true", "yes", "on", "0", "false", "off", "no"):
+        assert accepted in warning
+
+
+@pytest.mark.parametrize("value", ("1", "true", "TRUE", " on ", "0", "false", "off", "no", ""))
+def test_accepted_spellings_are_silent(monkeypatch, value):
+    monkeypatch.setenv("UNSLOTH_PORTABLE", value)
+    sr = _load_storage_roots()
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(sr, "logger", recorder)
+
+    sr.portable_mode()
+
+    assert recorder.warnings == []
+
+
 def test_explicit_env_beats_the_pinned_default(monkeypatch, tmp_path):
     chosen = tmp_path / "elsewhere" / "inductor"
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(chosen))
