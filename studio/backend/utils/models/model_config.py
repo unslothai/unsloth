@@ -766,8 +766,18 @@ def _raw_config_has_vision_config(
     revision: Optional[str] = None,
 ) -> Optional[bool]:
     try:
+        current = (
+            None
+            if revision is not None
+            else _current_cached_snapshot(model_name, hf_token, local_files_only)
+        )
         if is_local_path(model_name):
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
+        elif current is not None and (current[0] / "config.json").is_file():
+            # This is the repo's current commit and the file is in it, so the fetch below
+            # would return what is already here. Saves both the absence probe and the
+            # download's own freshness check.
+            config_path = current[0] / "config.json"
         else:
             from huggingface_hub import hf_hub_download
             from utils.hf_probe import hf_file_definitely_absent
