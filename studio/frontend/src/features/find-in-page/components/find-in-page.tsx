@@ -15,9 +15,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 // hugeicons shaft is a bezier that bows out rather than meeting at a point, and after that change
 // there is no other use of the pair left to match.
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import { resolveFindScope, resolvePortalSurfaces } from "../lib/find-dom.ts";
+import {
+  resolveDismissiblePortalSurfaces,
+  resolveFindScope,
+} from "../lib/find-dom.ts";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-text-index.ts";
 import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 
@@ -79,16 +82,52 @@ function rewindToStart(event: { currentTarget: HTMLInputElement }): void {
  */
 const FIND_BUTTON_CLASS = "size-8 hover:bg-black/[0.06] dark:hover:bg-white/10";
 
+/** Coalesce a typing burst before the DOM search/highlight work runs. */
+export const FIND_QUERY_SETTLE_MS = 100;
+
+function useSettledQuery(query: string): [string, () => void] {
+  const [settled, setSettled] = useState(query);
+  useEffect(() => {
+    if (query.length === 0) {
+      setSettled("");
+      return;
+    }
+    const timer = setTimeout(() => setSettled(query), FIND_QUERY_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+  return [settled, () => setSettled(query)];
+}
+
 function FindBar() {
   const t = useT();
   const query = useFindInPageStore((state) => state.query);
   const setQuery = useFindInPageStore((state) => state.setQuery);
   const close = useFindInPageStore((state) => state.close);
   const focusToken = useFindInPageStore((state) => state.focusToken);
-  const { count, active, capped, truncated, next, previous } =
-    useFindInPage(query);
+  const [settledQuery, settleQuery] = useSettledQuery(query);
+  const queryPending = query !== settledQuery;
+  const { count, active, capped, truncated, next, previous } = useFindInPage(
+    settledQuery,
+    queryPending,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
-
+  const queuedStepRef = useRef(0);
+  const stepWhenSettled = (delta: -1 | 1) => {
+    if (queryPending) {
+      queuedStepRef.current = delta;
+      settleQuery();
+      return;
+    }
+    if (delta < 0) previous();
+    else next();
+  };
+  useEffect(() => {
+    if (queryPending || queuedStepRef.current === 0) return;
+    const delta = queuedStepRef.current;
+    queuedStepRef.current = 0;
+    if (delta < 0) previous();
+    else next();
+  }, [queryPending, next, previous]);
   // Hand focus back to whatever had it, usually the composer, so closing a search leaves the reader
   // typing. Declared above the focus effect so it reads `activeElement` before the field takes it.
   const barRef = useRef<HTMLDivElement>(null);
@@ -131,7 +170,8 @@ function FindBar() {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || isImeComposing(event)) return;
       if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
-      if (resolvePortalSurfaces(resolveFindScope()).length > 0) return;
+      if (resolveDismissiblePortalSurfaces(resolveFindScope()).length > 0)
+        return;
       event.preventDefault();
       event.stopPropagation();
       close();
@@ -142,6 +182,7 @@ function FindBar() {
 
   // Every press of the chord, not just the one that opened the bar: pressing it again selects what
   // is in the field so the next keystroke replaces the last search.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each token requests a fresh focus/select.
   useEffect(() => {
     const input = inputRef.current;
     if (!input) return;
@@ -150,16 +191,19 @@ function FindBar() {
   }, [focusToken]);
 
   const searching = query.length > 0;
-  const empty = searching && count === 0;
-  const counter = searching
-    ? `${count === 0 ? 0 : active + 1}/${count}${capped ? "+" : ""}`
-    : "";
+  const empty = !queryPending && searching && count === 0;
+  const counter =
+    searching && !queryPending
+      ? `${count === 0 ? 0 : active + 1}/${count}${capped ? "+" : ""}`
+      : "";
 
   return (
     // `data-find-skip` keeps the bar out of its own index: without it every keystroke finds itself.
     <div
       ref={barRef}
       data-find-skip=""
+      // biome-ignore lint/a11y/useSemanticElements: this landmark contains the field and navigation controls.
+
       role="search"
       aria-label={t("shell.find.label")}
       // Escape is handled on the window for the lifetime of the bar (see the effect above), which
@@ -178,8 +222,7 @@ function FindBar() {
             // match and throws away the word.
             if (isImeComposing(event.nativeEvent)) return;
             event.preventDefault();
-            if (event.shiftKey) previous();
-            else next();
+            stepWhenSettled(event.shiftKey ? -1 : 1);
           }
         }}
         onBlur={rewindToStart}

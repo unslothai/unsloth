@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The searchable text of a subtree, flattened into one string plus the map back to its text nodes.
-// Flattening once and running `indexOf` keeps a keystroke off the DOM: a tree walk per character
-// typed would re-read a 300K conversation six times to type "unsloth". The walk is paid only when
-// the document changes (see use-find-in-page).
-//
-// Pure, and written against structural types, so it runs under `node --test` with the hand-rolled
-// DOM in tests/find-in-page.test.ts. There is no DOM library in this project.
+// Flatten searchable text once and retain offsets back to its text nodes. The module is pure, so
+// the Node tests can use a hand-rolled DOM.
 
 import { FIND_SKIP_ATTRIBUTE } from "./find-attributes.ts";
 
@@ -32,14 +27,7 @@ export const MAX_MATCHES = 5_000;
  *  reader is looking at are not indexed at all. A share each, and the walk goes on. */
 export const MAX_NODE_CHARS = 100_000;
 
-/**
- * Budget held back from the workspace for the surfaces portaled in front of it.
- *
- * The workspace is walked first, because that is where it sits in the document, and a conversation
- * long enough to reach the ceiling would otherwise spend the whole budget before the popover the
- * reader is actually looking at was reached. A popover, a menu or a listbox is small; this is 2.5%
- * of the ceiling and only held back while one of them is open.
- */
+/** Reserve space for visible portaled surfaces after walking the workspace. */
 export const PORTAL_RESERVE_CHARS = 100_000;
 
 /** Elements whose subtree holds no findable text. Form controls carry theirs in `value`; a `Range`
@@ -201,24 +189,26 @@ export function foldText(raw: string): string {
   return plain.replace(FINAL_SIGMA_PATTERN, "\u03c3");
 }
 
-/**
- * The half of the skip rule that costs no layout: tag name and attributes.
- *
- * Asked first, and by the walk directly, so a subtree turned down on markup alone never resolves a
- * style at all. That is most of what gets skipped: SCRIPT and STYLE, the bar itself, the off-route
- * workspaces the shell parks under `inert`, and the whole page behind a modal.
- */
+/** Check cheap markup before resolving styles, which avoids layout work for skipped subtrees. */
+function hasClassToken(element: FindElementLike, token: string): boolean {
+  return (element.getAttribute("class") ?? "").split(/\s+/).includes(token);
+}
 function skipsByMarkup(element: FindElementLike): boolean {
   // Uppercased first: only HTML elements report their tag that way. SVG and MathML keep their source
   // casing, so an inline `<svg>` answers "svg" and walked straight past this set, putting Mermaid
   // labels in the index as matches no engine can paint. Already uppercase for everything else.
   if (SKIP_TAGS.has(element.tagName.toUpperCase())) return true;
+  if (hasClassToken(element, "katex-mathml")) return true;
   if (element.getAttribute(FIND_SKIP_ATTRIBUTE) !== null) return true;
   // Boolean attributes, so presence is the whole signal. The shell parks an off-route workspace
-  // under `inert`; Radix marks the page `aria-hidden` behind a modal.
+  // under `inert`; Radix marks the page `aria-hidden` behind a modal. KaTeX is the narrow exception:
+  // its painted HTML tree is deliberately aria-hidden because a clipped MathML mirror speaks it.
   if (element.getAttribute("hidden") !== null) return true;
   if (element.getAttribute("inert") !== null) return true;
-  return element.getAttribute("aria-hidden") === "true";
+  return (
+    element.getAttribute("aria-hidden") === "true" &&
+    !hasClassToken(element, "katex-html")
+  );
 }
 
 /**
@@ -502,8 +492,17 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
   return variants;
 }
 
-/** A base character with the combining marks that belong to it, which compose or decompose as one. */
-const CLUSTER_PATTERN = /[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+/**
+ * One canonical cluster. Hangul decomposes into L + V + optional T Jamo rather than a base plus
+ * combining marks, so its sequence has to win before the generic character alternative.
+ */
+const CLUSTER_PATTERN =
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: Jamo and combining marks intentionally form canonical clusters.
+  /(?:[ᄀ-ᅟꥠ-꥿][ᅠ-ᆧힰ-ퟆ][ᆨ-ᇿퟋ-ퟻ]?|[\s\S])[̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+
+const OPEN_HANGUL_CLUSTER_PATTERN =
+  /^[\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6]$/u;
+const TRAILING_HANGUL_JAMO_SOURCE = "[\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 
 /**
  * The needle as a regex source in which each cluster may match either of its spellings.
@@ -532,10 +531,14 @@ function canonicalSource(needle: string, dotted: boolean): string {
     // A decomposed dotted I folds to `i` plus a combining dot, which has no precomposed form, so
     // NFC cannot put it back and the plain query would miss a word plainly on screen.
     if (dotted && cluster === "i") spellings.push(`i${COMBINING_DOT}`);
-    out +=
+    const spellingSource =
       spellings.length === 1
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
+    const boundary = OPEN_HANGUL_CLUSTER_PATTERN.test(cluster)
+      ? `(?!${TRAILING_HANGUL_JAMO_SOURCE})`
+      : "";
+    out += spellingSource + boundary;
   }
   return out;
 }

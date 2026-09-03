@@ -3,6 +3,8 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page";
+
 import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
@@ -241,6 +243,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
   // republishing through them would re-render every overlay in the stack for
   // each one, which is most of what made dragging feel heavy.
   useLayoutEffect(() => {
+    void layout;
     const monitor = monitorRef.current;
     if (!(monitor && constraintsElement)) {
       return;
@@ -495,6 +498,7 @@ function FloatingMonitorPanel({
       style={{ zIndex }}
     >
       <motion.div
+        {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         onPointerDownCapture={() => raisePanel("resource-monitor")}
         initial={{ opacity: 0 }}

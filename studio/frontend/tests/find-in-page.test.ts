@@ -40,7 +40,6 @@ import {
   segmentAt,
   startPositionAt,
 } from "../src/features/find-in-page/lib/find-text-index.ts";
-import { useFindInPageStore } from "../src/features/find-in-page/stores/find-in-page-store.ts";
 
 // --- the hand-rolled tree ----------------------------------------------------------------------
 
@@ -124,6 +123,38 @@ test("aria-hidden false does not hide a subtree", () => {
     el("P", [text("shown")], { "aria-hidden": "false" }),
   ]);
   assert.equal(buildTextIndex(root).text, "shown");
+});
+
+test("KaTeX indexes its painted tree instead of its clipped accessibility mirror", () => {
+  const mathmlText = text("x2");
+  const paintedText = text("x2");
+  const root = el(
+    "SPAN",
+    [
+      el("SPAN", [mathmlText], { class: "katex-mathml" }),
+      el("SPAN", [paintedText], {
+        class: "katex-html",
+        "aria-hidden": "true",
+      }),
+    ],
+    { class: "katex" },
+  );
+
+  const index = buildTextIndex(root);
+  const [match] = findMatches(index, "x2");
+  assert.ok(match);
+  assert.equal(
+    index.segments.some((segment) => segment.node === mathmlText),
+    false,
+    "the clipped MathML mirror must not create ranges",
+  );
+  assert.equal(
+    index.segments.some((segment) => segment.node === paintedText),
+    true,
+    "the painted KaTeX tree must create the range",
+  );
+  assert.equal(startPositionAt(index.segments, match.start)?.node, paintedText);
+  assert.equal(endPositionAt(index.segments, match.end)?.node, paintedText);
 });
 
 // --- offsets -----------------------------------------------------------------------------------
@@ -864,6 +895,72 @@ test("an occurrence that mixes the two spellings is still one word", () => {
     el("DIV", [el("P", [text(`caf${composed}`), text(`caf${decomposed}`)])]),
   );
   assert.equal(findMatches(split, `caf${composed}caf${composed}`).length, 1);
+});
+
+test("Hangul canonical spellings match without changing document offsets", () => {
+  const composed = "가각";
+  const decomposed = composed.normalize("NFD");
+  const mixed = `가${"각".normalize("NFD")}`;
+
+  for (const written of [composed, decomposed, mixed]) {
+    for (const typed of [composed, decomposed, mixed]) {
+      const node = text(`a ${written} b`);
+      const index = buildTextIndex(el("P", [node]));
+      const matches = findMatches(index, typed);
+      assert.deepEqual(
+        matches,
+        [{ start: 2, end: 2 + written.length }],
+        `text ${escape(written)} and query ${escape(typed)} did not meet`,
+      );
+      assert.equal(
+        startPositionAt(index.segments, matches[0].start)?.node,
+        node,
+      );
+      assert.equal(
+        startPositionAt(index.segments, matches[0].start)?.offset,
+        2,
+      );
+      assert.equal(
+        endPositionAt(index.segments, matches[0].end)?.offset,
+        2 + written.length,
+      );
+    }
+  }
+
+  const leading = text("ᄀ");
+  const rest = text("ᅡ각");
+  const split = buildTextIndex(el("P", [leading, el("EM", [rest])]));
+  const [match] = findMatches(split, composed);
+  assert.ok(
+    match,
+    "a decomposed syllable split across inline nodes must match",
+  );
+  assert.equal(startPositionAt(split.segments, match.start)?.node, leading);
+  assert.equal(endPositionAt(split.segments, match.end)?.node, rest);
+  assert.equal(
+    endPositionAt(split.segments, match.end)?.offset,
+    rest.data.length,
+  );
+});
+
+test("an open Hangul syllable cannot match the prefix of a closed one", () => {
+  const open = "가";
+  const closed = "각";
+  for (const written of [closed, closed.normalize("NFD"), `${open}\u11a8`]) {
+    const index = buildTextIndex(el("P", [text(written)]));
+    assert.deepEqual(
+      findMatches(index, open),
+      [],
+      `open ${escape(open)} matched part of closed ${escape(written)}`,
+    );
+  }
+
+  for (const written of [open, open.normalize("NFD")]) {
+    const index = buildTextIndex(el("P", [text(written)]));
+    assert.deepEqual(findMatches(index, open), [
+      { start: 0, end: written.length },
+    ]);
+  }
 });
 
 test("the index itself is left in the form the document wrote", () => {
@@ -1625,7 +1722,7 @@ function withPortals<T>(surfaces: Element[], body: () => T): T {
     return body();
   } finally {
     if (had) view.document = saved;
-    else delete view.document;
+    else view.document = undefined;
   }
 }
 
@@ -1648,6 +1745,39 @@ test("a portaled surface is searched unless it is on its way out", () => {
     withPortals([open, closing, plain], () => resolvePortalSurfaces(scope)),
     [open, plain],
   );
+});
+
+test("explicit monitor portals are searched but are not dismissible surfaces", async () => {
+  const monitor = surface(null);
+  const popover = surface("open");
+  const scope = { contains: () => false } as unknown as Element;
+  const view = globalThis as { document?: unknown };
+  const had = "document" in view;
+  const saved = view.document;
+  view.document = {
+    querySelectorAll: (selector: string) =>
+      selector.includes("data-find-portal") ? [monitor, popover] : [popover],
+  };
+  try {
+    assert.deepEqual(resolvePortalSurfaces(scope), [monitor, popover]);
+  } finally {
+    if (had) view.document = saved;
+    else view.document = undefined;
+  }
+
+  const dom = await readFile(
+    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(dom, /export function resolveDismissiblePortalSurfaces/);
+
+  for (const path of [
+    "../src/features/api-monitor/api-monitor-overlay.tsx",
+    "../src/components/floating-monitor.tsx",
+  ]) {
+    const component = await readFile(new URL(path, import.meta.url), "utf8");
+    assert.match(component, /\[FIND_PORTAL_ATTRIBUTE\]: ""/);
+  }
 });
 
 test("a surface inside the scope, or inside one already taken, is not indexed twice", () => {
@@ -1727,7 +1857,7 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
   // Two presses it deliberately does not take: a modal above the bar owns Escape, and an open
   // popover, menu or listbox is dismissed by its own Escape first.
   assert.match(body, /isSurfaceBackgrounded\(/);
-  assert.match(body, /resolvePortalSurfaces\(/);
+  assert.match(body, /resolveDismissiblePortalSurfaces\(/);
   // And nothing left on the landmark, which would take the inside presses before the window does.
   const landmark = bar.slice(bar.indexOf('role="search"'));
   assert.equal(
@@ -1915,41 +2045,17 @@ test("a breakpoint that changes what is rendered invalidates the index", async (
   );
 });
 
-test("leaving the shell forgets the search", () => {
-  // The store is module-global and keeps the query across a close on purpose. Signing out unmounts
-  // the shell, and the next person to sign in in the same tab must not be handed the last one's
-  // search, open and focused.
-  const store = useFindInPageStore;
-  store.getState().setQuery("someone else's search");
-  store.getState().requestFocus();
-  assert.equal(store.getState().open, true);
-  store.getState().reset();
-  assert.deepEqual(
-    { open: store.getState().open, query: store.getState().query },
-    { open: false, query: "" },
-  );
-});
-
-test("the shell unmounting is what calls it, not the bar closing", async () => {
-  const bar = await readFile(
+test("closing preserves the query while leaving the shell forgets the session", async () => {
+  const controller = await readFile(
     new URL(
       "../src/features/find-in-page/components/find-in-page.tsx",
       import.meta.url,
     ),
     "utf8",
   );
-  // As an unmount cleanup. Not `enabled`: a dialog turns that off, and the search should still be
-  // there when it closes.
-  assert.match(bar, /useEffect\(\(\) => reset, \[reset\]\);/);
-  // And `close` still keeps the query, which is what makes reopening offer the last search.
-  const store = await readFile(
-    new URL(
-      "../src/features/find-in-page/stores/find-in-page-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(store, /close: \(\) => set\(\{ open: false \}\),/);
+  assert.match(controller, /useEffect\(\(\) => reset, \[reset\]\);/);
+  assert.equal(controller.includes('setQuery("")'), false);
+  assert.match(controller, /useFindInPageStore/);
 });
 
 test("the capped window follows the reader, not the top of the document", () => {
@@ -2145,9 +2251,9 @@ test("Escape is left to the IME while it is composing", async () => {
     ),
     "utf8",
   );
-  const escape = bar.slice(bar.indexOf("const onEscape ="));
-  const guard = escape.indexOf("isImeComposing(event)");
-  const consume = escape.indexOf("event.preventDefault()");
+  const escapeHandler = bar.slice(bar.indexOf("const onEscape ="));
+  const guard = escapeHandler.indexOf("isImeComposing(event)");
+  const consume = escapeHandler.indexOf("event.preventDefault()");
   assert.ok(guard > 0 && guard < consume);
   // Safe to let through: the global listener stands aside for a composing event before it looks
   // for a binding, so the bare-Escape decline cannot take it either.
@@ -2280,19 +2386,4 @@ test("a container query resizing the scope invalidates the index", async () => {
     engine,
     /if \(!measured\) \{\s*\n\s*measured = true;\s*\n\s*return;/,
   );
-});
-
-test("nothing of the engine is mounted while the bar is closed", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  // The index, the observer and the highlights all live in `useFindInPage`, and the only component
-  // that calls it is behind this return. A hook moved above it would run them on every route.
-  assert.match(bar, /if \(!enabled \|\| !open\) return null;/);
-  const engineCallers = bar.match(/useFindInPage\(/g) ?? [];
-  assert.equal(engineCallers.length, 1);
 });

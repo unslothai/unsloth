@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The find engine. Mounted only while the bar is open, so a Studio nobody is searching runs none of
-// this: no observer, no index, no ranges.
-//
-// Everything expensive lives in refs and is rebuilt only when the document changes. A keystroke
-// runs `indexOf` over a string and creates at most `MAX_PAINTED_RANGES` ranges. Nothing here writes
-// to the DOM, which is why the observer below cannot retrigger itself.
+// The find engine mounts only while the bar is open. Expensive work stays in refs, and DOM writes
+// are limited to highlights, so the observer cannot retrigger itself.
 
 import { completeProgressiveMounts } from "@/components/assistant-ui/progressive-messages";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -107,7 +103,10 @@ function ordinalOfStart(matches: FindMatch[], start: number): number {
   return -1;
 }
 
-export function useFindInPage(query: string): FindResults {
+export function useFindInPage(
+  query: string,
+  queryPending = false,
+): FindResults {
   const [results, setResults] = useState<{
     count: number;
     active: number;
@@ -134,9 +133,13 @@ export function useFindInPage(query: string): FindResults {
   const staleRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const queryPendingRef = useRef(queryPending);
+  queryPendingRef.current = queryPending;
+
   /** Clamp the active match, paint, and optionally move the reader to it. The only place highlights
    *  and React state are written, so a navigation and a rebuild take the same path. */
   const apply = useCallback((reveal: boolean) => {
+    if (queryPendingRef.current) return;
     const index = indexRef.current;
     const matches = matchesRef.current;
     const count = matches.length;
@@ -359,6 +362,21 @@ export function useFindInPage(query: string): FindResults {
       matchesRef.current = [];
     };
   }, [reindex, search]);
+
+  // Do not leave the previous partial word painted while the input already shows the next one.
+  // The settled search below is deliberately coalesced so a broad first letter cannot stall every
+  // following keystroke in a rich conversation.
+  useEffect(() => {
+    if (queryPending) {
+      cancelRevealPasses();
+      clearHighlights();
+      if (!supportsHighlightApi()) selectRangeFallback(null);
+      return;
+    }
+    // Returning to the already-settled query does not run the query effect again. A genuinely new
+    // settled query has not reached queryRef yet and is painted by the search effect below instead.
+    if (queryRef.current === query) apply(false);
+  }, [apply, query, queryPending]);
 
   // A new query starts from the reader's position, re-indexing first if the document moved on.
   useEffect(() => {
