@@ -64,7 +64,6 @@ def _cache_snapshot_repo(local_path: str) -> Optional[str]:
     """
     try:
         from utils.security.file_security import _hf_cache_snapshot_ref
-
         ref = _hf_cache_snapshot_ref(local_path)
     except Exception:
         return None
