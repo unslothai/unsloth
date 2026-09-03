@@ -42,7 +42,9 @@ def test_chat_and_inference_context_default_matches_studio_run():
     run_default = _typer_option_default(
         (_CMD_DIR / "studio.py").read_text(encoding = "utf-8"), "run", "--max-seq-length"
     )
-    assert run_default == 0, f"`unsloth studio run` --max-seq-length default changed to {run_default}"
+    assert (
+        run_default == 0
+    ), f"`unsloth studio run` --max-seq-length default changed to {run_default}"
 
     for module, func in (("chat.py", "chat"), ("inference.py", "inference")):
         default = _typer_option_default(
