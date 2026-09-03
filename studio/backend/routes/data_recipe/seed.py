@@ -329,17 +329,6 @@ def inspect_seed_dataset(
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
 
-    try:
-        from datasets import load_dataset
-    except ImportError as exc:
-        raise log_and_http_error(
-            exc,
-            500,
-            "seed inspect dependencies unavailable",
-            event = "data_recipe.seed.dependencies_unavailable",
-            log = logger,
-        ) from exc
-
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
     # From the caller, like every other Hub-reaching route: a hardcoded False would take
@@ -359,6 +348,17 @@ def inspect_seed_dataset(
             status_code = 404,
             detail = "Dataset preview is not available without Hub authorization.",
         )
+
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "seed inspect dependencies unavailable",
+            event = "data_recipe.seed.dependencies_unavailable",
+            log = logger,
+        ) from exc
 
     preview_rows: list[dict[str, Any]] = []
     data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
