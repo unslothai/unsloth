@@ -66,9 +66,7 @@ _BANNER_UMD_CU12 = _BANNER_UMD.replace("CUDA UMD Version: 13.3", "CUDA UMD Versi
 
 def _driver_major_sed() -> str:
     """The exact `sed` expression provision_llama_cuda.sh uses for _DRV_CUDA_MAJOR."""
-    line = next(
-        ln for ln in _provision_src().splitlines() if ln.startswith("_DRV_CUDA_MAJOR=")
-    )
+    line = next(ln for ln in _provision_src().splitlines() if ln.startswith("_DRV_CUDA_MAJOR="))
     match = re.search(r"sed (-\w+) '([^']+)'", line)
     assert match, f"could not extract the sed expression from: {line}"
     return f"sed {match.group(1)} '{match.group(2)}'"
@@ -91,9 +89,9 @@ def test_driver_cuda_major_parses_both_banner_spellings(banner, expected):
         text = True,
         check = True,
     )
-    assert out.stdout.strip() == expected, (
-        f"driver CUDA major parsed as {out.stdout.strip()!r}, expected {expected!r}"
-    )
+    assert (
+        out.stdout.strip() == expected
+    ), f"driver CUDA major parsed as {out.stdout.strip()!r}, expected {expected!r}"
 
 
 def test_setup_sh_and_provisioner_agree_on_the_banner_spelling():
@@ -107,9 +105,9 @@ def test_setup_sh_and_provisioner_agree_on_the_banner_spelling():
 
 def test_pr_pin_bypasses_the_already_provisioned_fast_path():
     src = _provision_src()
-    assert 'if [ -z "$_PR_PIN" ] && is_cuda_server "$SERVER"; then' in src, (
-        "the already-provisioned early exit must not short-circuit an explicit PR pin"
-    )
+    assert (
+        'if [ -z "$_PR_PIN" ] && is_cuda_server "$SERVER"; then' in src
+    ), "the already-provisioned early exit must not short-circuit an explicit PR pin"
     # The pin is still validated as numeric before it is used anywhere.
     assert re.search(r'case "\$\{UNSLOTH_LLAMA_PR:-\}" in\s*\n\s*\'\'\|\*\[!0-9\]\*\)', src)
 
@@ -131,15 +129,22 @@ def test_already_provisioned_fast_path_runs_only_without_a_pr_pin(tmp_path):
     server = bin_dir / "llama-server"
     server.write_text("#!/bin/sh\n")
     server.chmod(0o755)
-    (bin_dir / "libggml-cuda.so").write_text("")       # structural CUDA marker
-    (bin_dir / ".unsloth-cuda-ok").write_text("")      # completion stamp
+    (bin_dir / "libggml-cuda.so").write_text("")  # structural CUDA marker
+    (bin_dir / ".unsloth-cuda-ok").write_text("")  # completion stamp
 
     def run(**extra):
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
-               "UNSLOTH_LLAMA_CPP_PATH": str(llama_dir)}
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(tmp_path),
+            "UNSLOTH_LLAMA_CPP_PATH": str(llama_dir),
+        }
         env.update(extra)
         return subprocess.run(
-            ["bash", str(script)], capture_output = True, text = True, env = env, timeout = 120,
+            ["bash", str(script)],
+            capture_output = True,
+            text = True,
+            env = env,
+            timeout = 120,
         ).stdout
 
     assert "already present" in run(), "an unpinned rerun must still short-circuit"
@@ -156,9 +161,9 @@ def test_already_provisioned_fast_path_runs_only_without_a_pr_pin(tmp_path):
 def test_pr_fetch_uses_fetch_head_not_a_branch_refspec():
     src = _provision_src()
     assert 'origin "pull/${_PR_PIN}/head"' in src, "fetch must target FETCH_HEAD"
-    assert "pull/${_PR_PIN}/head:_unsloth_pr_" not in src, (
-        "a branch refspec is rejected on rerun and after a force-push"
-    )
+    assert (
+        "pull/${_PR_PIN}/head:_unsloth_pr_" not in src
+    ), "a branch refspec is rejected on rerun and after a force-push"
     assert 'checkout -q -B "_unsloth_pr_${_PR_PIN}" FETCH_HEAD' in src
 
 
@@ -171,16 +176,25 @@ def test_pr_fetch_survives_rerun_and_force_push(tmp_path):
     New form (FETCH_HEAD + checkout -B): succeeds in both cases.
     """
     env = {
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
         "PATH": "/usr/bin:/bin:/usr/local/bin",
         "HOME": str(tmp_path),
     }
 
-    def git(cwd, *args, check = True):
+    def git(
+        cwd,
+        *args,
+        check = True,
+    ):
         return subprocess.run(
             ["git", "-C", str(cwd), *args],
-            capture_output = True, text = True, env = env, check = check,
+            capture_output = True,
+            text = True,
+            env = env,
+            check = check,
         )
 
     upstream = tmp_path / "upstream.git"
@@ -194,7 +208,9 @@ def test_pr_fetch_survives_rerun_and_force_push(tmp_path):
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", "-q", "--depth", "1", f"file://{upstream}", str(clone)],
-        check = False, env = env, capture_output = True,
+        check = False,
+        env = env,
+        capture_output = True,
     )
     subprocess.run(["git", "init", "-q", str(clone)], check = True, env = env)
     git(clone, "remote", "add", "origin", f"file://{upstream}", check = False)
@@ -217,7 +233,13 @@ def test_pr_fetch_survives_rerun_and_force_push(tmp_path):
 
     # The old refspec fails while _unsloth_pr_7 is the checked-out branch...
     old = git(
-        clone, "fetch", "--depth", "1", "origin", "pull/7/head:_unsloth_pr_7", check = False,
+        clone,
+        "fetch",
+        "--depth",
+        "1",
+        "origin",
+        "pull/7/head:_unsloth_pr_7",
+        check = False,
     )
     assert old.returncode != 0
     assert "refusing to fetch into branch" in old.stderr or "non-fast-forward" in old.stderr
@@ -232,28 +254,38 @@ def test_pr_fetch_survives_rerun_and_force_push(tmp_path):
 
 def test_compute_cap_probe_uses_the_shared_nvsmi_resolver():
     src = SETUP_SH.read_text(encoding = "utf-8")
-    probe = src[src.index("Resolve the arch list before committing") : src.index("_resolve_cuda_archs \"$_raw_caps\"")]
-    assert '_smi_bin="$(_resolve_nvsmi)"' in probe, (
-        "the compute-cap probe must reuse _resolve_nvsmi (it covers /usr/lib/wsl/lib)"
-    )
-    assert 'elif [ -x "/usr/bin/nvidia-smi" ]' not in probe, (
-        "the inlined PATH+/usr/bin resolver misses WSL2 GPU-PV's only nvidia-smi"
-    )
+    probe = src[
+        src.index("Resolve the arch list before committing") : src.index(
+            '_resolve_cuda_archs "$_raw_caps"'
+        )
+    ]
+    assert (
+        '_smi_bin="$(_resolve_nvsmi)"' in probe
+    ), "the compute-cap probe must reuse _resolve_nvsmi (it covers /usr/lib/wsl/lib)"
+    assert (
+        'elif [ -x "/usr/bin/nvidia-smi" ]' not in probe
+    ), "the inlined PATH+/usr/bin resolver misses WSL2 GPU-PV's only nvidia-smi"
 
 
 def test_staged_updates_never_reach_the_cuda_provisioner():
     src = SETUP_SH.read_text(encoding = "utf-8")
 
-    defer = src[src.index("# ── Native Linux aarch64 + NVIDIA, no nvcc yet") : src.index("Background staging cannot install system build tools")]
-    assert '[ -z "$STAGE_ROOT" ]' in defer, (
-        "clearing _NEED_LLAMA_SOURCE_BUILD under STAGE_ROOT slips past the staging guard"
-    )
+    defer = src[
+        src.index("# ── Native Linux aarch64 + NVIDIA, no nvcc yet") : src.index(
+            "Background staging cannot install system build tools"
+        )
+    ]
+    assert (
+        '[ -z "$STAGE_ROOT" ]' in defer
+    ), "clearing _NEED_LLAMA_SOURCE_BUILD under STAGE_ROOT slips past the staging guard"
 
-    provision_start = src.index("aarch64 + NVIDIA (DGX Spark / GB10 / N1X \"RTX Spark\"): provision a CUDA")
-    provision = src[provision_start : src.index("_PROV_SH=\"\"", provision_start)]
-    assert '[ -z "$STAGE_ROOT" ]' in provision, (
-        "the CUDA provisioner (apt/sudo + a full source build) must stay on foreground runs"
+    provision_start = src.index(
+        'aarch64 + NVIDIA (DGX Spark / GB10 / N1X "RTX Spark"): provision a CUDA'
     )
+    provision = src[provision_start : src.index('_PROV_SH=""', provision_start)]
+    assert (
+        '[ -z "$STAGE_ROOT" ]' in provision
+    ), "the CUDA provisioner (apt/sudo + a full source build) must stay on foreground runs"
 
 
 # ── 6. install.sh: the torch trio override must reach every with-deps install ─
@@ -263,11 +295,17 @@ def test_every_with_deps_unsloth_install_passes_the_torch_overrides():
     src = INSTALL_SH.read_text(encoding = "utf-8")
     # The git-ref (pre-merge testing) branch used to omit it, letting unsloth-zoo's
     # resolution replace the CUDA/ROCm torch trio installed in Step 1.
-    ref_branch = src[src.index("installing unsloth from git ref") : src.index("unsloth-zoo\n", src.index("installing unsloth from git ref"))]
-    assert "${_UNSLOTH_TORCH_OVERRIDES:+--overrides \"$_UNSLOTH_TORCH_OVERRIDES\"}" in ref_branch
+    ref_branch = src[
+        src.index("installing unsloth from git ref") : src.index(
+            "unsloth-zoo\n", src.index("installing unsloth from git ref")
+        )
+    ]
+    assert '${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"}' in ref_branch
 
     # Every `uv pip install` that resolves unsloth WITH dependencies carries the flag.
-    for match in re.finditer(r'run_install_cmd(?:_retry)? "install unsloth[^"]*"(?:[^\n]*\\\n)*[^\n]*\n', src):
+    for match in re.finditer(
+        r'run_install_cmd(?:_retry)? "install unsloth[^"]*"(?:[^\n]*\\\n)*[^\n]*\n', src
+    ):
         block = match.group(0)
         if "--no-deps" in block or "--torch-backend=auto" in block:
             continue
