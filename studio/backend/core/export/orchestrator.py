@@ -185,6 +185,10 @@ class ExportOrchestrator:
         # worker and a new store while we are in join(), and that one is not ours to delete.
         store = getattr(self, "_token_store", None)
         if proc is None or not proc.is_alive():
+            # Nothing to cancel, but it may have died holding a store. Pinned, because this
+            # is the one liveness check that runs without the lock: a load may already be
+            # between allocating the next store and spawning the worker for it.
+            self._discard_token_store(only = store)
             return False
         logger.info(
             "Export cancel requested: terminating export subprocess (pid=%s)",
@@ -334,7 +338,7 @@ class ExportOrchestrator:
         and returns from, so no shutdown runs and the credential its store may hold would sit
         in /tmp until the next load.
         """
-        if self._proc is not None and not self._proc.is_alive():
+        if self._proc is None or not self._proc.is_alive():
             self._proc = None
             self._discard_token_store()
 
@@ -371,8 +375,18 @@ class ExportOrchestrator:
         self._token_store = None
 
     def _ensure_subprocess_alive(self) -> bool:
-        """Check if subprocess is alive."""
-        return self._proc is not None and self._proc.is_alive()
+        """Check if subprocess is alive, reaping it if it is not.
+
+        Every caller that cares whether the worker is up comes through here, which makes it
+        the one place a worker that died on its own is noticed. Reaping from here rather than
+        from each caller is deliberate: the worker has more exits than any one branch sees
+        (crash mid-wait, crash while idle, cancellation, a failed load), and its private token
+        store must not outlive it on any of them.
+        """
+        if self._proc is not None and self._proc.is_alive():
+            return True
+        self._reap_dead_worker()
+        return False
 
     # ------------------------------------------------------------------
 

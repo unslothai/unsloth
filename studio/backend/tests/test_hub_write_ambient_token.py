@@ -1303,3 +1303,49 @@ def test_a_failed_load_retires_the_worker_and_its_token_store(monkeypatch):
     assert ok is False and "OOM" in message
     assert shut.get("called"), "a failed load must retire the worker"
     assert shut["store"] and not os.path.exists(shut["store"])
+
+
+def test_a_worker_that_dies_while_idle_is_reaped_by_the_next_liveness_check():
+    """No waiter is polling an idle worker, so the reap has to hang off the liveness check
+    every caller already goes through."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+    with open(os.path.join(store, "token"), "w") as fh:
+        fh.write("hf_caller_own_token")
+
+    class _DiedWhileIdle:
+        def is_alive(self):
+            return False
+
+    o._proc = _DiedWhileIdle()
+    assert o._ensure_subprocess_alive() is False
+    assert o._proc is None
+    assert not os.path.exists(store)
+
+
+def test_cancelling_an_already_dead_worker_still_removes_its_store():
+    """cancel_export returns early for a dead process; that early return has to reap too."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+    with open(os.path.join(store, "token"), "w") as fh:
+        fh.write("hf_caller_own_token")
+
+    class _Dead:
+        def is_alive(self):
+            return False
+
+    o._proc = _Dead()
+    try:
+        assert o.cancel_export() is False
+        assert not os.path.exists(store)
+    finally:
+        o._proc = None
+        o._discard_token_store()
