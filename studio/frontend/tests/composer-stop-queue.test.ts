@@ -48,9 +48,11 @@ test("stop stays available when the running composer can queue", async () => {
     /<Button[\s\S]*?aria-label="Stop generating"[\s\S]*?>/,
   );
   assert.ok(stopButton, "the running composer must render a stop button");
-  assert.doesNotMatch(
+  // Without it a cancelled reply just advances the queue, so stop cannot end a
+  // queue run while one is streaming (#6244 wired it for that).
+  assert.match(
     stopButton[0],
     /onClick=\{stop\}/,
-    "stopping the active generation must not discard the prompt queue",
+    "stop must still end the prompt queue run, not only the active reply",
   );
 });
