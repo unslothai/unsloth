@@ -525,7 +525,10 @@ def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
     # approved by appending, which is the shape the torch and huggingface-hub
     # entries in this baseline already have.
     assert {(e["file"], e["check"]) for e in targets} == {
-        ("unsloth_zoo/vision_utils.py", "Harvests environment variables/secrets AND makes network calls"),
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Harvests environment variables/secrets AND makes network calls",
+        ),
         ("unsloth_zoo/vision_utils.py", "Accesses cloud metadata/IMDS AND makes network calls"),
         ("unsloth_zoo/compiler.py", "Advanced obfuscation (marshal/compile/zlib) + exec/eval"),
     }
