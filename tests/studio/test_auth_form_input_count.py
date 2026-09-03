@@ -170,7 +170,7 @@ def test_login_jsx_declares_exactly_one_password_input():
 
 def test_auth_flow_routes_do_not_mount_global_settings():
     root = (FRONTEND / "app/routes/__root.tsx").read_text(encoding = "utf-8")
-    assert "{!isAuthFlowRoute && <SettingsDialog />}" in root
+    assert "{!isAuthFlowRoute && <SettingsDialogMount />}" in root
     assert "useSettingsDialogStore.getState().closeDialog();" in root
     # The settings chord must stay inert on the auth routes. That used to be an
     # early return inside a hand-rolled keydown handler; once the chords became

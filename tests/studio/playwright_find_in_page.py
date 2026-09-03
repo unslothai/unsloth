@@ -107,7 +107,7 @@ def counter(page) -> str | None:
 
 
 def state(page) -> dict:
-    return page.evaluate("() => window.__findSmoke.store.getState()")
+    return page.evaluate("() => window.__findSmoke.state()")
 
 
 def open_bar(page, mod: str) -> None:
@@ -131,16 +131,16 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
         page.locator('[role="search"]').count() == 1,
     )
 
-    # Re-pressing it while the field has focus restarts the search rather than
-    # handing the chord back to the browser.
-    before = state(page).get("focusToken")
+    # Re-pressing the chord keeps the search open and returns focus to its field.
+    page.evaluate("() => document.activeElement?.blur()")
+    check(engine, mode, "the field can lose focus while the bar stays open", state(page).get("focused") is False)
     page.keyboard.press(f"{mod}+f")
     page.wait_for_timeout(200)
     check(
         engine,
         mode,
         "the chord re-focuses the field instead of closing",
-        state(page).get("open") is True and state(page).get("focusToken") != before,
+        state(page).get("open") is True and state(page).get("focused") is True,
     )
     close_bar(page)
     check(engine, mode, "Escape closes the bar", state(page).get("open") is False)

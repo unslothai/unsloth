@@ -40,7 +40,6 @@ import {
   segmentAt,
   startPositionAt,
 } from "../src/features/find-in-page/lib/find-text-index.ts";
-import { useFindInPageStore } from "../src/features/find-in-page/stores/find-in-page-store.ts";
 
 // --- the hand-rolled tree ----------------------------------------------------------------------
 
@@ -1545,7 +1544,7 @@ test("re-indexing while the document changes is a throttle, and says so", async 
 test("the bar has no border, and its buttons have a hover that shows", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1568,7 +1567,7 @@ test("a long query rewinds to its first character when focus leaves", async () =
   // nothing about what was searched for.
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1702,7 +1701,7 @@ test("the rows progressive completion adds are re-anchored, not renumbered", asy
 test("Escape closes the bar from the walk buttons, not just the field", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1789,7 +1788,7 @@ test("the chord is left to the browser when the scope is behind a modal", async 
 test("the Enter that commits an IME candidate is left alone", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1804,7 +1803,7 @@ test("the Enter that commits an IME candidate is left alone", async () => {
 test("closing the bar hands focus back to where it came from", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1915,41 +1914,21 @@ test("a breakpoint that changes what is rendered invalidates the index", async (
   );
 });
 
-test("leaving the shell forgets the search", () => {
-  // The store is module-global and keeps the query across a close on purpose. Signing out unmounts
-  // the shell, and the next person to sign in in the same tab must not be handed the last one's
-  // search, open and focused.
-  const store = useFindInPageStore;
-  store.getState().setQuery("someone else's search");
-  store.getState().requestFocus();
-  assert.equal(store.getState().open, true);
-  store.getState().reset();
-  assert.deepEqual(
-    { open: store.getState().open, query: store.getState().query },
-    { open: false, query: "" },
-  );
-});
-
-test("the shell unmounting is what calls it, not the bar closing", async () => {
-  const bar = await readFile(
+test("closing preserves the query while leaving the shell forgets the session", async () => {
+  const controller = await readFile(
     new URL(
       "../src/features/find-in-page/components/find-in-page.tsx",
       import.meta.url,
     ),
     "utf8",
   );
-  // As an unmount cleanup. Not `enabled`: a dialog turns that off, and the search should still be
-  // there when it closes.
-  assert.match(bar, /useEffect\(\(\) => reset, \[reset\]\);/);
-  // And `close` still keeps the query, which is what makes reopening offer the last search.
-  const store = await readFile(
-    new URL(
-      "../src/features/find-in-page/stores/find-in-page-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  assert.match(controller, /const \[query, setQuery\] = useState\(""\);/);
+  assert.match(
+    controller,
+    /const close = useCallback\(\(\) => \{[\s\S]*?setOpen\(false\);[\s\S]*?\}, \[\]\);/,
   );
-  assert.match(store, /close: \(\) => set\(\{ open: false \}\),/);
+  assert.equal(controller.includes('setQuery("")'), false);
+  assert.equal(controller.includes("useFindInPageStore"), false);
 });
 
 test("the capped window follows the reader, not the top of the document", () => {
@@ -2126,7 +2105,7 @@ test("the cap flag is what the bar renders, not the count", async () => {
   assert.match(engine, /anchoredAt = viewportOffset\(index\);/);
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2283,16 +2262,23 @@ test("a container query resizing the scope invalidates the index", async () => {
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {
-  const bar = await readFile(
+  const controller = await readFile(
     new URL(
       "../src/features/find-in-page/components/find-in-page.tsx",
       import.meta.url,
     ),
     "utf8",
   );
-  // The index, the observer and the highlights all live in `useFindInPage`, and the only component
-  // that calls it is behind this return. A hook moved above it would run them on every route.
-  assert.match(bar, /if \(!enabled \|\| !open\) return null;/);
-  const engineCallers = bar.match(/useFindInPage\(/g) ?? [];
-  assert.equal(engineCallers.length, 1);
+  assert.match(controller, /if \(!enabled \|\| !open\) return null;/);
+  assert.match(controller, /lazy\(\(\) => import\("\.\/find-bar-loader\.tsx"\)\)/);
+  assert.equal(controller.includes("useFindInPage("), false);
+
+  const loadedBar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal((loadedBar.match(/useFindInPage\(/g) ?? []).length, 1);
 });
