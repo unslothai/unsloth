@@ -137,6 +137,44 @@ grep -qx 'torch==2.11.0+cu128' "$_merged" || _rc=1
 assert_true "inherited torch-trio lines are dropped; generated pin wins" "$_rc"
 rm -rf "$_ov_dir"
 
+# 5. The beside-the-caller override file must not be world-readable. The merge
+#    above copies every inherited non-torch requirement into it, and a direct URL
+#    requirement can carry credentials, so a caller's umask 022 would expose them
+#    for the length of a torch install. The mktemp fallback is already 0600.
+_creation=$(sed -n '/_UNSLOTH_TORCH_OVERRIDES="$_ov_dir\/.unsloth-torch-overrides/,/^            fi$/p' "$INSTALL_SH")
+# `if` rather than a bare pipeline: this file runs under `set -e`, so a failing
+# grep would abort the suite instead of reporting one FAIL.
+if printf '%s' "$_creation" | grep -q 'umask 077'; then _rc=0; else _rc=1; fi
+assert_true "the adjacent override file is created under umask 077" "$_rc"
+
+if printf '%s' "$_creation" | grep -q 'chmod 600'; then _rc=0; else _rc=1; fi
+assert_true "and chmod'd too, since \`: >\` truncates without changing an existing mode" "$_rc"
+
+# Drive the real construct. A stale file from a recycled PID is the case the
+# umask alone cannot fix, which is why both halves are needed.
+_mode_dir=$(mktemp -d)
+(
+    umask 022
+    _f="$_mode_dir/.unsloth-torch-overrides.$$.txt"
+    if (umask 077; : > "$_f") 2>/dev/null; then chmod 600 "$_f" 2>/dev/null || true; fi
+    stat -c %a "$_f" > "$_mode_dir/fresh"
+
+    _s="$_mode_dir/stale.txt"
+    : > "$_s"; chmod 644 "$_s"
+    if (umask 077; : > "$_s") 2>/dev/null; then
+        stat -c %a "$_s" > "$_mode_dir/stale_umask_only"
+        chmod 600 "$_s" 2>/dev/null || true
+    fi
+    stat -c %a "$_s" > "$_mode_dir/stale_both"
+)
+if [ "$(cat "$_mode_dir/fresh")" = "600" ]; then _rc=0; else _rc=1; fi
+assert_true "a freshly created override file is 0600 under umask 022" "$_rc"
+if [ "$(cat "$_mode_dir/stale_umask_only")" = "644" ]; then _rc=0; else _rc=1; fi
+assert_true "umask alone leaves a stale file 0644, so the chmod is load-bearing" "$_rc"
+if [ "$(cat "$_mode_dir/stale_both")" = "600" ]; then _rc=0; else _rc=1; fi
+assert_true "umask plus chmod brings a stale file back to 0600" "$_rc"
+rm -rf "$_mode_dir"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

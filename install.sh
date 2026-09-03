@@ -5195,7 +5195,18 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
             _UNSLOTH_TORCH_OVERRIDES=""
             if [ "$_ov_dir_ok" = 1 ] && [ -n "$_ov_dir" ] && [ -w "$_ov_dir" ]; then
                 _UNSLOTH_TORCH_OVERRIDES="$_ov_dir/.unsloth-torch-overrides.$$.txt"
-                : > "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || _UNSLOTH_TORCH_OVERRIDES=""
+                # 0600, matching the mktemp fallback below. The merge further down
+                # copies every inherited non-torch requirement in, which can include
+                # an authenticated direct URL, and a caller's umask 022 would leave
+                # that world-readable for the length of a torch install. The chmod is
+                # not redundant with the umask: `: >` truncates a pre-existing file
+                # without touching its mode, so a stale file from a recycled PID
+                # would keep whatever mode it already had.
+                if (umask 077; : > "$_UNSLOTH_TORCH_OVERRIDES") 2>/dev/null; then
+                    chmod 600 "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
+                else
+                    _UNSLOTH_TORCH_OVERRIDES=""
+                fi
             fi
             [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] || _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
             printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
