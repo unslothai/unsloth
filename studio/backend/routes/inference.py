@@ -7128,6 +7128,15 @@ def _target_effective_context_length(
         configured = _positive_int_or_none(
             resolve_fit_max_seq_length(override, is_gguf = is_gguf) if override else None
         )
+        if configured is None and override and is_gguf:
+            # A saved context can also arrive only as a pass-through flag; the mapper
+            # forwards llama_extra_args untouched and resolve_requested_ctx makes that
+            # flag the loader's window. Same parser, so the two read one value.
+            from core.inference.llama_server_args import parse_ctx_override
+
+            configured = _positive_int_or_none(
+                parse_ctx_override(override.get("llama_extra_args"))
+            )
         if configured is not None:
             return configured
     except Exception as exc:
