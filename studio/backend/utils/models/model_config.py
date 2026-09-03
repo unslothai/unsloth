@@ -20,6 +20,7 @@ from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
     HfTokenArg,
     apply_token_to_child_env,
+    cache_reads_authorized,
     is_anonymous,
     normalize_token,
 )
@@ -573,6 +574,16 @@ def load_model_config(
             **revision_kwargs,
         )
 
+    if (
+        isinstance(token, str)
+        and token
+        and not is_local_path(model_name)
+        and not cache_reads_authorized(token, repo_id = model_name)
+    ):
+        raise OSError(
+            f"config.json for {model_name} is not available to an unauthorized caller"
+        )
+
     if token:
         return AutoConfig.from_pretrained(
             model_name,
@@ -1071,7 +1082,11 @@ def is_vision_model(
     effective_offline = bool(local_files_only or _env_offline())
     # Offline the probe reads the cache and never authorizes, so local_files_only=False
     # does not put an anonymous caller back on the wire. It gets the default instead.
-    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+    if (
+        effective_offline
+        and not is_local_path(model_name)
+        and not cache_reads_authorized(hf_token, repo_id = resolved_name)
+    ):
         return False
     cache_key: _CapabilityCacheKey = (
         resolved_name,
@@ -1264,7 +1279,11 @@ def detect_audio_type_checked(
     effective_offline = bool(local_files_only or _env_offline())
     # Offline the probe reads the cache and never authorizes, so local_files_only=False
     # does not put an anonymous caller back on the wire. Inconclusive for it instead.
-    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+    if (
+        effective_offline
+        and not is_local_path(model_name)
+        and not cache_reads_authorized(hf_token, repo_id = model_name)
+    ):
         return None, False
     # Checked on the RAW name, before the casing resolution below, because resolving a
     # repo id that is not in the cache walks every cache directory, and that walk is the
@@ -1391,7 +1410,11 @@ def _detect_audio_from_tokenizer(
         else:
             # Read before any network branch and never authorizes, so it would serve a
             # cached private repo's audio tokens online as well as offline.
-            repo_dir = None if is_anonymous(hf_token) else get_cache_path(model_name)
+            repo_dir = (
+                get_cache_path(model_name)
+                if cache_reads_authorized(hf_token, repo_id = model_name)
+                else None
+            )
             if repo_dir is not None and repo_dir.is_dir():
                 snapshots_dir = repo_dir / "snapshots"
                 if snapshots_dir.is_dir() and revision is None:
@@ -3151,7 +3174,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     if not is_local_path(model_name) and hf_env_offline():
         # The marker is read off the HF cache and never authorizes. Offline this caller
         # cannot establish access, so it reports the default rather than the cache.
-        if is_anonymous(hf_token):
+        if not cache_reads_authorized(hf_token, repo_id = model_name):
             return False
         return _embedding_marker_in_hf_cache(model_name)
 
@@ -3192,7 +3215,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     except Exception as e:
         # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        if is_anonymous(hf_token):
+        if not cache_reads_authorized(hf_token, repo_id = model_name):
             # The anonymous 404 lands here too, and the marker read never authorizes.
             return False
         is_emb = _embedding_marker_in_hf_cache(model_name)

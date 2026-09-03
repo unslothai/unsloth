@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from hub.utils.hf_tokens import is_anonymous
+from hub.utils.hf_tokens import cache_reads_authorized
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -367,7 +367,7 @@ def read_default_chat_template(
 
     # The walk returns a private repo's raw template without asking the Hub, so a denied
     # caller goes to the Hub and is refused there. A UI session keeps the cache.
-    if not is_anonymous(hf_token):
+    if cache_reads_authorized(hf_token, repo_id = resolved):
         try:
             # Resolve within each cached revision, newest first. A revision's sidecar
             # supersedes its own embedded GGUF copy, but must not override a newer
@@ -379,7 +379,7 @@ def read_default_chat_template(
         except Exception as exc:
             logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
 
-    if is_anonymous(hf_token) and hf_env_offline():
+    if hf_env_offline() and not cache_reads_authorized(hf_token, repo_id = resolved):
         # Offline, hf_hub_download serves the cached copy without checking the credential,
         # so the fallback would hand back the template the walk just refused. The route
         # forces offline whenever the Hub looks unreachable.
