@@ -383,7 +383,6 @@ export function buildTextIndex(
       pendingSeparator = true;
       pendingClip = null;
       pendingChain = null;
-      pendingChain = null;
     }
     const preserved =
       style?.whiteSpace === undefined
@@ -500,6 +499,7 @@ export function buildTextIndex(
     if (block) {
       pendingSeparator = true;
       pendingClip = null;
+      pendingChain = null;
     }
   };
 

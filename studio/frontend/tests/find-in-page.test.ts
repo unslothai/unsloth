@@ -2279,6 +2279,32 @@ test("doubt over a whole node is one run, not an entry per character", () => {
   assert.equal(index.unsafe.runs < 100, true);
 });
 
+test("a chain a cut leaves ends where the block does", () => {
+  // Carrying the chain between siblings has to stop at the boundary that makes the next content
+  // independent, and a block closing is one. Left running it followed the cut into the block after
+  // and marked a consonant there that nothing on the page joins, losing a valid occurrence.
+  // Text after the block, not inside another one: a following block clears the chain as it opens,
+  // so only this shape reaches the closing boundary with it still live.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [text("a".repeat(MAX_NODE_CHARS - 1) + "क्"), text("́")]),
+      text("त rest"),
+    ]),
+  );
+  assert.equal(findMatches(index, "त", 10).length, 1);
+  // Inside the one block it is still carried, or the clear has taken the fix with it.
+  const inline = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 1) + "क्"),
+        text("́"),
+        text("त"),
+      ]),
+    ]),
+  );
+  assert.deepEqual(findMatches(inline, "त", 10), []);
+});
+
 test("a chain a cut leaves crosses as many siblings as it needs", () => {
   // The doubt was dropped at the edge of the first sibling, so a chain that reached its target in
   // the sibling after that lost it. One extender is enough when it is a node of its own, which is
