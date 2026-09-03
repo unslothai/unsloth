@@ -1146,19 +1146,11 @@ def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_
     snap = tmp_path / "models--meta-llama--Llama-3.1-8B-Instruct" / "snapshots" / "abc123"
     snap.mkdir(parents = True)
 
-<<<<<<< Updated upstream
-    assert (
-        export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
-    )
-    assert export_backend_module._needs_anonymous_authorization(str(snap)) is True
-    # A checkpoint the user trained is still exempt.
-=======
     assert export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
     assert export_backend_module._remote_load_targets(str(snap)) == [
         "meta-llama/Llama-3.1-8B-Instruct"
     ]
     # A plain training checkpoint with no adapter base has nothing to authorize.
->>>>>>> Stashed changes
     plain = tmp_path / "outputs" / "my-run"
     plain.mkdir(parents = True)
     assert export_backend_module._remote_load_targets(str(plain)) == []
