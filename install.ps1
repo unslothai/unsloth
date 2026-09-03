@@ -128,7 +128,7 @@ function Install-UnslothStudio {
     # Not restored afterwards, deliberately. $env: is the process environment,
     # so running this script in an interactive console leaves the reordering in
     # place for that session. A try/finally would not change that for the case
-    # it is raised about: the interactive path ends by running Studio in the
+    # it is raised about: the interactive path ends by running Unsloth in the
     # foreground, so the finally would not fire until the user stops the server.
     # Narrowing the trigger instead would risk skipping the fix on some chain
     # this list does not anticipate, and the cost of that is the install failing
@@ -321,6 +321,11 @@ function Install-UnslothStudio {
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
+        # Most failures return before the lock try/finally, and under `irm | iex`
+        # these variables are the caller's own. Defined later, so probed like above.
+        if (Get-Command Restore-StudioTempEnvironment -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioTempEnvironment
+        }
         if ($TauriMode) {
             exit $Code
         }
@@ -332,6 +337,322 @@ function Install-UnslothStudio {
         }
         $global:LASTEXITCODE = $Code
         throw $Message
+    }
+
+    # ── Usable temporary storage ──
+    # Windows picks the temp directory from TMP, then TEMP, then the profile, and
+    # never checks it exists or is writable. The desktop app passes on whatever it
+    # inherited (studio/src-tauri/src/install.rs sets neither); one report had it at
+    # C:\Windows\TEMP, where the source Add-Type had just written was gone by the
+    # time csc.exe opened it (issue #9140). The Python, uv and VC++ downloads stage
+    # through it too. Probe it once and, if it cannot hold a file, point BOTH
+    # variables at a directory we own: every child process and every
+    # [System.IO.Path]::GetTempPath() call reads the process environment block.
+    function Test-StudioDirectoryUsable {
+        param(
+            [string]$Path,
+            # Only for a directory this installer OWNS. Probing the host's own
+            # inherited TMP/TEMP must not bring it into existence: -Force creates
+            # the whole parent chain, so a stale or mistyped TMP would have the
+            # installer silently materialize a tree at a path nobody chose, and
+            # then trust it. Absent means unusable, which is what the private
+            # fallback is for.
+            [switch]$CreateIfMissing
+        )
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        try {
+            if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+                if (-not $CreateIfMissing) { return $false }
+                New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
+            }
+            # Anything an earlier run could not delete. Bounded self-healing: the
+            # probe below cannot clean up after itself when deletion is what
+            # failed, so each such run used to leave one more file behind forever.
+            try {
+                $cutoff = (Get-Date).AddDays(-1)
+                foreach ($old in @(Get-ChildItem -LiteralPath $Path -File -Filter "unsloth-probe-*.tmp" -ErrorAction Stop)) {
+                    # Shape, not prefix. This runs in the HOST's temp directory,
+                    # where a name that merely starts the same way belongs to
+                    # somebody else; the probe below only ever writes eight hex
+                    # characters, so anything else is not ours to delete.
+                    if ($old.Name -notmatch '^unsloth-probe-[0-9a-f]{8}\.tmp$') { continue }
+                    if ($old.LastWriteTime -lt $cutoff) {
+                        Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            } catch {}
+            # Write, read back, delete -- not Test-Path: the failures that matter
+            # (write without read, a scanner deleting the file) pass an existence check.
+            $probe = Join-Path $Path ("unsloth-probe-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".tmp")
+            [System.IO.File]::WriteAllText($probe, "unsloth")
+            $readBack = [System.IO.File]::ReadAllText($probe)
+            # Deleting has to work too, and be VERIFIED. csc.exe writes its source
+            # and its output into this directory and then cleans up, so one that
+            # accepts a file and will not give it back is the shape that produced
+            # #9140; a suppressed Remove-Item said nothing either way. Retried a
+            # couple of times first, because a scanner holding the file for a
+            # moment is not the same as a directory that denies deletion, and only
+            # the second should cost a healthy host its own temp.
+            $probeGone = $false
+            foreach ($attempt in 1..3) {
+                Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+                if (-not [System.IO.File]::Exists($probe)) { $probeGone = $true; break }
+                Start-Sleep -Milliseconds 100
+            }
+            if (-not $probeGone) { return $false }
+            return ($readBack -eq "unsloth")
+        } catch {
+            return $false
+        }
+    }
+
+    function Remove-StudioStalePrivateTempDirectories {
+        param([Parameter(Mandatory = $true)][string]$Root)
+        # These outlive the install (an autostarted Unsloth inherits one as its own
+        # %TEMP%), so bound the pile by age instead of deleting one still in use.
+        try {
+            $cutoff = (Get-Date).AddDays(-1)
+            foreach ($stale in @(Get-ChildItem -LiteralPath $Root -Directory -Filter "ust-*" -ErrorAction Stop)) {
+                # SHAPE, not prefix. The delete below is recursive and this is the
+                # only ownership test there is, so it has to name a directory the
+                # allocator could actually have made: "ust-" + $PID + "-" + 8 hex.
+                # A prefix match takes "ust-legacy" or "ust-user-cache" too, and
+                # since neither has a parseable PID the liveness check is skipped
+                # for exactly the names least likely to be ours. scripts/uninstall.ps1
+                # already requires this shape; the two had drifted apart.
+                if ($stale.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
+                if ($stale.LastWriteTime -ge $cutoff) { continue }
+                # Before any owner logic, because the allocator never makes a link:
+                # anything here that IS one is not ours, reading owner.pid out of it
+                # would read through it, and unlinking is safe whatever owns the
+                # target. Not Remove-Item: on 5.1 without -Recurse it throws a
+                # NullReferenceException on a junction that -ErrorAction
+                # SilentlyContinue does not suppress (measured on windows-latest), and
+                # -Recurse has walked THROUGH the link on some 5.1 builds.
+                # Directory.Delete with recursive:$false cannot follow it.
+                if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                    try { [System.IO.Directory]::Delete($stale.FullName, $false) } catch {}
+                    continue
+                }
+                # Age alone is not proof it is unused, and this sweep runs before the
+                # runtime mutex, so it could delete a live process's %TEMP%. owner.pid
+                # names the process that INHERITED this directory (the autostarted
+                # Unsloth, which outlives the installer); the PID in the name is only
+                # the installer's and is already gone. If the owner is alive, leave it.
+                # PID reuse only ever costs a directory its cleanup.
+                $ownerPid = 0
+                $ownerFile = Join-Path $stale.FullName "owner.pid"
+                $recorded = $null
+                try {
+                    if ([System.IO.File]::Exists($ownerFile)) {
+                        $recorded = [System.IO.File]::ReadAllText($ownerFile).Trim()
+                    }
+                } catch { $recorded = $null }
+                if (-not [string]::IsNullOrWhiteSpace($recorded)) {
+                    $null = [int]::TryParse($recorded, [ref]$ownerPid)
+                }
+                # Whether the owner was RECORDED, or only guessed from the name.
+                # The name carries the installer's PID, and an installer that was
+                # killed between Start-Process and the owner.pid write leaves a dead
+                # PID in the name while the Unsloth it started is very much alive on
+                # that directory as its own %TEMP%. Guessing therefore proves much
+                # less than reading, and the two are not treated alike below.
+                $ownerRecorded = ($ownerPid -gt 0)
+                if ($ownerPid -le 0) {
+                    $null = [int]::TryParse(($stale.Name -split '-')[1], [ref]$ownerPid)
+                }
+                # No recorded owner: unknown, not abandoned. Still collected, so the
+                # pile stays bounded, but only once it has gone a whole week without
+                # a single entry being created in it, which an Unsloth actually using
+                # it as %TEMP% would not manage.
+                if (-not $ownerRecorded -and $stale.LastWriteTime -ge (Get-Date).AddDays(-7)) {
+                    continue
+                }
+                if ($ownerPid -gt 0) {
+                    $ownerLives = $true
+                    try {
+                        $null = Get-Process -Id $ownerPid -ErrorAction Stop
+                    } catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+                        # The only answer that means "abandoned"; any other failure
+                        # says nothing about the owner, so keep the directory.
+                        $ownerLives = $false
+                    } catch {
+                        $ownerLives = $true
+                    }
+                    if ($ownerLives) { continue }
+                }
+                Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+
+    function Set-StudioPrivateTempOwner {
+        param([Parameter(Mandatory = $true)][int]$OwnerProcessId)
+        # Only meaningful if this run redirected the temp; otherwise it is the host's.
+        if ($null -eq $script:StudioTempOverride) { return }
+        # Only a directory this run created. The other override shape just pins the
+        # absolute spelling of the host's own temp, and dropping a file in there
+        # would be litter in somebody else's directory.
+        if (-not $script:StudioTempOverride.Owned) { return }
+        $owned = $script:StudioTempOverride.Path
+        if ([string]::IsNullOrWhiteSpace($owned)) { return }
+        try {
+            [System.IO.File]::WriteAllText((Join-Path $owned "owner.pid"), [string]$OwnerProcessId)
+        } catch {}
+    }
+
+    function Get-StudioPrivateTempRoots {
+        # Only under paths scripts/uninstall.ps1 already reclaims (LOCALAPPDATA\
+        # "Unsloth Studio", ~\.unsloth\.cache): anywhere else would survive an
+        # uninstall, and a leftover directly under ~\.unsloth would be worse, since
+        # that is removed only when empty.
+        $roots = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            $roots += (Join-Path $env:LOCALAPPDATA "Unsloth Studio\temp")
+        }
+        try {
+            $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+            if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
+                $roots += (Join-Path $localAppData "Unsloth Studio\temp")
+            }
+        } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            $roots += (Join-Path $env:USERPROFILE ".unsloth\.cache\temp")
+        }
+        return $roots
+    }
+
+    function New-StudioPrivateTempDirectory {
+        foreach ($root in @(Get-StudioPrivateTempRoots)) {
+            # Short leaf: the .NET Framework compiler 5.1 shells out to is still
+            # bound by the legacy path limit.
+            $leaf = "ust-" + $PID + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $candidate = Join-Path $root $leaf
+            # Which of these did not exist BEFORE the probe touched anything. Only
+            # those may be unwound below: a pre-provisioned "Unsloth Studio\temp"
+            # with custom ACLs, or an empty junction pointing somewhere else, is
+            # configuration this installer did not create and must not remove
+            # merely for being empty and correctly named.
+            $preAbsent = @{}
+            $walk = $candidate
+            for ($seen = 0; $seen -lt 4; $seen++) {
+                if ([string]::IsNullOrEmpty($walk)) { break }
+                $preAbsent[$walk] = (-not (Test-Path -LiteralPath $walk))
+                $walk = [System.IO.Path]::GetDirectoryName($walk)
+            }
+            if (Test-StudioDirectoryUsable -Path $candidate -CreateIfMissing) {
+                Remove-StudioStalePrivateTempDirectories -Root $root
+                return $candidate
+            }
+            # The probe creates the candidate before it tests it, and -Force builds
+            # the whole chain, so a root that fails leaves "Unsloth Studio\temp\ust-x"
+            # behind; on a host where every root fails that is a data directory tree
+            # conjured by an install that then gave up. Walk back up, but only through
+            # the directories this path is made of and only while each one is EMPTY,
+            # so a tree that already held something is never touched and neither is
+            # ~\.unsloth itself, which is shared and is not ours to remove.
+            $ours = @("temp", "Unsloth Studio", ".cache")
+            $unwind = $candidate
+            for ($depth = 0; $depth -lt 4; $depth++) {
+                try {
+                    if (-not $preAbsent[$unwind]) { break }
+                    if (-not (Test-Path -LiteralPath $unwind -PathType Container)) { break }
+                    $item = Get-Item -LiteralPath $unwind -Force -ErrorAction Stop
+                    # A relocation junction is somebody's configuration even when the
+                    # probe created it, and unlinking it is not "taking back what we
+                    # made". Leave it and stop.
+                    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { break }
+                    if (@(Get-ChildItem -LiteralPath $unwind -Force -ErrorAction Stop).Count -gt 0) { break }
+                    [System.IO.Directory]::Delete($unwind, $false)
+                } catch { break }
+                $unwind = [System.IO.Path]::GetDirectoryName($unwind)
+                if ([string]::IsNullOrEmpty($unwind)) { break }
+                if ($ours -notcontains [System.IO.Path]::GetFileName($unwind)) { break }
+            }
+        }
+        return $null
+    }
+
+    $script:StudioTempOverride = $null
+    $script:StudioTempChecked = $false
+    function Initialize-StudioTempEnvironment {
+        if ($script:StudioTempChecked) { return }
+        $script:StudioTempChecked = $true
+        # TMP wins over TEMP, so only fall through when TMP is unset. IsNullOrEmpty,
+        # not IsNullOrWhiteSpace: GetTempPath takes the first of TMP/TEMP that is
+        # merely non-empty, so a whitespace-only TMP is what Windows and every child
+        # will use, and treating it as unset would probe a healthy TEMP and change
+        # nothing.
+        $inherited = if (-not [string]::IsNullOrEmpty($env:TMP)) { $env:TMP } else { $env:TEMP }
+        # Resolve BEFORE probing, not after. Test-Path is relative to PowerShell's
+        # location while the .NET file APIs are relative to the process working
+        # directory, and Set-Location moves only the first, so probing a relative
+        # value can check one directory and write to another.
+        # Whitespace-only is left exactly as it is, so the probe below rejects it.
+        # Resolving it first would turn "   " or a tab into the working directory
+        # plus that name, which is creatable on some filesystems, and the installer
+        # would manufacture a junk directory and then trust it as the host's temp.
+        $absolute = $inherited
+        if (-not [string]::IsNullOrWhiteSpace($inherited)) {
+            try { $absolute = [System.IO.Path]::GetFullPath($inherited) } catch { $absolute = $inherited }
+        }
+        if (Test-StudioDirectoryUsable -Path $absolute) {
+            # A host whose temp was fixed since the last run never allocates another
+            # private directory, and the allocator is the only thing that sweeps.
+            # Without this, whatever an earlier degraded run left behind ages in
+            # place until an uninstall. Each root that does not exist is a no-op.
+            foreach ($root in @(Get-StudioPrivateTempRoots)) {
+                Remove-StudioStalePrivateTempDirectories -Root $root
+            }
+            # Pin what was probed. A relative value (temp, or the drive-relative
+            # C:temp) is resolved by whoever reads it, and the install relocates
+            # out of a Windows system directory further down, so the same value
+            # could later name somewhere else, or nowhere. An already-absolute
+            # value normalizes to itself and is left alone.
+            if (-not [string]::Equals($absolute, $inherited, [System.StringComparison]::Ordinal)) {
+                $script:StudioTempOverride = [pscustomobject]@{
+                    TmpSet = ($null -ne $env:TMP)
+                    TmpValue = $env:TMP
+                    TempSet = ($null -ne $env:TEMP)
+                    TempValue = $env:TEMP
+                    Path = $absolute
+                    Owned = $false
+                }
+                $env:TMP = $absolute
+                $env:TEMP = $absolute
+            }
+            return
+        }
+        $private = New-StudioPrivateTempDirectory
+        if (-not $private) {
+            Write-StudioLine "[WARN] No writable temporary directory was found; downloads may fail." -ForegroundColor Yellow
+            return
+        }
+        # Absent is not empty: restoring an absent variable as "" would change how
+        # every later child resolves its own temp directory.
+        $script:StudioTempOverride = [pscustomobject]@{
+            TmpSet = ($null -ne $env:TMP)
+            TmpValue = $env:TMP
+            TempSet = ($null -ne $env:TEMP)
+            TempValue = $env:TEMP
+            Path = $private
+            Owned = $true
+        }
+        $env:TMP = $private
+        $env:TEMP = $private
+        Write-StudioLine "[WARN] The inherited temporary directory is not usable; this install will use its own." -ForegroundColor Yellow
+    }
+
+    function Restore-StudioTempEnvironment {
+        $override = $script:StudioTempOverride
+        if ($null -eq $override) { return }
+        $script:StudioTempOverride = $null
+        if ($override.TmpSet) { $env:TMP = $override.TmpValue }
+        else { Remove-Item Env:\TMP -ErrorAction SilentlyContinue }
+        if ($override.TempSet) { $env:TEMP = $override.TempValue }
+        else { Remove-Item Env:\TEMP -ErrorAction SilentlyContinue }
+        # The directory stays: an autostarted Unsloth inherited it as its own %TEMP%,
+        # and the host's real one is broken. The next run sweeps the old ones.
     }
 
     # ── Parse flags ──
@@ -429,26 +750,44 @@ function Install-UnslothStudio {
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
     $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
-    function Get-StudioFinalPath {
-        param([Parameter(Mandatory = $true)][string]$Path)
-        $fullPath = [System.IO.Path]::GetFullPath($Path)
-        $fullRoot = [System.IO.Path]::GetPathRoot($fullPath)
-        if (-not $fullRoot -or $fullPath.Length -gt $fullRoot.Length) {
-            $fullPath = $fullPath.TrimEnd('\', '/')
+    # GetFinalPathNameByHandleW is the only exact answer: it follows junctions,
+    # symlinks and SUBST drives, expands 8.3 aliases and reports the on-disk
+    # spelling, none of which GetFullPath does. It costs a C# compile, and 5.1 (the
+    # interpreter the desktop app spawns) compiles by writing the source to %TEMP%
+    # and running csc.exe. When that directory is unusable, or a scanner eats the
+    # source, Add-Type throws CS2001, which used to abort a first launch as "Could
+    # not create the Unsloth install lock" (issue #9140). Try once, retry with a
+    # %TEMP% we own, cache the answer (callers resolve dozens of paths), then let
+    # Get-StudioLexicalPath carry the run.
+    $script:StudioFinalPathNativeState = $null
+    # Reset with the rest: under `irm | iex` these are the caller's own.
+    $script:StudioNativeResolveWarned = $false
+    $script:StudioFinalPathWarned = $false
+    function Write-StudioFinalPathDegraded {
+        param([string]$Reason)
+        if ($script:StudioFinalPathWarned) { return }
+        $script:StudioFinalPathWarned = $true
+        Write-StudioLine "[WARN] Could not load the native path resolver ($Reason)." -ForegroundColor Yellow
+        Write-StudioLine "       Continuing with the PowerShell resolver; installation is unaffected." -ForegroundColor Yellow
+    }
+
+    function Initialize-StudioFinalPathNativeType {
+        if ("UnslothStudioFinalPathV2" -as [type]) {
+            $script:StudioFinalPathNativeState = $true
+            return $true
         }
-        $existingPath = $fullPath
-        $missingSegments = @()
-        while (-not (Test-Path -LiteralPath $existingPath)) {
-            $leaf = [System.IO.Path]::GetFileName($existingPath)
-            $parent = [System.IO.Path]::GetDirectoryName($existingPath)
-            if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
-                return $fullPath
-            }
-            $missingSegments = @($leaf) + $missingSegments
-            $existingPath = $parent
+        if ($null -ne $script:StudioFinalPathNativeState) { return $script:StudioFinalPathNativeState }
+        # Constrained Language Mode forbids Add-Type, so compiling would only produce
+        # a second, less honest error.
+        $languageMode = "FullLanguage"
+        try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
+        if ($languageMode -ne "FullLanguage") {
+            $script:StudioFinalPathNativeState = $false
+            Write-StudioFinalPathDegraded -Reason "PowerShell is in $languageMode"
+            return $false
         }
-        if (-not ("UnslothStudioFinalPathV2" -as [type])) {
-            Add-Type -TypeDefinition @'
+        Initialize-StudioTempEnvironment
+        $source = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -552,11 +891,256 @@ public static class UnslothStudioFinalPathV2
   }
 }
 '@
+        $firstError = $null
+        try {
+            Add-Type -TypeDefinition $source -ErrorAction Stop
+        } catch {
+            $firstError = $_.Exception.Message
         }
-        $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
+        # A compile that reports failure can still have loaded the type, and the same
+        # name cannot be defined twice in one session.
+        if ("UnslothStudioFinalPathV2" -as [type]) {
+            $script:StudioFinalPathNativeState = $true
+            return $true
+        }
+        $private = New-StudioPrivateTempDirectory
+        if ($private) {
+            $hadTmp = ($null -ne $env:TMP)
+            $previousTmp = $env:TMP
+            $hadTemp = ($null -ne $env:TEMP)
+            $previousTemp = $env:TEMP
+            try {
+                # Both, because GetTempPath reads TMP first.
+                $env:TMP = $private
+                $env:TEMP = $private
+                try { Add-Type -TypeDefinition $source -ErrorAction Stop } catch {}
+            } finally {
+                if ($hadTmp) { $env:TMP = $previousTmp } else { Remove-Item Env:\TMP -ErrorAction SilentlyContinue }
+                if ($hadTemp) { $env:TEMP = $previousTemp } else { Remove-Item Env:\TEMP -ErrorAction SilentlyContinue }
+                # Only now: deleting while csc.exe still holds it is the race being
+                # worked around.
+                Remove-Item -LiteralPath $private -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ("UnslothStudioFinalPathV2" -as [type]) {
+            $script:StudioFinalPathNativeState = $true
+            return $true
+        }
+        $script:StudioFinalPathNativeState = $false
+        # First line of the compiler output, not the whole C# dump it echoes after.
+        $reason = if ($firstError) { ($firstError -split "`r?`n")[0].Trim() } else { "compilation failed" }
+        Write-StudioFinalPathDegraded -Reason $reason
+        return $false
+    }
+
+    function Resolve-StudioLinkTarget {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $item = $null
+        try { $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop } catch { return $null }
+        $target = $null
+        # PowerShell 7 walks the whole chain; 5.1 exposes only the raw reparse target,
+        # relative for a relative symlink and still carrying a junction's NT prefix.
+        if ($item.PSObject.Methods.Name -contains 'ResolveLinkTarget') {
+            try {
+                $final = $item.ResolveLinkTarget($true)
+                if ($final) { $target = [string]$final.FullName }
+            } catch { $target = $null }
+        }
+        if ([string]::IsNullOrWhiteSpace($target)) {
+            $raw = $null
+            try { $raw = $item.Target } catch { $raw = $null }
+            # 5.1 hands this back as a COLLECTION, not a string, and not always an
+            # [array], so unwrap anything that is not already a string.
+            if ($null -ne $raw -and $raw -isnot [string]) {
+                $raw = @($raw) | Select-Object -First 1
+            }
+            if (-not [string]::IsNullOrWhiteSpace($raw)) { $target = [string]$raw }
+        }
+        if ([string]::IsNullOrWhiteSpace($target)) { return $null }
+        if ($target.StartsWith('\??\')) {
+            $target = $target.Substring(4)
+            # \??\UNC\server\share is the device spelling of \\server\share. Left as
+            # "UNC\server\share" it reads as RELATIVE and gets combined with the
+            # link's local parent, inventing a path; a wrong identity is a wrong mutex.
+            if ($target.StartsWith('UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $target = '\\' + $target.Substring(4)
+            } elseif ($target.StartsWith('Volume{', [System.StringComparison]::OrdinalIgnoreCase)) {
+                # A mounted folder reports \??\Volume{GUID}\..., the same trap:
+                # "Volume{...}\..." is not rooted either. \\?\ is the extended-length
+                # spelling of that device path, so it keeps naming the volume.
+                $target = '\\?\' + $target
+            }
+        }
+        # "\real" is rooted as far as IsPathRooted is concerned but names no drive,
+        # so GetFullPath would resolve it against the PROCESS current drive. Windows
+        # resolves a drive-less target on the LINK's own volume, so anchor it there.
+        if ($target.Length -ge 1 -and ($target[0] -eq '\' -or $target[0] -eq '/') -and
+            -not ($target.Length -ge 2 -and ($target[1] -eq '\' -or $target[1] -eq '/'))) {
+            $linkRoot = $null
+            try { $linkRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path)) } catch { $linkRoot = $null }
+            # Empty for a volume-GUID spelling; leaving the target alone beats guessing.
+            if (-not [string]::IsNullOrEmpty($linkRoot)) {
+                try { $target = [System.IO.Path]::Combine($linkRoot, $target.TrimStart('\', '/')) } catch {}
+            }
+        }
+        try {
+            if (-not [System.IO.Path]::IsPathRooted($target)) {
+                $parent = [System.IO.Path]::GetDirectoryName($Path)
+                if ([string]::IsNullOrEmpty($parent)) { return $null }
+                $target = [System.IO.Path]::Combine($parent, $target)
+            }
+            $target = [System.IO.Path]::GetFullPath($target)
+        } catch { return $null }
+        # Compare like against like: $target went through GetFullPath, so $Path must
+        # too, or a relative spelling misses the self-reference guard and loops.
+        $self = $Path
+        try { $self = [System.IO.Path]::GetFullPath($Path) } catch { $self = $Path }
+        if ([string]::Equals(
+            $target.TrimEnd('\', '/'), $self.TrimEnd('\', '/'), [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $null
+        }
+        return $target
+    }
+
+    # Compiler-free stand-in for the native resolver. Normalized, not exact: it
+    # cannot expand an 8.3 alias or recover stored casing, so callers are told the
+    # answer is inexact. Never throws; an identity nobody can establish must not
+    # stop an install.
+    $script:StudioSubstMap = $null
+    function Get-StudioSubstTarget {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        # A SUBST drive is a DOS device mapping and no 5.1 API reports it: measured
+        # on windows-latest, Get-PSDrive.DisplayRoot and Win32_LogicalDisk.ProviderName
+        # are empty, GetFullPath and Resolve-Path hand X:\ straight back, and
+        # (Get-Item X:\).Target reports the target's tail under the SUBST letter.
+        # `subst` with no arguments prints the mapping in full ("X:\: => D:\real\dir"),
+        # so that is what this reads, once.
+        if ($null -eq $script:StudioSubstMap) {
+            $script:StudioSubstMap = @{}
+            try {
+                foreach ($line in @(& "$env:SystemRoot\System32\subst.exe" 2>$null)) {
+                    $m = [regex]::Match([string]$line, '^([A-Za-z]):\\?:\s*=>\s*(\S.*)$')
+                    if ($m.Success) {
+                        $script:StudioSubstMap[$m.Groups[1].Value.ToUpperInvariant()] =
+                            $m.Groups[2].Value.TrimEnd()
+                    }
+                }
+            } catch {}
+        }
+        if ($script:StudioSubstMap.Count -eq 0) { return $null }
+        if ($Path.Length -lt 2 -or $Path[1] -ne ':') { return $null }
+        $letter = ([string]$Path[0]).ToUpperInvariant()
+        if (-not $script:StudioSubstMap.ContainsKey($letter)) { return $null }
+        $tail = $Path.Substring(2).TrimStart('\', '/')
+        $target = $script:StudioSubstMap[$letter]
+        if ([string]::IsNullOrWhiteSpace($tail)) { return $target }
+        try { return [System.IO.Path]::Combine($target, $tail) } catch { return $null }
+    }
+
+    function Get-StudioLexicalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $current = $null
+        try { $current = [System.IO.Path]::GetFullPath($Path) } catch { return $Path }
+        # Fold a SUBST drive BEFORE walking components: the Python runtime gate
+        # resolves it, so leaving it would give the two sides different mutex names
+        # for one directory and hide a running Unsloth from the in-use scan.
+        $substituted = Get-StudioSubstTarget -Path $current
+        if ($substituted) {
+            try { $current = [System.IO.Path]::GetFullPath($substituted) } catch {}
+        }
+        # Hashtable, not a generic HashSet: already case-insensitive, and a
+        # locked-down host (the kind that got here) can forbid generic types.
+        $visited = @{}
+        # A link on a PARENT component is the ordinary Windows shape (redirected
+        # profiles), so walk from the root and restart at each one. Capped with a
+        # visited set, because reparse points can point at each other.
+        for ($hop = 0; $hop -lt 32; $hop++) {
+            if ($visited.ContainsKey($current)) { break }
+            $visited[$current] = $true
+            $root = ""
+            try { $root = [System.IO.Path]::GetPathRoot($current) } catch { break }
+            if ([string]::IsNullOrEmpty($root) -or $current.Length -lt $root.Length) { break }
+            $walked = $root
+            $rewritten = $null
+            $tail = $current.Substring($root.Length)
+            # [char[]] on purpose: an untyped array binds Split's single-string
+            # overload instead, which splits on nothing.
+            foreach ($segment in $tail.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)) {
+                $walked = [System.IO.Path]::Combine($walked, $segment)
+                $target = Resolve-StudioLinkTarget -Path $walked
+                if ($target) {
+                    $remainder = $current.Substring($walked.Length).TrimStart('\', '/')
+                    $rewritten = if ($remainder) { [System.IO.Path]::Combine($target, $remainder) } else { $target }
+                    break
+                }
+            }
+            if (-not $rewritten) { break }
+            try { $current = [System.IO.Path]::GetFullPath($rewritten) } catch { $current = $rewritten; break }
+        }
+        try {
+            $provider = (Resolve-Path -LiteralPath $current -ErrorAction Stop).ProviderPath
+            if (-not [string]::IsNullOrWhiteSpace($provider)) { $current = $provider }
+        } catch {}
+        return $current
+    }
+
+    # Exact = $true means the native resolver answered, so the string is what it
+    # always was. Callers keying a lock on it use that to judge an inequality.
+    function Resolve-StudioFinalPathInfo {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $fullRoot = [System.IO.Path]::GetPathRoot($fullPath)
+        if (-not $fullRoot -or $fullPath.Length -gt $fullRoot.Length) {
+            $fullPath = $fullPath.TrimEnd('\', '/')
+        }
+        $existingPath = $fullPath
+        $missingSegments = @()
+        while (-not (Test-Path -LiteralPath $existingPath)) {
+            $leaf = [System.IO.Path]::GetFileName($existingPath)
+            $parent = [System.IO.Path]::GetDirectoryName($existingPath)
+            if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
+                return [pscustomobject]@{ Path = $fullPath; Exact = $false }
+            }
+            $missingSegments = @($leaf) + $missingSegments
+            $existingPath = $parent
+        }
+        $exact = $false
+        $resolved = $null
+        if (Initialize-StudioFinalPathNativeType) {
+            try {
+                $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
+                $exact = $true
+            } catch {
+                # The helper COMPILED and still could not answer: a path renamed
+                # between the Test-Path walk and CreateFileW, an access denial on a
+                # component, a volume with no drive letter. Falling back keeps the
+                # install alive, and Exact = $false already makes the runtime lock
+                # fail closed, but nothing said so out loud: the degraded warning
+                # below only fires when the compile itself failed. An operator was
+                # left with a silently inexact identity on a host that looks fine.
+                $resolved = $null
+                if (-not $script:StudioNativeResolveWarned) {
+                    $script:StudioNativeResolveWarned = $true
+                    Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the PowerShell resolver." -ForegroundColor Yellow
+                }
+            }
+        }
+        if ([string]::IsNullOrEmpty($resolved)) {
+            $resolved = Get-StudioLexicalPath -Path $existingPath
+            $exact = $false
+        }
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            # Every extended spelling, INCLUDING \\?\Volume{GUID}\, because this string
+            # is hashed into the runtime mutex name and unsloth_cli/_studio_runtime_gate.py
+            # strips \\?\ unconditionally (_resolved_windows_path). Keeping the prefix
+            # here made the installer and a running Unsloth compute different names for
+            # one directory, so neither would exclude the other. Rootedness does matter
+            # while a link target is being anchored, and Resolve-StudioLinkTarget keeps
+            # the extended form for exactly that; nothing after this point anchors
+            # anything, and Combine only drops its left side for a ROOTED right side.
             $resolved = $resolved.Substring(4)
         }
         foreach ($segment in $missingSegments) {
@@ -564,9 +1148,14 @@ public static class UnslothStudioFinalPathV2
         }
         $resolvedRoot = [System.IO.Path]::GetPathRoot($resolved)
         if ($resolvedRoot -and $resolved.Length -le $resolvedRoot.Length) {
-            return $resolvedRoot
+            return [pscustomobject]@{ Path = $resolvedRoot; Exact = $exact }
         }
-        return $resolved.TrimEnd('\', '/')
+        return [pscustomobject]@{ Path = $resolved.TrimEnd('\', '/'); Exact = $exact }
+    }
+
+    function Get-StudioFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return (Resolve-StudioFinalPathInfo -Path $Path).Path
     }
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
@@ -595,6 +1184,10 @@ public static class UnslothStudioFinalPathV2
             Write-StudioLine "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
             Write-StudioLine "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
             Write-StudioLine "       or unset the env var for default desktop installs." -ForegroundColor Yellow
+            # Resolving the roots above can redirect TMP/TEMP, and this throw is well
+            # before the lock try/finally. Under `irm | iex` those variables are the
+            # caller's own and would stay pointed at an installer-owned directory.
+            Restore-StudioTempEnvironment
             throw "$envOverrideVar is not supported with --tauri."
         }
     }
@@ -618,6 +1211,8 @@ public static class UnslothStudioFinalPathV2
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
         } catch {
             Write-StudioLine "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
+            # Same as the --tauri rejection above: still before the lock finally.
+            Restore-StudioTempEnvironment
             throw "$envOverrideVar=$envOverride cannot be created or accessed."
         }
         $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
@@ -627,6 +1222,7 @@ public static class UnslothStudioFinalPathV2
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         } catch {
             Write-StudioLine "ERROR: $envOverrideVar=$StudioHome is not writable." -ForegroundColor Red
+            Restore-StudioTempEnvironment
             throw "$envOverrideVar=$StudioHome is not writable."
         }
         $StudioDataDir = Join-Path $StudioHome "share"
@@ -697,6 +1293,10 @@ public static class UnslothStudioFinalPathV2
         Write-StudioLine "  $Rule" -ForegroundColor DarkGray
     }
     Write-StudioLine ""
+
+    # Here so its warning lands under the banner. A no-op the second time: a --tauri
+    # run with a custom root reaches it first via Initialize-StudioFinalPathNativeType.
+    Initialize-StudioTempEnvironment
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
@@ -1009,8 +1609,13 @@ public static class UnslothStudioFinalPathV2
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Shared default cache, or the custom Studio home's llama.cpp tree.
+    # Explicit staging root, shared default cache, or the custom Unsloth home's tree.
     function Get-ManagedLlamaCppDir {
+        param([AllowNull()][string]$StagingRoot = $null)
+
+        if ($StagingRoot) {
+            return (Join-Path $StagingRoot "llama.cpp")
+        }
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
         }
@@ -1019,9 +1624,11 @@ public static class UnslothStudioFinalPathV2
 
     # Failure reason when the managed tree is denied; never touches its ACLs.
     function Invoke-ManagedLlamaCppPreflight {
+        param([AllowNull()][string]$StagingRoot = $null)
+
         # Let the existing profile validation handle a missing USERPROFILE later.
         if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
-        $dir = Get-ManagedLlamaCppDir
+        $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
         if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
         Write-StudioLine ""
         # A denied custom home cannot be claimed as an Unsloth-managed cache.
@@ -1550,6 +2157,14 @@ public static class UnslothStudioFinalPathV2
             if ((Test-Path -LiteralPath $_studioIdFile) -and `
                 ((Get-Item -LiteralPath $_studioIdFile).Length -gt 0)) {
                 $_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
+                # Same contract as the backend and the desktop app: 64
+                # lowercase hex. -cnotmatch because -notmatch is case
+                # insensitive and would take uppercase the backend rejects.
+                # Anything else lands in a single-quoted assignment in the
+                # generated launcher, so a planted quote would be code.
+                if ($_studioRootId -cnotmatch '^[0-9a-f]{64}$') {
+                    $_studioRootId = ""
+                }
             }
             if (-not $_studioRootId) {
                 $_idBytes = New-Object byte[] 32
@@ -1568,11 +2183,12 @@ public static class UnslothStudioFinalPathV2
                     try {
                         $_adoptedRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
                     } catch { }
-                    if ($_adoptedRootId) {
+                    if ($_adoptedRootId -cmatch '^[0-9a-f]{64}$') {
                         $_studioRootId = $_adoptedRootId
                     } else {
-                        # Zero-length incumbent is an interrupted write, not an
-                        # id. Replace it with one atomic rename, no unlink.
+                        # Zero-length or malformed is an interrupted write
+                        # or a planted value, not an id: replace it with one
+                        # atomic rename, no unlink.
                         Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
                     }
                 } finally {
@@ -1952,7 +2568,7 @@ exit 0
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
             # A launcher on a share is a REMOTE script to PowerShell and RemoteSigned refuses an
             # unsigned one, so a roaming profile would get a shortcut that exits without starting
-            # Studio. Bypass for that case only, and without the hidden window: a console beats
+            # Unsloth. Bypass for that case only, and without the hidden window: a console beats
             # nothing launching. A mapped drive (H:, Z:) is the same share and the same zone, and
             # DriveInfo on the root reports Network for both.
             $launcherIsRemote = $launcherPs1 -like "\\*"
@@ -2061,6 +2677,11 @@ exit 0
 
     # Regen .lnk + launcher only; used by `unsloth studio update`.
     if ($ShortcutsOnly) {
+        # `unsloth studio update` reaches the installer only here, and returns before
+        # the lock try/finally, so undo the temp redirection on every way out,
+        # including the throw below. Under `irm | iex` these variables belong to the
+        # caller's own session, so leaving them redirected outlives the install.
+        try {
         if ($TauriMode) { return }
         # The launcher runs the interpreter, so that is what has to be there. Checking
         # unsloth.exe instead would refuse to regenerate shortcuts on exactly the
@@ -2102,6 +2723,9 @@ exit 0
         }
         New-StudioShortcuts -ManagedPythonPath $ShortcutPython
         return
+        } finally {
+            Restore-StudioTempEnvironment
+        }
     }
 
     # ── Leave Windows system directories before installing ──
@@ -2110,7 +2734,7 @@ exit 0
     # then rolls back. Relocating is safe: nothing here reads the caller's directory
     # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
     # --with-llama-cpp-dir needs a rebase first. Not restored at the end, same reason as
-    # the PSModulePath fix at the top: the interactive path ends running Studio in the
+    # the PSModulePath fix at the top: the interactive path ends running Unsloth in the
     # foreground, so a finally would not fire until it stops.
     $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
     $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
@@ -2238,6 +2862,11 @@ exit 0
 
     function Get-StudioPathHash {
         param([Parameter(Mandatory = $true)][string]$Path)
+        # Unchanged whenever the native resolver answered. When it could not, this
+        # hashes the normalized spelling, so two ALIASES of one root (a junction and
+        # its target, an 8.3 name and its long form) name different mutexes and do not
+        # exclude each other. That needs two installs racing into one directory through
+        # different spellings, and beats refusing to install, which is what this did.
         $canonical = (Get-StudioFinalPath -Path $Path).ToUpperInvariant()
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
         $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -2256,15 +2885,25 @@ exit 0
             [Parameter(Mandatory = $true)][string]$Right
         )
         try {
-            $leftFull = Get-StudioFinalPath -Path $Left
-            $rightFull = Get-StudioFinalPath -Path $Right
+            $leftInfo = Resolve-StudioFinalPathInfo -Path $Left
+            $rightInfo = Resolve-StudioFinalPathInfo -Path $Right
         } catch {
-            Write-StudioLine "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
             return $null
         }
-        return [string]::Equals(
-            $leftFull, $rightFull, [System.StringComparison]::OrdinalIgnoreCase
-        )
+        if ([string]::Equals(
+            $leftInfo.Path, $rightInfo.Path, [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $true
+        }
+        # Different spellings only prove different directories when both resolved
+        # exactly; otherwise they may be aliases of one. $null is the caller's
+        # "identity unresolved" signal and makes it take both runtime locks.
+        if (-not $leftInfo.Exact -or -not $rightInfo.Exact) {
+            Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
+            return $null
+        }
+        return $false
     }
 
     function Get-StudioInstallMutexName {
@@ -2299,7 +2938,7 @@ exit 0
     function Get-StudioCurrentUserSid {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
         if ($null -eq $identity) {
-            throw "Could not determine the Windows user for the Studio runtime lock"
+            throw "Could not determine the Windows user for the Unsloth runtime lock"
         }
         try {
             $sid = if ($identity.User) { $identity.User.Value } else { $null }
@@ -2307,7 +2946,7 @@ exit 0
             $identity.Dispose()
         }
         if ([string]::IsNullOrWhiteSpace($sid)) {
-            throw "Could not determine the Windows user SID for the Studio runtime lock"
+            throw "Could not determine the Windows user SID for the Unsloth runtime lock"
         }
         return $sid
     }
@@ -2391,6 +3030,52 @@ exit 0
         }
     }
 
+    # QueryFullProcessImageNameW answers for processes whose MainModule is not
+    # readable here, but needs the compiled helper. Without a fallback a host that
+    # cannot compile would find NO running processes and overwrite a venv Unsloth has
+    # open, so the ladder ends at Win32_Process. Every rung reports a real executable
+    # image; a command line or working directory mentioning the path is never proof.
+    $script:StudioProcessImageTable = $null
+    $script:StudioProcessImageWarned = $false
+    function Get-StudioProcessImagePath {
+        param([Parameter(Mandatory = $true)][int]$ProcessId)
+        if (Initialize-StudioFinalPathNativeType) {
+            try {
+                $native = [UnslothStudioFinalPathV2]::GetProcessImagePath($ProcessId)
+                if (-not [string]::IsNullOrWhiteSpace($native)) { return $native }
+            } catch {}
+            return $null
+        }
+        if (-not $script:StudioProcessImageWarned) {
+            $script:StudioProcessImageWarned = $true
+            Write-StudioLine "[WARN] Scanning for running Unsloth processes without the native helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
+        }
+        $process = $null
+        try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
+        if ($process) {
+            # .Path is MainModule.FileName (an ETS ScriptProperty over it on 5.1), so
+            # there is no second rung here: empty means MainModule was unreadable.
+            try {
+                if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
+            } catch {}
+        }
+        # Queried once per run, not once per process: this is the slow rung.
+        if ($null -eq $script:StudioProcessImageTable) {
+            $script:StudioProcessImageTable = @{}
+            try {
+                foreach ($row in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+                    if (-not [string]::IsNullOrWhiteSpace($row.ExecutablePath)) {
+                        $script:StudioProcessImageTable[[int]$row.ProcessId] = [string]$row.ExecutablePath
+                    }
+                }
+            } catch {}
+        }
+        if ($script:StudioProcessImageTable.ContainsKey($ProcessId)) {
+            return $script:StudioProcessImageTable[$ProcessId]
+        }
+        return $null
+    }
+
     function Get-RunningStudioVenvProcesses {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPath,
@@ -2399,14 +3084,20 @@ exit 0
         try {
             $resolvedPath = (Get-StudioFinalPath -Path $VenvPath).TrimEnd('\', '/')
         } catch {
-            throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
+            throw "Could not resolve managed Unsloth process path '$VenvPath': $($_.Exception.Message)"
         }
+        # No root-relative fallback here: without the native helper EVERY path is
+        # inexact, so it compared path tails across unrelated drives and an ordinary
+        # D:\env\python.exe matched a protected C:\env, aborting a legitimate install
+        # as "still in use". The alias it was written for, SUBST, is folded in
+        # Get-StudioLexicalPath instead. A volume reached by GUID still cannot be
+        # matched to the same volume by drive letter without the compiler.
 
         # Block only confirmed executable identities: a command line or working
         # directory that merely mentions the path is not proof of an open file.
         foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
             $executable = $null
-            try { $executable = [UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id) } catch { continue }
+            try { $executable = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
             if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
@@ -2421,8 +3112,8 @@ exit 0
     try {
         $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
     } catch {
-        Write-StudioLine "[ERROR] Could not create the Studio install lock: $($_.Exception.Message)" -ForegroundColor Red
-        return (Exit-InstallFailure "Could not create the Studio install lock")
+        Write-StudioLine "[ERROR] Could not create the Unsloth install lock: $($_.Exception.Message)" -ForegroundColor Red
+        return (Exit-InstallFailure "Could not create the Unsloth install lock")
     }
     if ($null -eq $studioInstallMutex) {
         Write-StudioLine "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
@@ -2452,13 +3143,13 @@ exit 0
                     if ($null -eq $mutex) {
                         Write-StudioLine "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
                         Write-StudioLine "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
-                        return (Exit-InstallFailure "The managed Studio environment is busy")
+                        return (Exit-InstallFailure "The managed Unsloth environment is busy")
                     }
                     $studioRuntimeMutexes += $mutex
                 }
             } catch {
-                Write-StudioLine "[ERROR] Could not create the Studio runtime lock: $($_.Exception.Message)" -ForegroundColor Red
-                return (Exit-InstallFailure "Could not create the Studio runtime lock")
+                Write-StudioLine "[ERROR] Could not create the Unsloth runtime lock: $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not create the Unsloth runtime lock")
             }
         }
 
@@ -3284,6 +3975,58 @@ exit 0
         }
     }
 
+    # uv creates only into a path that is absent or an empty directory. The .NET
+    # API counts hidden entries and reads wildcards in the path literally.
+    function Test-DirectoryHasEntries {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+            # Still an existing path to CreateDirectory, which answers
+            # ERROR_ALREADY_EXISTS for a file or a link whose target is gone, so
+            # uv refuses it too. -PathType Container follows the link and cannot
+            # see a dangling one; Get-Item sees the link itself.
+            return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
+        }
+        try {
+            foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($Path)) {
+                if ($entry) { return $true }
+            }
+        } catch {
+            # Present but unreadable: report it occupied rather than let uv fail on it.
+            return $true
+        }
+        return $false
+    }
+
+    # Move-Item into an existing directory nests the source inside it rather than
+    # renaming it, and uv then refuses that target as in #9479. A migration branch
+    # already means $VenvDir is absent or empty, so clear it: Directory.Delete is
+    # non-recursive, and on a reparse point it unlinks without following.
+    function Clear-MigrationTargetDirectory {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        $item = Get-Item -LiteralPath $Path -Force
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            # Not Remove-Item: on Windows PowerShell 5.1 it trips a reparse-tag
+            # mismatch on a directory symlink (PowerShell/PowerShell#621).
+            # Directory.Delete throws on a link to a file or a dangling one,
+            # hence the File.Delete fallback.
+            try { [System.IO.Directory]::Delete($Path) }
+            catch {
+                try { [System.IO.File]::Delete($Path) }
+                catch { throw "$Path is in the way of the environment migration. Move it aside and re-run." }
+            }
+            return
+        }
+        if (-not $item.PSIsContainer) {
+            throw "$Path is a file and is in the way of the environment migration. Move it aside and re-run."
+        }
+        try {
+            [System.IO.Directory]::Delete($Path)
+        } catch {
+            throw "$Path is in the way of the environment migration. Move it aside and re-run."
+        }
+    }
+
     function Get-VenvBaseHome {
         param([Parameter(Mandatory = $true)][string]$VenvRoot)
         $configPath = Join-Path $VenvRoot "pyvenv.cfg"
@@ -3297,6 +4040,14 @@ exit 0
             }
         } catch {}
         return $null
+    }
+
+    # Test-Path follows a link, so a dangling one reads as absent. A rollback holds
+    # whatever Test-DirectoryHasEntries called occupied, so ask the path itself.
+    function Test-StudioPathPresent {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if (-not $Path) { return $false }
+        return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
     function Start-StudioVenvRollback {
@@ -3458,7 +4209,7 @@ exit 0
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
-        if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
+        if (-not (Test-StudioPathPresent -Path $backup)) {
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackPartial = $false
             return
@@ -3513,14 +4264,15 @@ exit 0
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false
-        if ($backup -and (Test-Path -LiteralPath $backup)) {
+        if (Test-StudioPathPresent -Path $backup) {
             Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
         }
     }
 
     $studioVenvReplacementCommitted = $false
     try {
-    if (Test-Path -LiteralPath $VenvPython) {
+    # Replace occupied venvs even when python.exe is missing, as in #9479.
+    if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir)) {
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
         # existing $StudioHome\unsloth_studio that lacks Unsloth sentinels.
@@ -3571,6 +4323,12 @@ exit 0
         $ErrorActionPreference = $prevEAP2
         if ($legacyOk) {
             substep "legacy environment is healthy -- migrating..."
+            try {
+                Clear-MigrationTargetDirectory -Path $VenvDir
+            } catch {
+                Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+            }
             Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force
             substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
@@ -3587,6 +4345,12 @@ exit 0
         # Skip custom-root env-mode so it is not relocated into a workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
+        try {
+            Clear-MigrationTargetDirectory -Path $VenvDir
+        } catch {
+            Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+            return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+        }
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
@@ -3616,7 +4380,7 @@ exit 0
         Write-StudioLine "        Managed Python: $VenvPython" -ForegroundColor Yellow
         if (-not $recordedBaseHome) { $recordedBaseHome = "unavailable" }
         Write-StudioLine "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
-        # The ownership marker is written above, so a plain re-run replaces this venv.
+        # The occupied-directory branch makes this venv replaceable on a plain re-run.
         Write-StudioLine "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
@@ -4735,22 +5499,37 @@ exit 0
                         (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
 
+    # Intel XPU reroute. Must run AFTER the Get-TorchIndexUrl call above, or that call overwrites
+    # it. An explicit pin still wins, like the AMD ROCm reroute below.
+    if ($script:IsIntelXpu -and -not $TorchIndexPinned -and -not $SkipTorch) {
+        $XpuBaseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        $TorchIndexUrl = "$XpuBaseUrl/xpu"
+        substep "PyTorch XPU (SYCL) wheels will be installed from $(Remove-IndexUrlCredentials $TorchIndexUrl)"
+    }
+
     # ===== Windows-on-ARM + NVIDIA GPU -> automatic WSL2 fallback (N1X "RTX Spark" / DGX Spark-class) =====
     # win_arm64 has no CUDA PyTorch/Triton wheel, so run the Linux installer inside WSL2 (full
     # GPU) plus a Windows `unsloth` shim into it; x86_64 / ARM64-without-NVIDIA unaffected, and
     # the probe below keeps the native install if a win_arm64 CUDA wheel ever ships.
-    # Opt out: UNSLOTH_NO_WSL_FALLBACK=1; pick distro with UNSLOTH_WSL_DISTRO.
-    try { $_winArm64 = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { $_winArm64 = $false }
-    # x64-emulated PS on ARM reports X64/AMD64; Win32_Processor.Architecture (12=ARM64) and
-    # machine-level PROCESSOR_ARCHITECTURE read the true arch. Only ever turns $_winArm64 ON.
-    if (-not $_winArm64) {
+    # Opt out: UNSLOTH_NO_WSL_FALLBACK=1, or any explicit wheel-index pin
+    # (UNSLOTH_TORCH_INDEX_URL / UNSLOTH_TORCH_INDEX_FAMILY), which stays authoritative
+    # here as it does for the ROCm and XPU reroutes. Pick distro with UNSLOTH_WSL_DISTRO.
+    # Get-HostMachineArch reads PROCESSOR_ARCHITEW6432 first, which is the signal that
+    # distinguishes an x64-emulated shell on ARM64 from a real x64 host -- so it already
+    # answers the emulation case, without a WMI query on every x64 install.
+    $_hostArch = Get-HostMachineArch
+    $_winArm64 = ($_hostArch -ieq 'arm64')
+    # Only when all three of its signals were unreadable ("unknown") do we fall back to
+    # the heavier probes. Never reached on a healthy x64 or ARM64 host, and each can
+    # only turn $_winArm64 ON.
+    if ((-not $_winArm64) -and ($_hostArch -ieq 'unknown')) {
         try { if ((@(Get-CimInstance Win32_Processor -ErrorAction Stop))[0].Architecture -eq 12) { $_winArm64 = $true } } catch {}
-    }
-    if (-not $_winArm64) {
-        try {
-            $_machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
-            if ($_machArch -ieq 'ARM64') { $_winArm64 = $true }
-        } catch {}
+        if (-not $_winArm64) {
+            try {
+                $_machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+                if ($_machArch -ieq 'ARM64') { $_winArm64 = $true }
+            } catch {}
+        }
     }
     $_nativeCudaTorchOk = $false
     if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch)) {
@@ -4773,7 +5552,7 @@ exit 0
             if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
         }
     }
-    if ($_winArm64 -and $HasNvidiaSmi -and (-not $_nativeCudaTorchOk) -and (-not $SkipTorch) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
+    if ($_winArm64 -and $HasNvidiaSmi -and (-not $_nativeCudaTorchOk) -and (-not $SkipTorch) -and (-not $TorchIndexPinned) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
         step "wsl" "Windows on ARM + NVIDIA, native CUDA unavailable -- routing GPU setup through WSL2"
         substep "no win_arm64 CUDA PyTorch/Triton yet; WSL2 delivers full GPU (DGX Spark / RTX Spark path)." "Yellow"
 
@@ -5194,15 +5973,6 @@ exit 0
         return (Exit-InstallFailure "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc)")
     }
 
-    # Intel XPU reroute. Must run AFTER the Get-TorchIndexUrl call above, or that call overwrites
-    # it. An explicit pin still wins, like the AMD ROCm reroute below.
-    # Unreachable on the Windows-on-ARM path above, which returns before here; x86-only either way.
-    if ($script:IsIntelXpu -and -not $TorchIndexPinned -and -not $SkipTorch) {
-        $XpuBaseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
-        $TorchIndexUrl = "$XpuBaseUrl/xpu"
-        substep "PyTorch XPU (SYCL) wheels will be installed from $(Remove-IndexUrlCredentials $TorchIndexUrl)"
-    }
-
     # ── GPU arch → newest compatible Windows ROCm wheel release ──
     # Wheels bundle their own ROCm runtime; the installed HIP SDK version does
     # not constrain which release to use.  Always picks the newest release that
@@ -5370,6 +6140,10 @@ exit 0
         return $installed
     }
 
+    $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
+    $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.22" }
+
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
         # existing torch/CUDA unless the flavor repair below re-lands it.
@@ -5378,7 +6152,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.16" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -5392,7 +6166,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.16" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5519,7 +6293,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.16" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -5531,9 +6305,10 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.16" }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5559,7 +6334,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.12" "unsloth>=2026.8.18" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.16" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -5577,7 +6352,8 @@ exit 0
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
+            $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$_unslothPkg" }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -5605,8 +6381,27 @@ exit 0
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "from importlib.metadata import version; import sys; print(version(sys.argv[1]))" $PackageName 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -eq 0 -and $installedPackageVersion) {
+    $installedPackageVersion = (& $VenvPython -c "
+import sys
+try:
+    from studio.install_manifest import installed_version_probe
+except Exception:
+    # --package installs something that does not ship studio/. Report what the
+    # old probe would have, rather than claiming the version is unknown.
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        print(version(sys.argv[1]))
+    except PackageNotFoundError:
+        sys.exit(1)
+    sys.exit(0)
+installed, conflict = installed_version_probe(sys.argv[1])
+print(installed)
+sys.exit(2 if conflict else (0 if installed else 1))
+" $PackageName 2>$null | Out-String).Trim()
+    $_installedPackageVersionExit = $LASTEXITCODE
+    if ($_installedPackageVersionExit -eq 2) {
+        substep "duplicate metadata found for $PackageName; the dependency pass will repair it" "Cyan"
+    } elseif ($_installedPackageVersionExit -eq 0 -and $installedPackageVersion) {
         step $PackageName "$installedPackageVersion installed"
     } else {
         substep "[WARN] installed $PackageName version could not be determined" "Yellow"
@@ -5815,7 +6610,7 @@ exit 0
     # so it answers there, but antivirus QUARANTINES it, deleting it out of a venv that
     # is otherwise perfectly able to run. Nothing after this point executes it -- the
     # setup handoff, the shortcuts and bin\unsloth.cmd all go through $VenvPython -- so
-    # failing here would refuse to install or repair Studio for exactly the machines
+    # failing here would refuse to install or repair Unsloth for exactly the machines
     # this change is for. Ask the interpreter instead, and only then give up.
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path -LiteralPath $UnslothExe)) {
@@ -6053,7 +6848,7 @@ exit 0
             Write-StudioLine "       $($_.Exception.Message)" -ForegroundColor Yellow
             # The interpreter, not $UnslothExe: this arm is reached on machines whose
             # policy denies the generated console script, where that advice cannot work.
-            Write-StudioLine "       Until the next successful install, start Studio with:" -ForegroundColor Yellow
+            Write-StudioLine "       Until the next successful install, start Unsloth with:" -ForegroundColor Yellow
             Write-StudioLine "       & '$VenvPython' -I -m unsloth_cli studio -p 8888" -ForegroundColor Yellow
         }
     }
@@ -6155,7 +6950,7 @@ exit 0
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
             # Keep both locks until the process exists: a second installer can
-            # then take them, but its scan sees Studio before it mutates.
+            # then take them, but its scan sees Unsloth before it mutates.
             $_runtimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
             try {
                 $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
@@ -6165,6 +6960,11 @@ exit 0
                 $studioAutoStartProcess = Start-Process -FilePath $VenvPython `
                     -ArgumentList (Get-ManagedUnslothCliCommandLine -Arguments @("studio", "-p", "8888")) `
                     -NoNewWindow -PassThru
+                # This inherits the private %TEMP% and outlives the installer, so it,
+                # not $PID, is the owner the next sweep must see.
+                if ($null -ne $studioAutoStartProcess) {
+                    Set-StudioPrivateTempOwner -OwnerProcessId $studioAutoStartProcess.Id
+                }
             } finally {
                 if ($null -eq $_runtimeGateHandoff) {
                     Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
@@ -6226,6 +7026,8 @@ exit 0
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
         Exit-StudioInstallMutex -Mutex $studioInstallMutex
+        # Matters for `irm | iex`, where these are the user's own session variables.
+        Restore-StudioTempEnvironment
     }
     if ($null -ne $studioAutoStartProcess) {
         $studioAutoStartProcess.WaitForExit()

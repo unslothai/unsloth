@@ -24,6 +24,35 @@ RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
 THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
+# Conversation archive: turns evicted by the rolling context window go to a per-thread
+# searchable scope and the relevant ones are recalled on the turn that evicted them. Off,
+# evicted turns are simply dropped again, and the recall reserve is not taken. Only applies
+# once the window evicts, which is itself opt-in per request via
+# context_overflow="truncate_oldest".
+#
+# It does NOT turn the rolling window back into what it was before: the compaction headroom
+# and the sticky boundary belong to the window, not to the archive, and have their own knob
+# (ROLLING_COMPACTION_HEADROOM_RATIO). Gating them here instead would make a host without
+# sqlite-vec silently compact differently.
+CONVERSATION_ARCHIVE = os.environ.get("RAG_CONVERSATION_ARCHIVE", "1") == "1"
+CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K", "4"))
+# Room held back during the fit for the turns recalled straight after it. Sized to
+# CONVERSATION_ARCHIVE_TOP_K * CHUNK_TOKENS with slack for the wrapper text.
+CONVERSATION_RECALL_RESERVE_TOKENS = int(
+    os.environ.get("RAG_CONVERSATION_RECALL_RESERVE_TOKENS", "2048")
+)
+# Shape the archive's lexical query: require identifier-like tokens first, drop function
+# words from the fallback. Off restores the plain OR-of-every-token other scopes use.
+CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") == "1"
+# "chronological" presents recalled turns oldest first, labelled, with later superseding
+# earlier; "relevance" restores the previous rendering. Presentation only: neither changes
+# which turns are selected.
+CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
+# Cosine floor for the automatic recall only, never for a search the model asked for.
+# Default 0.0 (off): a weak match is often still the right turn in one's own conversation.
+# Raise it when the automatic block does more harm than good.
+CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
+
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # Reject uploads larger than this, so one pathological file can't drive unbounded parse
 # + vision work at ingest. 0 disables the cap. Default 200 MB.
@@ -150,6 +179,32 @@ def _names_gguf(model: str) -> bool:
     return "gguf" in re.split(r"[^a-z0-9]+", model.lower())
 
 
+# Suffixes unsloth puts on an unquantized re-upload; the GGUF sits on the base
+# name (embeddinggemma-300m-qat-q8_0-unquantized -> embeddinggemma-300m-GGUF).
+_QUANT_SUFFIX_RE = re.compile(r"(?:-qat)?(?:-q\d+_\d+[a-z]*)?-unquantized$", re.I)
+
+
+def gguf_repo_candidates(model: str) -> list[str]:
+    """Repos that may hold ``model``'s GGUF, in preference order. Shared by the
+    loader and the settings resolve endpoint so they cannot pick different repos."""
+    if "RAG_EMBED_GGUF_REPO" in os.environ:
+        return [EMBED_GGUF_REPO]
+    if _names_gguf(model):
+        return [model]
+    owner, _, name = model.rpartition("/")
+    out = [f"{model}-GGUF"]
+    base = _QUANT_SUFFIX_RE.sub("", name)
+    if base != name:
+        out.append(f"{owner}/{base}-GGUF" if owner else f"{base}-GGUF")
+    out.append(model)
+    return list(dict.fromkeys(out))
+
+
+def gguf_repo_is_explicit() -> bool:
+    """Whether one GGUF repository was explicitly pinned for every embedder."""
+    return "RAG_EMBED_GGUF_REPO" in os.environ
+
+
 def gguf_repo_for_embedding_model(model: str) -> str:
     """GGUF repo for ``model``, honoring an explicit companion override."""
     if "RAG_EMBED_GGUF_REPO" in os.environ:
@@ -169,12 +224,34 @@ def default_gguf_repo() -> str:
 def effective_gguf_repo() -> str:
     """GGUF repo for the llama-server backend, tracking the effective model.
 
-    An explicit ``RAG_EMBED_GGUF_REPO`` env always wins. Otherwise any custom
-    model (saved in Settings or via ``RAG_EMBEDDING_MODEL``) maps to its
-    ``-GGUF`` companion repo (the unsloth convention the default pair follows),
-    or is used as-is when it already names a GGUF repo.
+    An explicit ``RAG_EMBED_GGUF_REPO`` env always wins, then the repo the picker
+    resolved and stored for this model (which need not follow any naming rule),
+    then the ``-GGUF`` companion convention.
     """
-    return gguf_repo_for_embedding_model(effective_embedding_model())
+    return effective_gguf_repo_for_embedding_model(effective_embedding_model())
+
+
+def effective_gguf_repo_for_embedding_model(model: str) -> str:
+    """GGUF repo the loader/identity use for ``model``.
+
+    The resolved repo is part of the vector space identity, not merely a load
+    location: two different conversions of the same source model need separate
+    tags or their document/query vectors can be mixed.
+    """
+    if "RAG_EMBED_GGUF_REPO" in os.environ:
+        return EMBED_GGUF_REPO
+    try:
+        from utils.embedding_model_settings import get_stored_gguf_repo, remembered_gguf_repo
+        stored = get_stored_gguf_repo(model)
+        if stored is None:
+            # One stored record, so saving another model takes this one's repo
+            # away while a job pinned to it is still ingesting; the derived name
+            # would move that job's identity mid-run and split one document set
+            # across two tags. The memo is what this process last saw for it.
+            stored = remembered_gguf_repo(model)
+    except Exception:  # noqa: BLE001 - store unavailable: fall back to the convention
+        stored = None
+    return stored or gguf_repo_for_embedding_model(model)
 
 
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this

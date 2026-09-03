@@ -17,7 +17,7 @@ from core.research.redaction import _escape_link_destination
 
 # Unrolled rather than the equivalent (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks
 # catastrophically on an unterminated "[Document:" (ordinary malformed model output), and this
-# runs on the event loop, so one bad report would stall all of Studio.
+# runs on the event loop, so one bad report would stall all of Unsloth.
 _DOCUMENT_CITATION = re.compile(r"\[Document:[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
 _MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
 _SOURCES_HEADING = re.compile(

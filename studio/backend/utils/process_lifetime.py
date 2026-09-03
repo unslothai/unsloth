@@ -41,7 +41,7 @@ _JobObjectExtendedLimitInformation = 9
 # kill(2) gives 0, 1 and negatives a different meaning to every other value, and
 # each of those meanings is catastrophic here:
 #
-#   kill(0, sig)     this process's entire group, i.e. Studio and its siblings
+#   kill(0, sig)     this process's entire group, i.e. Unsloth and its siblings
 #   killpg(1, sig)   the same call as kill(-1, sig): EVERY process the caller
 #                    has permission to signal, not "process group 1"
 #   kill(-n, sig)    process group n
@@ -65,7 +65,7 @@ def is_signalable_pid(pid: object) -> bool:
     `bool` is excluded explicitly: it is an `int` subclass, so True would
     otherwise read as pid 1.
 
-    Public because the floor has to hold at every signalling boundary in Studio,
+    Public because the floor has to hold at every signalling boundary in Unsloth,
     not just this module's. It was written out by hand in four places at first,
     and the site that got missed was missed precisely because "who enforces the
     floor" was a question you had to answer by reading rather than by grepping
@@ -288,7 +288,7 @@ def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
     # Runs in the forked child before exec (PR_SET_PDEATHSIG does not survive the
     # fork); the getppid check closes the race where the parent died first.
     # owner_pid is the spawner's pid, read pre-fork. A bare `getppid() == 1` also
-    # matches a parent that legitimately IS pid 1, which is how Studio runs as a
+    # matches a parent that legitimately IS pid 1, which is how Unsloth runs as a
     # container entrypoint: it killed every llama-server before exec (#7886). It
     # also misses reparenting to a subreaper, whose pid is not 1.
     try:
@@ -330,6 +330,26 @@ def bind_current_process_to_parent_lifetime() -> None:
     try:
         if not parent.is_alive():
             os._exit(1)
+    except Exception:
+        pass
+
+
+def allow_child_processes() -> None:
+    """Allow the current multiprocessing worker to spawn children (#9094).
+
+    Children inherit the cleared flag, since `Process.__init__` copies `_config`.
+    A grandchild that does not pass `daemon =` itself is therefore non-daemonic,
+    and `_exit_function` joins those unconditionally and without a timeout, so it
+    would hold the worker's exit open forever. Everything a worker reaches today
+    passes `daemon = True`; keep it that way.
+    """
+    try:
+        from multiprocessing import process as multiprocessing_process
+
+        # This config is child-local; the parent's Process handle stays daemonic.
+        config = getattr(multiprocessing_process.current_process(), "_config", None)
+        if isinstance(config, dict):
+            config["daemon"] = False
     except Exception:
         pass
 
@@ -787,7 +807,7 @@ def _breadcrumb_dir():
 
 
 def _breadcrumb_file():
-    # One file per owner: two Studios can share a home (different ports), and a
+    # One file per owner: two Unsloth instances can share a home (different ports), and a
     # single shared file would let the second erase the first's children.
     directory = _breadcrumb_dir()
     return None if directory is None else directory / f"{os.getpid()}.json"
@@ -1122,10 +1142,10 @@ def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
 
 
 def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
-    """Kill children recorded by a previous Studio that is no longer running.
+    """Kill children recorded by a previous Unsloth that is no longer running.
 
     Runs once at startup, before anything new spawns. Every record in the
-    directory is considered, so a Studio that crashed while a sibling was
+    directory is considered, so an Unsloth that crashed while a sibling was
     running is still cleaned up. A child is only signalled when its recorded
     start-time identity still matches, so a recycled pid is never touched.
     """
@@ -1172,9 +1192,9 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
     # treated like a missing one rather than trusted or crashed on.
     owner_identity = _recorded_identity(record.get("owner_identity"))
     # Identity decides, not the pid: pids recycle, and this process may have
-    # inherited the pid of the Studio that wrote the record.
+    # inherited the pid of the Unsloth that wrote the record.
     # Inconclusive counts as a match: a `ps` that failed for a moment must not
-    # make a live Studio look gone and cost it its running sidecars.
+    # make a live Unsloth look gone and cost it its running sidecars.
     current_owner = _identity_or_none(owner_pid)
     owner_matches = (
         owner_identity is None
@@ -1187,11 +1207,11 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
         isinstance(owner_pid, int)
         and owner_matches
         and _pid_alive(owner_pid)
-        # os.kill(pid, 0) succeeds for a zombie, and a Studio nobody has waited
+        # os.kill(pid, 0) succeeds for a zombie, and an Unsloth nobody has waited
         # on yet is still a dead one whose sidecars are orphans.
         and not _pid_is_zombie(owner_pid)
     ):
-        return killed, True  # that Studio is still running; its children are its own
+        return killed, True  # that Unsloth is still running; its children are its own
 
     unresolved = False
     children = record.get("children")
@@ -1254,7 +1274,7 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
         try:
             import logging
             logging.getLogger(__name__).warning(
-                "Reaped %d orphaned child process(es) left by a previous Studio: %s",
+                "Reaped %d orphaned child process(es) left by a previous Unsloth: %s",
                 len(killed),
                 killed,
             )
@@ -1266,8 +1286,8 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
 def _own_process_group(pid: int) -> Optional[int]:
     """The pid's process group, but only when it leads one (start_new_session).
 
-    A child sharing Studio's group must never be recorded: killing that group
-    would take Studio and every sibling with it.
+    A child sharing Unsloth's group must never be recorded: killing that group
+    would take Unsloth and every sibling with it.
     """
     if _is_windows() or not hasattr(os, "getpgid"):
         return None

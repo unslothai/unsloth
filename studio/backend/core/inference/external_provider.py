@@ -8,13 +8,17 @@ Most providers use OpenAI-compatible /v1/chat/completions; Anthropic uses
 the native Messages API, translated in this client.
 """
 
+import asyncio
 import base64
+import io
 import json as _json
 import mimetypes
 import re
+import threading
 import time
+import wave
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -52,6 +56,90 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+_MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
+_MAX_CONCATENATED_WAV_SEGMENTS = 1_024
+
+
+def _merge_concatenated_wav_segments(
+    audio: bytes, cancelled: Optional[threading.Event] = None
+) -> bytes:
+    """Join a byte stream containing multiple complete WAV files into one WAV."""
+    cancelled = cancelled or threading.Event()
+    if len(audio) > _MAX_CONCATENATED_WAV_BYTES:
+        return audio
+
+    def _segment_offsets():
+        offset = 0
+        while offset < len(audio):
+            if audio[offset : offset + 4] != b"RIFF" or audio[offset + 8 : offset + 12] != b"WAVE":
+                raise ValueError("not a concatenated WAV stream")
+            segment_end = offset + 8 + int.from_bytes(audio[offset + 4 : offset + 8], "little")
+            if segment_end <= offset + 12 or segment_end > len(audio):
+                raise ValueError("invalid RIFF segment length")
+            yield offset, segment_end
+            offset = segment_end
+
+    try:
+        params = None
+        source = io.BytesIO(audio)
+        segment_count = 0
+        for segment_start, _segment_end in _segment_offsets():
+            if cancelled.is_set():
+                return audio
+            segment_count += 1
+            if segment_count > _MAX_CONCATENATED_WAV_SEGMENTS:
+                return audio
+            source.seek(segment_start)
+            with wave.open(source, "rb") as reader:
+                current = (
+                    reader.getnchannels(),
+                    reader.getsampwidth(),
+                    reader.getframerate(),
+                    reader.getcomptype(),
+                    reader.getcompname(),
+                )
+                if params is None:
+                    params = current
+                elif current != params:
+                    return audio
+        if segment_count < 2:
+            return audio
+        assert params is not None
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(params[0])
+            writer.setsampwidth(params[1])
+            writer.setframerate(params[2])
+            writer.setcomptype(params[3], params[4])
+            for segment_start, _segment_end in _segment_offsets():
+                if cancelled.is_set():
+                    return audio
+                source.seek(segment_start)
+                with wave.open(source, "rb") as reader:
+                    expected_bytes = (
+                        reader.getnframes() * reader.getnchannels() * reader.getsampwidth()
+                    )
+                    observed_bytes = 0
+                    while frames := reader.readframes(65_536):
+                        if cancelled.is_set():
+                            return audio
+                        observed_bytes += len(frames)
+                        writer.writeframesraw(frames)
+                    if observed_bytes != expected_bytes:
+                        return audio
+        return output.getvalue()
+    except MemoryError:
+        raise
+    except Exception:
+        return audio
+
+
+def _append_provider_path(base_url: str, endpoint: str) -> str:
+    """Append an API path without moving it behind a base URL's query string."""
+    parts = urlsplit(base_url)
+    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
@@ -583,6 +671,36 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "high"
 
 
+# ollama's openai-compatible /v1/chat/completions accepts these five values.
+# https://docs.ollama.com/api/openai-compatibility
+_OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "max"})
+_OLLAMA_REASONING_EFFORT_ALIASES = {
+    "minimal": "low",
+    "xhigh": "max",
+}
+
+
+def _apply_ollama_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    """Map API thinking controls onto Ollama's ``reasoning_effort`` field.
+
+    Requests with neither control remain unchanged. An explicit off is
+    ``none``; an on without a level is ``medium``. #9649
+    """
+    effort = (reasoning_effort or "").strip().lower()
+    if effort in _OLLAMA_REASONING_EFFORT_ALIASES:
+        effort = _OLLAMA_REASONING_EFFORT_ALIASES[effort]
+    if effort in _OLLAMA_REASONING_EFFORTS:
+        body["reasoning_effort"] = effort
+        return
+    if enable_thinking is False:
+        body["reasoning_effort"] = "none"
+        return
+    if enable_thinking is True:
+        body["reasoning_effort"] = "medium"
+
+
 # Shared client reused across all requests for HTTP connection pooling.
 # Auth headers and timeouts are passed per-request, so a single client
 # handles every provider without storing credentials.
@@ -862,7 +980,7 @@ def _build_kimi_tool_end(
 
 
 class ExternalProviderClient:
-    """Async proxy for OpenAI-compatible external LLM APIs."""
+    """Async proxy for OpenAI-compatible external APIs."""
 
     def __init__(
         self,
@@ -1149,6 +1267,8 @@ class ExternalProviderClient:
                 tpl_kw = {}
             tpl_kw["enable_thinking"] = bool(enable_thinking)
             body["chat_template_kwargs"] = tpl_kw
+        elif self.provider_type == "ollama":
+            _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
         # Some routes (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
@@ -1234,7 +1354,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # Manual __anext__ (not `async for`) so we can close the
@@ -1396,7 +1521,7 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # Verbatim relay, minus Unsloth's own UI control protocol:
                         # the frames this server writes to paint tool cards ride
                         # the same stream, so an endpoint that echoes them forges
                         # a card for a tool that never ran.
@@ -1534,7 +1659,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1625,7 +1755,12 @@ class ExternalProviderClient:
                             response.status_code,
                             error_text[:500],
                         )
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
                     # Manual __anext__ loop instead of `async for` — see the
                     # stream_chat_completion comment for the Python 3.13 +
@@ -1639,7 +1774,7 @@ class ExternalProviderClient:
                                 break
                             if line.strip():
                                 # Same rule as the main relay: never let the
-                                # endpoint speak Studio's control vocabulary.
+                                # endpoint speak Unsloth's control vocabulary.
                                 relayed = sanitize_provider_sse_line(line)
                                 if relayed is not None:
                                     yield relayed
@@ -1730,7 +1865,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1775,7 +1915,7 @@ class ExternalProviderClient:
                                                         str(ann.get("type") or "?")
                                                     )
                         # Same rule as the main relay: never let the endpoint
-                        # speak Studio's control vocabulary.
+                        # speak Unsloth's control vocabulary.
                         relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
@@ -2375,7 +2515,12 @@ class ExternalProviderClient:
                                 f"data: "
                                 f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
                             )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
@@ -4152,7 +4297,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 if web_search_active:
@@ -4858,7 +5008,7 @@ class ExternalProviderClient:
                 # OpenAI requires the reasoning items that came back alongside a
                 # tool call to be replayed with the function_call /
                 # function_call_output pair whenever the history is managed by
-                # hand, which is exactly what the Studio tool loop does: "any
+                # hand, which is exactly what the Unsloth tool loop does: "any
                 # reasoning items returned in model responses with tool calls
                 # must also be passed back with tool call outputs"
                 # (https://developers.openai.com/api/docs/guides/function-calling).
@@ -5274,7 +5424,12 @@ class ExternalProviderClient:
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
 
                     # NOTE: same manual __anext__ loop as stream_chat_completion --
@@ -6278,6 +6433,94 @@ class ExternalProviderClient:
         response.raise_for_status()
         return response.json()
 
+    async def create_speech(
+        self,
+        text: str,
+        model: str,
+        voice: Optional[str] = None,
+        response_format: str = "wav",
+        speed: Optional[float] = None,
+        instructions: Optional[str] = None,
+    ) -> tuple[bytes, str]:
+        """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
+        body: dict[str, Any] = {
+            "model": model,
+            "input": text,
+            "response_format": response_format,
+        }
+        if voice:
+            body["voice"] = voice
+        if speed is not None:
+            body["speed"] = speed
+        if instructions is not None:
+            body["instructions"] = instructions
+        response = await _http_client.post(
+            _append_provider_path(self.base_url, "/audio/speech"),
+            headers = self._auth_headers(),
+            json = body,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+        audio = response.content
+        if response_format.strip().lower() == "wav":
+            merge_cancelled = threading.Event()
+            merge_task = asyncio.create_task(
+                asyncio.to_thread(_merge_concatenated_wav_segments, audio, merge_cancelled)
+            )
+            try:
+                audio = await asyncio.shield(merge_task)
+            except asyncio.CancelledError:
+                merge_cancelled.set()
+                while not merge_task.done():
+                    try:
+                        await asyncio.shield(merge_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                try:
+                    merge_task.result()
+                except BaseException:
+                    pass
+                raise asyncio.CancelledError
+        return audio, media_type or f"audio/{response_format}"
+
+    async def create_transcription(
+        self,
+        audio: bytes,
+        filename: str,
+        content_type: str,
+        model: str,
+        language: Optional[str] = None,
+        response_format: str = "json",
+        timestamp_granularities: Optional[list[str]] = None,
+    ) -> tuple[bytes, str]:
+        """Post audio to an OpenAI-compatible transcription endpoint."""
+        data = {
+            "model": model,
+            "response_format": response_format,
+        }
+        if language:
+            data["language"] = language
+        if timestamp_granularities:
+            # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
+            data["timestamp_granularities[]"] = list(timestamp_granularities)
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _http_client.post(
+            f"{self.base_url}/audio/transcriptions",
+            headers = headers,
+            files = {"file": (filename, audio, content_type)},
+            data = data,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip()
+        if not media_type:
+            media_type = "text/plain" if response_format == "text" else "application/json"
+        return response.content, media_type
+
     async def list_models(self) -> list[dict[str, Any]]:
         """GET /models to discover available models.
 
@@ -6579,19 +6822,27 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
     return f"{text} ({code})" if code and code not in text else text
 
 
-def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
-    """Format an error as an SSE data line in OpenAI error format."""
+def _error_sse_line(
+    status_code: int,
+    message: str,
+    provider_type: str,
+    retry_after: str | None = None,
+) -> str:
+    """Format an error as an SSE data line in OpenAI error format.
+
+    ``retry_after`` carries the upstream Retry-After through: this stream is delivered under a
+    200, so a client that backs off has nowhere else to read the delay from."""
     import json
 
-    error_obj = {
-        "error": {
-            "message": _readable_provider_error(status_code, message, provider_type),
-            "type": "provider_error",
-            "code": str(status_code),
-            "provider": provider_type,
-        }
+    error: dict[str, str] = {
+        "message": _readable_provider_error(status_code, message, provider_type),
+        "type": "provider_error",
+        "code": str(status_code),
+        "provider": provider_type,
     }
-    return f"data: {json.dumps(error_obj)}"
+    if retry_after:
+        error["retry_after"] = retry_after
+    return f"data: {json.dumps({'error': error})}"
 
 
 def _build_usage_chunk(

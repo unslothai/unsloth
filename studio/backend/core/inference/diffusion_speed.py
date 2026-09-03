@@ -146,7 +146,7 @@ def torch_compile_runtime_available() -> bool:
     """Whether THIS process can actually run an inductor compile.
 
     Inductor needs Triton, and Windows is the one supported platform whose normal install has no
-    Triton wheel. The three Studio workers (inference / training / export) already gate on this
+    Triton wheel. The three Unsloth workers (inference / training / export) already gate on this
     import and set ``TORCHDYNAMO_DISABLE=1`` when it fails, but the diffusion and video backends
     run in the SERVER process, which those gates never reach, so ask it once here.
 
@@ -161,7 +161,11 @@ def torch_compile_runtime_available() -> bool:
         import triton  # noqa: F401, PLC0415
     except Exception:  # noqa: BLE001 -- absent or broken Triton means eager, never a failed load
         return False
-    return True
+    try:
+        from .._msvc_env import crt_headers_reachable  # noqa: PLC0415
+        return crt_headers_reachable()
+    except Exception:  # noqa: BLE001 -- this runs during load; never fail it over a probe
+        return True
 
 
 def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
@@ -240,7 +244,8 @@ def apply_speed_optims(
     # default = LIGHT: GGUF compiles ONLY the dequant op chain (cheap, VRAM-free, resolution-invariant); dense falls back to the
     # regional block compile. max = FULL: regional max-autotune compile of the repeated block. eager = no compile.
     if mode == SPEED_DEFAULT:
-        if is_gguf and on_cuda and family_allows_compile:
+        # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
+        if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family):
             # A U-Net (SDXL) fuses QKV BEFORE its whole-module compile: 36.3 vs 39.3 ms/step (LPIPS 0.033). DiTs were neutral, so they keep the fuse on max only.

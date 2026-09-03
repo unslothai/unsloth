@@ -30,7 +30,7 @@ function storedPinned(): string[] | null {
 }
 
 /**
- * Another Studio window rewriting the pin list: the record changes underneath
+ * Another Unsloth window rewriting the pin list: the record changes underneath
  * this window and a "storage" event follows, which is the only way the list can
  * change without this window's store doing it. Goes through the real listener,
  * so what the store learns is exactly what a second window would teach it.
@@ -303,7 +303,7 @@ test("outside a drag session movePinned still persists on every call", () => {
 
 // --- another window writing mid-drag ---------------------------------------
 // pinned-models installs a window "storage" listener that replaces the list
-// wholesale, so a second Studio window can rewrite the order underneath a drag
+// wholesale, so a second Unsloth window can rewrite the order underneath a drag
 // that is still in flight. A snapshot taken before that write no longer
 // describes what is in localStorage, so restoring it would put this window out
 // of step with the record and the next write from here would clobber the other

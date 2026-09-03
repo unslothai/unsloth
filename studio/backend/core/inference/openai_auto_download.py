@@ -135,7 +135,7 @@ def is_downloadable_ref(requested: str) -> bool:
 
 
 def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
-    """Whether *repo_id* names a Studio catalog entry, not a LiteLLM/OpenRouter label.
+    """Whether *repo_id* names an Unsloth catalog entry, not a LiteLLM/OpenRouter label.
 
     Namespaced ids without a GGUF suffix are foreign routing labels (``openai/gpt-4o``).
     ``-GGUF`` and the ``unsloth/`` namespace mark ids clients pick from this server's
@@ -258,8 +258,8 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
 def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     """Quant label -> bytes the download will actually fetch.
 
-    Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP)
-    and big-endian builds are not quants, and sharded quants sum across shards.
+    Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP),
+    calibration imatrices and big-endian builds are not quants, and sharded quants sum across shards.
     Bytes come from the download plan, which folds companions back into every
     quant, so the disk reserve is measured against what the worker fetches.
     """
@@ -269,13 +269,17 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mmproj,
         _is_mtp_drafter,
     )
 
+    from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+    # Plans and advertised variants are derived separately, so both are filtered here.
     siblings = [
         sibling
-        for sibling in (siblings or [])
+        for sibling in drop_shadowed_appledouble_siblings(list(siblings or []))
         if _is_selectable_repo_gguf(repo_id, getattr(sibling, "rfilename", "") or "")
     ]
     plans = build_gguf_variant_plans(siblings)
@@ -295,7 +299,12 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
             # key the whole stem, so advertising ours dispatches an unresolvable variant.
             quant = canonical_quant_label(name) or quant
         # The endian test reads a quant TOKEN, so it gets the label, not the path-qualified key.
-        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, label):
+        if (
+            _is_mmproj(name)
+            or _is_mtp_drafter(name)
+            or _is_imatrix_path(name)
+            or _is_big_endian_gguf_path(name, label)
+        ):
             continue
         plan = plans.get(quant.lower())
         if plan is not None:
@@ -500,7 +509,7 @@ async def maybe_auto_download(
     only ever sees an already-downloaded model.
 
     ``subject`` and ``via_api_key`` describe the caller for the monitor row this
-    opens: the same /v1 endpoints serve Studio's own chat on a session JWT, so the
+    opens: the same /v1 endpoints serve Unsloth's own chat on a session JWT, so the
     download is not API-key traffic unless the request that asked for it was.
     """
     global _active
@@ -880,7 +889,7 @@ async def _dispatch(
 
     monitor_id = api_monitor.record_lifecycle(
         # Reason "api" since only /v1 reaches auto-download, but that is not API-key
-        # traffic: Studio's chat calls /v1 on a JWT, and marking its download would pop
+        # traffic: Unsloth's chat calls /v1 on a JWT, and marking its download would pop
         # the overlay mid-chat. So attribution comes from the request, plus its caller,
         # since the row is shared.
         event = "download",

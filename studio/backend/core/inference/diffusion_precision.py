@@ -36,7 +36,7 @@ from .diffusion_auto_policy import (
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from functools import lru_cache
 
-from core._torchao_stub import is_stubbed
+from core._torchao_stub import is_stubbed, torch_is_rocm
 
 TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
@@ -130,10 +130,9 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     Blackwell sm_100+ (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
         return False
-    # The Windows-ROCm torchao stub's quantize_ is a no-op, so the encoder stays bf16 while
-    # quantize_text_encoders reports the mode applied. ROCm answers device "cuda" and a
-    # capability pair, so nothing below would catch it.
-    if mode in _TE_TORCHAO_MODES and is_stubbed("torchao"):
+    # Torchao modes cannot use the Windows stub or ROCm's non-SM capability values. Plain fp8 is
+    # only a dtype cast and remains supported.
+    if mode in _TE_TORCHAO_MODES and (is_stubbed("torchao") or torch_is_rocm()):
         return False
     try:
         import torch

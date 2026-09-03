@@ -35,19 +35,35 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # Both apt steps in this workflow shell out to it, so an edit to it changes
+      # what this workflow actually runs.
+      - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Never on main: pushes land in bursts, so cancelling superseded runs there means
-  # a deterministic failure can go unreported for as long as the bursts continue.
-  # The collapsed-row break below sat on main for 14 hours behind four cancelled
-  # runs. On a PR branch cancelling is still what you want.
+  # Unique per commit on main, so a merge burst cannot cancel a pending run
+  # before it starts. See the note below for what this is buying.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # On a PR branch: latest-only, which is what cancel-in-progress buys.
+  #
+  # On main it buys less than it looks like. GitHub cancels any PENDING run in a
+  # concurrency group as soon as a newer one is queued, and cancel-in-progress
+  # governs only runs that are already EXECUTING ("any existing pending job or
+  # workflow in the same concurrency group will be canceled", workflow-syntax docs).
+  # So a burst of merges leaves only the tip's run alive: on 2026-08-17 four merges
+  # in 37 minutes cancelled three consecutive main runs of this workflow and none
+  # completed. Detection survives on the tip, since the tree is cumulative;
+  # per-commit attribution does not.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -55,11 +71,70 @@ permissions:
 
 jobs:
   ui-smoke:
-    name: Chat UI Tests
+    name: Chat UI Tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # The job was landing at 22m30s of its 25, so the banner layout step below
-    # took it over and the three image-model steps after it never ran.
+    # Left at 30 even though each shard now carries a quarter of the work.
+    #
+    # It was briefly cut to 20 on the reasoning that a quarter of the job needs a quarter
+    # of the budget. Staging then cancelled three shards at 20m0s inside "Linux deps", an
+    # apt step that takes 13 SECONDS in the org repo. The work was not slow; the runner
+    # was. Tightening a timeout to fit the expected duration converts that kind of
+    # infrastructure stall from a slow pass into a red build, and a timeout is there to
+    # catch a hang, not to police the mean.
     timeout-minutes: 30
+    strategy:
+      # Four shards, split where the job already split itself.
+      #
+      # This is 11 Playwright scripts run one after another against four Unsloth instances booted
+      # one after another, and at 22.1 minutes on average it was the largest job in the
+      # repo. The setup every shard has to repeat is small -- checkout, Linux deps,
+      # Install Unsloth, Playwright browsers, about 2.6 minutes -- so splitting it is
+      # nearly all profit in wall-clock, which is the thing being optimised. Runner
+      # minutes go up. That is the trade, taken deliberately.
+      #
+      # The boundaries are the Unsloth instances, not an even division of scripts: a
+      # Unsloth boot, its health wait, its bootstrap password and the scripts that drive
+      # it have to stay on one machine. So `chat` takes 18892 and the cross-browser
+      # permission pass, `extra` and `banner` each boot their own 18894 (the two banner
+      # engines alone were 7.25 of the 17.6 minutes, which is why they are a shard), and
+      # `picker` takes 18898 and 18896, which are small and adjacent.
+      #
+      # In-machine parallelism is deliberately NOT used here. These are separate runners,
+      # so each still boots one Unsloth at a time and nothing competes for RAM.
+      fail-fast: false
+      matrix:
+        # The shard list stays a list: test_chat_ui_shards_cover_everything reads it
+        # to prove every Playwright step lands on some shard, and an include-only
+        # matrix hides it from that guard.
+        shard: [chat, extra, banner, picker]
+        # include: entries that match an existing combination ADD fields to it rather
+        # than creating new jobs, which is how each shard gets the engines it drives
+        # without changing the shard set.
+        #
+        # `extra` and `picker` name no engine but chromium anywhere in their steps.
+        # Installing webkit's system libraries for them is 181 packages and 102 MB of
+        # apt, which is what timed this job out on 2026-08-19:
+        #
+        #   0 upgraded, 181 newly installed
+        #   Need to get 102 MB/114 MB of archives
+        #   Get:2 .../fonts-wqy-zenhei [7472 kB]   -> 4m51s, then the attempt died
+        #
+        # Fonts, X fonts and a soundfont, fetched so that two shards which never
+        # launch webkit could fail to fetch them. test_ui_shard_engines.py keeps this
+        # honest against the steps rather than against this comment.
+        include:
+          - shard: chat      # Cross-browser permission controls drives all three
+            engines: chromium firefox webkit
+            engine_key: cfw
+          - shard: banner    # "other engines" step drives firefox and webkit
+            engines: chromium firefox webkit
+            engine_key: cfw
+          - shard: extra
+            engines: chromium
+            engine_key: c
+          - shard: picker
+            engines: chromium
+            engine_key: c
     env:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
@@ -72,10 +147,32 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
+        # Retried through the shared helper. Unbounded, this stalled on the Azure
+        # mirror for 28 minutes on one shard before anyone noticed, and would have
+        # spent the job's full 30: an apt stall is not slow, it is silent. Every
+        # step after it is skipped and the run reports "cancelled" with no reason,
+        # so the shard says nothing about its subject.
+        #
+        # The retry is the point, not the shorter wait. The note on this job's
+        # timeout-minutes records the last attempt at this -- cutting the JOB budget
+        # to 20 turned the same stall from a slow pass into a red build, because a
+        # single attempt had nowhere to go. Three bounded attempts do: 180s is ~14x
+        # the 13 seconds this takes healthy, so only a mirror that is genuinely gone
+        # burns all three, and that is a hang rather than a slow mean.
+        #
+        # The job's 30 stays the final backstop and is deliberately not tightened.
+        timeout-minutes: 20
+        env:
+          # See the note above: two long attempts beat three short ones against a
+          # mirror that is slow rather than gone.
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -84,10 +181,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       # Static reads, so it runs first and fails fast; nothing else runs it.
       - name: Playwright locator contract (static)
+        if: matrix.shard == 'chat'
         run: |
           python -m pip install --quiet 'pytest>=8'
           python -m pytest tests/studio/test_stt_model_search_locator_contract.py -q
@@ -121,12 +218,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -141,17 +241,213 @@ jobs:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
-      - name: Install Playwright browsers
+      - name: Pin the Playwright version so the browser cache has a key
+        id: pw
         run: |
-          pip install 'playwright>=1.45'
-          python -m playwright install --with-deps chromium firefox webkit
+          pip install 'playwright>=1.45,<2'
+          echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Three browser engines, downloaded on every job, on every run, uncached. It was
+      # 0.75 minutes when one job needed them; with four shards it is four times that,
+      # and it sits on the critical path of each one.
+      #
+      # Keyed on the resolved Playwright version because that is what decides which
+      # browser builds are wanted: a floating '>=1.45' that resolves higher must not hit
+      # a cache holding the older engines.
+      - name: Restore the Playwright browser cache
+        id: pw-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
+
+      - name: Restore the apt archive cache (webkit's .deb set)
+        id: apt-cache
+        # The browser cache above holds the ENGINES. This holds the .deb files their
+        # system libraries come from, which is a different 102 MB and the one that has
+        # actually been taking jobs down:
+        #
+        #   0 upgraded, 181 newly installed
+        #   Need to get 102 MB/114 MB of archives
+        #   Get:2 .../fonts-wqy-zenhei [7472 kB]   -> 4m51s, then the attempt died
+        #
+        # #9283 removed that cost from the two chromium-only shards by not asking for
+        # webkit at all. The shards that genuinely drive webkit still pay it, so this is
+        # the other half: pay the download once on main, and let a degraded mirror cost
+        # a cache miss rather than a shard.
+        #
+        # Keyed on the runner image as well as the engine set, because which .deb
+        # versions satisfy a dependency set is a property of the image. A key that
+        # ignored it would offer noble packages to a future image; apt would reject them
+        # against its index and re-fetch, so the failure is a slow no-op rather than a
+        # wrong install -- but a silent one, and this is cheaper than finding out.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: apt-archives-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-${{ matrix.engine_key }}-v1
+
+      - name: Install Playwright browsers
+        id: pw-install
+        # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
+        # the cached directory, so a restored cache without it gives browsers that cannot
+        # start. Only the download is skipped, which is the part that costs.
+        #
+        # Bounded and retried, because this step stalls. Three times in one day it sat in
+        # apt's download loop until the job's 30-minute timeout killed it: the shards that
+        # hit it took 30 minutes to report nothing, while their siblings finished the whole
+        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
+        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
+        # entire surface and reads like a mystery.
+        #
+        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
+        # the retry is what actually recovers -- both observed stalls cleared on a plain
+        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
+        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
+        # pair in case `timeout` itself is outlived by an unkillable child.
+        # Bounded and retried through the shared helper, which is where the dpkg
+        # lock wait and the exit-code reporting live. This was eight lines of
+        # inline loop and it shipped a bug that made the retry dead: GitHub runs
+        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
+        # first stall and the second attempt never ran. The step exited 124 having
+        # printed nothing at all, which looked exactly like the unbounded stall it
+        # was supposed to replace. One definition, tested, instead of copies.
+        #
+        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
+        # lock wait, which still leaves the job's 30 room for the work it exists to
+        # do. Three attempts here would not.
+        # Two helper calls now, not one: the CDN download and the apt transaction
+        # are separated, and each carries its own retry budget. 2 x 300s plus a lock
+        # wait, twice over, is 24m of worst case against the job's 30 -- which is
+        # why the per-attempt cap comes down from 420. Healthy is ~2 minutes for the
+        # download and seconds for the probe, so 300 is still 2.5x headroom.
+        timeout-minutes: 25
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+          # install-deps runs its own `apt-get update`, and that is the only apt call
+          # in this repo that cannot be restructured to try the image's lists first.
+          # The helper's 20s transfer cap was applied and confirmed in the log on
+          # 2026-08-19 and the update still burned 4m31s of a 300s attempt, twice, so
+          # the step failed having never reached the download. Four InRelease URIs
+          # stalling to the cap, repeated over apt's default 3 retries, is 4 x 4 x 20s.
+          #
+          # Zero hands resilience to the outer attempt loop, which re-runs the command
+          # under a fresh timeout and reports which way each attempt went. apt's own
+          # retries are invisible and are charged to the caller's budget.
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          # The browsers first, and WITHOUT --with-deps. That flag makes playwright
+          # run its own `apt-get update` internally, which is the one apt call this
+          # repo cannot restructure: on 2026-08-19 it spent 16m14s here against a
+          # dead azure.archive.ubuntu.com while every other apt step in CI had
+          # already been taught to skip the update entirely. A CDN download and an
+          # apt transaction are two different failures and they are separated here.
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install ${{ matrix.engines }}
+          fi
+
+          # Then ask whether the system libraries are actually missing, instead of
+          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # nearly all of them; when it does, `install-deps` is a full apt update
+          # and transaction to install nothing. Launching each engine is the honest
+          # test of that -- it is exactly what the suites are about to do.
+          probe() {
+            python - "$@" <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+
+          missing = []
+          with sync_playwright() as p:
+              for name in sys.argv[1:]:
+                  try:
+                      browser = getattr(p, name).launch()
+                      browser.close()
+                  except Exception as exc:
+                      missing.append(f"{name}: {type(exc).__name__}")
+          if missing:
+              print("engines that will not start: " + "; ".join(missing))
+              sys.exit(1)
+          print("all three engines launch; system libraries are present")
+          PY
+          }
+
+          if probe ${{ matrix.engines }}; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
+          else
+            echo "system libraries are missing, installing them"
+            # Hand apt last run's .debs before it goes looking for them. apt checks each
+            # file against its index and re-fetches only what does not match, so a stale
+            # cache costs a download rather than a wrong install.
+            if [ -d "${{ github.workspace }}/.apt-archives" ]; then
+              sudo cp "${{ github.workspace }}"/.apt-archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+              echo "seeded $(ls "${{ github.workspace }}"/.apt-archives/*.deb 2>/dev/null | wc -l) cached .deb files"
+            fi
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps ${{ matrix.engines }}
+            # Harvest for next time. apt keeps what it installed in the archive dir until
+            # something runs `apt-get clean`, so this is exactly what it just used --
+            # seeded or downloaded, and only the packages this engine set needs.
+            mkdir -p "${{ github.workspace }}/.apt-archives"
+            sudo cp /var/cache/apt/archives/*.deb "${{ github.workspace }}/.apt-archives/" 2>/dev/null || true
+            sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/.apt-archives" || true
+            # Fail loudly rather than proceeding into suites that cannot launch a
+            # browser: without this the real error surfaces later as an opaque
+            # per-test timeout in whichever suite happens to run first.
+            probe ${{ matrix.engines }}
+          fi
+
+      # Save on main only, like every model cache in this repo. read-write
+      # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
+      # can only be restored by re-runs of that same PR while still competing for the
+      # 50 GiB repo budget, measured 99.3% full. At ~470MB per browser set that is how
+      # main's copy -- the one every PR can actually read -- gets evicted, so the next
+      # PR misses and writes its own. This key was measured holding 3 copies for 0.91
+      # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
+      - name: Save the apt archive cache
+        # main only, same rule as every other cache here: a PR-ref entry can only be
+        # restored by re-runs of that same PR while still counting against the shared
+        # budget, evicting the copy every PR can read.
+        if: >-
+          github.ref == 'refs/heads/main'
+          && steps.apt-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+
+      - name: Save the Playwright browser cache
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
 
       - name: Reset auth + boot Unsloth
+        if: matrix.shard == 'chat'
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
           bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
+        if: matrix.shard == 'chat'
         # The 180 s deadline lives in wait-for-health.sh, along with the
         # reason for it: a cold runner with venv warm-up + lazy imports
         # has been seen to exceed 60 s.
@@ -159,6 +455,7 @@ jobs:
           bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password to the Playwright step
+        if: matrix.shard == 'chat'
         # The Playwright test does its OWN /change-password through the
         # UI (Setup your account / Choose a new password), then loads
         # the model via page.evaluate against /api/inference/load with
@@ -184,6 +481,7 @@ jobs:
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
       - name: Drive the chat UI with Playwright
+        if: matrix.shard == 'chat'
         env:
           BASE_URL: http://127.0.0.1:18892
           # The test file lives in the repo so it can be run locally
@@ -199,28 +497,17 @@ jobs:
           python tests/studio/playwright_chat_ui.py
 
       - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
-        if: always()
+        if: (always()) && (matrix.shard == 'chat')
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
       - name: Cross-browser permission controls
+        if: matrix.shard == 'chat'
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18893 firefox
           bash .github/scripts/run-studio-permission-browser.sh 18893 webkit
           bash .github/scripts/run-studio-permission-browser.sh 18893 chromium chrome
-
-      # The indicator restores an absolute viewport position from localStorage,
-      # so it needs a real layout and a real ResizeObserver to test at all --
-      # a stored position from a wider screen once left the card off screen with
-      # its own drag handle and collapse button unreachable. The four /status
-      # reads are stubbed, so this needs no model and no GPU, which also lets it
-      # replay the AMD / Apple / CPU-only payload shapes this runner never sees.
-      - name: Cross-browser loaded-models indicator
-        run: |
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 firefox
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
 
       # The chat UI test ends by clicking the Shutdown menuitem, which
       # leaves the server dead. The extra UI test (Compare / Recipes /
@@ -228,16 +515,19 @@ jobs:
       # second one on a different port. Boot is fast (~3-5s on the
       # warm install we already did) so this adds little wall time.
       - name: Reset auth + boot Unsloth for extra UI tests (port 18894)
+        if: matrix.shard == 'extra' || matrix.shard == 'banner'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18894 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18894
+        if: matrix.shard == 'extra' || matrix.shard == 'banner'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18894 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
+        if: matrix.shard == 'extra' || matrix.shard == 'banner'
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
@@ -247,6 +537,7 @@ jobs:
           echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -259,7 +550,23 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: MCP arguments end to end (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_mcp_arguments
+          STUDIO_UI_STRICT: '1'
+        run: |
+          mkdir -p logs/playwright_mcp_arguments
+          studio_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+          export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"
+          test -x "$STUDIO_MCP_PYTHON"
+          python tests/studio/playwright_mcp_arguments.py
+
       - name: Per-chat settings persistence (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -269,6 +576,7 @@ jobs:
           python tests/studio/playwright_thread_scoped_settings.py
 
       - name: UI font size scaling regression (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -278,6 +586,7 @@ jobs:
           python tests/studio/playwright_ui_font_scale.py
 
       - name: Update banner layout regression (Playwright)
+        if: matrix.shard == 'banner'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -294,6 +603,7 @@ jobs:
       # this runner gets to Safari. Cut down to `spot` because a third full
       # pass would spend minutes re-answering the first pass's questions.
       - name: Update banner layout, other engines (Playwright)
+        if: matrix.shard == 'banner'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -307,6 +617,7 @@ jobs:
           done
 
       - name: Image model full-footprint selector regression (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -316,6 +627,7 @@ jobs:
           python tests/studio/playwright_image_model_footprint.py
 
       - name: Image staged-download cancel/retry regression (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -327,6 +639,7 @@ jobs:
       # Same drive with the checkpoint absent, so the plan stages two entries instead of one and
       # the queue's ordering and cancellation are covered as well as the single-entry path.
       - name: Image staged-download cancel/retry regression, cold checkpoint (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -336,8 +649,42 @@ jobs:
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
 
+      - name: Tool activity collapse regression (Playwright)
+        if: matrix.shard == 'extra'
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm install -g npm@^11 --no-fund --no-audit
+            V=$(npm -v)
+            case "$V" in
+              11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+              *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+            esac
+            npm --prefix studio/frontend ci --strict-allow-scripts --no-fund --no-audit
+          fi
+          python tests/studio/playwright_tool_activity.py --json
+
+      # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
+      # each other: the suppression sets in loggers/handlers.py and the poll cadences in
+      # session.py. A pull request that adds a polling call site in the frontend edits
+      # neither, so it passes, and the new endpoint logs every hit on a 300 ms window.
+      # Only a browser can see that a timer started, whatever it was implemented with.
+      #
+      # Last of the shard's steps on purpose: it walks the sidebar and then sits idle for
+      # two minutes, and it rotates the bootstrap password, so anything scheduled after it
+      # would wait on the dwell and then meet a password it did not mint.
+      - name: Every polled path is declared in the log budget (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_declared_polls
+        run: |
+          mkdir -p logs/playwright_declared_polls
+          python tests/studio/playwright_declared_polls.py
+
       - name: Stop second Unsloth
-        if: always()
+        if: (always()) && (matrix.shard == 'extra' || matrix.shard == 'banner')
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
@@ -348,22 +695,26 @@ jobs:
       # Reset clears the stored override (never pins it), and the infra models
       # (RAG embedder + llama.cpp probe) stay hidden from the picker.
       - name: Reset auth + boot Unsloth for model-config tests (port 18898)
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18898 --log logs/studio_modelcfg.log --pid-var STUDIO_MODELCFG_PID
 
       - name: Wait for /api/health on 18898
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18898 --log logs/studio_modelcfg.log --tmp /tmp/health4.json
 
       - name: Pass bootstrap pw for model-config test
+        if: matrix.shard == 'picker'
         run: |
           NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
           echo "::add-mask::$NEW"
           echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive model-picker per-model-config with Playwright
+        if: matrix.shard == 'picker'
         env:
           BASE_URL: http://127.0.0.1:18898
           STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
@@ -376,8 +727,34 @@ jobs:
           mkdir -p logs/playwright_modelcfg
           python tests/studio/playwright_model_config.py
 
+      # "Estimated Memory Usage" row in the same run-settings panel: the collapsible
+      # readout that prices a prospective GGUF load before it runs.
+      #
+      # On the fourth Unsloth rather than a fifth, and immediately after the step above,
+      # for two reasons. The row is GGUF-only, so it needs a GGUF sitting in the picker,
+      # and that step has just put one there. And it needs nothing else from the server:
+      # POST /api/inference/estimate-memory is intercepted in the browser, so the figures
+      # under assertion are the ones the suite handed back rather than this runner's own
+      # memory, which is what makes them assertable at all.
+      #
+      # It attaches with the password the step above minted instead of driving
+      # /change-password itself: the bootstrap password on this instance has already been
+      # rotated by then, so there is no first-boot flow left to drive.
+      - name: Estimated Memory Usage row (Playwright)
+        if: matrix.shard == 'picker'
+        env:
+          BASE_URL: http://127.0.0.1:18898
+          STUDIO_LOGIN_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
+          PW_ART_DIR: logs/playwright_memory_estimate
+          STUDIO_UI_STRICT: '1'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+        run: |
+          mkdir -p logs/playwright_memory_estimate
+          python tests/studio/playwright_memory_estimate.py
+
       - name: Stop fourth Unsloth
-        if: always()
+        if: (always()) && (matrix.shard == 'picker')
         run: |
           kill "${STUDIO_MODELCFG_PID}" 2>/dev/null || true
           sleep 2
@@ -386,16 +763,19 @@ jobs:
       # Third Unsloth on its own port so a hang here cannot poison the
       # earlier UI tests. No GGUF -- the bug surface is the composer.
       - name: Reset auth + boot Unsloth for IME / i18n tests (port 18896)
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18896 --log logs/studio_ime.log --pid-var STUDIO_IME_PID
 
       - name: Wait for /api/health on 18896
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18896 --log logs/studio_ime.log --tmp /tmp/health3.json
 
       - name: Pass bootstrap pw for IME / i18n test
+        if: matrix.shard == 'picker'
         # IME smoke does the change-password against the bootstrap that
         # Unsloth's frontend injects into the page, so it only needs the
         # NEW password.
@@ -405,6 +785,7 @@ jobs:
           echo "STUDIO_IME_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive IME + multilingual paste regression with Playwright
+        if: matrix.shard == 'picker'
         env:
           BASE_URL: http://127.0.0.1:18896
           STUDIO_NEW_PW: ${{ env.STUDIO_IME_NEW_PW }}
@@ -415,12 +796,21 @@ jobs:
           python tests/studio/playwright_chat_ime_i18n.py
 
       - name: Stop third Unsloth
-        if: always()
+        if: (always()) && (matrix.shard == 'picker')
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
           sleep 2
-          # Capture backend + llama-server logs (all three Studios share this
-          # dir) so a stray 500 has a server-side traceback.
+
+      # Every shard, not just the one that happened to own the last Unsloth.
+      #
+      # This copy used to sit inside the step above, with a comment saying all three
+      # Unsloth instances share the directory. That was true when they shared a RUNNER. Each cell
+      # now has its own machine and its own ~/.unsloth/studio/logs, so leaving it there
+      # would upload three artifacts with no server-side traceback in them, and those are
+      # the artifacts anyone debugging a failed shard would open first.
+      - name: Capture the backend and llama-server logs
+        if: always()
+        run: |
           mkdir -p logs/server-logs
           cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
@@ -430,7 +820,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: studio-ui-smoke-artifacts
+          # Per shard: artifacts are immutable within a run, so four cells uploading one
+          # name means the first wins and the other three fail the step. It carries
+          # if: always() and no continue-on-error, so that would turn passing UI runs red.
+          name: studio-ui-smoke-artifacts-${{ matrix.shard }}
           path: |
             logs/studio.log
             logs/studio_extra.log
@@ -441,6 +834,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_mcp_arguments
             logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner
@@ -448,9 +842,357 @@ jobs:
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
             logs/playwright_modelcfg
+            logs/playwright_memory_estimate
             logs/playwright_ime
             logs/studio-permissions-*.log
           # 1 day, matching the repository-wide cap. A larger value here is
           # silently clamped to that cap today, so stating 7 only invites the
           # artifacts to re-inflate if the cap is ever raised.
+          retention-days: 1
+
+  ui-indicator:
+    name: Loaded-models indicator (cross-browser)
+    runs-on: ubuntu-latest
+    # Its own job, not a step in ui-smoke, because it was 853s of that job's 30
+    # minute limit -- three browser engines at ~4.7 minutes each -- and it pushed
+    # the five Playwright steps after it past the limit. Those steps did not fail;
+    # they never ran, on any PR, while the job reported a plain red timeout that
+    # said nothing about the PR. That is the second time this workflow has lost
+    # steps that way (the limit already went 25 -> 30 for the same reason), so
+    # this time the work moves off the critical path instead of the limit moving
+    # again.
+    #
+    # No HF cache and no GGUF here: the suite stubs the four /status reads with
+    # page.route, so it needs no model, no GPU and no llama.cpp build. That is
+    # also what lets it replay the AMD / Apple / CPU-only payload shapes this
+    # runner never sees. What it does need is a real browser: the indicator
+    # restores an absolute viewport position from localStorage, and a stored
+    # position from a wider screen once left the card off screen with its own
+    # drag handle and collapse button unreachable, which only a real layout and
+    # a real ResizeObserver can catch.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Linux deps
+        # Retried through the shared helper. Unbounded, this stalled on the Azure
+        # mirror for 28 minutes on one shard before anyone noticed, and would have
+        # spent the job's full 30: an apt stall is not slow, it is silent. Every
+        # step after it is skipped and the run reports "cancelled" with no reason,
+        # so the shard says nothing about its subject.
+        #
+        # The retry is the point, not the shorter wait. The note on this job's
+        # timeout-minutes records the last attempt at this -- cutting the JOB budget
+        # to 20 turned the same stall from a slow pass into a red build, because a
+        # single attempt had nowhere to go. Three bounded attempts do: 180s is ~14x
+        # the 13 seconds this takes healthy, so only a mirror that is genuinely gone
+        # burns all three, and that is a hang rather than a slow mean.
+        #
+        # The job's 30 stays the final backstop and is deliberately not tightened.
+        timeout-minutes: 20
+        env:
+          # See the note above: two long attempts beat three short ones against a
+          # mirror that is slow rather than gone.
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Pin the Playwright version so the browser cache has a key
+        id: pw
+        run: |
+          pip install 'playwright>=1.45,<2'
+          echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Three browser engines, downloaded on every job, on every run, uncached. It was
+      # 0.75 minutes when one job needed them; with four shards it is four times that,
+      # and it sits on the critical path of each one.
+      #
+      # Keyed on the resolved Playwright version because that is what decides which
+      # browser builds are wanted: a floating '>=1.45' that resolves higher must not hit
+      # a cache holding the older engines.
+      - name: Restore the Playwright browser cache
+        id: pw-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
+
+      - name: Restore the apt archive cache (webkit's .deb set)
+        id: apt-cache
+        # The browser cache above holds the ENGINES. This holds the .deb files their
+        # system libraries come from, which is a different 102 MB and the one that has
+        # actually been taking jobs down:
+        #
+        #   0 upgraded, 181 newly installed
+        #   Need to get 102 MB/114 MB of archives
+        #   Get:2 .../fonts-wqy-zenhei [7472 kB]   -> 4m51s, then the attempt died
+        #
+        # #9283 removed that cost from the two chromium-only shards by not asking for
+        # webkit at all. The shards that genuinely drive webkit still pay it, so this is
+        # the other half: pay the download once on main, and let a degraded mirror cost
+        # a cache miss rather than a shard.
+        #
+        # Keyed on the runner image as well as the engine set, because which .deb
+        # versions satisfy a dependency set is a property of the image. A key that
+        # ignored it would offer noble packages to a future image; apt would reject them
+        # against its index and re-fetch, so the failure is a slow no-op rather than a
+        # wrong install -- but a silent one, and this is cheaper than finding out.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: apt-archives-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-cfw-v1
+
+      - name: Install Playwright browsers
+        id: pw-install
+        # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
+        # the cached directory, so a restored cache without it gives browsers that cannot
+        # start. Only the download is skipped, which is the part that costs.
+        #
+        # Bounded and retried, because this step stalls. Three times in one day it sat in
+        # apt's download loop until the job's 30-minute timeout killed it: the shards that
+        # hit it took 30 minutes to report nothing, while their siblings finished the whole
+        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
+        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
+        # entire surface and reads like a mystery.
+        #
+        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
+        # the retry is what actually recovers -- both observed stalls cleared on a plain
+        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
+        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
+        # pair in case `timeout` itself is outlived by an unkillable child.
+        # Bounded and retried through the shared helper, which is where the dpkg
+        # lock wait and the exit-code reporting live. This was eight lines of
+        # inline loop and it shipped a bug that made the retry dead: GitHub runs
+        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
+        # first stall and the second attempt never ran. The step exited 124 having
+        # printed nothing at all, which looked exactly like the unbounded stall it
+        # was supposed to replace. One definition, tested, instead of copies.
+        #
+        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
+        # lock wait, which still leaves the job's 30 room for the work it exists to
+        # do. Three attempts here would not.
+        # Two helper calls now, not one: the CDN download and the apt transaction
+        # are separated, and each carries its own retry budget. 2 x 300s plus a lock
+        # wait, twice over, is 24m of worst case against the job's 30 -- which is
+        # why the per-attempt cap comes down from 420. Healthy is ~2 minutes for the
+        # download and seconds for the probe, so 300 is still 2.5x headroom.
+        timeout-minutes: 25
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+          # install-deps runs its own `apt-get update`, and that is the only apt call
+          # in this repo that cannot be restructured to try the image's lists first.
+          # The helper's 20s transfer cap was applied and confirmed in the log on
+          # 2026-08-19 and the update still burned 4m31s of a 300s attempt, twice, so
+          # the step failed having never reached the download. Four InRelease URIs
+          # stalling to the cap, repeated over apt's default 3 retries, is 4 x 4 x 20s.
+          #
+          # Zero hands resilience to the outer attempt loop, which re-runs the command
+          # under a fresh timeout and reports which way each attempt went. apt's own
+          # retries are invisible and are charged to the caller's budget.
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          # The browsers first, and WITHOUT --with-deps. That flag makes playwright
+          # run its own `apt-get update` internally, which is the one apt call this
+          # repo cannot restructure: on 2026-08-19 it spent 16m14s here against a
+          # dead azure.archive.ubuntu.com while every other apt step in CI had
+          # already been taught to skip the update entirely. A CDN download and an
+          # apt transaction are two different failures and they are separated here.
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install chromium firefox webkit
+          fi
+
+          # Then ask whether the system libraries are actually missing, instead of
+          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # nearly all of them; when it does, `install-deps` is a full apt update
+          # and transaction to install nothing. Launching each engine is the honest
+          # test of that -- it is exactly what the suites are about to do.
+          probe() {
+            python - "$@" <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+
+          missing = []
+          with sync_playwright() as p:
+              for name in sys.argv[1:]:
+                  try:
+                      browser = getattr(p, name).launch()
+                      browser.close()
+                  except Exception as exc:
+                      missing.append(f"{name}: {type(exc).__name__}")
+          if missing:
+              print("engines that will not start: " + "; ".join(missing))
+              sys.exit(1)
+          print("all three engines launch; system libraries are present")
+          PY
+          }
+
+          if probe chromium firefox webkit; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
+          else
+            echo "system libraries are missing, installing them"
+            # Hand apt last run's .debs before it goes looking for them. apt checks each
+            # file against its index and re-fetches only what does not match, so a stale
+            # cache costs a download rather than a wrong install.
+            if [ -d "${{ github.workspace }}/.apt-archives" ]; then
+              sudo cp "${{ github.workspace }}"/.apt-archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+              echo "seeded $(ls "${{ github.workspace }}"/.apt-archives/*.deb 2>/dev/null | wc -l) cached .deb files"
+            fi
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps chromium firefox webkit
+            # Harvest for next time. apt keeps what it installed in the archive dir until
+            # something runs `apt-get clean`, so this is exactly what it just used --
+            # seeded or downloaded, and only the packages this engine set needs.
+            mkdir -p "${{ github.workspace }}/.apt-archives"
+            sudo cp /var/cache/apt/archives/*.deb "${{ github.workspace }}/.apt-archives/" 2>/dev/null || true
+            sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/.apt-archives" || true
+            # Fail loudly rather than proceeding into suites that cannot launch a
+            # browser: without this the real error surfaces later as an opaque
+            # per-test timeout in whichever suite happens to run first.
+            probe chromium firefox webkit
+          fi
+
+      # Save on main only, like every model cache in this repo. read-write
+      # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
+      # can only be restored by re-runs of that same PR while still competing for the
+      # 50 GiB repo budget, measured 99.3% full. At ~470MB per browser set that is how
+      # main's copy -- the one every PR can actually read -- gets evicted, so the next
+      # PR misses and writes its own. This key was measured holding 3 copies for 0.91
+      # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
+      - name: Save the apt archive cache
+        # main only, same rule as every other cache here: a PR-ref entry can only be
+        # restored by re-runs of that same PR while still counting against the shared
+        # budget, evicting the copy every PR can read.
+        if: >-
+          github.ref == 'refs/heads/main'
+          && steps.apt-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+
+      - name: Save the Playwright browser cache
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
+
+      - name: Cross-browser loaded-models indicator
+        # The three engines are independent runs of the same suite, and running
+        # them one after another was ~870s of this job's ~1000s -- the largest
+        # single block of Linux wall-clock in CI. They are disjoint: each boots
+        # its own server and drives its own browser, so the only reason they
+        # could not overlap was shared state, not shared work.
+        #
+        # Note the sibling ui-smoke job says in-machine parallelism is
+        # deliberately not used there. That reasoning is "these are separate
+        # runners, so each still boots one Unsloth at a time" -- it is an argument
+        # about a SHARDED job, and this job has no shards to spread across.
+        #
+        # Two things are shared, and each gets split rather than serialised:
+        #
+        #   port  -- one per engine, so three servers coexist.
+        #   UNSLOTH_STUDIO_HOME -- one per engine. The script wipes
+        #     $studio_home/auth so the boot mints a fresh .bootstrap_password,
+        #     then reads that file back. On a shared home the three runs would
+        #     race destructively: one wipes the password another just minted and
+        #     is about to log in with.
+        #
+        # UNSLOTH_STUDIO_HOME is the CLI's INSTALL root, not just a data root, so a
+        # bare empty directory is not usable: unsloth_cli/commands/studio.py resolves
+        # $UNSLOTH_STUDIO_HOME/unsloth_studio/bin/python and exits "Unsloth Studio not
+        # set up. Run install.sh first." before binding a port. So each per-engine home
+        # SYMLINKS the one venv install.sh already built under ~/.unsloth/studio, and
+        # owns only the mutable state that sits beside it: auth/, studio.db, cache/.
+        #
+        # That keeps it cheap. Nothing is copied or rebuilt per engine, the frontend
+        # still comes from a package-relative path inside the shared venv, and the suite
+        # is UNSLOTH_API_ONLY with the /status endpoints stubbed via page.route, so a
+        # fresh home needs no model, no GPU and no llama.cpp build. That last part is
+        # what makes this safe for THIS suite and not for a job whose home holds a
+        # downloaded model.
+        run: |
+          mkdir -p logs
+          installed_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+          test -x "$installed_home/unsloth_studio/bin/python" \
+            || { echo "::error::no studio venv under $installed_home"; exit 1; }
+          pids=""
+          for spec in "18899 chromium" "18900 firefox" "18901 webkit"; do
+            port="${spec% *}"
+            engine="${spec#* }"
+            home="${{ github.workspace }}/.studio-indicator-$engine"
+            mkdir -p "$home"
+            ln -sfn "$installed_home/unsloth_studio" "$home/unsloth_studio"
+            UNSLOTH_STUDIO_HOME="$home" \
+              bash .github/scripts/run-studio-indicator-browser.sh "$port" "$engine" \
+              >"logs/indicator-$engine.out" 2>&1 &
+            pids="$pids $!:$engine"
+          done
+          # Wait on ALL of them before failing, so one engine's breakage does not
+          # hide another's: a sequential run reported only the first failure.
+          rc=0
+          for entry in $pids; do
+            if ! wait "${entry%%:*}"; then
+              echo "::error::loaded-models indicator failed in ${entry##*:}"
+              rc=1
+            fi
+          done
+          for f in logs/indicator-*.out; do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+      - name: Upload Playwright artifacts
+        # Always, so a green run's screenshots stay reviewable: this suite is
+        # about what the card LOOKS like, and it can pass while it looks wrong.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-ui-indicator-artifacts
+          path: |
+            logs/playwright-indicator-*
+            logs/studio-indicator-*.log
+            logs/indicator-*.out
           retention-days: 1

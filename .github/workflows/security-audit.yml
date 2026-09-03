@@ -26,7 +26,6 @@
 #                        does not block the supply-chain pattern scan
 #                        (or vice versa).
 #   - npm-scan-packages: npm tarball content scan, no npm install.
-#   - tests-security:    pytest tests/security regression suite.
 #   - npm-provenance-and-install-scripts:
 #                        npm audit signatures + new-postinstall gate.
 #
@@ -77,6 +76,16 @@ on:
       - 'scripts/scan_packages.py'
       - 'scripts/scan_packages_baseline.json'
       - 'tests/security/**'
+      # The production code the security suites protect. Without these, a PR touching
+      # only `loader_utils.py` skipped this job entirely - the always-running light
+      # workflow ignores those three suites - so the tests ran for the first time on
+      # the push event, after the regression had already merged.
+      - 'unsloth/models/loader_utils.py'
+      - 'unsloth/models/mapper.py'
+      - 'unsloth/models/_custom_dtype.py'
+      - 'unsloth/models/loader.py'
+      - 'unsloth/models/vision.py'
+      - 'unsloth/models/_utils.py'
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
@@ -89,11 +98,11 @@ concurrency:
   # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
   # only one pending run, so without this a merge burst silently drops the nightly:
   # cancel-in-progress protects the running run, never the pending one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -154,7 +163,7 @@ jobs:
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -184,7 +193,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -192,11 +200,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
@@ -576,7 +584,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11  # v3.96.0
+        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -808,7 +816,7 @@ jobs:
       # Per-job allowlist: pip-scan-packages only fetches PyPI archives
       # via scan_packages.py + pip download. No npm or cargo traffic.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -827,7 +835,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Install scan_packages.py runtime deps
         # scan_packages.py imports requests + packaging at runtime to
@@ -1003,7 +1010,7 @@ jobs:
       # registry.npmjs.org. GitHub endpoints retained for checkout +
       # setup-python action machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -1068,48 +1075,6 @@ jobs:
           retention-days: 30
 
   # ─────────────────────────────────────────────────────────────────────
-  # Regression tests: pin scanner IOC tables and pre-install fixtures.
-  # Hard gate (no continue-on-error) so future drift in the IOC tables
-  # or scanner exit semantics fails this PR at review time.
-  # ─────────────────────────────────────────────────────────────────────
-  tests-security:
-    name: pytest tests/security
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-          disable-sudo: true
-          allowed-endpoints: >
-            api.github.com:443
-            github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            pypi.org:443
-            files.pythonhosted.org:443
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Install pytest + PyYAML
-        # PyYAML is imported by scripts/lint_workflow_triggers.py, which the
-        # `tests/security/test_lint_workflow_triggers.py` regression suite
-        # exercises as a subprocess. Without it the lint script bails with
-        # `ERROR: PyYAML is required` (exit 2) and the 5 lint regression
-        # tests fail. Pinned the same way pytest is pinned.
-        run: pip install pytest==9.0.3 pyyaml==6.0.2
-
-      - name: Run security regression tests
-        run: python3 -m pytest tests/security -v
-
-  # ─────────────────────────────────────────────────────────────────────
   # npm provenance + new install-script diff. Catches the two npm
   # supply-chain levers we don't yet gate on:
   #
@@ -1131,7 +1096,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
           disable-sudo: true

@@ -188,6 +188,18 @@ IMATRIX_QUANTS = {
 }
 
 
+def _describe_exception(exc) -> str:
+    """A description that survives an exception with no message.
+
+    `f"{exc}"` is the EMPTY STRING when the args are empty, so
+    `f"Failed to save model: {exc}"` named nothing at all on a real Kaggle
+    Q8_0 export. Leading with the type keeps the class of failure visible.
+    """
+    text = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
+
+
 def has_curl():
     return shutil.which("curl") is not None
 
@@ -430,7 +442,10 @@ def _quantize_q2_k_l(
             error_details += f"\nSubprocess stdout:\n{e.stdout}"
         if hasattr(e, "stderr") and e.stderr:
             error_details += f"\nSubprocess stderr:\n{e.stderr}"
-        raise RuntimeError(f"Failed to quantize {input_gguf} to q2_k_l: {e}{error_details}")
+        raise RuntimeError(
+            f"Failed to quantize {input_gguf} to q2_k_l: "
+            f"{_describe_exception(e)}{error_details}"
+        ) from e
 
     output_path = Path(output_gguf)
     if not output_path.exists():
@@ -1842,6 +1857,198 @@ def get_executable(executables):
 
 # Output types convert_hf_to_gguf.py can emit directly via --outtype.
 _DIRECT_CONVERT_OUTTYPES = ("f32", "f16", "bf16", "q8_0")
+_FULL_PRECISION_GGUF_TYPES = ("f32", "f16", "bf16")
+_GGUF_DEFAULT_SHARD_SIZE = "50GB"
+_GGUF_NO_SHARDING = "0"
+_GGUF_SHARD_SIZE_RE = re.compile(r"^(\d+)\s*([MG])B?$", re.IGNORECASE)
+
+
+def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
+    """Validate and normalize the final GGUF shard size."""
+    if gguf_shard_size is None:
+        return _GGUF_DEFAULT_SHARD_SIZE
+    if not isinstance(gguf_shard_size, str):
+        raise TypeError("Unsloth: gguf_shard_size must be a string or None.")
+
+    value = gguf_shard_size.strip()
+    if value.casefold() in ("", "0", "none"):
+        return _GGUF_NO_SHARDING
+
+    match = _GGUF_SHARD_SIZE_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            f"Unsloth: gguf_shard_size={gguf_shard_size!r} is invalid. "
+            "Use a positive whole number in MB or GB, such as '500MB' or '4GB', "
+            "or pass '0' for one file."
+        )
+
+    magnitude = int(match.group(1))
+    unit = match.group(2).upper()
+    if magnitude == 0:
+        raise ValueError(
+            "Unsloth: gguf_shard_size must be positive. Pass '0' without a unit "
+            "to request one file."
+        )
+    multiplier = 1_000_000 if unit == "M" else 1_000_000_000
+    if magnitude > sys.maxsize // multiplier:
+        raise ValueError("Unsloth: gguf_shard_size is too large for this platform.")
+    return f"{magnitude}{unit}B"
+
+
+def _converter_gguf_shard_size(
+    gguf_shard_size: str, first_conversion: str, quantization_methods, is_vlm: bool
+) -> str:
+    """Choose the converter limit without splitting final quantized files or VLM companions."""
+    keeps_converter_output = first_conversion in quantization_methods
+    if not is_vlm and keeps_converter_output and first_conversion in _FULL_PRECISION_GGUF_TYPES:
+        return gguf_shard_size
+    return _GGUF_NO_SHARDING
+
+
+def _gguf_shard_size_bytes(gguf_shard_size: str) -> int:
+    """Convert a normalized GGUF shard size to decimal bytes."""
+    if gguf_shard_size == _GGUF_NO_SHARDING:
+        return 0
+    match = _GGUF_SHARD_SIZE_RE.fullmatch(gguf_shard_size)
+    if match is None:
+        raise ValueError(f"Unsloth: invalid normalized GGUF shard size {gguf_shard_size!r}.")
+    multiplier = 1_000_000 if match.group(2).upper() == "M" else 1_000_000_000
+    return int(match.group(1)) * multiplier
+
+
+def _is_gguf_companion(path: Union[str, os.PathLike]) -> bool:
+    """Return whether a GGUF is a vision or speculative-decoding companion."""
+    file_path = Path(path)
+    name = file_path.name.casefold()
+    stem = name[:-5] if name.endswith(".gguf") else name
+    return (
+        stem.endswith("-mmproj")
+        or stem.startswith("mmproj-")
+        or stem.startswith("mtp-")
+        or stem.endswith("-mtp")
+        or file_path.parent.name.casefold() == "mtp"
+    )
+
+
+def _find_llama_gguf_split(quantizer_location: str) -> str:
+    """Find the llama.cpp split utility beside supported install layouts."""
+    executable = "llama-gguf-split.exe" if IS_WINDOWS else "llama-gguf-split"
+    candidates = [shutil.which(executable)]
+    quantizer_dir = os.path.dirname(os.path.abspath(quantizer_location))
+    candidates.extend(
+        [
+            os.path.join(quantizer_dir, executable),
+            os.path.join(LLAMA_CPP_DEFAULT_DIR, executable),
+            os.path.join(LLAMA_CPP_DEFAULT_DIR, "build", "bin", executable),
+            os.path.join(
+                LLAMA_CPP_DEFAULT_DIR,
+                "build",
+                "bin",
+                "Release",
+                executable,
+            ),
+        ]
+    )
+    for candidate in dict.fromkeys(path for path in candidates if path):
+        if os.path.isfile(candidate) and (IS_WINDOWS or os.access(candidate, os.X_OK)):
+            return candidate
+    raise RuntimeError(
+        "Unsloth: post-conversion GGUF sharding requires llama-gguf-split. "
+        "Upgrade unsloth_zoo and reinstall llama.cpp, then retry."
+    )
+
+
+def _split_main_gguf(initial_files, gguf_shard_size: str, quantizer_location: str):
+    """Split one main GGUF while leaving mmproj and MTP companions untouched."""
+    max_bytes = _gguf_shard_size_bytes(gguf_shard_size)
+    if max_bytes == 0:
+        return initial_files
+
+    main_files = [os.fspath(path) for path in initial_files if not _is_gguf_companion(path)]
+    if len(main_files) != 1:
+        raise RuntimeError(
+            "Unsloth: expected one unsharded main GGUF before companion-safe "
+            f"splitting, found {len(main_files)}."
+        )
+    main_file = main_files[0]
+    if os.path.getsize(main_file) <= max_bytes:
+        return initial_files
+
+    splitter = _find_llama_gguf_split(quantizer_location)
+    parent = os.path.dirname(os.path.abspath(main_file))
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix = ".unsloth_gguf_split_", dir = parent) as temp_dir:
+        output_prefix = os.path.join(temp_dir, Path(main_file).stem)
+        split_size = gguf_shard_size[:-1]
+        try:
+            result = subprocess.run(
+                [
+                    splitter,
+                    "--split",
+                    "--split-max-size",
+                    split_size,
+                    main_file,
+                    output_prefix,
+                ],
+                check = True,
+                capture_output = True,
+                text = True,
+            )
+        except subprocess.CalledProcessError as exception:
+            details = (exception.stderr or exception.stdout or "").strip()
+            suffix = f"\n{details}" if details else ""
+            raise RuntimeError(f"Unsloth: llama-gguf-split failed.{suffix}") from exception
+
+        pattern = re.compile(
+            rf"^{re.escape(Path(output_prefix).name)}-(\d{{5}})-of-(\d{{5}})\.gguf$"
+        )
+        shards = []
+        for candidate in Path(temp_dir).iterdir():
+            match = pattern.fullmatch(candidate.name)
+            if match is not None:
+                shards.append((int(match.group(1)), int(match.group(2)), candidate))
+        shards.sort(key = lambda item: item[0])
+        if not shards:
+            details = (result.stderr or result.stdout or "").strip()
+            suffix = f"\n{details}" if details else ""
+            raise RuntimeError(f"Unsloth: llama-gguf-split produced no shards.{suffix}")
+
+        total = shards[0][1]
+        indices = [index for index, declared_total, _ in shards if declared_total == total]
+        if len(indices) != len(shards) or indices != list(range(1, total + 1)):
+            raise RuntimeError("Unsloth: llama-gguf-split produced an incomplete shard set.")
+        if total == 1:
+            return initial_files
+
+        destinations = [os.path.join(parent, shard.name) for _, _, shard in shards]
+        existing = [path for path in destinations if os.path.exists(path)]
+        if existing:
+            raise FileExistsError(
+                "Unsloth: refusing to overwrite an existing GGUF shard set: " + ", ".join(existing)
+            )
+
+        moved = []
+        try:
+            for (_, _, source), destination in zip(shards, destinations):
+                os.replace(source, destination)
+                moved.append(destination)
+            os.unlink(main_file)
+        except Exception:
+            for destination in moved:
+                try:
+                    os.unlink(destination)
+                except OSError:
+                    pass
+            raise
+
+    output_files = []
+    for path in initial_files:
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(main_file):
+            output_files.extend(destinations)
+        else:
+            output_files.append(path)
+    return output_files
 
 
 def _choose_first_conversion(
@@ -1881,6 +2088,7 @@ def save_to_gguf(
     gguf_directory: Optional[Union[str, os.PathLike]] = None,
     merge_is_disposable: bool = False,
     preexisting_weights = None,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Orchestrates the complete GGUF conversion process.
@@ -1894,6 +2102,8 @@ def save_to_gguf(
     `preexisting_weights` is what `model_directory` held before the merge wrote it,
     so reclamation can take only what this export produced. `None` means the caller
     cannot say, and nothing is reclaimed.
+    `gguf_shard_size` applies to final f32, f16 and bf16 outputs. Quantized outputs
+    remain single-file. None preserves the historical 50GB converter limit.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -1986,6 +2196,13 @@ def save_to_gguf(
         first_conversion = "f16"
 
     first_conversion_dtype = "" if first_conversion == "None" else first_conversion
+    gguf_shard_size = _resolve_gguf_shard_size(gguf_shard_size)
+    converter_shard_size = _converter_gguf_shard_size(
+        gguf_shard_size,
+        first_conversion,
+        quantization_method,
+        is_vlm,
+    )
     # Print conversion info
     needs_quantize_pass = any(m != first_conversion for m in quantization_method)
     if needs_quantize_pass:
@@ -2041,7 +2258,7 @@ def save_to_gguf(
             supported_vision_archs = supported_vision_archs,
             is_vlm = is_vlm,
             is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
+            max_shard_size = converter_shard_size,
             print_output = print_output,
         )
     # update is_vlm switch
@@ -2079,6 +2296,17 @@ def save_to_gguf(
         shutil.move(fpath, dst)
         moved_files.append(dst)
     initial_files = moved_files
+
+    if (
+        is_vlm
+        and first_conversion in _FULL_PRECISION_GGUF_TYPES
+        and first_conversion in quantization_method
+    ):
+        initial_files = _split_main_gguf(
+            initial_files,
+            gguf_shard_size,
+            quantizer_location,
+        )
 
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
@@ -2169,8 +2397,7 @@ def save_to_gguf(
                             sum(
                                 os.path.getsize(f)
                                 for f in initial_files
-                                if os.path.isfile(f)
-                                and "-mmproj" not in os.path.basename(f).lower()
+                                if os.path.isfile(f) and not _is_gguf_companion(f)
                             )
                             * _ratio
                         )
@@ -2254,11 +2481,7 @@ def save_to_gguf(
         # once when the host has headroom for two copies, else a multi-quant export that
         # fit sequentially could OOM.
         try:
-            base_bytes = sum(
-                os.path.getsize(f)
-                for f in initial_files
-                if "-mmproj" not in os.path.basename(f).lower()
-            )
+            base_bytes = sum(os.path.getsize(f) for f in initial_files if not _is_gguf_companion(f))
             mem_ok = psutil.virtual_memory().available >= int(2.5 * base_bytes)
         except Exception:
             mem_ok = False
@@ -2323,9 +2546,8 @@ def save_to_gguf(
         print("Unsloth: Model files cleanup...")
         want_full_precision = first_conversion in quantization_method
         if quants_created:
-            # convert_to_gguf may return multiple base shards plus an mmproj entry,
-            # so treat every initial file that is not an mmproj as part of the base set.
-            base_files = [f for f in initial_files if "-mmproj" not in os.path.basename(f).lower()]
+            # convert_to_gguf can return main shards plus companion files.
+            base_files = [f for f in initial_files if not _is_gguf_companion(f)]
             if not want_full_precision:
                 for f in base_files:
                     if f in all_saved_locations:
@@ -2343,6 +2565,17 @@ def save_to_gguf(
                         all_saved_locations.remove(f)
                 for i, f in enumerate(base_files):
                     all_saved_locations.insert(1 + i, f)
+
+        for quant_method, quantized_file in zip(methods_to_quantize, quantized_files):
+            if quant_method not in _FULL_PRECISION_GGUF_TYPES:
+                continue
+            split_files = _split_main_gguf(
+                [quantized_file],
+                gguf_shard_size,
+                quantizer_location,
+            )
+            index = all_saved_locations.index(quantized_file)
+            all_saved_locations[index : index + 1] = split_files
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
         want_full_precision = True
@@ -4547,6 +4780,7 @@ def unsloth_save_pretrained_gguf(
     save_method: str = None,
     imatrix_file = None,
     merge_is_disposable: bool = True,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -4560,6 +4794,9 @@ def unsloth_save_pretrained_gguf(
     the converter, so it may be reclaimed if the quants would otherwise not fit. Pass False
     to keep the weights when `save_directory` is part of the caller's own deliverable (the
     SentenceTransformer export writes its module directory there).
+
+    gguf_shard_size: maximum final f32, f16 or bf16 GGUF shard size in MB or GB. Pass
+    "0" for one file. None preserves the historical 50GB converter limit.
 
     Choose for `quantization_method` to be:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
@@ -4594,6 +4831,7 @@ def unsloth_save_pretrained_gguf(
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
     save_directory = os.path.normpath(os.fspath(save_directory))
+    gguf_shard_size = _resolve_gguf_shard_size(gguf_shard_size)
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
     if save_method is not None and str(save_method).lower() == "lora":
@@ -4699,6 +4937,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
     del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
     del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
+    del arguments["gguf_shard_size"]  # only used by the gguf converter
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input.
     # Same definition the preflight sized, so the disk it measured is the one
@@ -4747,7 +4986,10 @@ def unsloth_save_pretrained_gguf(
                 unsloth_generic_save(**arguments)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to save/merge model: {e}{_offloaded_parameter_hint(self)}")
+            raise RuntimeError(
+                f"Failed to save/merge model: {_describe_exception(e)}"
+                f"{_offloaded_parameter_hint(self)}"
+            ) from e
     else:
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
@@ -4774,7 +5016,10 @@ def unsloth_save_pretrained_gguf(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                raise RuntimeError(f"Failed to save model: {e}{_offloaded_parameter_hint(self)}")
+                raise RuntimeError(
+                    f"Failed to save model: {_describe_exception(e)}"
+                    f"{_offloaded_parameter_hint(self)}"
+                ) from e
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -4861,6 +5106,7 @@ def unsloth_save_pretrained_gguf(
             gguf_directory = gguf_directory,
             merge_is_disposable = merge_is_disposable,
             preexisting_weights = preexisting_weights,
+            gguf_shard_size = gguf_shard_size,
         )
     except Exception as e:
         if _gguf_child_was_oom_killed(e):
@@ -4871,17 +5117,17 @@ def unsloth_save_pretrained_gguf(
                 f"about system memory rather than GPU memory or disk.\n"
                 f"Try a smaller quantization, a machine with more RAM, or "
                 f"convert from a saved 16bit checkpoint on a larger host.\n"
-                f"Error: {e}"
+                f"Error: {_describe_exception(e)}"
             ) from e
         if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, save_directory):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
                 f"This is likely due to the 20GB disk space limit.\n"
                 f"Try saving to /tmp directory or use a smaller model.\n"
-                f"Error: {e}"
+                f"Error: {_describe_exception(e)}"
             ) from e
         else:
-            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}") from e
+            raise RuntimeError(f"Unsloth: GGUF conversion failed: {_describe_exception(e)}") from e
 
     # Step 9: Create Ollama modelfile
     modelfile_location = None
@@ -5285,14 +5531,12 @@ def _free_merge_if_disk_is_tight(
     if not quant_methods:
         return 0
     try:
-        # llama-quantize copies a VLM's `-mmproj` projector rather than quantizing
-        # it, so it is not part of what a pass writes and charging it once per
-        # quant would call a disk tight that has the room. Filtered the same way
-        # the RAM budget above filters it.
+        # llama-quantize copies companions rather than quantizing them, so they
+        # are excluded from the output and memory estimates.
         base_bytes = sum(
             os.path.getsize(f)
             for f in initial_files
-            if os.path.isfile(f) and "-mmproj" not in os.path.basename(f).lower()
+            if os.path.isfile(f) and not _is_gguf_companion(f)
         )
     except OSError:
         return 0
@@ -5381,6 +5625,7 @@ def unsloth_push_to_hub_gguf(
     save_method: str = None,
     imatrix_file = None,
     is_main_process: bool = True,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -5477,6 +5722,7 @@ def unsloth_push_to_hub_gguf(
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
             imatrix_file = imatrix_file,
+            gguf_shard_size = gguf_shard_size,
         )
 
         # Extract results
@@ -5494,7 +5740,7 @@ def unsloth_push_to_hub_gguf(
                     shutil.rmtree(d)
                 except:
                     pass
-        raise RuntimeError(f"Failed to convert model to GGUF: {e}")
+        raise RuntimeError(f"Failed to convert model to GGUF: {_describe_exception(e)}") from e
 
     # Step 3: Upload to HuggingFace Hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -5669,7 +5915,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 )
 
     except Exception as e:
-        raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
+        raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
 
     finally:
         # Clean up temporary directory
@@ -7079,14 +7325,14 @@ def _offload_model_for_quantize_subprocess(model):
 
     Two shapes are handled:
       * single-device CUDA/XPU model -> ``.to("cpu")``, restored with ``.to(device)``;
-      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the Studio
+      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the Unsloth
         multi-GPU export load) -> hooks removed and moved to CPU, restored by replaying
         the dispatch. A plain ``.to("cpu")`` is invalid here, which is why the old
         single-device-only move left every GPU holding a full copy. A map spilling to
         CPU is still released, but disk/meta targets are left alone: accelerate keeps
         those parameters off the model, so moving would materialize the whole checkpoint.
 
-    Quantized (bnb) models are attempted too rather than skipped: Studio exports load
+    Quantized (bnb) models are attempted too rather than skipped: Unsloth exports load
     4-bit by DEFAULT, so skipping them left a shard on every GPU. transformers refuses
     ``.to()`` for some bitsandbytes builds and that refusal raises before anything moves,
     so the failure path restores the model and returns None, i.e. the old behaviour.

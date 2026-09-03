@@ -150,6 +150,8 @@ export const it = {
       closeAriaLabel: "Chiudi le impostazioni",
       searchPlaceholder: "Cerca nelle impostazioni…",
       searchNoResults: "Nessuna impostazione trovata.",
+      panelFailed: "Non è stato possibile caricare questa sezione.",
+      panelReload: "Ricarica",
     },
     tabs: {
       general: "Generali",
@@ -161,9 +163,242 @@ export const it = {
       connections: "Connessioni",
       data: "Dati",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       agents: "Agenti",
       debugging: "Log",
       about: "Informazioni",
+      keyboardShortcuts: "Scorciatoie",
+    },
+    keyboardShortcuts: {
+      title: "Scorciatoie da tastiera",
+      description:
+        "Modifica una scorciatoia, oppure cancellala per liberare la combinazione per il browser o il sistema.",
+      searchPlaceholder: "Cerca scorciatoie…",
+      noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
+      unassigned: "Non assegnata",
+      recording: "Premi i tasti…",
+      recordingHint: "Premi la nuova combinazione, o Esc per annullare.",
+      needsModifier: "Aggiungi ⌘, Ctrl o Alt. Un tasto singolo intercetterebbe la digitazione.",
+      conflict: "Usata anche da un'altra scorciatoia",
+      conflictShadowed: "Un'altra scorciatoia usa questa combinazione e viene eseguita al suo posto",
+      edit: "Cambia scorciatoia",
+      clear: "Rimuovi scorciatoia",
+      reset: "Ripristina il valore predefinito",
+      resetAll: "Ripristina tutto",
+      primarySlot: "Scorciatoia",
+      alternateSlot: "Scorciatoia alternativa",
+      browserReserved:
+        "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
+      actions: {
+        openSettings: {
+          label: "Apri le impostazioni",
+          description: "Apri la finestra delle impostazioni",
+        },
+        openKeyboardShortcuts: {
+          label: "Scorciatoie da tastiera",
+          description: "Apri questo elenco di scorciatoie",
+        },
+        searchChats: {
+          label: "Cerca nelle chat",
+          description: "Apri la ricerca delle chat",
+        },
+        openMcpServers: {
+          label: "Server MCP",
+          description: "Configura i server MCP per questa chat",
+        },
+        logOut: {
+          label: "Esci",
+          description: "Esci da Unsloth",
+        },
+        approveToolRequest: {
+          label: "Approva la richiesta",
+          description: "Consenti la chiamata allo strumento in attesa",
+        },
+        declineToolRequest: {
+          label: "Rifiuta la richiesta",
+          description: "Nega la chiamata allo strumento in attesa",
+        },
+        newChat: {
+          label: "Nuova chat",
+          description: "Avvia una nuova chat",
+        },
+        newTemporaryChat: {
+          label: "Nuova chat temporanea",
+          description: "Avvia una chat che non viene salvata nella cronologia",
+        },
+        newStandaloneChat: {
+          label: "Nuova chat autonoma",
+          description: "Avvia una chat fuori da qualsiasi progetto",
+        },
+        archiveChat: {
+          label: "Archivia chat",
+          description: "Archivia le chat selezionate, o quella corrente",
+        },
+        markChatUnread: {
+          label: "Segna come non letta",
+          description: "Segna come non lette le chat selezionate, o quella corrente",
+        },
+        togglePinChat: {
+          label: "Fissa/sblocca",
+          description: "Fissa o sblocca le chat selezionate, o quella corrente",
+        },
+        selectAllChats: {
+          label: "Seleziona tutte le chat",
+          description: "Seleziona tutte le chat nella barra laterale",
+        },
+        clearChatSelection: {
+          label: "Annulla selezione",
+          description: "Deseleziona le chat scelte. Anche Esc le annulla",
+        },
+        deleteSelectedChats: {
+          label: "Elimina le chat selezionate",
+          description: "Elimina tutte le chat selezionate",
+        },
+        nextRecentlyViewedChat: {
+          label: "Chat vista successiva",
+          description: "Avanza tra le chat viste di recente",
+        },
+        previousRecentlyViewedChat: {
+          label: "Chat vista precedente",
+          description: "Torna indietro tra le chat viste di recente",
+        },
+        nextChat: {
+          label: "Chat successiva",
+          description: "Passa alla chat successiva nella barra laterale",
+        },
+        previousChat: {
+          label: "Chat precedente",
+          description: "Passa alla chat precedente nella barra laterale",
+        },
+        nextChatNeedingAttention: {
+          label: "Chat da seguire successiva",
+          description: "Passa alla prossima chat in generazione, in coda o non letta",
+        },
+        clearAllUnreads: {
+          label: "Segna tutto come letto",
+          description: "Segna ogni chat come letta",
+        },
+        goToRecentChat1: {
+          label: "Vai alla chat recente 1",
+          description: "Apri la chat 1 in Recenti",
+        },
+        goToRecentChat2: {
+          label: "Vai alla chat recente 2",
+          description: "Apri la chat 2 in Recenti",
+        },
+        goToRecentChat3: {
+          label: "Vai alla chat recente 3",
+          description: "Apri la chat 3 in Recenti",
+        },
+        goToRecentChat4: {
+          label: "Vai alla chat recente 4",
+          description: "Apri la chat 4 in Recenti",
+        },
+        goToRecentChat5: {
+          label: "Vai alla chat recente 5",
+          description: "Apri la chat 5 in Recenti",
+        },
+        goToRecentChat6: {
+          label: "Vai alla chat recente 6",
+          description: "Apri la chat 6 in Recenti",
+        },
+        switchToChat: {
+          label: "Vai a Chat",
+          description: "Vai allo spazio di lavoro chat",
+        },
+        switchToProjects: {
+          label: "Vai a Progetti",
+          description: "Vai allo spazio di lavoro progetti",
+        },
+        switchToHub: {
+          label: "Vai all’Hub modelli",
+          description: "Vai all’hub dei modelli",
+        },
+        switchToTrain: {
+          label: "Vai ad Addestramento",
+          description: "Vai allo spazio di lavoro di addestramento",
+        },
+        switchToRecipes: {
+          label: "Vai a Recipes",
+          description: "Vai a Data Recipes",
+        },
+        switchToImages: {
+          label: "Vai a Immagini",
+          description: "Vai allo spazio di lavoro immagini",
+        },
+        switchToVideo: {
+          label: "Vai a Video",
+          description: "Vai allo spazio di lavoro video",
+        },
+        switchToAudio: {
+          label: "Vai ad Audio",
+          description: "Vai allo spazio di lavoro audio",
+        },
+        switchToExport: {
+          label: "Vai a Esporta",
+          description: "Vai allo spazio di lavoro di esportazione",
+        },
+        toggleSidebar: {
+          label: "Mostra/nascondi barra laterale",
+          description: "Mostra o nascondi la barra laterale",
+        },
+        toggleApiMonitor: {
+          label: "Mostra/nascondi attività API",
+          description: "Mostra o nascondi il monitor di attività API",
+        },
+        openModelPicker: {
+          label: "Apri selettore modello",
+          description: "Scegli il modello per questa chat",
+        },
+        openProjectPicker: {
+          label: "Apri selettore progetto",
+          description: "Passa a un altro progetto dall'intestazione della chat",
+        },
+        startDictation: {
+          label: "Dettatura",
+          description: "Avvia o interrompi la dettatura nell’editor",
+        },
+        attachFiles: {
+          label: "Allega foto e file",
+          description: "Aggiungi un allegato all’editor",
+        },
+        sendMessage: {
+          label: "Invia messaggio",
+          description: "Invia il contenuto dell’editor",
+        },
+        cycleReasoningEffort: {
+          label: "Scorri lo sforzo di ragionamento",
+          description: "Passa in rassegna i livelli di sforzo di ragionamento",
+        },
+        increaseReasoningEffort: {
+          label: "Aumenta lo sforzo di ragionamento",
+          description: "Alza di un livello lo sforzo di ragionamento",
+        },
+        decreaseReasoningEffort: {
+          label: "Riduci lo sforzo di ragionamento",
+          description: "Abbassa di un livello lo sforzo di ragionamento",
+        },
+        toggleFastMode: {
+          label: "Attiva/disattiva la modalità Fast",
+          description: "Attiva o disattiva la modalità Fast",
+        },
+        renameChat: {
+          label: "Rinomina chat",
+          description: "Rinomina la chat corrente",
+        },
+        forkChat: {
+          label: "Dirama chat",
+          description: "Crea una nuova chat a partire dall’ultimo messaggio",
+        },
+        copyChatAsMarkdown: {
+          label: "Copia come Markdown",
+          description: "Copia l’intera chat negli appunti come Markdown",
+        },
+        copySessionId: {
+          label: "Copia ID sessione",
+          description: "Copia l’ID di sessione sandbox di questa chat",
+        },
+      },
     },
     debugging: {
       logSection: "File di log",
@@ -202,6 +437,17 @@ export const it = {
         engineModel: "Trascrizione locale",
         engineModelDescription:
           "Esegue un modello speech-to-text (STT) in locale e funziona offline. Puoi scaricare e caricare il modello, che verrà poi rimosso dalla memoria dopo un periodo di inattività.",
+        engineCustom: "Endpoint personalizzato",
+        engineCustomDescription:
+          "Invia l'audio registrato a un server STT compatibile con OpenAI dalle tue connessioni.",
+        connectionLabel: "Connessione",
+        connectionDescription:
+          "Aggiungi un server compatibile con OpenAI e una chiave API facoltativa in Connessioni.",
+        connectionPlaceholder: "Seleziona una connessione",
+        connectionEmpty: "Nessuna connessione disponibile",
+        customModelLabel: "Modello",
+        customModelDescription:
+          "Nome del modello inviato a /v1/audio/transcriptions.",
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
@@ -255,6 +501,8 @@ export const it = {
         allowMicrophone: "Consenti l'accesso al microfono",
         micAccessBlocked:
           "L'accesso al microfono è stato bloccato. Consenti l'accesso al microfono per questa pagina di Unsloth, poi riprova.",
+        micAccessBlockedDesktop:
+          "L'accesso al microfono è stato bloccato. Riprova e scegli Consenti, oppure abilita il microfono nelle impostazioni di privacy del sistema.",
         micAccessUnsupported:
           "L'accesso al microfono non è supportato in questo browser o contesto.",
         systemDefault: "Predefinito di sistema",
@@ -262,6 +510,7 @@ export const it = {
         languageLabel: "Lingua di dettatura",
         languageDescription: "Lingua da riconoscere",
         languageAuto: "Automatica (lingua del browser)",
+        languageAutoDetect: "Automatica (rileva lingua)",
       },
       dictionary: {
         sectionTitle: "Dizionario di dettatura",
@@ -325,9 +574,20 @@ export const it = {
         engineStudioDescription: "Usa il modello audio caricato (es. Orpheus)",
         engineSystem: "Voci di sistema",
         engineStudio: "Carica un modello TTS",
+        engineCustom: "Endpoint personalizzato",
+        engineCustomDescription:
+          "Un server TTS compatibile con OpenAI dalle tue connessioni (ad es. Kokoro)",
+        connectionLabel: "Connessione",
+        connectionDescription:
+          "Aggiungi un server compatibile con OpenAI nella scheda Connessioni",
+        connectionPlaceholder: "Seleziona una connessione",
+        customModelLabel: "Modello",
+        customVoiceDescription:
+          "Nome della voce atteso dall'endpoint; il valore predefinito è alloy",
         modelLabel: "Modello TTS",
         modelDescription:
           "Carica un modello audio dal selettore dei modelli (es. Orpheus TTS)",
+        openAudioAction: "Apri Audio",
         voiceLabel: "Voce",
         voiceDescription: "Le migliori voci disponibili su questo dispositivo",
         speedLabel: "Velocità",
@@ -336,6 +596,7 @@ export const it = {
         previewLabel: "Ascolta la voce",
         previewDescription: "Riproduci un breve campione",
         previewAction: "Ascolta",
+        preparingAction: "Generazione…",
         previewFailed: "Impossibile riprodurre l'anteprima TTS",
         stopAction: "Interrompi",
         ttsLabel: "Sintesi vocale",
@@ -404,7 +665,7 @@ export const it = {
         sectionTitle: "Cambio automatico del modello (API OpenAI)",
         enable: "Cambia modello in base alla richiesta",
         enableDescription:
-          "Carica un GGUF già scaricato indicato in una richiesta API prima di rispondere. Disattivato per impostazione predefinita.",
+          "Carica un modello già scaricato indicato in una richiesta API prima di rispondere. Disattivato per impostazione predefinita.",
         autoDownload: "Scarica i modelli mancanti",
         autoDownloadDescription:
           "Scarica un GGUF indicato in una richiesta API se non è ancora presente. Chiunque abbia una chiave API potrà così consumare spazio su disco e banda.",
@@ -439,7 +700,7 @@ export const it = {
           "Salva la cache KV prima dello scaricamento dalla memoria per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
         apiOnly: "Scarica solo i modelli caricati dall'API",
         apiOnlyDescription:
-          "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Studio e libera solo quelli caricati da una richiesta API.",
+          "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Unsloth e libera solo quelli caricati da una richiesta API.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",
@@ -492,6 +753,29 @@ export const it = {
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
       },
+      downloads: {
+        sectionTitle: "Download",
+        transport: "Trasporto di download",
+        transportDescription:
+          "Come arrivano i file di modelli e dataset da Hugging Face. HTTPS riprende da dove si è fermato; Xet è spesso più veloce al primo download ma ricomincia il file se annulli.",
+        transportHint:
+          "HTTPS è normale TLS: ogni rete, proxy e VPN lo consente, un trasferimento annullato o interrotto riprende dai byte già su disco e l'uso di memoria resta costante. Xet scarica blocchi deduplicati, quindi un repository che condivide dati con uno che hai già può arrivare molto più rapidamente, ma richiede hf_xet, usa più RAM e un annullamento scarta il file in corso. Auto decide per macchina: valuta la RAM e se Xet si è bloccato qui, e ripiega su HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS standard. Riprende dopo un annullamento, funziona su qualsiasi rete, memoria costante.",
+        transportDescriptionNoResume:
+          "Come i file di modelli e dataset vengono scaricati da Hugging Face. In questa installazione nessun trasporto può riprendere, quindi un download annullato ricomincia; Xet è spesso più veloce al primo download.",
+        httpsHintNoResume:
+          "TLS standard. Funziona con qualsiasi rete, uso di memoria costante. Questa installazione non può riprendere un download annullato.",
+        xetHint:
+          "Trasferimento a blocchi deduplicati. Spesso più veloce su un download nuovo, ricomincia il file se annulli, richiede più memoria.",
+        autoHint:
+          "Sceglie in base alla macchina e passa a HTTPS se Xet si blocca o fallisce qui.",
+        autoCurrently: "Auto sta usando {transport} su questa macchina.",
+        xetMissing: "Xet non è disponibile perché hf_xet non è installato.",
+      },
       uploads: {
         sectionTitle: "Caricamenti",
         maxUploadSize: "Limite di caricamento del dataset di addestramento",
@@ -502,6 +786,7 @@ export const it = {
         embeddingModel: "Modello di embedding",
         embeddingModelDescription:
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
+        searchPlaceholder: "Cerca qualsiasi modello su HF",
         reindexWarning:
           "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
         emptyError:
@@ -511,7 +796,24 @@ export const it = {
         saveError: "Salvataggio del modello di embedding non riuscito.",
         saved: "Modello di embedding salvato.",
         saveAnyway: "Salva comunque",
-        resetAction: "Ripristina il valore predefinito",
+        recommended: "Consigliato",
+        onDevice: "Sul dispositivo",
+        searching: "Ricerca su Hugging Face…",
+        checking: "Verifica…",
+        noResults: "Nessun modello di embedding trovato",
+        download: "Scarica",
+        unload: "Scarica dalla memoria",
+        unloadFailed: "Impossibile scaricare il modello di embedding",
+        downloadingStatus: "Download in corso…",
+        notDownloaded: "Non scaricato",
+        notDownloadedSized: "Non scaricato · {size}",
+        loaded: "Caricato",
+        downloading: "Download di {model}",
+        downloadingDescription:
+          "L'avanzamento è nel pannello dei download. L'indicizzazione lo userà al termine.",
+        downloadFailed: "Impossibile avviare il download",
+        downloadConflict: "Riprendi questo download dall'Hub",
+        downloadBusy: "Download già in corso",
       },
       storage: {
         sectionTitle: "Archiviazione",
@@ -522,6 +824,16 @@ export const it = {
         copied: "Percorso copiato",
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
+      },
+      repairInstall: {
+        label: "Ripara l'installazione",
+        description:
+          "Riesegue il programma di installazione sull'ambiente gestito. Utile se la GPU non viene rilevata o se l'app non si avvia.",
+        action: "Ripara installazione",
+        confirmTitle: "Riparare questa installazione?",
+        confirmDescription:
+          "Arresta il server e riesegue il programma di installazione, che reinstalla PyTorch per la GPU di questa macchina. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
+        confirmAction: "Ripara ora",
       },
       resetPreferences: {
         sectionTitle: "Zona pericolosa",
@@ -570,9 +882,9 @@ export const it = {
           "Tutto quello che vedi qui è calcolato dalla tua cronologia. Nessun dato viene raccolto o inviato a Unsloth.",
         retry: "Riprova",
         privacyNote:
-          "Le statistiche sono calcolate dalla cronologia di chat e addestramenti presente nella tua installazione di Unsloth. Nessun dato viene raccolto né inviato a Unsloth o a terze parti.",
+          "Le statistiche sono calcolate dalla cronologia locale di chat, utilizzo API e addestramenti della tua installazione di Unsloth. Prompt, risposte e chiavi API non vengono mai salvati per le statistiche. Nulla viene inviato a Unsloth o a terze parti.",
         emptyChats:
-          "Nessuna chat. Inizia una conversazione e le tue statistiche compariranno qui.",
+          "Nessun utilizzo della chat o dell'API. Inizia una conversazione o invia una richiesta autenticata all'API locale.",
         lifetimeTokens: "Token totali",
         peakTokens: "Giorno record",
         longestChat: "Chat più lunga",
@@ -594,6 +906,9 @@ export const it = {
         totalMessages: "Messaggi totali",
         tokensIn: "Token inviati",
         tokensOut: "Token generati",
+        totalTokens: "Token totali",
+        studioChatTokens: "Token di Unsloth Chat",
+        apiTokens: "Token API",
         cachedTokens: "Token in cache",
         cachedValue: "{tokens} ({percent}% dell'input)",
         avgTokensPerChat: "Token medi per chat",
@@ -773,13 +1088,23 @@ export const it = {
         currentLoad: "Carico attuale",
         free: "Disponibili: {value}",
         noGpu: "Nessuna GPU visibile",
+        gpuUnusable: "GPU non utilizzabile",
+        gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
       },
       gpu: {
         title: "Dispositivi GPU",
         ggufInference: "Inferenza GGUF",
         unavailable: "non disponibile",
+        detecting: "Ricerca di GPU...",
+        unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
+        noUsableGpu: "Nessuna GPU di questa macchina è utilizzabile da PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -802,6 +1127,24 @@ export const it = {
         switchFailed: "Impossibile cambiare il backend di llama.cpp.",
         switchInterrupted: "Il cambio è stato interrotto prima del completamento.",
         envLocked: "Impostato su {backend} dalla variabile d'ambiente UNSLOTH_LLAMA_CPP_BACKEND, che ha la precedenza su questa opzione.",
+        customPath: {
+          label: "Cartella llama.cpp personalizzata",
+          description: "Usa la tua build di llama-server.",
+          hint: "Scegli la cartella llama.cpp che contiene llama-server o una build in cui si trova sotto build/bin. Il runtime personalizzato viene usato per chat GGUF, embedding e modelli vocali supportati. Le variabili d'ambiente hanno comunque la priorità.",
+          automatic: "Automatico (incluso)",
+          bundled: "Usa il runtime llama.cpp installato da Unsloth.",
+          active: "Il tuo llama-server personalizzato verrà usato al prossimo caricamento del modello.",
+          environmentManaged: "Gestito dalla variabile d'ambiente {variable}.",
+          missingBinary: "llama-server non è più disponibile in questa cartella. Scegli un'altra cartella o usa il runtime incluso.",
+          reloadRequired: "Ricarica il modello per usare il llama-server selezionato.",
+          change: "Cambia",
+          saving: "Salvataggio...",
+          useBundled: "Usa quello incluso",
+          chooseTitle: "Scegli la cartella llama.cpp",
+          chooseAction: "Usa questa cartella",
+          saved: "Cartella llama.cpp aggiornata",
+          saveError: "Impossibile aggiornare la cartella llama.cpp",
+        },
         backends: {
           auto: "Automatico",
           cpu: "CPU",
@@ -814,6 +1157,7 @@ export const it = {
           notInstalled: "Nessuna installazione di llama.cpp gestita da Unsloth, quindi non c'è un backend da cambiare.",
           localLink: "llama.cpp è una cartella locale collegata da te, quindi Unsloth non la sostituirà.",
           sourceBuild: "Questo llama.cpp è stato compilato dai sorgenti, quindi il backend non è modificabile da qui.",
+          customPath: "È selezionata una cartella llama.cpp personalizzata. La sua build determina il backend di calcolo.",
           unresolved: "Non è stato possibile controllare i backend disponibili. Verifica la connessione e riprova.",
         },
         // Non visualizzato: termini aggiuntivi per la ricerca nelle impostazioni.
@@ -875,6 +1219,7 @@ export const it = {
         processMemory: "Memoria del processo",
         notInstalled: "Non installato",
         unknown: "Sconosciuto",
+        vramWithShared: "{vram} di VRAM + {shared} di memoria condivisa",
       },
     },
     agents: {
@@ -904,6 +1249,15 @@ export const it = {
       docs: "Documentazione",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex richiede un modello GGUF servito da llama-server. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
       subagent: {
@@ -921,7 +1275,7 @@ export const it = {
       quickstart: {
         title: "Costruisci un comando",
         description:
-          "Avvia un agente sul modello attualmente caricato in Studio. Carica prima un modello, poi sostituisci claude con uno degli agenti supportati qui sotto.",
+          "Avvia un agente sul modello attualmente caricato in Unsloth. Carica prima un modello, poi sostituisci claude con uno degli agenti supportati qui sotto.",
         noneDetected: "Nessuna CLI di agenti supportati trovata nel tuo PATH.",
         installed: "Installato",
       },
@@ -942,7 +1296,7 @@ export const it = {
         description:
           "I flag di Unsloth vengono interpretati per primi; tutto ciò che Unsloth non riconosce viene passato direttamente all'agente.",
         model:
-          "Seleziona un modello. Senza --model, unsloth start usa il modello attualmente caricato in Studio e restituisce un errore se non ce n'è nessuno.",
+          "Seleziona un modello. Senza --model, unsloth start usa il modello attualmente caricato in Unsloth e restituisce un errore se non ce n'è nessuno.",
         contextLength:
           "Imposta la lunghezza di contesto richiesta (alias: --max-seq-length).",
         ggufVariant: "Scegli la variante di quantizzazione GGUF.",
@@ -959,12 +1313,16 @@ export const it = {
           "Mantieni l'agente principale sul suo modello attuale e registra Unsloth come subagente locale (Claude Code, Codex e OpenCode).",
         apiKey:
           "Fornisci la tua chiave API Unsloth (oppure imposta UNSLOTH_API_KEY).",
+        reasoning:
+          "Usare il ragionamento nella chat: on, off o auto. Auto segue il chat template del modello, che di solito significa on.",
+        reasoningEffort:
+          "Impegno di ragionamento passato al chat template del modello, ad esempio medium. I livelli dipendono dal modello, quindi usane uno che accetta. Se non impostato resta quello del template.",
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {
-        title: "Connettersi a uno Studio remoto",
+        title: "Connettersi a un Unsloth Studio remoto",
         description:
-          "Punta unsloth start a uno Studio in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
+          "Punta unsloth start a un Unsloth Studio in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
       },
       passthrough: {
         title: "Passare argomenti all'agente",
@@ -992,6 +1350,9 @@ export const it = {
         showAllQuantizations: "Mostra tutte le quantizzazioni",
         showAllQuantizationsDescription:
           "Attivata: elenca tutte le quantizzazioni in «On Device», incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
+        showMemoryBar: "Mostra la barra di utilizzo della VRAM",
+        showMemoryBarDescription:
+          "Mostra sotto la riga di ogni modello scaricato il consumo stimato di VRAM: pesi, cache KV alla lunghezza di contesto con cui verrà caricato ed eventuale riserva per il draft speculativo.",
       },
       menu: {
         title: "Menu della chat",
@@ -1004,7 +1365,7 @@ export const it = {
         exportChat: "Esporta chat",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
-      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio.",
+      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio. Premi {shortcut} per incollare comunque nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
@@ -1012,10 +1373,52 @@ export const it = {
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      projectAttachments: "Condividi i file nel progetto",
+      projectAttachmentsDescription:
+        "Impostazione predefinita per i file allegati in una chat che appartiene a un progetto: indicizzarli per l'intero progetto in modo che ogni chat possa usarli. Ogni chat puo cambiarlo dal menu degli allegati.",
+      rememberParamsPerModel: "Ricorda le impostazioni per modello",
+      rememberParamsPerModelDescription:
+        "Cambiando modello vengono ripristinati temperatura, prompt e le altre impostazioni usate l'ultima volta con quel modello. Disattivato, resta un unico set di impostazioni per tutti i modelli.",
+      autoCompact: "Compatta automaticamente le chat lunghe",
+      autoCompactDescription:
+        "Quando una chat GGUF locale raggiunge la lunghezza di contesto impostata, elimina i turni precedenti invece di restituire un errore. Questa impostazione non dipende dalla VRAM libera.",
+      compactionStyle: "Quando il contesto è pieno",
+      compactionStyleDescription:
+        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
+      compactionStyleInherit: "Usa il valore del server",
+      compactionStyleCheckpoint: "Reimposta la conversazione",
+      compactionStyleRollingDefault:
+        "Elimina i turni precedenti (~25% di spazio aggiuntivo)",
+      compactionStyleRolling10:
+        "Elimina i turni precedenti (~10% di spazio aggiuntivo)",
+      compactionStyleRolling5:
+        "Elimina i turni precedenti (~5% di spazio aggiuntivo)",
+      compactionStyleRollingNone:
+        "Elimina i turni precedenti (nessun taglio aggiuntivo)",
+      autoCompactKeywords:
+        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine compaction rolling headroom",
       thinking: {
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+      },
+      currentDate: {
+        label: "Comunica al modello la data di oggi",
+        description:
+          "Aggiunge la data corrente al prompt in modo che la ricerca web e Deep Research cerchino fonti recenti invece di basarsi sulla data di fine addestramento del modello.",
+        loadError: "Impossibile caricare le impostazioni della data corrente",
+        saveError: "Impossibile aggiornare le impostazioni della data corrente",
+      },
+      tools: {
+        collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
+        collapseByDefaultDescription:
+          "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
+      },
+      webSearch: {
+        title: "Ricerca web",
+        images: "Mostra immagini dalla ricerca web",
+        imagesDescription:
+          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Unsloth, quindi il browser non contatta mai gli host delle immagini.",
       },
       artifacts: {
         title: "Canvas",
@@ -1028,6 +1431,11 @@ export const it = {
         blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
         blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
         blockedBannerAction: "Consenti per questo Canvas",
+        blockedTitle: "L'accesso alla rete del Canvas è disattivato",
+        blockedHint:
+          "Attiva “{setting}” in Impostazioni → Chat per consentire ai Canvas di caricare risorse esterne, oppure consentilo solo per questo Canvas.",
+        blockedSettingsAction: "Apri impostazioni",
+        blockedDismiss: "Ignora",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",
@@ -1036,7 +1444,7 @@ export const it = {
       exportingAction: "Esportazione...",
       exportConversations: "Esporta Recenti e Progetti",
       exportConversationsDescription:
-        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in JSONL grezzo, CSV o JSONL ShareGPT, in un unico file o uno per chat.",
+        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in Training JSONL, CSV o JSONL ShareGPT, in un unico file o uno per chat. Message JSONL è disponibile solo per singola chat.",
       exportConversationsAction: "Esporta",
       exportScopeRecents: "Recenti",
       exportScopeAll: "Recenti + Progetti",
@@ -1102,7 +1510,12 @@ export const it = {
       archivedImagesDescription: "Visualizza e gestisci le immagini che hai archiviato.",
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
+      archivedAudio: "Audio archiviati",
+      archivedAudioDescription: "Visualizza e gestisci le clip audio che hai archiviato.",
       manageAction: "Gestisci",
+      manageChats: "Gestisci chat",
+      manageChatsDescription:
+        "Seleziona più chat da spostare, fissare, archiviare, esportare o eliminare.",
       exportArchivedChats: "Esporta",
       exportingArchivedChats: "Esportazione...",
       exportedOneArchivedChat: "1 chat archiviata esportata",
@@ -1152,6 +1565,11 @@ export const it = {
     connections: {
       title: "Connessioni",
       description: "Gestisci provider e connessioni esterne.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Raggiungi questo Unsloth dagli altri tuoi dispositivi, tramite la rete locale o un URL pubblico temporaneo.",
     },
     apiKeys: {
       title: "API",
@@ -1284,7 +1702,7 @@ export const it = {
         desktopAvailable:
           "È disponibile la versione {version} dell'app desktop",
         desktopAvailableDescription:
-          "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
+          "Aggiorna ora per prepararlo in background. Puoi continuare a lavorare e riavviare quando è pronto.",
         desktopExternalServer:
           "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
         desktopManualInstall:
@@ -1295,11 +1713,20 @@ export const it = {
         desktopCurrent: "L'app desktop è aggiornata",
         desktopCurrentDescription:
           "Unsloth continuerà a verificare automaticamente la disponibilità di aggiornamenti.",
+        desktopPreparingDescription:
+          "L'aggiornamento viene preparato in background. Puoi continuare a lavorare.",
+        desktopReadyToRestartDescription:
+          "È tutto pronto. Riavvia per completare l'installazione dell'aggiornamento.",
+        desktopReadyToInstallDescription:
+          "L'aggiornamento dell'app è stato scaricato. Completa l'aggiornamento del backend per installarlo.",
         checkForUpdates: "Verifica aggiornamenti",
         checkAgain: "Verifica di nuovo",
         retryCheck: "Riprova",
         checking: "Verifica in corso...",
+        preparing: "Preparazione...",
         updateNow: "Aggiorna ora",
+        restartToUpdate: "Riavvia per aggiornare",
+        finishUpdate: "Completa aggiornamento",
         openReleasePage: "Apri la pagina della release",
         unknownInstall:
           "Impossibile rilevare come è stato installato Unsloth. Per installazioni tramite installer o PyPI, usa i comandi sopra.",
@@ -1503,8 +1930,8 @@ export const it = {
       sourceLocalModel: "Modello locale",
       vramOomBadge: "OOM",
       vramTightBadge: "Al limite",
-      vramNeeds: "Richiede ~{est} GB di VRAM (GPU: {total} GB)",
-      vramTight: "~{est} GB di VRAM (al limite su {total} GB)",
+      vramNeeds: "Richiede ~{est} GB di VRAM (GPU: {total} GiB)",
+      vramTight: "~{est} GB di VRAM (al limite su {total} GiB)",
       vramApprox: "~{est} GB di VRAM",
     },
     methods: {
@@ -2057,5 +2484,14 @@ export const it = {
       datasetStreaming: "Dataset: in streaming (nessun download completo)",
       modelWeights: "Pesi del modello",
     },
+  },
+  modelMemory: {
+    readout:
+      "Pesi {model} + contesto {context} = {total} di {budget} di VRAM utilizzabile",
+    readoutWithSpec:
+      "Pesi {model} + KV {kv} + draft MTP {spec} = {total} di {budget} di VRAM utilizzabile",
+    kvRate: "KV riservato, ~{rate}/token",
+    oomLikely: "Con le impostazioni attuali è probabile un errore di memoria",
+    tooLarge: "Più grande della VRAM, verrà scaricato sulla CPU. Una quantizzazione più piccola è più veloce",
   },
 } as const;

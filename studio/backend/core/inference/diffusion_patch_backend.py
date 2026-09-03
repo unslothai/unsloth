@@ -57,7 +57,7 @@ def _helpers() -> Optional[dict]:
     """``{"patch": patch_function, "restore": restore_original}``, or None when unavailable.
 
     ``unsloth_zoo.__init__`` refuses to import unless ``UNSLOTH_IS_PRESENT`` is in the environment,
-    and that is set by ``unsloth`` itself. The Studio server imports ``unsloth`` at boot so this
+    and that is set by ``unsloth`` itself. The Unsloth server imports ``unsloth`` at boot so this
     always resolved there, but ANY process that reaches the patch backend first -- the test suite,
     a worker subprocess -- got an ImportError and silently ran unpatched (every install returning
     False). So on failure, import ``unsloth`` and retry once, which is also the import order Unsloth

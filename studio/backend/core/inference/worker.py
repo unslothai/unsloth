@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 from loggers import get_logger
 import os
@@ -44,6 +45,24 @@ _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 def _ensure_backend_on_path() -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
+
+
+def _native_audio_security_targets_or_error(
+    model_name: str, hf_token: str | None, resp_queue: Any
+) -> list[str] | None:
+    try:
+        from core.inference.native_audio import native_audio_security_targets
+        return native_audio_security_targets(model_name, hf_token = hf_token)
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "error",
+                "error": f"Failed to inspect native audio security metadata: {exc}",
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+        return None
 
 
 def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
@@ -340,6 +359,28 @@ def _run_security_gates(
     return True
 
 
+def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
+    """Live allocator-owned VRAM this disposable worker will release."""
+    resolved_gpu_ids = config.get("resolved_gpu_ids")
+    device_backend = str(config.get("device_backend") or "")
+    if not resolved_gpu_ids or device_backend not in ("cuda", "xpu"):
+        return None
+    try:
+        import torch
+
+        device_module = torch.cuda if device_backend == "cuda" else torch.xpu
+        memory_reserved = getattr(device_module, "memory_reserved", None)
+        if not callable(memory_reserved):
+            return None
+        return {
+            str(int(physical_id)): int(memory_reserved(local_ordinal)) / float(1024**3)
+            for local_ordinal, physical_id in enumerate(resolved_gpu_ids)
+        }
+    except Exception as exc:
+        logger.warning("Could not report worker-owned GPU memory: %s", exc)
+        return None
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -369,7 +410,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
         # the SSM install so a blocked model never triggers a native kernel build.
-        targets = [config["model_name"]]
+        from core.inference.native_audio import native_audio_security_targets
+
+        targets = native_audio_security_targets(
+            config["model_name"], getattr(mc, "audio_type", None), hf_token
+        )
         if mc.is_lora and getattr(mc, "base_model", None):
             targets.append(str(mc.base_model))
         if not _run_security_gates(
@@ -447,12 +492,24 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            try:
-                _context_length = _entry.get("context_length")
-                if _context_length is not None:
-                    model_info["context_length"] = int(_context_length)
-            except Exception as _ctx_exc:
-                logger.warning("context_length forward failed: %s", _ctx_exc)
+            # The whole group: the parent reports all four and can recompute none of
+            # them once the worker holds the model.
+            for _ctx_field in (
+                "context_length",
+                "native_context_length",
+                "max_context_length",
+                "requested_context_length",
+            ):
+                try:
+                    _ctx_value = _entry.get(_ctx_field)
+                    if _ctx_value is not None:
+                        model_info[_ctx_field] = int(_ctx_value)
+                except Exception as _ctx_exc:
+                    logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
+            # Tri-state, so it is forwarded as it is rather than coerced: None means the
+            # backend does not answer, which is not the same as a confirmed False.
+            if _entry.get("context_length_enforced") is not None:
+                model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
             # Backend post-load audio classification outranks pre-load config.
             model_info.update(
                 {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
@@ -572,6 +629,27 @@ def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> 
     return True
 
 
+def _backend_declares(
+    backend,
+    name: str,
+    method: str = "generate_chat_response",
+) -> bool:
+    """Whether this backend's *method* declares *name*.
+
+    A signature check, not a capability claim: a backend honoring the option
+    through **kwargs would read as False here. That is accurate for the backends
+    that ship today, and failing closed costs the option -- an ignored seed, or
+    a request sampled without its penalty -- never a crash.
+    """
+    generate = getattr(backend, method, None)
+    if generate is None:
+        return False
+    try:
+        return name in inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
@@ -611,6 +689,13 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
+
+        # These options are MLX-only. The transformers backend declares none of
+        # them and takes no **kwargs, so forwarding unconditionally would turn
+        # its documented "ignores them" behavior into a TypeError.
+        for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
+            if gated in cmd and _backend_declares(backend, gated):
+                gen_kwargs[gated] = cmd[gated]
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
@@ -666,6 +751,52 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
                 "stack": traceback.format_exc(limit = 20),
             },
         )
+
+
+def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
+    """Count prompt tokens for the loaded model and reply with the total."""
+    try:
+        count = backend.count_chat_tokens(
+            cmd.get("messages") or [],
+            cmd.get("system_prompt") or "",
+            tools = cmd.get("tools"),
+            enable_thinking = cmd.get("enable_thinking"),
+            reasoning_effort = cmd.get("reasoning_effort"),
+            preserve_thinking = cmd.get("preserve_thinking"),
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "count_tokens_response",
+                "request_id": cmd.get("request_id"),
+                "error": str(exc),
+            },
+        )
+        return
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            # Echoed so the dispatcher can address the caller's mailbox; an unaddressed
+            # reply is dropped and the caller waits out its timeout.
+            "request_id": cmd.get("request_id"),
+            "input_tokens": int(count),
+            "model": backend.active_model_name,
+        },
+    )
+
+
+def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
+    """Answer a count this backend cannot serve; dropping it costs the caller its timeout."""
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            "request_id": cmd.get("request_id"),
+            "error": "Counting is not supported on the transformers backend.",
+        },
+    )
 
 
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
@@ -744,6 +875,9 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             repetition_penalty = cmd.get("repetition_penalty", 1.0),
             use_adapter = cmd.get("use_adapter"),
             cancel_event = cancel_event,
+            instructions = cmd.get("instructions"),
+            language = cmd.get("language"),
+            seed = cmd.get("seed"),
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
@@ -813,6 +947,11 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             use_adapter = cmd.get("use_adapter")
             if use_adapter is not None:
                 audio_kwargs["use_adapter"] = use_adapter
+            # MLX-only here too, for the reason the text branch gates it.
+            if "stop" in cmd and _backend_declares(
+                backend, "stop", "generate_audio_input_response"
+            ):
+                audio_kwargs["stop"] = cmd["stop"]
             generator = backend.generate_audio_input_response(**audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
@@ -965,6 +1104,13 @@ def run_inference_process(
 
     model_name = config["model_name"]
 
+    # These architectures use their publishers' native Transformers/Diffusers
+    # interfaces. Select that backend before the Apple MLX fast-path and before
+    # importing Unsloth; native_audio itself has no eager ML imports.
+    from core.inference.native_audio import is_native_audio_model
+
+    _native_audio_worker = is_native_audio_model(model_name)
+
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
@@ -984,7 +1130,7 @@ def run_inference_process(
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
@@ -1078,6 +1224,8 @@ def run_inference_process(
                             ),
                         },
                     )
+                elif cmd_type == "count_tokens":
+                    _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -1092,6 +1240,15 @@ def run_inference_process(
                     cancel_event.set()
                     backend.reset_generation_state()
                     _send_response(resp_queue, {"type": "reset_ack"})
+                elif cmd_type == "gpu_memory":
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "gpu_memory",
+                            "request_id": cmd.get("request_id"),
+                            "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
+                        },
+                    )
                 elif cmd_type == "status":
                     _send_response(
                         resp_queue,
@@ -1134,16 +1291,10 @@ def run_inference_process(
 
     # ── Windows: check Triton availability ──
     # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── Stub torchao on Windows ROCm before ANY transformers import ──
     # Must precede every path that pulls transformers, not just the ML imports in section 2:
@@ -1202,7 +1353,9 @@ def run_inference_process(
     # are metadata-only, so run them first and refuse a blocked model before any native build.
     # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
     # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
-    _gate_targets = [model_name]
+    _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)
+    if _gate_targets is None:
+        return
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
@@ -1232,18 +1385,24 @@ def run_inference_process(
             resp_queue,
             {
                 "type": "status",
-                "message": "Importing Unsloth...",
+                "message": (
+                    "Importing native audio runtime..."
+                    if _native_audio_worker
+                    else "Importing Unsloth..."
+                ),
             },
         )
 
         _ensure_backend_on_path()
 
-        # Recover from any namespace-package shadow before importing Unsloth.
-        from core.import_guards import ensure_real_packages
+        if _native_audio_worker:
+            from core.inference.native_audio import NativeAudioBackend as InferenceBackend
+        else:
+            # Recover from any namespace-package shadow before importing Unsloth.
+            from core.import_guards import ensure_real_packages
+            ensure_real_packages("unsloth_zoo", "unsloth")
 
-        ensure_real_packages("unsloth_zoo", "unsloth")
-
-        from core.inference.inference import InferenceBackend
+            from core.inference.inference import InferenceBackend
 
         import transformers
 
@@ -1319,6 +1478,9 @@ def run_inference_process(
                     continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
 
+            elif cmd_type == "count_tokens":
+                _decline_count_tokens(cmd, resp_queue)
+
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)
 
@@ -1351,6 +1513,16 @@ def run_inference_process(
                     resp_queue,
                     {
                         "type": "reset_ack",
+                    },
+                )
+
+            elif cmd_type == "gpu_memory":
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gpu_memory",
+                        "request_id": cmd.get("request_id"),
+                        "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
                     },
                 )
 

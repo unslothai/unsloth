@@ -3,7 +3,7 @@
 
 """Device + dtype policy for the local diffusion backend.
 
-torch imported lazily so this stays importable in a no-torch runtime. Studio's hardware layer
+torch imported lazily so this stays importable in a no-torch runtime. Unsloth's hardware layer
 reports product backends (CUDA, XPU, MLX, CPU); diffusers runs on PyTorch devices, so Apple
 Silicon maps to MPS and ROCm to ``cuda``. Centralises that mapping plus the per-backend dtype and
 the capability flags optimisation paths key off.
@@ -292,8 +292,8 @@ def placed_cuda_ordinal(target: DiffusionDeviceTarget) -> Optional[int]:
 def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
     """Resolve the torch device + dtype + capability flags for diffusion.
 
-    Prefers Studio's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
-    Silicon Studio may report MLX/CPU, but diffusers uses MPS, so those fall through to the MPS
+    Prefers Unsloth's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
+    Silicon Unsloth may report MLX/CPU, but diffusers uses MPS, so those fall through to the MPS
     probe. Torch is optional: without it the native sd.cpp engine still runs, so a missing torch
     reports a torch-free CPU target instead of crashing ``/images/load`` before engine selection.
 

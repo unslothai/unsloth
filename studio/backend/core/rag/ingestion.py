@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import queue
+import re
 import threading
 
 from storage import rag_db
@@ -26,6 +27,7 @@ _workers: dict[str, threading.Thread] = {}
 _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64  # bounds peak memory
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Poll with a timeout so the generator wakes periodically to detect a gone
 # client or a terminal job whose worker died without the None sentinel.
@@ -357,10 +359,17 @@ def start_ingestion(
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
     background: bool = True,
+    content_hash: str | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
-    existing id with an already-completed job (no re-ingest)."""
+    existing id with an already-completed job (no re-ingest).
+
+    ``content_hash`` lets a caller that already hashed ``stored_path`` (linked-folder
+    reconciliation hashes it to detect content-identical renames) pass that digest
+    through instead of paying for a second full read of the file. Must be the lowercase
+    hex sha256 of ``stored_path``; a mismatched value would misfile the document under
+    the wrong hash, so it is trusted as given and never reverified here."""
     ext = os.path.splitext(stored_path)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
@@ -368,7 +377,9 @@ def start_ingestion(
     # Reclaim queues for finished jobs so the registry stays bounded.
     _reap_finished_jobs()
 
-    sha = _sha256_file(stored_path)
+    if content_hash is not None and not _SHA256_HEX_RE.match(content_hash):
+        raise ValueError("content_hash must be a lowercase hex sha256 digest")
+    sha = content_hash or _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
         # Named before the transaction opens, because naming the embedder on a fresh

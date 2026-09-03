@@ -3,6 +3,7 @@
 
 import {
   consumeNativePathToken,
+  nativeFileName,
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
@@ -13,10 +14,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  announceProjectSourcesUpdated,
   invalidateProjectSources,
+  noteProjectWork,
   uploadProjectDocument,
 } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
+import { partitionSupported } from "./source-drop-policy";
 import {
   addStagedSources,
   EXPIRY_GRACE_MS,
@@ -29,11 +33,6 @@ import {
 import { resolveVisionOverrides } from "./vision-overrides";
 
 export type { StagedSource };
-
-function nativeFileName(path: string): string {
-  const segments = path.split(/[\\/]/);
-  return segments[segments.length - 1] || path;
-}
 
 function formatSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
@@ -49,19 +48,6 @@ function formatSize(bytes: number): string {
       ? String(Math.round(value))
       : value.toFixed(1).replace(/\.0$/, "");
   return `${shown} ${units[unit]}`;
-}
-
-const ACCEPTED_EXTS = new Set(
-  RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
-);
-
-// `accept` only filters the picker, so a drop can carry anything. A folder
-// arrives as an extension-less entry, which this rejects along with the types
-// the backend would 400 on.
-function isSupported(name: string): boolean {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return ACCEPTED_EXTS.has(name.slice(dot).toLowerCase());
 }
 
 // Projects created with staged files, so the landing can open on Sources.
@@ -91,6 +77,22 @@ export async function uploadStagedSources(
   if (staged.length === 0) return;
   invalidateProjectSources(projectId);
   markProjectSourcesPending(projectId);
+  // Counted as project work for the whole batch: a tab opening the new project
+  // holds no row for a file still uploading, so without this it reports nothing
+  // indexing and lets a send go out ahead of the sources it was created with.
+  noteProjectWork(projectId, 1);
+  try {
+    await uploadStaged(projectId, staged);
+  } finally {
+    announceProjectSourcesUpdated(projectId);
+    noteProjectWork(projectId, -1);
+  }
+}
+
+async function uploadStaged(
+  projectId: string,
+  staged: StagedSource[],
+): Promise<void> {
   const { ocr, caption } = await resolveVisionOverrides();
   const documentIds = new Set<string>();
   const merged: string[] = [];
@@ -127,7 +129,6 @@ export async function uploadStagedSources(
       { description: "Identical contents are stored once." },
     );
   }
-  invalidateProjectSources(projectId);
 }
 
 /** Create-project drop area: stages files until the project exists. */
@@ -250,11 +251,11 @@ export function ProjectSourceDropzone({
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {
-      const incoming = Array.from(files);
-      addSources(
-        incoming.filter((file) => isSupported(file.name)).map(stagedFromFile),
-        incoming.filter((file) => !isSupported(file.name)).map((file) => file.name),
+      const { supported, unsupported } = partitionSupported(
+        Array.from(files),
+        (file) => file.name,
       );
+      addSources(supported.map(stagedFromFile), unsupported);
     },
     [addSources],
   );
@@ -262,10 +263,10 @@ export function ProjectSourceDropzone({
   const addNativePaths = useCallback(
     async (paths: string[]) => {
       const claimed = generation.current;
-      const supported = paths.filter((path) => isSupported(nativeFileName(path)));
-      const unsupported = paths
-        .filter((path) => !isSupported(nativeFileName(path)))
-        .map(nativeFileName);
+      const { supported, unsupported } = partitionSupported(
+        paths,
+        nativeFileName,
+      );
       // Per path, so one rejected file does not discard the rest of the drop.
       addPending(1);
       const settled = await Promise.allSettled(
@@ -292,7 +293,14 @@ export function ProjectSourceDropzone({
   // handler, which would attach it to the chat behind the dialog.
   const nativeDropRef = useNativeDropTarget({
     onDrop: (paths) => {
-      if (disabled) return;
+      // Claimed but refusing, so say so: returning quietly made the file
+      // vanish with no border and no message (#9036).
+      if (disabled) {
+        toast.error("Sources are still uploading", {
+          description: "Wait for them to finish, then drop again.",
+        });
+        return;
+      }
       void addNativePaths(paths);
     },
     onDragOver: (over) => setDragging(over && !disabled),
@@ -383,6 +391,7 @@ export function ProjectSourceDropzone({
                     className="size-4 shrink-0 text-muted-foreground"
                   />
                   <span
+                    data-reload-snapshot-sensitive
                     className="min-w-0 flex-1 truncate text-ui-14 text-foreground"
                     title={entry.name}
                   >
@@ -393,6 +402,7 @@ export function ProjectSourceDropzone({
                   </span>
                   <button
                     type="button"
+                    data-reload-snapshot-sensitive
                     aria-label={`Remove ${entry.name}`}
                     disabled={disabled}
                     onClick={() =>

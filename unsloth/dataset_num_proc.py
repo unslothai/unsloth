@@ -18,7 +18,7 @@ in ways that produced https://github.com/unslothai/unsloth/issues/2693:
    keeps its own default context. The two read different settings.
 
 2. They used ``1`` as the "disable multiprocessing" sentinel, but ``datasets``
-   >= 4.1 (Studio pins 4.3.0) pools for any ``num_proc >= 1``, so only ``None``
+   >= 4.1 (Unsloth pins 4.3.0) pools for any ``num_proc >= 1``, so only ``None``
    is in-process on every supported version.
 """
 
@@ -399,7 +399,7 @@ def _clamp_by_memory(num_proc: int) -> Optional[int]:
     """Bound a worker count by RAM. None means "do not use workers at all".
 
     Applies to explicit counts too: the old heuristic capped only the auto path,
-    so a caller passing a number (Studio passes ``max(1, cpu_count // 4)``) could
+    so a caller passing a number (Unsloth passes ``max(1, cpu_count // 4)``) could
     ask for dozens of workers on a machine with no room. That is what OOMs.
     """
     affordable = _affordable_workers()

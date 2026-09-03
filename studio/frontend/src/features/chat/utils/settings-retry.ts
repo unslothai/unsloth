@@ -9,7 +9,7 @@
 // body on one bad field, so a permanently-rejected value requeued forever rides
 // along with every later save and takes it down too: after one 400 no chat setting
 // can be persisted again for the life of the tab. Measured in Chromium, Firefox and
-// WebKit against a live Studio before this existed.
+// WebKit against a live Unsloth before this existed.
 //
 // Reachable without a bug on either side, whenever the two versions differ: a new
 // bundle against a rolled-back backend has every mirrored field rejected as

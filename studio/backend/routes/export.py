@@ -213,11 +213,10 @@ async def get_export_logs(
 
     The SSE endpoint (`/logs/stream`) is the low-latency path, but some reverse
     proxies -- notably Cloudflare quick tunnels (`*.trycloudflare.com`) used by
-    `--secure` mode -- buffer `text/event-stream` responses and only flush when
-    the stream closes, so over the tunnel the browser sees nothing for the whole
-    export ("connecting..." with no logs). This endpoint returns the same
-    ring-buffer lines as a short, complete JSON response that no proxy buffers,
-    so the frontend can poll it and still show logs in near real time.
+    `--secure` mode -- buffer streamed GET responses until the stream closes.
+    This endpoint returns the same ring-buffer lines as a short, complete JSON
+    response that no proxy buffers, so the frontend can poll it and still show
+    logs in near real time even where the stream itself does not arrive.
 
     Shares the orchestrator's monotonic `seq` cursor with the SSE stream, so the
     two transports can run together and the client de-dupes by seq.
@@ -412,6 +411,8 @@ async def export_gguf(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             imatrix_file = imatrix_file,
+            private = request.private,
+            gguf_shard_size = request.gguf_shard_size,
         )
 
         if not success:
@@ -509,7 +510,9 @@ def _format_sse(
     return "\n".join(lines)
 
 
-@router.get("/logs/stream")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/logs/stream")
+@router.get("/logs/stream", include_in_schema = False)
 async def stream_export_logs(
     request: Request,
     since: Optional[int] = Query(

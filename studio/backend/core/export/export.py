@@ -37,6 +37,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -85,9 +86,9 @@ def _multi_gpu_device_map_kwargs() -> dict:
 
     unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which stacks
     the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit empty (#7053).
-    Returns ``{"device_map": "balanced"}`` only on a real multi-GPU CUDA/ROCm host
-    (mirroring the inference loader's ``get_device_map``), else empty so single-GPU, CPU
-    and MLX loads keep the loader default."""
+    Returns a sharding map only on a real multi-GPU CUDA/ROCm host (mirroring the
+    inference loader's ``get_device_map``), else empty so single-GPU, CPU and MLX loads
+    keep the loader default."""
     if _IS_MLX:
         return {}
     try:
@@ -101,7 +102,9 @@ def _multi_gpu_device_map_kwargs() -> dict:
             device_map = get_device_map(None)
         else:
             return {}
-        if device_map == "balanced":
+        # Every sharding answer `get_device_map` gives; a "balanced"-only whitelist
+        # dropped the map the moment CUDA began asking for a planned one.
+        if device_map in ("balanced", "unsloth", "unsloth_balanced"):
             return {"device_map": device_map}
     except Exception as exc:
         logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
@@ -137,6 +140,17 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
     match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``.
     """
     return "dispatched on the cpu or the disk" in str(exc).lower()
+
+
+def _is_device_map_infeasible(exc: BaseException) -> bool:
+    """The planner refusing to place the model, matched by class name.
+
+    It raises rather than spilling a bitsandbytes model to CPU, budgeting from free
+    memory read before this process opens a context -- so a training or chat job
+    holding the other cards can make it refuse a model the single-device loader
+    still fits. By name, so the export does not require a version defining it.
+    """
+    return type(exc).__name__ == "DeviceMapInfeasible"
 
 
 class _CpuSpillRetry(Exception):
@@ -178,6 +192,17 @@ def _supports_kwarg(fn, name):
     return _accepts_by_keyword(params, name) or any(
         p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
     )
+
+
+def _gguf_shard_export_supported(fn):
+    """True when the exporter explicitly implements GGUF shard-size control."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return _accepts_by_keyword(params, "gguf_shard_size")
 
 
 def _imatrix_export_supported(save_fn):
@@ -637,7 +662,10 @@ class ExportBackend:
             if (
                 _device_map_override is None
                 and (
-                    isinstance(e, _CpuSpillRetry) or _is_oom_error(e) or _is_cpu_spill_rejection(e)
+                    isinstance(e, _CpuSpillRetry)
+                    or _is_oom_error(e)
+                    or _is_cpu_spill_rejection(e)
+                    or _is_device_map_infeasible(e)
                 )
                 and _multi_gpu_device_map_kwargs()
             ):
@@ -653,7 +681,7 @@ class ExportBackend:
 
         logger.warning(
             f"Multi-GPU export load unusable ({retry_reason}); retrying on "
-            f"the single-device loader default."
+            f"the sequential loader default."
         )
         self.cleanup_memory()
         return self.load_checkpoint(
@@ -662,7 +690,10 @@ class ExportBackend:
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
-            _device_map_override = {},
+            # Named, not omitted: an omitted map is unsloth's DEFAULT_DEVICE_MAP, which
+            # `requested_device_map` upgrades back to the planner, re-running the
+            # placement that just failed. A typed "sequential" passes through.
+            _device_map_override = {"device_map": "sequential"},
         )
 
     def _write_export_metadata(self, save_directory: str):
@@ -1061,6 +1092,8 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
+        private: bool = False,
+        gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -1073,6 +1106,9 @@ class ExportBackend:
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
+            imatrix_file: Optional importance matrix file path or boolean
+            private: Whether to make the Hub repository private
+            gguf_shard_size: Maximum final full-precision GGUF shard size
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -1093,6 +1129,21 @@ class ExportBackend:
             )
         # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        shard_hooks = []
+        if save_directory:
+            shard_hooks.append(self.current_model.save_pretrained_gguf)
+        if push_to_hub:
+            shard_hooks.append(self.current_model.push_to_hub_gguf)
+        if gguf_shard_size is not None and not all(
+            _gguf_shard_export_supported(hook) for hook in shard_hooks
+        ):
+            return (
+                False,
+                "This Unsloth build does not support GGUF shard-size control. "
+                "Upgrade unsloth and unsloth_zoo, or clear the shard-size option.",
+                None,
+            )
+        shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token too -- kept out of
         # imatrix_kw, which the push below shares and already names token= itself.
         local_token_kw = (
@@ -1160,6 +1211,7 @@ class ExportBackend:
                         quantization_method = quant_method,
                         **imatrix_kw,
                         **local_token_kw,
+                        **shard_kw,
                     )
 
                     # Scan only the owned root; exact reported paths cover external outputs.
@@ -1221,10 +1273,11 @@ class ExportBackend:
                         shutil.rmtree(model_tmp_root, ignore_errors = True)
 
                 # iterdir, not glob.glob: glob hides dot-leading names, so an empty
-                # model stem's ".Q4_K_M.gguf" got reported as "(none)".
+                # model stem's ".Q4_K_M.gguf" got reported as "(none)". This list is the
+                # success gate, so a leftover companion would report a run that wrote nothing.
                 final_ggufs = sorted(
                     str(p)
-                    for p in Path(abs_save_dir).iterdir()
+                    for p in drop_appledouble_metadata(list(Path(abs_save_dir).iterdir()))
                     if p.is_file() and p.name.lower().endswith(".gguf")
                 )
                 logger.info(
@@ -1263,7 +1316,9 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    private = private,
                     **imatrix_kw,
+                    **shard_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
@@ -1373,7 +1428,7 @@ class ExportBackend:
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
                         str(p)
-                        for p in Path(save_directory).iterdir()
+                        for p in drop_appledouble_metadata(list(Path(save_directory).iterdir()))
                         if p.is_file() and p.name.lower().endswith(".gguf")
                     )
                     logger.info(

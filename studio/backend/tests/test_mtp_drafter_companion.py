@@ -12,6 +12,7 @@ quant's main files), and local drafter detection / self-pairing rejection.
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -678,6 +679,41 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
         "mtp-gemma-4-E4B-it.gguf",
     ]
     assert captured["pick"](repo_files) == "mtp-gemma-4-E4B-it.gguf"
+
+
+def test_companion_downloads_forward_the_load_cancel_event(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+    event = threading.Event()
+    seen = []
+    b = LlamaCppBackend()
+    b.probe_server_capabilities = lambda binary = None: {
+        "supports_dspark": True,
+        "supports_dflash": True,
+    }
+
+    def _fake_companion(**kwargs):
+        seen.append((kwargs["label"], kwargs["cancel_event"]))
+        return None
+
+    b._download_companion_gguf = _fake_companion
+    b._download_mmproj(hf_repo = "org/repo", cancel_event = event)
+    b._download_mtp(hf_repo = "org/repo", cancel_event = event)
+    b._download_dspark(hf_repo = "org/repo", cancel_event = event)
+    b._download_dflash(hf_repo = "org/repo", cancel_event = event)
+
+    assert {label for label, _ in seen} == {
+        "mmproj",
+        "MTP drafter",
+        "DSpark drafter",
+        "DFlash drafter",
+    }
+    assert all(forwarded is event for _, forwarded in seen)
 
 
 # ── Reuse an on-disk drafter offline; fetch fresh online ─────────────
@@ -1404,6 +1440,89 @@ def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     assert found is not None and found.endswith("mtp-model.gguf")
 
 
+def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monkeypatch):
+    """Offline reuse must name the file the online picker names.
+
+    Lexical order put mtp-Qwen3.8-Flash-Next-BF16.gguf first, so a cached user got
+    the 7.77 GB slowest head while a fresh install downloaded the 2.79 GB shared
+    Q8_0 one.
+    """
+    import core.inference.llama_cpp as llama_cpp_module
+
+    published = [
+        f"MTP/mtp-Qwen3.8-Flash-Next-{tier}.gguf"
+        for tier in ("BF16", "Q4_K_M", "Q8_0", "shared-BF16", "shared-Q4_K_M", "shared-Q8_0")
+    ]
+    snap = tmp_path / "snap"
+    for rel in [*published, "UD-IQ1_S/model.gguf"]:
+        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).write_bytes(b"x")
+
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+
+    found = backend._cached_repo_mtp_drafter("unsloth/Qwen3.8-Flash-Next-GGUF")
+    assert found is not None
+    assert Path(found).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", (
+        f"offline reuse picked {Path(found).name}; the online picker takes "
+        f"{llama_cpp_module._pick_mtp(published)}"
+    )
+    # Same listing, same answer, whichever path reaches it first.
+    assert Path(found).name == Path(llama_cpp_module._pick_mtp(published)).name
+
+
+def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monkeypatch):
+    """Everything under MTP/ classifies as an mtp drafter: right for excluding
+    companions from menus, wrong for choosing what to launch."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    snap = tmp_path / "snap"
+    for rel in ("MTP/mmproj-BF16.gguf", "MTP/imatrix_unsloth.gguf", "model-Q4_K_M.gguf"):
+        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).write_bytes(b"x")
+
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+    assert backend._cached_repo_mtp_drafter("some/repo") is None
+
+
+def test_a_shared_head_pairs_with_its_target_in_the_local_scan(tmp_path):
+    """-shared marks the head's FORM, not its family.
+
+    mtp-<model>-shared-<quant>.gguf left a pairing stem of <model>-shared, which
+    never prefixes <model>-<quant>, so detect_mtp_file could not pair the head the
+    hub picker prefers: a local checkout of the files Studio had just downloaded
+    resolved differently from the download.
+    """
+    from utils.models.drafters.common import _drafter_matches_weight, _drafter_pairing_stem
+    from utils.models.model_config import detect_mtp_file
+
+    weight = "qwen3.8-flash-next-ud-iq1_s-00001-of-00003.gguf"
+    for tier in ("Q8_0", "BF16", "Q4_K_M"):
+        name = f"mtp-Qwen3.8-Flash-Next-shared-{tier}.gguf"
+        assert _drafter_pairing_stem(name, kind = "mtp") == "qwen3.8-flash-next"
+        assert _drafter_matches_weight(name, weight, kind = "mtp"), name
+    # A different family is still rejected, which is the whole point of pairing.
+    assert not _drafter_matches_weight("mtp-Some-Other-shared-Q8_0.gguf", weight, kind = "mtp")
+    # Only MTP publishes a borrowed form, so no other kind changes meaning.
+    assert _drafter_pairing_stem("dspark-Model-shared-Q8_0.gguf", kind = "dspark") == "model-shared"
+
+    root = tmp_path / "local"
+    (root / "MTP").mkdir(parents = True)
+    for i in (1, 2, 3):
+        (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
+    shared = root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+    shared.write_bytes(b"x" * 64)
+    found = detect_mtp_file(
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+    )
+    assert found is not None and Path(found).name == shared.name
+
+
 def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypatch):
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -1490,7 +1609,7 @@ def test_deleting_one_of_several_variants_keeps_the_dspark_drafter(tmp_path):
 
 
 def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
-    """Studio downloads the sidecar itself once the user opts in, and companion
+    """Unsloth downloads the sidecar itself once the user opts in, and companion
     filtering keeps it out of the variant menu, so leaving it behind is an
     invisible ~11 GB allocation. Nothing can launch it with no main GGUF left."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
@@ -1542,7 +1661,7 @@ def test_a_suffix_scheme_sidecar_is_not_mistaken_for_a_quant(tmp_path):
 
 def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):
     """Negative control: dflash is a family name a user picks for real weights,
-    and Studio never fetches it as a companion, so it is not reclaimable."""
+    and Unsloth never fetches it as a companion, so it is not reclaimable."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(

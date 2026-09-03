@@ -7,7 +7,7 @@ Standalone speech-to-text (STT) sidecar for dictation.
 Loads a Whisper model (via Transformers) in a spawn child of its own, separate
 from the chat model's inference subprocess, so dictation works with any chat
 model without evicting it. Curated defaults plus any Transformers-compatible
-Whisper repo; weights come through Studio's Model Hub and stay warm briefly
+Whisper repo; weights come through Unsloth's Model Hub and stay warm briefly
 between dictations. CUDA runs float16; MPS and CPU run float32.
 
 Everything except the model itself stays here: device choice, the Hub cache,
@@ -307,7 +307,7 @@ def resolve_model_id(model: Optional[str]) -> str:
     if _HF_REPO_ID.fullmatch(normalized):
         return normalized
     raise SttModelIdError(
-        "STT model must be one of Studio's defaults or a Hugging Face "
+        "STT model must be one of Unsloth's defaults or a Hugging Face "
         "repository in 'owner/model' form."
     )
 
@@ -347,7 +347,7 @@ def _active_hf_hub_cache() -> Path:
         from utils.hf_cache_settings import get_hf_cache_paths
 
         paths = get_hf_cache_paths()
-        # Studio's live cache setting takes precedence over environment defaults.
+        # Unsloth's live cache setting takes precedence over environment defaults.
         if paths.source == "studio":
             return Path(paths.hub_cache)
         explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()

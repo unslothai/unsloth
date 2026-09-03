@@ -619,7 +619,7 @@ def test_max_steps_dataset_rows_survives_unusable_numbers():
 
 
 def _single_process_launch(monkeypatch):
-    """Clear every launcher variable, so a bound reads as Studio's own launch."""
+    """Clear every launcher variable, so a bound reads as Unsloth's own launch."""
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
         monkeypatch.delenv(name, raising = False)
@@ -805,6 +805,65 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
     assert world_size_from_rank_files({"MLX_HOSTFILE": None}) == 1
     assert world_size_from_rank_files({"MLX_HOSTFILE": 17}) == 1
     assert world_size_from_rank_files({}) == 1
+
+
+def test_a_rank_file_read_is_capped_in_bytes_not_characters(tmp_path):
+    """The cap has to bound what comes off the disk, whatever the file holds.
+
+    A text-mode ``read(n)`` counts CHARACTERS, so a file of 4-byte codepoints
+    would pull four times ``MAX_WORLD_SIZE_FILE_BYTES`` into memory on a variable
+    that names an arbitrary path. Read in binary and the constant means what it
+    says; ``json.loads`` takes bytes, and non-UTF-8 raises ``UnicodeDecodeError``,
+    which is a ``ValueError`` and already discarded.
+    """
+    from core.training.dataset_bounds import (
+        MAX_WORLD_SIZE_FILE_BYTES,
+        world_size_from_rank_files,
+    )
+
+    # Sized so the readings disagree: under the cap in characters, over it in bytes.
+    # A text handle reads it whole and answers 8; binary truncates to one process,
+    # the safe direction, and reading the whole file is what the cap forbids.
+    wide = tmp_path / "wide.json"
+    filler = "\U0001f600" * (MAX_WORLD_SIZE_FILE_BYTES // 3)  # 4 bytes per character
+    hosts = [filler] + [f"10.0.0.{rank}:5000" for rank in range(7)]
+    # ensure_ascii would escape the codepoints back to ASCII and make the two
+    # readings agree, which is what this test needs them not to do.
+    wide.write_text(json.dumps(hosts, ensure_ascii = False), encoding = "utf-8")
+    assert len(wide.read_text(encoding = "utf-8")) < MAX_WORLD_SIZE_FILE_BYTES
+    assert wide.stat().st_size > MAX_WORLD_SIZE_FILE_BYTES
+    assert world_size_from_rank_files({"MLX_HOSTFILE": str(wide)}) == 1
+
+    # Non-UTF-8 bytes must be discarded, not raised.
+    invalid = tmp_path / "invalid.bin"
+    invalid.write_bytes(b'["\xff\xfe10.0.0.1:5000"]')
+    assert world_size_from_rank_files({"MLX_HOSTFILE": str(invalid)}) == 1
+
+
+def test_the_launcher_env_report_names_the_variable_that_claimed_the_ranks():
+    """A stale size variable is otherwise invisible.
+
+    The report exists so a user whose single-machine run is told it makes several
+    passes can see which variable said so. It must never raise and never grow
+    without bound: MLX_HOSTFILE legitimately carries a whole JSON payload.
+    """
+    from core.training.dataset_bounds import world_size_env_report
+
+    assert world_size_env_report({}) == "no launcher variable set"
+    assert world_size_env_report({"WORLD_SIZE": ""}) == "no launcher variable set"
+    assert world_size_env_report({"NOT_A_LAUNCHER": "8"}) == "no launcher variable set"
+
+    report = world_size_env_report({"OMPI_COMM_WORLD_SIZE": "8", "WORLD_SIZE": "2"})
+    assert "OMPI_COMM_WORLD_SIZE=8" in report and "WORLD_SIZE=2" in report
+
+    long_payload = world_size_env_report({"MLX_HOSTFILE": json.dumps(["h"] * 500)})
+    assert len(long_payload) < 200
+
+    class _Hostile:
+        def get(self, name):
+            raise RuntimeError("environment lookup exploded")
+
+    assert world_size_env_report(_Hostile()) == "no launcher variable set"
 
 
 def test_effective_packing_decides_the_opt_out():

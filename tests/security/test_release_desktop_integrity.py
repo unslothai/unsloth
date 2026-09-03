@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -127,7 +126,6 @@ def _run_step(
             "GITHUB_OUTPUT": str(tmp_path / "github-output"),
             "GH_TOKEN": "masked-token",
             "PATH": f"{fake_bin}:{env['PATH']}",
-            "ASSET_VERSION": "0_1_50_beta",
             "RUNNER_TEMP": str(tmp_path),
             "SOURCE_COMMIT_SHA": SOURCE_SHA,
             "TARGET_HAS_DESKTOP_ASSETS": "1" if target_has_desktop_assets else "0",
@@ -147,8 +145,8 @@ def _run_step(
     return result, log.read_text(encoding = "utf-8").splitlines()
 
 
-def _stage_assets(tmp_path: Path) -> dict[str, str]:
-    """Create release assets and return their digests."""
+def _stage_assets(tmp_path: Path) -> None:
+    """Create the one release asset set."""
     asset_dir = tmp_path / "desktop-release-assets"
     asset_dir.mkdir(exist_ok = True)
     signature = base64.b64encode(
@@ -157,21 +155,17 @@ def _stage_assets(tmp_path: Path) -> dict[str, str]:
         b"trusted comment: timestamp:1\tfile:test\n"
         b"test global signature bytes\n"
     )
-    digests = {}
     for name, payload in (
-        ("Unsloth-Desktop-0_1_50_beta-MacOS.dmg", b"disk image"),
-        ("Unsloth-Desktop-0_1_50_beta-Ubuntu.deb", b"package"),
-        ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz", b"mac updater"),
-        ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz.sig", signature),
-        ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage", b"linux updater"),
-        ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig", signature),
-        ("Unsloth-Desktop-0_1_50_beta-Windows.exe", b"installer"),
-        ("Unsloth-Desktop-0_1_50_beta-Windows.exe.sig", signature),
+        ("Unsloth-Desktop-MacOS.dmg", b"disk image"),
+        ("Unsloth-Desktop-Ubuntu.deb", b"package"),
+        ("Unsloth-Desktop-ARM64.app.tar.gz", b"mac updater"),
+        ("Unsloth-Desktop-ARM64.app.tar.gz.sig", signature),
+        ("Unsloth-Desktop-Linux.AppImage", b"linux updater"),
+        ("Unsloth-Desktop-Linux.AppImage.sig", signature),
+        ("Unsloth-Desktop-Windows.exe", b"installer"),
+        ("Unsloth-Desktop-Windows.exe.sig", signature),
     ):
         (asset_dir / name).write_bytes(payload)
-        if not name.endswith(".sig"):
-            digests[name] = hashlib.sha256(payload).hexdigest()
-    return digests
 
 
 def _run_create_release(
@@ -183,9 +177,9 @@ def _run_create_release(
 ):
     _stage_assets(tmp_path)
     if invalid_signature:
-        (
-            tmp_path / "desktop-release-assets" / "Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig"
-        ).write_text("Tauri signer diagnostic, not a signature\n", encoding = "utf-8")
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-Linux.AppImage.sig").write_text(
+            "Tauri signer diagnostic, not a signature\n", encoding = "utf-8"
+        )
     env = {
         "DESKTOP_RELEASE_NOTES": workflow["env"]["DESKTOP_RELEASE_NOTES"],
         "APP_VERSION": "0.1.50",
@@ -348,21 +342,18 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     assert "Desktop app for Unsloth." in notes
 
 
-def test_versioned_uploads_never_clobber_or_mutate_the_legacy_channel():
+def test_release_uploads_never_clobber_or_mutate_the_legacy_channel():
     uploads = _upload_commands(_workflow())
     versioned = [line for line in uploads if "$DESKTOP_RELEASE_TAG" in line]
     channel = [line for line in uploads if "desktop-latest" in line]
     assert len(versioned) == 2, uploads
     assert channel == [], uploads
 
-    # latest.json is the moving updater pointer and may already hold a carried
-    # forward manifest, so only it may be replaced. Bundles stay immutable.
     for line in versioned:
-        if "latest.json" not in line:
-            assert "--clobber" not in line, line
+        assert "--clobber" not in line, line
 
 
-def test_a_carried_forward_manifest_does_not_block_the_guard(tmp_path):
+def test_any_existing_manifest_blocks_republishing_the_release(tmp_path):
     workflow = _workflow()
     result, _ = _run_step(
         workflow,
@@ -372,14 +363,15 @@ def test_a_carried_forward_manifest_does_not_block_the_guard(tmp_path):
         target_has_desktop_assets = True,
         target_manifest_version = "v0.1.49-beta",
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "latest.json" in result.stderr
 
 
 def test_a_validation_only_run_touches_nothing_public():
     steps = _workflow()["jobs"]["publish-release"]["steps"]
     names = [step.get("name") for step in steps]
     mutating = (
-        "Publish versioned release assets",
+        "Publish release assets",
         "Publish versioned updater metadata",
         "Promote normal release to GitHub latest",
     )

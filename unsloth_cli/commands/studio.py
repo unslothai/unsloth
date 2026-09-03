@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
-from unsloth_cli import _studio_deps, _studio_runtime_gate
+from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -153,13 +153,14 @@ DESKTOP_SECRET_PREFIX = "desktop-"
 API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
 DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
+CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY = "credential_undelivered_password_hash"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_start_api_key_marker_env() -> bool:
-    """Consume the one-shot readiness marker passed across a Studio re-exec."""
+    """Consume the one-shot readiness marker passed across an Unsloth re-exec."""
     return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
 
 
@@ -237,7 +238,7 @@ _WINDOWS_CLI_ENTRYPOINT = (
 # package), for a package whose __init__ raises, and for one whose dependencies
 # an interrupted install never fetched. Every one of those is a venv the
 # trampoline cannot start, and this probe gates the headless-public strip of
-# .bootstrap_password, so a false pass there is a public Studio with no login
+# .bootstrap_password, so a false pass there is a public Unsloth with no login
 # page and no plaintext recovery credential. Paying the import is what makes the
 # probe's answer the launch's answer.
 _MANAGED_CLI_IMPORT_PROBE = (
@@ -289,10 +290,11 @@ def _is_application_control_block(error: OSError) -> bool:
 
 
 @contextlib.contextmanager
-def _studio_runtime_launch_guard(*, inherited: bool = False):
+def _studio_runtime_launch_guard(*, inherited: bool = False, wait: bool = False):
     guard = _studio_runtime_gate.studio_runtime_launch_guard(
         STUDIO_HOME,
         inherited = inherited,
+        wait = wait,
     )
     try:
         acquired = guard.__enter__()
@@ -304,7 +306,7 @@ def _studio_runtime_launch_guard(*, inherited: bool = False):
         )
         raise typer.Exit(1)
     except OSError as exc:
-        typer.echo(f"Error: could not coordinate the Studio launch: {exc}", err = True)
+        typer.echo(f"Error: could not coordinate the Unsloth launch: {exc}", err = True)
         raise typer.Exit(1)
 
     try:
@@ -334,16 +336,54 @@ def _stream_for_subprocess(stream):
 
 
 def _display_host_for_bind(run_mod, host: str) -> str:
-    return run_mod._resolve_external_ip() if host in ("0.0.0.0", "::") else host
+    return run_mod._display_host_for_bind(host)
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    return "::1" if host == "::" else "127.0.0.1"
+    from unsloth_cli._tool_policy import wildcard_loopback_host
+    return wildcard_loopback_host(host) or "127.0.0.1"
+
+
+def _require_bind_host(host: str) -> None:
+    if isinstance(host, str) and host.strip():
+        return
+    typer.echo(
+        "Error: --host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.",
+        err = True,
+    )
+    raise typer.Exit(2)
+
+
+def _normalize_wildcard_bind_host(host: str) -> str:
+    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
+    try:
+        return normalize_wildcard_bind_host(host)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(2) from None
+
+
+def _require_unambiguous_ephemeral_bind(host: str, port: int) -> None:
+    if port != 0:
+        return
+    from unsloth_cli._tool_policy import resolved_bind_address_count
+
+    if resolved_bind_address_count(host) <= 1:
+        return
+    typer.echo(
+        "Error: --port 0 cannot be used when --host resolves to multiple bind "
+        "addresses; choose an explicit port.",
+        err = True,
+    )
+    raise typer.Exit(2)
 
 
 def _url_host(host: str) -> str:
+    url_host = host.replace("%", "%25")
     return (
-        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+        f"[{url_host}]"
+        if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
+        else url_host
     )
 
 
@@ -401,7 +441,7 @@ def _managed_cli_package_present(python: Path) -> bool:
     directory is metadata, not a runnable CLI. It matters here specifically:
     this gate stands in front of the headless-public strip of
     .bootstrap_password, so passing a venv that then fails to import is the one
-    outcome the gate's placement exists to prevent -- a public Studio with no
+    outcome the gate's placement exists to prevent -- a public Unsloth with no
     login page and no plaintext recovery credential.
 
     The probe runs the trampoline's own ``from unsloth_cli import app`` rather
@@ -433,7 +473,7 @@ def _managed_cli_package_present(python: Path) -> bool:
         # runs THAT interpreter, so it is going to fail the same way, and the
         # on-disk layout cannot say otherwise. Fail closed, because the caller
         # strips .bootstrap_password on a headless public launch before it
-        # re-execs: passing here would leave a public Studio with no login page
+        # re-execs: passing here would leave a public Unsloth with no login page
         # and no plaintext recovery credential, which is worse than telling the
         # user to re-run setup.
         return False
@@ -632,13 +672,16 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
-def _install_state() -> dict:
+def _install_state(deep: bool = False) -> dict:
     """verify_install() result for this install root.
 
     STUDIO_HOME is an extra search root so a CLI installed outside the managed
     venv still inspects the venv the desktop app launches.
     """
-    return _studio_deps.install_state(extra_roots = (STUDIO_HOME / "unsloth_studio",))
+    return _studio_deps.install_state(
+        extra_roots = (STUDIO_HOME / "unsloth_studio",),
+        deep = deep,
+    )
 
 
 _RUN_MODULE = None
@@ -820,17 +863,42 @@ def _find_frontend_dist() -> Optional[Path]:
 
 # ── helpers for `unsloth studio run` ────────────────────────────────
 
+_direct_http_opener = None
 
-def _wait_for_server(port: int, timeout: int = 30) -> bool:
+
+def _direct_urlopen(request, timeout):
+    """Open a process-local URL without proxies or redirects."""
+    global _direct_http_opener
+
+    if _direct_http_opener is None:
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise urllib.error.HTTPError(
+                    req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+                )
+
+        _direct_http_opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _NoRedirect(),
+        )
+    return _direct_http_opener.open(request, timeout = timeout)
+
+
+def _wait_for_server(
+    port: int,
+    timeout: int = 30,
+    request_host: str = "127.0.0.1",
+) -> bool:
     """Poll ``GET /api/health`` until the server responds 200 or *timeout* expires."""
     import urllib.request
     import urllib.error
 
-    url = f"http://127.0.0.1:{port}/api/health"
+    url = f"http://{_url_host(request_host)}:{port}/api/health"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout = 2) as resp:
+            with _direct_urlopen(url, timeout = 2) as resp:
                 if resp.status == 200:
                     return True
         except (urllib.error.URLError, OSError, ConnectionError):
@@ -1093,31 +1161,95 @@ def _should_prompt_password_change(
         return True
     if cloudflare is not True:
         return False
-    return host in ("0.0.0.0", "::") and not api_only
+    from unsloth_cli._tool_policy import is_wildcard_host
+
+    return is_wildcard_host(host) and not api_only
 
 
 def _prompt_streams_interactive() -> bool:
     """The prompt needs a real terminal for input and for the masked echo."""
     try:
         return sys.stdin.isatty() and sys.stderr.isatty()
-    except (AttributeError, ValueError):
+    except (AttributeError, OSError, ValueError):
         return False
 
 
-def _bootstrap_deadline_active() -> bool:
-    """Whether the backend's bootstrap shutdown deadline will arm.
+def _clear_credential_undelivered(conn: sqlite3.Connection) -> None:
+    """Clear the durable delivery guard in its own transaction."""
+    with conn:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key = ?",
+            (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+        )
 
-    Mirror of studio/backend/auth/bootstrap_timeout.py bootstrap_timeout_seconds:
-    unset/blank/malformed UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT falls back to the 1h
-    default (a typo must not remove protection); 0 or negative disables it.
+
+def _credential_undelivered(conn: sqlite3.Connection) -> bool:
+    """True when the current password's hash belongs to a password never shown.
+
+    Matching on the hash (not mere existence) is what makes this self-healing:
+    `unsloth studio reset-password` rewrites the row and atomically clears the
+    pending state. A stale value is removed rather than refusing a launch
+    unprovably.
     """
-    raw = os.environ.get("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "").strip()
-    if not raw:
+    row = conn.execute(
+        """
+        SELECT s.value,
+               (SELECT password_hash FROM auth_user WHERE username = ?)
+        FROM app_secrets AS s
+        WHERE s.key = ?
+        """,
+        (DEFAULT_ADMIN_USERNAME, CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY),
+    ).fetchone()
+    if row is None:
+        return False
+    recorded, current_hash = row
+    if recorded and current_hash and hmac.compare_digest(recorded, current_hash):
         return True
-    try:
-        return int(raw) > 0
-    except ValueError:
-        return True
+    # Delete only the observed value, preserving any concurrent launcher's guard.
+    with conn:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key = ? AND value = ?",
+            (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY, recorded),
+        )
+    return False
+
+
+def _one_time_secret_console_stream(*, skip = None):
+    """Return an interactive-terminal stream to surface a one-time secret, or None.
+
+    Mirrors run.py's ``_one_time_secret_stream`` fail-closed contract for the CLI
+    parent: the auto-generated admin password must reach the operator's terminal
+    BEFORE we rotate away the seeded bootstrap credential. Prefers stderr, then
+    stdout, and requires a real TTY. A writable non-tty stream -- a ``> file``
+    redirect, nohup.out, a systemd-journald pipe -- is NOT an ephemeral console:
+    surfacing the credential there PERSISTS the plaintext where log consumers can
+    read it (CWE-532), so it is skipped. Returns None when neither stream is a
+    usable TTY -- a Windows pythonw/service wrapper (both absent), a closed stream,
+    or a headless (nohup/systemd) launch with redirected output -- in which case
+    the caller fails closed rather than rotate away and lose (or leak) the only
+    credential. The CLI parent has no session-log tee, so no _TeeStream unwrapping
+    is needed here.
+
+    *skip* excludes an already-resolved console so a delivery that RAISED on it can
+    retry the other one (see _deliver_auto_generated_credentials). The remaining
+    candidate still has to pass every check above, so the retry cannot downgrade to
+    a redirected, non-tty surface.
+    """
+    for candidate in (sys.stderr, sys.stdout):
+        try:
+            if candidate is None or getattr(candidate, "closed", False):
+                continue
+            if skip is not None and candidate is skip:
+                continue
+            if not callable(getattr(candidate, "write", None)):
+                continue
+            # Reject redirected streams that would persist the credential (CWE-532).
+            if not candidate.isatty():
+                continue
+        except (AttributeError, OSError, ValueError):
+            continue
+        return candidate
+    return None
 
 
 def _generate_reset_password() -> str:
@@ -1137,24 +1269,56 @@ def _cli_update_password(
     new_password: str,
     *,
     revoke_api_keys: bool = False,
-) -> None:
+    require_must_change: bool = False,
+    mark_credential_undelivered: bool = False,
+) -> bool:
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
-    revoke refresh tokens (PR #6651 finding), drop the desktop secret, and (for a
-    reset) the API keys the old credential could have minted. File cleanup happens
-    after commit; a failed unlink must not roll the change back.
+    persist or clear the undelivered-credential guard, revoke refresh tokens
+    (PR #6651 finding), revoke outstanding one-time link tokens, drop the desktop
+    secret, and (for a reset) the API keys the old credential could have minted.
+    File cleanup happens after commit; a failed unlink must not roll the change
+    back. Returns whether the row was written.
+
+    ``require_must_change`` makes it a compare-and-set on must_change_password,
+    mirroring backend storage.update_password: an auto-generated launch credential
+    must not overwrite a password a user chose in a Studio tab between the
+    must_change read and this write. Returns False when that guard rejects the
+    update, and then NOTHING else is revoked -- the password that won the race
+    belongs to another writer, and its sessions, link tokens, desktop secret and
+    API keys are not ours to destroy. That is why the early return sits above
+    ``if revoke_api_keys:`` in particular: that DELETE has no WHERE clause and
+    would wipe every key for every user while leaving the password as the winner
+    set it. The guard stays spelled ``require_must_change and rowcount == 0``
+    rather than a bare rowcount check, because the unguarded callers
+    (``reset_password``, ``_apply_supplied_password_before_launch``) rely on the
+    revocations running even when the UPDATE matches nothing, e.g. a renamed
+    admin row.
     """
     password_salt, password_hash = _hash_password(new_password)
+    guard = " AND must_change_password = 1" if require_must_change else ""
     with conn:
-        conn.execute(
-            """
+        cursor = conn.execute(
+            f"""
             UPDATE auth_user
             SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-            WHERE username = ?
+            WHERE username = ?{guard}
             """,
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
+        if require_must_change and cursor.rowcount == 0:
+            return False
+        if mark_credential_undelivered:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+                (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY, password_hash),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM app_secrets WHERE key = ?",
+                (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+            )
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.execute(
             "DELETE FROM app_secrets WHERE key IN (?, ?)",
@@ -1179,18 +1343,102 @@ def _cli_update_password(
             except OSError:
                 cleared = False
             if cleared:
-                typer.echo(
+                warning = (
                     f"Warning: could not remove stale {stale} file ({exc}); cleared its "
-                    "contents so the old credential cannot be reused.",
-                    err = True,
+                    "contents so the old credential cannot be reused."
                 )
             else:
-                typer.echo(
+                warning = (
                     f"Warning: could not remove or clear stale {stale} file ({exc}); the "
                     "old credential is still on disk. Remove it manually to prevent reuse "
-                    "after a reset.",
+                    "after a reset."
+                )
+            try:
+                typer.echo(
+                    warning,
                     err = True,
                 )
+            except Exception:
+                # Warning failure must not prevent delivery on the other console.
+                pass
+    return True
+
+
+def _echo_auto_generated_credentials(
+    username: str,
+    password: str,
+    *,
+    out = None,
+) -> None:
+    """Surface an auto-generated admin credential once, on the parent's console.
+
+    Writes to the pre-resolved *out* stream (the one the caller verified was usable
+    before it rotated the seeded recovery password) so the credential lands on the
+    exact console the fail-closed preflight checked; falls back to ``typer.echo`` on
+    stderr for callers that do not resolve one. Mirrors run.py's
+    ``_print_auto_generated_credentials``. Never logged elsewhere and never
+    persisted; the re-exec'd child then sees must_change=0 and no-ops.
+    """
+    line = "=" * 70
+    banner = (
+        f"\n{line}\n"
+        "  Unsloth Studio admin login (auto-generated for this public launch)\n"
+        f"    Username: {username}\n"
+        f"    Password: {password}\n"
+        "  Save this now: it is shown once, not written to disk, and not in the\n"
+        "  process list. Rotate later with `unsloth studio reset-password`.\n"
+        f"{line}"
+    )
+    if out is None:
+        typer.echo(banner, err = True)
+    else:
+        print(banner, file = out, flush = True)
+
+
+def _deliver_auto_generated_credentials(username: str, password: str, *, out) -> bool:
+    """Echo the one-time credential to *out*, retrying once on the other console.
+
+    Mirrors run.py's ``_deliver_one_time_credential``. The console preflight runs
+    before the rotation, but this write happens after ``_cli_update_password`` has
+    committed the generated password and removed the seeded bootstrap credential.
+    A terminal that disappears in between (a dropped SSH session; writes to the
+    orphaned pty raise OSError EIO) would make the echo raise, aborting the launch
+    with a live password nobody has ever seen. Retry once on the other console
+    (re-resolved through the same tty/closed/writable preflight, so the retry can
+    never land the credential in a redirected file or journal), and report whether
+    it reached a console at all so the caller can fail closed instead of crashing.
+    """
+    fallback = _one_time_secret_console_stream(skip = out)
+    # Never retry the stream that just failed (a stubbed resolver could return it).
+    for stream in (out, fallback if fallback is not out else None):
+        if stream is None:
+            continue
+        try:
+            _echo_auto_generated_credentials(username, password, out = stream)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _log_secret_free_delivery_failure() -> None:
+    """Explain an undeliverable one-time credential, WITHOUT echoing the secret.
+
+    Reached only when every console refused the banner, so this message may itself
+    fail to land; it is best-effort and deliberately carries no password (writing
+    the value anywhere else would persist it, CWE-532). The non-zero exit is the
+    part the caller can always rely on.
+    """
+    try:
+        typer.echo(
+            "Error: the auto-generated Unsloth admin password could not be shown: "
+            "the console went away after the pre-rotation check. It is now the live "
+            "password but was never displayed, so nothing can recover it. Reset the "
+            "credential with `unsloth studio reset-password`, then relaunch.",
+            err = True,
+        )
+    except Exception:
+        pass
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
@@ -1521,49 +1769,24 @@ def _enforce_password_change_before_exposure(
             )
             _strip_seeded_bootstrap_password_or_exit(context = "auth DB row unreadable")
             return
+        if row and _credential_undelivered(conn):
+            # A prior generated password was never shown. Fail closed until it is reset.
+            typer.echo(
+                "Error: refusing to publish Unsloth on a public Cloudflare URL: the "
+                "admin password auto-generated by an earlier launch was committed but "
+                "never displayed, so no one can log in. Reset it with `unsloth studio "
+                "reset-password`, then relaunch.",
+                err = True,
+            )
+            raise typer.Exit(1)
         if not row or not row[2]:
             return
         if not _prompt_streams_interactive():
-            # Only proceed headless if the bootstrap shutdown deadline will protect
-            # the launch: it never arms for api-only, and TIMEOUT=0 disables it.
-            if api_only or not _bootstrap_deadline_active():
-                typer.echo(
-                    "Error: refusing to publish Unsloth on a public Cloudflare "
-                    "URL: the default admin password was never changed, no "
-                    "terminal is attached to change it here, and the bootstrap "
-                    "shutdown deadline does not apply to this launch (api-only, "
-                    "or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the "
-                    "password first (run `unsloth studio` locally and log in, "
-                    "or re-run with a terminal attached), then retry.",
-                    err = True,
-                )
-                raise typer.Exit(1)
-            if child_self_suppresses:
-                # The child is this install's own backend, whose pre-bind gate sets
-                # app.state.suppress_bootstrap_injection, so the seeded credential
-                # is never served publicly even with the file on disk. Skip the
-                # strip: unnecessary here, and it would lock the user out if the
-                # tunnel never comes up (e.g. a --secure loopback whose tunnel
-                # fails). Keep the file for LOCAL recovery; must_change stays set
-                # and the deadline arms.
-                typer.echo(
-                    "Warning: Unsloth is being exposed publicly while the admin "
-                    "account still uses its auto-generated bootstrap password. The "
-                    "login page forces a change and the credential is never served "
-                    "on the public page. Set a new password by running `unsloth "
-                    "studio` locally with a terminal attached, or `unsloth studio "
-                    "reset-password`; Unsloth shuts down after ~1h if the password "
-                    "stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
-                    err = True,
-                )
-                return
-            # The strip permanently removes the only plaintext recovery credential.
-            # On --secure the bind is loopback, so the tunnel is the ONLY public
+            # On --secure the loopback bind means the tunnel is the only public
             # exposure: if cloudflared is provably unavailable no public URL can
-            # start, so stripping would just lock the user out. Refuse with the
-            # credential preserved. (A wildcard --cloudflare bind is public
-            # regardless of the tunnel, so it still strips below, as does any
-            # uncertainty.)
+            # ever come up, so refuse rather than rotate the recovery credential
+            # for a launch that will not start. (A wildcard --cloudflare bind is
+            # public regardless of the tunnel, so it still proceeds below.)
             if secure and _tunnel_binary_confirmed_unavailable():
                 typer.echo(
                     "Error: refusing to expose Unsloth: the Cloudflare tunnel binary "
@@ -1575,22 +1798,49 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
-            # Mixed-version safety: an OLD studio-venv child (predating this gate)
-            # has no pre-bind suppression and would read the seeded credential back
-            # from disk and inject it into the public HTML until the deadline.
-            # Delete the file here, in the parent, so a fresh child of ANY version
-            # reads None. must_change_password stays set, so the login page still
-            # forces a change and the timer still arms; only the on-disk copy goes.
-            _strip_seeded_bootstrap_password_or_exit(context = "no terminal to change it")
-            typer.echo(
-                "Warning: Unsloth is being exposed publicly while the admin account "
-                "still uses its auto-generated bootstrap password. The seeded password "
-                "file has been removed so it is not served on the public page. Set a new "
-                "password by running `unsloth studio` locally with a terminal attached, "
-                "or `unsloth studio reset-password`; Unsloth shuts down after ~1h if the "
-                "password stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
-                err = True,
-            )
+            # Rotate through the normal update path and show the password before re-exec,
+            # keeping it off child argv. Resolve a usable console before rotation so a
+            # headless launch cannot lose the only recovery credential.
+            out = _one_time_secret_console_stream()
+            if out is None:
+                typer.echo(
+                    "Error: refusing to rotate the Unsloth admin password: no usable "
+                    "console (stderr/stdout) to show the auto-generated credential, so "
+                    "it would be lost. The seeded bootstrap password is preserved; "
+                    "change the password first (`unsloth studio` locally with a "
+                    "terminal attached, or `unsloth studio reset-password`).",
+                    err = True,
+                )
+                raise typer.Exit(1)
+            generated = secrets.token_urlsafe(24)
+            if not _cli_update_password(
+                conn,
+                DEFAULT_ADMIN_USERNAME,
+                generated,
+                require_must_change = True,
+                mark_credential_undelivered = True,
+            ):
+                # A concurrent password won; launch with it and do not show ours.
+                winner = conn.execute(
+                    "SELECT password_hash FROM auth_user WHERE username = ?",
+                    (DEFAULT_ADMIN_USERNAME,),
+                ).fetchone()
+                if winner and _credential_undelivered(conn):
+                    # A concurrent launcher has not delivered its password; keep closed.
+                    typer.echo(
+                        "Error: refusing to publish Unsloth on a public Cloudflare URL: "
+                        "a concurrent launch committed an auto-generated admin password "
+                        "that has not been displayed yet. Retry after that launch shows "
+                        "the credential, or reset it with `unsloth studio reset-password`.",
+                        err = True,
+                    )
+                    raise typer.Exit(1)
+                return
+            # Delivery follows commit; retry the other console, then fail closed.
+            if not _deliver_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated, out = out):
+                _log_secret_free_delivery_failure()
+                raise typer.Exit(1)
+            _clear_credential_undelivered(conn)
             return
         password_salt, password_hash = row[0], row[1]
 
@@ -1633,6 +1883,7 @@ def _load_model_via_http(
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
+    request_host: str = "127.0.0.1",
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
     import json
@@ -1661,7 +1912,7 @@ def _load_model_via_http(
         payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
-    url = f"http://127.0.0.1:{port}/api/inference/load"
+    url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
     req = urllib.request.Request(
         url,
         data = data,
@@ -1672,7 +1923,7 @@ def _load_model_via_http(
         method = "POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
+        with _direct_urlopen(req, timeout = timeout) as resp:
             try:
                 body = json.loads(resp.read())
             except ValueError:
@@ -1722,7 +1973,7 @@ def studio_default(
         max = _PARALLEL_MAX,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Unsloth run settings "
             "(Parallel Slots) override it per load."
         ),
     ),
@@ -1871,7 +2122,9 @@ def studio_default(
             raise typer.Exit(2)
         return
 
+    _require_bind_host(host)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
@@ -1891,6 +2144,9 @@ def studio_default(
                 err = True,
             )
         host = "127.0.0.1"
+
+    host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # --verbose restores the per-request access logs that are suppressed by
     # default (plain-server path; the `run` subcommand has its own --verbose).
@@ -2049,29 +2305,32 @@ def studio_default(
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    with _studio_deps.studio_backend_imports("unsloth studio"):
-        run_mod = _load_run_module()
-    run_server = run_mod.run_server
+    with _studio_runtime_launch_guard(
+        inherited = runtime_gate_handoff,
+        wait = runtime_gate_acquire,
+    ):
+        with _studio_deps.studio_backend_imports("unsloth studio"):
+            run_mod = _load_run_module()
+        run_server = run_mod.run_server
 
-    if not silent:
-        display_host = _display_host_for_bind(run_mod, host)
-        typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
+        if not silent:
+            display_host = _display_host_for_bind(run_mod, host)
+            typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
 
-    run_kwargs = dict(
-        host = host,
-        port = port,
-        silent = silent,
-        api_only = api_only,
-        llama_parallel_slots = parallel,
-        cloudflare = cloudflare,
-        secure = secure,
-        enable_tools = enable_tools,
-    )
-    # Forward the frontend validated before the gate (in-venv path), so the
-    # in-process server serves exactly the dist we vouched for.
-    if resolved_frontend is not None:
-        run_kwargs["frontend_path"] = resolved_frontend
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        run_kwargs = dict(
+            host = host,
+            port = port,
+            silent = silent,
+            api_only = api_only,
+            llama_parallel_slots = parallel,
+            cloudflare = cloudflare,
+            secure = secure,
+            enable_tools = enable_tools,
+        )
+        # Forward the frontend validated before the gate (in-venv path), so the
+        # in-process server serves exactly the dist we vouched for.
+        if resolved_frontend is not None:
+            run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
     try:
@@ -2244,7 +2503,7 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Speculative decoding mode for GGUF models. DSpark automatically uses a "
-            "matching dspark-*.gguf sidecar when available. Default: unset (Studio auto)."
+            "matching dspark-*.gguf sidecar when available. Default: unset (Unsloth auto)."
         ),
     ),
     spec_draft_n_max: Optional[int] = typer.Option(
@@ -2283,7 +2542,7 @@ def run(
         help = (
             "Force server-side tools (web search, code execution) on or off for "
             "every request. Default: on for every bind, with a request's own "
-            "enable_tools: false (what the Studio UI sends) honored. /v1/messages "
+            "enable_tools: false (what the Unsloth UI sends) honored. /v1/messages "
             "takes the on direction per request (enable_tools) because it has no "
             "confirmation channel; the off direction still applies everywhere."
         ),
@@ -2385,7 +2644,7 @@ def run(
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Studio "
+            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Unsloth "
             "run settings (Parallel Slots) can override it per load."
         ),
     ),
@@ -2455,7 +2714,7 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
-    # A newer outer CLI can re-exec into an older Studio venv; pass this signal via
+    # A newer outer CLI can re-exec into an older Unsloth venv; pass this signal via
     # env so an older child ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
@@ -2552,6 +2811,8 @@ def run(
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
 
+    _require_bind_host(host)
+
     # --secure requires the tunnel; force a loopback bind so the raw port is never public.
     if secure:
         if cloudflare is False:
@@ -2569,6 +2830,9 @@ def run(
                 err = True,
             )
         host = "127.0.0.1"
+
+    host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # Tool policy does not depend on the bind: tools default on everywhere
     # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
@@ -2777,7 +3041,7 @@ def run(
         # Headless serving prints its own URL/API-key banner; the Tauri-only
         # TAURI_PORT line would corrupt that machine-parseable output.
         emit_tauri_port = False,
-        # We read the bound port back below, so a fallback past another Studio is
+        # We read the bound port back below, so a fallback past another Unsloth is
         # safe here and keeps side-by-side model runs working.
         abort_if_own_studio = False,
     )
@@ -2794,10 +3058,14 @@ def run(
     from studio.backend.run import _graceful_shutdown, _server
 
     try:
+        request_host = getattr(app.state, "server_request_host", None)
+        if not isinstance(request_host, str) or not request_host:
+            typer.echo("Error: server did not expose its bound address.", err = True)
+            raise typer.Exit(1)
         # 3. Wait for server health.
         if not silent:
             typer.echo("Starting Unsloth Studio...")
-        if not _wait_for_server(actual_port):
+        if not _wait_for_server(actual_port, request_host = request_host):
             typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
             raise typer.Exit(1)
 
@@ -2824,6 +3092,7 @@ def run(
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
+                request_host = request_host,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
@@ -3551,12 +3820,16 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
 
     if platform.system() == "Windows":
-        powershell_args = ["powershell.exe"]
+        # Resolved, not bare: the gate that runs immediately before this in setup() and update()
+        # had to stop trusting PATH for exactly this reason (#9440), and the Popen below has no
+        # OSError handler, so a bare name here just moves the same WinError 2 one frame later.
+        powershell = _studio_runtime_gate.resolve_windows_powershell()
+        powershell_args = [powershell]
         # PRESENCE, not truthiness: install.ps1 publishes this around the handoff and sets it to
         # "{}" when it found no proxy, so treating that as "nobody handed anything over" would
         # send an installer launch off to reload the profiles it deliberately discarded.
         if os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None:
-            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or ["powershell.exe"])
+            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or [powershell])
             if probed:
                 env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
         # -NoProfile unconditionally, not just on the hidden branch: install.ps1 hands off to
@@ -3758,7 +4031,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
 
     if is_windows:
-        ps_argv: List[str] = ["powershell.exe"]
+        ps_argv: List[str] = [_studio_runtime_gate.resolve_windows_powershell()]
         # -NoProfile unconditionally, as in _run_setup_script above: gating it on the hidden
         # branch left the visible console path, where a profile is exactly what IS loaded.
         ps_argv.append("-NoProfile")
@@ -3883,10 +4156,15 @@ def setup(
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
         _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        _run_setup_script(verbose = verbose)
+        # Duplicate-metadata repair can reinstall unsloth even when the
+        # installer set SKIP_STUDIO_BASE. Free and preserve the running Windows
+        # launcher exactly as the direct update path does.
+        with _WindowsLauncherUpdateTransaction() as launcher_update:
+            _run_setup_script(verbose = verbose)
+            launcher_update.validate_launcher()
 
 
-def _fail_if_install_damaged() -> None:
+def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     """Refuse to call an update successful when the tree it produced is damaged.
 
     pip considers a distribution with intact metadata already satisfied, so an
@@ -3895,10 +4173,41 @@ def _fail_if_install_damaged() -> None:
     is the shape behind "just re-run the installer", and it is only actionable
     if the update says so.
     """
-    if _studio_deps.running_outside_managed_venv((STUDIO_HOME / "unsloth_studio",)):
+    managed_venv = _studio_stage.runtime_root(STUDIO_HOME) / "unsloth_studio"
+    if _studio_deps.running_outside_managed_venv((managed_venv,)):
         # This CLI does not live in the venv the update just wrote, so its own
         # file list describes the wrong tree. Silence beats a wrong answer.
         return
+    managed_names = (package_name, "unsloth-zoo")
+    managed_conflicts = _studio_deps.installed_metadata_conflicts(names = managed_names)
+    if managed_conflicts:
+        typer.echo("", err = True)
+        typer.echo("Update finished, but Unsloth package metadata is inconsistent:", err = True)
+        for entry in managed_conflicts:
+            typer.echo(f"  {entry}", err = True)
+        typer.echo("", err = True)
+        typer.echo("The file check cannot safely choose between these records.", err = True)
+        typer.echo("The installer could not repair its managed package metadata.", err = True)
+        typer.echo(
+            "Recreate the managed environment before running the Unsloth installer again.", err = True
+        )
+        typer.echo("", err = True)
+        typer.echo(
+            "To update anyway without this check: unsloth studio update --no-verify", err = True
+        )
+        raise typer.Exit(code = 1)
+    other_conflicts = _studio_deps.installed_metadata_conflicts(exclude_names = managed_names)
+    if other_conflicts:
+        typer.echo("", err = True)
+        typer.echo("Warning: some other packages have duplicate metadata:", err = True)
+        for entry in other_conflicts:
+            typer.echo(f"  {entry}", err = True)
+        typer.echo("", err = True)
+        typer.echo("Unsloth skipped file verification for these packages.", err = True)
+        typer.echo(
+            "Reinstall the intended version from its original package source, or use a clean environment.",
+            err = True,
+        )
     damaged = _studio_deps.damaged_installed_files()
     if not damaged:
         return
@@ -3908,7 +4217,7 @@ def _fail_if_install_damaged() -> None:
         typer.echo(f"  {entry}", err = True)
     typer.echo("", err = True)
     typer.echo("An update cannot repair these. pip sees intact package metadata and", err = True)
-    typer.echo("reinstalls nothing, so Studio will keep failing to start. Reinstall", err = True)
+    typer.echo("reinstalls nothing, so Unsloth will keep failing to start. Reinstall", err = True)
     typer.echo("over the top:", err = True)
     # Carry a custom root into the command. The shim is a bare symlink and
     # _ensure_studio_env_exported only sets os.environ for this process, so the
@@ -3994,11 +4303,24 @@ def update(
         "--verify/--no-verify",
         help = "After updating, scan installed files for damage an update cannot repair.",
     ),
+    stage: bool = typer.Option(
+        False,
+        "--stage",
+        hidden = True,
+        help = "Prepare the update in a copy of the environment without touching the live one.",
+    ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
     # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
     # subprocess resolves the same install root the user originally chose.
     _ensure_studio_env_exported()
+    # `is True`, not truthiness: only the CLI resolves the parameter to a bool. An
+    # in-process caller that leaves it out gets typer's OptionInfo sentinel, which
+    # is truthy, and every such call would stage instead of updating.
+    if stage is True:
+        _stage_update(local = local, package = package, verbose = verbose, verify = verify)
+        return
+    staging = _studio_stage.is_staging()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
@@ -4054,25 +4376,58 @@ def update(
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     # main gained a runtime gate around setup; this branch replaced the
     # rename-to-.deleteme helpers with the launcher transaction. Both apply:
-    # the gate keeps a second Studio process off the venv, the transaction
+    # the gate keeps a second Unsloth process off the venv, the transaction
     # keeps the launcher recoverable across the setup it wraps.
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
-        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        with _WindowsLauncherUpdateTransaction() as launcher_update:
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff or staging):
+        if not staging:
+            _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        # Constructed after the idle scan, which test_studio_runtime_gate pins: the
+        # transaction wraps the mutation, so nothing of it may precede the gate.
+        launcher_transaction = _WindowsLauncherUpdateTransaction()
+        if staging:
+            # A staged run writes no launcher; there is nothing to keep recoverable.
+            launcher_transaction.enabled = False
+        with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
             # This deliberately runs even with --no-verify: the broad package scan
             # is optional, but a successful update must leave its own launcher usable.
             launcher_update.validate_launcher()
             if verify:
-                _fail_if_install_damaged()
+                _fail_if_install_damaged(package)
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
-    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+    if staging or os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
         if verbose:
             typer.echo("  refresh-launcher  skipped (Tauri update)")
         return
     _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _stage_update(*, local: bool, package: str, verbose: bool, verify: bool) -> None:
+    if local:
+        typer.echo("Error: --stage cannot be combined with --local.", err = True)
+        raise typer.Exit(2)
+    if _studio_stage.is_staging():
+        typer.echo("Error: --stage cannot run inside a staged update.", err = True)
+        raise typer.Exit(2)
+    args = ["--package", package]
+    if verbose:
+        args.append("--verbose")
+    if not verify:
+        args.append("--no-verify")
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        try:
+            result = _studio_stage.stage(STUDIO_HOME, update_args = args, echo = typer.echo)
+        except _studio_stage.StageError as exc:
+            typer.echo(f"[TAURI:ERROR] {exc}")
+            raise typer.Exit(1)
+        except Exception as exc:
+            # convert staging exceptions to the structured error stream consumed by the desktop.
+            typer.echo(f"[TAURI:ERROR] {type(exc).__name__}: {exc}")
+            raise typer.Exit(1)
+    typer.echo(f"Staged Unsloth Studio {result['backend_version']} at {result['root']}")
 
 
 class _WindowsLauncherUpdateTransaction:
@@ -4473,9 +4828,9 @@ class _WindowsLauncherUpdateTransaction:
         self.launcher = scripts / "unsloth.exe"
         self.backup = scripts / "unsloth.exe.update-backup"
         self.legacy_backup = scripts / "unsloth.exe.deleteme"
-        # Under the Studio home, not the venv: setup.ps1 removes the whole
+        # Under the Unsloth home, not the venv: setup.ps1 removes the whole
         # $VenvDir to rebuild a stale torch, and an open handle inside it makes
-        # Windows refuse the recursive delete. One lock per Studio home is the
+        # Windows refuse the recursive delete. One lock per Unsloth home is the
         # right grain anyway, since that is what names the managed venv.
         self.lock_path = STUDIO_HOME / "unsloth.exe.update-lock"
         # install.ps1 hardlinks this to the launcher, so it survives the old
@@ -4616,8 +4971,11 @@ def verify_install(
 
     Exits 0 when complete, 1 otherwise. setup.sh / setup.ps1 use the exit code
     to decide whether the "already up to date" fast path may be taken.
+
+    Scans the installed files too, unlike `desktop-capabilities`: nothing times
+    this one out.
     """
-    state = _install_state()
+    state = _install_state(deep = True)
 
     if json_output:
         typer.echo(json.dumps(state, sort_keys = True))

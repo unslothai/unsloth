@@ -174,9 +174,10 @@ def _snapshot_relative_names(repo) -> Iterable[str]:
     relative name, so a GGUF filed under ``FLUX.2-klein/model-Q4_K_M.gguf`` is a dependent that a
     basename-only scan cannot see. The inventory and cleanup scanners already reconstruct it this
     way; this is the same reconstruction, so all three agree on what a cached file is called."""
+    from hub.services.models.cache_inventory import cached_repo_files
     for revision in getattr(repo, "revisions", ()) or ():
         snapshot = getattr(revision, "snapshot_path", None)
-        for file in getattr(revision, "files", ()) or ():
+        for file in cached_repo_files(revision):
             name = str(getattr(file, "file_name", "") or "")
             path = getattr(file, "file_path", None)
             if path and snapshot:

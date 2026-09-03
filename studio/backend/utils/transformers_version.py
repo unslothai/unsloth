@@ -7,8 +7,8 @@ Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
 tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require a
 newer 5.x sidecar.  Dense NemotronH models (e.g. NVIDIA-Nemotron-3-Nano-4B) use
 MLP layers that only transformers>=5.10 can parse natively, so they go on the
-5.10 sidecar too.  Everything else needs the default 4.57.x that ships with
-Unsloth.
+5.10 sidecar too.  Everything else runs on the ambient default that ships with
+Unsloth (TRANSFORMERS_DEFAULT_VERSION).
 
 Two separate target directories are maintained:
   - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
@@ -52,6 +52,10 @@ from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+
+# Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
+# cannot pin a transformers version into sys.modules before the sidecar is activated.
+from utils.training_runs import base_model_from_run_dir_name
 
 logger = get_logger(__name__)
 
@@ -287,6 +291,9 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "locateanything",
     "diffusion-gemma",
     "diffusiongemma",
+    "higgs-tts-2",
+    "higgs-audio-v2",
+    "higgs-audio-v3-tts",
 )
 
 # Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
@@ -307,12 +314,16 @@ _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "Gemma4ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
     "LocateAnythingForConditionalGeneration",
+    "HiggsAudioV2ForConditionalGeneration",
+    "HiggsMultimodalQwen3ForConditionalGeneration",
 }
 _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "diffusion_gemma",
     "gemma4",
     "kimi_k3",
     "locateanything",
+    "higgs_audio_v2",
+    "higgs_multimodal_qwen3",
 }
 
 # Architecture classes / model_type values requiring transformers 5.3.0 (via config.json).
@@ -488,7 +499,9 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
         _pp = os.environ.get("PYTHONPATH", "")
         os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+        logger.info(
+            "Using default transformers (%s) for %s", TRANSFORMERS_DEFAULT_VERSION, model_name
+        )
 
 
 def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool:
@@ -565,10 +578,9 @@ def recorded_local_base(model_name) -> "tuple[str | None, bool]":
                     return base, False
         # Only reachable without a Hub call when there is no adapter_config.json; with one,
         # the resolver tries get_base_model_from_lora first, which needs_hub already covers.
-        if not adapter_cfg and root.name.startswith("unsloth_") and _has_adapter_weights(root):
-            parts = root.name.split("_")
-            if len(parts) >= 2:
-                return "unsloth/" + "_".join(parts[1:-1]), False
+        base = base_model_from_run_dir_name(root.name)
+        if base and not adapter_cfg and _has_adapter_weights(root):
+            return base, False
         return None, adapter_cfg
     except Exception:
         return None, True
@@ -641,16 +653,14 @@ def _resolve_base_model(model_name: str) -> str:
             )
 
     # adapter_model-only LoRA: no config, so parse the unsloth_<model>_<timestamp> dir name.
-    if local_path.name.startswith("unsloth_") and _has_adapter_weights(local_path):
-        parts = local_path.name.split("_")
-        if len(parts) >= 2:  # unsloth_<model...>_<timestamp>
-            base = "unsloth/" + "_".join(parts[1:-1])
-            logger.info(
-                "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
-                model_name,
-                base,
-            )
-            return base
+    base = base_model_from_run_dir_name(local_path.name)
+    if base and _has_adapter_weights(local_path):
+        logger.info(
+            "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
+            model_name,
+            base,
+        )
+        return base
 
     return model_name
 
@@ -1432,7 +1442,7 @@ _TRUSTSTORE_VENDOR = """
     + inline_gate_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
-if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
+if target_dir:  # empty = probe the ambient (default-tier) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
 try:
     from transformers import AutoConfig
@@ -1469,7 +1479,7 @@ def _stderr_is_transient(err: str) -> bool:
 
 def _probe_tier_venvs():
     """tier -> (target_dir, ensure_fn), a function so the later _ensure_* defs resolve. The
-    ``default`` entry (empty target_dir = ambient 4.57.x) is only probed with include_default."""
+    ``default`` entry (empty target_dir = ambient default) is only probed with include_default."""
     return {
         "default": ("", lambda: True),
         "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
@@ -1561,8 +1571,8 @@ def _probe_tier(
       - all tiers probed, none parse -> remote-code/custom model_type; keep *floor*.
 
     Known-5.x callers use ``floor='530'``; weak-signal callers (config saved by transformers
-    5.x) use ``include_default=True, floor='default'`` so a model that still parses on 4.57.x
-    stays on the default. Cached per _probe_cache_key (process lifetime). No Hub sha is
+    5.x) use ``include_default=True, floor='default'`` so a model that still parses on the
+    ambient default stays there. Cached per _probe_cache_key (process lifetime). No Hub sha is
     resolved: that would import huggingface_hub before the sidecar is on sys.path.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes", "on"):
@@ -1698,14 +1708,14 @@ def get_transformers_tier(
     Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
     ``"550"`` for models needing transformers 5.5.0 (e.g. Gemma 4 or mlx-vlm processors),
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
-    or ``"default"`` for everything else (4.57.x).
+    or ``"default"`` for everything else.
 
     Strong signals (architecture/model_type, name substrings) are fast paths. For local paths,
     ``config.json`` is checked before name heuristics to avoid false-positives from directory
     name fragments. When the only signal is the 5.x tokenizer class, the exact tier is resolved
     by probing AutoConfig in each sidecar; a config saved by transformers 5.x with no fast-path
-    match is probed default-first, catching a new 5.x-only arch while 4.57.x-loadable models
-    stay on default.
+    match is probed default-first, catching a new 5.x-only arch while models the ambient
+    default can load stay on default.
 
     ``probe=False`` skips the sidecar subprocesses (used by the cheap
     :func:`needs_transformers_5`); it still classifies via cheap signals (a 5.x-saved config
@@ -1812,7 +1822,8 @@ def get_transformers_tier(
                 if tier != "default":
                     return tier
             logger.info(
-                "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
+                "Transformers tier default (%s) selected for %s (local config.json no match)",
+                TRANSFORMERS_DEFAULT_VERSION,
                 model_name,
             )
             return "default"
@@ -1892,7 +1903,11 @@ def get_transformers_tier(
         if tier != "default":
             return tier
 
-    logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
+    logger.info(
+        "Transformers tier default (%s) selected for %s (no match)",
+        TRANSFORMERS_DEFAULT_VERSION,
+        model_name,
+    )
     return "default"
 
 

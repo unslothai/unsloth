@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""run.py writes the Studio PID files; `unsloth studio stop` globs for them.
+"""run.py writes the Unsloth PID files; `unsloth studio stop` globs for them.
 
 Nothing else ties the writer's filename to the reader's glob, and each side's own
 tests hardcode the names they expect, so a rename on either side alone leaves both

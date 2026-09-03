@@ -110,7 +110,14 @@ test("highlighting is capped, and the cap is one constant", () => {
     markdownPluginNeeds("x".repeat(MAX_HIGHLIGHT_CHARS + 1)).code,
     false,
   );
-  const cell = source("components/assistant-ui/tool-code-cell.tsx");
-  assert.match(cell, /import \{ MAX_HIGHLIGHT_CHARS \} from "@\/lib\/markdown-plugins";/);
-  assert.doesNotMatch(cell, /const MAX_HIGHLIGHT_CHARS = /);
+  const imports =
+    /import \{[^}]*\bMAX_HIGHLIGHT_CHARS\b[^}]*\} from "@\/lib\/markdown-plugins";/;
+  for (const path of [
+    "components/assistant-ui/tool-code-cell.tsx",
+    "components/assistant-ui/attachment-preview.tsx",
+  ]) {
+    const cell = source(path);
+    assert.match(cell, imports, path);
+    assert.doesNotMatch(cell, /const MAX_HIGHLIGHT_CHARS = /, path);
+  }
 });

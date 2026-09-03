@@ -14,7 +14,9 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
+import sqlite3
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -416,7 +418,7 @@ def test_reexec_forwards_context_length_alias(monkeypatch):
 
 
 def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
-    """An explicit manual policy must survive the Studio venv re-exec."""
+    """An explicit manual policy must survive the Unsloth venv re-exec."""
     result, captured = _invoke_run(
         monkeypatch,
         _BASE + ["--gpu-memory-mode", "manual"],
@@ -427,7 +429,7 @@ def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
 
 
 def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
-    """The default stays compatible with older Studio venv launchers."""
+    """The default stays compatible with older Unsloth venv launchers."""
     result, captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, result.output
     assert "--gpu-memory-mode" not in captured[0]["argv"]
@@ -512,7 +514,7 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
         captured["timeout"] = timeout
         return BytesIO(b'{"model": "owner/model-GGUF"}')
 
-    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", urlopen)
     result = studio_mod._load_model_via_http(
         port = 8888,
         api_key = "sk-test",
@@ -521,11 +523,92 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
         max_seq_length = 0,
         load_in_4bit = True,
         gpu_memory_mode = mode,
+        request_host = "::1",
     )
 
     assert result == {"model": "owner/model-GGUF"}
     assert json.loads(captured["request"].data) == expected
     assert captured["request"].get_header("Authorization") == "Bearer sk-test"
+    assert captured["request"].full_url == "http://[::1]:8888/api/inference/load"
+
+
+def test_health_poll_brackets_an_ipv6_request_host(monkeypatch):
+    studio_mod = _load_run_command()
+    urls = []
+
+    class _Healthy(BytesIO):
+        status = 200
+
+    def _urlopen(url, timeout):
+        urls.append((url, timeout))
+        return _Healthy()
+
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", _urlopen)
+
+    assert studio_mod._wait_for_server(8888, timeout = 1, request_host = "::1") is True
+    assert urls == [("http://[::1]:8888/api/health", 2)]
+
+
+def test_internal_request_urls_encode_an_ipv6_scope(monkeypatch):
+    studio_mod = _load_run_command()
+    urls = []
+
+    class _Healthy(BytesIO):
+        status = 200
+
+    def _urlopen(url, timeout):
+        urls.append(url)
+        return _Healthy()
+
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", _urlopen)
+
+    assert studio_mod._wait_for_server(8888, timeout = 1, request_host = "fe80::1234%7") is True
+    assert urls == ["http://[fe80::1234%257]:8888/api/health"]
+
+
+def test_process_local_http_opener_disables_proxies_and_redirects(monkeypatch):
+    studio_mod = _load_run_command()
+    handlers = []
+    opened = []
+
+    class _Opener:
+        def open(self, request, timeout):
+            opened.append((request, timeout))
+            return BytesIO(b"ok")
+
+    def _build_opener(*configured):
+        handlers.extend(configured)
+        return _Opener()
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+    monkeypatch.setattr(studio_mod, "_direct_http_opener", None)
+    monkeypatch.setattr(studio_mod.urllib.request, "build_opener", _build_opener)
+
+    with studio_mod._direct_urlopen("http://192.0.2.24:8888/api/health", timeout = 2):
+        pass
+
+    proxy_handler = next(
+        handler
+        for handler in handlers
+        if isinstance(handler, studio_mod.urllib.request.ProxyHandler)
+    )
+    redirect_handler = next(
+        handler
+        for handler in handlers
+        if isinstance(handler, studio_mod.urllib.request.HTTPRedirectHandler)
+    )
+    assert proxy_handler.proxies == {}
+    assert opened == [("http://192.0.2.24:8888/api/health", 2)]
+    request = studio_mod.urllib.request.Request("http://192.0.2.24:8888/api/inference/load")
+    with pytest.raises(studio_mod.urllib.error.HTTPError, match = "refusing redirect"):
+        redirect_handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "http://attacker.example/steal",
+        )
 
 
 def test_load_model_http_payload_for_dspark(monkeypatch):
@@ -536,7 +619,7 @@ def test_load_model_http_payload_for_dspark(monkeypatch):
         captured["request"] = request
         return BytesIO(b'{"model": "owner/model-GGUF"}')
 
-    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", urlopen)
     studio_mod._load_model_via_http(
         port = 8888,
         api_key = "sk-test",
@@ -568,7 +651,7 @@ def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
             ).encode()
         )
 
-    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", urlopen)
     with pytest.raises(RuntimeError) as excinfo:
         studio_mod._load_model_via_http(
             port = 8888,
@@ -587,9 +670,7 @@ def test_load_model_http_rejects_a_truncated_padded_body(monkeypatch, body):
     """A 200 the load never finished under must fail like any other load failure."""
     studio_mod = _load_run_command()
 
-    monkeypatch.setattr(
-        studio_mod.urllib.request, "urlopen", lambda request, timeout: BytesIO(body)
-    )
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", lambda request, timeout: BytesIO(body))
     with pytest.raises(RuntimeError) as excinfo:
         studio_mod._load_model_via_http(
             port = 8888,
@@ -754,12 +835,17 @@ def test_studio_default_exposes_parallel_option():
 
 
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
-def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value, stub_tool_policy_state):
+def test_in_venv_path_passes_parallel_to_run_server(
+    monkeypatch, tmp_path, value, stub_tool_policy_state
+):
     """In-venv path must forward --parallel to
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
 
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     # Pin STUDIO_HOME so sys.prefix.startswith() picks the in-venv branch.
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -831,29 +917,57 @@ def test_reexec_forwards_api_only(monkeypatch, extra, present):
     assert ("--api-only" in argv) is present, argv
 
 
-def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
-    """`--secure --api-only` used to re-exec; the pre-exposure gate now refuses
-    it, because api-only has no login page and the bootstrap deadline does not
-    apply, so the seeded password could never be changed."""
+def test_secure_api_only_autogenerates_then_reexecs(monkeypatch, tmp_path):
+    """`--secure --api-only` proceeds again, on an auto-generated admin password.
+
+    It used to be refused outright: api-only has no login page, so the bootstrap
+    SHUTDOWN DEADLINE never armed, and the seeded default would have stayed live on
+    a public URL indefinitely. Auto-generation removes that premise rather than
+    working around it -- the gate rotates the seeded credential and prints the new
+    one once BEFORE any re-exec, so nothing public is ever reachable under a
+    default password and there is no deadline left to depend on.
+    """
     studio_mod = _load_run_command()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_tunnel_binary_confirmed_unavailable", lambda: False)
+    # CliRunner's captured stderr is not a tty and the one-time-secret selector
+    # refuses to write a credential to a non-tty; hand it a console so this test
+    # reaches the rotation rather than stopping at the preflight (which has its own
+    # test, test_studio_password_prompt.py).
+    shown = io.StringIO()
+    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda **_kw: shown)
 
     result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
 
-    assert captured == [], captured
-    assert result.exit_code != 0
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "default admin password was never changed" in combined.lower()
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, captured
+    banner = shown.getvalue()
+    assert "auto-generated for this public launch" in banner.lower()
+
+    # The seeded default is gone: must_change cleared, bootstrap file removed.
+    with sqlite3.connect(tmp_path / "auth" / "auth.db") as conn:
+        must_change = conn.execute(
+            "SELECT must_change_password FROM auth_user WHERE username = ?",
+            (studio_mod.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()[0]
+    assert must_change == 0
+    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+
+    # The credential never crosses to the child on argv.
+    assert not any("password" in tok.lower() for tok in captured[0]["argv"]), captured[0]["argv"]
 
 
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
 def test_in_venv_path_passes_api_only_to_run_server(
-    monkeypatch, extra, expected, stub_tool_policy_state
+    monkeypatch, tmp_path, extra, expected, stub_tool_policy_state
 ):
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 

@@ -85,3 +85,37 @@ export function readReferenceFile(
   reader.onerror = () => handlers.onError(`Could not read the ${kind} file`);
   reader.readAsDataURL(file);
 }
+
+export interface ReferenceSelectionClaim {
+  isCurrent(): boolean;
+}
+
+export interface ReferenceSelectionGate {
+  begin(): ReferenceSelectionClaim;
+  invalidate(): void;
+  mount(): () => void;
+}
+
+/** Create a latest-wins guard for asynchronous picker reads. */
+export function createReferenceSelectionGate(): ReferenceSelectionGate {
+  let revision = 0;
+  let live = true;
+  return {
+    begin() {
+      revision += 1;
+      const claimed = revision;
+      return { isCurrent: () => live && claimed === revision };
+    },
+    invalidate() {
+      revision += 1;
+    },
+    mount() {
+      live = true;
+      return () => {
+        live = false;
+        // A StrictMode remount must not revive the previous mount's claim.
+        revision += 1;
+      };
+    },
+  };
+}

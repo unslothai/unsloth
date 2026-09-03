@@ -32,6 +32,7 @@ from hub.utils.gguf import (
     gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
+    is_imatrix_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
@@ -45,6 +46,7 @@ from hub.utils.hf_cache_state import (
     latest_snapshot_dir,
     repo_cache_dir_has_incomplete_blobs,
 )
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 # Inventory is invalidated explicitly on every app-driven cache mutation, so
 # this TTL only bounds staleness from out-of-band edits while skipping re-walks
@@ -251,13 +253,12 @@ def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
     return refs_by_commit
 
 
-def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
-    """Rebuild the scan entry for a repo dropped *solely* over leftover refs.
+def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
+    """Recover readable revisions from a repo omitted by ``scan_cache_dir``.
 
-    ``scan_cache_dir`` omits an intact repo when a ``refs/<branch>`` names a commit with no
-    ``snapshots/<commit>/`` dir, which ``snapshot_download`` creates by writing ``refs/main`` before
-    fetching the first file, hiding the repo from every inventory endpoint. Read-only: pruning the
-    ref cannot be race-free. None whenever anything other than leftover refs failed the scan.
+    Dangling refs, broken snapshot links, and stray snapshot files can hide an otherwise usable
+    repo. Skip those bad entries and rebuild a read-only row from the intact files. Return None
+    when nothing remains or the on-disk state does not explain the omission.
     """
     identity = _hf_repo_identity(repo_dir.name)
     if identity is None:
@@ -277,16 +278,20 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     blob_stats: dict[Path, object] = {}
     revisions: set[_RecoveredRevisionInfo] = set()
     dangling = dict(refs_by_commit)
+    # Entries that explain why upstream dropped the repo.
+    skipped = 0
     for snapshot in snapshot_entries:
         if snapshot.name in _CACHE_ENTRIES_TO_IGNORE:
             continue
         try:
             if not snapshot.is_dir():
-                # Upstream treats a file here as corruption; defer to it.
-                return None
-            entries = sorted(snapshot.rglob("*"))
+                # A stray file is not a revision.
+                skipped += 1
+                continue
+            entries = drop_appledouble_metadata(sorted(snapshot.rglob("*")))
         except OSError:
-            return None
+            skipped += 1
+            continue
         files: set[_RecoveredFileInfo] = set()
         for entry in entries:
             try:
@@ -295,8 +300,9 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
                 blob_path = entry.resolve()
                 stat = blob_stats.get(blob_path) or blob_path.stat()
             except OSError:
-                # Broken symlink / unreadable blob: upstream raises here too.
-                return None
+                # Keep the revision; broken links remain a separate partial signal.
+                skipped += 1
+                continue
             blob_stats[blob_path] = stat
             files.add(
                 _RecoveredFileInfo(
@@ -313,7 +319,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
                 max(f.blob_last_modified for f in files) if files else snapshot.stat().st_mtime
             )
         except OSError:
-            return None
+            skipped += 1
+            continue
         revisions.add(
             _RecoveredRevisionInfo(
                 commit_hash = snapshot.name,
@@ -327,8 +334,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     # Nothing fetched yet, so the repo is not on disk.
     if not revisions:
         return None
-    # Every ref resolved, so upstream dropped this repo for some other reason.
-    if not dangling:
+    # Nothing here explains why upstream omitted the repo.
+    if not dangling and not skipped:
         return None
     try:
         repo_stats = repo_dir.stat()
@@ -350,8 +357,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     )
 
 
-def _with_repos_hidden_by_dangling_refs(scan, cache_root: Path):
-    """Add back the repos ``scan_cache_dir`` dropped over a dangling ref."""
+def _with_repos_dropped_by_scan(scan, cache_root: Path):
+    """Add back the repos ``scan_cache_dir`` dropped over one bad entry."""
     try:
         repo_dirs = sorted(entry for entry in cache_root.iterdir() if "--" in entry.name)
     except OSError:
@@ -368,14 +375,15 @@ def _with_repos_hidden_by_dangling_refs(scan, cache_root: Path):
         try:
             if str(repo_dir.resolve(strict = False)) in scanned:
                 continue
-            entry = _recover_repo_hidden_by_dangling_refs(repo_dir)
+            entry = _recover_repo_dropped_by_scan(repo_dir)
         except (OSError, RuntimeError, ValueError):
             continue
         if entry is None:
             continue
         logger.info(
-            "Recovered HF cache repo %s hidden by a dangling ref (%d revision(s) on disk)",
+            "Recovered HF cache repo %s hidden by %s (%d revision(s) on disk)",
             entry.repo_id,
+            "a dangling ref" if _repo_has_a_dangling_ref(repo_dir) else "an unreadable entry",
             len(entry.revisions),
         )
         recovered.append(entry)
@@ -403,7 +411,7 @@ def _compute_all_hf_cache_scans() -> list:
             scan = scan_cache_dir(cache_dir = str(cache_root))
             # Only a warned-about scan can hide a repo, so never walk a healthy cache twice.
             if getattr(scan, "warnings", None):
-                scan = _with_repos_hidden_by_dangling_refs(scan, cache_root)
+                scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
         except Exception as exc:
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
@@ -614,9 +622,8 @@ def default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
 def _repo_has_a_dangling_ref(repo_cache_dir: Path) -> bool:
     """Whether ANY ref under ``refs/`` names a commit with no snapshot dir.
 
-    ``_default_ref_names_an_absent_snapshot`` only checks ``refs/main``, but the recovery admits a
-    repo over a leftover ref of any name, so the two must agree or a repo recovered over
-    ``refs/stale`` is judged as though upstream had published it.
+    Check every ref because recovery is not limited to ``refs/main``. Repos recovered only for
+    unreadable entries correctly return False.
     """
     refs_by_commit = _read_refs_by_commit(repo_cache_dir / "refs")
     if refs_by_commit is None:
@@ -777,7 +784,17 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
+        if (
+            not is_gguf_filename(rel)
+            or is_mmproj_filename(rel)
+            or is_mtp_drafter_path(rel)
+            or is_imatrix_filename(rel)
+        ):
+            continue
+        # Metadata vouching for a quant marks a torn snapshot ready: a set whose sidecars are
+        # all present but whose weights are not answers the shard count exactly as the real
+        # files would, in its own family and under their quant.
+        if is_appledouble_metadata(path):
             continue
         quant = gguf_variant_key(rel)
         # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
@@ -975,7 +992,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     unreachable_root: set[str] = set()
     unreadable: set[str] = set()
     try:
-        paths = list(snapshot_dir.rglob("*"))
+        paths = drop_appledouble_metadata(list(snapshot_dir.rglob("*")))
     except OSError:
         return None
     for path in paths:
@@ -1285,6 +1302,9 @@ def _recovered_snapshot_cannot_serve(
     manifest and ``.incomplete``/broken-symlink all read false and a snapshot short a shard looks
     runnable; its contents are the only evidence left. Scoped to the dangling case: where the ref
     resolves, upstream already publishes the row.
+
+    Other recovered cases retain their own evidence: broken links mark the repo partial, while a
+    stray snapshot file never represented a revision.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return False
@@ -1576,7 +1596,7 @@ _SELECTED_DENOISER_INDEX = "diffusion_pytorch_model.safetensors.index.json"
 
 
 def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
-    """Whether *snapshot* itself carries a ROOT ``model_index.json``.
+    """Whether *snapshot* carries a conventional or modular root pipeline index.
 
     The snapshot-scoped twin of :func:`repo_has_pipeline_index`, for callers that already know the
     ONE directory their row loads from. ``from_pretrained`` reads the manifest at the root of the
@@ -1585,13 +1605,16 @@ def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
     if snapshot is None:
         return False
     try:
-        return (Path(snapshot) / "model_index.json").is_file()
+        root = Path(snapshot)
+        return (root / "model_index.json").is_file() or (
+            root / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 
 
 def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
-    """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
+    """The denoiser subdirs this pipeline's root manifest declares, or None.
 
     Read off the manifest rather than the fixed ``_DENOISER_DIRS`` pair because multi-DiT pipelines
     carry more than one (Ideogram 4 adds ``unconditional_transformer/``, Wan 2.2's A14B experts
@@ -1603,7 +1626,10 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
     prove absent and the caller must not hunt for directories that layout never had.
     """
     try:
-        with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
+        manifest_path = snapshot / "model_index.json"
+        if not manifest_path.is_file():
+            manifest_path = snapshot / "modular_model_index.json"
+        with manifest_path.open("r", encoding = "utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError, RecursionError):
         # RecursionError (deeply nested json) would escape the caller's fail-open guard.
@@ -1989,3 +2015,32 @@ def partial_transport_for(
         hub_cache = hub_cache,
     )
     return manifest.transport if manifest is not None else None
+
+
+def partial_resume_available(
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str] = None,
+    repo_cache_dir: Optional[Path] = None,
+) -> bool:
+    """Whether THIS partial can be picked up byte for byte, rather than whether some partial
+    somewhere could be.
+
+    Both verdicts have to agree: the transport this row reports, and the registry's per-file
+    check, which rejects a 1.18+ nonce partial nothing will reopen. The installed
+    huggingface_hub cannot answer it alone, since a cache shared with a newer environment
+    holds partials this one can never continue.
+    """
+    from hub.utils import download_registry
+
+    if partial_transport_for(repo_type, repo_id, variant, repo_cache_dir) != "http":
+        return False
+    # Same root the transport was read from. A row can be displayed from a remembered, legacy
+    # or custom cache, and both halves have to answer about THAT directory: the active root
+    # neither holds its partials nor shares its manifest scope.
+    return download_registry.is_resumable_partial(
+        repo_type,
+        repo_id,
+        variant,
+        root = _hub_cache_for_repo_dir(repo_cache_dir),
+    )

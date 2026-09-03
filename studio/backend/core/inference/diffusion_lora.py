@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared LoRA support for the Studio diffusion backends.
+"""Shared LoRA support for the Unsloth diffusion backends.
 
 The native sd-cli engine selects adapters by `<lora:NAME:WEIGHT>` prompt tags resolved against a
 `--lora-model-dir`; diffusers loads them with `load_lora_weights()` + `set_adapters()`. This
@@ -27,6 +27,7 @@ from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.paths.storage_roots import studio_root
 
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
+from utils.paths.path_utils import is_appledouble_metadata
 
 # Accepted LoRA formats. safetensors + gguf only (.pt is pickled -> excluded for safety).
 _NATIVE_EXTS = (".safetensors", ".gguf")
@@ -93,7 +94,7 @@ _CURATED: tuple[LoraCatalogEntry, ...] = (
 
 
 def loras_dir() -> Path:
-    """Local directory Studio scans for user-provided diffusion LoRA files."""
+    """Local directory Unsloth scans for user-provided diffusion LoRA files."""
     d = studio_root() / "loras" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
@@ -121,7 +122,12 @@ def _scan_local() -> list[LoraCatalogEntry]:
         children = sorted(root.iterdir())
     except OSError:
         return []
-    files = [p for p in children if p.is_file() and p.suffix.lower() in _ALL_EXTS]
+
+    files = [
+        p
+        for p in children
+        if p.is_file() and p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p)
+    ]
     # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full filename.
     stem_counts: dict[str, int] = {}
     for p in files:
@@ -268,7 +274,9 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
     """Pick the single LoRA weight file in an HF repo (prefer safetensors)."""
     from huggingface_hub import HfApi
 
-    files = HfApi(token = hf_token).list_repo_files(repo_id)
+    from hub.utils.gguf import drop_shadowed_appledouble_names, is_imatrix_filename
+
+    files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
@@ -278,7 +286,13 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
             return f
     if safes:
         return safes[0]
-    ggufs = [f for f in files if f.lower().endswith(".gguf") and "/" not in f]
+    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked
+    # here, while a .safetensors is never one, so the candidates above stay untouched.
+    ggufs = [
+        f
+        for f in files
+        if f.lower().endswith(".gguf") and "/" not in f and not is_imatrix_filename(f)
+    ]
     if ggufs:
         return ggufs[0]
     raise FileNotFoundError(f"no .safetensors/.gguf LoRA file found in '{repo_id}'")

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""whisper.cpp (GGML/GGUF) speech-to-text sidecar for Studio dictation.
+"""whisper.cpp (GGML/GGUF) speech-to-text sidecar for Unsloth dictation.
 
 Runs the same curated Whisper checkpoints as the Transformers sidecar
 (stt_sidecar.py) through whisper.cpp's `whisper-server`, ~2.5x faster at
@@ -16,7 +16,7 @@ than through the Model Hub (whose variant planner only handles `.gguf` chat
 layouts).
 
 Binary discovery mirrors `_find_llama_server_binary`: env override, then managed
-Studio home, then PATH. With no binary the engine is unavailable and dictation
+Unsloth home, then PATH. With no binary the engine is unavailable and dictation
 falls back to the Transformers sidecar; `scripts/build_whisper_cpp.sh` installs
 the binary.
 """
@@ -280,7 +280,7 @@ def slim_runtime_intact(binary: str) -> bool:
 # and is_available() said yes, which meant _resolve_serving_stt_engine never fell back and
 # every recording 501'd while the UI showed the model as loaded. Only inference can prove
 # this, so it is recorded when inference fails and cleared when one succeeds. Process
-# lifetime by design: a reinstall restarts Studio.
+# lifetime by design: a reinstall restarts Unsloth.
 _runtime_inference_failure: Optional[str] = None
 _runtime_failure_lock = threading.Lock()
 
@@ -1002,7 +1002,7 @@ class GgmlSttSidecar:
                     # Co-located GPU libs on the loader path (WSL system HIP first),
                     # secrets scrubbed from the downloaded binary's env.
                     env = _whisper_server_child_env(binary),
-                    # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
+                    # Die with Unsloth (Linux PDEATHSIG, Windows job) so a crash
                     # never orphans a server holding the model.
                     **child_popen_kwargs(),
                 )

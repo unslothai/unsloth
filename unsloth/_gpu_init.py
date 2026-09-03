@@ -148,7 +148,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.5.2"):
+    if Version(unsloth_zoo_version) < Version("2026.8.15"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -189,10 +189,12 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from .device_type import arch_lacks_bf16, hip_visible_archs
 
 # Fix other issues
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers_fully_masked_rows,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -228,6 +230,11 @@ from .import_fixes import (
 
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
+# Probe-gated: no-ops unless this transformers really hands SDPA a query row
+# that attends to nothing. Ordered here, before anything imports a model, so a
+# plain `transformers.generate` in the same process is covered too -- which is
+# the case unsloth #9708 was measured on.
+fix_transformers_fully_masked_rows()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk, so it
 # must precede any xformers import) and BEFORE models/_utils.py imports xformers.ops.
@@ -340,7 +347,18 @@ elif DEVICE_TYPE == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     del major_version, minor_version
 elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+    old_is_bf16_supported = torch.cuda.is_bf16_supported
+
+    # SUPPORTS_BFLOAT16 is process-wide, so one gfx10 in the visible set must disable it for all.
+    SUPPORTS_BFLOAT16 = (
+        not any(arch_lacks_bf16(arch) for arch in hip_visible_archs()) and old_is_bf16_supported()
+    )
+
+    def is_bf16_supported(*args, **kwargs):
+        return SUPPORTS_BFLOAT16
+
+    torch.cuda.is_bf16_supported = is_bf16_supported
+    del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()

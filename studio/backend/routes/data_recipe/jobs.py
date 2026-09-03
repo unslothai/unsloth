@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
@@ -38,6 +39,9 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
+_KEEPALIVE_EVERY_S = 15.0
 
 # A stdio provider is a command this host would run, so only a UI session may
 # supply one. Annotated, not a Depends default, so a direct call gets False.
@@ -615,7 +619,9 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     }
 
 
-@router.get("/jobs/{job_id}/events")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/jobs/{job_id}/events")
+@router.get("/jobs/{job_id}/events", include_in_schema = False)
 async def job_events(request: Request, job_id: str):
     mgr = get_job_manager()
     last_id = request.headers.get("last-event-id")
@@ -639,6 +645,7 @@ async def job_events(request: Request, job_id: str):
 
     async def gen():
         try:
+            last_sent = time.monotonic()
             for event in sub.replay:
                 yield sub.format_sse(event)
 
@@ -647,9 +654,18 @@ async def job_events(request: Request, job_id: str):
                     break
                 event = await sub.next_event(timeout_sec = 1.0)
                 if event is None:
+                    # A quiet job would otherwise go silent for minutes and take a tunnel 524.
+                    if time.monotonic() - last_sent >= _KEEPALIVE_EVERY_S:
+                        last_sent = time.monotonic()
+                        yield ": keepalive\n\n"
                     continue
+                last_sent = time.monotonic()
                 yield sub.format_sse(event)
         finally:
             mgr.unsubscribe(sub)
 
-    return StreamingResponse(gen(), media_type = "text/event-stream")
+    return StreamingResponse(
+        gen(),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

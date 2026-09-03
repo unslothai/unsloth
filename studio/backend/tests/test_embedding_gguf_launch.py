@@ -110,6 +110,11 @@ class TestIsEmbeddingGguf:
         assert backend._pooling_type is None
         assert backend.is_embedding_gguf is False
 
+    def test_false_on_minimal_backend_without_path_state(self):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._pooling_type = None
+        assert backend.is_embedding_gguf is False
+
     @pytest.mark.parametrize("pooling_type", [POOLING_MEAN, POOLING_CLS, POOLING_LAST])
     def test_true_for_every_sequence_pooling_mode(self, tmp_path, backend, pooling_type):
         backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = pooling_type))
@@ -139,6 +144,20 @@ class TestIsEmbeddingGguf:
         backend._read_gguf_metadata(_make_gguf(tmp_path, "llama"))
         assert backend._pooling_type is None
         assert backend.is_embedding_gguf is False
+
+    def test_true_for_dedicated_embedding_arch_without_pooling_type(self, tmp_path, backend):
+        # nomic-bert and similar encoder GGUFs often omit pooling_type in the header.
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "nomic-bert-moe"))
+        assert backend._pooling_type is None
+        assert backend.is_embedding_gguf is True
+
+    def test_true_for_embedding_name_hint_without_pooling_type(self, tmp_path, backend):
+        backend._model_identifier = "unsloth/Qwen3-Embedding-4B"
+        backend._read_gguf_metadata(
+            _make_gguf(tmp_path, "qwen3", filename = "Qwen3-Embedding-4B-Q4_K_M.gguf")
+        )
+        assert backend._pooling_type is None
+        assert backend.is_embedding_gguf is True
 
     def test_resets_between_parses(self, tmp_path, backend):
         backend._read_gguf_metadata(

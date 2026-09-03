@@ -387,7 +387,7 @@ export function buildRowStatusTooltip({
     lines.push(
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
-        . Click Resume to continue.
+        . Open it to finish the download.
       </TooltipLegendRow>,
     );
   } else if (isAvailableOnDevice) {

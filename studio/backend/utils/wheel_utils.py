@@ -226,7 +226,7 @@ def pytorch_wheel_index_base_url() -> str:
 
 _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
-    # switch, so it publishes one wheel per interpreter and stops at cp312, and Studio's
+    # switch, so it publishes one wheel per interpreter and stops at cp312, and Unsloth's
     # default interpreter is 3.13. Supporting it would mean a per-interpreter gate here
     # and a second one in install.ps1 for a four-year-old torch that resolves to nothing
     # on the default install anyway.
@@ -249,7 +249,7 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
 #
 # An exact-key table alone refuses the patch releases: 2.10.1, 2.11.1 and 2.12.1 are all
 # supported resident builds this file names elsewhere, and each of them missed and left
-# Studio on native attention. Enumerating patches is not an option -- they are published
+# Unsloth on native attention. Enumerating patches is not an option -- they are published
 # after this code ships -- and 0.0.35 is compiled against 2.10.0 by design, with upstream
 # stating that "binary builds targeting PyTorch 2.10+ will be compatible with any later
 # version". So above 2.10.0 the answer is known without a table.
@@ -395,7 +395,7 @@ def redact_url_credentials(url: str) -> str:
     UNSLOTH_PYTORCH_MIRROR is allowed to be a private index, and people put credentials in
     it -- ``https://user:token@mirror/whl`` or ``...?token=``. The wheel URL built from it
     is handed to pip AND printed, so without this the secret lands in the backend log the
-    first time Studio installs (or fails to install) xFormers. Same rule as the installer's
+    first time Unsloth installs (or fails to install) xFormers. Same rule as the installer's
     Remove-IndexUrlCredentials, so both sides redact identically.
     """
     separator = url.find("://")

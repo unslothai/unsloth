@@ -7,8 +7,10 @@ The report: on Ubuntu 26.04 under Wayland the desktop app froze on "Writing the 
 again while closing the research detail pane -- spinner stopped, nothing clickable, force quit.
 
 What this measures, and what it cannot: Chromium is not the WebKitGTK webview the desktop app
-embeds on Linux, and `studio/src-tauri/src/linux_webkit.rs` forces that webview onto the SHM
-software renderer on Wayland, where the frame budget is far tighter than anything measured here.
+embeds on Linux, and `studio/src-tauri/src/linux_webkit.rs` takes that webview off the hardware
+DMA-BUF transport on Wayland and on NVIDIA under either display server -- onto shared memory, or
+off accelerated compositing entirely -- where the frame budget is far tighter than anything
+measured here.
 So an absolute pass here does not prove the reporter's machine is fixed. What transfers is the
 *work*: long tasks, forced layouts and style recalcs during the stream, and whether the window
 still takes clicks afterwards. Those are the quantities the fixes move.
@@ -37,6 +39,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    echo_browser_errors,
     start_vite,
     stop_process,
     wait_for_smoke_page,
@@ -184,6 +187,7 @@ def run() -> dict:
             lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
         )
         page = context.new_page()
+        echo_browser_errors(page, info)
         page.goto(f"{BASE}/smoke-research.html", wait_until = "domcontentloaded")
         page.wait_for_function("() => Boolean(window.__research)", timeout = 30_000)
         cdp = context.new_cdp_session(page)

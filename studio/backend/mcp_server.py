@@ -139,9 +139,7 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_training as start
 
         request = TrainingStartRequest.model_validate(config)
-        # Pass via_api_key explicitly (a direct call leaves it a Depends object).
-        # MCP drives Unsloth like the UI session, so it coexists and frees VRAM.
-        return _dump(await start(request, current_subject = "mcp", via_api_key = False))
+        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
 
     @mcp.tool
     async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:
@@ -234,6 +232,8 @@ def create_studio_mcp() -> FastMCP:
         hf_token: str | None = None,
         imatrix: bool = False,
         imatrix_path: str | None = None,
+        private: bool = False,
+        gguf_shard_size: str | None = None,
     ) -> dict[str, Any]:
         """Export the loaded model to GGUF using Unsloth's existing path validation.
 
@@ -253,6 +253,8 @@ def create_studio_mcp() -> FastMCP:
             hf_token = hf_token,
             imatrix = imatrix,
             imatrix_path = imatrix_path,
+            private = private,
+            gguf_shard_size = gguf_shard_size,
         )
         return _dump(await export(request, current_subject = "mcp"))
 

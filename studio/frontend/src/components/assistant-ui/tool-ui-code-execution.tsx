@@ -14,12 +14,15 @@ import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
+import { toolArgText } from "./tool-arg-text";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
 
 /**
  * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
@@ -38,8 +41,9 @@ import {
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
-  command?: string;
-  path?: string;
+  // Straight off the wire: the model, not the schema, decides the JSON type.
+  command?: unknown;
+  path?: unknown;
 }
 
 const MAX_COMMAND_LABEL = 80;
@@ -131,11 +135,12 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   const parsedArgs = (args as CodeExecutionArgs) ?? {};
   const kind = parsedArgs.kind ?? "bash";
-  const command = parsedArgs.command ?? "";
-  const path = parsedArgs.path ?? "";
+  const command = toolArgText(parsedArgs.command);
+  const path = toolArgText(parsedArgs.path);
   const isRunning = status?.type === "running";
 
   const commandLabel = command ? truncateCommandLabel(command) : "";
@@ -173,17 +178,17 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={isRunning ? runningLabel : completedLabel}
         status={status}

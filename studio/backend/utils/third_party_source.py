@@ -811,7 +811,7 @@ def ensure_pinned_source(
 
                 if hf_env_offline():
                     raise RuntimeError(
-                        f"The pinned {spec.name} source is not cached and Studio is offline"
+                        f"The pinned {spec.name} source is not cached and Unsloth is offline"
                     )
                 if spec.archive_url is not None:
                     _install_archive_source(checkout, spec)

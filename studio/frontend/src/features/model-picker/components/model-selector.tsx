@@ -50,6 +50,7 @@ import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy"
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
@@ -154,7 +155,7 @@ interface ModelSelectorProps {
   loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
@@ -362,7 +363,7 @@ function ModelSelectorContent({
   value,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onSelect,
@@ -387,7 +388,7 @@ function ModelSelectorContent({
   value?: string;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -586,7 +587,7 @@ function ModelSelectorContent({
               value === visibleConfigTarget.id &&
               (activeGgufVariant ?? null) ===
                 (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeGgufContextLength ?? null)
+                ? (activeLoadedContextLength ?? null)
                 : null
             }
             initialConfig={
@@ -650,7 +651,7 @@ export function ModelSelector({
   defaultValue,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onValueChange,
@@ -693,10 +694,7 @@ export function ModelSelector({
       all.set(model.id, model);
     }
     for (const lora of loraModels) {
-      // Strip "/ suffix" from display name (e.g. "foo_123/foo" → "foo_123")
-      const displayName = lora.name.includes("/")
-        ? lora.name.split("/")[0].trim()
-        : lora.name;
+      const displayName = loraOptionLabel(lora);
       // Show type tag instead of base model name
       const isLocal = lora.source === "local";
       const isTraining = lora.source === "training";
@@ -826,7 +824,7 @@ export function ModelSelector({
         value={selected}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
-        activeGgufContextLength={activeGgufContextLength}
+        activeLoadedContextLength={activeLoadedContextLength}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}

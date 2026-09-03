@@ -45,7 +45,7 @@ _SECRET_KEYS = (
     "authorization|x-api-key|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
     "refresh[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|"
     "aws_secret_access_key|aws_session_token|wandb[-_]?token|hub[-_]?token|"
-    # Studio's own S3 field (models/training.py:60) and its camelCase alias.
+    # Unsloth's own S3 field (models/training.py:60) and its camelCase alias.
     # Neither is reachable through the bare "secret" alternative (the trailing \b
     # cannot fire before "_access" or "Access"), and an AWS secret key has no
     # prefix of its own for a shape rule to catch.
@@ -117,7 +117,7 @@ _FLAG_RE = re.compile(
 
 # An Authorization value, whatever the scheme. The key/value rule cannot reach
 # it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is "Basic",
-# leaving the credential behind it. Same for a Cookie, which for Studio is the
+# leaving the credential behind it. Same for a Cookie, which for Unsloth is the
 # UI session that gates these very endpoints.
 _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
 # A scheme word only introduces a credential when an Authorization header put it

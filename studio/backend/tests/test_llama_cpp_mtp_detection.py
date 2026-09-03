@@ -75,6 +75,8 @@ from core.inference.llama_cpp import (
     _extra_args_set_spec_type,
     _is_mtp_model_name,
     _kv_unified_from_args,
+    _TARGET_KV_EXCLUDES_NEXTN_ARCHS,
+    _arch_has_fast_mla_mtp,
     _mla_mtp_auto_enabled,
     _swa_full_from_args_or_env,
 )
@@ -1117,7 +1119,7 @@ def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
     assert caps["supports_ngram_mod"] is True
     assert caps["spec_draft_n_max_flag"] == "--spec-draft-n-max"
     # The build's own depth, off the same line: a pass-through --spec-type makes
-    # the child run on this rather than on anything Studio emits, and the Hybrid
+    # the child run on this rather than on anything Unsloth emits, and the Hybrid
     # Mamba rollback reserve scales by it.
     assert caps["spec_draft_n_max_default"] == 16
 
@@ -2278,6 +2280,60 @@ def test_reload_forced_mtp_bounces_auto_mla():
     )
 
 
+# glm5next matches the MLA gate on metadata, but its MTP is 1.31x faster, not slower.
+_GLM5NEXT_MODEL = "unsloth/GLM-5.3-Flash-GGUF"
+
+
+def test_auto_glm5next_keeps_draft_mtp(monkeypatch):
+    backend = _mla_resolver_backend(monkeypatch)
+    backend._architecture = "glm5next"
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM5NEXT_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason != "mla_mtp_disabled"
+
+
+def test_auto_glm5next_hyphenated_arch_still_gated(monkeypatch):
+    # The "glm5-next" port never builds the NextN graph: no spillover.
+    backend = _mla_resolver_backend(monkeypatch)
+    backend._architecture = "glm5-next"
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM5NEXT_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert _flags_dict(flags).get("--spec-type") != "draft-mtp"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
+
+
+def test_arch_has_fast_mla_mtp_is_case_and_space_tolerant():
+    assert _arch_has_fast_mla_mtp("glm5next")
+    assert _arch_has_fast_mla_mtp("  GLM5Next  ")
+    assert not _arch_has_fast_mla_mtp("glm5-next")
+    assert not _arch_has_fast_mla_mtp("glm-dsa")
+    assert not _arch_has_fast_mla_mtp(None)
+    assert not _arch_has_fast_mla_mtp("")
+
+
+def test_glm5next_target_kv_excludes_nextn():
+    # Both ports filter il < n_layer() && !is_recr(il), so blk.45 gets no target KV.
+    assert "glm5next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
+    assert "glm5-next" in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
+
+
 # ── Full named-repo resolver matrix (the shipping Unsloth families) ─────
 #
 # Locks auto / off / forced-mtp routing for every Qwen3.5 (MTP + plain) and
@@ -3071,7 +3127,7 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
 def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
     """The found:False early return sits above the cache and costs a stat rather than a
     subprocess, so it must stay uncached: an install finishing mid-session has to be
-    picked up without a Studio restart."""
+    picked up without an Unsloth restart."""
     binary = tmp_path / "llama-server"
     _clear_caps_cache()
 

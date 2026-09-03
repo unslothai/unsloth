@@ -191,16 +191,19 @@ test("an eviction drops the pick, not just the loaded marks", () => {
     ),
     "utf8",
   );
+  // Anchored on the branch, not on the file: other catches sit above it now.
+  // chatActiveModel, not status.active_model: this branch owns the resident-TTS case too.
+  const branchStart = hook.indexOf("} else if (!chatActiveModel");
   const branch = hook.slice(
-    hook.indexOf("} else if (!statusRes.active_model"),
-    hook.indexOf("} catch (error) {"),
+    branchStart,
+    hook.indexOf("} catch (error) {", branchStart),
   );
   assert.match(branch, /clearCheckpoint\(\)/);
-  // Guarded twice: a model that was never confirmed resident has nothing to
-  // lose, and a load in flight reports no active model either.
+  // A first speech-only status is definitive too: it must clear a persisted
+  // pick even before this tab has observed a resident Chat model.
   assert.match(
     branch,
-    /if \(wasResident && selectedCheckpoint && !modelLoading\)/,
+    /\(wasResident \|\| isSpeechOnlyStatus\(statusRes\)\)[\s\S]*selectedCheckpoint[\s\S]*!modelLoading/,
   );
 });
 

@@ -35,7 +35,7 @@ PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
 # v2 is v1 plus an ACTIVATION ROTATION (see ``diffusion_convrot``): the weights are stored in a
 # rotated basis and are wrong unless the loader rotates the activations to match. That is the one
-# on-disk change a released Studio cannot ignore safely -- an old build reading a rotated artifact
+# on-disk change a released Unsloth cannot ignore safely -- an old build reading a rotated artifact
 # as v1 would load it clean, raise nothing and render quietly wrong pixels forever -- so it gets a
 # tag old builds refuse outright, and the load drops to dense instead. Strictly a biconditional:
 # a v2 artifact MUST declare a rotation and a v1 artifact must NOT, both checked below, so neither
@@ -58,7 +58,7 @@ ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 
 # The constructors a pre-quant checkpoint's pickle may name, on top of what ``weights_only``
 # already permits (storages, dtypes, ``_rebuild_*``, ``OrderedDict``, ``torch.device``,
-# ``_get_layout``). Surveyed across every hosted checkpoint Studio resolves (image + video, fp8 +
+# ``_get_layout``). Surveyed across every hosted checkpoint Unsloth resolves (image + video, fp8 +
 # int8, rotated and not) this is the complete set, so the load runs ``weights_only = True`` and a
 # checkpoint naming anything else is refused before one opcode of it executes, hosted or local.
 #
@@ -174,7 +174,7 @@ def _tuple_safe_globals_supported() -> bool:
 
     Asked by VERSION rather than by trying it: 2.4/2.5 accept the pairs silently and only fail
     later, in ``_get_user_allowed_globals``, which reads ``f.__module__`` off every entry of a
-    PROCESS-WIDE list -- so a tuple left there breaks every other weights_only load in Studio.
+    PROCESS-WIDE list -- so a tuple left there breaks every other weights_only load in Unsloth.
     Nothing is registered unless the answer here is yes."""
     try:
         import torch
@@ -514,7 +514,7 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     not short-circuit it, or a stale name stays pinned once the repo ships the real one, so a
     fallback-only cache reads as "this would have to download" and the GGUF simply runs.
 
-    Both cache roots are searched: Studio pins the LIVE cache setting while an unpinned
+    Both cache roots are searched: Unsloth pins the LIVE cache setting while an unpinned
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
     for root in (cache_dir, None) if cache_dir else (None,):
         hit = _cached_in_root(source, root)
@@ -608,7 +608,7 @@ def load_prequantized_transformer(
 
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
-    into a root Studio no longer reads.
+    into a root Unsloth no longer reads.
 
     ``config_subfolder`` is where the DENOISER CONFIG lives inside ``base``, defaulting to the
     universal ``transformer``. A family hosting several denoiser partitions in one repo overrides
@@ -866,7 +866,7 @@ def _resolve_checkpoint_path(
 def _config_cache_roots(checkpoint_path: str, cache_dir: Optional[str]) -> tuple:
     """Cache roots to read the transformer config from, the checkpoint's OWN root first.
 
-    ``_resolve_checkpoint_path`` may answer from huggingface_hub's import-time root even when Studio
+    ``_resolve_checkpoint_path`` may answer from huggingface_hub's import-time root even when Unsloth
     pins its live one, so pinning the config to the live root alone misses in exactly the
     cache-moved/offline case the checkpoint lookup just accepted, and load_config's raise is
     swallowed into a None return. The other root is still tried second."""
@@ -953,7 +953,7 @@ def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logg
     raises nothing, and renders quietly wrong -- so all three are refused here rather than
     discovered later:
 
-      * the artifact declares a rotation and is tagged v1. Only v2 makes a Studio too old for this
+      * the artifact declares a rotation and is tagged v1. Only v2 makes an Unsloth too old for this
         code refuse it, so a v1 tag on rotated weights is a hazard to every OTHER build, and the
         builder that produced it is not one to trust about anything else in the file;
       * the artifact is tagged v2 and declares none. Nothing here would rotate, and the tag says

@@ -22,6 +22,7 @@ from hub.utils.gguf import (
     gguf_variant_key,
     is_qualified_gguf_variant_key,
     quant_token_with_bpw,
+    remove_appledouble_sidecar,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
@@ -40,9 +41,11 @@ from hub.services import resolve_destructive_repo_ids
 from hub.services.models import cache_inventory, downloads, gguf_variants
 from hub.services.models.common import (
     _is_gguf_filename,
+    _is_imatrix_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -84,6 +87,20 @@ def _path_exists_or_symlink(path: Path) -> bool:
         return False
 
 
+def _unlink_snapshot_entry(snap: Path) -> int:
+    """Unlink one snapshot entry, plus any AppleDouble sidecar beside it.
+
+    Returns the entries removed, which never counts the sidecar: it is metadata about a file the
+    caller asked to remove, not a second file.
+    """
+    removed = 0
+    if _path_exists_or_symlink(snap):
+        snap.unlink()
+        removed += 1
+    remove_appledouble_sidecar(snap)
+    return removed
+
+
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
     """Files whose snapshot-relative path satisfies *predicate*.
 
@@ -108,6 +125,11 @@ def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path
             if not predicate(name):
                 continue
             if not file_path:
+                continue
+            # Every predicate here keys on the name, which a sidecar answers exactly as its
+            # neighbour does, so it would be counted as a deleted model in its own right.
+            # Proven metadata only: anything else carrying this key is a file to delete.
+            if is_appledouble_metadata(Path(file_path)):
                 continue
             blob_path = getattr(f, "blob_path", None)
             matches.append(
@@ -265,9 +287,7 @@ def _delete_gguf_variant_from_repos(
 
         for snap, _blob, name in matched:
             try:
-                if _path_exists_or_symlink(snap):
-                    snap.unlink()
-                    removed_snapshots += 1
+                removed_snapshots += _unlink_snapshot_entry(snap)
             except OSError as e:
                 failures.append(f"{name}: {e}")
 
@@ -275,17 +295,21 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the drafters Studio downloads (MTP with
+                # Companions: mmproj and the drafters Unsloth downloads (MTP with
                 # every variant, DSpark on opt-in). No main GGUF is left, so they
-                # cannot be launched; reclaim them with the last variant.
+                # cannot be launched; reclaim them with the last variant. An imatrix
+                # joins them: no longer offered as a variant, so a copy an older build
+                # fetched as one would be unreachable from the UI.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_reclaimable_drafter_path(name)),
+                and (
+                    _is_mmproj_filename(name)
+                    or _is_reclaimable_drafter_path(name)
+                    or _is_imatrix_filename(name)
+                ),
             )
             for snap, _blob, name in companion_matches:
                 try:
-                    if _path_exists_or_symlink(snap):
-                        snap.unlink()
-                        removed_snapshots += 1
+                    removed_snapshots += _unlink_snapshot_entry(snap)
                 except OSError as e:
                     failures.append(f"{name}: {e}")
 
@@ -502,9 +526,7 @@ def reclaim_replaced_gguf_variant(
 
         for snap, _blob, name in stale_matches:
             try:
-                if _path_exists_or_symlink(snap):
-                    snap.unlink()
-                    removed_snapshots += 1
+                removed_snapshots += _unlink_snapshot_entry(snap)
             except OSError as e:
                 failures.append(f"{name}: {e}")
 

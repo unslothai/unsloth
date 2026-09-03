@@ -16,7 +16,11 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { encryptProviderApiKey } from "../api/providers-api";
+import { getExternalProviderApiKey } from "../external-providers";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { startDictationLevelMeter } from "./dictation-level";
+import { type SegmentRecorder, createAudioRecorder } from "./pcm-recorder";
 import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
 // Re-exported so the one public entry point for dictation is unchanged.
 export { SttModelNotDownloadedError } from "./stt-errors";
@@ -76,22 +80,104 @@ export function sttEngineFor(model: string): SttEngine {
   return isCuratedSttModel(model) ? "gguf" : "transformers";
 }
 
-/** POST audio to the STT sidecar and return the transcript. */
+function externalSttLanguage(language: string): string | undefined {
+  const normalized = language.trim().replaceAll("_", "-").toLowerCase();
+  if (!normalized || normalized === "auto") {
+    return undefined;
+  }
+  return normalized.split("-", 1)[0] || undefined;
+}
+
+function dictationFilename(contentType: string): string {
+  if (contentType.includes("ogg")) {
+    return "dictation.ogg";
+  }
+  if (contentType.includes("mp4")) {
+    return "dictation.m4a";
+  }
+  if (contentType.includes("wav")) {
+    return "dictation.wav";
+  }
+  return "dictation.webm";
+}
+
+async function sttErrorDetail(response: Response): Promise<string> {
+  const body = (await response.json().catch(() => null)) as {
+    detail?: string;
+    error?: { message?: string };
+  } | null;
+  return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
+}
+
+/** post recorded audio to the selected STT backend and return its transcript. */
 export async function transcribeAudioBlob(
   blob: Blob,
   options: {
     model?: string;
     language?: string;
     engine?: SttEngine;
+    providerId?: string;
     signal?: AbortSignal;
   } = {},
 ): Promise<string> {
   const settings = useVoiceSettingsStore.getState();
-  const model = options.model ?? settings.sttModel;
-  const language = resolveModelDictationLanguage(
-    model,
-    options.language ?? settings.dictationLanguage,
-  );
+  const usesExternalEndpoint = options.providerId !== undefined;
+  const providerId = options.providerId?.trim() ?? "";
+  const model = (
+    options.model ??
+    (usesExternalEndpoint ? settings.sttProviderModel : settings.sttModel)
+  ).trim();
+  const languageSetting = options.language ?? settings.dictationLanguage;
+
+  if (usesExternalEndpoint) {
+    const providersState = useExternalProvidersStore.getState();
+    if (!providersState.connectionsEnabled) {
+      throw new Error(
+        "Connections are disabled. Enable connections before using custom transcription.",
+      );
+    }
+    if (!providerId || !model) {
+      throw new Error(
+        "Custom transcription is not configured. Pick a connection and model in Settings → Voice.",
+      );
+    }
+    const form = new FormData();
+    form.set("file", blob, dictationFilename(blob.type));
+    form.set("provider_id", providerId);
+    form.set("model", model);
+    form.set("response_format", "json");
+    const provider = providersState.providers.find(
+      (candidate) => candidate.id === providerId,
+    );
+    const legacyApiKey = provider?.hasApiKey
+      ? ""
+      : getExternalProviderApiKey(providerId).trim();
+    if (legacyApiKey) {
+      form.set(
+        "encrypted_api_key",
+        await encryptProviderApiKey(legacyApiKey),
+      );
+    }
+    const language = externalSttLanguage(languageSetting);
+    if (language) {
+      form.set("language", language);
+    }
+    const response = await authFetch("/api/inference/audio/transcriptions", {
+      method: "POST",
+      body: form,
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      throw sttRequestError(response.status, await sttErrorDetail(response));
+    }
+    const data = (await response.json()) as { text?: string };
+    if (typeof data.text !== "string") {
+      throw new Error("The transcription endpoint returned no text.");
+    }
+    return data.text.trim();
+  }
+
+  const language = resolveModelDictationLanguage(model, languageSetting);
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
@@ -105,10 +191,7 @@ export async function transcribeAudioBlob(
     },
   );
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    const detail = body?.detail ?? `HTTP ${response.status}`;
+    const detail = await sttErrorDetail(response);
     if (response.status === 501) {
       throw new Error(
         "Speech-to-text is not available on this server. Run `unsloth studio update` to install it.",
@@ -317,8 +400,8 @@ export function unloadSttModel(
 }
 
 /**
- * Local model dictation. Short recordings use one pass; long ones split near
- * Whisper's 30s window. Confirm keeps text, discard removes it, and either
+ * recorded-audio dictation. short recordings use one pass; long ones split near
+ * whisper's 30s window. confirm keeps text, discard removes it, and either
  * releases the microphone immediately.
  */
 export class StudioModelDictationAdapter implements DictationAdapter {
@@ -341,18 +424,30 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     if (!StudioModelDictationAdapter.isSupported()) {
       throw new Error("Recording is not supported in this browser.");
     }
-    beginDictationSession();
 
     // Pin the model, language, and linked chat chosen when recording began, so a
     // mid-session settings change or thread switch cannot affect later segments
     // or relink the saved transcript.
-    const { sttModel: sessionModel, dictationLanguage } =
-      useVoiceSettingsStore.getState();
-    const sessionLanguage = resolveModelDictationLanguage(
-      sessionModel,
-      dictationLanguage,
-    );
-    const sessionEngine = sttEngineFor(sessionModel);
+    const settings = useVoiceSettingsStore.getState();
+    const usesExternalEndpoint = settings.dictationEngine === "custom";
+    const sessionProviderId = usesExternalEndpoint
+      ? settings.sttProviderId.trim()
+      : undefined;
+    const sessionModel = usesExternalEndpoint
+      ? settings.sttProviderModel.trim()
+      : settings.sttModel;
+    if (usesExternalEndpoint && (!sessionProviderId || !sessionModel)) {
+      throw new Error(
+        "Custom transcription is not configured. Pick a connection and model in Settings → Voice.",
+      );
+    }
+    beginDictationSession();
+    const sessionLanguage = usesExternalEndpoint
+      ? settings.dictationLanguage
+      : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
+    const sessionEngine = usesExternalEndpoint
+      ? undefined
+      : sttEngineFor(sessionModel);
     const sessionChatId = resolveDictationChatId(this.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
@@ -389,7 +484,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       chunks: Blob[];
       startedAt: number;
       voiced: boolean;
-      recorder: MediaRecorder;
+      recorder: SegmentRecorder;
     };
     const results: string[] = [];
     const queue: { index: number; blob: Blob }[] = [];
@@ -412,7 +507,10 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       console.error("STT transcription error:", error);
       // An undownloaded model is the ordinary first-run state, not a failure.
       // Point at the download; never start it here.
-      if (error instanceof SttModelNotDownloadedError) {
+      if (
+        !usesExternalEndpoint &&
+        error instanceof SttModelNotDownloadedError
+      ) {
         requestSttDownload(sessionModel);
         finishSession("cancelled");
         return;
@@ -495,6 +593,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             model: sessionModel,
             language: sessionLanguage,
             engine: sessionEngine,
+            providerId: sessionProviderId,
             signal: abortController.signal,
           });
           if (!cancelled) results[item.index] = text;
@@ -535,10 +634,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         chunks: [],
         startedAt: performance.now(),
         voiced: false,
-        recorder: new MediaRecorder(
-          stream,
-          mimeType ? { mimeType } : undefined,
-        ),
+        recorder: createAudioRecorder(stream, mimeType),
       };
       currentSeg = seg;
       silenceMs = 0;
@@ -712,11 +808,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
-        // Warm the model only after mic access. The backend loads cache-only
-        // and never downloads here.
-        void loadSttModel(sessionModel, sessionEngine).catch((error: unknown) =>
-          reportTranscriptionError(error, "preload"),
-        );
+        if (!usesExternalEndpoint && sessionEngine) {
+          // warm the model only after mic access; the backend never downloads here.
+          void loadSttModel(sessionModel, sessionEngine).catch(
+            (error: unknown) => reportTranscriptionError(error, "preload"),
+          );
+        }
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });

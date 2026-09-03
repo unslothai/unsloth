@@ -55,6 +55,45 @@ def test_resolve_effective_use_xet(monkeypatch):
         assert download_lifecycle.resolve_effective_use_xet(requested) is expected
 
 
+def test_completion_invalidates_inventory_before_publishing_state(monkeypatch):
+    events = []
+
+    class _Registry:
+        def cancel_requested(self, _key):
+            return False
+
+        def drop_process(self, _key, _proc):
+            return True
+
+        def get_job_metadata(self, _key):
+            return None
+
+        def set_job(self, _key, state):
+            events.append(state)
+
+    monkeypatch.setattr(
+        download_lifecycle.hf_cache_scan,
+        "invalidate_hf_cache_scans",
+        lambda: events.append("invalidate"),
+    )
+
+    assert (
+        download_lifecycle.finalize_worker_exit(
+            _Registry(),
+            "org/data",
+            _Proc(0),
+            hf_token = None,
+            label = "org/data",
+            log_prefix = "Download",
+            logger = logging.getLogger("test"),
+            repo_type = "dataset",
+            repo_id = "org/data",
+        )
+        == "complete"
+    )
+    assert events == ["invalidate", "complete"]
+
+
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)

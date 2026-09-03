@@ -48,7 +48,7 @@ RELEASES_RATE_LIMIT_MAX_SECONDS = 60 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
 # The repo also publishes llama.cpp prebuilts (`b8475`), legacy month tags
-# (`February-2026`) and `desktop-v...` drafts. Only a Studio version tag is an
+# (`February-2026`) and `desktop-v...` drafts. Only an Unsloth version tag is an
 # announcement the popup should show.
 _RELEASE_TAG_PATTERN = re.compile(r"^v\d+(?:\.\d+)+")
 
@@ -129,8 +129,8 @@ _GENERATED_TITLES = frozenset({"what's changed", "whats changed", "new contribut
 _GENERATED_PREFIXES = ("what's changed in ", "whats changed in ")
 _GENERATED_SUFFIXES = ("zoo changes", "notebooks changes", "changelog")
 # The install block, worded differently in almost every release ("Updating /
-# installing Unsloth", "To update Studio", "Update Unsloth via `pip install`").
-# Naming Unsloth or Studio separates those from "Updating models is now 2x
+# installing Unsloth", "To update Unsloth", "Update Unsloth via `pip install`").
+# Naming Unsloth or Unsloth separates those from "Updating models is now 2x
 # faster", which is a change and not instructions.
 _UPGRADE_PREFIXES = ("update", "updating", "to update", "how to update")
 _UPGRADE_SUBJECTS = ("unsloth", "studio")
@@ -583,7 +583,7 @@ def get_release_notes(version: str, refresh: bool = False) -> dict[str, Any]:
     """Return the newest release's notes for the update popup.
 
     `version` is echoed back, not used to select a release: the pip popup offers
-    a PyPI version (`2026.8.7`) and releases are tagged with the Studio version
+    a PyPI version (`2026.8.7`) and releases are tagged with the Unsloth version
     (`v0.1.60-beta`), so no tag could match it.
 
     `refresh` retries a cached failure, so the UI's retry is not stuck behind

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp multimodal (mtmd) speech-to-text sidecar for Studio dictation.
+"""llama.cpp multimodal (mtmd) speech-to-text sidecar for Unsloth dictation.
 
 whisper.cpp loads only the Whisper architecture, so newer ASR models run through
 llama.cpp instead: a text model plus an audio mmproj, served by `llama-server`
@@ -170,7 +170,7 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
     """Stop a child and wait for it, so its port and VRAM are actually free.
 
     terminate() alone returns before the process has gone, and a child that
-    ignores SIGTERM would hold both until Studio exits.
+    ignores SIGTERM would hold both until Unsloth exits.
     """
     if process is None:
         return
@@ -551,6 +551,7 @@ class MtmdSttSidecar:
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_id: Optional[str] = None
+        self._binary_path_revision: Optional[int] = None
         self._loading = False
         # Published as soon as Popen returns, so a startup can be preempted
         # before _process is assigned (readiness takes up to three minutes).
@@ -626,6 +627,7 @@ class MtmdSttSidecar:
             self._process = None
             self._port = None
             self._model_id = None
+            self._binary_path_revision = None
 
     def _drain_active_requests(self, deadline: float) -> None:
         """Wait, bounded, for in-flight transcriptions to finish.
@@ -804,6 +806,9 @@ class MtmdSttSidecar:
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
         model_id = resolve_mtmd_model_id(model)
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+        path_revision = custom_llama_cpp_path_revision()
         binary = ensure_engine_available()
         # Startup happens outside _lock (it is slow), so this keeps two callers
         # from each spawning a server and orphaning the first.
@@ -811,17 +816,31 @@ class MtmdSttSidecar:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             self._raise_if_update_in_progress()
-            self._load_locked(model_id, binary, request_cancel_event)
+            self._load_locked(
+                model_id,
+                binary,
+                request_cancel_event,
+                path_revision = path_revision,
+            )
 
     def _load_locked(
         self,
         model_id: str,
         binary: str,
         request_cancel_event: Optional[threading.Event] = None,
+        *,
+        path_revision: Optional[int] = None,
     ) -> None:
+        if path_revision is None:
+            from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+            path_revision = custom_llama_cpp_path_revision()
         with self._lock:
             training = _training_active()
-            if self._process_alive() and self._model_id == model_id:
+            if (
+                self._process_alive()
+                and self._model_id == model_id
+                and self._binary_path_revision == path_revision
+            ):
                 # Same model, so only the offload mode can differ: a server
                 # started at -ngl 0 during training would otherwise serve every
                 # later dictation on CPU. Restarting for that is an
@@ -906,7 +925,7 @@ class MtmdSttSidecar:
                 # Bundled libs and pip CUDA runtimes on the loader path, secrets
                 # scrubbed, as the chat backend spawns the same binary.
                 env = _llama_server_child_env(binary),
-                # Die with Studio, so a crash never orphans a server on the GPU.
+                # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
             # Published before the wait, so training can preempt a startup that
@@ -929,6 +948,7 @@ class MtmdSttSidecar:
                 self._process = process
                 self._port = port
                 self._model_id = model_id
+                self._binary_path_revision = path_revision
                 self._gpu_disabled = training
                 self._generation += 1
                 self._schedule_idle_unload_locked()

@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   thinkEffortAriaLabel,
@@ -31,6 +36,11 @@ import {
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceInForeground,
+  useShortcut,
+} from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   AUDIO_ACCEPT,
@@ -38,18 +48,25 @@ import {
   getAudioSizeError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
-import { cancelPreStreamRunReservations } from "./utils/pre-stream-run-reservation";
+import {
+  cancelPreStreamRunReservations,
+  releasePreStreamRunReservation,
+  reservePreStreamRun,
+} from "./utils/pre-stream-run-reservation";
 import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
+  ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
@@ -71,12 +88,14 @@ import {
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
+import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -91,13 +110,17 @@ import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
-  normalizeMaxSeqLength,
+  DEFAULT_PER_MODEL_CONFIG,
+  isServedByMlx,
+  savedContextPin,
   resolveInitialConfig,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
+import { usePlatformStore } from "@/config/env";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -108,7 +131,14 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import {
+  loadedContextForParams,
+  resolveExplicitCtxPin,
+  resolveFitMaxSeqLength,
+  retainedContextPin,
+  unpinnedLoadContext,
+  replayMaxTokensCap,
+} from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -134,6 +164,7 @@ import {
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
+  resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
@@ -148,7 +179,7 @@ import {
 import {
   type CompositionEvent,
   type ClipboardEvent,
-  type FC,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
@@ -175,6 +206,7 @@ export interface CompareHandle {
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
+  threadIds: () => string[];
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
@@ -183,22 +215,6 @@ const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -372,6 +388,16 @@ export function RegisterCompareHandle({
       return;
     }
     const currentHandles = handlesRef.current;
+    const getThreadIds = () => {
+      const itemState = aui.threadListItem().getState();
+      return Array.from(
+        new Set(
+          [itemState.id, itemState.remoteId].filter(
+            (id): id is string => Boolean(id),
+          ),
+        ),
+      );
+    };
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
@@ -394,18 +420,12 @@ export function RegisterCompareHandle({
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
+      threadIds: getThreadIds,
       waitForRunEnd: () =>
         new Promise<void>((resolve, reject) => {
           const runtime =
             aui.threads().__internal_getAssistantRuntime?.();
-          const itemState = aui.threadListItem().getState();
-          const threadIds = Array.from(
-            new Set(
-              [itemState.id, itemState.remoteId].filter(
-                (id): id is string => Boolean(id),
-              ),
-            ),
-          );
+          const threadIds = getThreadIds();
           let thread = null;
           for (const threadId of threadIds) {
             try {
@@ -457,7 +477,10 @@ function PendingImageThumb({
   if (!src)
     return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
   return (
-    <div className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted">
+    <div
+      data-reload-snapshot-sensitive
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+    >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
         type="button"
@@ -504,6 +527,13 @@ function PillGlyph({ children }: { children: ReactNode }) {
   );
 }
 
+/** True when a drop reached this composer from a portaled child, such as a
+ * dialog and its overlay, which React routes through here but which owns it. */
+function isPortaledDrop(event: ReactDragEvent): boolean {
+  const target = event.target as Element | null;
+  return !target?.closest?.(".chat-composer-surface");
+}
+
 export function SharedComposer({
   handlesRef,
   model1,
@@ -511,6 +541,8 @@ export function SharedComposer({
   onExitCompare,
   model1ThreadId,
   model2ThreadId,
+  sendUnavailableReason,
+  requireStableCheckpoint = false,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
@@ -518,6 +550,8 @@ export function SharedComposer({
   onExitCompare?: () => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
+  sendUnavailableReason?: string;
+  requireStableCheckpoint?: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
@@ -592,6 +626,12 @@ export function SharedComposer({
   );
   const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const loadedVisionDisabledByUser = useChatRuntimeStore(
+    (s) => s.loadedVisionDisabledByUser,
+  );
+  const mmprojFallbackReason = useChatRuntimeStore(
+    (s) => s.mmprojFallbackReason,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -671,6 +711,8 @@ export function SharedComposer({
     loadedIsMultimodal,
     modelLoaded,
     loadError: lastModelLoadError,
+    visionDisabledByUser: loadedVisionDisabledByUser,
+    mmprojFallbackReason,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
   // Attach-time gate. Compare mode defers to send: the catalog can lag a
@@ -915,6 +957,7 @@ export function SharedComposer({
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
+      let videoUnsupported = false;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -931,6 +974,12 @@ export function SharedComposer({
           });
           continue;
         }
+        // video_base64 targets the single loaded GGUF, so at most one side of
+        // a compare could answer. Say that rather than drop the file.
+        if (isVideoFile(file)) {
+          videoUnsupported = true;
+          continue;
+        }
         // Handle image files
         if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
@@ -945,6 +994,11 @@ export function SharedComposer({
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (videoUnsupported) {
+        toast.error("Video can't be attached in compare mode", {
+          description: "Open a single chat with a video-capable model instead.",
+        });
       }
       setPendingImages((prev) => [...prev, ...next]);
     },
@@ -1026,12 +1080,22 @@ export function SharedComposer({
       resetPromptQueue();
       return;
     }
+    if (sendUnavailableReason) {
+      resetPromptQueue();
+      toast.error("Compare unavailable", {
+        description: sendUnavailableReason,
+      });
+      return;
+    }
 
     const hasCompareHandles = Boolean(
       handlesRef.current["model1"] || handlesRef.current["model2"],
     );
     const isGeneralizedCompare =
       hasCompareHandles && Boolean(model1?.id && model2?.id);
+    const submittedCompareCheckpoint = requireStableCheckpoint
+      ? useChatRuntimeStore.getState().params.checkpoint
+      : undefined;
 
     // Generalized compare requires both panes to have a model. A half-
     // selected send either races to an empty bubble with bogus tok/s (#5569)
@@ -1249,6 +1313,7 @@ export function SharedComposer({
         const targetIsGguf =
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
+        const platform = usePlatformStore.getState();
         let resolvedIsDiffusion = sel.isDiffusion;
         // Set when the preflight could not classify the GGUF, so a false
         // resolvedIsDiffusion below must not be read as "ordinary".
@@ -1324,16 +1389,19 @@ export function SharedComposer({
             // The load still works; a real overrides outage surfaces there.
           }
         }
-        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
-        // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
-        // which would silently shrink the shown context.
-        // A non-GGUF pane with no saved maxSeqLength falls back to the app default,
-        // not the active model's shared runtime snapshot: else comparing a saved
-        // 128K model against an unconfigured one loads the latter at 128K and OOMs.
+        // Mirror single-view resolveLoadMaxSeqLength: a pane with no explicit context
+        // hands sizing to whichever local backend serves it, not the session
+        // maxSeqLength, which would silently shrink the shown context. One no local
+        // backend serves falls back to the app default rather than the active model's
+        // runtime snapshot, else comparing a saved 128K model against an unconfigured
+        // one loads the latter at 128K and OOMs.
         const effectiveMaxSeqLength =
-          ownConfig.customContextLength ??
-          normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
-          (targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);
+          savedContextPin(ownConfig) ??
+          unpinnedLoadContext(
+            targetIsGguf,
+            isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason),
+            DEFAULT_MAX_SEQ_LENGTH,
+          );
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
           ownConfig.chatTemplateOverride,
         );
@@ -1350,6 +1418,18 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.tensorParallel
             : fallbackTensorParallel;
+        // The diffusion runner has no projector to skip, so the toggle is inert
+        // there for the same reason tensorParallel is.
+        //
+        // A pane with no saved config gets the per-model DEFAULT, not the store's
+        // current value, which belongs to whichever model is loaded. Where this parts
+        // company with tensorParallel: that one deliberately stands across models,
+        // while an unconfigured model is a model with vision on.
+        const effectiveDisableVision = resolvedIsDiffusion
+          ? false
+          : ownRemembered
+            ? ownConfig.disableVision
+            : DEFAULT_PER_MODEL_CONFIG.disableVision;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
@@ -1417,6 +1497,7 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
@@ -1441,6 +1522,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1506,6 +1588,7 @@ export function SharedComposer({
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1528,6 +1611,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1544,21 +1628,38 @@ export function SharedComposer({
         store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          // Same cap as the interactive load: this replays the model's
+          // remembered settings, and a budget kept from a larger context does
+          // not fit the one it just loaded with.
+          {
+            // The reported window leads and the request stands in only for a backend
+            // that sizes nothing, as on the interactive load: an unpinned pane sends
+            // the auto-size sentinel, and capping a budget at 0 asks for no output.
+            maxTokensCap: replayMaxTokensCap(
+              loadedContextFields(resp).loadedContextLength ??
+                (!resp.is_gguf && effectiveMaxSeqLength > 0
+                  ? effectiveMaxSeqLength
+                  : null),
+            ),
+          },
         );
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // Keep an explicit Manual+Auto context pin the load just applied (so a
-        // later Apply/Reset doesn't silently revert the model to auto-fit
-        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
-        // compare loads don't send the pin, so their baseline clears.
+        // This pane's own saved Context Length, not compareMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        // A non-GGUF pane keeps an MLX pin instead of clearing its baseline.
         const keepCustomCtx = targetIsGguf
-          ? resolveManualAutoCtxPin(
-              effectiveGpuMemoryMode,
-              effectiveGpuLayers,
-              effectiveCustomContextLength,
-            )
-          : null;
+          ? resolveExplicitCtxPin(effectiveCustomContextLength)
+          : retainedContextPin({
+              isMlx: isServedByMlx(
+                targetIsGguf,
+                platform.deviceType,
+                platform.chatOnlyReason,
+              ),
+              requestedContextLength: compareMaxSeqLength,
+            });
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
@@ -1579,6 +1680,7 @@ export function SharedComposer({
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
@@ -1590,6 +1692,9 @@ export function SharedComposer({
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          ...(targetIsGguf && !(resp.is_diffusion ?? false)
+            ? committedServerTuningState(ownConfig)
+            : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status
           // applier is held off for the whole load, so nothing else records it, and
           // a switch straight after would snapshot the other model's list.
@@ -1599,34 +1704,35 @@ export function SharedComposer({
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          loadedDisableVision: resp.disable_vision ?? false,
+          // Adopted from the echo like the knob above: this pane loaded its own
+          // model, so the editable value must follow it or Advanced Settings
+          // shows the other pane's Vision state.
+          disableVision: resp.disable_vision ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // The context baseline this pane loaded with (see keepCustomCtx above),
-          // so a later Apply/Reset can't silently revert a Manual+Auto pin.
+          // The context baseline this pane loaded with (see keepCustomCtx above), so a
+          // later Apply/Reset can't silently revert the pin it was serving.
           loadedCustomContextLength: keepCustomCtx,
           // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick
-          // plus loaded baselines) so the GPU controls round-trip. (gguf context,
+          // plus loaded baselines) so the GPU controls round-trip. (The context group,
           // customContextLength and native-path token/expiry clear in the tail below.)
           ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          // Set alongside loadedIsMultimodal so the composer can say WHY images
+          // are unavailable in compare mode too.
+          loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
+          mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
-          // Record the context this pane loaded with (like the single-model path)
-          // so when it becomes the active model, the UI and later reload/save use
-          // its context, not the previous/default one.
-          customContextLength: targetIsGguf
-            ? (ownConfig.customContextLength ?? keepCustomCtx)
-            : null,
-          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
-          ggufNativeContextLength: resp.is_gguf
-            ? (resp.native_context_length ?? null)
-            : null,
-          ggufMaxContextLength: resp.is_gguf
-            ? (resp.max_context_length ?? null)
-            : null,
+          // Same value as the baseline above, so that when this pane becomes the
+          // active model the UI and later reload/save use the context it actually
+          // loaded with, not the previous/default one.
+          customContextLength: keepCustomCtx,
+          ...loadedContextFields(resp),
           // Compare selections load by repo/variant, never from the file picker,
           // so they carry no native lease. Clear any prior picked file's
           // token/expiry so the reload path never sends a stale lease.
@@ -1636,9 +1742,14 @@ export function SharedComposer({
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
+          const paneParams = useChatRuntimeStore.getState().params;
           store.setParams({
-            ...useChatRuntimeStore.getState().params,
-            maxSeqLength: effectiveMaxSeqLength,
+            ...paneParams,
+            maxSeqLength: loadedContextForParams(
+              loadedContextFields(resp).loadedContextLength,
+              effectiveMaxSeqLength,
+              paneParams.maxSeqLength,
+            ),
           });
         }
         loadedFromConfig = config != null;
@@ -1650,9 +1761,11 @@ export function SharedComposer({
         const synced = {
           isVision: Boolean(resp.is_vision),
           isGguf: Boolean(resp.is_gguf),
+          isMlx: Boolean(resp.is_mlx),
           isAudio: Boolean(resp.is_audio),
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
+          hasVideoInput: Boolean(resp.has_video_input),
         };
         if (idx === -1) {
           store.setModels([
@@ -1757,8 +1870,44 @@ export function SharedComposer({
       }
     } else {
       // Original behavior: fire all handles simultaneously
+      const liveRuntime = useChatRuntimeStore.getState();
+      if (
+        requireStableCheckpoint &&
+        (liveRuntime.modelLoading ||
+          !modelIdsMatch(
+            submittedCompareCheckpoint,
+            liveRuntime.params.checkpoint,
+          ))
+      ) {
+        resetPromptQueue();
+        toast.error("Compare unavailable", {
+          description: "The loaded model changed while preparing the message.",
+        });
+        return;
+      }
+      const handles = Object.values(handlesRef.current);
+      const reservations: symbol[] = [];
+      if (requireStableCheckpoint) {
+        for (const handle of handles) {
+          const token = reservePreStreamRun(handle.threadIds(), {
+            usesLocalModel: true,
+            cancel: () => handle.cancel(),
+          });
+          if (!token) {
+            for (const reservation of reservations) {
+              releasePreStreamRunReservation(reservation);
+            }
+            resetPromptQueue();
+            toast.error("Compare unavailable", {
+              description: "A comparison run is already starting.",
+            });
+            return;
+          }
+          reservations.push(token);
+        }
+      }
       clearSubmittedDraft();
-      for (const handle of Object.values(handlesRef.current)) {
+      for (const handle of handles) {
         handle.append(content);
       }
     }
@@ -1814,7 +1963,58 @@ export function SharedComposer({
       pendingAudio !== null) &&
     !busy &&
     !isComposing &&
-    !isDictating;
+    !isDictating &&
+    !sendUnavailableReason;
+
+  // Compare mode swaps this composer in for the single-chat one, and only one
+  // of the two is ever on screen, so the chords register in both. Both gate on
+  // the chat tab being visible: off-route the pane is hidden, not unmounted.
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      // As in the single-chat composer: a dialog over Chat leaves this
+      // registered, and a microphone opened behind one is neither visible nor
+      // stoppable from where the user is.
+      // Stopping first and ungated, as in the single-chat composer: a recording
+      // stays stoppable wherever the gate would say no.
+      if (isDictating) {
+        stopDictation();
+        return;
+      }
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      startDictation();
+    },
+    { enabled: chatActive },
+  );
+  // Through the existing sendRef: `send` is render-scoped, which the React
+  // compiler will not let a hook outlive.
+  useShortcut(
+    "sendMessage",
+    () => {
+      // As in the single-chat composer: the draft behind a dialog is not what
+      // the user is typing.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      sendRef.current?.();
+    },
+    {
+      enabled: chatActive && canSend,
+      // As in the single-chat composer: a non-modal popover's search box is a
+      // text field the composer is still the foreground behind.
+      skipInTextFields: true,
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
+  );
+  useShortcut(
+    "attachFiles",
+    () => {
+      // As in the single-chat composer, which would otherwise raise the file
+      // chooser from behind a dialog.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      fileInputRef.current?.click();
+    },
+    { enabled: chatActive },
+  );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,
@@ -1898,7 +2098,8 @@ export function SharedComposer({
           className="unsloth-plus-menu w-[208px]"
         >
           {[
-            { label: "Raw JSONL", fn: exportConversationRawJsonl },
+            { label: "Training JSONL", fn: exportConversationRawJsonl },
+            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
             {
@@ -1981,7 +2182,7 @@ export function SharedComposer({
     <div
       className="chat-composer-surface"
       onDragOver={(e) => {
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -1989,7 +2190,7 @@ export function SharedComposer({
       onDrop={(e) => {
         // Phase 1 native model drops own Tauri local-path drops. Restore
         // browser attachment drops in Tauri once Phase 1d adds token bridging.
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);
@@ -2053,7 +2254,9 @@ export function SharedComposer({
           {pendingAudio && (
             <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
               <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-              <span className="max-w-48 truncate">{pendingAudio.name}</span>
+              <span data-reload-snapshot-sensitive className="max-w-48 truncate">
+                {pendingAudio.name}
+              </span>
               <button
                 type="button"
                 onClick={() => {
@@ -2101,11 +2304,16 @@ export function SharedComposer({
           setCompositionState(false);
         }}
         placeholder="Send to both models..."
-        className="composer-input"
-        rows={1}
         // dir="auto" detects RTL (Arabic/Hebrew/Persian/Urdu) from the first
-        // strong character; no effect on LTR scripts.
+        // strong character; no effect on LTR scripts. Kept next to the
+        // placeholder: the IME smoke reads this pair out of the source.
         dir="auto"
+        // aui-composer-input carries no styling anywhere; it is the name both
+        // composers answer to, so one selector can mean "the composer" whichever
+        // of the two is on screen. Escape's decline exception and the dictation
+        // foreground check both rely on it.
+        className="composer-input aui-composer-input"
+        rows={1}
       />
       <div className="composer-action-wrapper">
         <div
@@ -2430,7 +2638,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -2627,7 +2835,7 @@ export function SharedComposer({
                       : "Stop dictation"
                   }
                 >
-                  <SquareIcon className="size-3 animate-pulse fill-current" />
+                  <SquareIcon className="aui-composer-cancel-icon size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
@@ -2655,11 +2863,11 @@ export function SharedComposer({
               className="ml-1.5 size-9 rounded-full"
               onClick={stop}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={sendUnavailableReason ?? "Send message"}
               side="bottom"
               variant="default"
               size="icon"

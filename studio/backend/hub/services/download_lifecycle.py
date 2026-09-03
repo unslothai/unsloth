@@ -75,11 +75,51 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
         health = xet_health()
     except Exception as exc:  # noqa: BLE001 - never let a health probe block a download
         logger.debug("Xet health probe failed, defaulting to Xet: %s", exc)
-        return (True, "Xet (health check unavailable)")
-    if health is None:
+        health, reason = None, "Xet (health check unavailable)"
+    else:
         # Older unsloth_zoo without the health module: no opinion, keep the existing default.
-        return (True, "Xet")
-    return (bool(health.use_xet), str(health.reason))
+        reason = "Xet" if health is None else str(health.reason)
+    if health is not None and not health.use_xet:
+        return (False, reason)
+    if _health_is_forced(health):
+        # ``UNSLOTH_FORCE_XET=1``. The zoo's off switches (``UNSLOTH_DISABLE_XET``,
+        # ``UNSLOTH_STABLE_DOWNLOADS``, ``HF_HUB_DISABLE_XET``) already win above, so the on switch
+        # has to win here or the pair is asymmetric and the only escape from the RAM rule is
+        # editing the request. Buffers are still clamped to free RAM; only the transport choice is
+        # left to the operator, the same stand-down the zoo makes for a user-set
+        # HF_XET_HIGH_PERFORMANCE.
+        return (True, reason)
+    # Health said Xet, or had no opinion at all. Free RAM is separate evidence, read from a
+    # different zoo module, so it still gets a say: a missing health module says nothing about
+    # whether this machine can afford Xet right now.
+    pressure = _memory_pressure_reason()
+    if pressure is not None:
+        return (False, pressure)
+    return (True, reason)
+
+
+def _health_is_forced(health) -> bool:
+    """``UNSLOTH_FORCE_XET``-style verdict? Delegates so this and the capabilities probe stand down
+    on exactly the same evidence; a degraded shim answers False, which keeps the RAM gate on."""
+    try:
+        from utils.hf_xet_fallback import xet_health_is_forced
+        return xet_health_is_forced(health)
+    except Exception as exc:  # noqa: BLE001 - an unreadable verdict is not an override
+        logger.debug("Could not read the Xet health source: %s", exc)
+        return False
+
+
+def _memory_pressure_reason() -> Optional[str]:
+    """Free-RAM verdict for an API caller that sends "auto".
+
+    The Unsloth UI never reaches here: it resolves Auto through the capabilities probe and submits
+    the concrete xet/http, so that probe applies the same rule. Shared helper, so the two agree."""
+    try:
+        from utils.hf_xet_fallback import free_ram_pressure_reason
+        return free_ram_pressure_reason()
+    except Exception as exc:  # noqa: BLE001 - a probe must not decide the transport by crashing
+        logger.debug("Free-RAM probe failed, leaving the Xet verdict alone: %s", exc)
+        return None
 
 
 def _allow_high_performance() -> bool:
@@ -152,7 +192,7 @@ def spawn_worker(
         # natively at import, so the worker's env has to be sized here. unsloth_zoo decides, so
         # there is one rule and not two: it sizes from RAM/cores/disk and honours a user-set
         # high-performance flag (standing its own sizing down, since xet-core voids it anyway).
-        # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Studio hand-rolled this, and the
+        # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Unsloth hand-rolled this, and the
         # copies drifted: on a 2TB host the worker got a 24GB laptop's buffer and ran 3.4x slower.
         from utils import hf_xet_fallback
 
@@ -186,23 +226,33 @@ def spawn_worker(
         env["HF_TOKEN"] = hf_token
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "hub.workers.hf_download",
-            *args,
-            "--parent-pid",
-            str(os.getpid()),
-            "--transport",
-            mode,
-        ],
-        env = env,
-        cwd = str(cwd),
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.PIPE,
-        start_new_session = sys.platform != "win32",
-    )
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "hub.workers.hf_download",
+                *args,
+                "--parent-pid",
+                str(os.getpid()),
+                "--transport",
+                mode,
+            ],
+            env = env,
+            cwd = str(cwd),
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            start_new_session = sys.platform != "win32",
+        )
+        return proc
+    finally:
+        if use_xet:
+            # Tie the sizing's RAM reservation to the worker, so it frees when the worker exits and
+            # a sibling starting in this window sizes against the remainder. A spawn that raised
+            # passes None, which drops the reservation instead of leaking it.
+            from utils import hf_xet_fallback
+            hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
 
 def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
@@ -323,6 +373,7 @@ def finalize_worker_exit(
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
+        hf_cache_scan.invalidate_hf_cache_scans()
         registry.set_job(key, "complete")
         # Where /v1 learns a new model exists: its resolver answers from a cached scan
         # with no watcher, so it would report the model absent and serve whatever is

@@ -76,6 +76,7 @@ from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
     resolve_output_dir,
@@ -89,7 +90,7 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows
+from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
 
 logger = get_logger(__name__)
 
@@ -157,7 +158,7 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
 
     `disable_tqdm=True` only swaps ProgressCallback for PrinterCallback, which prints a
     raw dict per step instead (`{'loss': '0.5684', 'grad_norm': ..., 'epoch': ...}`).
-    Both write to the same stdout, so both have to go; Studio's own progress callback,
+    Both write to the same stdout, so both have to go; Unsloth's own progress callback,
     the SSE stream and `training_progress` are unaffected. Best effort: a transformers
     build without these classes just keeps its current behaviour.
     """
@@ -576,7 +577,7 @@ class UnslothTrainer:
                 if not logs:
                     return
                 # Trainer's end-of-run and end-of-eval summaries carry numbers that
-                # appear nowhere else in Studio (train_samples_per_second,
+                # appear nowhere else in Unsloth (train_samples_per_second,
                 # train_steps_per_second, total_flos, memory, eval runtime). They used
                 # to reach the log only through PrinterCallback's raw stdout dict, so
                 # with that callback gone they are re-published here, structured, once.
@@ -1082,6 +1083,7 @@ class UnslothTrainer:
                     model_name = llm_path,
                     max_seq_length = max_seq_length,
                     dtype = torch.float32,  # Spark-TTS requires float32
+                    attn_implementation = "sdpa",  # Flash Attention cannot run float32
                     load_in_4bit = False,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -1365,6 +1367,7 @@ class UnslothTrainer:
                 peft_kwargs = dict(
                     r = lora_r,
                     target_modules = target_modules,
+                    modules_to_save = modules_to_save,
                     lora_alpha = lora_alpha,
                     lora_dropout = lora_dropout,
                     bias = "none",
@@ -1396,6 +1399,7 @@ class UnslothTrainer:
                     self.model,
                     r = lora_r,
                     target_modules = target_modules,
+                    modules_to_save = modules_to_save,
                     lora_alpha = lora_alpha,
                     lora_dropout = lora_dropout,
                     bias = "none",
@@ -1415,6 +1419,7 @@ class UnslothTrainer:
                     self.model,
                     r = lora_r,
                     target_modules = target_modules,
+                    modules_to_save = modules_to_save,
                     lora_alpha = lora_alpha,
                     lora_dropout = lora_dropout,
                     bias = "none",
@@ -1773,7 +1778,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"CSM preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"CSM preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2024,7 +2029,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"SNAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"SNAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2215,8 +2220,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"BiCodec preprocessing complete: {len(result_dataset)} examples "
-            f"({skipped} skipped)\n"
+            f"BiCodec preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2408,7 +2412,7 @@ class UnslothTrainer:
 
         result_dataset = HFDataset.from_list(processed_examples)
         logger.info(
-            f"DAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"DAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2522,22 +2526,7 @@ class UnslothTrainer:
             file_path_obj = Path(file_path)
 
             if file_path_obj.is_dir():
-                parquet_dir = (
-                    file_path_obj / "parquet-files"
-                    if (file_path_obj / "parquet-files").exists()
-                    else file_path_obj
-                )
-                parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                if parquet_files:
-                    all_files.extend(str(p) for p in parquet_files)
-                    continue
-                candidates: list[Path] = []
-                for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                    candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                if candidates:
-                    all_files.extend(str(c) for c in candidates)
-                    continue
-                raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
             else:
                 all_files.append(str(file_path_obj))
         return all_files
@@ -2797,8 +2786,7 @@ class UnslothTrainer:
                                 self.dataset_snapshot_path
                             )
                             logger.info(
-                                f"Loaded cached dataset for {dataset_source}: "
-                                f"{len(dataset)} rows\n"
+                                f"Loaded cached dataset for {dataset_source}: {len(dataset)} rows\n"
                             )
                         except Exception as error:
                             from hub.utils.dataset_cache import (
@@ -2813,8 +2801,7 @@ class UnslothTrainer:
                                 raise
                             self._update_progress(
                                 status_message = (
-                                    f"Cached dataset unavailable; "
-                                    f"downloading {dataset_source}..."
+                                    f"Cached dataset unavailable; downloading {dataset_source}..."
                                 )
                             )
                             dataset = None
@@ -3471,7 +3458,7 @@ class UnslothTrainer:
         self._online_eval_dataset = eval_dataset
         train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
 
-        # A step-capped run says nothing about passes, but Studio knows the rows
+        # A step-capped run says nothing about passes, but Unsloth knows the rows
         # and microbatch size, so resolve it here. World size scales rows consumed
         # per step; omitting it would understate the passes.
         resolved_epochs = None
@@ -3479,7 +3466,32 @@ class UnslothTrainer:
         if max_steps > 0:
             try:
                 rows = len(train_dataset)
-                world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+                # Every launcher variable, not WORLD_SIZE alone: no MPI sets it (Open
+                # MPI uses OMPI_COMM_WORLD_SIZE, Hydra/Intel MPI PMI_SIZE, mlx.launch's
+                # CUDA-only NCCL backend MLX_WORLD_SIZE), LOCAL_WORLD_SIZE is defensive
+                # since torchrun sets both and the max prefers the global count. Reading
+                # one variable calls an mpirun launch single-process and engages a view
+                # that re-tokenizes every extra pass; it also raises on junk like
+                # int("auto"), leaving resolved_epochs None so the gate reads inf and
+                # kills the feature. Env-only, deliberately NOT worker.py's
+                # _data_parallel_world_size, which also counts visible CUDA devices:
+                # that bounds a row subset where over-counting is free, this feeds a
+                # veto where both directions are wrong. Unsloth's multi-GPU load is a
+                # sharding device_map, model-parallel to transformers with _n_gpu = 1,
+                # so a sharded 4-GPU run draws one GPU's rows per step and counting
+                # devices would report 4x the passes, vetoing a qualifying run.
+                world_size = world_size_from_env()
+                if world_size > 1:
+                    # Say which variable said so: a stale size from an earlier mpirun
+                    # or an HPC container image reads as a multi-rank launch on a
+                    # one-process machine, and the only symptom is this run being told
+                    # it makes several passes. The row bound already trusts the same
+                    # variables; what was missing was a way to see them.
+                    logger.info(
+                        f"Launcher environment reports {world_size} data-parallel "
+                        f"processes ({world_size_env_report()}); a step-capped run "
+                        f"consumes that many times the rows per step\n"
+                    )
                 per_step = (
                     int(config_args.get("per_device_train_batch_size", 1))
                     * int(config_args.get("gradient_accumulation_steps", 1))
@@ -3738,7 +3750,7 @@ class UnslothTrainer:
                     args = TrainingArguments(**config),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
-                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # Unsloth publishes progress itself, so HF's stdout callbacks are pure
                 # duplication in a log that has no terminal. --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
 
@@ -3779,7 +3791,7 @@ class UnslothTrainer:
                     ),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
-                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # Unsloth publishes progress itself, so HF's stdout callbacks are pure
                 # duplication in a log that has no terminal. --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
 
@@ -3826,7 +3838,7 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
-                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # Unsloth publishes progress itself, so HF's stdout callbacks are pure
                 # duplication in a log that has no terminal. --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
 
@@ -4349,7 +4361,7 @@ class UnslothTrainer:
 
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
-            # Studio publishes progress itself, so HF's stdout callbacks are pure
+            # Unsloth publishes progress itself, so HF's stdout callbacks are pure
             # duplication in a log that has no terminal. --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)
 

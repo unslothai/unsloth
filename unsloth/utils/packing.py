@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 import os
@@ -37,7 +38,7 @@ except Exception:
         _XFormersBlockMask = None
 
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int], Any] = OrderedDict()
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
@@ -55,12 +56,62 @@ def _window_cache_key(sliding_window: Optional[int]) -> int:
     return int(sliding_window)
 
 
-def _get_cached_block_mask(lengths: Tuple[int, ...], sliding_window: Optional[int]):
+def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
+    """Return an xFormers attention bias whose tensor metadata is on ``device``."""
+    if attn_bias is None:
+        return None
+
+    device = torch.device(device)
+    seqinfos = [
+        (name, seqinfo)
+        for name in ("q_seqinfo", "k_seqinfo")
+        if (seqinfo := getattr(attn_bias, name, None)) is not None
+    ]
+    if seqinfos:
+        if all(
+            getattr(getattr(seqinfo, "seqstart", None), "device", None) == device
+            for _, seqinfo in seqinfos
+        ):
+            return attn_bias
+
+        # Move the device-bearing metadata instead of the top-level mask. Older
+        # xFormers versions demote causal masks in their inherited ``to`` method.
+        # Copies also keep later model shards from rewriting masks retained for
+        # backward by earlier shards.
+        moved_bias = copy.copy(attn_bias)
+        moved_seqinfos = {}
+        for name, seqinfo in seqinfos:
+            source_id = id(seqinfo)
+            if source_id not in moved_seqinfos:
+                moved_seqinfo = copy.copy(seqinfo)
+                move = getattr(moved_seqinfo, "to", None)
+                if callable(move):
+                    moved = move(device)
+                    if moved is not None:
+                        moved_seqinfo = moved
+                moved_seqinfos[source_id] = moved_seqinfo
+            setattr(moved_bias, name, moved_seqinfos[source_id])
+        return moved_bias
+
+    # Biases without sequence metadata can safely use their own move protocol.
+    moved_bias = copy.copy(attn_bias)
+    move = getattr(moved_bias, "to", None)
+    if callable(move):
+        moved = move(device)
+        if moved is not None:
+            moved_bias = moved
+    return moved_bias
+
+
+def _get_cached_block_mask(
+    lengths: Tuple[int, ...], sliding_window: Optional[int], device: torch.device
+):
     if _XFormersBlockMask is None:
         return None
 
+    device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    cache_key = (lengths, window_key)
+    cache_key = (device, lengths, window_key)
     cached = _XFORMERS_MASK_CACHE.get(cache_key)
     if cached is not None:
         _XFORMERS_MASK_CACHE.move_to_end(cache_key)
@@ -69,6 +120,7 @@ def _get_cached_block_mask(lengths: Tuple[int, ...], sliding_window: Optional[in
     mask = _XFormersBlockMask.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
         mask = mask.make_local_attention(window_size = window_key)
+    mask = move_xformers_attention_bias(mask, device)
 
     _XFORMERS_MASK_CACHE[cache_key] = mask
     if len(_XFORMERS_MASK_CACHE) > _XFORMERS_MASK_CACHE_MAXSIZE:
@@ -169,10 +221,14 @@ def enable_sample_packing(
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                # Boundary labels are NOT masked here: unsloth_zoo's
+                # Boundary labels are NOT masked here. unsloth_zoo's
                 # _unsloth_get_batch_samples counts num_items_in_batch off this batch and
-                # already subtracts the N-1 boundary targets, so masking here would deduct
-                # twice on TRL < 0.24 (no pre-masking). The guard runs in the forward.
+                # discounts the N-1 boundary targets itself, idempotently: it zeroes those
+                # slots rather than subtracting a constant, so the count is unaffected by
+                # upstream masking (TRL >= 0.24's labels[position_ids == 0] = -100,
+                # completion-only masking, assistant_masks). Masking here would be harmless
+                # to the count; labels are left alone because the guard that needs these
+                # positions runs in the forward, off packed_seq_lengths.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -216,7 +272,8 @@ def enable_padding_free_metadata(model, trainer):
         batch = original_torch_call(examples)
         if seq_lengths:
             # Labels left alone for the same reason as enable_sample_packing:
-            # num_items_in_batch is counted off this batch.
+            # num_items_in_batch is counted off this batch, and the zoo's discount of the
+            # boundary targets is idempotent, so masked slots do not change the count.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
@@ -570,7 +627,7 @@ def build_xformers_block_causal_mask(
         if lengths_tensor.numel() == 0:
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
-        mask = _get_cached_block_mask(lengths, sliding_window)
+        mask = _get_cached_block_mask(lengths, sliding_window, device)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
             "seq_lengths": seq_lengths,
@@ -717,6 +774,7 @@ def mask_packed_boundary_labels(
 
 def clear_packed_caches():
     """Release cached masks/metadata to free device memory."""
+    _XFORMERS_MASK_CACHE.clear()
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
@@ -727,6 +785,7 @@ __all__ = [
     "configure_padding_free",
     "enable_sample_packing",
     "enable_padding_free_metadata",
+    "move_xformers_attention_bias",
     "mark_allow_overlength",
     "get_packed_info_from_kwargs",
     "build_xformers_block_causal_mask",

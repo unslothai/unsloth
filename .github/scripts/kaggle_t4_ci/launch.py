@@ -55,6 +55,7 @@ import argparse
 import json
 import os
 import re
+import select
 import atexit
 import shutil
 import signal
@@ -215,8 +216,84 @@ def worst_case_seconds(max_wait: int, kernels: int) -> int:
     )
 
 
+_STDOUT_FD = 1
+
+# Set once, on entry to the signal handler, and never cleared: the process is dying.
+# Below it, NO line written to stdout may either block or raise, and both have to be
+# handled here rather than at the handler's own call sites. release() reports a refused
+# delete and warns about a kernel it could not delete through the ordinary path, so those
+# lines are reached transitively, and either failure strands the cleanup: a block never
+# reaches the retry or the `finally`, and a raise propagates out of delete_kernel() and
+# abandons the remaining delete attempts for a kernel that is still billing.
+_IN_SIGNAL_HANDLER = False
+
+
+def _writable(fd: int) -> bool:
+    """Whether a write to ``fd`` can proceed without blocking, asked without writing.
+
+    A regular file or a terminal always answers yes; a pipe answers no exactly when it
+    has backed up, which is the case worth avoiding. Any error answers no: a closed or
+    unselectable descriptor is not somewhere to risk a stall from a signal handler.
+    """
+    try:
+        return bool(select.select([], [fd], [], 0)[1])
+    except BaseException:  # noqa: BLE001
+        return False
+
+
+def _line_from_signal(line: str) -> None:
+    """One line out, from a context where the ordinary path can raise OR block.
+
+    It can RAISE: a handler runs on the main thread wherever that thread happened to be,
+    and if it was inside a write to stdout the interpreter refuses the second one
+    outright, ``RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>``.
+    That is not hypothetical; it was captured on a loaded CI runner, where it escaped the
+    handler and left a cancelled launcher exiting 1 instead of dying of its signal.
+    ``os.write`` goes straight to the descriptor and takes no lock the interrupted frame
+    could already hold, which is what makes it usable as the fallback.
+
+    It can also BLOCK, which raising does not cover and no ``except`` or ``finally``
+    catches. stdout in CI is a pipe, and if the collector stops draining it both the
+    buffered flush and the raw write sleep in the kernel. That backpressure is also what
+    leaves the main thread parked mid-write, so the two arrive together. Asking first
+    turns the stall into a dropped line: POSIX reports a pipe writable only when at least
+    PIPE_BUF bytes fit, and these lines are far shorter than that.
+    """
+    if not _writable(_STDOUT_FD):
+        return
+    try:
+        _emit(line)
+    except BaseException:  # noqa: BLE001 -- a log line may never decide whether we die
+        try:
+            os.write(_STDOUT_FD, (line + "\n").encode("utf-8", "replace"))
+        except BaseException:  # noqa: BLE001
+            pass
+
+
+def _emit(line: str) -> None:
+    print(line, flush = True)
+
+
+def _write_line(line: str) -> None:
+    """Every line this script puts on stdout goes through here.
+
+    Unconditional on the ordinary path, which is everything before something kills us:
+    nothing dropped, nothing swallowed, no syscall added.
+    """
+    if not _IN_SIGNAL_HANDLER:
+        _emit(line)
+        return
+    _line_from_signal(line)
+
+
 def _log(msg: str) -> None:
-    print(f"[launch] {msg}", flush = True)
+    _write_line(f"[launch] {msg}")
+
+
+def _log_from_signal(msg: str) -> None:
+    """``_log`` for the handler's own lines. Kept as its own name because the handler
+    runs before the flag it sets can matter to anything else reading this."""
+    _line_from_signal(f"[launch] {msg}")
 
 
 def _out(key: str, value: str) -> None:
@@ -241,6 +318,27 @@ def _api():
     api = KaggleApi()
     api.authenticate()
     return api
+
+
+def username_of(api) -> str | None:
+    """The account this client authenticated as, as Kaggle itself reports it.
+
+    `_authenticate_with_access_token` introspects the token and records the name
+    that comes back, so this is not a guess. It matters because a kernel id is
+    `<owner>/<slug>`: pushing under a name the token does not own fails, and
+    DELETING under the wrong name silently reaps nothing while the real kernel
+    keeps billing. With more than one account in play the owner cannot be a
+    constant, so it is read from whichever token this process was handed.
+
+    Takes the client the caller already authenticated rather than building one:
+    a second `authenticate()` is a second network round trip on a path that is
+    already bounded, and it could answer for a different token than the one the
+    rest of the run uses.
+    """
+    try:
+        return api.config_values.get(api.CONFIG_NAME_USER) or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # A kernel this process pushed but has not yet deleted is recorded here, so a
@@ -272,9 +370,22 @@ def _inflight_write(entries: list[dict]) -> None:
         pass  # bookkeeping only; never fail a run over it
 
 
-def _inflight_add(slug: str) -> None:
+def _inflight_add(slug: str, owner: str | None = None) -> None:
+    """File a slug, WITH the account that owns it.
+
+    The owner is recorded because the sweep below runs with whatever token the
+    NEXT job was handed, and CI now hands out more than one. A slug is
+    `<owner>/<name>`, so an entry filed by one account cannot be deleted by the
+    other; without the owner on the record the sweep cannot tell that it is
+    about to try, and a failed delete reads exactly like a kernel that was
+    already gone.
+    """
     entries = [e for e in _inflight_read() if e.get("slug") != slug]
-    entries.append({"slug": slug, "pid": os.getpid(), "at": time.time()})
+    entry = {"slug": slug, "pid": os.getpid(), "at": time.time()}
+    owner = owner or (slug.split("/", 1)[0] if "/" in slug else None)
+    if owner:
+        entry["owner"] = owner
+    entries.append(entry)
     _inflight_write(entries)
 
 
@@ -309,11 +420,18 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def sweep_orphans() -> list[str]:
+def sweep_orphans(owner: str | None = None) -> list[str]:
     """Delete kernels left behind by a launcher that was killed outright.
 
     Only entries whose owning process is gone are eligible, so a concurrent
     run is never disturbed. Returns the slugs reclaimed.
+
+    ``owner``, when given, is the account this process authenticated as, and an
+    entry belonging to a DIFFERENT account is left alone rather than attempted.
+    This token cannot delete that kernel, so trying would turn a real leak into
+    a log line indistinguishable from a kernel that was already gone -- and
+    would drop the record, which is the only thing that still knows the kernel
+    exists. Left filed, it is reclaimed by the next run that holds its account.
     """
     entries = _inflight_read()
     if not entries:
@@ -327,6 +445,14 @@ def sweep_orphans() -> list[str]:
         if entry.get("keep"):
             # --keep-kernel asked for this one to stay up.
             keep.append(entry)
+            continue
+        entry_owner = entry.get("owner") or (slug.split("/", 1)[0] if "/" in slug else None)
+        if owner and entry_owner and entry_owner != owner:
+            keep.append(entry)
+            _log(
+                f"leaving orphan {slug} filed: it belongs to {entry_owner} and this "
+                f"job holds {owner}, so this token cannot delete it"
+            )
             continue
         if isinstance(pid, int) and _pid_alive(pid) and pid != os.getpid():
             keep.append(entry)
@@ -935,13 +1061,43 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
     atexit.register(release)
 
     def _release_and_die(signum, _frame):
-        _log(f"received signal {signum}; deleting kernels before exiting")
-        release()
-        # Die of the original signal rather than exiting 0, so the status
-        # still reads "killed by signal N". A CI system treats a 0 from a
-        # cancelled job as a completed one.
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
+        # First, and outside the try: from here on every _log in this process drops a
+        # line rather than stalling on a stdout nobody is draining. release() logs
+        # through the ordinary path -- delete_kernel() reports a refused delete that way
+        # -- and a stall there is a stall before the retry and before the `finally`.
+        global _IN_SIGNAL_HANDLER
+        _IN_SIGNAL_HANDLER = True
+        # Everything before the `finally` is best effort. The death is not: a handler
+        # that returns normally leaves the process exiting on whatever code main()
+        # computes, and a cancelled job then reads as a completed one.
+        try:
+            _log_from_signal(f"received signal {signum}; deleting kernels before exiting")
+            release()
+        except BaseException as exc:  # noqa: BLE001
+            # A raise here used to propagate into the main thread, where main()'s
+            # `except BaseException` caught it and finish() called release() again.
+            # A transient first failure (the observed one: an OSError from a
+            # subprocess spawn on a loaded runner) therefore ended in main
+            # RETURNING 0, and the cancelled job read as completed. Deleting is
+            # best effort, the exit status is not. Retried once, since the kernel
+            # is billing meanwhile.
+            _log_from_signal(f"release() failed under signal {signum}: {type(exc).__name__}: {exc}")
+            try:
+                release()
+            except BaseException as retry_exc:  # noqa: BLE001
+                # Nothing more to try in-process: the slug stays in the registry
+                # for the next launch's orphan sweep, as after a kill -9.
+                _log_from_signal(
+                    f"release() failed again: {type(retry_exc).__name__}: {retry_exc}. "
+                    f"The kernels stay in the registry for the next launcher's sweep"
+                )
+        finally:
+            # Die of the original signal rather than exiting 0, so the status
+            # still reads "killed by signal N". A CI system treats a 0 from a
+            # cancelled job as a completed one. In a `finally` because anything
+            # above can raise -- including the logging, which is how this was found.
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
 
     for _sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None)):
         if _sig is None:
@@ -963,7 +1119,19 @@ def main() -> int:
         help = "kernel notebook to push. Repeatable: all of them "
         "are pushed before any of them is waited on",
     )
-    ap.add_argument("--user", required = True)
+    # NOT required, and not a constant. The owner is a property of the TOKEN
+    # this process was handed, and CI now hands it one of several. Passing the
+    # name is still allowed -- the caller that selected the account knows it --
+    # but it is CHECKED against the token rather than trusted, because the one
+    # failure worth catching here is a name and a credential that disagree: the
+    # push fails, or worse, the cleanup deletes under a name that owns nothing
+    # and the real kernel bills on unwatched.
+    ap.add_argument(
+        "--user",
+        default = "",
+        help = "Kaggle account to push under. Defaults to the account the token "
+        "authenticates as; when given, it must MATCH that account",
+    )
     ap.add_argument("--outdir", required = True)
     ap.add_argument(
         "--expect", type = int, default = 2, help = "payload reports this kernel should produce"
@@ -1047,12 +1215,16 @@ def main() -> int:
             entry["released"] = all(s in done for s in _slugs_filed(entry))
         result["unreleased"] = leaked
         if leaked:
-            print(
+            # _write_line, not _log: the [launch] prefix would stop GitHub parsing
+            # this as an annotation. Not print: release() runs from the signal handler
+            # too, and this line is emitted on exactly the path where a kernel is still
+            # billing, so a raw write here blocks or raises before the handler can
+            # re-raise its signal.
+            _write_line(
                 "::warning title=Kaggle kernels may still be running::"
                 + ", ".join(leaked)
                 + " could not be deleted, so they may keep billing accelerator "
-                "quota until they hit their own ceiling. Delete them by hand.",
-                flush = True,
+                "quota until they hit their own ceiling. Delete them by hand."
             )
 
     # From here on release() is reachable from a signal and from atexit too,
@@ -1128,11 +1300,36 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
+    # WHO this token is, settled before anything is pushed and read off the
+    # client just authenticated. CI holds more than one account now, and both
+    # ways to get this wrong are silent: a name the token does not own makes
+    # every push fail for a reason that reads like a bad notebook, and a name
+    # belonging to the OTHER account makes the cleanup delete nothing while the
+    # kernel it filed bills on unwatched.
+    #
+    # Answered through finish() rather than a bare return, so this stand-down
+    # still writes launch_result.json -- the report step reads that file, and a
+    # launcher that exits without one is indistinguishable from a runner that
+    # died, which is the wrong story for a configuration error.
+    owner = username_of(api)
+    if not owner:
+        result["reason"] = "could not determine which Kaggle account this token belongs to"
+        return finish()
+    if args.user and args.user != owner:
+        result["reason"] = (
+            f"the account selected upstream ({args.user}) is not the account this token "
+            f"authenticates as ({owner}); refusing to push, because a kernel pushed "
+            "under one name cannot be deleted under the other"
+        )
+        return finish()
+    args.user = owner
+    _log(f"authenticated as {owner}")
+
     # Reclaim anything a previous launcher was killed outright before it
     # could delete. Done BEFORE pushing, so the freed session slots are
     # available to this run -- Kaggle allows only two GPU sessions at once,
     # and an orphan holds one until its ceiling.
-    for _slug in sweep_orphans():
+    for _slug in sweep_orphans(owner):
         _log(f"reclaimed orphaned kernel {_slug} from a killed launcher")
     # AGAIN, now that authentication is paid for and the next thing is a push.
     # The check above is not enough on its own: authenticate() reaches the

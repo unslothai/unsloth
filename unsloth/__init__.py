@@ -1564,3 +1564,15 @@ else:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+# Both paths, GPU and MLX: a `pip install --target` / PYTHONPATH layout makes
+# dill pickle whole modules by value, and every training path here builds a
+# `datasets.Dataset`, which fingerprints through dill. No-op on an ordinary
+# install. See `import_fixes.fix_dill_module_by_value_pickling`.
+try:
+    from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
+    _fix_dill()
+    del _fix_dill
+except Exception:
+    pass

@@ -44,6 +44,7 @@ from hub.utils.paths import (
     resolve_dataset_path,
 )
 from utils.datasets.audio_decode import ensure_audio_decoding
+from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = get_logger(__name__)
 
@@ -226,7 +227,12 @@ def _select_tier1_repo_file(
     train_split: str,
     allow_unlabeled_fallback: bool = False,
 ) -> Optional[str]:
-    data_files = sorted(f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS))
+    # "._train.parquet" sorts first and would be handed to the single-file preview load.
+    data_files = sorted(
+        f
+        for f in drop_shadowed_appledouble_names(list(files))
+        if any(f.lower().endswith(ext) for ext in DATA_EXTS)
+    )
     if not data_files:
         return None
     tabular_files = [f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)]

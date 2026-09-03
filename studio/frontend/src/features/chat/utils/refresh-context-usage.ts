@@ -4,9 +4,10 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import {
   buildLocalTokenCountExtras,
+  buildLocalTokenCountHistory,
   buildLocalTokenCountReasoning,
-  buildOutboundMessagesForTokenCount,
   findLatestUserAudioBase64,
+  findLatestUserVideoBase64,
   messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
@@ -179,10 +180,11 @@ type RefreshOptions =
       threadId?: string;
       /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
+      invalidate?: boolean;
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
+/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {
@@ -194,7 +196,7 @@ export async function refreshContextUsage(
     !checkpoint ||
     isExternalModelId(checkpoint) ||
     (!options?.afterModelLoad && store.modelLoading) ||
-    store.ggufContextLength == null
+    store.loadedContextLength == null
   ) {
     return;
   }
@@ -206,9 +208,7 @@ export async function refreshContextUsage(
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  // Deep Research routes the turn to a server-side research run whose reply carries no usage, so
-  // a total counted here would describe a request that is never made and nothing would correct it.
-  if (store.deepResearchEnabled) return;
+  if (options?.invalidate) store.setContextUsage(null);
 
   // Never count while anything is generating: the endpoint refuses, and the recount effect depends
   // on this, so the last run finishing re-fires it. runningByThreadId, not the narrower
@@ -275,6 +275,15 @@ export async function refreshContextUsage(
     // no audio branch, so counting would price a text-only prompt. Decline as images do.
     if (findLatestUserAudioBase64(runMessages)) return;
 
+    // Same for video, and more so: the real request replays the clip as
+    // video_base64 and llama-server expands it into frames, while
+    // toOpenAIMessages has no video branch -- so counting would price a
+    // text-only prompt and the bar would show room the window does not have.
+    // /chat/count_tokens 503s on video for the same reason. Declining here also
+    // keeps up to 85 MB of base64 out of branchSignature's JSON.stringify,
+    // which is the synchronous main-thread cost the image bail above exists for.
+    if (findLatestUserVideoBase64(runMessages)) return;
+
     if (fromLiveBranch) {
       countedBranch = branchSignature(runMessages);
     } else {
@@ -287,7 +296,7 @@ export async function refreshContextUsage(
 
     // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
-    const outbound = await buildOutboundMessagesForTokenCount(
+    const countHistory = await buildLocalTokenCountHistory(
       runMessages,
       payloadThreadId,
     );
@@ -300,7 +309,7 @@ export async function refreshContextUsage(
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens({
         model: capturedCheckpoint,
-        messages: outbound,
+        ...countHistory,
         ...buildLocalTokenCountReasoning(),
         ...countExtras,
       });

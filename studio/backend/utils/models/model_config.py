@@ -17,6 +17,15 @@ from utils.paths import (
     resolve_export_dir,
 )
 from utils.utils import without_hf_auth
+from utils.training_runs import (
+    base_model_from_run_dir_name as _base_model_from_dir_name,
+)
+from utils.audio_tokens import (
+    AUDIO_TOKENIZER_CONFIG_PATHS as _AUDIO_TOKENIZER_CONFIG_PATHS,
+    classify_audio_tokens as _check_token_patterns,
+    is_audio_input_type,
+    may_hold_audio_tokens as _may_hold_audio_tokens,
+)
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
     mmproj_accepts_image,
@@ -215,18 +224,22 @@ MODEL_NAME_MAPPING = {
     "unsloth_gemma-4-31B-it.yaml": [
         "unsloth/gemma-4-31B-it",
         "google/gemma-4-31B-it",
+        "unsloth/gemma-4-31B-it-GGUF",
     ],
     "unsloth_gemma-4-26B-A4B-it.yaml": [
         "unsloth/gemma-4-26B-A4B-it",
         "google/gemma-4-26B-A4B-it",
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
     ],
     "unsloth_gemma-4-E2B-it.yaml": [
         "unsloth/gemma-4-E2B-it",
         "google/gemma-4-E2B-it",
+        "unsloth/gemma-4-E2B-it-GGUF",
     ],
     "unsloth_gemma-4-E4B-it.yaml": [
         "unsloth/gemma-4-E4B-it",
         "google/gemma-4-E4B-it",
+        "unsloth/gemma-4-E4B-it-GGUF",
     ],
     "unsloth_gemma-4-31B.yaml": [
         "unsloth/gemma-4-31B",
@@ -265,6 +278,8 @@ MODEL_NAME_MAPPING = {
     ],
     "unsloth_LFM2-1.2B.yaml": [
         "unsloth/LFM2-1.2B",
+        "LiquidAI/LFM2-1.2B",
+        "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
     ],
     "unsloth_llama-3-8b-bnb-4bit.yaml": [
         "unsloth/llama-3-8b",
@@ -441,6 +456,10 @@ MODEL_NAME_MAPPING = {
         "Qwen/Qwen3-4B-Instruct-2507-FP8",
         "unsloth/Qwen3-4B-Instruct-2507-FP8",
     ],
+    "unsloth_Qwen3-30B-A3B-Instruct-2507.yaml": [
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "unsloth/Qwen3-30B-A3B-Instruct-2507-bnb-4bit",
+    ],
     "unsloth_Qwen3-4B-Thinking-2507.yaml": [
         "unsloth/Qwen3-4B-Thinking-2507-unsloth-bnb-4bit",
         "Qwen/Qwen3-4B-Thinking-2507",
@@ -485,6 +504,11 @@ MODEL_NAME_MAPPING = {
     "unsloth_tinyllama-bnb-4bit.yaml": [
         "unsloth/tinyllama",
         "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+    ],
+    "unsloth_GLM-4.7-Flash.yaml": [
+        "unsloth/GLM-4.7-Flash-unsloth-bnb-4bit",
+        "unsloth/GLM-4.7-Flash-bnb-4bit",
+        "THUDM/GLM-4.7-Flash",
     ],
     "unsloth_whisper-large-v3.yaml": [
         "unsloth/whisper-large-v3",
@@ -677,7 +701,17 @@ def _raw_config_has_vision_config(
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
         else:
             from huggingface_hub import hf_hub_download
+            from utils.hf_probe import hf_file_definitely_absent
 
+            # Avoid caching the expected 404 for GGUF repos without config.json.
+            if not local_files_only and hf_file_definitely_absent(
+                model_name,
+                "config.json",
+                revision = revision,
+                token = hf_token,
+            ):
+                logger.debug("'%s' has no config.json on the Hub", model_name)
+                return None
             download_kwargs = {
                 "repo_id": model_name,
                 "filename": "config.json",
@@ -1119,8 +1153,6 @@ def _is_vision_model_uncached(
         return None
 
 
-VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
-
 # Keyed like the vision cache so an unauthenticated/offline/other-revision miss can't poison.
 _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 
@@ -1133,73 +1165,6 @@ _AUDIO_OFFLINE_MISS_TTL_S = 60.0
 _audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
 
 
-def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
-    """Whether more than ``threshold`` tokens start with ``prefix``.
-
-    Equivalent to ``sum(...) > threshold`` but stops at the answer. Summing counted every
-    one of Orpheus's 28k codes to decide a question settled by the first 10,001.
-    """
-    count = 0
-    for token in tokens:
-        if token.startswith(prefix):
-            count += 1
-            if count > threshold:
-                return True
-    return False
-
-
-# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
-# ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
-# generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
-# stray <|audio|>; audio_vlm first typed it as audio-input, leaving is_audio False.
-_AUDIO_TOKEN_PATTERNS = {
-    "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
-    "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
-    "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: (
-        "<|audio_start|>" in tokens
-        and "<|audio_end|>" in tokens
-        and "<|text_start|>" in tokens
-        and "<|text_end|>" in tokens
-    ),
-    "snac": lambda tokens: _count_prefix_exceeds(tokens, "<custom_token_", 10000),
-    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|> (not csm's
-    # <|AUDIO|>). Neither carries a codebook, so nothing above shadows them.
-    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
-}
-# Every substring a pattern above needs. A tokenizer_config whose text contains NONE of
-# these cannot match any pattern, whatever it holds, so the answer is settled without
-# parsing it. That matters because an ordinary text checkpoint carries a large
-# tokenizer_config and json.loads of it was the bulk of a cold /loras scan.
-# MUST cover every pattern: _AUDIO_TOKEN_PATTERNS is lambdas, so this cannot be derived
-# from them, and a codec added there without its marker here would silently stop being
-# detected. test_audio_token_detection.py fails if the two drift.
-_AUDIO_TOKEN_MARKERS = (
-    "<|AUDIO|>",  # csm
-    "<|startoftranscript|>",  # whisper
-    "<|bicodec_",  # bicodec
-    "<|audio_start|>",  # dac
-    "<custom_token_",  # snac
-    "<audio_soft_token>",  # audio_vlm (Gemma 3n)
-    "<|audio|>",  # audio_vlm (Gemma 4)
-)
-
-
-def _may_hold_audio_tokens(raw: str) -> bool:
-    """Whether a tokenizer_config's raw text is worth parsing.
-
-    Conservative: a false True only costs the parse that would have happened anyway.
-    A false False would misclassify, which is why the markers are pinned by a test.
-    """
-    return any(marker in raw for marker in _AUDIO_TOKEN_MARKERS)
-
-
-_AUDIO_TOKENIZER_CONFIG_PATHS = (
-    "tokenizer_config.json",
-    "LLM/tokenizer_config.json",
-)
-
-
 def detect_audio_type(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1209,8 +1174,7 @@ def detect_audio_type(
     """Detect if a model is an audio model and return its type.
 
     Works for any model via tokenizer_config.json special tokens.
-    Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
-    'audio_vlm') or None.
+    Returns an audio_type string from ``VALID_AUDIO_TYPES`` or None.
 
     A None here is ambiguous: it covers both "not an audio model" and "the repo
     could not be read". Callers that gate a user action on the answer want
@@ -1245,6 +1209,14 @@ def detect_audio_type_checked(
     # interpolated into the Hub URL and every poll fetches /None/resolve/main/...
     if not model_name:
         return None, True
+
+    try:
+        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS
+        curated_type = NATIVE_AUDIO_MODEL_IDS.get(str(model_name).strip().lower())
+    except Exception:
+        curated_type = None
+    if curated_type:
+        return curated_type, True
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
@@ -1283,6 +1255,16 @@ def detect_audio_type_checked(
         # Only definitive results are cached, so a hit is definitive by construction.
         return _audio_detection_cache[cache_key], True
 
+    config_kwargs = {"local_files_only": effective_offline}
+    if revision is not None:
+        config_kwargs["revision"] = revision
+    result = _detect_audio_from_config(model_name, hf_token, **config_kwargs)
+    if result:
+        _audio_detection_cache[cache_key] = result
+        _audio_offline_miss_cache.pop(miss_key, None)
+        logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
+        return result, True
+
     tokenizer_kwargs = {"local_files_only": effective_offline}
     if revision is not None:
         tokenizer_kwargs["revision"] = revision
@@ -1306,6 +1288,32 @@ def detect_audio_type_checked(
     return result, definitive
 
 
+def _detect_audio_from_config(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Optional[str]:
+    """Detect native audio architectures whose tokenizer has no codec markers.
+
+    Curated remote IDs are handled before this helper. Here only bounded local
+    metadata is read, so capability detection never adds a Hub request or fetches
+    weights. A failed read deliberately falls through to the established tokenizer
+    detector so its definitive/transient semantics stay unchanged.
+    """
+    try:
+        del hf_token, local_files_only, revision
+        if not is_local_path(model_name):
+            return None
+        local_path = Path(normalize_path(model_name)).expanduser()
+        from core.inference.native_audio import native_audio_type_from_local_path
+
+        return native_audio_type_from_local_path(str(local_path))
+    except Exception as exc:
+        logger.debug("Could not read audio model_type for '%s': %s", model_name, exc)
+        return None
+
+
 def _detect_audio_from_tokenizer(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1322,16 +1330,6 @@ def _detect_audio_from_tokenizer(
     transient read failure (network/timeout/5xx) so the caller skips caching and
     retries; a successful read with no audio tokens is a definitive None.
     """
-
-    def _check_token_patterns(tok_config: dict) -> Optional[str]:
-        added = tok_config.get("added_tokens_decoder", {})
-        if not added:
-            return None
-        token_contents = [v.get("content", "") for v in added.values()]
-        for audio_type, check_fn in _AUDIO_TOKEN_PATTERNS.items():
-            if check_fn(token_contents):
-                return audio_type
-        return None
 
     read_any = False  # parsed at least one tokenizer_config -> a None is definitive
 
@@ -1441,14 +1439,28 @@ def _detect_audio_from_tokenizer(
     return None, (read_any or not transient)
 
 
-def is_audio_input_type(audio_type: Optional[str]) -> bool:
-    """True if an audio_type accepts audio input: whisper (ASR), audio_vlm (Gemma3n)."""
-    return audio_type in ("whisper", "audio_vlm")
-
-
 def _is_mmproj(filename: str) -> bool:
     """Check if a GGUF filename is a vision projection (mmproj) file."""
     return "mmproj" in filename.lower()
+
+
+# Mirrors hub.utils.gguf._IMATRIX_TOKEN_RE (utils cannot import hub).
+_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+
+
+def _is_imatrix_path(path: str) -> bool:
+    """True for a calibration imatrix published beside the weights
+    (``imatrix_unsloth.gguf``, ``imatrix.gguf``, ``<model>.imatrix``).
+
+    Activation statistics for llama-quantize, not a model, so it is excluded
+    everywhere mmproj is: a GGUF-suffixed one is a valid container that a
+    size-ranked scan would otherwise hand to llama-server.
+
+    Mirrors hub.utils.gguf.is_imatrix_filename.
+    """
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
@@ -1566,9 +1578,10 @@ def _is_gguf_filename(filename: str) -> bool:
 def _iter_gguf_files(directory: Path, recursive: bool = False):
     if not directory.is_dir():
         return
+
     iterator = directory.rglob("*") if recursive else directory.iterdir()
     for f in iterator:
-        if f.is_file() and _is_gguf_filename(f.name):
+        if f.is_file() and _is_gguf_filename(f.name) and not is_appledouble_metadata(f):
             yield f
 
 
@@ -1821,6 +1834,7 @@ from utils.models.drafters import (  # noqa: E402
 from utils.models.drafters import (  # noqa: E402
     dspark_preference_key as _drafters_dspark_preference_key,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 def dspark_preference_key(name: str) -> Tuple[int, str]:
@@ -2178,10 +2192,15 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
         # copies are caught -- the basename alone (...-MTP.gguf) misses the mtp- prefix.
         rel = f"{p.parent.name}/{p.name}"
         quant = _extract_quant_label(rel)
+
         if (
             _is_mmproj(p.name)
             or _is_local_mtp_drafter(p, root, rel)
+            or _is_imatrix_path(p.name)
             or _is_big_endian_gguf_path(rel, quant)
+            # Pointed at directly, a sidecar bypasses the scan that would have skipped it.
+            # Identified positively so an unreadable file still reaches the lock window below.
+            or is_appledouble_metadata(p)
         ):
             return None
         # Extension is authoritative: is_file()/exists() can fail in the Windows lock window.
@@ -2202,6 +2221,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             if (
                 _is_mmproj(f.name)
                 or _is_local_mtp_drafter(f, root, context_rel)
+                or _is_imatrix_path(f.name)
                 or _is_big_endian_gguf_path(context_rel, quant)
             ):
                 continue
@@ -2283,6 +2303,10 @@ _GGUF_QUANT_PREFERENCE = [
 
 def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
     """Pick the best GGUF file: quant levels in _GGUF_QUANT_PREFERENCE order, else first .gguf."""
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+
+    # See hub.utils.gguf.pick_best_gguf: the first matching name wins.
+    filenames = drop_shadowed_appledouble_names(list(filenames))
     gguf_files = [f for f in filenames if f.lower().endswith(".gguf")]
     if not gguf_files:
         return None
@@ -2685,7 +2709,10 @@ def list_gguf_variants(
     # (name, quant, size); grouped per shard FAMILY below, not summed across copies.
     main_files: list[tuple[str, str, int]] = []
 
-    for sibling in info.siblings:
+    from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+    # Sidecars in the listing would otherwise be advertised as the variant, at their own size.
+    for sibling in drop_shadowed_appledouble_siblings(list(info.siblings)):
         fname = sibling.rfilename
         if not fname.lower().endswith(".gguf"):
             continue
@@ -2697,6 +2724,10 @@ def list_gguf_variants(
             continue
         # MTP drafters are speculative-decoding companions, not quants.
         if _is_mtp_drafter(fname):
+            continue
+        # An imatrix is calibration data, not a quant: listed, it becomes an
+        # unlabelled ~13 MB row (unsloth/Qwen3.8-27B-GGUF ships imatrix_unsloth.gguf).
+        if _is_imatrix_path(fname):
             continue
 
         label = _extract_quant_label(fname)
@@ -2789,6 +2820,8 @@ def list_local_gguf_variants(
     # Recurse so variant-specific subdirs (``BF16/...gguf``) are picked up. Result filenames
     # keep the relative subpath so ``_find_local_gguf_by_variant`` can locate the file again.
     for f in sorted(_iter_gguf_files(p, recursive = True)):
+        if _is_imatrix_path(f.name):
+            continue
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -2888,7 +2921,7 @@ def _find_local_gguf_by_variant(
     owned = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
-        if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
+        if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel) or _is_imatrix_path(f.name):
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
@@ -2930,7 +2963,12 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
         for f in _iter_gguf_files(snap, recursive = True):
             rel = f.relative_to(snap).as_posix()
             quant = _extract_quant_label(rel)
-            if _is_mmproj(f.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+            if (
+                _is_mmproj(f.name)
+                or _is_mtp_drafter(rel)
+                or _is_imatrix_path(f.name)
+                or _is_big_endian_gguf_path(rel, quant)
+            ):
                 continue
             rel_files.append(rel)
         if rel_files:
@@ -2964,6 +3002,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
                 if (
                     _is_mmproj(fname)
                     or _is_mtp_drafter(fname)
+                    or _is_imatrix_path(fname)
                     or _is_big_endian_gguf_path(fname, quant)
                 ):
                     continue
@@ -3103,8 +3142,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
 def _has_model_weight_files(model_dir: Path) -> bool:
     """Return True when a directory contains loadable model weights."""
+
     for item in model_dir.iterdir():
         if not item.is_file():
+            continue
+        if is_appledouble_metadata(item):
             continue
 
         suffix = item.suffix.lower()
@@ -3198,6 +3240,7 @@ def scan_exported_models(
         List of (display_name, model_path, export_type, base_model), where
         export_type is "lora" | "merged" | "gguf".
     """
+
     results = []
     exports_path = resolve_export_dir(exports_dir)
 
@@ -3209,8 +3252,13 @@ def scan_exported_models(
             if not run_dir.is_dir():
                 continue
 
-            # Flat GGUF export (exports/...-gguf/); mmproj files aren't loadable as main models.
-            gguf_files = [f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)]
+            # Flat GGUF export (exports/...-gguf/); neither mmproj files nor the imatrix an
+            # imatrix export leaves beside the weights are loadable as main models.
+            gguf_files = [
+                f
+                for f in _iter_gguf_files(run_dir)
+                if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+            ]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
@@ -3234,8 +3282,9 @@ def scan_exported_models(
 
                 adapter_config = checkpoint_dir / "adapter_config.json"
                 config_file = checkpoint_dir / "config.json"
-                has_weights = any(checkpoint_dir.glob("*.safetensors")) or any(
-                    checkpoint_dir.glob("*.bin")
+                has_weights = any(
+                    not is_appledouble_metadata(f)
+                    for f in (*checkpoint_dir.glob("*.safetensors"), *checkpoint_dir.glob("*.bin"))
                 )
                 has_gguf = any(_iter_gguf_files(checkpoint_dir))
 
@@ -3336,14 +3385,10 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
         # TODO: reading base_model from training_args.bin is disabled -- torch.load defaults to
         # weights_only=True (torch >= 2.6), which rejects pickled TrainingArguments.
 
-        dir_name = checkpoint_path_obj.name
-        if dir_name.startswith("unsloth_"):
-            parts = dir_name.split("_")
-            if len(parts) >= 2:
-                model_parts = parts[1:-1]
-                base_model = "unsloth/" + "_".join(model_parts)
-                logger.info("Detected base model from directory name: %s", base_model)
-                return base_model
+        base_model = _base_model_from_dir_name(checkpoint_path_obj.name)
+        if base_model:
+            logger.info("Detected base model from directory name: %s", base_model)
+            return base_model
 
         logger.warning(f"Could not detect base model for checkpoint: {checkpoint_path}")
         return None
@@ -3375,14 +3420,10 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         # weights_only=True and is a remote-code sink for third-party LoRAs; needs a trust check.
 
         # Last resort: parse from dir name (unsloth_<model>_<timestamp>)
-        dir_name = lora_path_obj.name
-        if dir_name.startswith("unsloth_"):
-            parts = dir_name.split("_")
-            if len(parts) >= 2:
-                model_parts = parts[1:-1]  # Skip "unsloth" and timestamp
-                base_model = "unsloth/" + "_".join(model_parts)
-                logger.info(f"Detected base model from directory name: {base_model}")
-                return base_model
+        base_model = _base_model_from_dir_name(lora_path_obj.name)
+        if base_model:
+            logger.info(f"Detected base model from directory name: {base_model}")
+            return base_model
 
         logger.warning(f"Could not detect base model for LoRA: {lora_path}")
         return None
@@ -3423,6 +3464,15 @@ def get_base_model_from_lora_identifier(
     # Remote repo id: read base_model_name_or_path from adapter_config.json only.
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+    from utils.hf_probe import hf_file_definitely_absent
+
+    # Plain model repos normally lack adapter_config.json, so probe without caching its 404.
+    if hf_file_definitely_absent(
+        identifier,
+        "adapter_config.json",
+        token = hf_token if hf_token else None,
+    ):
+        return None
 
     last_exc = None
     for _attempt in range(2):  # one retry: a transient blip must not skip the base
@@ -3496,6 +3546,23 @@ def _log_model_defaults(
     getattr(logger, level)(message)
 
 
+def defaults_lookup_names(model_name: str) -> List[str]:
+    """Names to look a model id up under in configs/model_defaults, most specific first.
+
+    A repo id is used as-is. A local path also contributes its last two and last one path
+    components, so a model on disk resolves to the same config as the id it came from: an
+    LM Studio or custom scan folder is laid out `<root>/<publisher>/<model>`, and an adapter
+    can point at `<root>/Spark-TTS-0.5B/LLM`. The drive or root is dropped: it is part of no
+    id, and it makes rglob raise "Non-relative patterns are unsupported" on Windows.
+    """
+    if not is_local_path(model_name):
+        return [model_name]
+    # Normalize Windows backslashes: pathlib treats them as literals on POSIX/WSL.
+    path = Path(normalize_path(model_name))
+    parts = path.parts[1:] if path.anchor else path.parts
+    return ["/".join(parts[-depth:]) for depth in (2, 1) if len(parts) >= depth]
+
+
 def load_model_defaults(model_name: str) -> Dict[str, Any]:
     """Load default training parameters for a model from a YAML file.
 
@@ -3511,53 +3578,35 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         script_dir = Path(__file__).parent.parent.parent
         defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
 
-        if model_name.lower() in _REVERSE_MODEL_MAPPING:
-            canonical_file = _REVERSE_MODEL_MAPPING[model_name.lower()]
+        lookup_names = defaults_lookup_names(model_name)
+
+        for name in lookup_names:
+            canonical_file = _REVERSE_MODEL_MAPPING.get(name.lower())
+            if canonical_file is None:
+                continue
             for config_path in defaults_dir.rglob(canonical_file):
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
                         _log_model_defaults(
-                            f"Loaded model defaults from {config_path} (via mapping)",
+                            f"Loaded model defaults from {config_path} (via mapping '{name}')",
                             f"{model_name}|{config_path}|mapping",
                         )
                         return config
 
-        # For local paths (e.g. .../Spark-TTS-0.5B/LLM from adapter_config.json, or a Windows
-        # path), match the last 1-2 path components against the registry.
-        _is_local_path = is_local_path(model_name)
-        # Normalize Windows backslashes: pathlib treats them as literals on POSIX/WSL.
-        _normalized = normalize_path(model_name) if _is_local_path else model_name
-        if model_name.lower() not in _REVERSE_MODEL_MAPPING and _is_local_path:
-            parts = Path(_normalized).parts
-            for depth in [2, 1]:
-                if len(parts) >= depth:
-                    suffix = "/".join(parts[-depth:])
-                    if suffix.lower() in _REVERSE_MODEL_MAPPING:
-                        canonical_file = _REVERSE_MODEL_MAPPING[suffix.lower()]
-                        for config_path in defaults_dir.rglob(canonical_file):
-                            if config_path.is_file():
-                                with open(config_path, "r", encoding = "utf-8") as f:
-                                    config = yaml.safe_load(f) or {}
-                                    _log_model_defaults(
-                                        f"Loaded model defaults from {config_path} (via path suffix '{suffix}')",
-                                        f"{model_name}|{config_path}|suffix",
-                                    )
-                                    return config
-
-        # Exact name match (backward compat). For local paths use only the dir basename: absolute
-        # paths make rglob raise "Non-relative patterns are unsupported" on Windows.
-        _lookup_name = Path(_normalized).name if _is_local_path else model_name
-        model_filename = _lookup_name.replace("/", "_") + ".yaml"
-        for config_path in defaults_dir.rglob(model_filename):
-            if config_path.is_file():
-                with open(config_path, "r", encoding = "utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                    _log_model_defaults(
-                        f"Loaded model defaults from {config_path}",
-                        f"{model_name}|{config_path}|exact",
-                    )
-                    return config
+        # org/model -> org_model.yaml. Runs after the whole registry so an alias never loses to
+        # a filename, and over every lookup name so a config covers its own id from a local path
+        # too, without having to repeat that id in MODEL_NAME_MAPPING.
+        for name in lookup_names:
+            for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml"):
+                if config_path.is_file():
+                    with open(config_path, "r", encoding = "utf-8") as f:
+                        config = yaml.safe_load(f) or {}
+                        _log_model_defaults(
+                            f"Loaded model defaults from {config_path} (via name '{name}')",
+                            f"{model_name}|{config_path}|exact",
+                        )
+                        return config
 
         default_config_path = defaults_dir / "default.yaml"
         if default_config_path.exists():
@@ -3594,7 +3643,7 @@ class ModelConfig:
     is_lora: bool  # LoRA adapter?
     is_gguf: bool = False  # GGUF model?
     is_audio: bool = False  # TTS audio model?
-    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
+    audio_type: Optional[str] = None  # Codec or native audio generation architecture.
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     # ``(repo, variant, path, sizes)`` for a GGUF verified during config resolution;
@@ -3905,7 +3954,9 @@ class ModelConfig:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
-                logger.info(
+                # Debug: from_identifier is re-resolved on every validate, estimate and
+                # load. The load path announces the model it actually starts.
+                logger.debug(
                     f"Detected remote GGUF repo '{identifier}', "
                     f"variant={variant}, vision={has_vision}"
                 )

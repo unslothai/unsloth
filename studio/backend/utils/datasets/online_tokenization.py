@@ -13,7 +13,7 @@ needed together:
    on ``__getitem__``.  It returns an immutable *view*; ``set_transform`` would
    mutate the caller's object, which the preview/eval code also holds.
 2. TRL gets ``dataset_kwargs = {"skip_prepare_dataset": True}`` so it does not
-   map over the view, materialising the pass we are avoiding.  Studio already
+   map over the view, materialising the pass we are avoiding.  Unsloth already
    uses that hook for the VLM branch.
 3. ``dataloader_num_workers`` > 0 with prefetch and persistent workers, so the
    tokenizer runs overlapped with the GPU.
@@ -136,7 +136,7 @@ def platform_supports_dataloader_workers() -> bool:
     """Fork, and only fork.
 
     The hazard is ``spawn``, not the OS: a spawned worker re-imports the entry
-    point against a fresh ``sys.path``, and Studio's is modified in-process, so
+    point against a fresh ``sys.path``, and Unsloth's is modified in-process, so
     the import fails (why ``trainer.py`` already forces 0 workers on Windows and
     macOS, which default to spawn).  A Linux process set to ``spawn`` or
     ``forkserver`` is the same hazard, and a platform check cannot see it.
@@ -151,7 +151,7 @@ def trl_supports_skip_prepare_dataset() -> bool:
 
     ``SFTConfig`` must carry ``dataset_kwargs`` and ``SFTTrainer.__init__`` must
     read the key.  If the source is unreadable (compiled or patched build) the
-    field alone decides: Studio's VLM branch has relied on this hook across every
+    field alone decides: Unsloth's VLM branch has relied on this hook across every
     supported TRL, so a missing source is not evidence of a missing hook.
     """
     try:
@@ -665,7 +665,7 @@ def release_train_dataloader(trainer: Any) -> int:
     ``dataloader_persistent_workers = True`` lets the barrier's workers survive
     into ``train()``, and equally keeps them alive after it returns: memo holds
     loader holds iterator holds the processes, so nothing drops the last
-    reference.  Studio then merges, quantizes and exports -- the most
+    reference.  Unsloth then merges, quantizes and exports -- the most
     memory-hungry part of a run -- with four forked children still resident, each
     holding the parent's CUDA file descriptors.
 

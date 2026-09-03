@@ -99,6 +99,26 @@ test("hydration backfills only from an authoritative read", () => {
   assert.doesNotMatch(hydrate, /\n\s*backfillMirroredSettings\(settings\);/);
 });
 
+test("a missing Deep Research timeout keeps the finite default", () => {
+  const loadTimeout = slice(
+    store,
+    "function loadResearchModelTimeoutSeconds(): number {",
+    "\n}\n\nfunction loadResearchWebsitePolicy",
+  );
+  assert.match(
+    loadTimeout,
+    /const raw = window\.localStorage\.getItem\(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY\);/,
+  );
+  assert.match(
+    loadTimeout,
+    /if \(raw === null\) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;/,
+  );
+  assert.match(
+    loadTimeout,
+    /catch \{\s*return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;\s*\}/,
+  );
+});
+
 test("only the legacy-storage fallback is non-authoritative", () => {
   const loader = slice(
     storage,

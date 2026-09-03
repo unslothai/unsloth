@@ -2,13 +2,24 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import functools
+import hashlib
 import re
 import threading
+import time
+from contextvars import ContextVar
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    field_validator,
+)
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -20,7 +31,10 @@ from auth.storage import rotate_preview_link_secret
 from routes.provider_credentials import current_credential_write, require_ui_session
 
 from storage import credential_secrets
-from core.rag.config import default_gguf_repo, effective_gguf_repo
+from core.rag.config import (
+    default_gguf_repo,
+    effective_gguf_repo_for_embedding_model,
+)
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -38,11 +52,21 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.xet_notice_settings import reserve_xet_notice
+from utils.chat_preferences_settings import (
+    get_show_model_disclaimer,
+    migrate_show_model_disclaimer,
+    set_show_model_disclaimer,
+)
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
+)
+from utils.download_transport_settings import (
+    get_download_transport_mode,
+    set_download_transport_mode,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -64,6 +88,9 @@ from utils.vram_budget_settings import (
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    CACHE_RAM_MAX_MIB,
+    CACHE_RAM_MIN_MIB,
+    CTX_CHECKPOINTS_MAX,
     DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_MEDIA_AUTO_SWITCH_ENABLED,
@@ -74,6 +101,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    is_cache_load_path_key,
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
@@ -90,10 +118,27 @@ from utils.openai_auto_switch_settings import (
     set_model_override,
     set_openai_auto_switch,
 )
+from utils.keyless_api_access import (
+    access_exposure,
+    get_keyless_api_access_settings,
+    set_keyless_api_access,
+)
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.current_date_prompt_settings import (
+    DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
+    get_current_date_prompt_enabled,
+    set_current_date_prompt_enabled,
+)
+from utils.lan_access_settings import (
+    lan_access_status,
+    save_lan_access_port,
+    set_lan_access_auto_start,
+    start_lan_access,
+    stop_lan_access,
 )
 from utils.remote_access_settings import (
     DEFAULT_REMOTE_ACCESS_AUTO_START,
@@ -112,6 +157,11 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.llama_cpp_path_settings import (
+    MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
+    custom_llama_cpp_path_status,
+    set_custom_llama_cpp_path,
+)
 from utils.media_generation_preset_settings import (
     delete_media_generation_preset,
     get_media_generation_preset_settings,
@@ -551,6 +601,44 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class DownloadTransportPayload(BaseModel):
+    mode: Literal["auto", "xet", "http"]
+
+
+class DownloadTransportResponse(BaseModel):
+    mode: str
+    xet_available: bool
+    xet_unavailable_reason: Optional[str] = None
+    # What "auto" resolves to here right now, and why.
+    auto_resolves_to: str
+    auto_reason: Optional[str] = None
+
+
+class XetNoticeReservePayload(BaseModel):
+    # A legacy localStorage count from a client that has not reported one before.
+    # Can only raise the stored count (see reserve_xet_notice), so a client cannot
+    # talk its own way back under the limit with it.
+    seen_hint: int = 0
+
+
+class XetNoticeResponse(BaseModel):
+    granted: bool
+    shown: int
+    limit: int
+
+
+class ChatPreferencesPayload(BaseModel):
+    show_model_disclaimer: StrictBool
+
+
+class ChatPreferencesMigrationPayload(BaseModel):
+    show_model_disclaimer: Optional[StrictBool] = None
+
+
+class ChatPreferencesResponse(BaseModel):
+    show_model_disclaimer: bool
+
+
 class ModelMemoryPayload(BaseModel):
     # None leaves the stored value untouched, so the switches save independently.
     keep_resident: Optional[bool] = None
@@ -618,6 +706,20 @@ class HuggingFaceCacheResponse(BaseModel):
     environment_variable: Optional[str] = None
 
 
+class LlamaCppPathPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
+
+
+class LlamaCppPathResponse(BaseModel):
+    path: Optional[str] = None
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    available: bool
+    resolved_binary: Optional[str] = None
+    environment_variable: Optional[str] = None
+    reload_required: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
     # None leaves the stored value untouched (partial updates can't clobber it).
@@ -660,6 +762,9 @@ _MAX_VARIANT_SUFFIX_LEN = 64
 # A limit under PATH_MAX would 422 the server sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
 
+# GgufVariantDetail.quant may be a path-qualified variant key, not just a quant suffix.
+MAX_GGUF_VARIANT_KEY_LEN = 4096
+
 # A list longer than MAX_GPU_ID cannot name a device the normalizer would store, so bound it
 # here and reject an oversized array at the boundary instead of walking it.
 MAX_GPU_IDS = MAX_GPU_ID + 1
@@ -691,7 +796,27 @@ class ModelOverridePayload(BaseModel):
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    # The remaining llama-server tuning the picker remembers. model_override_load_kwargs
+    # already applies all four off a stored row, so a route that drops them leaves the
+    # setting reaching a picker load and nothing else, and the panel reads the gap back
+    # as unset. Load mode is a discrete set, left to the normalizer like the KV dtype.
+    load_mode: Optional[str] = Field(default = None, max_length = 32)
+    spec_draft_cache_type: Optional[str] = Field(default = None, max_length = 32)
+    # Stored on "is not None", not on truth: 0 checkpoints and a 0 or -1 cache are
+    # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
+    ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
+    # Does this client know the four above exist? A save REPLACES the entry, so an
+    # omission from a build that predates them is indistinguishable from a user
+    # clearing them, and during an upgrade -- a cached bundle, or another LAN client
+    # still on the old build -- that silently deletes settings it never sent. Only a
+    # client that sets this may clear by omission; for anyone else the stored values
+    # are carried over. Default False so an old payload, which cannot set it, is the
+    # safe case. Not a blanket carry-over: that would make clearing impossible for
+    # everyone, trading a mixed-version window for a permanent bug.
+    mirrors_server_tuning: bool = False
     tensor_parallel: bool = False
+    disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -726,6 +851,8 @@ class ModelOverridePayload(BaseModel):
         "n_parallel",
         "n_batch",
         "n_ubatch",
+        "ctx_checkpoints",
+        "cache_ram",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -766,6 +893,26 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
+    )
+
+
+def _download_transport_response(mode: str | None = None) -> DownloadTransportResponse:
+    # No Xet probe: this renders a row, not a download start. The free-RAM gate is asked for
+    # anyway, since the row states what the next download will use.
+    from hub.utils.download_registry import get_download_transport_capabilities
+    caps = get_download_transport_capabilities(ram_gate = True)
+    return DownloadTransportResponse(
+        mode = get_download_transport_mode() if mode is None else mode,
+        xet_available = caps.xet.available,
+        xet_unavailable_reason = caps.xet.reason,
+        auto_resolves_to = caps.auto_resolves_to,
+        auto_reason = caps.auto_reason,
+    )
+
+
+def _chat_preferences_response(enabled: bool | None = None) -> ChatPreferencesResponse:
+    return ChatPreferencesResponse(
+        show_model_disclaimer = (get_show_model_disclaimer() if enabled is None else enabled)
     )
 
 
@@ -894,6 +1041,27 @@ def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
 
+def _llama_cpp_path_reload_required() -> bool:
+    """Whether a running or pending GGUF server predates the path selection."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = getattr(backend, "_binary_revision_pending", None)
+        if pending is not None:
+            return backend._binary_changed_since_revision(pending)
+        return bool(backend.is_active and backend._binary_changed_since_launch())
+    except Exception:
+        return False
+
+
+def _llama_cpp_path_response() -> LlamaCppPathResponse:
+    return LlamaCppPathResponse(
+        **custom_llama_cpp_path_status(),
+        reload_required = _llama_cpp_path_reload_required(),
+    )
+
+
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
@@ -912,6 +1080,35 @@ def update_hugging_face_cache(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return _hugging_face_cache_response()
+
+
+@router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
+    return _llama_cpp_path_response()
+
+
+@router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def update_llama_cpp_path(
+    payload: LlamaCppPathPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> LlamaCppPathResponse:
+    # Only the interactive Unsloth UI may change this executable setting.
+    require_ui_session(via_api_key)
+    try:
+        set_custom_llama_cpp_path(payload.path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            # Validator messages are safe to expose to the UI.
+            str(exc),
+            event = "settings.update_llama_cpp_path_failed",
+            log = logger,
+        ) from exc
+    return _llama_cpp_path_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
@@ -960,6 +1157,89 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+@router.get("/download-transport", response_model = DownloadTransportResponse)
+def get_download_transport(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadTransportResponse:
+    return _download_transport_response()
+
+
+@router.put("/download-transport", response_model = DownloadTransportResponse)
+def update_download_transport(
+    payload: DownloadTransportPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadTransportResponse:
+    try:
+        mode = set_download_transport_mode(payload.mode)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download transport."),
+            event = "settings.update_download_transport_failed",
+            log = logger,
+        ) from exc
+    return _download_transport_response(mode)
+
+
+@router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
+def post_xet_notice_reserve(
+    payload: XetNoticeReservePayload, current_subject: str = Depends(get_current_subject)
+) -> XetNoticeResponse:
+    """Take one of the remaining notices. POST because it mutates the count."""
+    try:
+        result = reserve_xet_notice(payload.seen_hint)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not reserve the Xet download notice."),
+            event = "settings.reserve_xet_notice_failed",
+            log = logger,
+        ) from exc
+    return XetNoticeResponse(**result)
+
+
+@router.get("/chat-preferences", response_model = ChatPreferencesResponse)
+def get_chat_preferences(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatPreferencesResponse:
+    return _chat_preferences_response()
+
+
+@router.put("/chat-preferences", response_model = ChatPreferencesResponse)
+def update_chat_preferences(
+    payload: ChatPreferencesPayload, current_subject: str = Depends(get_current_subject)
+) -> ChatPreferencesResponse:
+    try:
+        enabled = set_show_model_disclaimer(payload.show_model_disclaimer)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not save chat preferences."),
+            event = "settings.update_chat_preferences_failed",
+            log = logger,
+        ) from exc
+    return _chat_preferences_response(enabled)
+
+
+@router.post("/chat-preferences/migrate", response_model = ChatPreferencesResponse)
+def migrate_chat_preferences(
+    payload: ChatPreferencesMigrationPayload, current_subject: str = Depends(get_current_subject)
+) -> ChatPreferencesResponse:
+    try:
+        enabled = migrate_show_model_disclaimer(payload.show_model_disclaimer)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not migrate chat preferences."),
+            event = "settings.migrate_chat_preferences_failed",
+            log = logger,
+        ) from exc
+    return _chat_preferences_response(enabled)
+
+
 @router.get("/model-memory", response_model = ModelMemoryResponse)
 def get_model_memory(current_subject: str = Depends(get_current_subject)) -> ModelMemoryResponse:
     return _model_memory_response()
@@ -983,6 +1263,109 @@ def update_model_memory(
             log = logger,
         ) from exc
     return _model_memory_response()
+
+
+LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
+_LAST_LOCAL_MODEL_LOCK = threading.Lock()
+
+
+def _last_local_model_key(subject: str) -> str:
+    """Per-subject key: one shared row would hand user B user A's last model."""
+    subject = (subject or "").strip()
+    if not subject:
+        return LAST_LOCAL_MODEL_SETTING_KEY
+    # Hashed so an arbitrary subject cannot collide with another key.
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+    return f"{LAST_LOCAL_MODEL_SETTING_KEY}:{digest}"
+
+
+def _read_last_local_model(subject: str) -> "dict | None":
+    """The subject's record, falling back to the pre-scoping shared row so an
+    upgrade keeps the model the install already remembered."""
+    from storage.studio_db import get_app_setting
+
+    stored = get_app_setting(_last_local_model_key(subject), None)
+    if not isinstance(stored, dict):
+        stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    return stored if isinstance(stored, dict) else None
+
+
+# Clients stamp loads, so cap how far ahead of server time a client clock may claim.
+_LAST_LOCAL_MODEL_CLOCK_SLACK_MS = 5 * 60 * 1000
+
+
+class LastLocalModelPayload(BaseModel):
+    id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    kind: Literal["gguf", "model"]
+    gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+    # Epoch ms of the load; orders writes from surfaces that keep their own local shadow.
+    loaded_at: Optional[int] = Field(default = None, ge = 0)
+    # The client clock when the request was sent: the skew (server_now - client_now)
+    # translates loaded_at into the server frame. Never persisted.
+    client_now: Optional[int] = Field(default = None, ge = 0)
+
+
+class LastLocalModelResponse(BaseModel):
+    id: Optional[str] = None
+    kind: Optional[Literal["gguf", "model"]] = None
+    gguf_variant: Optional[str] = None
+    loaded_at: Optional[int] = None
+    # Lets the client translate loaded_at back into its own clock frame.
+    server_now: Optional[int] = None
+
+
+@router.get("/last-local-model", response_model = LastLocalModelResponse)
+def get_last_local_model(
+    current_subject: str = Depends(get_current_subject),
+) -> LastLocalModelResponse:
+    stored = _read_last_local_model(current_subject)
+    _now = int(time.time() * 1000)
+    if stored is None:
+        return LastLocalModelResponse(server_now = _now)
+    try:
+        payload = LastLocalModelPayload(**stored)
+    except Exception:
+        return LastLocalModelResponse(server_now = _now)
+    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _now)
+
+
+@router.put("/last-local-model", response_model = LastLocalModelResponse)
+def update_last_local_model(
+    payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
+) -> LastLocalModelResponse:
+    from storage.studio_db import upsert_app_settings
+
+    # loaded_at orders stamped writes so a delayed older PUT cannot overwrite a newer
+    # load; the stored record is returned. Unstamped writes stay last-write-wins.
+    _server_now = int(time.time() * 1000)
+    _key = _last_local_model_key(current_subject)
+    with _LAST_LOCAL_MODEL_LOCK:
+        if payload.loaded_at is not None:
+            if payload.client_now is not None:
+                # Into the server frame: fresh loads land near now, re-issued shadows stay old.
+                _shifted = payload.loaded_at + (_server_now - payload.client_now)
+                payload = payload.model_copy(update = {"loaded_at": max(0, _shifted)})
+            _cap = _server_now + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
+            if payload.loaded_at > _cap:
+                payload = payload.model_copy(update = {"loaded_at": _cap})
+            stored = _read_last_local_model(current_subject)
+            if stored is not None:
+                try:
+                    current = LastLocalModelPayload(**stored)
+                except Exception:
+                    current = None
+                if (
+                    current is not None
+                    and current.loaded_at is not None
+                    and payload.loaded_at < current.loaded_at
+                ):
+                    return LastLocalModelResponse(
+                        **current.model_dump(exclude = {"client_now"}), server_now = _server_now
+                    )
+        upsert_app_settings({_key: payload.model_dump(exclude = {"client_now"})})
+    return LastLocalModelResponse(
+        **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
+    )
 
 
 @router.get("/vram-budget", response_model = VramBudgetResponse)
@@ -1265,18 +1648,34 @@ def update_openai_auto_switch_override(
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
-        # every payload look non-empty and break the legacy "no fields means remove".
+        # fill_absent_fields and mirrors_server_tuning are write modes, not saved fields:
+        # leaving either in would make every payload look non-empty (they are bools, so
+        # exclude_none does not drop them) and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
+            exclude = {
+                "model_id",
+                "llama_extra_args",
+                "remove",
+                "fill_absent_fields",
+                "mirrors_server_tuning",
+            },
             exclude_none = True,
         )
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            is_removal = not payload.tensor_parallel and not {
-                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-            }
+            # Both booleans are carried, not just counted: they are stored only when
+            # true, so an override whose one setting is either of them has no other
+            # saved field and would otherwise read as a removal and be deleted.
+            is_removal = (
+                not payload.tensor_parallel
+                and not payload.disable_vision
+                and not {
+                    key: value
+                    for key, value in saved_fields.items()
+                    if key not in ("tensor_parallel", "disable_vision")
+                }
+            )
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
             # A fill keeps the stored flags without echoing them back through validation: one
@@ -1319,6 +1718,51 @@ def update_openai_auto_switch_override(
                 )
         else:
             extra_args = validate_extra_args(requested_extra_args)
+        # Same shape as the extra-args carry-over above, for the same reason: a save
+        # replaces the entry, so a field the caller never knew about must survive it.
+        # A client that declares it mirrors these clears by omission as usual; an
+        # older one keeps whatever is stored. On a remove the whole entry goes, so
+        # there is nothing to preserve.
+        # Gated on is_removal, not on payload.remove: the documented legacy contract is a
+        # payload carrying only model_id, which leaves remove None while is_removal is
+        # true. Carrying anything over there would rebuild a non-empty row and the clear
+        # would silently do nothing.
+        _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
+        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
+        if not payload.mirrors_server_tuning and not is_removal:
+            # The same spellings the extra-args carry-over walks, and in the same order.
+            # A cached repo is not an ordinary folded match, so a save under the repo id
+            # while the row sits under the snapshot path finds nothing here and then
+            # retires that alias below, taking the tuning with it.
+            _alias_ids = [payload.model_id]
+            for _candidate in (
+                _bare_model_id(payload.model_id),
+                _legacy_standalone_gguf_key(payload.model_id),
+                *cached_repo_alias_keys(payload.model_id),
+            ):
+                if _candidate and _candidate not in _alias_ids:
+                    _alias_ids.append(_candidate)
+            # Load order, not the order they were collected in. A lookup reads the
+            # concrete load path before the advertised repo id, so on a cache upgraded
+            # from a build that keyed rows by path, the snapshot row is the one that
+            # applies and the one the retirement block below clears. Reading the repo
+            # row first would adopt tuning no load has ever used and drop the tuning
+            # that was live. Stable, so every other spelling keeps its position.
+            _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
+            # Taken as a unit from the first row that exists, not field by field down
+            # the list. A load stops at the first non-empty row (resolve_override_for_load)
+            # rather than merging, so tuning in a row that never wins is dormant, and
+            # filling a gap in the winner from a loser would switch it on as a side effect
+            # of saving something unrelated. Single-valued above, so the distinction only
+            # shows up here.
+            for _alias_id in _alias_ids:
+                _stored_tuning = get_model_override(_alias_id)
+                if not _stored_tuning:
+                    continue
+                for name in _tuning_fields:
+                    if _kept_tuning[name] is None:
+                        _kept_tuning[name] = _stored_tuning.get(name)
+                break
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1391,7 +1835,12 @@ def update_openai_auto_switch_override(
                 n_parallel = payload.n_parallel,
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
+                load_mode = _kept_tuning["load_mode"],
+                spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
+                ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
+                cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
+                disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
@@ -1421,6 +1870,10 @@ def update_openai_auto_switch_override(
 
 class EmbeddingModelPayload(BaseModel):
     embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    # The repo /resolve named, stored so the loader opens what was downloaded.
+    gguf_repo: Optional[str] = Field(default = None, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    # And the backend it needs, so a model with no GGUF is not sent to llama-server.
+    backend: Optional[Literal["llama", "sentence-transformers"]] = None
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -1433,16 +1886,41 @@ class EmbeddingModelResponse(BaseModel):
     default_embedding_model: str
     default_embedding_gguf_repo: str
     is_custom: bool
+    # Whether THIS model is held in memory right now, for the status line.
+    loaded: bool = False
+    # Whether ANY embedder is resident, for the Unload action: saving a new model
+    # does not release the old one, so the selected model is the wrong question.
+    backend_loaded: bool = False
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
+    model = get_rag_embedding_model()
     return EmbeddingModelResponse(
-        embedding_model = get_rag_embedding_model(),
-        embedding_gguf_repo = effective_gguf_repo(),
+        embedding_model = model,
+        embedding_gguf_repo = effective_gguf_repo_for_embedding_model(model),
         default_embedding_model = default_embedding_model(),
         default_embedding_gguf_repo = default_gguf_repo(),
         is_custom = get_stored_embedding_model() is not None,
+        loaded = _embedder_is_loaded(model),
+        backend_loaded = _any_embedder_is_loaded(),
     )
+
+
+def _embedder_is_loaded(model: str) -> bool:
+    from core.rag import embeddings
+    try:
+        return embeddings.backend_is_loaded(model)
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return False
+
+
+def _any_embedder_is_loaded() -> bool:
+    """Whether any embedder is resident, whichever model it belongs to."""
+    from core.rag import embeddings
+    try:
+        return embeddings.backend_is_loaded()
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return False
 
 
 def _ambient_hf_token() -> Optional[str]:
@@ -1455,8 +1933,29 @@ def _ambient_hf_token() -> Optional[str]:
         return None
 
 
-def _llama_backend_active() -> bool:
-    """True when this install actually embeds via the llama-server (GGUF) backend.
+def _model_names_gguf_repo(model: str) -> bool:
+    """Whether ``model`` is a repo id naming GGUF weights, per the embedder's rule."""
+    from core.rag import embeddings
+    try:
+        return embeddings._model_names_gguf_repo(model)
+    except Exception:  # noqa: BLE001 - a name test that cannot answer blocks nothing
+        return False
+
+
+def _llama_runtime_available() -> bool:
+    """Whether a llama-server binary this install can launch is present.
+
+    Shares the embedder's own probe so the resolver and the loader cannot disagree
+    about whether the backend exists."""
+    from core.rag import embeddings
+    try:
+        return embeddings._llama_server_runtime_available()
+    except Exception:  # noqa: BLE001 - an unanswerable probe must not block saving
+        return True
+
+
+def _llama_backend_active(model: str | None = None) -> bool:
+    """Whether llama serves the active model, or would serve ``model`` if supplied.
 
     Delegates to the embeddings module so a runtime fallback from
     sentence-transformers to llama-server (after a torch/CUDA load or encode
@@ -1465,6 +1964,8 @@ def _llama_backend_active() -> bool:
     Before any backend is built this still reflects the resolver."""
     from core.rag import embeddings
     try:
+        if model is not None:
+            return embeddings.resolved_backend_for_model(model) == "llama-server"
         return embeddings.active_backend_is_llama()
     except Exception:  # noqa: BLE001 - backend probe must never block saving
         return False
@@ -1488,11 +1989,16 @@ def _local_gguf_backend_error(model: str) -> str | None:
     None when not applicable. ``force`` skips this check like HF verification."""
     from pathlib import Path
 
-    if not Path(model).expanduser().is_dir():
+    from utils.paths import normalize_path
+
+    # Normalized as _resolve_local_gguf normalizes it, or a WSL drive-letter dir
+    # reads as "not a directory" here and the 409 that would have explained it
+    # never fires.
+    if not Path(normalize_path(model)).expanduser().is_dir():
         return None
     from core.rag.embed_llama_server import LlamaServerBackend
 
-    if not _llama_backend_active():
+    if not _llama_backend_active(model):
         return None
     try:
         LlamaServerBackend._resolve_local_gguf(model)
@@ -1516,27 +2022,28 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
 
     if Path(model).expanduser().exists():
         return None  # local paths are handled by the local checks
-    if not _llama_backend_active():
+    if not _llama_backend_active(model):
         return None
-    from core.rag import config as rag_config
+    candidates = _embedding_gguf_candidates(model)
+    if _remote_embedding_gguf_plan(candidates, hf_token) is not None:
+        return None
+    if _search_hub_for_gguf(model, hf_token) is not None:
+        return None
+    # Safetensors on sentence-transformers is a working answer, not a failure.
+    if (
+        _sentence_transformers_fallback_allowed(model)
+        and _safetensors_plan(model, hf_token) is not None
+    ):
+        return None
+    return _no_embedding_weights_error(candidates)
 
-    candidates = [model] if rag_config._names_gguf(model) else [f"{model}-GGUF", model]
-    try:
-        from huggingface_hub import list_repo_files
-    except Exception:  # noqa: BLE001 - hub client unavailable: don't block saving
-        return None
-    for candidate in candidates:
-        try:
-            files = list_repo_files(candidate, token = hf_token)
-        except Exception:  # noqa: BLE001 - missing/gated repo: try next candidate
-            continue
-        if any(f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files):
-            return None
+
+def _no_embedding_weights_error(candidates: list[str]) -> str:
+    """Error after the caller has already exhausted GGUF and ST resolution."""
     checked = " or ".join(repr(c) for c in candidates)
     return (
-        f"No GGUF weights found in {checked}, but this install embeds with the "
-        "llama-server backend which requires them. Pick a model with a GGUF "
-        "companion repo or GGUF files in the repo itself."
+        f"No GGUF weights found in {checked}, and no safetensors to fall back to. "
+        "Only the model's own publisher is used as a source."
     )
 
 
@@ -1545,6 +2052,611 @@ def get_embedding_model(
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResponse:
     return _embedding_model_response()
+
+
+class EmbeddingModelResolveResponse(BaseModel):
+    embedding_model: str
+    backend: Literal["llama", "sentence-transformers"]
+    # Repo the picker hands the download manager, and the files to take from it.
+    # Split GGUF plans contain every shard in the selected family.
+    # Both None when nothing needs fetching, or when ``error`` is set.
+    download_repo: Optional[str] = None
+    files: Optional[list[str]] = None
+    cached: bool = False
+    size_bytes: Optional[int] = None
+    error: Optional[str] = None
+
+
+def _embedding_gguf_candidates(model: str) -> list[str]:
+    """Repos the loader would try for ``model``'s GGUF, in its order."""
+    from core.rag import config as rag_config
+
+    # An env override is the loader's only source. A stored mirror from an older
+    # selection must not outrank it, and discovery must not replace it later.
+    if rag_config.gguf_repo_is_explicit():
+        return rag_config.gguf_repo_candidates(model)
+    try:
+        from utils.embedding_model_settings import get_stored_gguf_repo
+        stored = get_stored_gguf_repo(model)
+    except Exception:  # noqa: BLE001 - resolver still has derived candidates
+        stored = None
+    return list(
+        dict.fromkeys([*([stored] if stored else []), *rag_config.gguf_repo_candidates(model)])
+    )
+
+
+# A GGUF conversion must come from the same owner as the model. Repo names are
+# not proof of provenance, so an unsloth/ pick only ever downloads from unsloth.
+_GGUF_MIRROR_SEARCH_LIMIT = 25
+_GGUF_LIST_DEADLINE_S = 20.0
+_EMBEDDING_RESOLVE_DEADLINE: ContextVar[float | None] = ContextVar(
+    "embedding-resolve-deadline", default = None
+)
+
+
+def _call_with_embedding_resolve_budget(fn, *, name: str):
+    """Run one remote probe inside the resolution's single time budget."""
+    deadline = _EMBEDDING_RESOLVE_DEADLINE.get()
+    timeout = (
+        _GGUF_LIST_DEADLINE_S
+        if deadline is None
+        else max(0.0, min(_GGUF_LIST_DEADLINE_S, deadline - time.monotonic()))
+    )
+    if timeout <= 0:
+        raise TimeoutError("embedding model resolution deadline expired")
+    from utils.utils import call_with_deadline
+
+    return call_with_deadline(fn, timeout, name = name)
+
+
+def _with_embedding_resolve_budget(fn):
+    """Give one GET/PUT resolution a deadline shared by every Hub fallback."""
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        if _EMBEDDING_RESOLVE_DEADLINE.get() is not None:
+            return fn(*args, **kwargs)
+        marker = _EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() + _GGUF_LIST_DEADLINE_S)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _EMBEDDING_RESOLVE_DEADLINE.reset(marker)
+
+    return _wrapped
+
+
+def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
+    """List a Hub repo without letting a blackholed route pin Settings forever."""
+    from huggingface_hub import list_repo_files
+    return _call_with_embedding_resolve_budget(
+        lambda: list_repo_files(repo, token = hf_token),
+        name = "embed-settings-repo-listing",
+    )
+
+
+def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
+    """Whether a search hit names a conversion of exactly ``base``.
+
+    Prefix matching is unsafe (``foo`` must never resolve to ``foo-bar-GGUF``).
+    The Hub filter already requires GGUF; this check accepts only the common
+    conversion suffix spellings and the exact model name.
+    """
+    name = hit_name.casefold()
+    base = base.casefold()
+    return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
+
+
+def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
+    """The complete downloadable file family for a picked GGUF.
+
+    llama-server opens split siblings implicitly, so a single selected shard is
+    not a usable plan. Incomplete published families are rejected. Deferred to the
+    loader so the plan offered here and the transfer it performs name one set.
+    """
+    from core.rag.embed_llama_server import LlamaServerBackend
+    return LlamaServerBackend._split_family(names, picked)
+
+
+def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
+    """Pick the loader's preferred GGUF, skipping torn split families."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    _picked, files = LlamaServerBackend._pick_complete_gguf(names)
+    return files or None
+
+
+def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
+    """``(repo, files)`` for a GGUF conversion of ``model`` published by the same
+    owner under a name the -GGUF candidates do not cover.
+
+    Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
+    re-upload, and picking unsloth/X must download unsloth's own weights."""
+    from core.rag import config as rag_config
+
+    # The loader cannot open a discovered mirror while an explicit repo override
+    # is active, so returning one would create a download that can never satisfy it.
+    if rag_config.gguf_repo_is_explicit():
+        return None
+    owner, _, name = model.rpartition("/")
+    if not owner:
+        return None
+    try:
+        from huggingface_hub import HfApi
+    except Exception:  # noqa: BLE001 - hub client unavailable
+        return None
+    base = rag_config._QUANT_SUFFIX_RE.sub("", name).lower()
+    if not base:
+        return None
+    try:
+        hits = _call_with_embedding_resolve_budget(
+            lambda: list(
+                HfApi().list_models(
+                    search = base,
+                    author = owner,
+                    filter = ["gguf"],
+                    sort = "downloads",
+                    limit = _GGUF_MIRROR_SEARCH_LIMIT,
+                    token = hf_token,
+                )
+            ),
+            name = "embed-settings-model-search",
+        )
+    except Exception:  # noqa: BLE001 - offline or rate limited
+        return None
+    for hit in hits:
+        hit_owner, _, hit_name = hit.id.rpartition("/")
+        if hit_owner.casefold() != owner.casefold() or not _gguf_conversion_name_matches(
+            hit_name, base
+        ):
+            continue
+        try:
+            files = _pick_downloadable_gguf(_list_repo_files_bounded(hit.id, hf_token))
+        except Exception:  # noqa: BLE001 - unreadable listing: try the next
+            continue
+        if files:
+            return hit.id, files
+    return None
+
+
+def _cached_embedding_gguf(candidates: list[str], *, require_variant: bool) -> Optional[str]:
+    """First candidate already holding a usable GGUF on disk. No network."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    for candidate in candidates:
+        try:
+            if LlamaServerBackend._resolve_cached_gguf(candidate, require_variant = require_variant):
+                return candidate
+        except Exception:  # noqa: BLE001 - a bad cache entry is just a miss
+            continue
+    return None
+
+
+def _cached_embedding_gguf_files(repo: str, files: list[str]) -> bool:
+    """Whether the exact resolved GGUF family is complete in ``repo``'s snapshot."""
+    from pathlib import Path, PurePosixPath
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    try:
+        snapshot = LlamaServerBackend._cached_snapshot_dir(repo)
+        if snapshot is None or not files:
+            return False
+        for name in files:
+            path = PurePosixPath(name)
+            if (
+                path.is_absolute()
+                or ".." in path.parts
+                or not (snapshot / Path(*path.parts)).is_file()
+            ):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - an unreadable cache is a miss
+        return False
+
+
+def _remote_embedding_gguf_plan(
+    candidates: list[str], hf_token: Optional[str]
+) -> Optional[tuple[str, list[str]]]:
+    """``(repo, files)`` for the first candidate publishing a usable GGUF family."""
+    for candidate in candidates:
+        try:
+            names = _list_repo_files_bounded(candidate, hf_token)
+        except Exception:  # noqa: BLE001 - missing/gated repo: try the next
+            continue
+        try:
+            files = _pick_downloadable_gguf(names)
+        except Exception:  # noqa: BLE001 - unreadable listing: try the next
+            files = None
+        if files:
+            return candidate, files
+    return None
+
+
+# safetensors first: a repo carrying both formats would otherwise be fetched twice.
+_ST_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+
+
+def _st_backend_available() -> bool:
+    """Whether sentence-transformers could actually run here. A GGUF-only install
+    has no torch, so the safetensors fallback is not on offer there."""
+    try:
+        from core.rag import embeddings
+        return embeddings.sentence_transformers_runtime_available()
+    except Exception:  # noqa: BLE001 - a broken import path is a no
+        return False
+
+
+def _is_st_weight_name(basename: str) -> bool:
+    """Whether a filename is a checkpoint, not just something ending in a suffix.
+
+    Shared with the loader so the plan and the cache check cannot disagree."""
+    from utils.utils import is_st_weight_name
+    return is_st_weight_name(basename)
+
+
+def _st_weight_source(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
+    """``(repo, weight files)`` for the repo an ST load of ``model`` would open.
+
+    A slashless name such as ``all-MiniLM-L6-v2`` resolves under the
+    ``sentence-transformers/`` namespace, which is what the loader's own
+    ``st_repo_id_candidates`` encodes. Probing only the literal id refused the
+    alias outright and a forced save then pinned it cache-only.
+    """
+    from utils.utils import st_repo_id_candidates
+
+    for candidate in st_repo_id_candidates(model) or [model]:
+        files = _st_weight_files(candidate, hf_token)
+        if files:
+            return (candidate, files)
+    return None
+
+
+def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]:
+    """The repo's own weight files, or None when it publishes none we can load."""
+    try:
+        files = _list_repo_files_bounded(model, hf_token)
+    except Exception:  # noqa: BLE001 - missing/gated repo or offline
+        return None
+    for suffix in _ST_WEIGHT_SUFFIXES:
+        weights = [
+            filename
+            for filename in files
+            if filename.rsplit("/", 1)[-1].lower().endswith(suffix)
+            and _is_st_weight_name(filename.rsplit("/", 1)[-1])
+        ]
+        if weights:
+            return weights
+    return None
+
+
+def _cached_snapshot_has_st_weights(model: str) -> bool:
+    """Whether the cached snapshot holds a checkpoint ST itself can open.
+
+    ``hf_cache_snapshot_is_loadable`` counts ``.gguf``, which is right for the
+    llama backend and wrong here: a cached GGUF-only repo would come back ready
+    with no checkpoint ST can load. No network."""
+    try:
+        from utils.utils import snapshot_has_st_weights
+        return snapshot_has_st_weights(model)
+    except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
+        return False
+
+
+def _cached_st_source(model: str):
+    """``(repo id, snapshot dir)`` the cached ST weights for ``model`` came from.
+
+    The same predicate as ``_cached_snapshot_has_st_weights``, keeping the repo it
+    matched under rather than reducing it to a yes: for a slashless alias that repo
+    is the ``sentence-transformers/`` one, and the PUT verifies and scans it."""
+    try:
+        from utils.utils import cached_st_source
+        return cached_st_source(model)
+    except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
+        return None
+
+
+def _cached_st_weight_names(model: str) -> list[str]:
+    """Snapshot-relative names of the ST weights already on disk for ``model``."""
+    try:
+        from utils.utils import hf_cache_snapshot_dir
+
+        snapshot = hf_cache_snapshot_dir(model)
+        if snapshot is None:
+            return []
+        return sorted(
+            str(path.relative_to(snapshot))
+            for path in snapshot.rglob("*")
+            if _is_st_weight_name(path.name) and path.is_file()
+        )
+    except Exception:  # noqa: BLE001 - the plan stands without a file list
+        return []
+
+
+def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
+    """``(repo, files)`` for running ``model`` on sentence-transformers instead.
+
+    An embedder with no GGUF still works from its own safetensors, for about 1 GB
+    more memory, which beats refusing the model or pulling a stranger's conversion."""
+    if not _st_backend_available():
+        return None
+    # A complete local snapshot is the same proof the listing gives, and works
+    # offline, where the listing fails and a downloaded model became unselectable.
+    from utils.utils import cached_st_repo
+
+    # The repo the snapshot is actually filed under: a slashless name caches under
+    # sentence-transformers/, and naming the literal id sends the download manager
+    # at a repo that usually does not exist.
+    cached_repo = cached_st_repo(model)
+    if cached_repo:
+        return (cached_repo, _cached_st_weight_names(cached_repo))
+    return _st_weight_source(model, hf_token)
+
+
+def _sentence_transformers_fallback_allowed(model: str) -> bool:
+    """Whether a newly selected model can actually be served by ST in this process."""
+    try:
+        from core.rag import embeddings
+        return embeddings.sentence_transformers_fallback_allowed(model)
+    except Exception:  # noqa: BLE001 - an unknown backend is not a safe fallback
+        return False
+
+
+def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
+    """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the
+    hub does not say; the dialog has copy for that."""
+    try:
+        from huggingface_hub import model_info
+
+        info = _call_with_embedding_resolve_budget(
+            lambda: model_info(repo, files_metadata = True, token = hf_token),
+            name = "embed-settings-file-size",
+        )
+        wanted = set(files)
+        total = sum(
+            sibling.size or 0 for sibling in (info.siblings or []) if sibling.rfilename in wanted
+        )
+        return total or None
+    except Exception:  # noqa: BLE001 - size is advisory, never a blocker
+        return None
+
+
+def _hf_snapshot_size(repo: str, hf_token: Optional[str]) -> Optional[int]:
+    """Bytes the model download worker will fetch for a full snapshot."""
+    try:
+        from huggingface_hub import model_info
+        from hub.utils.snapshot_filters import snapshot_download_size
+
+        info = _call_with_embedding_resolve_budget(
+            lambda: model_info(repo, files_metadata = True, token = hf_token),
+            name = "embed-settings-snapshot-size",
+        )
+        total = snapshot_download_size(info.siblings or [])
+        return total or None
+    except Exception:  # noqa: BLE001 - size is advisory, never a blocker
+        return None
+
+
+def _local_sentence_transformer_is_present(model: str) -> bool:
+    """Whether ``model`` is an existing local path ST can open directly."""
+    try:
+        from pathlib import Path
+        from utils.paths import is_local_path, normalize_path
+
+        if not is_local_path(model):
+            return False
+        p = Path(normalize_path(model)).expanduser()
+        # ST cannot open a .gguf. Falling through reaches the no-loadable-weights
+        # error rather than reporting it ready and failing at the first index.
+        if p.is_file() and p.suffix.lower() == ".gguf":
+            return False
+        if not p.exists():
+            return False
+        # A directory has to hold a checkpoint, not merely exist: modules.json
+        # alone also passes is_embedding_model's local-path check.
+        if not p.is_dir():
+            # SentenceTransformer takes a directory or a repo id, never a bare
+            # checkpoint file.
+            return False
+        if not any(_is_st_weight_name(child.name) and child.is_file() for child in p.rglob("*")):
+            return False
+        # And a WHOLE one: half a shard family, or a module modules.json declares
+        # and the directory lacks, read as ready and failed at the first index.
+        # Same completeness test a Hub snapshot gets, so a local copy of a model
+        # is judged the way the downloaded one is.
+        from utils.utils import checkpoint_directory_is_complete
+
+        return checkpoint_directory_is_complete(p)
+    except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
+        return False
+
+
+@_with_embedding_resolve_budget
+def _resolve_embedding_model_plan(
+    resolved: str, token: Optional[str]
+) -> EmbeddingModelResolveResponse:
+    """Server-owned artifact/backend plan shared by GET and PUT.
+
+    The PUT must not persist a client assertion that the GET never validated,
+    so both routes use this exact resolver.
+    """
+    # Resolve for the model being selected, not the backend still serving the
+    # previous model. A model-scoped runtime fallback must not force the next
+    # selection onto llama-server.
+    on_llama = _llama_backend_active(resolved)
+    backend: Literal["llama", "sentence-transformers"] = (
+        "llama" if on_llama else "sentence-transformers"
+    )
+
+    if not on_llama:
+        # A valid local SentenceTransformer path is already the artifact; it is
+        # not a Hub repo for the download manager to fetch.
+        if _local_sentence_transformer_is_present(resolved):
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved, backend = backend, cached = True
+            )
+        # The alias-aware predicate alone: it already pairs the ST file family with
+        # the loadable check PER CANDIDATE. Conjoining the generic one asked it
+        # about whichever cache directory matched first, so a stale literal entry
+        # beside a complete sentence-transformers/ snapshot reported uncached.
+        # The repo the cache hit came from, not just whether there was one: the
+        # PUT verifies and scans whatever this names, and for a slashless alias
+        # that is the sentence-transformers/ candidate. The literal id sent both
+        # at a repo that usually does not exist, 409ing a model already on disk.
+        cached_source = _cached_st_source(resolved)
+        cached = cached_source is not None
+        source = None if cached else _st_weight_source(resolved, token)
+        if not cached and source is None:
+            # is_embedding_model gates on tags, so a feature-extraction repo
+            # publishing no loadable checkpoint reaches here and would be offered
+            # as a download ST cannot open. The llama-to-ST fallback already
+            # proves the weights exist; this path did not.
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved,
+                backend = backend,
+                error = (
+                    f"No sentence-transformers weights found in {resolved!r}. "
+                    "The repository publishes no checkpoint this backend can load."
+                ),
+            )
+        # The repo that actually publishes the weights, which for a slashless
+        # alias is the sentence-transformers/ one, not the literal name. Same
+        # question whether the answer came from the cache or from the Hub.
+        if cached:
+            download_repo = cached_source[0]
+        elif source is None:
+            download_repo = resolved
+        else:
+            download_repo = source[0]
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            download_repo = download_repo,
+            cached = cached,
+            size_bytes = None if cached else _hf_snapshot_size(download_repo, token),
+        )
+
+    local_gguf = _resolves_as_local_gguf(resolved)
+    # Routing a model here does not make the backend runnable: without a binary
+    # the plan is advertised as valid and the transfer persisted, and the first
+    # warm fails in _resolve_binary. Scoped to models only llama can serve, since
+    # one with safetensors still has the usable ST fallback further down.
+    llama_only = (
+        local_gguf
+        or _model_names_gguf_repo(resolved)
+        # An explicit llama policy (or a runtime pin) refuses the safetensors
+        # fallback for every model, not only GGUF-named ones, so an ordinary repo
+        # id is just as unservable here without a binary.
+        or not _sentence_transformers_fallback_allowed(resolved)
+    )
+    if llama_only and not _llama_runtime_available():
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            error = (
+                f"{resolved!r} can only be embedded by the llama-server backend "
+                "here, and no llama-server binary was found. Install llama.cpp or "
+                "set LLAMA_SERVER_PATH / UNSLOTH_LLAMA_CPP_PATH."
+            ),
+        )
+
+    # A local .gguf (file or folder) is already the artifact; nothing to fetch.
+    if local_gguf:
+        return EmbeddingModelResolveResponse(embedding_model = resolved, backend = backend, cached = True)
+    local_error = _local_gguf_backend_error(resolved)
+    if local_error:
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved, backend = backend, error = local_error
+        )
+
+    candidates = _embedding_gguf_candidates(resolved)
+    # Match the loader's online fast path exactly: only the preferred repo and
+    # only the configured variant can suppress the download offer.
+    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True)
+    if cached_repo:
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            download_repo = cached_repo,
+            cached = True,
+        )
+    plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
+    if plan is None:
+        # The loader's offline fallback accepts any complete cached quant from
+        # any candidate only after its bounded online listing fails.
+        cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
+        if cached_repo:
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved,
+                backend = backend,
+                download_repo = cached_repo,
+                cached = True,
+            )
+        # No GGUF from this publisher: run it on its own safetensors only when
+        # configuration/runtime policy can actually select ST for this model.
+        st_plan = (
+            _safetensors_plan(resolved, token)
+            if _sentence_transformers_fallback_allowed(resolved)
+            else None
+        )
+        if st_plan is None:
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved,
+                backend = backend,
+                # Every remote/cache/fallback probe above has already failed;
+                # do not repeat the bounded Hub calls merely to format an error.
+                error = _no_embedding_weights_error(candidates),
+            )
+        st_repo, _st_files = st_plan
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = "sentence-transformers",
+            download_repo = st_repo,
+            # Same alias-aware predicate, asked about the repo the plan named
+            # rather than the alias the user typed.
+            cached = _cached_snapshot_has_st_weights(st_repo),
+            size_bytes = _hf_snapshot_size(st_repo, token),
+        )
+    repo, files = plan
+    if _cached_embedding_gguf_files(repo, files):
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            download_repo = repo,
+            files = files,
+            cached = True,
+        )
+    return EmbeddingModelResolveResponse(
+        embedding_model = resolved,
+        backend = backend,
+        download_repo = repo,
+        files = files,
+        size_bytes = _hf_files_size(repo, files, token),
+    )
+
+
+@router.get("/embedding-model/resolve", response_model = EmbeddingModelResolveResponse)
+def resolve_embedding_model(
+    model: str,
+    # Header, not a query param: keeps a gated-repo token out of URLs and logs.
+    hf_token: Optional[str] = Header(None, alias = "X-Unsloth-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResolveResponse:
+    """What saving ``model`` would need fetched, and whether it is already here.
+
+    The picker calls this so it can offer the download up front instead of letting
+    it happen invisibly at first index. ``error`` is the detail the PUT would
+    refuse with, so the two cannot disagree about what is usable."""
+    try:
+        resolved = validate_embedding_model(model)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid embedding model."),
+            event = "settings.resolve_embedding_model_failed",
+            log = logger,
+        ) from exc
+    token = (hf_token or "").strip() or None
+    return _resolve_embedding_model_plan(resolved, token)
 
 
 @router.put("/embedding-model", response_model = EmbeddingModelResponse)
@@ -1575,17 +2687,40 @@ def update_embedding_model(
     # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
     # to the local cache below; capture the state once.
     local_only_load = hf_env_offline()
+    # Resolve again server-side. The client fields are only an optimistic echo
+    # of GET /resolve; neither a repository nor a backend is trusted on its word.
+    plan = _resolve_embedding_model_plan(model, hf_token)
+    requested_repo = (payload.gguf_repo or "").strip() or None
+    if payload.backend is not None and payload.backend != plan.backend:
+        raise HTTPException(
+            status_code = 400,
+            detail = "The embedding backend no longer matches the server resolution. Resolve it again.",
+        )
+    if requested_repo is not None and requested_repo != plan.download_repo:
+        raise HTTPException(
+            status_code = 400,
+            detail = "The embedding download repository was not validated for this model.",
+        )
+    destination_is_llama = plan.backend == "llama"
+    # Verify and scan the repo the loader will actually open. A slashless alias
+    # resolves under sentence-transformers/, so checking the literal name scanned a
+    # repo that usually does not exist (failing open, or a forceable 409) or, worse,
+    # a different top-level repo that does. Only the ST path can diverge: a llama
+    # download_repo is the GGUF companion, which is not what is scanned here.
+    verify_target = model
+    if not destination_is_llama and plan.download_repo and plan.download_repo != model:
+        verify_target = plan.download_repo
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
-    is_local_gguf = _llama_backend_active() and _resolves_as_local_gguf(model)
+    is_local_gguf = destination_is_llama and _resolves_as_local_gguf(model)
     # The pickle gate only matters for the sentence-transformers backend, which is what
     # deserializes pickles. On the llama-server backend the embedder loads GGUF files
     # (inert) from effective_gguf_repo(), so scanning the ST repo's pickle here would
     # wrongly reject a custom repo whose GGUF companion is clean; the GGUF availability
     # checks below cover that path instead.
     scan_st_pickle = (
-        model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
+        model != default_embedding_model() and not is_local_gguf and not destination_is_llama
     )
     if scan_st_pickle:
         # Malware/pickle gate before we persist a repo the embedder later loads with
@@ -1608,13 +2743,13 @@ def update_embedding_model(
             load_subdirs = tuple(
                 dict.fromkeys(
                     (
-                        *security_load_subdirs(model, scan_token),
-                        *_st_module_subdirs(model, scan_token),
+                        *security_load_subdirs(verify_target, scan_token),
+                        *_st_module_subdirs(verify_target, scan_token),
                     )
                 )
             )
         if evaluate_file_security(
-            model,
+            verify_target,
             hf_token = scan_token,
             load_subdirs = load_subdirs,
             local_only_load = local_only_load,
@@ -1640,8 +2775,8 @@ def update_embedding_model(
         # files, which rarely carry sentence-transformers metadata; verify the
         # GGUF is available (below) rather than the ST embedding-metadata gate,
         # which would wrongly 409 a valid online GGUF embedder.
-        gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
-        if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
+        gguf_named = destination_is_llama and rag_config._names_gguf(model)
+        if not gguf_named and not is_embedding_model(verify_target, hf_token = hf_token):
             # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
             # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
             # metadata. If already cached and loadable, accept it rather than raising a 409 that
@@ -1650,7 +2785,7 @@ def update_embedding_model(
 
             # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
             # so a metadata-only partial cache still gets the forceable 409.
-            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(verify_target)
             if not offline_cached:
                 raise HTTPException(
                     status_code = 409,
@@ -1660,18 +2795,63 @@ def update_embedding_model(
                         "you may be offline)."
                     ),
                 )
-        # The Hub GGUF probe (list_repo_files) can hang offline; skip it. Local check stays.
-        gguf_error = _local_gguf_backend_error(model)
-        if gguf_error is None and not local_only_load:
-            gguf_error = _hf_gguf_backend_error(model, hf_token)
-        if gguf_error:
-            raise HTTPException(status_code = 409, detail = gguf_error)
-    set_rag_embedding_model(model)
+        # The shared resolver already applied the bounded listing and the exact
+        # destination backend, so PUT and GET cannot disagree. Any plan error
+        # counts, not just llama ones: is_embedding_model gates on tags, so a repo
+        # with no loadable checkpoint passes it and would be persisted anyway.
+        if plan.error:
+            raise HTTPException(status_code = 409, detail = plan.error)
+    trusted_backend = None
+    trusted_gguf_repo = None
+    trusted_gguf_files = None
+    trusted_download_pending = False
+    if plan.error is None:
+        trusted_backend = "llama-server" if destination_is_llama else "sentence-transformers"
+        # The exact family this transfer delivers. A repo publishing no
+        # RAG_EMBED_GGUF_VARIANT is served another quant on purpose, which the
+        # loader's variant lookup cannot recognize as what was downloaded, so
+        # without this the model stays cache-only and an eviction reads as
+        # "never downloaded" though the transfer finished.
+        trusted_gguf_files = plan.files if destination_is_llama else None
+        # A sentence-transformers download repo is not a GGUF source. Keeping
+        # it out also prevents a later runtime fallback from mislabelling it.
+        trusted_gguf_repo = plan.download_repo if destination_is_llama else None
+        # The setting may be activated so both mounted settings surfaces stay
+        # in sync, but its loader must remain cache-only until this transfer is
+        # complete. That prevents a close/cancel from becoming an implicit
+        # first-index download.
+        trusted_download_pending = bool(plan.download_repo and not plan.cached)
+    else:
+        # Save anyway, over a failed plan: nothing validated to record, but the
+        # marker still has to go on or both loaders take their uncached path and
+        # fetch invisibly at the first index, which this picker exists to replace.
+        trusted_download_pending = True
+    set_rag_embedding_model(
+        model,
+        gguf_repo = trusted_gguf_repo,
+        backend = trusted_backend,
+        download_pending = trusted_download_pending,
+        gguf_files = trusted_gguf_files,
+    )
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",
         current_subject,
         model,
         payload.force,
+    )
+    return _embedding_model_response()
+
+
+@router.post("/embedding-model/unload", response_model = EmbeddingModelResponse)
+def unload_embedding_model(
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResponse:
+    """Drop the embedder and stop its llama-server. Indexing rebuilds it on demand."""
+    from core.rag import embeddings
+
+    released = embeddings.release_backend()
+    logger.info(
+        "settings.embedding_model_unloaded subject=%s released=%s", current_subject, released
     )
     return _embedding_model_response()
 
@@ -1700,6 +2880,17 @@ def rotate_preview_links(
     return PreviewLinkRotateResponse(rotated = True)
 
 
+class KeylessApiAccessPayload(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: Optional[StrictBool] = None
+
+
+class KeylessApiAccessResponse(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: bool
+    exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+
+
 class PreviewSharingPayload(BaseModel):
     enabled: bool
 
@@ -1707,6 +2898,15 @@ class PreviewSharingPayload(BaseModel):
 class PreviewSharingResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
+
+
+class CurrentDatePromptPayload(BaseModel):
+    enabled: StrictBool
+
+
+class CurrentDatePromptResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
 
 
 class RemoteAccessAutoStartPayload(BaseModel):
@@ -1801,6 +3001,113 @@ def update_remote_access_auto_start(
     return _remote_access_response(request)
 
 
+class LanAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class LanAccessPortPayload(BaseModel):
+    port: Optional[StrictInt] = Field(ge = 1, le = 65535)
+
+
+class LanAccessResponse(BaseModel):
+    state: Literal["off", "online", "error"]
+    urls: list[str] = []
+    public_urls: list[str] = []
+    error: Optional[str] = None
+    auto_start: bool
+
+    configured_port: Optional[int] = None
+    active_port: Optional[int] = None
+    managed_by: Optional[Literal["launch", "settings"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    bind_host: Optional[str] = None
+    wildcard_bind: bool = False
+    serves_web_ui: bool = True
+    keyless_lan_eligible: bool = False
+    keyless_scope: Literal["off", "inference", "full"] = "off"
+    keyless_tools: bool = False
+
+
+def _lan_access_response(request: Request) -> LanAccessResponse:
+    return LanAccessResponse(**lan_access_status(request.app))
+
+
+@router.get("/lan-access", response_model = LanAccessResponse)
+def get_lan_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    return _lan_access_response(request)
+
+
+@router.post("/lan-access/start", response_model = LanAccessResponse)
+def start_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**start_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/lan-access/stop", response_model = LanAccessResponse)
+def stop_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**stop_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/lan-access/auto-start", response_model = LanAccessResponse)
+def update_lan_access_auto_start(
+    request: Request,
+    payload: LanAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    if bool(getattr(request.app.state, "lan_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_lan_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.lan_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _lan_access_response(request)
+
+
+@router.put("/lan-access/port", response_model = LanAccessResponse)
+def update_lan_access_port(
+    request: Request,
+    payload: LanAccessPortPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**save_lan_access_port(request.app, payload.port))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info(
+        "settings.lan_access_port_updated subject=%s port=%s",
+        current_subject,
+        payload.port if payload.port is not None else "automatic",
+    )
+    return response
+
+
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
 def get_preview_sharing(
     current_subject: str = Depends(get_current_subject),
@@ -1825,6 +3132,85 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+@router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)
+def get_current_date_prompt(
+    current_subject: str = Depends(get_current_subject),
+) -> CurrentDatePromptResponse:
+    return CurrentDatePromptResponse(enabled = get_current_date_prompt_enabled())
+
+
+@router.put("/current-date-prompt", response_model = CurrentDatePromptResponse)
+def update_current_date_prompt(
+    payload: CurrentDatePromptPayload, current_subject: str = Depends(get_current_subject)
+) -> CurrentDatePromptResponse:
+    """Enable/disable telling the model today's date in chat and Deep Research prompts."""
+    try:
+        enabled = set_current_date_prompt_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid current date prompt setting."),
+            event = "settings.update_current_date_prompt_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.current_date_prompt_updated subject=%s enabled=%s", current_subject, enabled
+    )
+    return CurrentDatePromptResponse(enabled = enabled)
+
+
+def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    """Only a signed-in UI session may change who needs a key.
+
+    An sk-unsloth key must not be able to switch authentication off for the whole
+    install, and a keyless caller must not be able to widen its own scope; both are
+    ``authenticated_via_api_key``, so one check covers them.
+    """
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Keyless API access can only be changed from the Unsloth UI.",
+        )
+
+
+def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
+    scope, tools = get_keyless_api_access_settings()
+    return KeylessApiAccessResponse(
+        scope = scope,
+        tools = tools,
+        exposure = access_exposure(request.app.state),
+    )
+
+
+@router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def get_keyless_api_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    return _keyless_api_access_response(request)
+
+
+@router.put("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def update_keyless_api_access(
+    request: Request,
+    payload: KeylessApiAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    """Choose which routes are served without an API key, and whether tools come too."""
+    scope, tools = set_keyless_api_access(payload.scope, tools = payload.tools)
+    logger.info(
+        "settings.keyless_api_access_updated subject=%s scope=%s tools=%s exposure=%s",
+        current_subject,
+        scope,
+        tools,
+        access_exposure(request.app.state),
+    )
+    return _keyless_api_access_response(request)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

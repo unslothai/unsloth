@@ -56,6 +56,7 @@ from hub.utils.state_dir import (
     variant_filename_prefix,
     variant_key_fragments,
 )
+from utils.paths.path_utils import drop_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -870,7 +871,9 @@ def expected_files_from_snapshot_dir(snapshot_dir: Path) -> list[ExpectedFile]:
     """
     out: list[ExpectedFile] = []
     try:
-        entries = sorted(snapshot_dir.rglob("*"))
+        # Baking a companion into the completion contract makes the download read as partial
+        # forever once macOS cleans it up.
+        entries = drop_appledouble_metadata(sorted(snapshot_dir.rglob("*")))
     except OSError:
         return out
     for path in entries:
@@ -901,8 +904,8 @@ def write_cancel_marker(
     """Record that this triple was cancelled. Idempotent across repeated cancels.
 
     ``transport`` ("http"/"xet") is surfaced via partial_transport on
-    inventory rows so the UI labels HTTP retries as continuable and XET
-    retries as full redownloads. None is accepted for forward-compat.
+    inventory rows so the UI only offers a byte-resume for an HTTP partial.
+    None is accepted for forward-compat.
     """
     recorded_hub_cache = _canonical_hub_cache(hub_cache)
     path = marker_path(

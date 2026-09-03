@@ -265,7 +265,7 @@ def with_readable_traceback(renderer):
     return _render
 
 
-# Set alongside HF_HUB_DISABLE_PROGRESS_BARS when the value is Studio's default rather
+# Set alongside HF_HUB_DISABLE_PROGRESS_BARS when the value is Unsloth's default rather
 # than the operator's, so allow_progress_bars() can tell them apart.
 _PROGRESS_BARS_DEFAULTED = "UNSLOTH_STUDIO_PROGRESS_BARS_DEFAULTED"
 
@@ -375,7 +375,7 @@ def keep_progress_bars_countable() -> None:
     the whole of a multi-GB download. Same trade as datasets: keep the counter, drop
     the writes, so nothing reaches the log either way.
 
-    Only Studio's own default is undone; an operator who set the variable themselves
+    Only Unsloth's own default is undone; an operator who set the variable themselves
     asked for no bars and keeps getting none. Afterwards
     quiet_third_party_progress_bars() is a no-op in this process, so a later call
     cannot re-disable what the poller reads.
@@ -398,7 +398,7 @@ def keep_progress_bars_countable() -> None:
 def quiet_bar_kwargs() -> dict:
     """tqdm kwargs that keep a bar counting but stop it writing to the log.
 
-    For Studio's own explicit bars (the dataset conversion loops), which no library
+    For Unsloth's own explicit bars (the dataset conversion loops), which no library
     switch reaches. Empty when the operator asked to keep bars, so nothing changes.
     """
     value = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
@@ -408,7 +408,7 @@ def quiet_bar_kwargs() -> dict:
 
 
 def allow_progress_bars() -> None:
-    """Undo an inherited Studio default so this process can draw progress bars.
+    """Undo an inherited Unsloth default so this process can draw progress bars.
 
     Called by the export worker, whose stdout is forwarded to the export dialog and
     whose Hub upload bar is the only live byte progress a long push_to_hub has. An
@@ -424,7 +424,7 @@ def quiet_third_party_progress_bars() -> None:
     """Turn off the tqdm bars transformers / diffusers / huggingface_hub draw
     during an in-process model load.
 
-    A bar is written with carriage returns to a terminal, so in Studio's log it
+    A bar is written with carriage returns to a terminal, so in Unsloth's log it
     lands as a burst of lines like
 
         Loading weights:   8%|>         | 30/398 [00:00<00:01, 277.16it/s][A

@@ -4,7 +4,7 @@
 // A Train-tab run on a model whose architecture no installed transformers ships was
 // accepted, spawned, and killed minutes later at model load:
 //   "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit is not supported yet in transformers==5.3.0"
-// Studio already had the consent dialog that provisions .venv_t5_latest, but it was
+// Unsloth already had the consent dialog that provisions .venv_t5_latest, but it was
 // wired only into chat. These pin the gate: the start path consults the check, pauses
 // on the dialog, and abandons the start when declined.
 

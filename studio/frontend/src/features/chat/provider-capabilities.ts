@@ -436,7 +436,7 @@ export function providerSupportsBuiltinCodeExecution(
  * running the model's code on the USER's machine would be a relocation, and
  * that does not depend on which model is selected. openai_codex is absent for
  * the same reason the backend registry leaves it out -- its code tools are
- * Studio's own, run by the Codex loop, and always have been.
+ * Unsloth's own, run by the Codex loop, and always have been.
  */
 const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
 

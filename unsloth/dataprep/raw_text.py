@@ -44,6 +44,8 @@ class RawTextDataLoader:
     ):
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride < 0:
+            raise ValueError(f"stride must be non-negative, got {stride}")
         if stride >= chunk_size:
             raise ValueError(f"stride ({stride}) must be smaller than chunk_size ({chunk_size})")
         self.tokenizer = tokenizer
@@ -138,6 +140,11 @@ class RawTextDataLoader:
         """
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride < 0:
+            raise ValueError(
+                f"stride must be non-negative, got {stride}: a negative stride advances the loop by "
+                f"more than chunk_size and silently skips the tokens in between"
+            )
         if stride >= chunk_size:
             raise ValueError(
                 f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"

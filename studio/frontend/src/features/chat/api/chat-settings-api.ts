@@ -11,15 +11,16 @@ import type {
   ReasoningEffort,
 } from "../stores/chat-runtime-store";
 import type { ResearchWebsitePolicy } from "../types/research";
-import type { InferenceParams } from "../types/runtime";
+import type {
+  InferenceParams,
+  PersistedInferenceParams,
+} from "../types/runtime";
 import {
   ChatSettingsRequestError,
   isUnderKeepaliveBudget,
 } from "../utils/settings-retry";
 
-export type PersistedInferenceParams = Partial<
-  Omit<InferenceParams, "checkpoint">
->;
+export type { PersistedInferenceParams };
 
 export interface PersistedChatPreset {
   name: string;
@@ -29,6 +30,9 @@ export interface PersistedChatPreset {
 
 export interface PersistedChatSettings {
   inferenceParams?: PersistedInferenceParams;
+  /** Last-used params per checkpoint id, replayed on model switch. */
+  inferenceParamsByModel?: Record<string, PersistedInferenceParams>;
+  rememberParamsPerModel?: boolean;
   customPresets?: PersistedChatPreset[];
   activePreset?: string;
   activePresetSource?: ChatPresetSource;
@@ -37,6 +41,8 @@ export interface PersistedChatSettings {
   preserveThinking?: boolean;
   collapseHtmlArtifacts?: boolean;
   allowArtifactNetworkAccess?: boolean;
+  /** web_search also returns image results the model can place inline. */
+  searchImages?: boolean;
   autoHealToolCalls?: boolean;
   nudgeToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
@@ -48,6 +54,7 @@ export interface PersistedChatSettings {
   webFetchToolsEnabled?: boolean;
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
+  researchModelTimeoutSeconds?: number;
   artifactsEnabled?: boolean;
   showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;
@@ -66,6 +73,10 @@ export interface PersistedChatSettings {
   expandQuantizations?: boolean;
   showAllQuantizations?: boolean;
   fitOnDeviceOnly?: boolean;
+  /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
+  autoCompactEnabled?: boolean;
+  contextPolicy?: "inherit" | "checkpoint" | "rolling";
+  compactionHeadroomRatio?: number;
 }
 
 interface ChatSettingsResponse {

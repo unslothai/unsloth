@@ -50,10 +50,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from functools import lru_cache
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -161,7 +164,16 @@ def _run_capturing_bytes(
     is how the CLI spawns setup for ``unsloth studio update``. Piped stdout is
     required to reproduce, and is captured as bytes, never decoded here.
     """
-    tmp = REPO_ROOT / "tests" / "python" / f"_{stem}_probe_{int(use_command_shape)}.ps1"
+    # Unique per call. The name used to be (stem, shape), which several tests
+    # share, so under pytest-xdist one case could unlink the script after another
+    # had written it and before its pwsh child opened it. pwsh is installed on
+    # ubuntu-latest, so these do not skip there and would race for real.
+    tmp = (
+        REPO_ROOT
+        / "tests"
+        / "python"
+        / f"_{stem}_probe_{int(use_command_shape)}_{uuid.uuid4().hex}.ps1"
+    )
     tmp.write_text(script, encoding = "utf-8")
     try:
         base = [_PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
@@ -170,7 +182,10 @@ def _run_capturing_bytes(
             argv = base + ["-Command", f"& '{literal}' *>&1"]
         else:
             argv = base + ["-File", str(tmp)]
-        proc = subprocess.run(argv, stdout = subprocess.PIPE, stderr = subprocess.PIPE, timeout = 180)
+        # run_pwsh, not subprocess.run: the byte-level cases read this stdout as the setup
+        # log, and an interpreter that aborted leaves an empty or truncated stream, which
+        # reads as the banner being mangled or lost. See tests/_shared/unsloth_pwsh_runner.py.
+        proc = run_pwsh(argv, stdout = subprocess.PIPE, stderr = subprocess.PIPE, timeout = 180)
         assert proc.returncode == 0, proc.stderr.decode("utf-8", errors = "replace")
         return proc.stdout
     finally:
@@ -634,7 +649,11 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
         text = _console_less_probe(path) if source is None else source
         probe.write_bytes(text.replace("\n", "\r\n").encode("ascii"))
-        proc = subprocess.run(
+        # run_pwsh, not subprocess.run: the console-less cases are phrased as "this run
+        # exited non-zero having printed almost nothing", which is also what an aborted
+        # interpreter looks like, so the two must not be confused. The retry covers 5.1
+        # here as well. See tests/_shared/unsloth_pwsh_runner.py.
+        proc = run_pwsh(
             [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,

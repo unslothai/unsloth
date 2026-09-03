@@ -248,7 +248,7 @@ def test_build_appends_offload_and_extra_args_last():
     assert "--offload-to-cpu" in cmd
     assert _pair(cmd, "--threads") == "8"
     assert "-v" in cmd
-    # extra args come after everything Studio set (last-wins for power users)
+    # extra args come after everything Unsloth set (last-wins for power users)
     assert cmd[-2:] == ["--rng", "cuda"]
 
 
@@ -658,7 +658,7 @@ def test_video_build_appends_extra_args_verbatim_and_last():
     )
     assert cmd[-2:] == ["--rng", "cuda"]
     assert cmd[-1] != "cuda" or cmd[-2] == "--rng"
-    # Studio's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
+    # Unsloth's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
     assert cmd.count("--rng") == 2
 
 

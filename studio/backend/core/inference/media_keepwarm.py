@@ -3,13 +3,13 @@
 
 """Opt-in idle auto-unload for the diffusion image and video backends.
 
-The image and video pipelines are the largest thing Studio holds in VRAM, and until now only
+The image and video pipelines are the largest thing Unsloth holds in VRAM, and until now only
 the chat GGUF was freed when the user walked away: one generation and a navigate-away left
 several GB resident forever. This is the same mechanism rather than a second one -- the same
 in-flight bookkeeping (``LlamaKeepWarmMiddleware`` already tracks the generate routes) and one
 step per tick of ``llama_keepwarm.idle_unload_loop``. The TTL is its own setting, off by
 default, so nothing here runs until the user asks for it: the tick returns before it resolves
-a backend, which is also what keeps torch out of a Studio that never opened these pages.
+a backend, which is also what keeps torch out of an Unsloth that never opened these pages.
 
 Each backend owns its teardown barrier, so this decides only WHEN: it calls the same
 ``unload()`` the arbiter's evictor calls, resolved through ``get_active_diffusion_engine()``
@@ -149,7 +149,7 @@ def loaded_by_user_action(
     variant: Optional[str] = None,
     partition: Optional[str] = None,
 ) -> bool:
-    """Whether the RESIDENT model was loaded from Studio rather than by an API request.
+    """Whether the RESIDENT model was loaded from Unsloth rather than by an API request.
 
     The record only answers for the build it was written against: a load that was accepted and
     then failed leaves the previous model resident, and reading its origin off the failed
@@ -204,6 +204,8 @@ _TRACKED_PATHS = {
     # The OpenAI-compatible route is on inference_router, mounted at both prefixes.
     "/api/inference/images/generations": DIFFUSION,
     "/v1/images/generations": DIFFUSION,
+    "/api/inference/videos": VIDEO,
+    "/v1/videos": VIDEO,
 }
 
 
@@ -275,6 +277,10 @@ def _video_engine() -> Any:
 
 
 _ENGINES = {DIFFUSION: _diffusion_engine, VIDEO: _video_engine}
+
+
+def engine_if_imported(owner: str) -> Any:
+    return _ENGINES[owner]()
 
 
 def _completed_token(progress: dict[str, Any]) -> Optional[tuple[Any, ...]]:
@@ -374,17 +380,20 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         # backends and an unload frees several GB, so a residency veto applied while it runs
         # (Model Memory, or the TTL itself moved) would otherwise be ignored by every teardown
         # left in the step, freeing a model the settings page now calls pinned.
-        ttl = _effective_ttl()
-        if (
-            ttl <= 0
-            or not tracker.is_idle(ttl)
-            or _user_pinned(
-                tracker.owner,
-                status.get("repo_id"),
-                status.get("gguf_variant"),
-                status.get("h3_task"),
-            )
+        ttl = await asyncio.to_thread(_effective_ttl)
+        if ttl <= 0 or not tracker.is_idle(ttl):
+            return
+        if await asyncio.to_thread(
+            _user_pinned,
+            tracker.owner,
+            status.get("repo_id"),
+            status.get("gguf_variant"),
+            status.get("h3_task"),
         ):
+            return
+        # A request may register _pending during an off-loop setting read.
+        # Recheck idleness before unloading.
+        if not tracker.is_idle(ttl):
             return
         await asyncio.to_thread(backend.unload)
         # Drop ownership only if nothing came back meanwhile, and check it under the arbiter
@@ -418,7 +427,8 @@ def _user_pinned(
 
 async def idle_unload_step() -> None:
     """The media half of one idle_unload_loop tick. Inert when the TTL is off."""
-    ttl = _effective_ttl()
+    # Keep this SQLite-backed setting read off the event loop.
+    ttl = await asyncio.to_thread(_effective_ttl)
     if ttl <= 0:
         return
     for tracker in _TRACKERS.values():

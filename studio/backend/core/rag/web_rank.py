@@ -9,7 +9,7 @@ go through the *same* retrieval pipeline the knowledge base uses and only the mo
 passages are folded into the evidence.
 
 Nothing here re-implements chunking, embedding, retrieval, ranking, or rendering; it wires
-Studio's existing KB components to the live scrape. The only difference from a persisted KB is
+Unsloth's existing KB components to the live scrape. The only difference from a persisted KB is
 the corpus: pages are ingested under a unique throwaway scope deleted in a ``finally`` block, so
 an auto-read never pollutes a user's knowledge base, like the per-thread attachment RAG already
 does on the same store.
@@ -59,7 +59,7 @@ def retrieve_web_chunks(
     model_name: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Ingest scraped pages into an ephemeral RAG scope, hybrid-retrieve the passages most
-    relevant to ``query``, and return ``(rendered_chunks, sources)`` using Studio's KB
+    relevant to ``query``, and return ``(rendered_chunks, sources)`` using Unsloth's KB
     formatter.
 
     ``pages`` is a list of dicts with ``text`` (required) and optional ``title`` / ``url``

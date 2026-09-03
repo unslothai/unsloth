@@ -22,11 +22,54 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
 DIFFUSION_NOT_LOADED_MSG = "No diffusion model is loaded."
 DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
+
+
+@dataclass(frozen = True)
+class LoadIdentity:
+    """What a caller's derived request parameters depend on, as one comparable value.
+
+    ``repo_id`` alone is not one: /images/load takes ``base_repo`` and ``family_override``
+    independently of the path, so a local checkpoint reloads as a different model while the
+    path stays put, and the images route derives steps/guidance from ``base_repo`` and its
+    edit-only verdict from the family (#9448). Loads agreeing on all three derive identical
+    parameters, which is exactly when accepting one for the other is correct.
+
+    A type rather than a tuple, so pinning a bare repo id compares unequal and is refused
+    instead of matching some other shape by accident.
+    """
+
+    repo_id: str
+    base_repo: str
+    family: str
+
+
+def load_identity(repo_id, base_repo, family) -> LoadIdentity:
+    """``LoadIdentity`` for one load. None and "" describe the same absent field."""
+    return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
+class DiffusionModelReplacedError(RuntimeError):
+    """Both engines' ``generate`` refusing a ``LoadIdentity`` that is no longer loaded.
+
+    Keeps a caller's per-model steps/guidance and workflow verdict, taken from an earlier
+    ``status()`` read, off a model they never validated (#9448). Here rather than in
+    ``diffusion`` so the native engine can raise it without importing the torch backend.
+    """
+
+    def __init__(self, expected: LoadIdentity, actual: LoadIdentity):
+        super().__init__(
+            f"The image model was replaced while this request waited "
+            f"(expected {expected.repo_id!r}, loaded {actual.repo_id!r}); "
+            "retry with fresh parameters."
+        )
+        self.expected = expected
+        self.actual = actual
 
 
 @dataclass(frozen = True)
@@ -75,7 +118,7 @@ class DiffusionFamily:
     # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
     # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
     # that asks for it by name and the old one to every build that does not. That is what lets a
-    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # rotated (v2) checkpoint ship without regressing an already-installed Unsloth, which would
     # otherwise refuse the v2 tag and fall all the way back to the dense download.
     # A row may also be (scheme, task, filename), which names the artifact for ONE task and beats
     # the task-agnostic row; see ``family_prequant_filename``.
@@ -91,7 +134,7 @@ class DiffusionFamily:
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
-    # True when Studio can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up front.
+    # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up front.
     trainable: bool = False
     # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA prequant repo, then bf16). Surfaced by the Train UI.
     train_base_repos: tuple[str, ...] = field(default_factory = tuple)
@@ -423,7 +466,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 
 
 def trainable_family_names() -> tuple[str, ...]:
-    """Names of families Studio can train a LoRA on, in registry order."""
+    """Names of families Unsloth can train a LoRA on, in registry order."""
     return tuple(fam.name for fam in _FAMILIES if fam.trainable)
 
 
@@ -434,13 +477,13 @@ IDEOGRAM4_FAMILY_NAME = "ideogram-4"
 LUMINA2_FAMILY_NAME = "lumina-2"
 
 
-# Models Studio deliberately does NOT support, reason surfaced verbatim in the load error, keyed by lowercase repo-id substring. The bar is a diffusers pipeline.
+# Models Unsloth deliberately does NOT support, reason surfaced verbatim in the load error, keyed by lowercase repo-id substring. The bar is a diffusers pipeline.
 _EXCLUDED_MODELS: tuple[tuple[str, str], ...] = (
     (
         # "-3" scoped so a future HunyuanImage 2.x with a diffusers pipeline falls through normally.
         "hunyuanimage-3",
         "HunyuanImage-3.0 has no diffusers pipeline (it is an 80B autoregressive MoE "
-        "that requires trust_remote_code), so Studio does not support it.",
+        "that requires trust_remote_code), so Unsloth does not support it.",
     ),
 )
 
@@ -535,7 +578,7 @@ def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
     """The ``_class_name`` the diffusers pipeline saved at ``path`` declares, or None.
 
     Size-capped and schema-free: neither a listing nor a load may be held up by whatever a scan
-    folder contains. ``_class_name`` is a LIST for a remote-code community pipeline, which Studio
+    folder contains. ``_class_name`` is a LIST for a remote-code community pipeline, which Unsloth
     cannot load, so only a plain string answers.
 
     ``utf-8-sig`` because PowerShell writes JSON with a BOM and a hand-authored index is ordinary
@@ -703,8 +746,12 @@ def canonical_base(repo_id: Optional[str]) -> str:
 _WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".ckpt", ".gguf"})
 
 
-def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> bool:
-    """``_upstream_is_cached`` for ONE cache root. Never raises."""
+def _cached_revisions(root: Path, repo_id: str) -> list[Path]:
+    """The snapshot dirs a fetch pinned to ``root`` could resolve for ``repo_id``. Never raises.
+
+    ``refs/main`` alone when it exists, the one commit a branch fetch falls back to on a failed
+    HEAD; every snapshot when it does not, since a commit-pinned download leaves no ref.
+    """
     try:
         repo = root / f"models--{repo_id.replace('/', '--')}"
         ref = repo / "refs" / "main"
@@ -713,13 +760,37 @@ def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> boo
             if ref.is_file()
             else sorted((repo / "snapshots").iterdir())
         )
-        for rev in revs:
-            if not rev.is_dir():
-                continue
+        return [rev for rev in revs if rev.is_dir()]
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
+        return []
+
+
+def _root_revision_coverage(root: Path, repo_id: str, wanted: Sequence[str]) -> set[frozenset[str]]:
+    """Which subsets of ``wanted`` ONE root can serve, one entry per revision it could resolve.
+
+    A fetch that lands in a root lands in a SINGLE revision of it, so a name may not be borrowed
+    from a superseded snapshot to complete a newer one. The empty set is always an option: a root
+    is allowed to contribute nothing.
+    """
+    covers: set[frozenset[str]] = {frozenset()}
+    for rev in _cached_revisions(root, repo_id):
+        covers.add(frozenset(name for name in wanted if (rev / name).exists()))
+    return covers
+
+
+def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> bool:
+    """``_upstream_is_cached`` for ONE cache root. Never raises."""
+    try:
+        for rev in _cached_revisions(root, repo_id):
             if wanted:
                 if all((rev / name).exists() for name in wanted):
                     return True
-            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+            elif any(
+                p.suffix.lower() in _WEIGHT_SUFFIXES
+                and p.is_file()
+                and not is_appledouble_metadata(p)
+                for p in rev.rglob("*")
+            ):
                 return True
         return False
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
@@ -750,6 +821,13 @@ def _upstream_is_cached(
     left in the pre-change root really do satisfy the load. OFF by default, because a
     ``from_pretrained`` is pinned to the live root and cannot see the other one -- counting those
     bytes there would send a gated base back to the 401 the mirror exists to avoid.
+
+    With BOTH roots the set is answered per FILE, because that is what those callers then do: a
+    pair split across a cache-folder change (one file fetched before it, one after) is held by
+    neither root alone, and asking each root for the whole set calls it absent and re-pulls bytes
+    the two roots already have between them. Split across ROOTS only: within a root a name still
+    has to come from the one revision that root's fetch resolves, so a superseded snapshot cannot
+    complete a newer one. Any single root answering the whole set is the case above unchanged.
     """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
@@ -764,6 +842,14 @@ def _upstream_is_cached(
             if fallback != roots[0]:
                 roots.append(fallback)
         wanted = tuple(files or ())
+        if wanted and len(roots) > 1:
+            # One revision per root, unioned across roots: a name may come from either root, but
+            # within a root it has to come from the revision that root's fetch would resolve.
+            reachable = {frozenset()}
+            for root in roots:
+                covers = _root_revision_coverage(root, repo_id, wanted)
+                reachable = {have | cover for have in reachable for cover in covers}
+            return any(set(wanted) <= have for have in reachable)
         return any(_root_holds_upstream(root, repo_id, wanted) for root in roots)
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
         return False
@@ -798,6 +884,12 @@ _SD_CPP_LEGACY_SOURCES: dict[str, str] = {
     "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
     "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
     "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+    # MiniMax-H3, where only PART of the mirror came from the repack: the two VAEs now sit beside
+    # the denoisers in the GGUF repo, and the int8 ConvRot conditioner beside the other
+    # prequantized checkpoints. That is why every caller passes the exact file list -- a denoiser
+    # the repack never carried simply misses the probe and keeps the mirror.
+    "unsloth/minimax-h3-gguf": "Comfy-Org/MiniMax-H3",
+    "unsloth/minimax-h3-fp8": "Comfy-Org/MiniMax-H3",
 }
 
 

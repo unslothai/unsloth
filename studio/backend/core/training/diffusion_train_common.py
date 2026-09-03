@@ -29,6 +29,7 @@ from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
     is_stubbed,
+    torch_is_rocm,
 )
 from core.inference.diffusion_families import (
     detect_family,
@@ -37,6 +38,7 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 from core.inference.video_families import detect_video_family, supported_video_family_names
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry over. Both import this module first.
 install_xformers_windows_rocm_stub()
@@ -63,7 +65,7 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
     {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2", "minimax-h3"}
 )
 
-# VIDEO families (from the separate ``video_families`` registry) Studio can train a LoRA on.
+# VIDEO families (from the separate ``video_families`` registry) Unsloth can train a LoRA on.
 # The video registry has no ``trainable`` flag of its own -- it exists for the inference
 # picker -- so the trainable set lives here, next to the trainers, and every name in it MUST
 # resolve through ``get_trainer``. Not necessarily to the DiT loop: LTX-2 is a
@@ -98,7 +100,7 @@ _CAPTION_EXTS = (".txt", ".caption")
 # diffusers' canonical single-file LoRA name, so load_lora_weights(dir) finds it.
 DEFAULT_LORA_FILENAME = "pytorch_lora_weights.safetensors"
 
-# Architectures Studio can neither train nor load: not in the family registry but recognisable by name, so rejecting them by name gives a clear error instead of a mid-run crash.
+# Architectures Unsloth can neither train nor load: not in the family registry but recognisable by name, so rejecting them by name gives a clear error instead of a mid-run crash.
 _NON_TRAINABLE_RESIDUAL_TOKENS = frozenset({"sd3", "pixart", "sana", "lumina", "cogview"})
 _NON_TRAINABLE_RESIDUAL_PHRASES = ("stable-diffusion-3", "hunyuan-dit")
 
@@ -133,7 +135,7 @@ def _trainable_family_spec(name: str) -> Any:
 
 
 def _refuse_untrainable_video_family(name: str) -> None:
-    """Raise for a video family Studio has no trainer for.
+    """Raise for a video family Unsloth has no trainer for.
 
     Video bases are invisible to the image registry, so before this gate existed every video
     checkpoint fell through ``resolve_trainable_family``'s unknown-name fallback and was
@@ -141,7 +143,7 @@ def _refuse_untrainable_video_family(name: str) -> None:
     name instead, with the list of video families that do train."""
     trainable = ", ".join(sorted(TRAINABLE_VIDEO_FAMILIES))
     raise ValueError(
-        f"'{name}' is a video model Studio can't train yet. Video LoRA training currently "
+        f"'{name}' is a video model Unsloth can't train yet. Video LoRA training currently "
         f"supports: {trainable}. {_trainable_hint()}"
     )
 
@@ -223,7 +225,7 @@ def _refuse_component_only_repo(base_model: str) -> None:
 
 
 def _trainable_hint() -> str:
-    """A user-facing hint listing the families Studio can train today. Always names SDXL
+    """A user-facing hint listing the families Unsloth can train today. Always names SDXL
     explicitly so the message is actionable even as more families become trainable."""
     names = ", ".join(_all_trainable_family_names()) or "sdxl"
     return (
@@ -462,7 +464,8 @@ def train_precision_modes() -> tuple[list[str], str]:
         import torch
         if native_bf16_supported():
             modes.append("bf16")
-            torchao_ok = has_functional_torchao()
+            # ROCm capability values are gfx versions, not the NVIDIA SM levels checked below.
+            torchao_ok = has_functional_torchao() and not torch_is_rocm()
             if torchao_ok:
                 modes.append("int8")
             major, minor = torch.cuda.get_device_capability()
@@ -498,12 +501,20 @@ def get_trainer(family: str) -> Callable[..., str]:
 # Per-family training defaults surfaced by the Train UI: starting points, not hard limits. Families absent here fall back to the DiffusionLoraConfig defaults.
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
-    # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on the big flow-matching DiTs.
-    "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20},
+    # Plain "constant" ignores lr_warmup_steps, so warmup defaults must use a
+    # warmup-capable scheduler.
+    "flux.1": {
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     "qwen-image": {
         "lora_rank": 16,
         "learning_rate": 5e-5,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
@@ -514,12 +525,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     "flux.2-dev": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     # LTX-2, from Lightricks' own ltx-trainer LoRA configs: rank/alpha 32, lr 1e-4. The
@@ -529,6 +542,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 32,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     # MiniMax-H3. ``resolution`` is the canvas SHORT EDGE, and 768 is the one the released
@@ -540,6 +554,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
         "train_batch_size": 1,
     },
@@ -766,9 +781,11 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     child, after eviction). Every gate mirrors one in _resolve_base_precision, so a doomed run is
     rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); no accelerator at
     all (dit_accelerator_missing_reason, which covers nf4 too); the dense precisions
-    (bf16/int8/fp8/mxfp8) needing CUDA; explicit int8 needing a FUNCTIONAL torchao (its
-    _int8_quantize_base has no fallback); explicit fp8/mxfp8 against the Windows-ROCm torchao stub;
-    explicit mxfp8 needing Blackwell (sm100+). Add a gate there, add it here. Never raises."""
+    (bf16/int8/fp8/mxfp8) needing CUDA; the torchao precisions (int8/fp8/mxfp8) against a ROCm
+    build, which clears the stub test and hands the sm100 floor an AMD gfx version; explicit int8
+    needing a FUNCTIONAL torchao (its _int8_quantize_base has no fallback); explicit fp8/mxfp8
+    against the Windows-ROCm torchao stub; explicit mxfp8 needing Blackwell (sm100+). Add a gate
+    there, add it here. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
@@ -789,6 +806,12 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
             return (
                 f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
                 "Use base_precision='nf4' or 'auto'."
+            )
+        # Reject before eviction; _resolve_base_precision repeats this in the child.
+        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm():
+            return (
+                f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
+                "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
             )
         if mode == "int8" and not has_functional_torchao():
             return (
@@ -842,7 +865,7 @@ def family_train_infos() -> list[dict[str, Any]]:
         # MiniMax-H3 has its own trainer but the same base_precision lever and the same bf16-on-
         # CUDA requirement. Reading _DIT_TRAIN_FAMILIES here reported precision_modes = [] for it,
         # which the Train panel reads as "this GPU cannot train this family" and disables Start
-        # with "Not supported on this GPU" -- the trainer was unreachable from Studio on every
+        # with "Not supported on this GPU" -- the trainer was unreachable from Unsloth on every
         # host. SDXL keeps its mixed_precision lever and is in neither set.
         is_dit = name in _FLOW_TRAIN_FAMILIES
         # On a non-bf16 CUDA GPU the start preflight rejects EVERY DiT family, so advertise no precision, else /info offers an
@@ -1001,7 +1024,7 @@ class DiffusionLoraConfig:
         """Return a copy with derived/validated fields filled in. Raises ValueError on a
         request that cannot train (bad numbers, or an untrainable base model).
 
-        Also coerces values that arrive as strings/blanks through the Studio config path
+        Also coerces values that arrive as strings/blanks through the Unsloth config path
         (``learning_rate`` is preserved as a string there; ``hf_token`` defaults to "")."""
         resolved_family = resolve_trainable_family(self.base_model, self.model_family)
         if self.train_steps < 1:
@@ -1047,6 +1070,16 @@ class DiffusionLoraConfig:
                 f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
                 f"got {self.lr_scheduler!r}"
             )
+        # Do not rewrite the scheduler here: it is part of checkpoint identity, so doing so would
+        # make legacy runs with ("constant", warmup > 0) impossible to resume.
+        try:
+            lr_warmup_steps = int(self.lr_warmup_steps or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"lr_warmup_steps must be a whole number, got {self.lr_warmup_steps!r}"
+            ) from exc
+        if lr_warmup_steps < 0:
+            raise ValueError("lr_warmup_steps must be >= 0")
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
         # Checkpointing knobs. Rejected here, before the route evicts resident GPU models, rather than deep in the loop.
@@ -1062,7 +1095,7 @@ class DiffusionLoraConfig:
             raise ValueError("save_steps must be >= 0 (0 disables periodic checkpoints)")
         if save_total_limit < 0:
             raise ValueError("save_total_limit must be >= 0 (0 keeps every checkpoint)")
-        # A blank resume path (the Studio default when the field is present but unset) means "fresh run", not the outputs root.
+        # A blank resume path (the Unsloth default when the field is present but unset) means "fresh run", not the outputs root.
         resume_from_checkpoint = (
             str(self.resume_from_checkpoint).strip()
             if self.resume_from_checkpoint is not None
@@ -1092,7 +1125,7 @@ class DiffusionLoraConfig:
         # decay = 1.0 would freeze the shadow at its init forever; the update is shadow * decay + param * (1 - decay), so valid decays live in [0, 1).
         if not 0.0 <= ema_decay < 1.0:
             raise ValueError("ema_decay must be in [0, 1); 0 disables the EMA adapter")
-        # A blank cond_cache_dir (the Studio default when unset) means "off", not cwd.
+        # A blank cond_cache_dir (the Unsloth default when unset) means "off", not cwd.
         cond_cache_dir = (
             str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
         ) or None
@@ -1170,7 +1203,7 @@ class DiffusionLoraConfig:
         # A zero/negative gamma would zero out (or invert) the min-SNR weight and silently train on a degenerate loss; None is the documented disable.
         if self.snr_gamma is not None and float(self.snr_gamma) <= 0:
             raise ValueError("snr_gamma must be > 0, or null to disable min-SNR weighting")
-        # learning_rate can arrive as a string ("1e-4") from the Studio config path, so coerce it before AdamW sees it.
+        # learning_rate can arrive as a string ("1e-4") from the Unsloth config path, so coerce it before AdamW sees it.
         try:
             learning_rate = float(self.learning_rate)
         except (TypeError, ValueError) as exc:
@@ -1179,7 +1212,7 @@ class DiffusionLoraConfig:
             raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
-        # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
+        # A blank Hub token (the Unsloth default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
         from core.inference.diffusion_families import (
             _is_local_path,
@@ -1228,6 +1261,7 @@ class DiffusionLoraConfig:
         return replace(
             self,
             learning_rate = learning_rate,
+            lr_warmup_steps = lr_warmup_steps,
             lora_alpha = alpha,
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
@@ -1381,7 +1415,11 @@ def discover_image_caption_pairs(
     if not root.is_dir():
         raise FileNotFoundError(f"data_dir is not a directory: {data_dir}")
 
-    images = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
+    # The caption lookup resolves to the caption's own companion, which exists, so the pair
+    # reads as a real one.
+    images = drop_appledouble_metadata(
+        sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
+    )
 
     # 1. metadata.jsonl / captions.jsonl (either name accepted).
     meta_caption: dict[str, str] = {}
@@ -2132,7 +2170,7 @@ def _publish_to_lora_catalog(
     cfg: DiffusionLoraConfig,
     steps: Optional[int] = None,
 ) -> Optional[str]:
-    """Best-effort copy of the trained adapter into the Studio diffusion LoRA directory so
+    """Best-effort copy of the trained adapter into the Unsloth diffusion LoRA directory so
     the Images LoRA picker (which scans only files directly under ``loras/diffusion``) finds
     it without the user moving files. Also writes a ``<alias>.json`` metadata sidecar so the
     picker can family-gate the adapter (family, base model, trigger prompt, ...). Returns the
@@ -2145,7 +2183,7 @@ def _publish_to_lora_catalog(
     A VIDEO family publishes nothing. ``loras/diffusion`` is read by the Images LoRA picker
     alone, and ``core/inference/video.py`` has no LoRA surface at all, so mirroring a video
     adapter there would copy a large file into a catalog nothing can load and hand the UI a
-    deployment path Studio cannot honour. The run still reports ``lora_path`` (and ``ema_path``),
+    deployment path Unsloth cannot honour. The run still reports ``lora_path`` (and ``ema_path``),
     which is the adapter a caller loads directly. Giving video its own catalog and a load path
     on the Video tab is a separate, larger piece of work."""
     if detect_video_family("", override = cfg.resolved_family) is not None:
@@ -2205,7 +2243,7 @@ def _write_lora_sidecar(
     sidecar_path.write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
 
 
-# Aliases from the generic Studio training payload onto DiffusionLoraConfig fields, so the shared request shape can also drive this trainer.
+# Aliases from the generic Unsloth training payload onto DiffusionLoraConfig fields, so the shared request shape can also drive this trainer.
 _CONFIG_ALIASES = {
     "model_name": "base_model",
     "max_steps": "train_steps",
@@ -2220,7 +2258,7 @@ _CONFIG_ALIASES = {
 
 
 def _coerce_gradient_checkpointing(value: Any) -> bool:
-    """Studio sends gradient_checkpointing as a string ("none" / "true" / "unsloth"); the
+    """Unsloth sends gradient_checkpointing as a string ("none" / "true" / "unsloth"); the
     disable words are False, anything else truthy is True. A real bool passes through."""
     if isinstance(value, str):
         return value.strip().lower() not in ("", "none", "false", "0", "no", "off")
@@ -2228,7 +2266,7 @@ def _coerce_gradient_checkpointing(value: Any) -> bool:
 
 
 def _coerce_bool(value: Any) -> bool:
-    """Coerce a flag that may arrive as a string through the generic Studio config path
+    """Coerce a flag that may arrive as a string through the generic Unsloth config path
     (e.g. "false" / "0" / "off"). A non-empty string like "false" is otherwise truthy, so
     an opt-out would silently no-op. A real bool passes through."""
     if isinstance(value, str):
@@ -2238,7 +2276,7 @@ def _coerce_bool(value: Any) -> bool:
 
 def _config_from_dict(config: dict) -> DiffusionLoraConfig:
     """Build a DiffusionLoraConfig from a plain dict. Unknown keys are ignored so a richer
-    request payload (UI form) does not break construction; a small set of generic Studio
+    request payload (UI form) does not break construction; a small set of generic Unsloth
     training keys are aliased onto the diffusion field names, and string flags are coerced."""
     valid = DiffusionLoraConfig.__dataclass_fields__.keys()
     kwargs: dict[str, Any] = {}

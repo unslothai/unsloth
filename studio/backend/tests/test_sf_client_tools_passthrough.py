@@ -92,8 +92,13 @@ class _ScriptedBackend:
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
         snapshots = self._responder(messages, tools)
-        if stats_holder is not None and self._stats is not None:
-            stats_holder["stats"] = self._stats
+        # A list scripts stats per call, where None is a generation that ended
+        # without publishing any -- a cancelled one, say.
+        _stats = self._stats
+        if isinstance(_stats, list):
+            _stats = _stats[min(len(self.calls), len(_stats)) - 1]
+        if stats_holder is not None and _stats is not None:
+            stats_holder["stats"] = _stats
         for snap in snapshots:
             yield snap
 
@@ -485,6 +490,88 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
     assert finishes == ["tool_calls"]
 
 
+def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkeypatch):
+    """An empty stop sequence is dropped rather than forwarded: it would match at
+    position 0 and end every turn before its first token. ``{"type": "text"}``
+    constrains nothing, so refusing it for want of a grammar engine would turn a
+    request this backend serves into a 400."""
+    backend = _ScriptedBackend(_fixed("hi"), stats = {"usage": {"prompt_tokens": 7}})
+    payload = _request(stop = ["END", ""], response_format = {"type": "text"})
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
+    assert backend.calls[0]["stop"] == ["END"]
+    assert body["choices"][0]["message"]["content"] == "hi"
+
+
+def test_n_serves_one_full_generation_per_choice(monkeypatch):
+    """Each choice is its own sampling run, as on the llama-server path: the
+    backend is asked once per choice rather than one reply being copied, and the
+    prompt they share is not re-counted. Two runs may sample the same text; what
+    is guaranteed is that each was generated."""
+    turns = iter(["first", "second"])
+    backend = _ScriptedBackend(
+        lambda messages, tools: [next(turns)],
+        stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+    )
+    body = _json_body(_call(_request(n = 2), monkeypatch, backend, supports_tools = False))
+    assert [c["index"] for c in body["choices"]] == [0, 1]
+    assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
+    assert len(backend.calls) == 2  # a generation per choice, not one reused
+    # The shared prompt is counted once; only generated tokens accumulate.
+    assert _totals(body) == {"prompt_tokens": 7, "completion_tokens": 6, "total_tokens": 13}
+
+
+def _totals(body):
+    return {k: body["usage"][k] for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
+
+
+@pytest.mark.parametrize("tool_loop", [False, True])
+def test_a_non_streaming_reply_reports_the_tokens_it_spent(monkeypatch, tool_loop):
+    """The response model defaults usage to a zero-filled object, so omitting it
+    reports zeros a client cannot tell from a real count. Both non-streaming
+    shapes answer from the same stats the monitor reads."""
+    spent = {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
+    build = _ToolLoopBackend if tool_loop else _ScriptedBackend
+    backend = build(_fixed("hello"), stats = {"usage": spent})
+    payload = _request(stream = False, enable_tools = True) if tool_loop else _request(stream = False)
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = tool_loop))
+    assert _totals(body) == spent
+    assert body["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
+
+
+def _monitor_entry(payload, monkeypatch, backend, **install_kwargs):
+    """The one monitor row a request leaves behind, and what it raised, if it did."""
+    from fastapi import HTTPException
+
+    monitor = _install(monkeypatch, backend, **install_kwargs)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    error = None
+    try:
+        asyncio.run(_run())
+    except HTTPException as exc:
+        error = exc
+    [entry] = monitor.snapshot()
+    return entry, error
+
+
+def test_one_monitor_row_describes_the_whole_turn(monkeypatch):
+    """The last choice cannot speak for the turn: the row shows every reply, and a
+    choice that ended without publishing stats is not billed the previous one's."""
+    turns = iter(["first", "second"])
+    backend = _ScriptedBackend(
+        lambda messages, tools: [next(turns)],
+        stats = [{"usage": {"prompt_tokens": 7, "completion_tokens": 3}}, None],
+    )
+    entry, _ = _monitor_entry(_request(n = 2), monkeypatch, backend, supports_tools = False)
+    assert "first" in entry["reply"] and "second" in entry["reply"]
+    assert entry["prompt_tokens"] == 7  # the shared prompt, not 7 per choice
+    assert entry["completion_tokens"] == 3  # only the choice that published
+    # Per-choice reasons can differ, so the turn claims none of them.
+    assert entry.get("stop_reason") is None
+
+
 def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
     # A stream cancelled via the registry ("Stop") must NOT promote the
     # buffered-but-unclosed tool markup at finalize, else it executes a tool
@@ -708,10 +795,11 @@ def test_failed_nudge_retry_keeps_original_response(monkeypatch):
     assert body["choices"][0]["message"]["content"] == '<tool_call>{"name":"lookup"'
 
 
-def test_discarded_nudge_retry_reports_first_attempt_usage(monkeypatch):
+def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
     # Double-failure nudge: the first response is delivered, but the retry's
-    # generate() overwrites stats_holder. The monitor must record the FIRST
-    # attempt's usage, not the discarded retry's.
+    # generate() overwrites stats_holder. The prompt reported is the delivered
+    # attempt's, never the discarded retry's -- but both attempts ran, so their
+    # completions are summed rather than one being dropped.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
     retry_stats = {"usage": {"prompt_tokens": 99, "completion_tokens": 99, "total_tokens": 198}}
 
@@ -746,9 +834,132 @@ def test_discarded_nudge_retry_reports_first_attempt_usage(monkeypatch):
     asyncio.run(_run())
     assert len(backend.calls) == 2  # first attempt + one discarded retry
     [entry] = monitor.snapshot()
-    # The delivered response is the first attempt, so its usage must be reported.
+    # The delivered response is the first attempt, so its prompt is the one
+    # reported; the retry's 99 completion tokens were still generated.
     assert entry["prompt_tokens"] == 7
+    assert entry["completion_tokens"] == 3 + 99
+
+
+def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
+    # The retry raises before publishing, so stats_holder still holds the first
+    # attempt's report. Folding that into itself would double its completion count.
+    first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
+
+    class _RetryRaisesBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(lambda m, t: ['<tool_call>{"name":"lookup"'])
+
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kwargs,
+        ):
+            self.calls.append({"messages": messages, "tools": tools, **kwargs})
+            if len(self.calls) > 1:
+                raise RuntimeError("retry blew up before reporting anything")
+            if stats_holder is not None:
+                stats_holder["stats"] = first_stats
+            for snap in self._responder(messages, tools):
+                yield snap
+
+    backend = _RetryRaisesBackend()
+    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    body = _json_body(asyncio.run(_run()))
+    assert len(backend.calls) == 2
+    assert body["usage"]["prompt_tokens"] == 7
+    assert body["usage"]["completion_tokens"] == 3
+    [entry] = monitor.snapshot()
     assert entry["completion_tokens"] == 3
+
+
+def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
+    # MLX folds its reused prefix into prompt_tokens, so a caller reading the
+    # OpenAI field must see the same count rather than a flat zero.
+    stats = {
+        "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 4,
+            "total_tokens": 1204,
+            "prompt_tokens_details": {"cached_tokens": 1100},
+        }
+    }
+    backend = _ScriptedBackend(_fixed("hi"), stats = stats)
+    body = _json_body(_call(_request(stream = False), monkeypatch, backend))
+    details = body["usage"]["prompt_tokens_details"]
+    assert details["cached_tokens"] == 1100
+    assert details["cached_tokens"] <= body["usage"]["prompt_tokens"]
+
+
+def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
+    # Two choices can report different prompt counts (the nudge rebuilds a longer
+    # prompt), so the count and its details must come from the same choice.
+    rich = {
+        "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 4,
+            "prompt_tokens_details": {"cached_tokens": 1100},
+        }
+    }
+    lean = {"usage": {"prompt_tokens": 1000, "completion_tokens": 4}}
+    backend = _ScriptedBackend(_fixed("hi"), stats = [rich, lean])
+    body = _json_body(_call(_request(stream = False, n = 2), monkeypatch, backend))
+    usage = body["usage"]
+    assert usage["prompt_tokens"] == 1000
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 0
+    assert usage["prompt_tokens_details"]["cached_tokens"] <= usage["prompt_tokens"]
+
+
+def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
+    # The retry heals, so its reply is delivered and its prompt is reported --
+    # but the first attempt generated tokens on the way there, and reporting the
+    # retry alone hides them from the caller's usage.
+    first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
+    retry_stats = {"usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}}
+
+    class _HealsOnRetryBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(
+                lambda m, t: [_CALL_XML if len(self.calls) > 1 else '<tool_call>{"name":"lookup"']
+            )
+            self._stats_seq = [first_stats, retry_stats]
+
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kwargs,
+        ):
+            self.calls.append({"messages": messages, "tools": tools, **kwargs})
+            if stats_holder is not None:
+                stats_holder["stats"] = self._stats_seq[
+                    min(len(self.calls) - 1, len(self._stats_seq) - 1)
+                ]
+            for snap in self._responder(messages, tools):
+                yield snap
+
+    backend = _HealsOnRetryBackend()
+    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    body = _json_body(asyncio.run(_run()))
+    assert len(backend.calls) == 2  # first attempt + the retry that healed
+    assert body["choices"][0]["message"]["tool_calls"]
+    assert body["usage"]["prompt_tokens"] == 20
+    assert body["usage"]["completion_tokens"] == 3 + 5
+    assert body["usage"]["total_tokens"] == 28
 
 
 def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
@@ -893,3 +1104,71 @@ def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
     assert choice["finish_reason"] == "tool_calls"
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+
+
+def _fold(*turns):
+    """Run the tool loop's fold over turns in order, as the orchestrator does."""
+    from core.inference.orchestrator import _summed_tool_loop_stats
+
+    total = None
+    for turn in turns:
+        total = _summed_tool_loop_stats(total, turn)
+    return total
+
+
+def _turn(
+    prompt,
+    completion,
+    *,
+    timings = True,
+    **extra,
+):
+    usage = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        **extra,
+    }
+    stats = {"usage": usage}
+    if timings:
+        stats["timings"] = {"predicted_ms": completion * 10.0, "predicted_n": completion}
+    return stats
+
+
+def test_every_tool_loop_turn_is_billed_not_just_the_last():
+    """The turns that produced the tool call spent tokens too, so the reply sums
+    them; only the prompt is the last turn's, since it already carries the
+    earlier results."""
+    folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
+
+    assert folded["usage"] == {"prompt_tokens": 220, "completion_tokens": 55, "total_tokens": 275}
+    # Rates describe the summed counts, not the last turn that arrived.
+    assert folded["timings"]["predicted_n"] == 55
+    assert folded["timings"]["predicted_ms"] == pytest.approx(550.0)
+    assert folded["timings"]["predicted_per_token_ms"] == pytest.approx(10.0)
+
+
+def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
+    """A cancelled or errored final turn has no counts of its own. Seeding the
+    fold from it would drop everything the loop already spent."""
+    # No report at all, in every position.
+    assert _fold(_turn(100, 20), None, _turn(160, 30))["usage"]["completion_tokens"] == 50
+    assert _fold(_turn(100, 20), _turn(160, 30), None)["usage"]["completion_tokens"] == 50
+
+    # Reported usage but no timings: the loop's totals must survive it.
+    partial = _fold(_turn(100, 20), _turn(160, 30, timings = False))
+    assert partial["timings"]["predicted_n"] == 20
+    # Reported timings but no usage: the prompt is still the loop's.
+    errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
+    assert errored["usage"] == {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+
+def test_completion_details_are_summed_with_the_completion_they_describe():
+    """Carrying the last turn's details would report them against every turn's
+    tokens."""
+    folded = _fold(
+        _turn(100, 20, completion_tokens_details = {"reasoning_tokens": 7}),
+        _turn(160, 30, completion_tokens_details = {"reasoning_tokens": 3}),
+    )
+    assert folded["usage"]["completion_tokens"] == 50
+    assert folded["usage"]["completion_tokens_details"] == {"reasoning_tokens": 10}

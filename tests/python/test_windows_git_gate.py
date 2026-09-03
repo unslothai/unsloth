@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -68,7 +69,10 @@ Write-Output $gitNeeded
 def _needs_git(env: dict[str, str]) -> bool:
     merged = {k: v for k, v in os.environ.items() if not k.startswith(("UNSLOTH_", "STUDIO_"))}
     merged.update(env)
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: every case in this file goes through here, so a pwsh
+    # that died at startup would come back as $gitNeeded computing the wrong answer for
+    # one environment. See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script()],
         check = True,
         capture_output = True,

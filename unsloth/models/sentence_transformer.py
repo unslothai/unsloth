@@ -15,6 +15,12 @@
 import logging
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
+from .loader_utils import (
+    DEFAULT_DEVICE_MAP,
+    _PLANNED_DEVICE_MAPS,
+    requested_device_map,
+    unmarked_device_map,
+)
 from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
@@ -164,6 +170,7 @@ def _save_pretrained_gguf(
     temporary_location = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage = 0.85,
     imatrix_file = None,
+    gguf_shard_size = None,
     **kwargs,
 ):
     """
@@ -218,6 +225,7 @@ def _save_pretrained_gguf(
         # loads as a SentenceTransformer, so a short disk fails loudly instead.
         merge_is_disposable = False,
         imatrix_file = imatrix_file,
+        gguf_shard_size = gguf_shard_size,
     )
 
     # 5. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
@@ -305,6 +313,7 @@ def _push_to_hub_gguf(
     revision = None,
     tags = None,
     imatrix_file = None,
+    gguf_shard_size = None,
     **kwargs,
 ):
     """
@@ -350,6 +359,7 @@ def _push_to_hub_gguf(
         create_pr (bool): Whether to create a pull request instead of pushing directly.
         revision (str, optional): Branch/revision to push to.
         tags (list, optional): Additional tags for the repo.
+        gguf_shard_size (str, optional): Maximum final f32, f16 or bf16 GGUF shard size.
 
     Returns:
         str: The full repo ID on Hugging Face Hub.
@@ -397,6 +407,7 @@ def _push_to_hub_gguf(
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
             imatrix_file = imatrix_file,
+            gguf_shard_size = gguf_shard_size,
         )
 
         gguf_files = result.get("gguf_files", [])
@@ -1160,7 +1171,11 @@ class FastSentenceTransformer(FastModel):
             "inputs_embeds",
             "return_dict",
         }
-        transformer_module.model_forward_params |= preinit_model_forward_params
+        if preinit_model_forward_params is None:
+            # ST 6 uses None to allow arbitrary **kwargs
+            transformer_module.model_forward_params = None
+        else:
+            transformer_module.model_forward_params |= preinit_model_forward_params
 
         # determine max_seq_length if not provided
         if max_seq_length is None:
@@ -1466,7 +1481,7 @@ class FastSentenceTransformer(FastModel):
         load_in_16bit = True,  # Changed default: 16-bit is optimal for encoders
         full_finetuning = False,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
@@ -1492,6 +1507,24 @@ class FastSentenceTransformer(FastModel):
                 "Unsloth: To use `FastSentenceTransformer`, you must install `sentence-transformers`.\n"
                 "Run `pip install sentence-transformers` to install it."
             )
+
+        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one
+        # declines. `st_device` below hands `device_map` to `SentenceTransformer(device=)`,
+        # which ends in `self.to(device)`: the sentinel raises there, and that same `.to()`
+        # would pull any split model back onto one card. The env-var opt-in is resolved too,
+        # or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan without ever naming the sentinel.
+        device_map = requested_device_map(device_map)
+        # Always "sequential", never the asked-for name's own declined value: the `st_device`
+        # blocks below normalise only dicts, "auto" and "sequential", so "balanced" would
+        # reach `SentenceTransformer(device = "balanced")` and then `.to("balanced")`, which
+        # is not a torch device. There is nothing to shard here in any case.
+        # `isinstance` first: a caller's explicit dict is unhashable, so `in` alone raises.
+        if isinstance(device_map, str) and device_map in _PLANNED_DEVICE_MAPS:
+            print(
+                "Unsloth: Not planning a device map; SentenceTransformer moves the assembled "
+                "model onto a single device. Using `sequential`."
+            )
+            device_map = "sequential"
 
         # Validate the load modes BEFORE the prefetch so a bad config fails without downloading weights.
         # Guard on not for_inference: that branch below never used these flags.
@@ -1833,6 +1866,15 @@ class FastSentenceTransformer(FastModel):
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
 
+        # The decline above only spends the sentinel on our copy. Strip the marker before
+        # the nested load, or FastModel reads it as "nobody chose this" and re-upgrades it
+        # under UNSLOTH_AUTO_DEVICE_MAP, splitting a model `st_device` then pulls back onto
+        # one card. Only the marker -- an explicit dict placement must arrive as a dict.
+        #
+        # A plain value rather than pinning the env var around the call: os.environ is
+        # process-wide, so that pin reached unrelated loads on other threads, and two
+        # overlapping sentence loads could restore it out of order.
+        device_map = unmarked_device_map(device_map)
         try:
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,

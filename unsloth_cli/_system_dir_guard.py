@@ -193,8 +193,8 @@ def safe_user_dir(
     return None
 
 
-# Commands the desktop runs that take no path from a user: Studio resolves its
-# venv, llama.cpp, auth, pid files and logs from the Studio home. `update` is here
+# Commands the desktop runs that take no path from a user: Unsloth resolves its
+# venv, llama.cpp, auth, pid files and logs from the Unsloth home. `update` is here
 # so an older desktop can still upgrade from the tray. Everything else keeps the
 # hard error. Matched whole, not on the first word, since `studio update --local
 # <path>` resolves that path against the working directory.
@@ -292,10 +292,10 @@ def is_relocatable_invocation(argv, environ):
 
 
 # Path overrides the caller may have written relative to the folder being left.
-# Studio resolves them with Path.resolve(), which anchors a relative value to the
+# Unsloth resolves them with Path.resolve(), which anchors a relative value to the
 # working directory, so moving first would silently retarget them.
 _RELATIVE_PATH_ENV = (
-    # Studio roots: storage_roots.py.
+    # Unsloth roots: storage_roots.py.
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -312,7 +312,7 @@ _RELATIVE_PATH_ENV = (
     "WHISPER_SERVER_PATH",
     "SD_CLI_PATH",
     "SD_SERVER_PATH",
-    # Model files llama-server reads straight from the environment, and Studio
+    # Model files llama-server reads straight from the environment, and Unsloth
     # reads back when it sizes a launch (llama_cpp.py). The URL and HF-repo
     # spellings are deliberately absent: they name no local file.
     "LLAMA_ARG_MODEL",
@@ -320,7 +320,7 @@ _RELATIVE_PATH_ENV = (
     "LLAMA_ARG_MODEL_DRAFT",
     "LLAMA_ARG_SPEC_DRAFT_MODEL",
     # Read straight from the environment as a file path: the ASIC table by
-    # unsloth/import_fixes.py, the vLLM cache root by Studio when the caller set
+    # unsloth/import_fixes.py, the vLLM cache root by Unsloth when the caller set
     # it themselves (storage_roots.py only fills a blank one).
     "AMDGPU_ASIC_ID_TABLE_PATH",
     "VLLM_CACHE_ROOT",
@@ -461,8 +461,8 @@ _INLINE_JSON_ENV = frozenset(("MLX_HOSTFILE", "MLX_IBV_DEVICES"))
 
 # Names whose readers disagree about %VAR% and $VAR: huggingface_hub calls
 # expandvars on HF_HOME (and on the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE
-# and HF_ASSETS_CACHE, and Studio calls it on SENTENCE_TRANSFORMERS_HOME, but
-# Studio's own hf_cache_settings._canonical() does not, so it would read
+# and HF_ASSETS_CACHE, and Unsloth calls it on SENTENCE_TRANSFORMERS_HOME, but
+# Unsloth's own hf_cache_settings._canonical() does not, so it would read
 # %LOCALAPPDATA%\hf as a relative folder. Expanding here before deciding settles
 # it: both readers then see one absolute path. Scoped to these names because a
 # directory really called "%data%" is legal, and every other name is read as one.
@@ -655,7 +655,7 @@ def relocation_target(
     try:
         makedirs(work_dir, exist_ok = True)
     except OSError:
-        # An unwritable home is a broken profile and Studio must write there
+        # An unwritable home is a broken profile and Unsloth must write there
         # anyway, so stop now rather than failing later.
         return None
     return work_dir

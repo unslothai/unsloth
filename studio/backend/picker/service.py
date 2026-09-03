@@ -14,7 +14,10 @@ from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import extract_quant_label, iter_snapshots_preferring_whole
+from hub.utils.gguf import (
+    extract_quant_label,
+    iter_snapshots_preferring_whole,
+)
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -30,6 +33,7 @@ from utils.paths.path_utils import (
 )
 
 from .schemas import MAX_CHAT_TEMPLATE_BYTES, ValidateChatTemplateResponse
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +236,8 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
             if not name.lower().endswith(".gguf") or _is_mmproj(name):
                 continue
             path = Path(current) / name
+            if is_appledouble_metadata(path):
+                continue
             try:
                 rel = path.relative_to(dir_path).as_posix()
             except ValueError:
@@ -373,25 +379,21 @@ def read_default_chat_template(
 
         _api = HfApi()
 
-        def _remote_exceeds_cap(rel: str) -> bool:
-            # Best-effort: skip the download when the remote's advertised size
-            # exceeds the cap, so a maliciously large sidecar is never fetched.
+        def _remote_worth_downloading(rel: str) -> bool:
+            # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
+                # An inconclusive lookup preserves the existing download behavior.
+                return True
+            matched = [info for info in infos if getattr(info, "path", None) == rel]
+            if not matched:
                 return False
-            for info in infos:
-                size = getattr(info, "size", None)
-                if (
-                    getattr(info, "path", None) == rel
-                    and isinstance(size, int)
-                    and size > MAX_TEMPLATE_METADATA_BYTES
-                ):
-                    return True
-            return False
+            size = getattr(matched[0], "size", None)
+            return not (isinstance(size, int) and size > MAX_TEMPLATE_METADATA_BYTES)
 
         def _download_text(rel: str) -> Optional[str]:
-            if _remote_exceeds_cap(rel):
+            if not _remote_worth_downloading(rel):
                 return None
             try:
                 path = hf_hub_download(
