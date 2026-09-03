@@ -196,7 +196,13 @@ def _build_step():
     raise AssertionError("the build step is gone, so nothing here can be true")
 
 
-def _compose_argv(event, tmp_path, legs_input = "", studio_concurrent = "", github_output = ""):
+def _compose_argv(
+    event,
+    tmp_path,
+    legs_input = "",
+    studio_concurrent = "",
+    github_output = "",
+):
     """Run the build step's shell body and return the argv it would invoke.
 
     The body is executed by bash, not pattern-matched, so the branches decide
@@ -252,7 +258,10 @@ def _compose_argv(event, tmp_path, legs_input = "", studio_concurrent = "", gith
     # `bash -e`, which is what GitHub runs a `run:` block under on Linux.
     proc = subprocess.run(
         ["bash", "-e", "-c", body],
-        cwd = ROOT, env = env, capture_output = True, text = True,
+        cwd = ROOT,
+        env = env,
+        capture_output = True,
+        text = True,
     )
     assert proc.returncode == 0, f"the step body itself failed:\n{proc.stderr}"
     assert argvfile.exists(), f"the body never invoked python:\n{proc.stdout}\n{proc.stderr}"
@@ -268,7 +277,10 @@ def _run_builder(argv, tmp_path):
     out = [str(tmp_path / "kernel") if a == "kernel" else a for a in argv]
     assert out != argv, "the step no longer writes to `kernel`, so this rule writes into the repo"
     return subprocess.run(
-        [sys.executable, *out], cwd = ROOT, capture_output = True, text = True,
+        [sys.executable, *out],
+        cwd = ROOT,
+        capture_output = True,
+        text = True,
     )
 
 
@@ -319,8 +331,7 @@ def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
     )
     per_pr, _, _ = _compose_argv("push", tmp_path)
     assert "--with-studio" in per_pr, (
-        "no trigger packs Studio in any more, so the whole Studio payload runs "
-        "nowhere"
+        "no trigger packs Studio in any more, so the whole Studio payload runs nowhere"
     )
     assert "--studio-args" in per_pr, per_pr
 
@@ -377,7 +388,9 @@ def test_studio_concurrent_false_actually_removes_the_flag(tmp_path):
     assert proc.returncode == 0, f"{printed}\n{proc.stdout}\n{proc.stderr}"
 
     on, _, _ = _compose_argv("workflow_dispatch", tmp_path)
-    assert "--studio-concurrent" in on, "the default stopped sharing, which is a makespan regression"
+    assert (
+        "--studio-concurrent" in on
+    ), "the default stopped sharing, which is a makespan regression"
 
 
 def test_the_studio_reporter_is_told_when_studio_is_not_aboard(tmp_path):
@@ -395,11 +408,14 @@ def test_the_studio_reporter_is_told_when_studio_is_not_aboard(tmp_path):
         outfile = tmp_path / f"out_{event}"
         outfile.write_text("", encoding = "utf-8")
         argv, log, _ = _compose_argv(
-            event, tmp_path / event, github_output = str(outfile),
+            event,
+            tmp_path / event,
+            github_output = str(outfile),
         )
         written = dict(
-            line.split("=", 1) for line in
-            outfile.read_text(encoding = "utf-8").splitlines() if "=" in line
+            line.split("=", 1)
+            for line in outfile.read_text(encoding = "utf-8").splitlines()
+            if "=" in line
         )
         assert written.get("studio") == expected, (
             f"{event} publishes studio={written.get('studio')!r}, so the "
