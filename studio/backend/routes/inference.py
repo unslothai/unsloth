@@ -18611,6 +18611,7 @@ def _normalise_chat_content_parts(payload) -> None:
     """Lift an ``input_audio`` part onto ``audio_base64``, in place, and refuse parts we cannot serve.
 
     Every audio check downstream reads ``audio_base64``, and an explicit one wins over a part.
+    ``getattr``, because /chat/count_tokens carries that field as an extra rather than declaring it.
     """
     lifted: Optional[str] = None
     for msg in payload.messages:
@@ -18630,7 +18631,7 @@ def _normalise_chat_content_parts(payload) -> None:
             kept.append(part)
         if len(kept) != len(msg.content):
             msg.content = kept
-    if lifted and not payload.audio_base64:
+    if lifted and not getattr(payload, "audio_base64", None):
         payload.audio_base64 = lifted
 
 
@@ -28507,6 +28508,8 @@ async def chat_count_tokens(
     for _m in payload.messages:
         if _m.role == "developer":
             _m.role = "system"
+    # And the same lift, so the audio refusal below sees a part the way it sees the field.
+    _normalise_chat_content_parts(payload)
     # And the same default it applies to a function tool that omits the discriminator: a
     # template serializing the whole entry renders it, so the count has to carry it too.
     for _tool in payload.tools or []:

@@ -98,3 +98,48 @@ def test_an_unmodelled_part_type_names_itself_in_a_typed_400():
 def test_a_part_with_no_type_is_still_a_validation_error():
     with pytest.raises(ValidationError):
         _request({"role": "user", "content": [{"text": "hi"}]})
+
+
+def _count_tokens_client():
+    """The real /chat/count_tokens route, with only the auth dependency stubbed."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from auth.authentication import get_current_subject
+    import routes.inference as inference_route
+
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test"
+    return TestClient(app, raise_server_exceptions = False)
+
+
+def test_the_count_route_refuses_an_audio_part_the_way_it_refuses_the_field():
+    """/chat/count_tokens already refuses audio, and a part is audio.
+
+    It guards images at the part level but audio only through ``audio_base64``, which was safe
+    only while an ``input_audio`` part could not validate at all.
+    """
+    with _count_tokens_client() as client:
+        response = client.post(
+            "/chat/count_tokens",
+            json = {"model": "default", "messages": [_audio_message()]},
+        )
+
+    assert response.status_code == 503
+    assert "audio" in response.json()["detail"]
+
+
+def test_the_count_route_refuses_an_unmodelled_part_like_the_completion_does():
+    with _count_tokens_client() as client:
+        response = client.post(
+            "/chat/count_tokens",
+            json = {
+                "model": "default",
+                "messages": [
+                    {"role": "user", "content": [{"type": "file", "file": {"file_id": "file_abc"}}]}
+                ],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "'file'" in response.json()["detail"]["error"]["message"]
