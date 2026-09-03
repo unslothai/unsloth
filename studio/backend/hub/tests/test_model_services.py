@@ -1126,6 +1126,7 @@ def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path)
             (),
             (),
             (),
+            (),
             [{"path": str(custom)}],
         )
     )

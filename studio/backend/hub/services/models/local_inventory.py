@@ -24,6 +24,7 @@ from hub.storage.scan_folders import (
 )
 from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
 from hub.utils.paths import (
+    hermes_model_dirs,
     hf_default_cache_dir,
     legacy_hf_cache_dir,
     lmstudio_model_dirs,
@@ -34,6 +35,7 @@ from hub.utils.paths import (
     studio_root,
 )
 from hub.services.models import common as model_common
+from hub.services.models.hermes import scan_hermes_dir
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
 from utils.paths.path_utils import is_appledouble_metadata
@@ -56,6 +58,7 @@ class _LocalInventorySources(NamedTuple):
     hf_default: Path
     lm_dirs: tuple[Path, ...]
     ollama_dirs: tuple[Path, ...]
+    hermes_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
 
 
@@ -166,6 +169,7 @@ def _local_inventory_sources() -> _LocalInventorySources:
         hf_default_cache_dir(),
         tuple(lmstudio_model_dirs()),
         tuple(ollama_model_dirs()),
+        tuple(hermes_model_dirs()),
         tuple(known_hf_hub_caches()),
     )
 
@@ -649,6 +653,7 @@ async def _collect_models_from_default_sources(
     hf_default: Path,
     lm_dirs: tuple[Path, ...],
     ollama_dirs: tuple[Path, ...],
+    hermes_dirs: tuple[Path, ...],
     known_hf_caches: tuple[Path, ...],
     custom_folders: list[dict],
 ) -> List[LocalModelInfo]:
@@ -725,6 +730,9 @@ async def _collect_models_from_default_sources(
 
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
+
+    for hermes_dir in hermes_dirs:
+        local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     for folder_path, discovered, row_path in custom_sources:
         try:
@@ -916,7 +924,7 @@ async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, known_hf_caches = sources
+    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, hermes_dirs, known_hf_caches = sources
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
@@ -938,6 +946,7 @@ async def _scan_local_models_response(
             hf_default,
             lm_dirs,
             ollama_dirs,
+            hermes_dirs,
             known_hf_caches,
             custom_folders,
         )
@@ -947,6 +956,7 @@ async def _scan_local_models_response(
             hf_cache_dir = str(hf_cache_dir),
             lmstudio_dirs = [str(d) for d in lm_dirs],
             ollama_dirs = [str(d) for d in ollama_dirs],
+            hermes_dirs = [str(d) for d in hermes_dirs],
             models = models,
         )
     except Exception as e:

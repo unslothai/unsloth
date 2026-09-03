@@ -1773,6 +1773,9 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         scan_order.append(resolved)
 
     _add(start_dir)
+    # Hermes stages the projector for a one-click download under models/assets/ so its own
+    # router never lists it as a model; the weight sits one level up as a flat file.
+    _add(start_dir / "assets")
 
     # Ollama's .studio_links/foo.gguf -> blobs/sha256-...: also scan target dir.
     try:

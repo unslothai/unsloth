@@ -2924,10 +2924,14 @@ export function HubModelPicker({
   );
   // Ollama rows list alongside custom folders: both are user-managed stores outside ./models,
   // and an Ollama root added as a custom folder is where the rows were expected (#9226).
+  // Hermes' one-click downloads are the same kind of store; a source in no bucket never renders.
   const customFolderModels = useMemo(
     () =>
       pickerInventory.localModels.filter(
-        (m) => m.source === "custom" || m.source === "ollama",
+        (m) =>
+          m.source === "custom" ||
+          m.source === "ollama" ||
+          m.source === "hermes",
       ),
     [pickerInventory.localModels],
   );

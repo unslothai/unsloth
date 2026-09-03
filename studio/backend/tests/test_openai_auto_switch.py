@@ -1662,6 +1662,51 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     assert str((tmp_path / "lmstudio").resolve()) in lm
 
 
+def test_build_index_covers_hermes_downloads(monkeypatch, tmp_path):
+    # Hermes downloads a GGUF and then asks Unsloth for it BY NAME, so the name must resolve
+    # to the file Hermes itself staged or the request is served by whatever is loaded.
+    from pathlib import Path
+    import routes.models as models_route
+    from hub.services.models import hermes as hermes_scan
+    from utils import paths as upaths
+    from utils import hf_cache_settings
+    import storage.studio_db as studio_db
+
+    monkeypatch.setattr(models_route, "_scan_models_dir", lambda d, limit = None: [])
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda d, **_: [])
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda d: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr(upaths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+
+    hermes_models = tmp_path / ".hermes" / "models"
+    hermes_models.mkdir(parents = True)
+    weight = hermes_models / "Qwen3.8-27B-UD-Q4_K_M.gguf"
+    weight.write_bytes(b"\x00" * 32)
+    monkeypatch.setattr(upaths, "hermes_model_dirs", lambda: [hermes_models])
+
+    scanned = []
+    real_scan = hermes_scan.scan_hermes_dir
+    monkeypatch.setattr(
+        hermes_scan,
+        "scan_hermes_dir",
+        lambda d, **kw: scanned.append(str(Path(d).resolve())) or real_scan(d, **kw),
+    )
+
+    index = resolver._build_index()
+
+    assert scanned == [str(hermes_models.resolve())]
+    # The id Hermes configures as model.default is the stem; it must land on the staged file.
+    entry = index.get("qwen3.8-27b-ud-q4_k_m")
+    assert entry is not None
+    assert entry.is_gguf
+    assert Path(entry.load_path).resolve() == weight.resolve()
+
+
 # ── gemini round: list-body 400, non-POST not tracked ──
 
 

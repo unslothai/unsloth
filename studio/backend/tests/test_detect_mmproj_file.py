@@ -365,3 +365,27 @@ def test_a_zero_byte_projector_does_not_shadow_a_whole_one(tmp_path: Path):
     whole = _touch(tmp_path / "mmproj-Q8_0.gguf")
 
     assert detect_mmproj_file(str(weight)) == str(whole.resolve())
+
+
+def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
+    """Hermes keeps a download's mmproj in models/assets/ so its router never lists it as a
+    model; the weight sits one level up. A sibling-only walk loads Qwen3.8-27B text-only."""
+    model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    mmproj = _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(mmproj.resolve())
+
+
+def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path):
+    """One assets/ dir serves every Hermes download, so it fills with projectors for
+    different families. The family gate must keep picking the right one."""
+    model = _touch(tmp_path / "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    gemma = _touch(tmp_path / "assets" / "mmproj-gemma-4-26B-A4B-it-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(gemma.resolve())
+
+
+def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Path):
+    model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")
+    assert detect_mmproj_file(str(model)) is None
+
