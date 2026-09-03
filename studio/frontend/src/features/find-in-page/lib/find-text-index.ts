@@ -972,16 +972,11 @@ const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
 /** Every boundary in the index, once seeking for them has cost more than walking the lot would.
  *
- *  Measured in time, not in seeks, because a seek is not one price: 0.2us into a page of Hangul
- *  and 1236us into a page of flags, which is six thousand to one on the same length of text. Any
- *  count is therefore far too small for one of them and far too large for the other, and it was
- *  the large end that showed: a first search costing twenty seconds of frozen tab.
- *
- *  So the budget is what a scan of this index would itself cost, and seeking may spend that much
- *  before buying one. Never more than the alternative, which puts the total within twice the
- *  better of the two whichever way it goes, and leaves no constant to be wrong about: a flat 20ms
- *  was fine here and bought a scan for a bounded pass on a slower machine. The rate is the slower
- *  of the two measured, 1.3M characters scanned in 82ms. */
+ *  In time, not in seeks: a seek is 0.2us into a page of Hangul and 1236us into a page of flags,
+ *  so any count is far too small for one and far too large for the other, and the large end cost
+ *  a first search twenty seconds. The budget is what a scan of this index would itself cost, so
+ *  the total stays within twice the better of the two and no constant is left to be wrong about.
+ *  The rate is the slower of the two measured, 1.3M characters scanned in 82ms. */
 const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
 const seekCosts = new WeakMap<
   FindTextIndex,
@@ -993,10 +988,9 @@ const MIN_SEEK_BUDGET_MS = 8;
  *  block is measured, so what accumulates is the real cost and not a sample of it. */
 const SEEK_BLOCK = 32;
 
-/** Drop a block left open by a search that ended inside one. It is wall time being measured, and
- *  between two searches that is the reader thinking: a query needing fewer than a block's worth of
- *  checks otherwise billed the pause before the next one to it, and bought a scan out of nothing.
- *  What is dropped is under a block of seeks, which the budget will not miss. */
+/** Drop a block left open by a search that ended inside one: it is wall time, and between two
+ *  searches that is the reader thinking, which was being billed to the next query. What is lost
+ *  is under a block of seeks, which the budget will not miss. */
 function endSeekWindow(index: FindTextIndex): void {
   const cost = seekCosts.get(index);
   if (cost === undefined) return;
@@ -1005,9 +999,8 @@ function endSeekWindow(index: FindTextIndex): void {
 }
 
 /** The one thing below U+0300 that joins (GB3), and so the one exception to the fast path below.
- *  A newline is its own grapheme everywhere the index collapses whitespace, which is everywhere
- *  but a `<pre>`, and there the pair arrives intact and a search for the feed alone landed
- *  between them. */
+ *  Everywhere whitespace is collapsed a newline is its own grapheme; in a `<pre>` the pair arrives
+ *  intact and a search for the feed alone landed between them. */
 function splitsCrlf(text: string, at: number): boolean {
   return at > 0 && text.charCodeAt(at - 1) === 13 && text.charCodeAt(at) === 10;
 }
