@@ -1144,12 +1144,22 @@ def test_create_directory_junction_uses_windows_mklink(tmp_path, monkeypatch):
         str(target),
         str(source),
     ]
-    assert captured["kwargs"] == {
+    # Whole-dict equality made this a tripwire for any unrelated keyword. #10192
+    # added encoding/errors so a localized Windows console cannot lose the child's
+    # whole output stream, and this assertion went red on a change that had nothing
+    # to do with junctions. Pin the values the call has to keep, and separately
+    # refuse a shell, instead of forbidding every future keyword.
+    kwargs = captured["kwargs"]
+    for key, value in {
         "capture_output": True,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
         "timeout": 30,
         "check": False,
-    }
+    }.items():
+        assert kwargs[key] == value, f"{key} = {kwargs.get(key)!r}"
+    assert not kwargs.get("shell", False), "mklink must not go through a shell"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")

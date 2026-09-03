@@ -323,7 +323,7 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
         return None
     ctx = vals.get("context_length")
     block = vals.get("block_count")
-    # A real context/layer count is positive; treat 0/garbage as absent
+    # A real context/layer count is positive; treat 0/garbage as absent so the UI never builds a slider with max < min.
     context_length = ctx if ctx and ctx > 0 else None
     layer_count = block if block and block > 0 else None
     # MoE layer count = block_count - leading dense layers, only when experts

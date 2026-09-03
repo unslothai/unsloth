@@ -292,7 +292,7 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     """
     from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
 
-    # trust_remote_code needs an approval fingerprint a switch has not got; read as data only
+    # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
     for name in REMOTE_CODE_CONFIG_FILES:
         candidate = config if name == "config.json" else _read_json(load_dir / name)
         # truthiness like the consent gate's _config_has_auto_map: an empty map runs nothing.
