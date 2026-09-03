@@ -3031,6 +3031,8 @@ from models.inference import (
     InstallLatestTransformersResponse,
     TextContentPart,
     ImageContentPart,
+    InputAudioContentPart,
+    UnknownContentPart,
     ImageUrl,
     ResponsesRequest,
     ResponsesInputTextPart,
@@ -18605,6 +18607,33 @@ def _inject_video_part(messages: list[dict], video_b64: str) -> None:
             return
 
 
+def _normalise_chat_content_parts(payload) -> None:
+    """Lift an ``input_audio`` part onto ``audio_base64``, in place, and refuse parts we cannot serve.
+
+    Every audio check downstream reads ``audio_base64``, and an explicit one wins over a part.
+    """
+    lifted: Optional[str] = None
+    for msg in payload.messages:
+        if not isinstance(msg.content, list):
+            continue
+        kept = []
+        for part in msg.content:
+            if isinstance(part, UnknownContentPart):
+                _raise_unsupported_openai_parameter(
+                    "messages",
+                    f"Message content parts of type '{part.type}' are not supported.",
+                )
+            if isinstance(part, InputAudioContentPart):
+                if msg.role == "user" and part.input_audio.data:
+                    lifted = part.input_audio.data
+                continue
+            kept.append(part)
+        if len(kept) != len(msg.content):
+            msg.content = kept
+    if lifted and not payload.audio_base64:
+        payload.audio_base64 = lifted
+
+
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
     """Append an input_audio part to the last user message, in place.
 
@@ -20420,6 +20449,9 @@ async def produce_openai_chat_completions(
                 detail = "Video input is only supported on a local GGUF model with video support.",
             )
         return await _proxy_to_external_provider(payload, request, current_subject)
+
+    # Local path only: an external provider takes input_audio natively.
+    _normalise_chat_content_parts(payload)
 
     # Reject a malformed function tool here: it would otherwise reach
     # llama-server and surface as an opaque 500 "Failed to parse tools".
