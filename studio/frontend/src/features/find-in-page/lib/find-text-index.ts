@@ -952,14 +952,22 @@ function canonicalSource(needle: string, dotted: boolean): string {
  *  index costs 4ms once and a fraction of a microsecond a question. */
 const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
-/** Every boundary in the index, once the search has asked about enough of them to be worth it: a
- *  seek is right for the offsets an ordinary query reaches and wrong for one that matches
- *  everywhere. The threshold is a share of the index, not a count, because the scan costs a pass
- *  over the whole of it and a flat count is reached by a bounded pass on a big enough index. */
+/** Every boundary in the index, once seeking for them has cost more than walking the lot would.
+ *
+ *  Measured in time, not in seeks, because a seek is not one price: 0.2us into a page of Hangul
+ *  and 1236us into a page of flags, which is six thousand to one on the same length of text. Any
+ *  count is therefore far too small for one of them and far too large for the other, and it was
+ *  the large end that showed: a first search costing twenty seconds of frozen tab. A scan is 36ms
+ *  to 82ms over the same text, so the budget below is what seeking may spend before buying one. */
 const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
-const seekCounts = new WeakMap<FindTextIndex, number>();
-const SEEKS_BEFORE_SCAN = 4096;
-const SEEK_SHARE_BEFORE_SCAN = 6;
+const seekCosts = new WeakMap<
+  FindTextIndex,
+  { spent: number; since: number; seen?: number }
+>();
+const SEEK_BUDGET_MS = 20;
+/** Timed in blocks, so the clock is read twice per block rather than twice per seek. The whole
+ *  block is measured, so what accumulates is the real cost and not a sample of it. */
+const SEEK_BLOCK = 32;
 
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
@@ -1063,15 +1071,23 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
     segments = platform.segment(text);
     segmentsCache.set(index, segments);
   }
-  const asked = (seekCounts.get(index) ?? 0) + 1;
-  seekCounts.set(index, asked);
-  const before = Math.max(
-    SEEKS_BEFORE_SCAN,
-    text.length >> SEEK_SHARE_BEFORE_SCAN,
-  );
-  if (asked <= before) return segments.containing(at)?.index === at;
-  // A capped search anchored near the end walks the candidates up to three times, so a query
-  // matching everywhere pays millions of seeks: one page of Hangul cost 2.1s at the 4M ceiling.
+  let cost = seekCosts.get(index);
+  if (cost === undefined) {
+    cost = { spent: 0, since: 0 };
+    seekCosts.set(index, cost);
+  }
+  if (cost.spent <= SEEK_BUDGET_MS) {
+    if (cost.since === 0) cost.since = performance.now();
+    const answer = segments.containing(at)?.index === at;
+    cost.seen = (cost.seen ?? 0) + 1;
+    if (cost.seen % SEEK_BLOCK === 0) {
+      cost.spent += performance.now() - cost.since;
+      cost.since = 0;
+    }
+    return answer;
+  }
+  // Past the budget, and a capped search anchored near the end walks the candidates up to three
+  // times, so this is bought once and answers every question after it.
   const marks = new Uint8Array(text.length + 1);
   for (const { index: start } of segments) marks[start] = 1;
   marks[text.length] = 1;

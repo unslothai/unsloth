@@ -2110,6 +2110,55 @@ test("an odd run longer than the window is not read as even", () => {
   }
 });
 
+test("what a seek is allowed to cost is time, not a number of them", () => {
+  // A seek is not one price. Into a page of Hangul it is 0.2us and into a page of flags 1236us,
+  // six thousand to one on the same length of text, so any count is far too small for one and far
+  // too large for the other. Counting let a flag-heavy page spend twenty thousand of the expensive
+  // kind on its first search, which is twenty seconds of frozen tab. Counted here, because the
+  // point is that the expensive kind stops after a handful rather than after a budgeted number.
+  const probe = `
+    let seeks = 0;
+    const Real = Intl.Segmenter;
+    Intl.Segmenter = class {
+      constructor(...args) { this.inner = new Real(...args); }
+      segment(input) {
+        const segments = this.inner.segment(input);
+        return {
+          containing: (at) => { seeks += 1; return segments.containing(at); },
+          [Symbol.iterator]: () => segments[Symbol.iterator](),
+        };
+      }
+    };
+    const { buildTextIndex, findMatches, MAX_MATCHES, MAX_NODE_CHARS } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const el = (tagName, childNodes) => ({
+      nodeType: 1, tagName, childNodes, getAttribute: () => null,
+    });
+    const flag = (at) => String.fromCodePoint(0x1f1e6 + (at % 26));
+    let run = "";
+    for (let at = 0; at < MAX_NODE_CHARS / 2; at += 1) run += flag(at);
+    const nodes = [];
+    for (let at = 0; at < 13; at += 1) nodes.push({ nodeType: 3, data: run });
+    const index = buildTextIndex(el("DIV", [el("P", nodes)]));
+    const started = Date.now();
+    // A pair that straddles two flags, so every candidate is rejected and every one asks.
+    findMatches(index, flag(1) + flag(2), MAX_MATCHES);
+    const took = Date.now() - started;
+    // A count-based cap spends about 20,000 of these; a budget stops inside a few blocks of them.
+    if (seeks > 2000) throw new Error("seeks: " + seeks + " in " + took + "ms");
+  `;
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+});
+
 test("a capped search does not segment the whole index to answer its first pass", () => {
   // The scan that replaces the seeks costs a pass over the whole index, so what it is allowed to
   // replace matters as much as that it exists. On a flat count a bounded pass reaches the
@@ -2192,9 +2241,10 @@ test("a query that matches everywhere stops seeking the segmenter per candidate"
     const index = buildTextIndex(el("DIV", [el("P", nodes)]));
     const found = findMatches(index, "\uac00", MAX_MATCHES, index.text.length);
     if (found.length !== MAX_MATCHES) throw new Error("expected a capped search, got " + found.length);
-    // One pass over the boundaries replaces the seeks, so what is left is the handful before the
-    // scan is worth making. Millions without it, on an index this size.
-    if (seeks > 20000) throw new Error("seeks per candidate: " + seeks);
+    // One pass over the boundaries replaces the seeks, so what is left is what the budget bought
+    // before it. The number is not fixed: the cap is time, and a seek into Hangul is cheap, so
+    // this shape gets tens of thousands where a page of flags would get tens. 1.6M without it.
+    if (seeks > 200000) throw new Error("seeks per candidate: " + seeks);
   `;
   const run = spawnSync(
     process.execPath,
