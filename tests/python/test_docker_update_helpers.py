@@ -178,7 +178,12 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
 # --- unsloth-llama-update -----------------------------------------------------
 
 
-def _llama_env(tmp_path: Path, *, latest: str | None, marker: str = '{"tag": "b1111-old"}') -> dict:
+def _llama_env(
+    tmp_path: Path,
+    *,
+    latest: str | None,
+    marker: str = '{"tag": "b1111-old"}',
+) -> dict:
     install = tmp_path / "llama.cpp"
     install.mkdir(parents = True)
     (install / "UNSLOTH_PREBUILT_INFO.json").write_text(
