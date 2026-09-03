@@ -49,35 +49,77 @@ def _inherits_parent_portable_marker(root: Path) -> bool:
     return False
 
 
+def _venv_studio_home_candidates(prefix_value: str) -> list[Path]:
+    """STUDIO_HOME spellings to test for *prefix_value*, resolved one first.
+
+    resolve() is right for a venv reached through a symlinked bin/python, and it
+    is the only spelling tried today. It is the wrong one when <master>/studio
+    was ALREADY a symlink to another volume: install.sh follows that layout
+    (`mkdir -p "$STUDIO_HOME"`, and _portable_escapes names it in the closing
+    summary instead of refusing it), so the venv lands on the far volume while
+    the marker stays at <master>, and neither the physical directory nor its
+    physical parent holds one. The console script's shebang keeps the spelling
+    the installer used, so that path is what still leads back to the marker.
+    Resolved first, so every tree that resolves today resolves identically.
+    """
+    spellings: list[Path] = []
+    try:
+        spellings.append(Path(prefix_value).resolve())
+    except (OSError, ValueError):
+        pass
+    try:
+        # abspath, not Path: it normalizes without touching the filesystem, so
+        # the symlinked spelling survives where resolve() would collapse it.
+        spellings.append(Path(os.path.abspath(prefix_value)))
+    except (OSError, ValueError):
+        pass
+    out: list[Path] = []
+    seen: set[str] = set()
+    for prefix in spellings:
+        if prefix.name != "unsloth_studio":
+            continue
+        candidate = prefix.parent
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        out.append(candidate)
+    return out
+
+
+def _has_installer_sentinel(candidate: Path) -> bool:
+    """Whether *candidate* carries a mark only the installer writes.
+
+    Unchanged by the candidate list above: widening which spellings are OFFERED
+    must not widen what is ACCEPTED, or a dev venv named unsloth_studio gets
+    adopted through whichever spelling happens to sit next to a marker.
+    """
+    shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
+    return (
+        (candidate / "share" / "studio.conf").is_file()
+        or (candidate / "bin" / shim_name).is_file()
+        # A nested portable install keeps share/ and bin/ one level up.
+        or (candidate / PORTABLE_MARKER).is_file()
+        or (
+            _inherits_parent_portable_marker(candidate)
+            and (candidate.parent / PORTABLE_MARKER).is_file()
+        )
+    )
+
+
 def _infer_studio_home_from_venv() -> Path | None:
     """Return parent of sys.prefix as STUDIO_HOME when running from an
     installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf,
     bin shim, or the portable marker beside it) so a dev venv named
     unsloth_studio isn't misidentified.
     """
-    try:
-        prefix = Path(sys.prefix).resolve()
-    except (OSError, ValueError):
-        return None
-    if prefix.name != "unsloth_studio":
-        return None
-    candidate = prefix.parent
-    shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
-    try:
-        has_sentinel = (
-            (candidate / "share" / "studio.conf").is_file()
-            or (candidate / "bin" / shim_name).is_file()
-            # A nested portable install keeps share/ and bin/ one level up.
-            or (candidate / PORTABLE_MARKER).is_file()
-            or (
-                _inherits_parent_portable_marker(candidate)
-                and (candidate.parent / PORTABLE_MARKER).is_file()
-            )
-        )
-    except OSError:
-        return None
-    if has_sentinel:
-        return candidate
+    for candidate in _venv_studio_home_candidates(sys.prefix):
+        try:
+            if _has_installer_sentinel(candidate):
+                return candidate
+        except OSError:
+            # An unreadable spelling says nothing about the other one, which on
+            # the symlink layout points at an entirely different volume.
+            continue
     return None
 
 
