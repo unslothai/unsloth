@@ -2017,7 +2017,7 @@ def test_env_mode_blocks_sentinels_naming_another_venv(tmp_path):
         capture_output = True,
     )
 
-    assert res.returncode != 0, (
-        f"sentinels naming another venv must not adopt this one; stdout={res.stdout!r}"
-    )
+    assert (
+        res.returncode != 0
+    ), f"sentinels naming another venv must not adopt this one; stdout={res.stdout!r}"
     assert (venv_dir / "bin" / "python").is_file()

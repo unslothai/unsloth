@@ -303,9 +303,7 @@ def test_helper_root_refuses_a_master_root_the_studio_root_is_not_under(
     assert _studio_stage.managed_helper_root(unrelated) == unrelated
 
 
-def test_helper_root_refuses_a_master_root_further_up_than_one_level(
-    monkeypatch, tmp_path, nested
-):
+def test_helper_root_refuses_a_master_root_further_up_than_one_level(monkeypatch, tmp_path, nested):
     """One level, not any ancestor: <master>/studio/nested is not the Studio root
     of this install, and walking two up would clone from a tree it does not own."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "elsewhere")
