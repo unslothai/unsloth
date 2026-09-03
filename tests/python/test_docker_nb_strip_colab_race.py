@@ -236,7 +236,7 @@ def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
                 "nbformat_minor": 5,
             }
         ),
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     # a mode a fresh root-written tmp file would NOT have under the usual umask
     os.chmod(nb_path, 0o640)
@@ -247,4 +247,4 @@ def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
     after = _stat.S_IMODE(os.stat(nb_path).st_mode)
     assert after == before, f"cleanup changed the mode {oct(before)} -> {oct(after)}"
     # the strip really happened
-    assert "To run this" not in nb_path.read_text(encoding="utf-8")
+    assert "To run this" not in nb_path.read_text(encoding = "utf-8")
