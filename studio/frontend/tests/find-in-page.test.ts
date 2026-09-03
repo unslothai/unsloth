@@ -2089,6 +2089,51 @@ test("the linker set is the one the platform joins on", () => {
   assert.deepEqual(findMatches(index, at(0x11381), 5), []);
 });
 
+test("an odd run longer than the window is not read as even", () => {
+  // Parity reaches as far as its run does. A context that ran out of window keeps an even tail of a
+  // run that is odd behind it, which read as a boundary and ended a match inside the visible flag.
+  const at = (code: number) => String.fromCodePoint(code);
+  const index = buildTextIndex(
+    el("DIV", [el("P", [text(`xx${at(0x1f1e6).repeat(50_000)}`)])]),
+  );
+  assert.equal(index.text.length, MAX_NODE_CHARS);
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
+  for (const match of findMatches(index, at(0x1f1e6), MAX_MATCHES)) {
+    assert.notEqual(match.end, MAX_NODE_CHARS);
+  }
+});
+
+test("a run of regional indicators is measured once, not once per offset", () => {
+  // Every offset in a run used to walk the whole run behind it to count parity, which is quadratic
+  // and, on a log of flags, seconds of frozen tab. In its own process because the parity walk only
+  // runs where there is no segmenter, which is the whole point of it being slow there.
+  const probe = `
+    delete Intl.Segmenter;
+    const { buildTextIndex, findMatches, MAX_MATCHES } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const flag = String.fromCodePoint(0x1f1e6);
+    const index = buildTextIndex({
+      nodeType: 1, tagName: "DIV", getAttribute: () => null,
+      childNodes: [{ nodeType: 3, data: flag.repeat(8000) }],
+    });
+    const started = Date.now();
+    const found = findMatches(index, flag.repeat(2), MAX_MATCHES).length;
+    const cost = Date.now() - started;
+    if (found !== 4000) throw new Error("found " + found + ", expected 4000");
+    if (cost > 250) throw new Error("searching 8,000 indicators took " + cost + "ms");
+  `;
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+});
+
 test("a carriage return keeps the line feed after it", () => {
   // GB3. Split across a cut the two are in different nodes, so the generic control break was the
   // only rule that ran and it put a boundary inside the pair.
@@ -2164,6 +2209,11 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["\u{1f44d}\u{1f3fb}", "\u{1f3fb}"],
       // GB9c: a virama joins the consonant after it to the one before.
       ["क्त", "त"],
+      // A ZWJ is an extender inside a conjunct, though not for the pictographic rule.
+      ["\u0915\u094d\u200d\u0924", "\u0924"],
+      // SpacingMark without being category Mc, so the category alone missed them.
+      ["กำ", "ก"],
+      ["ກຳ", "ກ"],
       ["\u{11380}\u{113d0}\u{11381}", "\u{11381}"],
     ];
     for (const [body, query] of fenced) {

@@ -481,10 +481,12 @@ const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 /** Never begins a grapheme: Extend and ZWJ (GB9), SpacingMark (GB9a), and the trailing half of a
  *  surrogate pair, which is not a character at all. UAX 29 derives Extend as Grapheme_Extend OR
  *  Emoji_Modifier, and a skin tone is only the second of those: it is `Sk`, so the marks alone
- *  left one showing as its own grapheme. */
+ *  left one showing as its own grapheme. The last two below are SpacingMark without being `Mc`:
+ *  asking the segmenter which code points attach to a plain letter, over every one of them, turns
+ *  up these two and nothing else. */
 const EXTEND_PATTERN = /[\p{Grapheme_Extend}\p{Emoji_Modifier}]/u;
 const EXTENDS_LEFT_PATTERN =
-  /[\p{Grapheme_Extend}\p{Emoji_Modifier}\p{Mc}\u200d]/u;
+  /[\p{Grapheme_Extend}\p{Emoji_Modifier}\p{Mc}\u200d\u{e33}\u{eb3}]/u;
 
 /** The marks that join the letter after them to the one before (GB9c). Not derivable from a
  *  property escape, which has no `InCB`, so this is the set the segmenter itself joins on: every
@@ -554,11 +556,18 @@ function pointBefore(text: string, end: number): [string, number] {
 
 /** Walk back over extenders from `end` and say whether `found` matches what they sit on: GB11 wants
  *  a pictograph on the far side of the ZWJ, GB9c a linker on the far side of the marks. */
-function reachesBack(text: string, end: number, found: RegExp): boolean {
+function reachesBack(
+  text: string,
+  end: number,
+  found: RegExp,
+  throughZwj = false,
+): boolean {
   for (let at = end; at > 0; ) {
     const [point, start] = pointBefore(text, at);
     if (found.test(point)) return true;
-    if (!EXTEND_PATTERN.test(point)) return false;
+    const chains =
+      EXTEND_PATTERN.test(point) || (throughZwj && point === "\u200d");
+    if (!chains) return false;
     at = start;
   }
   return false;
@@ -599,7 +608,17 @@ const REACHABLE_PATTERN = /[\p{L}\p{Extended_Pictographic}]/u;
 /** Whether the grapheme `context` ends on carries on into `point`. Unknown, and so yes, only where
  *  the context ran out of window and `point` is something a rule out there could still reach. */
 function reaches(context: ClipContext, point: string): boolean {
-  if (context.partial && REACHABLE_PATTERN.test(point)) return true;
+  if (context.partial) {
+    if (REACHABLE_PATTERN.test(point)) return true;
+    // Parity reaches as far as its run does, and a context that ran out of window cannot say how
+    // far that is: the kept tail can read even while the run behind it is odd.
+    if (
+      REGIONAL_INDICATOR_PATTERN.test(point) &&
+      trailingRegionals(context.tail) > 0
+    ) {
+      return true;
+    }
+  }
   return continuesGrapheme(context.tail + point, context.tail.length);
 }
 
@@ -612,7 +631,7 @@ function reaches(context: ClipContext, point: string): boolean {
  * The rules this feature can actually run into, by Unicode property where one exists rather than by
  * hand-listed range: the joiners, Prepend, Hangul, regional indicator parity, GB9c and GB11.
  */
-function continuesGrapheme(text: string, at: number): boolean {
+function continuesGrapheme(text: string, at: number, runStart = -1): boolean {
   // Whole code points, not code units: a property escape asked about half a surrogate pair sees a
   // lone surrogate and answers no, which is how a skin tone read as its own grapheme.
   if (isTrailingHalf(text.charCodeAt(at))) return true;
@@ -625,6 +644,11 @@ function continuesGrapheme(text: string, at: number): boolean {
   if (before === "\r" && after === "\n") return true;
   if (CONTROL_PATTERN.test(before) || CONTROL_PATTERN.test(after)) return false;
   if (EXTENDS_LEFT_PATTERN.test(after)) return true;
+  // GB9c, as far as it can be told without the consonant sets: a linker behind, whatever it is that
+  // follows. Wrong only by declining a boundary, never by cutting a cluster. Crossing a ZWJ, which
+  // counts as an extender inside a conjunct, and asked before GB11 for that reason: a ZWJ can sit
+  // between a linker and the letter it joins, and the pictographic rule would end the cluster there.
+  if (reachesBack(text, at, LINKER_PATTERN, true)) return true;
   // GB11 proper, both sides: a ZWJ joins a pictograph to a pictograph, so an emoji sequence holds
   // together while a ZWJ merely following a letter still ends its cluster.
   if (before === "\u200d") {
@@ -634,21 +658,18 @@ function continuesGrapheme(text: string, at: number): boolean {
     );
   }
   if (PREPEND_PATTERN.test(before)) return true;
-  // GB9c, as far as it can be told without the consonant sets: a linker behind, whatever it is that
-  // follows. Wrong only by declining a boundary, never by cutting a cluster.
-  if (reachesBack(text, at, LINKER_PATTERN)) return true;
   if (REGIONAL_INDICATOR_PATTERN.test(after)) {
-    // A run pairs off from its start, so it is the count behind that decides (GB12/GB13). Two code
-    // units apiece.
-    let run = 0;
-    while (
-      REGIONAL_INDICATOR_PATTERN.test(
-        text.slice(at - 2 - run * 2, at - run * 2),
-      )
-    ) {
-      run += 1;
+    // A run pairs off from its start, so it is the count behind that decides (GB12/GB13). Given
+    // where the run starts that count is arithmetic; without it every offset in a run walked the
+    // whole of it, and a log full of flags took seconds to search.
+    let from = runStart;
+    if (from < 0) {
+      from = at;
+      while (REGIONAL_INDICATOR_PATTERN.test(text.slice(from - 2, from))) {
+        from -= 2;
+      }
     }
-    return run % 2 === 1;
+    return ((at - from) / 2) % 2 === 1;
   }
   const left = hangulClass(before);
   return left !== null && hangulJoins(left, hangulClass(after));
@@ -760,6 +781,30 @@ function alignsToGraphemes(
   return startsGrapheme(index, start) && startsGrapheme(index, end);
 }
 
+/** The run of regional indicators most recently asked about, per index. A match walks its run in
+ *  order, so holding the one run turns a scan for every offset into a scan for every run. */
+const regionalRuns = new WeakMap<
+  FindTextIndex,
+  { start: number; end: number }
+>();
+
+/** Where the run of regional indicators covering `at` starts, or -1 if none does. */
+function regionalRunStart(index: FindTextIndex, at: number): number {
+  const held = regionalRuns.get(index);
+  if (held !== undefined && at > held.start && at <= held.end)
+    return held.start;
+  const text = index.text;
+  if (!REGIONAL_INDICATOR_PATTERN.test(text.slice(at - 2, at))) return -1;
+  let start = at;
+  while (REGIONAL_INDICATOR_PATTERN.test(text.slice(start - 2, start))) {
+    start -= 2;
+  }
+  let end = at;
+  while (REGIONAL_INDICATOR_PATTERN.test(text.slice(end, end + 2))) end += 2;
+  regionalRuns.set(index, { start, end });
+  return start;
+}
+
 /** True when a grapheme starts at `at`. */
 function startsGrapheme(index: FindTextIndex, at: number): boolean {
   const text = index.text;
@@ -767,7 +812,9 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
   if (index.unsafe.has(at)) return false;
   if (at === 0 || at === text.length) return true;
   const platform = graphemeSegmenter();
-  if (platform === null) return !continuesGrapheme(text, at);
+  if (platform === null) {
+    return !continuesGrapheme(text, at, regionalRunStart(index, at));
+  }
   let segments = segmentsCache.get(index);
   if (segments === undefined) {
     segments = platform.segment(text);
