@@ -557,6 +557,8 @@ class MtmdSttSidecar:
         # Whether the resident server was launched with the GPU pinned off for training. Kept so a dictation after the
         # run does not stay on CPU.
         self._gpu_disabled = False
+        # Apart from _gpu_disabled, so training restarts while the preference survives.
+        self._forced_cpu = False
         self._load_cancel_event: Optional[threading.Event] = None
         self._load_owner_cancel_event: Optional[threading.Event] = None
         self._update_in_progress = False
@@ -794,7 +796,12 @@ class MtmdSttSidecar:
         self,
         model: Optional[str] = None,
         request_cancel_event: Optional[threading.Event] = None,
+        device: Optional[str] = None,
     ) -> None:
+        """``device`` is the user's audio device preference; ``cpu`` starts
+        llama-server at ``-ngl 0``, the same offload training already forces."""
+        from core.inference.audio_device import audio_device_forces_cpu
+
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
@@ -813,6 +820,7 @@ class MtmdSttSidecar:
                 binary,
                 request_cancel_event,
                 path_revision = path_revision,
+                device = device,
             )
 
     def _load_locked(
@@ -822,12 +830,23 @@ class MtmdSttSidecar:
         request_cancel_event: Optional[threading.Event] = None,
         *,
         path_revision: Optional[int] = None,
+        device: Optional[str] = None,
     ) -> None:
+        from core.inference.audio_device import audio_device_forces_cpu
+
         if path_revision is None:
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
             path_revision = custom_llama_cpp_path_revision()
         with self._lock:
-            training = _training_active()
+            # None is no opinion: a caller sending none cannot move the server.
+            if device is None:
+                forced_cpu = (
+                    self._forced_cpu if self._process_alive() else audio_device_forces_cpu(None)
+                )
+            else:
+                forced_cpu = audio_device_forces_cpu(device)
+            # Both mean "no offload", which _gpu_disabled already tracks.
+            training = _training_active() or forced_cpu
             if (
                 self._process_alive()
                 and self._model_id == model_id
@@ -838,6 +857,9 @@ class MtmdSttSidecar:
                 # killing a running transcription for, so an in-flight request keeps the server it has and the next idle
                 # load picks the GPU back up.
                 if self._gpu_disabled == training or self._active_requests:
+                    # Recorded though nothing restarts: dropping it sends the next
+                    # device-less load back to the GPU once training ends.
+                    self._forced_cpu = forced_cpu
                     self._schedule_idle_unload_locked()
                     return
             # Announced before the slow probe and reap: is_loading() is read lock-free, so a training start would
@@ -873,7 +895,7 @@ class MtmdSttSidecar:
             # Re-read last: _release_locked() reaps the old server, which can take seconds, and training admission that
             # already passed its own check cannot come back to cancel this load. Publishing _loading first covers the
             # other order, so between them every training start either cancels this load or is seen by it.
-            training = _training_active()
+            training = _training_active() or forced_cpu
         try:
             sock, port = self._reserve_free_port()
             cmd = [
@@ -933,6 +955,7 @@ class MtmdSttSidecar:
                 self._model_id = model_id
                 self._binary_path_revision = path_revision
                 self._gpu_disabled = training
+                self._forced_cpu = forced_cpu
                 self._generation += 1
                 self._schedule_idle_unload_locked()
         finally:
