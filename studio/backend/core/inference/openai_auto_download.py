@@ -496,6 +496,7 @@ async def maybe_auto_download(
     *,
     hf_token: Optional[str] = None,
     require_vision: bool = False,
+    require_speech: bool = False,
     subject: Optional[str] = None,
     via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
@@ -504,9 +505,9 @@ async def maybe_auto_download(
     Returns None when the request should carry on unchanged, or a refusal the
     caller must raise. Only called after the local resolver has already missed.
 
-    ``require_vision`` refuses a target with no mmproj companion rather than spend
-    gigabytes on weights that cannot answer the request; the local capability guard
-    only ever sees an already-downloaded model.
+    ``require_vision`` and ``require_speech`` refuse incapable targets before spending
+    gigabytes on weights; the local capability guard only ever sees an already-downloaded
+    model.
 
     ``subject`` and ``via_api_key`` describe the caller for the monitor row this
     opens: the same /v1 endpoints serve Unsloth's own chat on a session JWT, so the
@@ -588,6 +589,7 @@ async def maybe_auto_download(
             hf_token,
             provisional,
             require_vision,
+            require_speech,
             subject = subject,
             via_api_key = via_api_key,
         )
@@ -604,6 +606,7 @@ async def _admit_and_start(
     hf_token: Optional[str],
     active: _Active,
     require_vision: bool = False,
+    require_speech: bool = False,
     *,
     subject: Optional[str] = None,
     via_api_key: bool = False,
@@ -736,6 +739,43 @@ async def _admit_and_start(
                 "downloaded."
             ),
         )
+
+    if require_speech:
+        from functools import partial
+        from utils.audio_tokens import is_tts_audio_type
+        from utils.models.model_config import detect_audio_type_checked
+
+        audio_type, definitive = await _bounded_probe(
+            partial(
+                detect_audio_type_checked,
+                repo_id,
+                hf_token = _hub_token(hf_token),
+                revision = getattr(info, "sha", None),
+            ),
+            timeout = _CODE_PROBE_TIMEOUT_S,
+            default = (None, False),
+        )
+        if not definitive:
+            _release(active)
+            return AutoDownloadRefusal(
+                status = 503,
+                code = "model_lookup_failed",
+                message = (
+                    f"Could not verify that '{_public_label(repo_id, variant)}' supports "
+                    "text-to-speech. It was not downloaded; retry shortly."
+                ),
+                retry_after = _RETRY_AFTER_S,
+            )
+        if not is_tts_audio_type(audio_type):
+            _release(active)
+            return AutoDownloadRefusal(
+                status = 400,
+                code = "invalid_value",
+                message = (
+                    f"'{_public_label(repo_id, variant)}' is not a text-to-speech model. "
+                    "It was not downloaded."
+                ),
+            )
 
     need_bytes = _remaining_bytes(repo_id, plan, expected_bytes)
     fits, free = _enough_disk(need_bytes)

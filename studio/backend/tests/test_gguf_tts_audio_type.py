@@ -158,6 +158,21 @@ def test_a_short_final_token_body_is_not_a_speech_model(tmp_path):
     assert read_gguf_tts_audio_type(str(path)) is None
 
 
+@pytest.mark.parametrize(
+    ("key", "element_type"),
+    (("tokenizer.ggml.tokens", 8), ("tokenizer.ggml.token_type", 5)),
+)
+def test_oversized_vocabulary_arrays_are_rejected_before_allocation(tmp_path, key, element_type):
+    path = tmp_path / f"oversized-{element_type}.gguf"
+    metadata = (
+        _string(key)
+        + struct.pack("<I", 9)
+        + struct.pack("<IQ", element_type, gguf_metadata._MAX_GGUF_VOCAB_ENTRIES + 1)
+    )
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    assert gguf_metadata._parse_gguf_marker_tokens(str(path)) is None
+
+
 def test_the_switch_probe_reads_the_variant_the_load_will_open(tmp_path, monkeypatch):
     import routes.inference as inference_route
     from utils.models import model_config

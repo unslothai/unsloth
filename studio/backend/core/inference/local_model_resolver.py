@@ -320,12 +320,16 @@ def _host_can_serve_minimax_music3() -> bool:
 
 def _native_audio_pipeline_is_servable_here(load_dir) -> bool:
     """Whether a local modular pipeline is a supported built-in native-audio model."""
-    from core.inference.native_audio import native_audio_type_from_local_path
+    from core.inference.native_audio import (
+        minimax_music3_local_components_complete,
+        native_audio_type_from_local_path,
+    )
     from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
 
     if (
         native_audio_type_from_local_path(str(load_dir)) != "minimax_music3"
         or not _host_can_serve_minimax_music3()
+        or not minimax_music3_local_components_complete(load_dir)
     ):
         return False
     for name in REMOTE_CODE_CONFIG_FILES:

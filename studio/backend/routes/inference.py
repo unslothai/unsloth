@@ -7544,6 +7544,7 @@ async def _maybe_auto_download_model(
     fastapi_request: Optional[Request],
     *,
     require_vision: bool = False,
+    require_speech: bool = False,
     current_subject: Optional[str] = None,
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
@@ -7567,6 +7568,7 @@ async def _maybe_auto_download_model(
             requested_model,
             hf_token = _auto_download_hf_token(fastapi_request),
             require_vision = require_vision,
+            require_speech = require_speech,
             subject = current_subject,
             # These endpoints also serve Unsloth's chat on a JWT, so only mark real API traffic.
             via_api_key = _request_used_api_key(fastapi_request),
@@ -8208,6 +8210,7 @@ async def _maybe_auto_switch_model(
                     # GGUF carries both from one mmproj, so the download guard takes
                     # either need; splitting them here would fetch a text-only repo.
                     require_vision = require_vision or require_audio_input,
+                    require_speech = require_speech,
                     current_subject = current_subject,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed

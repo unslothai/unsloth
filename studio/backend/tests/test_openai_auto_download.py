@@ -1728,6 +1728,48 @@ def test_an_image_request_does_not_download_a_text_only_model(hub):
     assert len(hub["started"]) == 1
 
 
+def test_a_speech_request_does_not_download_a_text_only_model(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/text-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.status == 400 and refusal.code == "invalid_value"
+    assert "text-to-speech" in refusal.message
+    assert hub["started"] == []
+
+
+def test_a_speech_download_probe_uses_the_caller_identity_and_pinned_revision(hub, monkeypatch):
+    seen = []
+
+    def _detect(repo_id, **kwargs):
+        seen.append((repo_id, kwargs))
+        return "bicodec", True
+
+    monkeypatch.setattr("utils.models.model_config.detect_audio_type_checked", _detect)
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/tts-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.code == "model_downloading"
+    assert seen == [("unsloth/tts-GGUF", {"hf_token": False, "revision": hub["info"].sha})]
+    assert len(hub["started"]) == 1
+
+
+def test_an_inconclusive_speech_probe_fails_closed_without_downloading(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: (None, False),
+    )
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/tts-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.status == 503 and refusal.code == "model_lookup_failed"
+    assert refusal.retry_after
+    assert hub["started"] == []
+
+
 def test_two_models_differing_only_in_case_are_not_the_same_weights(monkeypatch):
     # Lowercasing paths made /srv/models/Foo and /srv/models/foo compare equal, so
     # on a case-sensitive filesystem a request for one was answered by the other.

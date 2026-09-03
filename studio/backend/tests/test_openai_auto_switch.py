@@ -4188,6 +4188,32 @@ def test_require_speech_does_not_probe_a_reload_stash_restore(monkeypatch):
     assert rec.calls == []
 
 
+def test_a_missing_speech_model_forwards_the_capability_to_auto_download(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = None,
+        backend = backend,
+        recorder = rec,
+    )
+    calls = []
+
+    async def _capture(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_download_model", _capture)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/tts-GGUF", object(), "t", require_speech = True
+            )
+        )
+    assert calls[0][1]["require_speech"] is True
+    assert rec.calls == []
+
+
 def test_an_audio_only_target_still_switches_for_an_audio_request(monkeypatch, tmp_path):
     # End to end through the real probe: a Voxtral-style snapshot whose projector
     # declares audio and no vision tower must still be swapped in for an audio
@@ -9239,6 +9265,41 @@ def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
     return path
 
 
+def _complete_minimax_pipeline(root):
+    pipeline = root / "MiniMax-Music3"
+    pipeline.mkdir()
+    components = (
+        "condition_encoder",
+        "language_model",
+        "rvq_depth_decoder",
+        "scheduler",
+        "tokenizer",
+        "transformer",
+        "vocoder",
+    )
+    index = {
+        "_class_name": "MiniMaxMusic3ModularPipeline",
+        "_blocks_class_name": "MiniMaxMusic3Blocks",
+        **{
+            component: ["diffusers", "Component", {"subfolder": component}]
+            for component in components
+        },
+    }
+    (pipeline / "modular_model_index.json").write_text(json.dumps(index))
+    for component in components:
+        directory = pipeline / component
+        directory.mkdir()
+        if component == "scheduler":
+            (directory / "scheduler_config.json").write_text("{}")
+        elif component == "tokenizer":
+            (directory / "tokenizer_config.json").write_text("{}")
+            (directory / "tokenizer.json").write_text("{}")
+        else:
+            (directory / "config.json").write_text("{}")
+            (directory / "model.safetensors").write_bytes(_safetensors_bytes())
+    return pipeline
+
+
 def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
     # The Images and Video backends own these; /v1/chat/completions cannot serve them.
     from types import SimpleNamespace
@@ -9252,20 +9313,79 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
 def test_a_minimax_music_pipeline_is_a_servable_native_audio_model(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    pipeline = tmp_path / "MiniMax-Music3"
-    pipeline.mkdir()
-    (pipeline / "modular_model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "MiniMaxMusic3ModularPipeline",
-                "_blocks_class_name": "MiniMaxMusic3Blocks",
-            }
-        )
-    )
+    pipeline = _complete_minimax_pipeline(tmp_path)
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
     monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
     info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_incomplete_minimax_pipeline_is_not_switchable(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    (pipeline / "vocoder" / "model.safetensors").unlink()
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
+    info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_minimax_pipeline_with_a_missing_weight_shard_is_not_switchable(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    weights = pipeline / "language_model" / "model.safetensors"
+    weights.unlink()
+    (pipeline / "language_model" / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "layer.0": "model-00001-of-00002.safetensors",
+                    "layer.1": "model-00002-of-00002.safetensors",
+                }
+            }
+        )
+    )
+    (pipeline / "language_model" / "model-00001-of-00002.safetensors").write_bytes(
+        _safetensors_bytes()
+    )
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
+    info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
+    assert resolver.local_servable_model(info) is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        "not-json",
+        '{"weight_map":{}}',
+        '{"weight_map":{"layer":"../outside.safetensors"}}',
+        '{"weight_map":{"layer":"empty.safetensors"}}',
+    ),
+)
+def test_invalid_minimax_weight_indexes_do_not_prove_component_completeness(
+    tmp_path, payload
+):
+    from core.inference import native_audio
+
+    component = tmp_path / "component"
+    component.mkdir()
+    (component / "model.safetensors.index.json").write_text(payload)
+    (component / "empty.safetensors").write_bytes(b"")
+    assert native_audio._minimax_component_has_weights(component) is False
+
+
+def test_a_lone_minimax_weight_shard_without_its_index_is_incomplete(tmp_path):
+    from core.inference import native_audio
+
+    component = tmp_path / "component"
+    component.mkdir()
+    (component / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
+    assert native_audio._minimax_component_has_weights(component) is False
 
 
 def test_a_minimax_music_pipeline_is_hidden_on_an_unsupported_host(tmp_path, monkeypatch):

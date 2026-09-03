@@ -620,6 +620,9 @@ def _read_gguf_string(path: str, wanted_key: str) -> Optional[str]:
     return result
 
 
+_MAX_GGUF_VOCAB_ENTRIES = 2_000_000
+
+
 def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
     """(marker tokens, whether the ids the SNAC probe detokenizes are codec codes)."""
     from utils.audio_tokens import SNAC_PROBE_TOKEN_IDS
@@ -633,7 +636,7 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
             if magic != _GGUF_MAGIC:
                 return None
             marker_tokens: list[tuple[int, str]] = []
-            token_types: Optional[tuple[int, ...]] = None
+            token_types: Optional[bytes] = None
             snac_probe: Optional[dict[int, bool]] = None
             for _ in range(kv_count):
                 klen_bytes = f.read(8)
@@ -652,12 +655,12 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
                     if len(raw_header) != 12:
                         return None
                     atype, alen = struct.unpack("<IQ", raw_header)
-                    if atype != 5 or alen > 1 << 30:
+                    if atype != 5 or alen > _MAX_GGUF_VOCAB_ENTRIES:
                         return None
                     raw_types = f.read(4 * alen)
                     if len(raw_types) != 4 * alen:
                         return None
-                    token_types = struct.unpack(f"<{alen}i", raw_types)
+                    token_types = raw_types
                     continue
                 if key != "tokenizer.ggml.tokens" or vtype != 9:
                     if not _skip_gguf_value(f, vtype):
@@ -667,7 +670,7 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
                 if len(raw_header) != 12:
                     return None
                 atype, alen = struct.unpack("<IQ", raw_header)
-                if atype != 8 or alen > 1 << 30:
+                if atype != 8 or alen > _MAX_GGUF_VOCAB_ENTRIES:
                     return None
                 # The serving detector asks what these two ids detokenize to, so the
                 # vocabulary has to be read positionally, not just as a set of markers.
@@ -700,8 +703,8 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
                 token
                 for index, token in marker_tokens
                 if token_types is not None
-                and index < len(token_types)
-                and token_types[index] in {2, 3, 4}
+                and 4 * (index + 1) <= len(token_types)
+                and struct.unpack_from("<i", token_types, 4 * index)[0] in {2, 3, 4}
             ]
             return markers, all(snac_probe.values())
     except (OSError, struct.error) as e:

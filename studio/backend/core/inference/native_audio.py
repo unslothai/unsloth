@@ -33,7 +33,7 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,99 @@ _MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
 _MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
 _MOSS_NANO_SAVE_LOCK = threading.Lock()
 _MAX_AUDIO_METADATA_BYTES = 1_000_000
+
+
+def _minimax_component_has_weights(directory: Path) -> bool:
+    """Whether a component has one whole tensor file or a complete shard index."""
+    try:
+        indexes = tuple(directory.glob("*.safetensors.index.json"))
+    except OSError:
+        return False
+    for index_path in indexes:
+        try:
+            if (
+                index_path.stat().st_size <= 0
+                or index_path.stat().st_size > _MAX_AUDIO_METADATA_BYTES
+            ):
+                continue
+            index = json.loads(index_path.read_text(encoding = "utf-8-sig"))
+            weight_map = index.get("weight_map") if isinstance(index, dict) else None
+            if not isinstance(weight_map, dict) or not weight_map:
+                continue
+            shards = set(weight_map.values())
+            if not all(isinstance(shard, str) and shard for shard in shards):
+                continue
+            complete = True
+            for shard in shards:
+                posix = PurePosixPath(shard.replace("\\", "/"))
+                windows = PureWindowsPath(shard)
+                if (
+                    posix.is_absolute()
+                    or ".." in posix.parts
+                    or windows.is_absolute()
+                    or windows.drive
+                    or posix.suffix.lower() != ".safetensors"
+                ):
+                    complete = False
+                    break
+                target = directory.joinpath(*posix.parts)
+                if not target.is_file() or target.stat().st_size <= 0:
+                    complete = False
+                    break
+            if complete:
+                return True
+        except (OSError, TypeError, ValueError, RecursionError):
+            continue
+    if indexes:
+        return False
+    try:
+        return any(
+            path.is_file()
+            and path.stat().st_size > 0
+            and re.search(r"-\d+-of-\d+\.safetensors$", path.name, re.IGNORECASE) is None
+            for path in directory.glob("*.safetensors")
+        )
+    except OSError:
+        return False
+
+
+def minimax_music3_local_components_complete(model_path) -> bool:
+    """Whether a MiniMax modular snapshot contains every load-time component."""
+    try:
+        root = Path(model_path).expanduser()
+        if root.is_file():
+            root = root.parent
+        index = _read_local_audio_metadata(root, "modular_model_index.json")
+        weighted = _MINIMAX_DOWNLOAD_COMPONENTS - {"scheduler", "tokenizer"}
+        for component in _MINIMAX_DOWNLOAD_COMPONENTS:
+            entry = index.get(component)
+            metadata = (
+                next(
+                    (part for part in entry if isinstance(part, dict)),
+                    None,
+                )
+                if isinstance(entry, list)
+                else None
+            )
+            if not isinstance(metadata, dict) or metadata.get("subfolder") != component:
+                return False
+            directory = root / component
+            if component in weighted:
+                if not (directory / "config.json").is_file():
+                    return False
+                if not _minimax_component_has_weights(directory):
+                    return False
+            elif component == "scheduler":
+                if not (directory / "scheduler_config.json").is_file():
+                    return False
+            elif not (
+                (directory / "tokenizer_config.json").is_file()
+                and (directory / "tokenizer.json").is_file()
+            ):
+                return False
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 class _AudioMetadataTooLarge(ValueError):
