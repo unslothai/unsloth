@@ -742,6 +742,25 @@ _resolve_studio_destinations() {
 _resolve_studio_destinations
 UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
 
+# Prior state of the .unsloth-portable-root marker, so it can roll back with the venv. Both
+# writers run before the install can succeed -- the publish in _export_portable_roots is
+# before the uv bootstrap, and _clear_stale_portable_marker's removal is earlier still -- so
+# a failed run would otherwise leave the restored environment described by a marker that no
+# longer matches it. _restore_portable_marker, beside the venv rollback below, is what puts
+# these back; the writers only record, and record inline, so a snippet lifted out of either
+# one still runs on its own the way the tests around them do it.
+#
+# Two slots, statically assigned, so nothing has to be allocated: a portable run publishes one
+# marker (slot 1), a normal run clears at most the flat-layout marker (slot 1) and the
+# nested-layout parent marker (slot 2), and the two runs are mutually exclusive. Each holds
+# "y" plus the file's bytes, or "n" for absent. Content is informational -- every reader
+# (storage_roots.unsloth_home, setup.sh's _setup_portable_mode, scripts/uninstall.sh) only
+# tests existence -- so losing a trailing newline in the round trip changes nothing.
+_PORTABLE_MARKER_PATH_1=""
+_PORTABLE_MARKER_PRIOR_1=""
+_PORTABLE_MARKER_PATH_2=""
+_PORTABLE_MARKER_PRIOR_2=""
+
 # Must run before the uv bootstrap: a cache cannot be moved afterwards.
 _export_portable_roots() {
     [ "$_PORTABLE_MODE" = true ] || return 0
@@ -772,7 +791,15 @@ _export_portable_roots() {
 
     # Marker so the roots survive an invocation carrying none of this
     # environment: `source .../activate` reaches the venv binary past the shim.
-    printf '%s\n' "$UNSLOTH_ROOT" > "$UNSLOTH_ROOT/.unsloth-portable-root" 2>/dev/null || true
+    # Snapshotted first: published here, before the uv bootstrap, it would otherwise survive
+    # a failed install and describe whatever the rollback restores instead.
+    _PORTABLE_MARKER_PATH_1="$UNSLOTH_ROOT/.unsloth-portable-root"
+    if [ -f "$_PORTABLE_MARKER_PATH_1" ]; then
+        _PORTABLE_MARKER_PRIOR_1="y$(cat -- "$_PORTABLE_MARKER_PATH_1" 2>/dev/null)"
+    else
+        _PORTABLE_MARKER_PRIOR_1=n
+    fi
+    printf '%s\n' "$UNSLOTH_ROOT" > "$_PORTABLE_MARKER_PATH_1" 2>/dev/null || true
 
     substep "portable: everything under $UNSLOTH_ROOT"
 }
@@ -799,10 +826,19 @@ _clear_stale_portable_marker() {
     if [ -f "$STUDIO_HOME/$_spm_name" ]; then
         if [ -d "$STUDIO_HOME/studio/unsloth_studio" ]; then
             substep "portable marker kept: $STUDIO_HOME/studio still resolves through it" "$C_WARN"
-        elif rm -f -- "$STUDIO_HOME/$_spm_name" 2>/dev/null; then
-            substep "removed the stale portable marker in $STUDIO_HOME"
         else
-            substep "could not remove $STUDIO_HOME/$_spm_name; this install still reads as portable" "$C_WARN"
+            # Snapshot before the removal: this runs before anything is installed, and a
+            # failed run restores the portable venv that was reached through this marker.
+            # Inline, not a helper, so this block still runs when lifted out on its own.
+            _PORTABLE_MARKER_PATH_1="$STUDIO_HOME/$_spm_name"
+            _PORTABLE_MARKER_PRIOR_1="y$(cat -- "$_PORTABLE_MARKER_PATH_1" 2>/dev/null)"
+            if rm -f -- "$STUDIO_HOME/$_spm_name" 2>/dev/null; then
+                substep "removed the stale portable marker in $STUDIO_HOME"
+            else
+                _PORTABLE_MARKER_PATH_1=""
+                _PORTABLE_MARKER_PRIOR_1=""
+                substep "could not remove $STUDIO_HOME/$_spm_name; this install still reads as portable" "$C_WARN"
+            fi
         fi
     fi
     # Nested layout: <root>/studio is the one spelling under which a parent marker
@@ -816,9 +852,14 @@ _clear_stale_portable_marker() {
     _spm_parent="${STUDIO_HOME%/studio}"
     [ -n "$_spm_parent" ] || _spm_parent="/"
     if [ -f "$_spm_parent/$_spm_name" ]; then
+        # Snapshot before the removal, as above.
+        _PORTABLE_MARKER_PATH_2="$_spm_parent/$_spm_name"
+        _PORTABLE_MARKER_PRIOR_2="y$(cat -- "$_PORTABLE_MARKER_PATH_2" 2>/dev/null)"
         if rm -f -- "$_spm_parent/$_spm_name" 2>/dev/null; then
             substep "removed the stale portable marker in $_spm_parent"
         else
+            _PORTABLE_MARKER_PATH_2=""
+            _PORTABLE_MARKER_PRIOR_2=""
             substep "could not remove $_spm_parent/$_spm_name; this install still reads as portable" "$C_WARN"
         fi
     fi
@@ -1005,6 +1046,53 @@ _commit_studio_venv_replacement() {
     _prune_stale_studio_venv_rollbacks
 }
 
+# The portable marker's half of the same discipline, on the slots recorded far above by
+# _export_portable_roots and _clear_stale_portable_marker. Kept here, beside the venv it
+# describes, so both handlers below restore a tree and its marker together: a `--portable`
+# over a normal install that dies later would otherwise restore the normal venv under a
+# marker that keeps redirecting the HF caches and the projects root (UNSLOTH_PORTABLE=0
+# cannot turn that off), and a normal reinstall over a portable one would restore the
+# portable venv with no on-disk root left, so activating it writes outside the volume it
+# was contained in.
+_restore_portable_marker_slot() {  # path prior
+    [ -n "$1" ] || return 0
+    case "$2" in
+        y*)
+            # Never overwrite a marker that is back already: a concurrent portable install
+            # of the same tree owns it now.
+            if [ ! -f "$1" ] && printf '%s\n' "${2#y}" > "$1" 2>/dev/null; then
+                rollback_substep "restored the portable marker at $1"
+            fi
+            ;;
+        n*)
+            if [ -f "$1" ] && rm -f -- "$1" 2>/dev/null; then
+                rollback_substep "removed the portable marker this run published"
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# Called from the exit and signal handlers only, so a successful install keeps what it wrote.
+_restore_portable_marker() {
+    _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_1" "$_PORTABLE_MARKER_PRIOR_1"
+    _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_2" "$_PORTABLE_MARKER_PRIOR_2"
+    _PORTABLE_MARKER_PATH_1=""
+    _PORTABLE_MARKER_PATH_2=""
+    return 0
+}
+
+# The install is committed. Anything that fails after this -- the autostart returning nonzero
+# is the reachable one -- must not undo the marker, exactly as _commit_studio_venv_replacement
+# stops the same exit from restoring the previous environment over the one just installed.
+_commit_portable_marker() {
+    _PORTABLE_MARKER_PATH_1=""
+    _PORTABLE_MARKER_PRIOR_1=""
+    _PORTABLE_MARKER_PATH_2=""
+    _PORTABLE_MARKER_PRIOR_2=""
+    return 0
+}
+
 _cleanup_install_temporaries() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     [ -n "${_UV_INSTALL_NAME_TOOL_SHIM_DIR:-}" ] && rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
@@ -1022,6 +1110,8 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
+        # After the venv, so the marker describes the environment that is back in place.
+        _restore_portable_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -1034,6 +1124,7 @@ _on_install_signal() {
     trap - EXIT
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
+    _restore_portable_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
@@ -6527,6 +6618,11 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     exit "$_SETUP_EXIT"
 fi
+
+# Past every step that can fail the install: the environment is built, setup.sh reported
+# success and the shim and shortcuts are written. Keep the portable marker whatever the
+# autostart below does, the way _commit_studio_venv_replacement already keeps the venv.
+_commit_portable_marker
 
 # ── Tauri mode: done, skip shortcuts and auto-launch ──
 if [ "$TAURI_MODE" = true ]; then
