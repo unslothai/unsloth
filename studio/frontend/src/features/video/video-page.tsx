@@ -136,6 +136,7 @@ import {
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
+import { BlobUrlCache } from "@/lib/blob-url-cache";
 
 import { MATCH_SOURCE_RESOLUTION, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
@@ -166,6 +167,7 @@ import {
   setGalleryVideoFlags,
   fetchGalleryVideoExport,
   fetchGalleryVideoSignedUrl,
+  fetchGalleryVideoThumbnail,
   generateVideo,
   getVideoGallery,
   getVideoGenerateProgress,
@@ -175,6 +177,7 @@ import {
   loadVideoModel,
   unloadVideoModel,
 } from "./api";
+import { videoThumbnailQueue } from "./thumbnail-request-queue";
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts as data (HunyuanVideo carries both repacks), and the load kind per artifact via loadSpecFor.
 // The picker renders groups with a format second level, which also surfaces LTX-2.3 in Recommended (its HF pipeline_tag is image-to-video).
@@ -217,8 +220,8 @@ const FALLBACK_FRAME_OFFSET = 1;
 const FALLBACK_FPS = 24;
 const FALLBACK_DURATION_TARGETS = [1, 2, 3, 5];
 
-// Module cache of the backend-persisted gallery, so a tab switch re-renders instantly. The srcById entries are short-lived
-// signed links, not object URLs: nothing is pinned in the webview, and the media element streams ranges as it plays.
+// Module cache of the backend-persisted gallery, so a tab switch re-renders instantly. Playback URLs are short-lived signed
+// links, while the much smaller still posters are byte-budgeted object URLs because their endpoint is bearer-gated.
 const galleryCache: {
   videos: GalleryVideo[];
   hasMore: boolean;
@@ -227,6 +230,9 @@ const galleryCache: {
   // id -> the signed link and when it was minted. The link is short-lived and its signing secret is per-process, while this
   // cache survives navigation, so an entry has to be re-mintable or playback, seeking and Save would 401 until a reload.
   srcById: Map<string, { url: string; mintedAt: number }>;
+  thumbnailById: BlobUrlCache;
+  thumbnailInflight: Map<string, Promise<boolean>>;
+  thumbnailFailed: Set<string>;
   // Ids re-minted once after a media error already, so a clip that is broken for any other reason cannot spin in a mint/error loop.
   refreshed: Set<string>;
   // Ids with a mint in flight, so concurrent ensureSrc calls don't double-request.
@@ -243,6 +249,9 @@ const galleryCache: {
   selectedId: null,
   quant: null,
   srcById: new Map(),
+  thumbnailById: new BlobUrlCache(32 * 1024 * 1024),
+  thumbnailInflight: new Map(),
+  thumbnailFailed: new Set(),
   refreshed: new Set(),
   inflight: new Set(),
   deleted: new Set(),
@@ -1008,7 +1017,7 @@ function VideoGenerator({
     onScroll: onSettingsScroll,
     className: settingsFadeClass,
   } = useScrollFades();
-  // Records come from the backend (durable); srcById maps each id to its object URL.
+  // Records come from the backend (durable); playback links and poster object URLs are cached separately.
   const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
@@ -1034,6 +1043,13 @@ function VideoGenerator({
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     Object.fromEntries([...galleryCache.srcById].map(([id, e]) => [id, e.url])),
   );
+  const [thumbnailById, setThumbnailById] = useState<Record<string, string>>(() =>
+    galleryCache.thumbnailById.toRecord(),
+  );
+  const [thumbnailFailedIds, setThumbnailFailedIds] = useState<ReadonlySet<string>>(
+    () => new Set(galleryCache.thumbnailFailed),
+  );
+  const visibleThumbnailIds = useRef(new Set<string>());
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
   // False once the page truly unmounts. The page stays mounted across tab switches, so a switch does NOT flip this.
@@ -1525,6 +1541,55 @@ function VideoGenerator({
     }
   }, []);
 
+  const ensureThumbnail = useCallback((video: GalleryVideo): Promise<boolean> => {
+    const cached = galleryCache.thumbnailById.get(video.id);
+    if (cached) {
+      galleryCache.thumbnailById.touch(video.id);
+      return Promise.resolve(true);
+    }
+    if (galleryCache.thumbnailFailed.has(video.id)) return Promise.resolve(false);
+    const existing = galleryCache.thumbnailInflight.get(video.id);
+    if (existing) return existing;
+    const epochAtStart = galleryCache.epoch;
+    const request = (async () => {
+      try {
+        const fetched = await videoThumbnailQueue.run(() => {
+          // Deletion and clear can happen while this request is waiting for a slot. Skip the
+          // decoder entirely once its result no longer has a gallery record to attach to.
+          if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) {
+            return Promise.resolve(null);
+          }
+          return fetchGalleryVideoThumbnail(video.id);
+        });
+        if (!fetched) return false;
+        if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) {
+          URL.revokeObjectURL(fetched.url);
+          return false;
+        }
+        galleryCache.thumbnailById.set(video.id, fetched.url, fetched.bytes);
+        const evicted = galleryCache.thumbnailById.prune(visibleThumbnailIds.current);
+        if (isMounted.current) {
+          setThumbnailById((prev) => {
+            const next = { ...prev, [video.id]: fetched.url };
+            for (const id of evicted) delete next[id];
+            return next;
+          });
+        }
+        return true;
+      } catch {
+        galleryCache.thumbnailFailed.add(video.id);
+        if (isMounted.current) {
+          setThumbnailFailedIds(new Set(galleryCache.thumbnailFailed));
+        }
+        return false;
+      } finally {
+        galleryCache.thumbnailInflight.delete(video.id);
+      }
+    })();
+    galleryCache.thumbnailInflight.set(video.id, request);
+    return request;
+  }, []);
+
   // A media error on a playing clip means its link died early (the server restarted, changing its signing secret). Re-mint once per clip per session.
   const remintSrc = useCallback(
     (video: GalleryVideo) => {
@@ -1536,8 +1601,8 @@ function VideoGenerator({
     [ensureSrc],
   );
 
-  // A card's poster frame appears once its src lands and each src costs a request, so minting a full page up front would queue PAGE_SIZE
-  // requests ahead of the clip being waited on. Mint as a card nears the viewport, observed from here (the tile is a Tooltip trigger), per page.
+  // Load a still poster as a card nears the viewport. A video element per card makes WebKit create
+  // a decoder, source, video queue and audio queue for every clip, even with preload="metadata".
   const stripRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const root = stripRef.current;
@@ -1545,11 +1610,16 @@ function VideoGenerator({
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
           const id = (entry.target as HTMLElement).dataset.clipId;
           if (!id) continue;
+          if (!entry.isIntersecting) {
+            visibleThumbnailIds.current.delete(id);
+            continue;
+          }
+          visibleThumbnailIds.current.add(id);
+          galleryCache.thumbnailById.touch(id);
           const clip = videos.find((v) => v.id === id);
-          if (clip) void ensureSrc(clip);
+          if (clip) void ensureThumbnail(clip);
         }
       },
       // rootMargin is added to the ROOT box only, so the root has to be the strip itself: a card past its right edge is clipped,
@@ -1558,15 +1628,14 @@ function VideoGenerator({
     );
     for (const card of root.querySelectorAll("[data-clip-id]")) io.observe(card);
     return () => io.disconnect();
-  }, [videos, ensureSrc]);
+  }, [videos, ensureThumbnail]);
 
   // The preview player is what the user watches, so the selected clip is fetched whether or not its card is on screen.
   useEffect(() => {
     if (!selected) return;
-    void (async () => {
-      await ensureSrc(selected);
-    })();
-  }, [selected, ensureSrc]);
+    void ensureThumbnail(selected);
+    void ensureSrc(selected);
+  }, [selected, ensureSrc, ensureThumbnail]);
 
   // Bumped by every LOCAL change to the strip: a pin, an archive, a delete, a merged generation.
   // A resync started before one of those holds a snapshot the server listing cannot reconcile with
@@ -1596,14 +1665,14 @@ function VideoGenerator({
       galleryCache.hasMore = page.has_more;
       setVideos(page.videos);
       setHasMore(page.has_more);
-      // No visibility signal without IntersectionObserver (jsdom / old webview), so keep the eager fetch there.
+      // No visibility signal without IntersectionObserver (jsdom / old webview), so keep the eager poster fetch there.
       if (typeof IntersectionObserver === "undefined") {
-        page.videos.forEach((video) => void ensureSrc(video));
+        page.videos.forEach((video) => void ensureThumbnail(video));
       }
     } catch {
       // Best-effort: a failed gallery load shouldn't block the page.
     }
-  }, [ensureSrc]);
+  }, [ensureThumbnail]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore.current || !galleryCache.hasMore) return;
@@ -1629,14 +1698,14 @@ function VideoGenerator({
       galleryCache.hasMore = page.has_more;
       setHasMore(page.has_more);
       if (typeof IntersectionObserver === "undefined") {
-        page.videos.forEach((video) => void ensureSrc(video));
+        page.videos.forEach((video) => void ensureThumbnail(video));
       }
     } catch {
       // transient; the user can scroll again to retry
     } finally {
       loadingMore.current = false;
     }
-  }, [ensureSrc]);
+  }, [ensureThumbnail]);
 
   // WebM/GIF go through a server-side transcode that can take seconds (and 501s when the codec is missing), so wrap the helper with toasts.
   const handleDownload = useCallback(
@@ -1664,8 +1733,11 @@ function VideoGenerator({
   // cached link must go and any mint in flight must throw its result away. An archived clip keeps
   // both, since the archived view plays the same file.
   const dropFromStrip = useCallback((id: string, discardLink: boolean) => {
+    visibleThumbnailIds.current.delete(id);
     if (discardLink) {
       galleryCache.srcById.delete(id);
+      galleryCache.thumbnailById.delete(id);
+      galleryCache.thumbnailFailed.delete(id);
       galleryCache.refreshed.delete(id);
       galleryCache.deleted.add(id);
       setSrcById((prev) => {
@@ -1673,6 +1745,12 @@ function VideoGenerator({
         delete next[id];
         return next;
       });
+      setThumbnailById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setThumbnailFailedIds(new Set(galleryCache.thumbnailFailed));
     }
     stripEpoch.current += 1;
     // Read the list from the cache (kept in sync with state every render) rather than nesting a
@@ -1744,12 +1822,12 @@ function VideoGenerator({
         setVideos(collected);
         setHasMore(more);
         if (typeof IntersectionObserver === "undefined") {
-          collected.forEach((video) => void ensureSrc(video));
+          collected.forEach((video) => void ensureThumbnail(video));
         }
         return;
       }
     },
-    [ensureSrc],
+    [ensureThumbnail],
   );
 
   // This page stays mounted across route changes, so a restore from the Settings archive would
@@ -1876,6 +1954,9 @@ function VideoGenerator({
     try {
       await clearVideoGallery();
       galleryCache.srcById.clear();
+      galleryCache.thumbnailById.clear();
+      galleryCache.thumbnailFailed.clear();
+      visibleThumbnailIds.current.clear();
       galleryCache.refreshed.clear();
       // Every mint in flight now belongs to a cleared gallery, so their links are discarded on arrival. The epoch covers unlisted ids too.
       galleryCache.epoch += 1;
@@ -1884,6 +1965,8 @@ function VideoGenerator({
       galleryCache.hasMore = false;
       galleryCache.selectedId = null;
       setSrcById({});
+      setThumbnailById({});
+      setThumbnailFailedIds(new Set());
       setVideos([]);
       setHasMore(false);
       setSelectedId(null);
@@ -1996,7 +2079,10 @@ function VideoGenerator({
             galleryCache.videos.find(
               (video) => video.id === galleryCache.selectedId,
             ) ?? galleryCache.videos[0];
-          if (initialSelection) await ensureSrc(initialSelection);
+          if (initialSelection) {
+            void ensureThumbnail(initialSelection);
+            await ensureSrc(initialSelection);
+          }
         })(),
       ]);
       if (cancelled || initialReadySent.current) return;
@@ -2006,7 +2092,7 @@ function VideoGenerator({
     return () => {
       cancelled = true;
     };
-  }, [active, ensureSrc, loadGallery, onInitialReady, refreshStatus]);
+  }, [active, ensureSrc, ensureThumbnail, loadGallery, onInitialReady, refreshStatus]);
 
   // Ejected from the loaded models indicator, which does not run handleUnload:
   // without this the controls keep offering to generate on a freed runtime, and
@@ -2170,6 +2256,7 @@ function VideoGenerator({
                 sortGalleryItems([clip, ...prev.filter((v) => v.id !== clip.id)]),
               );
               setSelectedId(clip.id);
+              void ensureThumbnail(clip);
               void ensureSrc(clip);
             }
           } else if (p.phase === "failed") {
@@ -2201,7 +2288,7 @@ function VideoGenerator({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-  }, [ensureSrc, stopGenPoll]);
+  }, [ensureSrc, ensureThumbnail, stopGenPoll]);
 
   useEffect(() => {
     void (async () => {
@@ -2235,6 +2322,7 @@ function VideoGenerator({
             setVideos((prev) =>
               prev.some((v) => v.id === clip.id) ? prev : sortGalleryItems([clip, ...prev]),
             );
+            void ensureThumbnail(clip);
             void ensureSrc(clip);
           }
         } else if (g.phase === "failed") {
@@ -2251,7 +2339,7 @@ function VideoGenerator({
       stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, cancelLoadFromToast]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, cancelLoadFromToast]);
 
   // Keep the snapshot helper stable: route effects depend on loadOrStage.
   const loadControlsRef = useRef({
@@ -4136,16 +4224,19 @@ function VideoGenerator({
                   onClick={() => setSelectedId(video.id)}
                   className="relative flex size-full flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {srcById[video.id] ? (
-                    // Muted, preload="metadata" so the first frame renders as a poster without playing every card at once.
-                    <video
-                      src={srcById[video.id]}
-                      muted
-                      playsInline
-                      preload="metadata"
-                      onError={() => remintSrc(video)}
+                  {thumbnailById[video.id] ? (
+                    <img
+                      src={thumbnailById[video.id]}
+                      alt=""
                       className="absolute inset-0 size-full object-cover"
                     />
+                  ) : thumbnailFailedIds.has(video.id) ? (
+                    <span className="absolute inset-0 flex items-center justify-center">
+                      <HugeiconsIcon
+                        icon={FlimSlateIcon}
+                        className="size-4 text-muted-foreground"
+                      />
+                    </span>
                   ) : (
                     <span className="absolute inset-0 flex items-center justify-center">
                       <Spinner className="size-4 text-muted-foreground" />

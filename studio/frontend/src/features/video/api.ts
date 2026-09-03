@@ -359,6 +359,19 @@ export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   return apiUrl(body.url);
 }
 
+/** A still WebP poster for a gallery clip. The endpoint is bearer-gated, so keep
+ * the bytes in a revocable object URL instead of assigning its path to an img. */
+export async function fetchGalleryVideoThumbnail(
+  id: string,
+): Promise<{ url: string; bytes: number }> {
+  const res = await authFetch(
+    `/v1/videos/${encodeURIComponent(id)}/content?variant=thumbnail`,
+  );
+  if (!res.ok) throw new Error(await readFastApiError(res));
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), bytes: blob.size };
+}
+
 /** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable message when the codec is unavailable. */
 export async function fetchGalleryVideoExport(
   id: string,
