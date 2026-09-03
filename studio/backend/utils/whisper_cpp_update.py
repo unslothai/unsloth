@@ -232,7 +232,8 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     force_refresh bypasses the 24h release cache for an explicit "check now".
     """
     binary = _find_binary()
-    # A locally-linked whisper.cpp dir is the user's own tree; never offer
+    # A locally-linked whisper.cpp dir is the user's own tree; never offer to replace it. Bail before any
+    # network/freshness work.
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)

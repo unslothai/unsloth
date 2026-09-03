@@ -3,6 +3,10 @@
 
 import { authFetch } from "@/features/auth";
 import {
+  classifiedAttachmentFile,
+  needsAttachmentTrackInspection,
+} from "@/lib/video-utils";
+import {
   AssistantRuntimeProvider,
   type Attachment,
   type AttachmentAdapter,
@@ -59,6 +63,16 @@ import {
   getDocxAttachmentError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
+import {
+  isBinaryPropertyList,
+  isBinaryTrackerModule,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  isBinaryOfficeTemplate,
+  isCompiledFortranModule,
+  isBinaryVobSubSubtitle,
+  readTextAttachmentOnce,
+  UndecodableTextError,
+} from "./text-attachment-accept";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -210,7 +224,31 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 
   add(state: { file: File }) {
-    return this.delegate.add(state);
+    // A composite picks its adapter synchronously from the name and MIME type,
+    // and both say "video" for an audio-only 3GP recording, so settle that from
+    // the container's own tracks first, as the native readers do. Every other
+    // file goes straight through, keeping the delegate's own return.
+    if (!needsAttachmentTrackInspection(state.file)) {
+      return this.delegate.add(state);
+    }
+    return this.addInspected(state);
+  }
+
+  private async addInspected(state: {
+    file: File;
+  }): Promise<PendingAttachment> {
+    const file = await classifiedAttachmentFile(state.file);
+    const added = await this.delegate.add({ ...state, file });
+    if (Symbol.asyncIterator in added) {
+      // Only the audio and video adapters claim a 3GP and both resolve to one
+      // attachment, so this drains a generator to its last value rather than
+      // forwarding the progress an adapter here does not report.
+      let last: PendingAttachment | undefined;
+      for await (const value of added) last = value;
+      if (!last) throw new Error("The attachment adapter yielded nothing.");
+      return last;
+    }
+    return added;
   }
 
   remove(attachment: Attachment): Promise<void> {
@@ -370,6 +408,55 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
+    // Before any read: decoding an .mbox of arbitrary size would hold the bytes
+    // and the decoded string at once, and the native path already stops here.
+    if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+      const reason = `Text attachments are limited to ${
+        MAX_TEXT_ATTACHMENT_BYTES / (1024 * 1024)
+      } MB.`;
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryPropertyList(file)) {
+      const reason =
+        "Binary property-list files aren't supported. Convert the file to text before attaching it.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryVobSubSubtitle(file)) {
+      const reason =
+        "VobSub bitmap subtitles aren't supported. Convert the .sub file to SRT or VTT before attaching it.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryTrackerModule(file)) {
+      const reason =
+        "Tracker .mod audio files aren't supported as text attachments.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isCompiledFortranModule(file)) {
+      const reason =
+        "Compiled Fortran .mod modules aren't supported as text attachments.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryOfficeTemplate(file)) {
+      const reason =
+        "Legacy Word and PowerPoint templates aren't supported as text attachments.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    // Decodes here so an unreadable encoding is reported while attaching rather
+    // than at send, where the composer has no room to explain it.
+    try {
+      await readTextAttachmentOnce(file);
+    } catch (error) {
+      if (error instanceof UndecodableTextError) {
+        toast.error(error.message);
+      }
+      throw error;
+    }
     return {
       id: crypto.randomUUID(),
       type: "document",
@@ -381,7 +468,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await attachment.file.text();
+    const text = await readTextAttachmentOnce(attachment.file);
     return {
       id: attachment.id,
       type: "document",

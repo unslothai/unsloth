@@ -528,7 +528,8 @@ def stream_installer(
                 hint_lines.append(line)
             child = child_line
             if child is not None:
-                # Recorded while it runs and dropped when the installer says
+                # Recorded while it runs and dropped when the installer says it stopped; one it never got to report
+                # stays for the sweep.
                 started, child_pid = child.group(1) == "started", int(child.group(2))
                 if started:
                     adopt_pid(child_pid)

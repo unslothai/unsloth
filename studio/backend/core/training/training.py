@@ -1597,7 +1597,7 @@ class TrainingBackend:
                 logger.warning("Training subprocess already running")
                 return False
 
-        # Wait for pump thread to finish DB finalization (8s covers SQLite's 5s lock timeout).
+        # Join prior pump thread, refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
