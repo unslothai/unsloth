@@ -957,14 +957,20 @@ const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
  *  Measured in time, not in seeks, because a seek is not one price: 0.2us into a page of Hangul
  *  and 1236us into a page of flags, which is six thousand to one on the same length of text. Any
  *  count is therefore far too small for one of them and far too large for the other, and it was
- *  the large end that showed: a first search costing twenty seconds of frozen tab. A scan is 36ms
- *  to 82ms over the same text, so the budget below is what seeking may spend before buying one. */
+ *  the large end that showed: a first search costing twenty seconds of frozen tab.
+ *
+ *  So the budget is what a scan of this index would itself cost, and seeking may spend that much
+ *  before buying one. Never more than the alternative, which puts the total within twice the
+ *  better of the two whichever way it goes, and leaves no constant to be wrong about: a flat 20ms
+ *  was fine here and bought a scan for a bounded pass on a slower machine. The rate is the slower
+ *  of the two measured, 1.3M characters scanned in 82ms. */
 const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
 const seekCosts = new WeakMap<
   FindTextIndex,
   { spent: number; since: number; seen?: number }
 >();
-const SEEK_BUDGET_MS = 20;
+const SCAN_CHARS_PER_MS = 16_000;
+const MIN_SEEK_BUDGET_MS = 8;
 /** Timed in blocks, so the clock is read twice per block rather than twice per seek. The whole
  *  block is measured, so what accumulates is the real cost and not a sample of it. */
 const SEEK_BLOCK = 32;
@@ -1076,7 +1082,8 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
     cost = { spent: 0, since: 0 };
     seekCosts.set(index, cost);
   }
-  if (cost.spent <= SEEK_BUDGET_MS) {
+  const budget = Math.max(MIN_SEEK_BUDGET_MS, text.length / SCAN_CHARS_PER_MS);
+  if (cost.spent <= budget) {
     if (cost.since === 0) cost.since = performance.now();
     const answer = segments.containing(at)?.index === at;
     cost.seen = (cost.seen ?? 0) + 1;

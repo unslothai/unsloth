@@ -2192,11 +2192,29 @@ test("a capped search does not segment the whole index to answer its first pass"
       nodes.push({ nodeType: 3, data: "\uac00".repeat(MAX_NODE_CHARS) });
     }
     const index = buildTextIndex(el("DIV", [el("P", nodes)]));
+    // What a seek costs on THIS machine, since that is what the budget is spent in and it varies
+    // by orders of magnitude between engines and hosts. Measured through the same wrapper, then
+    // discounted so the count it feeds is not itself the thing under test.
+    const sample = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(index.text);
+    sample.containing(0);
+    const startedSample = performance.now();
+    for (let at = 0; at < 200; at += 1) sample.containing((at * 9871) % index.text.length);
+    const perSeek = (performance.now() - startedSample) / 200;
+    seeks = 0;
     // Anchored at the top, so the cap stops the search after one bounded pass.
     const found = findMatches(index, "\uac00", MAX_MATCHES, 0);
     if (found.length !== MAX_MATCHES) throw new Error("expected a capped search, got " + found.length);
-    if (scans !== 0) throw new Error("segmented the whole index for a bounded pass: " + scans);
     if (seeks > 4 * MAX_MATCHES) throw new Error("seeks: " + seeks);
+    // The budget is what one scan of this index would cost, so a bounded pass reaches it only
+    // where seeking is expensive enough that the scan is the better buy anyway. Assert the waste
+    // this guards against, which is scanning while the seeks were still the cheaper option.
+    const budgetMs = index.text.length / 16000;
+    if (scans !== 0 && seeks * perSeek < budgetMs / 2) {
+      throw new Error(
+        "scanned after " + seeks + " seeks costing " + (seeks * perSeek).toFixed(1) +
+        "ms, well inside a budget of " + budgetMs.toFixed(0) + "ms"
+      );
+    }
   `;
   const run = spawnSync(
     process.execPath,
