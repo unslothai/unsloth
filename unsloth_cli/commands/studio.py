@@ -137,6 +137,42 @@ def _is_managed_cmd_shim(path: Path) -> bool:
     return all(marker in body for marker in _CMD_SHIM_MARKERS)
 
 
+def _venv_studio_home_candidates(prefix_value: str) -> list[Path]:
+    """STUDIO_HOME spellings to test for *prefix_value*, resolved one first.
+
+    storage_roots._venv_studio_home_candidates, duplicated for the same reason
+    the marker constant is: resolve() lands on the physical venv, which is the
+    wrong side of a <master>/studio the user pre-symlinked to another volume.
+    install.sh follows such a symlink (`mkdir -p "$STUDIO_HOME"`) and names it in
+    the closing summary rather than refusing it, so the marker stays at <master>
+    while the venv lives on the far volume, and only the spelling baked into the
+    console script's shebang still reaches it. The two must not disagree: this
+    CLI exports UNSLOTH_HOME into the backend, where it outranks that lookup.
+    """
+    spellings: list[Path] = []
+    try:
+        spellings.append(Path(prefix_value).resolve())
+    except (OSError, ValueError):
+        pass
+    try:
+        # abspath, not Path: it normalizes without touching the filesystem, so
+        # the symlinked spelling survives where resolve() would collapse it.
+        spellings.append(Path(os.path.abspath(prefix_value)))
+    except (OSError, ValueError):
+        pass
+    out: list[Path] = []
+    seen: set[str] = set()
+    for prefix in spellings:
+        if prefix.name != "unsloth_studio":
+            continue
+        candidate = prefix.parent
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        out.append(candidate)
+    return out
+
+
 def _resolve_studio_home() -> tuple[Path, bool]:
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
@@ -166,11 +202,17 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             is_custom = candidate != (Path.home() / ".unsloth" / "studio")
         return candidate, is_custom
     try:
-        prefix = Path(sys.prefix).resolve()
-        if prefix.name == "unsloth_studio":
-            inferred = prefix.parent
-            legacy = (Path.home() / ".unsloth" / "studio").resolve()
-            if inferred != legacy and _looks_like_installer_managed_studio_home(inferred):
+        legacy = (Path.home() / ".unsloth" / "studio").resolve()
+        for inferred in _venv_studio_home_candidates(sys.prefix):
+            # Compared resolved, so the legacy path stays suppressed under a
+            # symlinked HOME no matter which spelling offered it.
+            try:
+                same_as_legacy = inferred.resolve() == legacy
+            except (OSError, ValueError):
+                same_as_legacy = inferred == legacy
+            if same_as_legacy:
+                continue
+            if _looks_like_installer_managed_studio_home(inferred):
                 return inferred, True
     except (OSError, ValueError):
         pass
@@ -246,6 +288,9 @@ def _portable_root_env(master: Path) -> dict[str, str]:
         "UV_INSTALL_DIR": str(master / "bin"),
         "UV_NO_MODIFY_PATH": "1",
         "NPM_CONFIG_CACHE": str(master / "cache" / "npm"),
+        # setup.sh prefers bun over npm when it is present, and bun ignores
+        # NPM_CONFIG_CACHE entirely, caching under $HOME instead.
+        "BUN_INSTALL_CACHE_DIR": str(master / "cache" / "bun"),
         "CUDA_CACHE_PATH": str(master / "cache" / "cuda"),
         # pip is install_python_stack's fallback when uv fails, and it caches by default.
         "PIP_CACHE_DIR": str(master / "cache" / "pip"),
