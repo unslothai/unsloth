@@ -31735,9 +31735,7 @@ class LlamaCppBackend:
                 # rewriting, so writing the tail in place would grow `conversation`
                 # itself and every later reader of it.
                 _refit_messages = list(
-                    neutralize_control_markup_in_messages(
-                        conversation, None, self.markup_profile
-                    )
+                    neutralize_control_markup_in_messages(conversation, None, self.markup_profile)
                 )
                 if _refit_tail:
                     # Already neutralized where the candidate was built, so the tail goes
@@ -32172,9 +32170,10 @@ class LlamaCppBackend:
                             # See the answer continuation above: spending the payload and
                             # the usage before the decision double-counted both.
                             _candidate_r = list(stream_payload["messages"])
-                            _merged_r = bool(
-                                stream_payload.get("continue_final_message")
-                            ) and trailing_assistant_text(_candidate_r) is not None
+                            _merged_r = (
+                                bool(stream_payload.get("continue_final_message"))
+                                and trailing_assistant_text(_candidate_r) is not None
+                            )
                             _append_assistant_turn(
                                 _candidate_r,
                                 {
