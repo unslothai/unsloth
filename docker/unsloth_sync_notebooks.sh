@@ -66,6 +66,28 @@ mkdir -p "$DEST" 2>/dev/null || exit 0
 
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 
+# Give staged file $1 the metadata destination $2 must keep (the bash twin of
+# unsloth_run.py's _stage_metadata). rename swaps the DIRECTORY ENTRY, so the
+# staged inode's owner and mode become the published file's and the clone's
+# root:root 0644 lands on a bind-mounted notebook the host user owns, locking
+# them out. Such a file is reachable because the populate above records a
+# bind mount matching the baked template as managed without copying it. Best
+# effort: a filesystem refusing chmod/chown must not cost the user the refresh.
+stage_metadata() {
+    [ -e "$2" ] || return 0
+    chmod --reference="$2" "$1" 2>/dev/null || true
+    chown --reference="$2" "$1" 2>/dev/null || true
+    return 0
+}
+
+# Copy $1 onto $2 without disturbing $2's owner/mode: a plain `cp` truncates the
+# existing destination inode and leaves its metadata alone, where `cp -a`
+# (--preserve=all) would chown the host user's file to root. `cp -a` is still
+# right when there is no destination yet.
+cp_keep_meta() {
+    if [ -e "$2" ]; then cp "$1" "$2" 2>/dev/null; else cp -a "$1" "$2" 2>/dev/null; fi
+}
+
 # --- mutual exclusion --------------------------------------------------------
 # Every phase below mutates $DEST and rewrites $STATE, and the GitHub refresh
 # runs in a DETACHED child of this same script, so two copies are live at once by
@@ -335,9 +357,11 @@ while IFS= read -r -d '' f; do
             kept=$((kept + 1))
             continue
         fi
+        # Publish with the metadata $dst already has, not the clone's root:root.
+        stage_metadata "$new" "$dst"
         # A single-FILE bind mount cannot be renamed over (EBUSY); fall back to the
         # previous in-place copy there so that setup keeps working as it does today.
-        if mv -f "$new" "$dst" 2>/dev/null || { rm -f "$new"; cp -a "$f" "$dst" 2>/dev/null; }; then
+        if mv -f "$new" "$dst" 2>/dev/null || { rm -f "$new"; cp_keep_meta "$f" "$dst"; }; then
             # $staged, not hash_of "$dst": both branches write the bytes of "$f".
             printf '%s  %s\n' "$staged" "$rel" >> "$TMPSTATE"
             updated=$((updated + 1))

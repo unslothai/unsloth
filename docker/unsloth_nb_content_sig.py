@@ -83,9 +83,18 @@ def _normalize_install(text):
     """
     lines = []
     for line in _COMMENT_RE.sub("", text).split("\n"):
-        line = " ".join(line.split())
-        if line:
-            lines.append(line)
+        body = " ".join(line.split())
+        if not body:
+            continue  # blank, or a line that was nothing but a comment
+        # Keep the INDENTATION. Upstream's install cell is an `if "COLAB_" not in
+        # ...: / else:` block, so a line's indent decides which runtime its
+        # `!pip install` runs on -- moving one out of the Colab-only branch is a
+        # functional change, not churn, and collapsing the indent away hashed it
+        # the same as leaving it in. SAME re-records the OLD hash, so such a
+        # notebook would never converge. Only the spacing WITHIN a line churns.
+        # Tabs are expanded so a tab/space rewrite alone still reads as cosmetic.
+        indent = line[: len(line) - len(line.lstrip())]
+        lines.append(" " * len(indent.expandtabs(4)) + body)
     return "\n".join(lines)
 
 
