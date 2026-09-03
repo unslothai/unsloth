@@ -361,20 +361,36 @@ test("a healthy read resets the stall window", async () => {
   // So measure the reset against the same loop without one. The comparison
   // divides the platform out: whatever a poll costs, a window restarted halfway
   // through must carry the loop about half as far again.
-  const withoutReset = await readsBeforeSettling(0);
-  assert.ok(
-    withoutReset > 8,
-    `the baseline is too short to compare against: ${withoutReset} reads. ` +
-      "Raise STALL_MS.",
-  );
+  // The two halves of the comparison are separate wall-clock runs, so anything
+  // that slows the runner between them skews the ratio, and only ever downwards
+  // for the half that got unlucky. A windows-latest runner is shared and noisy
+  // enough to do that: this failed on main at 56 reads with a reset against 47
+  // without, a ratio of 1.19 where a half-way restart should give about 1.5.
+  //
+  // So sample the pair a few times and take the best ratio. That costs nothing
+  // in strength, because the property under test is deterministic in the source:
+  // with the reset removed the two loops are the SAME loop, so every round
+  // scores about 1.0 and no amount of resampling gets one over the bar. Only an
+  // unlucky measurement is retried, never a wrong answer.
+  const rounds: string[] = [];
+  for (let round = 1; round <= 3; round += 1) {
+    const withoutReset = await readsBeforeSettling(0);
+    assert.ok(
+      withoutReset > 8,
+      `the baseline is too short to compare against: ${withoutReset} reads. ` +
+        "Raise STALL_MS.",
+    );
 
-  const withReset = await readsBeforeSettling(Math.floor(withoutReset / 2));
-  assert.ok(
-    withReset >= withoutReset * 1.25,
-    "a healthy read did not restart the stall window: " +
-      `${withReset} reads with one, ${withoutReset} without. A run of ` +
-      "unreadable polls is inheriting the elapsed time of the run before it, so " +
-      "a slow download that keeps reporting progress can still be abandoned.",
+    const withReset = await readsBeforeSettling(Math.floor(withoutReset / 2));
+    if (withReset >= withoutReset * 1.25) return;
+    rounds.push(`${withReset} with a reset against ${withoutReset} without`);
+  }
+
+  assert.fail(
+    "a healthy read did not restart the stall window, in any of " +
+      `${rounds.length} rounds: ${rounds.join("; ")}. A run of unreadable ` +
+      "polls is inheriting the elapsed time of the run before it, so a slow " +
+      "download that keeps reporting progress can still be abandoned.",
   );
 });
 
