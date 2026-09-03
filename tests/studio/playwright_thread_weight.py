@@ -3,7 +3,7 @@
 
 """How the chat thread's interaction cost grows with the number of messages (#8977).
 
-Studio's chat UI is reported as sluggish on Windows 11 and worsening as the thread fills:
+Unsloth's chat UI is reported as sluggish on Windows 11 and worsening as the thread fills:
 opening menus, scrolling, deleting and typing all lag while token generation is unaffected.
 That shape says the cost is per-message renderer work, so the thing to measure is not a single
 absolute number but a curve: the same four interactions repeated at N in {10, 50, 200, 500}.

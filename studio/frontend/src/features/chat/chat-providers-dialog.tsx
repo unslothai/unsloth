@@ -25,14 +25,17 @@ import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ArrowLeft02Icon,
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
   Wifi02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Eye, EyeOff } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  Eye,
+  EyeOff,
+} from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -281,7 +284,7 @@ export function ChatProvidersSettings({
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
-  // Studio runs Search, Code, MCP and RAG on this machine for any provider that
+  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider that
   // advertises the capability, with no extra opt-in. Say so where the
   // connection is created: the tool results also travel back to the provider as
   // the next turn's input, which is not obvious from "connect a model".
@@ -1311,7 +1314,7 @@ export function ChatProvidersSettings({
             aria-label="Back to connections"
             title="Back to connections"
           >
-            <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
+            <ArrowLeftIcon className="size-4" />
           </Button>
           <div className="flex min-w-0 items-center gap-2 leading-none">
             <span className="text-xs font-medium text-muted-foreground">
@@ -1434,6 +1437,7 @@ export function ChatProvidersSettings({
                     <Input
                       id="provider-api-key"
                       type={showApiKey ? "text" : "password"}
+                      data-reload-snapshot-sensitive
                       value={apiKey}
                       onChange={(event) => {
                         setApiKey(event.target.value);
@@ -1610,7 +1614,7 @@ export function ChatProvidersSettings({
               {runsStudioToolsLocally ? (
                 <div className="px-4 py-3">
                   <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Studio&apos;s Search, Code,
+                    Models on this connection can use Unsloth&apos;s Search, Code,
                     MCP and Docs tools. Those run on this machine, and their
                     results are sent back to the provider as part of the next
                     message. Code and terminal calls still ask before anything

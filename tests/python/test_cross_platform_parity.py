@@ -1006,7 +1006,7 @@ class TestNoTorchPersistenceParity:
 class TestAmdBnbFloorParity:
     """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
     4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
-    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    install.sh and the Unsloth stack resolve bitsandbytes independently, so all three
     must carry the same floor or an unreachable pre-release wheel silently reinstates
     the broken range."""
 

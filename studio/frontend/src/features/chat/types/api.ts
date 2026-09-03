@@ -136,6 +136,9 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** Native audio (TTS / music) only: "cpu" holds the weights in system RAM
+   *  rather than the GPU. Ignored for every non-audio model. */
+  audio_device?: "auto" | "cpu" | "gpu";
 }
 
 export interface ValidateModelResponse {
@@ -179,6 +182,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
@@ -248,6 +252,7 @@ export interface LoadModelResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -281,7 +286,7 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   cpu_fallback_reason?: CpuFallbackReason | null;
-  /** How Studio recovered after a multimodal projector failed at startup. */
+  /** How Unsloth recovered after a multimodal projector failed at startup. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
@@ -365,6 +370,7 @@ export interface InferenceStatusResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
   mlx_kv_bits_requested?: number | null;
@@ -392,8 +398,8 @@ export interface InferenceStatusResponse {
   mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
-  /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
-   * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
+  /** The context the active load was invoked with (0 = let the backend choose); re-seeds
+   * the pin on hydration. Null where the serving backend records no request. */
   requested_context_length?: number | null;
   /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
@@ -608,6 +614,8 @@ export interface OpenAIChatCompletionsRequest {
   min_p?: number;
   repetition_penalty?: number;
   presence_penalty?: number;
+  /** Omitted when unset, which leaves the server to draw its own seed. */
+  seed?: number;
   image_base64?: string;
   audio_base64?: string;
   video_base64?: string;
@@ -634,6 +642,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** The replayed tool calls came from Studio's own local tool loop. */
+  studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
   /**
@@ -664,6 +674,10 @@ export interface OpenAIChatCompletionsRequest {
   nudge_tool_calls?: boolean;
   /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
+  /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
+  context_policy?: "checkpoint" | "rolling";
+  /** Extra share of the prompt budget to drop when a rolling compaction fires. */
+  compaction_headroom_ratio?: number;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
@@ -752,6 +766,16 @@ export interface OpenAIChatChunk {
     // that one message is the problem, i.e. whether "shorten the conversation" helps.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
+    // Whether `latest_turn_tokens` is a real token count or the four-characters-a-token
+    // estimate the fit falls back to when nothing could price the turn at all. A turn the
+    // template renders as nothing on its own is priced by difference and stays exact.
+    // Only the counted one may be quoted as the turn's size.
+    latest_turn_exact?: boolean;
+    // The floor both counts above carry: what a rendered prompt costs with no messages in
+    // it, which on a tool-enabled request is the whole tool catalogue. Subtract it before
+    // comparing them, or the catalogue is blamed on the turn. Absent from an older server,
+    // where zero reproduces the old behaviour.
+    shared_prompt_tokens?: number;
     // Where the compaction boundary sits in the messages THIS request was sent with.
     // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
     // times cannot advance the boundary past the turns actually evicted.
@@ -761,6 +785,10 @@ export interface OpenAIChatChunk {
     // evicted prompt shortens that transcript; without the anchor the replayed count then
     // evicts live turns instead. Carried through untouched, like boundary_messages.
     boundary_anchor?: string;
+    // How much extra trim the fit that set the boundary above used. Replayed against the
+    // request's own ratio: a boundary cut under more headroom than the caller now asks for
+    // is discarded, so lowering the setting hands the history back.
+    boundary_headroom_ratio?: number;
     // Whose message that is: in a tool loop the last one is often a tool result rather
     // than anything the user typed.
     latest_turn_role?: string;

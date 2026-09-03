@@ -3,7 +3,7 @@
 
 """Only the macOS GGUF job opts out of the host-offload guard, and only deliberately.
 
-Mac Studio GGUF CI went red on every main run from ee68d9e2a onwards, the merge of #8883
+Mac Unsloth GGUF CI went red on every main run from ee68d9e2a onwards, the merge of #8883
 ("refuse a gguf that cannot fit in free vram plus available ram"). The chain that makes macOS
 special, from the failing run's own server log:
 

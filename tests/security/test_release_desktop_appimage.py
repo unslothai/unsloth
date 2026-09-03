@@ -2,8 +2,10 @@
 
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
+from xml.etree import ElementTree
 
 import yaml
 
@@ -17,6 +19,8 @@ VERIFIER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "verify-complete-appim
 FINALIZER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "finalize-complete-appimage.sh"
 
 APPRUN = REPO_ROOT / "studio" / "src-tauri" / "linux" / "appimage-apprun.sh"
+
+FONTCONFIG = REPO_ROOT / "studio" / "src-tauri" / "linux" / "appimage-fonts.conf"
 
 
 def _workflow():
@@ -38,7 +42,12 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
 
     # Require plugins compatible with the bundled GStreamer core.
     dependencies = _step("Install Linux dependencies")["run"]
-    for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"):
+    for package in (
+        "fonts-noto-color-emoji",
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-libav",
+    ):
         assert package in dependencies
 
     build = _step("Build Linux bundles")
@@ -60,6 +69,18 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert "tauri-driver --version 2.0.6 --locked" in webdriver_install["run"]
     assert "appimage_model_download_webdriver.py" in e2e_source
 
+    colrv1_sha = "0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2"
+    assert "googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742" in e2e_source
+    assert e2e_source.count(colrv1_sha) >= 2
+    assert "APPIMAGE_COLRV1_FONT" in e2e_source
+    webdriver_script = (REPO_ROOT / "tests/studio/appimage_model_download_webdriver.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "Unsloth Test COLRv1" in webdriver_script
+    assert '"route": "/hub"' in webdriver_script
+    assert '"survived_seconds": 0' in webdriver_script
+    assert "colrv1-model-hub.json" in webdriver_script
+
 
 def test_appimage_pr_build_is_unsigned_and_feeds_every_artifact_test():
     workflow = yaml.safe_load(CLEAN_MACHINE_WORKFLOW.read_text(encoding = "utf-8"))
@@ -78,7 +99,12 @@ def test_appimage_pr_build_is_unsigned_and_feeds_every_artifact_test():
     build = jobs["appimage-pr-build"]
     build_source = yaml.safe_dump(build)
     assert "github.event_name == 'pull_request'" in build["if"]
-    for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"):
+    for package in (
+        "fonts-noto-color-emoji",
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-libav",
+    ):
         assert package in build_source
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build_source
     assert "createUpdaterArtifacts" in build_source
@@ -182,11 +208,53 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     assert tool_script.index("sha256sum -c") < tool_script.index("chmod +x")
 
     assert "apprun-old" not in tool_script
-    for local_tool in ("appimage-apprun.sh", "finalize-complete-appimage.sh"):
+    for local_tool in (
+        "appimage-apprun.sh",
+        "appimage-fonts.conf",
+        "finalize-complete-appimage.sh",
+    ):
         assert local_tool in tool_script
 
     assert "patchelf --set-rpath" in finalizer_source
     assert "$ORIGIN" in finalizer_source
+
+    for asset in (
+        "UnslothSafeEmoji.ttf",
+        "UnslothSafeEmoji.LICENSE",
+        "unsloth-appimage-fonts.conf",
+    ):
+        assert asset in tool_script
+        assert asset in finalizer_source
+    fontconfig_source = FONTCONFIG.read_text(encoding = "utf-8")
+    # Fontconfig silently ignores malformed policies.
+    ElementTree.fromstring(fontconfig_source)
+    # AppRun replaces @APPDIR@ because Fontconfig 2.13 misresolves relative paths.
+    assert "<dir>@APPDIR@/usr/share/unsloth/fonts</dir>" in fontconfig_source
+    assert "<dir prefix=" not in fontconfig_source
+    assert '<match target="scan">' in fontconfig_source
+    assert "Unsloth Safe Emoji" in fontconfig_source
+
+    assert "<selectfont>" in fontconfig_source
+    assert "<rejectfont>" in fontconfig_source
+    assert '<patelt name="color"><bool>true</bool></patelt>' in fontconfig_source
+    # Spare the bundled color font from the host-color rejection.
+    assert "<acceptfont>" in fontconfig_source
+    assert '<patelt name="family"><string>Unsloth Safe Emoji</string></patelt>' in fontconfig_source
+    assert fontconfig_source.index("<acceptfont>") < fontconfig_source.index("<rejectfont>")
+
+    # Only emoji requests may strongly prefer the bundled font.
+    pattern_rules = re.findall(
+        r'<match target="pattern">(.*?)</match>', fontconfig_source, re.DOTALL
+    )
+    assert pattern_rules
+    for rule in pattern_rules:
+        assert '<test name="family">' in rule or '<test name="lang">' in rule
+        if 'mode="prepend"' in rule:
+            assert "<string>emoji</string>" in rule or "<string>und-zsye</string>" in rule
+        else:
+            assert 'mode="append" binding="weak"' in rule
+    for guard in ("und-zsye", "emoji", "sans-serif", "serif", "monospace"):
+        assert any(f"<string>{guard}</string>" in rule for rule in pattern_rules)
     assert 'case "${APPDIR:-}" in' in tool_script
     assert 'APPDIR="$(dirname "$(realpath "$0")")"' in tool_script
     for host_library in (
@@ -241,6 +309,8 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
         "#!/bin/sh\n"
         '. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\n'
         "unset LD_LIBRARY_PATH\n"
+        "sed -e 's,&,\\&amp;,g'\n"
+        'sed "s|@APPDIR@|$unsloth_fonts_appdir|g" "$unsloth_fonts_template"\n'
         "exit 0\n",
         encoding = "utf-8",
     )
@@ -294,6 +364,19 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     scanner = runtime / "gstreamer1.0/gstreamer-1.0/gst-plugin-scanner"
     scanner.parent.mkdir(parents = True)
     scanner.touch()
+    safe_font = appdir / "usr/share/unsloth/fonts/UnslothSafeEmoji.ttf"
+    safe_font.parent.mkdir(parents = True)
+    safe_font.write_bytes(b"fixture CBDT CBLC bitmap font tables")
+    safe_license = appdir / "usr/share/doc/unsloth-safe-emoji/copyright"
+    safe_license.parent.mkdir(parents = True)
+    safe_license.write_text("fixture OFL license\n", encoding = "utf-8")
+    fontconfig = appdir / "usr/etc/fonts/unsloth-appimage.conf"
+    fontconfig.parent.mkdir(parents = True)
+    fontconfig.write_text(
+        "Unsloth Safe Emoji\n<dir>@APPDIR@/usr/share/unsloth/fonts</dir>\n",
+        encoding = "utf-8",
+    )
+
     return appdir
 
 
@@ -391,10 +474,10 @@ def test_complete_appimage_verifier_rejects_global_library_path_and_missing_orig
     assert "$ORIGIN-relative RUNPATH" in result.stderr
 
 
-def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
-    """The loader reads LD_LIBRARY_PATH before the bundle's own $ORIGIN RUNPATHs."""
+def _apprun_mount(tmp_path: Path, name: str = "AppDir") -> Path:
+    """An AppDir holding just what AppRun itself touches."""
 
-    appdir = tmp_path / "AppDir"
+    appdir = tmp_path / name
     binary = appdir / "usr/bin/unsloth-studio"
     binary.parent.mkdir(parents = True)
     binary.write_text("#!/bin/sh\nexec /usr/bin/env\n", encoding = "utf-8")
@@ -402,17 +485,132 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     apprun = appdir / "AppRun"
     apprun.write_bytes(APPRUN.read_bytes())
     apprun.chmod(0o755)
+    template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
+    template.parent.mkdir(parents = True)
+    template.write_bytes(FONTCONFIG.read_bytes())
+    return appdir
+
+
+def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
+    """The loader reads LD_LIBRARY_PATH before the bundle's own $ORIGIN RUNPATHs."""
+
+    appdir = _apprun_mount(tmp_path)
+    apprun = appdir / "AppRun"
+    template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
+    state = tmp_path / "state"
 
     result = subprocess.run(
         [apprun],
         check = True,
         capture_output = True,
         text = True,
-        env = {"PATH": "/usr/bin:/bin", "LD_LIBRARY_PATH": "/opt/conda/lib:/opt/rocm/lib"},
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "LD_LIBRARY_PATH": "/opt/conda/lib:/opt/rocm/lib",
+            "XDG_RUNTIME_DIR": str(state),
+        },
     )
     printed = result.stdout.splitlines()
     assert not [line for line in printed if line.startswith("LD_LIBRARY_PATH=")]
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH=/opt/conda/lib:/opt/rocm/lib" in printed
+
+    # AppRun materializes the mount-specific font path.
+    materialized = state / "unsloth-studio/fonts-AppDir.conf"
+    assert f"FONTCONFIG_FILE={materialized}" in printed
+    assert f"<dir>{appdir}/usr/share/unsloth/fonts</dir>" in materialized.read_text(
+        encoding = "utf-8"
+    )
+    assert "@APPDIR@" not in materialized.read_text(encoding = "utf-8")
+
+
+def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
+    """A later launch preserves live-mount policies and removes departed ones."""
+
+    state = tmp_path / "state"
+    env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(state)}
+    live = _apprun_mount(tmp_path, "mount-live")
+    subprocess.run([live / "AppRun"], check = True, capture_output = True, env = env)
+    live_policy = state / "unsloth-studio/fonts-mount-live.conf"
+    assert live_policy.is_file()
+
+    # Simulate an unmounted AppImage.
+    dead = _apprun_mount(tmp_path, "mount-dead")
+    subprocess.run([dead / "AppRun"], check = True, capture_output = True, env = env)
+    dead_policy = state / "unsloth-studio/fonts-mount-dead.conf"
+    assert dead_policy.is_file()
+    shutil.rmtree(dead)
+
+    later = _apprun_mount(tmp_path, "mount-later")
+    result = subprocess.run([later / "AppRun"], check = True, capture_output = True, text = True, env = env)
+
+    assert live_policy.is_file(), "a running instance lost its font policy"
+    assert not dead_policy.exists(), "a departed mount's font policy was kept"
+    later_policy = state / "unsloth-studio/fonts-mount-later.conf"
+    assert f"FONTCONFIG_FILE={later_policy}" in result.stdout.splitlines()
+    assert later_policy.is_file()
+
+
+def test_apprun_encodes_a_mount_path_carrying_xml_and_sed_metacharacters(tmp_path):
+    """The AppImage runtime copies the file's own name into the mount path."""
+
+    # An AppImage named "R&D<x>.AppImage" mounts under /tmp/.mount_R&D<x>XXXXXX.
+    appdir = _apprun_mount(tmp_path, "mount-R&D<x>|y\\z")
+    state = tmp_path / "state"
+
+    result = subprocess.run(
+        [appdir / "AppRun"],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(state)},
+    )
+
+    materialized = state / f"unsloth-studio/fonts-{appdir.name}.conf"
+    assert f"FONTCONFIG_FILE={materialized}" in result.stdout.splitlines()
+    policy = materialized.read_text(encoding = "utf-8")
+    assert "@APPDIR@" not in policy
+
+    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1
+    # fonts back in front of Skia.
+    root = ElementTree.fromstring(policy)
+    directories = [element.text for element in root.findall("dir")]
+    assert directories == [f"{appdir}/usr/share/unsloth/fonts"]
+    assert root.find("selectfont/rejectfont") is not None
+
+
+def test_apprun_keeps_a_live_policy_whose_mount_path_needed_encoding(tmp_path):
+    """Cleanup compares mounts on disk, so it has to decode what it wrote."""
+
+    state = tmp_path / "state"
+    env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(state)}
+    live = _apprun_mount(tmp_path, "mount-R&D<x>")
+    subprocess.run([live / "AppRun"], check = True, capture_output = True, env = env)
+    live_policy = state / f"unsloth-studio/fonts-{live.name}.conf"
+    assert live_policy.is_file()
+
+    later = _apprun_mount(tmp_path, "mount-later")
+    subprocess.run([later / "AppRun"], check = True, capture_output = True, env = env)
+
+    assert live_policy.is_file(), "a running instance lost its font policy"
+
+
+def test_apprun_falls_back_to_the_shipped_font_policy_when_it_cannot_write(tmp_path):
+    """A policy that rejects host color fonts still beats no policy at all."""
+
+    appdir = _apprun_mount(tmp_path)
+    apprun = appdir / "AppRun"
+    template = appdir / "usr/etc/fonts/unsloth-appimage.conf"
+    unwritable = tmp_path / "unwritable"
+    unwritable.mkdir(mode = 0o500)
+
+    result = subprocess.run(
+        [apprun],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(unwritable / "state")},
+    )
+    assert f"FONTCONFIG_FILE={template}" in result.stdout.splitlines()
 
 
 def test_complete_appimage_verifier_rejects_a_launcher_that_keeps_the_host_library_path(tmp_path):

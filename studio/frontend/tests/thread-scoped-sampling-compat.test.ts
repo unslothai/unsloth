@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Rows written by a Studio without per-chat sampling, rows written by one that has more of
+// Rows written by an Unsloth without per-chat sampling, rows written by one that has more of
 // it than this build, and the values at the edges of what the sanitizer accepts. Every chat
 // in an existing installation is the first case: the snapshot is re-read through
 // sanitizeThreadScopedSettings on every open, and anything it drops is a setting the user
@@ -62,7 +62,7 @@ const INSTALLATION = {
   systemVariables: "scope=installation",
 };
 
-/** A row exactly as a Studio from before per-chat sampling would have left it. */
+/** A row exactly as an Unsloth from before per-chat sampling would have left it. */
 const LEGACY_ROW = {
   reasoningEnabled: false,
   reasoningEffort: "low",
@@ -177,7 +177,7 @@ test("C1: a legacy row opens on the installation sampling, and nothing is zeroed
   assert.equal(w.store().reasoningEnabled, false);
   assert.equal(w.store().toolsEnabled, true);
   // the row is left as it was: a chat that already has a snapshot is not re-pinned,
-  // so an old Studio reading it back still finds only the keys it knows.
+  // so an old Unsloth reading it back still finds only the keys it knows.
   assert.deepEqual(threadRows.rows.get("L"), LEGACY_ROW);
 });
 
@@ -294,7 +294,7 @@ test("C2b: hasThreadScopedSettings tells an empty snapshot from a falsy one", ()
 });
 
 // ---------------------------------------------------------------------------
-// C3 -- a row from a Studio newer or stranger than this one
+// C3 -- a row from an Unsloth newer or stranger than this one
 // ---------------------------------------------------------------------------
 
 test("C3: unknown future keys are dropped, and the known ones still arrive", () => {

@@ -5,10 +5,13 @@
 
 The repo-cpu-tests job runs tests/ under `-n 4`. Two groups cannot go through it:
 
-- tests/studio/load_freeze asserts UPPER bounds on real elapsed time (a /health
-  burst under 250 ms while a 600 ms blocking probe runs, a 100-request burst
-  under 350 ms). Those bounds are the contract, so they cannot be loosened, and a
-  pytest worker descheduled by the other three inflates them.
+- tests/studio/load_freeze asserts UPPER bounds on real elapsed time (50 concurrent
+  probes under 15s, a fast-shim probe under 2s, five sequential probes under 10s, a
+  not-loaded short circuit under 50 ms), and a pytest worker descheduled by the other
+  three inflates them. The two tightest bounds it used to carry, 250 ms for a /health
+  burst and 350 ms for a 100-request burst, are gone: those two tests now hold the
+  blocking call open on an event and assert that /health answers while it is held,
+  which is the property the bounds were standing in for and does not move with load.
 - the hardware-spoof files mutate hardware.py module globals, so they leak into
   whatever shares their worker.
 
@@ -33,6 +36,7 @@ ISOLATED = [
     ("tests/studio/test_hardware_dispatch_matrix.py", "mutates hardware.py globals"),
     ("tests/studio/test_is_mlx_dispatch_gate.py", "mutates hardware.py globals"),
     ("tests/studio/test_xpu_spoof_pipeline.py", "mutates hardware.py globals"),
+    ("tests/studio/test_mlx_context_platform_matrix.py", "mutates hardware.py globals"),
 ]
 
 

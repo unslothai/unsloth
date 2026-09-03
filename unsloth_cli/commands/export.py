@@ -118,6 +118,7 @@ def export(
             push_to_hub = push_to_hub,
             repo_id = repo_id,
             hf_token = hf_token,
+            private = private,
         )
     elif format == "lora":
         success, message, output_path = backend.export_lora_adapter(

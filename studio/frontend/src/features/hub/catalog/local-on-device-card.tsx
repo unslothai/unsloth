@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import {
   Popover,
   PopoverContent,
@@ -80,6 +82,11 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
+  /** False for a local diffusion / audio / video GGUF: it runs through the media
+   *  planner rather than llama.cpp, so the KV estimator describes the wrong
+   *  runtime -- and it still falls back to the file size, so it draws a
+   *  confident weights-only verdict rather than nothing. */
+  showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
   modelFormat: ModelInventoryFormat | null;
@@ -98,6 +105,8 @@ interface LocalOnDeviceCardProps {
   preferredFileIntent?: number;
 
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
   onLoad: (opts?: LocalLoadOptions) => void;
@@ -111,7 +120,10 @@ interface LocalOnDeviceCardProps {
    * it came from this card's selector or was derived from the resident model, which
    * decides whether a fresher status read may override it.
    */
-  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
+  onOpenSettings?: (
+    ggufVariant: string | null,
+    quantIsUserPicked: boolean,
+  ) => void;
 }
 
 function formatAdapterLabel(
@@ -209,6 +221,7 @@ export function LocalOnDeviceCard({
   sourceLabel,
   source,
   path,
+  showMemoryBar = true,
   isGguf,
   requiresVariant = false,
   modelFormat,
@@ -227,6 +240,7 @@ export function LocalOnDeviceCard({
   preferredFileIntent = 0,
 
   gpuGb,
+  gpuCount,
   systemRamGb,
   unsupportedReason,
   onLoad,
@@ -333,6 +347,11 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
+  // The same live VRAM Budget the memory bar on this card reads. Without it the
+  // quant menu ranked against the 0.97 default while the bar beside it used the
+  // saved fraction, so an over-budget variant could sit above a smaller one that
+  // actually fits.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
       variants
@@ -340,7 +359,9 @@ export function LocalOnDeviceCard({
             defaultVariant: currentVariantState.defaultVariant,
             activeGgufVariant: isActive ? activeGgufVariant : null,
             gpuGb,
+            gpuCount,
             systemRamGb,
+            budgetFraction,
           })
         : null,
     [
@@ -349,7 +370,9 @@ export function LocalOnDeviceCard({
       isActive,
       activeGgufVariant,
       gpuGb,
+      gpuCount,
       systemRamGb,
+      budgetFraction,
     ],
   );
   const preferredQuant = preferredFile
@@ -705,6 +728,31 @@ export function LocalOnDeviceCard({
             </button>
           </div>
         </div>
+        {/* Below the action row, not inside it: the row is a horizontal flex
+            container, so a full-width bar there becomes another flex item and
+            squeezes the Run/Train buttons. */}
+        {/* A direct .gguf path skips variant selection entirely, so selectedQuant
+            is null for exactly the local files this is meant to cover. The path
+            names the weights on its own there, and the backend resolves a
+            direct file without needing a quant to match. */}
+        {showMemoryBar &&
+        (repoId || localGgufPath) &&
+        (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
+          <ModelMemoryBarFor
+            // The card's own path is what Run opens, so it is the identity the
+            // estimate has to use: a repo cached under several roots or revisions
+            // can otherwise resolve a different snapshot and chart weights the
+            // click does not load. It is also the only identity a custom or local
+            // GGUF has, where repoId is null and the bar used to be suppressed
+            // outright despite a perfectly good path being right here.
+            repoId={repoId || localGgufPath}
+            loadId={localGgufPath}
+            quant={selectedQuant ?? ""}
+            sizeBytes={selectedVariant?.size_bytes}
+            gpuGb={gpuGb}
+            className="px-3 pb-2"
+          />
+        ) : null}
       </div>
       {baseModel && (
         <BaseModelReference

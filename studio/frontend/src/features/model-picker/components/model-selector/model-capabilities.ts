@@ -42,7 +42,7 @@ const IMAGE_GEN_TAGS = new Set([
   "inpainting",
 ]);
 // Every tag here must be one the Video page can run, or a row draws a glyph promising something
-// no page in Studio delivers. video-to-video is deliberately absent: the backend takes a prompt
+// no page in Unsloth delivers. video-to-video is deliberately absent: the backend takes a prompt
 // and reference IMAGES (routes/video.py), never a source video, so such a model has nowhere to go.
 const VIDEO_GEN_TAGS = new Set([
   "text-to-video",

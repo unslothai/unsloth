@@ -28,7 +28,6 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn, formatCompact } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
   ArrowUpDownIcon,
   Copy01Icon,
   Download01Icon,
@@ -40,6 +39,9 @@ import {
   Refresh01Icon,
   ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, type ReactNode, memo, useMemo } from "react";
@@ -220,8 +222,7 @@ export function HubListHeader({
             // avatars below, just inside the row hover's left edge.
             className="hub-section-chevron -ml-3 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
-            <HugeiconsIcon
-              icon={ArrowLeft01Icon}
+            <ChevronLeftIcon
               strokeWidth={2}
               className="size-4"
             />

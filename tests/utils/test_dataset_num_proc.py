@@ -284,7 +284,7 @@ def test_auto_value_clamped_by_available_memory(monkeypatch, dnp):
 def test_explicit_value_is_clamped_by_memory(monkeypatch, dnp, capsys):
     """The gap that caused issue #2693.
 
-    Studio passes an explicit ``max(1, cpu_count // 4)``, dozens of workers at
+    Unsloth passes an explicit ``max(1, cpu_count // 4)``, dozens of workers at
     ~680 MB each on a big-core machine, and the old heuristic bounded only the
     auto path, so that sailed through however little RAM there was.
     """
@@ -1037,7 +1037,7 @@ def test_successful_map_is_not_disturbed(dnp):
 
 
 def test_studio_num_proc_cap_has_not_drifted(dnp):
-    """Studio duplicates AUTO_NUM_PROC_CAP; the two must stay equal.
+    """Unsloth duplicates AUTO_NUM_PROC_CAP; the two must stay equal.
 
     hardware.py cannot import this module without pulling unsloth's whole
     __init__ into hardware detection, so it carries its own copy. Read it out of

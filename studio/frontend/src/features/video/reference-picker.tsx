@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Delete02Icon, FlimSlateIcon, MusicNote01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -11,20 +11,57 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  CHAT_AUDIO_DROP_ACCEPT,
-  CHAT_VIDEO_DROP_ACCEPT,
-} from "@/features/native-intents/drop-paths";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-import { readReferenceFile } from "./reference-budget";
+import {
+  REFERENCE_DROP_ACCEPT,
+  REFERENCE_PICKER_ACCEPT,
+  createReferenceSelectionGate,
+  readReferenceFile,
+} from "./reference-budget";
+import { classifiedAttachmentFile } from "@/lib/video-utils";
 
 /** One staged reference file: the data URL the request carries, plus its name for the chip. */
 export interface ReferenceMedia {
   name: string;
   dataUrl: string;
+  durationSeconds?: number;
+}
+
+/** How long to wait for a browser to report a clip's duration before giving up on it. */
+export const REFERENCE_DURATION_TIMEOUT_MS = 15_000;
+
+/** Read a clip's duration, resolving undefined when the browser cannot report one.
+ *
+ * An element firing neither loadedmetadata nor error would leave this pending forever, and
+ * its picker slot with it, so the wait is bounded; callers already treat an unknown duration
+ * as "no auto trim". The source stays a data URL because WebKit reports no metadata for an
+ * object URL, and losing the duration costs more than the extra parse saves.
+ */
+function readVideoDuration(dataUrl: string): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const media = document.createElement("video");
+    let settled = false;
+    const finish = (duration?: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      media.onloadedmetadata = null;
+      media.onerror = null;
+      media.removeAttribute("src");
+      // Without a load() the element can keep the resource it was decoding.
+      media.load();
+      resolve(duration);
+    };
+    const timer = setTimeout(() => finish(), REFERENCE_DURATION_TIMEOUT_MS);
+    media.preload = "metadata";
+    media.onloadedmetadata = () =>
+      finish(Number.isFinite(media.duration) && media.duration > 0 ? media.duration : undefined);
+    media.onerror = () => finish();
+    media.src = dataUrl;
+  });
 }
 
 /** Reference video or audio picker that displays the selected filename. */
@@ -44,23 +81,52 @@ export function ReferenceMediaPicker({
   compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Only the newest read from this mounted picker may update the list.
+  const [gate] = useState(createReferenceSelectionGate);
+  useEffect(() => gate.mount(), [gate]);
+  // Index-keyed slots can receive a sibling when an earlier reference is removed.
+  const seen = useRef(value);
+  useEffect(() => {
+    if (seen.current === value) return;
+    seen.current = value;
+    gate.invalidate();
+  }, [value, gate]);
 
   const readFile = useCallback(
-    (file: File | undefined | null) => {
+    async (picked: File | undefined | null) => {
+      if (!picked) return;
+      const claim = gate.begin();
+      // A .3gp is a recording or a clip and its name says neither, so read the
+      // container's tracks before the kind check, as chat and compare do.
+      const file = await classifiedAttachmentFile(picked);
+      if (!claim.isCurrent()) return;
       readReferenceFile(kind, file, {
-        onLoaded: (dataUrl) =>
-          onChange(dataUrl === null || !file ? null : { name: file.name, dataUrl }),
+        onLoaded: (dataUrl) => {
+          if (!claim.isCurrent()) return;
+          if (dataUrl === null) {
+            onChange(null);
+            return;
+          }
+          if (kind !== "video") {
+            onChange({ name: file.name, dataUrl });
+            return;
+          }
+          void readVideoDuration(dataUrl).then((durationSeconds) => {
+            if (!claim.isCurrent()) return;
+            onChange({ name: file.name, dataUrl, durationSeconds });
+          });
+        },
         onError: (message) => toast.error(message),
       });
     },
-    [kind, onChange],
+    [gate, kind, onChange],
   );
 
   // Tauri suppresses the webview's own drop events, so the handlers below never
   // fire on the desktop app; this claims the OS drop for the button (#9036).
   const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
-    onFiles: (files) => readFile(files[0]),
-    accept: kind === "video" ? CHAT_VIDEO_DROP_ACCEPT : CHAT_AUDIO_DROP_ACCEPT,
+    onFiles: (files) => void readFile(files[0]),
+    accept: REFERENCE_DROP_ACCEPT[kind],
     multiple: false,
   });
 
@@ -75,7 +141,14 @@ export function ReferenceMediaPicker({
         )}
       >
         <HugeiconsIcon icon={icon} className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-ui-11 text-foreground">{value.name}</span>
+        {/* The file input is early-returned past in this branch, so the
+            type=file redaction never sees it: mark the name itself. */}
+        <span
+          data-reload-snapshot-sensitive
+          className="min-w-0 flex-1 truncate text-ui-11 text-foreground"
+        >
+          {value.name}
+        </span>
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button
@@ -117,9 +190,9 @@ export function ReferenceMediaPicker({
       <input
         ref={inputRef}
         type="file"
-        accept={`${kind}/*`}
+        accept={REFERENCE_PICKER_ACCEPT[kind]}
         className="hidden"
-        onChange={(e) => readFile(e.target.files?.[0])}
+        onChange={(e) => void readFile(e.target.files?.[0])}
       />
     </button>
   );

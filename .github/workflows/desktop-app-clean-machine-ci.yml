@@ -607,7 +607,7 @@ jobs:
           RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
+            'apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -615,7 +615,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: false
           workspaces: 'studio/src-tauri -> target'
@@ -862,6 +862,13 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0; }'
           cargo install tauri-driver --version 2.0.6 --locked
+      - name: Fetch the digest-pinned COLRv1 regression font
+        run: |
+          set -euo pipefail
+          url='https://raw.githubusercontent.com/googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742/fonts/Noto-COLRv1.ttf'
+          output="$RUNNER_TEMP/Noto-COLRv1.ttf"
+          curl -fsSL --retry 3 --retry-all-errors "$url" -o "$output"
+          echo '0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2  '"$output" | sha256sum -c -
 
       - name: Download the AppImage built from this PR
         if: github.event_name == 'pull_request'
@@ -900,6 +907,8 @@ jobs:
         env:
           APPIMAGE_PATH: ${{ github.workspace }}/dl/Unsloth.AppImage
           APPIMAGE_E2E_ART_DIR: ${{ github.workspace }}/logs/appimage-model-download
+          APPIMAGE_COLRV1_FONT: ${{ runner.temp }}/Noto-COLRv1.ttf
+          APPIMAGE_COLRV1_FONT_SHA256: 0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2
         run: |
           set -euo pipefail
           appimage="$(find dl -maxdepth 1 -type f -name '*.AppImage' -print -quit)"

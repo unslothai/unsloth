@@ -3,11 +3,27 @@
 
 "use client";
 
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { useT } from "@/i18n";
+// eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useLocale, useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ShieldAlertIcon, XIcon } from "lucide-react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { hashArtifactCode } from "./types";
 
@@ -94,13 +110,16 @@ export function ArtifactHtmlFrame({
   title = "HTML canvas preview",
   className,
   fill = false,
+  actionFocusTargetRef,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
+  actionFocusTargetRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
+  const locale = useLocale();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Every canvas honors this, fence or tool. Off by default; the standing half
   // of the gate, alongside the per-canvas grant below.
@@ -125,6 +144,8 @@ export function ArtifactHtmlFrame({
   const [grantedCode, setGrantedCode] = useState<string | null>(null);
   const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
+  const [dismissedCode, setDismissedCode] = useState<string | null>(null);
+  const dismissedForCanvas = dismissedCode === code;
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   // Identifies this load to the frame, which stamps its blocked reports with it.
   const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
@@ -196,7 +217,8 @@ export function ArtifactHtmlFrame({
     // canvas on screen, rather than relying on postArtifactHtml changing.
   }, [postArtifactHtml, code, codeVersion]);
 
-  const showBlockedBanner = !networkAllowed && blockedForCanvas.uris.length > 0;
+  const showBlockedBanner =
+    !networkAllowed && !dismissedForCanvas && blockedForCanvas.uris.length > 0;
   const shownHosts = blockedForCanvas.hosts
     .slice(0, BLOCKED_HOSTS_SHOWN)
     .join(", ");
@@ -204,36 +226,98 @@ export function ArtifactHtmlFrame({
     blockedForCanvas.hosts.length > BLOCKED_HOSTS_SHOWN
       ? `${shownHosts}…`
       : shownHosts;
+  const focusAfterAction = () => {
+    (actionFocusTargetRef?.current ?? iframeRef.current)?.focus({
+      preventScroll: true,
+    });
+  };
 
   return (
-    <div className={cn("relative", fill ? "h-full" : undefined)}>
+    <div
+      className={cn("relative", fill ? "h-full" : undefined)}
+    >
       <iframe
         ref={iframeRef}
         src={src}
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         onLoad={postArtifactHtml}
-        className={cn("block w-full border-0 bg-background", className)}
+        className={cn(
+          "block w-full border-0 bg-background outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+          className,
+        )}
         style={{ height: fill ? "100%" : height }}
         title={title}
       />
       {showBlockedBanner ? (
-        <div className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-2 border-t bg-background/95 px-3 py-2 text-xs backdrop-blur">
-          <span className="text-muted-foreground">
-            {t(
-              blockedForCanvas.uris.length === 1
-                ? "settings.chat.artifacts.blockedBanner"
-                : "settings.chat.artifacts.blockedBannerPlural",
-              { count: blockedForCanvas.uris.length, hosts: blockedFrom },
-            )}
-          </span>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setGrantedCode(code)}
+        <div className="absolute inset-x-0 top-0 p-2">
+          <Alert
+            role="group"
+            dir={locale === "ar" ? "rtl" : "ltr"}
+            aria-label={t("settings.chat.artifacts.blockedTitle")}
+            className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur"
           >
-            {t("settings.chat.artifacts.blockedBannerAction")}
-          </Button>
+            <ShieldAlertIcon className="text-amber-500" />
+            <AlertAction>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                onClick={() => {
+                  focusAfterAction();
+                  setDismissedCode(code);
+                }}
+              >
+                <XIcon />
+              </Button>
+            </AlertAction>
+            <AlertTitle role="alert">
+              {t("settings.chat.artifacts.blockedTitle")}
+              <span className="sr-only">
+                {" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </span>
+            </AlertTitle>
+            <AlertDescription>
+              <p>
+                {t(
+                  blockedForCanvas.uris.length === 1
+                    ? "settings.chat.artifacts.blockedBanner"
+                    : "settings.chat.artifacts.blockedBannerPlural",
+                  { count: blockedForCanvas.uris.length, hosts: blockedFrom },
+                )}{" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    focusAfterAction();
+                    setGrantedCode(code);
+                  }}
+                >
+                  {t("settings.chat.artifacts.blockedBannerAction")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-canvas-network",
+                      focusFallback:
+                        actionFocusTargetRef?.current ?? iframeRef.current,
+                    });
+                  }}
+                >
+                  {t("settings.chat.artifacts.blockedSettingsAction")}
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
         </div>
       ) : null}
     </div>

@@ -44,6 +44,12 @@ function snapshotContent(
     : [];
 }
 
+// Epoch millis pass through; `getTime?.()` alone re-dated them to now and reordered the thread.
+function toEpochMillis(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  return typeof value === "number" && Number.isFinite(value) ? value : Date.now();
+}
+
 function snapshotAttachments(
   attachments: readonly CompleteAttachment[] | undefined,
 ): readonly CompleteAttachment[] {
@@ -67,7 +73,7 @@ export function exportedItemToRecord(
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       ...(attachments.length > 0 && { attachments }),
       ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
-      createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+      createdAt: toEpochMillis(message.createdAt),
     };
   }
   const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
@@ -81,7 +87,7 @@ export function exportedItemToRecord(
       { role: "assistant" }
     >["content"],
     ...(Object.keys(custom).length > 0 && { metadata: custom }),
-    createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+    createdAt: toEpochMillis(message.createdAt),
   };
 }
 
@@ -112,7 +118,7 @@ async function withStoredResearchMessages(
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<void> {
   // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
   // this used to make every save pay for the same GET /threads/{id} twice.
@@ -122,7 +128,10 @@ export async function syncExportedRepositoryToBackend(
   await syncStoredChatMessages(
     remoteId,
     await withStoredResearchMessages(remoteId, records),
-    { pruneMissing: options.pruneMissing },
+    {
+      pruneMissing: options.pruneMissing,
+      deletedMessageIds: options.deletedMessageIds,
+    },
   );
 }
 
@@ -167,6 +176,7 @@ export async function deleteThreadMessage(args: {
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {
       pruneMissing: true,
+      deletedMessageIds: [messageId, ...assistantReplyIds],
     });
   }
   thread.import(next);

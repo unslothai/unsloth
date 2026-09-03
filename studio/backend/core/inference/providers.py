@@ -68,11 +68,43 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "hosted_tools": ("web_search", "code_execution", "image_generation"),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Scope the picker to the current generation. /v1/models returns many
-        # historical snapshots, fine-tunes, and non-chat models we don't want.
-        "model_id_allowlist": re.compile(r"^(gpt-5\.[3456]|gpt-4\.5|o3)(?:[-.]|$)"),
-        # Hide dated snapshots and the retired plain gpt-5.3 id.
-        "model_id_denylist": re.compile(r"^(gpt-5\.3)$|-\d{4}-\d{2}-\d{2}$"),
+        # Deny non-chat rather than allowlist chat families: the allowlist
+        # silently dropped every new family until someone widened it.
+        # The bar is not "chat model" but "servable on /v1/responses with
+        # stream: true", Studio's only OpenAI transport (`_stream_openai_
+        # responses`), so a family whose model page marks `v1/responses` Not
+        # supported is denied even though it chats fine over chat/completions.
+        # Feature words match mid-id because OpenAI qualifies every variant
+        # with them (`tts-1`, `gpt-4o-mini-tts`) and never uses them inside a
+        # chat id; bases stay ^-anchored so `gpt-7-davinci-edition` survives.
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
+            r"transcribe|translate|instruct|sora)\b"
+            # Chat Completions only, per developers.openai.com/api/docs/models/
+            # {gpt-audio, gpt-4o-search-preview, o1-mini, o1-preview}.
+            # `-search-api` is the standalone search endpoint.
+            r"|(?:^|-)(?:audio|realtime)\b"
+            r"|(?:^|-)search-(?:preview|api)\b"
+            # Needs a data source and a Studio turn sends no tools.
+            # https://developers.openai.com/api/docs/guides/deep-research
+            r"|(?:^|-)deep-research\b"
+            r"|^o1-(?:mini|preview)\b"
+            # Retired canonical id retained by /v1/models.
+            r"|^gpt-5\.3$"
+            # Legacy bases and the first-generation embedding / search line.
+            # `^(?:text|code)-` needs the hyphen, so `codex-mini-latest` stays.
+            r"|^(?:babbage|davinci|ada|curie)\b"
+            r"|^(?:text|code)-(?:embedding|moderation|search|similarity"
+            r"|davinci|curie|babbage|ada|cushman)\b"
+            r"|^dall-e\b"
+            r"|^computer-use\b"
+            # Fine-tunes carry the user's tenant in the id.
+            r"|^ft:"
+            # Snapshots hide behind the canonical id the listing also returns:
+            # modern `-YYYY-MM-DD` and legacy `-MMDD` (`gpt-4-1106-preview`).
+            r"|-\d{4}-\d{2}-\d{2}$"
+            r"|-\d{4}(?:-preview)?$"
+        ),
     },
     "anthropic": {
         "display_name": "Anthropic",
@@ -85,12 +117,14 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-sonnet-4-6",
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5-20251001",
         ],
-        # Hide YYYYMMDD-suffixed snapshot ids (e.g. claude-3-5-sonnet-20241022).
-        "model_id_denylist": re.compile(r"-\d{8}$"),
+        # No denylist: a `-YYYYMMDD` id IS the canonical name for the whole
+        # pre-4.6 generation, not a snapshot to hide, so the old `-\d{8}$`
+        # rule hid 6 of the 9 live models. `pruneProviderModelIds` in
+        # sync-external-providers.ts held a copy and had to go with it.
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": False,
@@ -418,10 +452,10 @@ def get_base_url(provider_type: str) -> str | None:
 
 
 def provider_runs_local_tools(provider_type: str | None) -> bool:
-    """Whether Studio may run its own tool loop against this provider type.
+    """Whether Unsloth may run its own tool loop against this provider type.
 
-    Studio's tools (web_search, python, terminal, MCP, knowledge-base search)
-    execute on the Studio host, so any provider whose wire format can carry a
+    Unsloth's tools (web_search, python, terminal, MCP, knowledge-base search)
+    execute on the Unsloth host, so any provider whose wire format can carry a
     tool schema out and a tool result back can use them. That is the whole
     OpenAI-compatible family plus Gemini, whose native shape is translated to
     and from OpenAI chunks in ``external_provider.py``.
@@ -465,14 +499,14 @@ def provider_model_runs_local_tools(provider_type: str | None, model: str | None
 def provider_hosted_tools(provider_type: str | None) -> frozenset[str]:
     """Built-in tool names this provider executes on its own side.
 
-    These are not Studio's tools: they are body flags (`tools: [{type:
+    These are not Unsloth's tools: they are body flags (`tools: [{type:
     "web_search"}]`, `plugins: [{id: "web"}]`, `codeExecution`) that the provider
     runs and bills, and the only thing this server does with them is forward the
     name. `provider_runs_local_tools` is orthogonal -- most providers do both,
     and a request picks a side by which names it lists.
 
     Empty for the self-hosted presets (llama.cpp, vLLM, Ollama, custom) and for
-    openai_codex, whose `web_search` is Studio's own tool run by the Codex loop.
+    openai_codex, whose `web_search` is Unsloth's own tool run by the Codex loop.
     """
     if not isinstance(provider_type, str):
         return frozenset()
@@ -494,10 +528,10 @@ HOSTED_TOOL_NAMES: frozenset[str] = frozenset(
 # and bills for it.
 #
 # Which side a request wants is the request's to say, not this server's to
-# assume. web_search is unambiguous -- the hosted name and Studio's own tool are
-# spelled the same, so naming it while the loop runs can only mean Studio's.
+# assume. web_search is unambiguous -- the hosted name and Unsloth's own tool are
+# spelled the same, so naming it while the loop runs can only mean Unsloth's.
 # code_execution is a different name from python/terminal precisely because it
-# is a different thing: it runs in the provider's sandbox, and Studio has no
+# is a different thing: it runs in the provider's sandbox, and Unsloth has no
 # implementation of it at all (see ALL_TOOLS). Treating it as "already replaced"
 # therefore substitutes nothing, it just drops the tool while its pill stays lit.
 LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
@@ -507,11 +541,11 @@ LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
 
 
 def hosted_only_tools(provider_type: str | None, enabled_tools: Any) -> list[str]:
-    """The requested hosted tools Studio is not running in their place.
+    """The requested hosted tools Unsloth is not running in their place.
 
     image_generation and web_fetch have no local implementation, and their UI
     pills are independent of Search / Code / RAG, so a request that mixes one of
-    them with a Studio tool has to carry it through to the provider or the tool
+    them with an Unsloth tool has to carry it through to the provider or the tool
     silently disappears while its toggle stays on. code_execution has no local
     implementation either, and rides along unless the same request also asked
     for the local tools that would duplicate it.
@@ -567,7 +601,7 @@ _METADATA_IPS = frozenset(
 # not mistaken for one.
 _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 
-# Opt-in for operators who expose Studio on a shared host: also refuse provider
+# Opt-in for operators who expose Unsloth on a shared host: also refuse provider
 # URLs that resolve to a non-public address. Off by default, because loopback and
 # LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
@@ -908,7 +942,7 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     entries.
 
     ``include_hidden`` is how a client that does know says so. The self-hosted
-    presets are exactly the ones that run Studio's tools, so their capability
+    presets are exactly the ones that run Unsloth's tools, so their capability
     has to reach a frontend that asks for it, and asking is opt-in.
     """
     result = []
