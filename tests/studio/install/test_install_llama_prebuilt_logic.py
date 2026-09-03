@@ -1538,9 +1538,7 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
     original_replace = INSTALL_LLAMA_PREBUILT.os.replace
 
     # EIO, not EXDEV: a cross-device link is the one rename failure the aside-move
-    # completes by copy (Docker lands the install dir and the staging root on
-    # different overlay layers), so it is no longer an example of a move that
-    # fails. Any other non-busy error still is, and that is what this covers.
+    # now completes by copy, so it is no longer an example of a move that fails
     def failing_replace(src, dst):
         if Path(src) == install_dir:
             raise OSError(errno.EIO, "Input/output error")
@@ -1583,10 +1581,8 @@ def test_activate_install_tree_copies_the_existing_install_aside_across_devices(
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
 
-    # A Docker studio build moves the base image's llama.cpp aside onto a
-    # different overlay layer, where rename cannot reach. The source is idle
-    # there, so the move completes as a copy and the update goes through
-    # instead of falling back to a source build inside the image.
+    # a Docker studio build moves the base image's llama.cpp onto a different overlay
+    # layer, where rename cannot reach and the copy fallback has to carry it
     activate_install_tree(staging_dir, install_dir, linux_host())
 
     assert (install_dir / "new.txt").read_text() == "new install\n"
@@ -1617,8 +1613,7 @@ def test_move_install_dir_aside_leaves_no_partial_tree_when_the_copy_fails(
     with pytest.raises(OSError, match = "No space left on device"):
         INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
 
-    # Callers read dst.exists() as proof of a complete tree, so a copy that dies
-    # partway must leave nothing there and must not have touched the source.
+    # callers read dst.exists() as proof of a COMPLETE tree
     assert not dst.exists()
     assert not dst.with_name(dst.name + ".copying").exists()
     assert (src / "old.txt").read_text() == "old install\n"
@@ -1643,8 +1638,8 @@ def test_move_install_dir_aside_refuses_to_copy_a_linked_install(
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
 
-    # copytree always follows the root it is given, so copying a linked install
-    # aside would duplicate a checkout this installer does not own.
+    # copytree always follows the root, so this would duplicate a checkout the
+    # installer does not own
     with pytest.raises(OSError, match = "cross-device"):
         INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
 

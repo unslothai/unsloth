@@ -2,12 +2,8 @@
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 """Tests for the Unsloth Docker Studio branding / AGPLv3 integrity guard.
 
-verify_branding() is exercised against a staged temp tree that mirrors the
-installed image layout, so no container or built labextension is required:
-  * positive: a faithful tree passes (no problems).
-  * negative: removing/altering each attribution marker is detected.
-  * no-encoding: the attribution sources carry no base64/decoder obfuscation
-    (plain readable strings only -- the only data URI is the logo *image*).
+verify_branding() runs against a staged temp tree mirroring the installed image
+layout, so no container or built labextension is required.
 """
 
 import json
@@ -24,7 +20,6 @@ import unsloth_branding as ub  # noqa: E402
 
 
 def _stage(tmp_path):
-    """Create a faithful copy of the installed branding layout; return paths."""
     venv_share = tmp_path / "venv-share"
     js_dir = tmp_path / "jupyter_server"
 
@@ -72,8 +67,7 @@ def _stage(tmp_path):
     (js_dir / "static" / "logo").mkdir(parents = True)
     (js_dir / "static" / "logo" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\nlogo")
 
-    # config_dirs = [] keeps the tree hermetic (no host jupyter config scanned);
-    # page_config tests write to the app-settings page_config.json directly.
+    # config_dirs = [] keeps the tree hermetic: no host jupyter config is scanned
     return ub.resolve_paths(
         venv_share = str(venv_share),
         jupyter_server_dir = str(js_dir),
@@ -86,7 +80,6 @@ def test_positive_clean_tree_passes(tmp_path):
     assert ub.verify_branding(paths) == []
 
 
-# --- negative mutations: each strips one attribution marker --------------------
 def _remove_license(paths):
     os.remove(paths["license"])
 
@@ -161,7 +154,6 @@ def _disable_unsloth_plugin(paths):
 
 
 def _disable_unsloth_ext_list_form(paths):
-    # Older JupyterLab configs used a list of ids rather than an {id: bool} map.
     with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
         json.dump({"disabledExtensions": [ub.SPLASH_PLUGIN_ID]}, f)
 
@@ -194,7 +186,7 @@ def test_negative_each_marker_is_enforced(tmp_path, mutate):
 
 
 def test_disabling_stock_plugins_is_allowed(tmp_path):
-    """We disable the stock logo/splash ourselves -- the guard must not flag those."""
+    """We disable the stock logo/splash ourselves; the guard must not flag those."""
     paths = _stage(tmp_path)
     with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
         json.dump(
@@ -210,7 +202,7 @@ def test_disabling_stock_plugins_is_allowed(tmp_path):
 
 
 def test_attribution_sources_have_no_encoded_obfuscation():
-    """Plain readable strings only -- no base64/decoder tricks (antivirus-safe)."""
+    """Plain readable strings only, so antivirus scanners have nothing to trip on."""
     src_dir = os.path.join(REPO, "docker", "jupyter")
     files = [
         os.path.join(src_dir, "unsloth_branding.py"),
@@ -236,12 +228,8 @@ def test_attribution_sources_have_no_encoded_obfuscation():
 
 
 def test_canonical_phrase_is_plain_text_in_definition_files():
-    """The attribution lives as plain readable text in both definition files.
-
-    branding.ts holds the full PHRASE as ONE contiguous literal (so webpack keeps
-    it whole in the bundle for the guard to grep). unsloth_branding.py keeps the
-    markers as plain constants (the runtime PHRASE value matches, even though the
-    source wraps it across adjacent literals)."""
+    """branding.ts holds the full PHRASE as ONE contiguous literal, so webpack keeps it
+    whole in the bundle for the guard to grep."""
     src_dir = os.path.join(REPO, "docker", "jupyter")
     ts = open(
         os.path.join(src_dir, "unsloth_labext", "src", "branding.ts"), encoding = "utf-8"

@@ -2,18 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-# Remove the Colab-only "how to run" sentence from Unsloth notebooks for Docker.
+# Remove the Colab-only "To run this, press Runtime > Run all ..." sentence, which is
+# wrong inside Docker, keeping the rest of the header cell. Two modes:
 #
-# Each generated notebook's first markdown cell opens with a Colab instruction
-# ("To run this, press Runtime > Run all ...") that is wrong inside Docker. Strip
-# only that leading sentence and keep the rest (badge row, install link, etc).
-# Docker-only, applied at sync time; NOT pushed upstream.
-#
-# Two modes:
-#   unsloth_nb_strip_colab.py <a.ipynb> [b.ipynb ...]   strip in place (idempotent)
+#   unsloth_nb_strip_colab.py <a.ipynb> ...              strip in place (idempotent)
 #   unsloth_nb_strip_colab.py --state <STATE> --dest <DEST>
-#       STATE-aware migration: strip + rehash each owned+unedited notebook (one
-#       whose hash still matches STATE); user-edited ones are left untouched.
+#       strip + rehash each notebook whose hash still matches STATE
 #
 # Safe with refresh: content_sig classifies the intro cell as boilerplate, so the
 # body digest is unchanged. Exit code is always 0.
@@ -24,27 +18,17 @@ import os
 import stat
 import sys
 
-# Stable identifier for the offending line (all GPU/Cloud variants).
 _INTRO_PREFIX = "to run this, press"
 
-# Baked notebooks ship tqdm widget outputs + a metadata.widgets block that
-# JupyterLab can't rebuild, so they render as a stuck "Loading widget...". Drop
-# them (the cell recreates a fresh widget). Outputs aren't in the refresh
-# signature (content_sig hashes type+source), so this is safe.
+# Baked tqdm widget outputs render as a stuck "Loading widget...", and outputs are not
+# in the refresh signature, so dropping them is safe.
 _WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json"
 
 
 def _is_intro_line(line):
-    """True for the Colab run announcement in either shipped spelling.
-
-    Most notebooks open the line with the sentence itself, but two (NeMo-Gym-*)
-    ship it inside a single-line HTML comment:
-
-        <!-- To run this, press "*Runtime*" ... instance! -->
-
-    Only a comment that OPENS AND CLOSES on the same line is matched, so
-    dropping it can never leave a dangling `<!--` that swallows the rest of the
-    cell."""
+    """True for the Colab run announcement, bare or inside a single-line HTML comment.
+    Only a comment that OPENS AND CLOSES on one line matches, so dropping it can never
+    leave a dangling `<!--` that swallows the rest of the cell."""
     stripped = line.strip()
     low = stripped.lower()
     if low.startswith(_INTRO_PREFIX):
@@ -55,16 +39,9 @@ def _is_intro_line(line):
 
 
 def _stage_metadata(staged, dest):
-    """Give the staged file the metadata `dest` must keep, before os.replace.
-
-    The third site of this hazard on this branch, after unsloth_run.py and
-    unsloth_sync_notebooks.sh. os.replace swaps the directory entry, so the
-    staged inode's root owner and mode become the published file's, and the sync
-    script deliberately records a bind-mounted notebook matching the baked
-    template as managed WITHOUT copying it precisely so the host user keeps
-    owning it. Cleaning it must not undo that. Best effort: a filesystem that
-    refuses chmod/chown must not cost the user the cleanup.
-    """
+    """os.replace swaps the directory entry, so the staged inode's root owner would
+    become the published file's, undoing the sync script's care to leave a
+    bind-mounted notebook host-owned. Best effort."""
     try:
         st = os.stat(dest)
     except OSError:
@@ -80,8 +57,6 @@ def _stage_metadata(staged, dest):
 
 
 def _strip_lines(lines):
-    """Drop the intro line (and an immediately-following blank). Return new list
-    or None if there was nothing to strip."""
     for i, line in enumerate(lines):
         if _is_intro_line(line):
             out = lines[:i] + lines[i + 1 :]
@@ -92,7 +67,6 @@ def _strip_lines(lines):
 
 
 def _strip_cell(cell):
-    """Strip the intro line out of ONE markdown cell. Return True if changed."""
     src = cell.get("source")
     if isinstance(src, str):
         lines = src.splitlines(keepends = True)
@@ -110,16 +84,9 @@ def _strip_cell(cell):
 
 
 def _strip_intro(nb):
-    """Strip the Colab intro sentence from the LEADING markdown block.
-
-    Scanning cells[0] alone missed 23 of the 433 shipped notebooks: 21 put the
-    Colab badge `<a href=...>` in cells[0] and the sentence in cells[1]
-    (Advanced_Llama3_2_(3B)_GRPO_LoRA, Falcon_H1-Alpaca, gpt-oss-(20B)-GRPO,
-    ...), and 2 (NeMo-Gym-*) wrap it in an HTML comment cells[0]-only matching
-    never saw. The scan stops at the first non-markdown cell, so it only ever
-    touches the header block a notebook opens with (at most 5 cells across the
-    shipped set) and can never reach explanatory prose between code cells.
-    Return True if any cell changed."""
+    """Strip the Colab intro from the LEADING markdown block: cells[0] alone misses the
+    notebooks that put the badge there and the sentence in cells[1]. The scan stops at
+    the first non-markdown cell, so it never reaches prose between code cells."""
     cells = nb.get("cells")
     if not isinstance(cells, list):
         return False
@@ -133,8 +100,6 @@ def _strip_intro(nb):
 
 
 def _clean_widgets(nb):
-    """Drop baked ipywidget outputs + the orphan widget-state metadata that
-    otherwise render as "Loading widget...". Return True if changed."""
     changed = False
     cells = nb.get("cells")
     if isinstance(cells, list):
@@ -160,12 +125,8 @@ def _clean_widgets(nb):
 
 
 def strip_notebook(path, staged = None):
-    """Return True if the notebook was modified and written back.
-
-    ``staged`` is an optional dict; on a successful publish it receives
-    ``{"sha256": ...}`` for the bytes THIS call wrote, so the caller can record
-    what it published instead of re-reading the live file afterwards.
-    """
+    """True if the notebook was modified and written back. `staged`, when given, gets
+    {"sha256": ...} for the bytes THIS call wrote, so the caller need not re-read."""
     try:
         before = _sha256(path)
         with open(path, "r", encoding = "utf-8") as f:
@@ -173,7 +134,6 @@ def strip_notebook(path, staged = None):
     except Exception:
         return False
 
-    # Apply both transforms; write back if either changed.
     changed = _strip_intro(nb)
     changed = _clean_widgets(nb) or changed
     if not changed:
@@ -184,25 +144,14 @@ def strip_notebook(path, staged = None):
         with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(nb, f, indent = 1, ensure_ascii = False)
             f.write("\n")
-        # Hash the staged copy up front: it is what gets published, and taking it
-        # here rather than after the replace keeps the recheck below immediately
-        # adjacent to the replace it guards.
         after = _sha256(tmp)
-        # The refresh child re-arms this cleanup AFTER the entrypoint has execed
-        # the container command, so JupyterLab is already serving the tree: a save
-        # landing between the read above and this replace would be silently
-        # overwritten, and migrate() would then record the cleaned hash and mark
-        # the notebook pristine forever. Re-read the live file once the staged
-        # copy is complete (the same rule the refresh publish in
-        # unsloth_sync_notebooks.sh follows) and let their edit win.
+        # JupyterLab is already serving the tree, so a save between the read above and
+        # this replace would be overwritten and then recorded as pristine forever
         if _sha256(path) != before:
             os.remove(tmp)
             return False
         _stage_metadata(tmp, path)
         os.replace(tmp, path)
-        # Hand the caller the STAGED hash: rehashing `path` after the replace
-        # would adopt a save that landed in that window and record the user's own
-        # work as pristine, which is what lets the next refresh overwrite it.
         if staged is not None:
             staged["sha256"] = after
     except Exception:
@@ -223,7 +172,6 @@ def _sha256(path):
 
 
 def migrate(state_path, dest):
-    """Strip owned+unedited notebooks listed in STATE and update their hashes."""
     try:
         with open(state_path, "r", encoding = "utf-8") as f:
             lines = f.read().splitlines()

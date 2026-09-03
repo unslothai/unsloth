@@ -7,17 +7,11 @@ import {
 } from '@jupyterlab/application';
 
 /**
- * Colab-style Ctrl/Cmd+A inside a cell output.
- *
- * Clicking an output leaves the notebook in command mode, so Ctrl/Cmd+A fires
- * `notebook:select-all` (every cell). Colab selects only the clicked output's
- * text; reproduce that and stop the event. Listens in the CAPTURE phase, acts
- * only on exactly Ctrl/Cmd+A (no Alt) outside an editor/input, keyed off the
- * target or last pointer-down (not the stale selection anchor).
+ * Colab-style Ctrl/Cmd+A inside a cell output: clicking an output leaves the
+ * notebook in command mode, so the chord otherwise fires `notebook:select-all`.
+ * Keyed off the target or last pointer-down, never the stale selection anchor.
  */
 
-// Output containers, widest first: a single output, then the whole output column
-// (covers a click on padding between outputs).
 const OUTPUT_SELECTORS = ['.jp-OutputArea-output', '.jp-Cell-outputWrapper'];
 
 function closestOutput(node: Node | null): HTMLElement | null {
@@ -51,7 +45,6 @@ function inEditableContext(): boolean {
   if (tag === 'INPUT' || tag === 'TEXTAREA') {
     return true;
   }
-  // CodeMirror 6 editor (cell input in edit mode).
   return !!ae.closest('.cm-editor');
 }
 
@@ -61,15 +54,11 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
     'Ctrl/Cmd+A inside a cell output selects only that output, not every cell.',
   autoStart: true,
   activate: (_app: JupyterFrontEnd): void => {
-    // Remember the last pointer-down: a click on an image/widget output leaves no
-    // text selection, so the anchor alone can't tell which output is meant.
+    // a click on an image/widget output leaves no text selection
     let lastPointerOutput: HTMLElement | null = null;
-    // ...but only trust it while that output is still in the document AND still
-    // inside the ACTIVE cell. Keyboard cell navigation (J/K, arrows) fires no
-    // pointer event, so an unvalidated value would make the chord on a later cell
-    // select the previously clicked output and swallow `notebook:select-all`; and
-    // a re-executed cell replaces the node, leaving a detached range that selects
-    // nothing at all while still suppressing the shortcut.
+    // ...but only while it is still in the document AND in the ACTIVE cell: J/K
+    // navigation fires no pointer event, so a stale value selects an earlier cell's
+    // output, and a re-executed cell leaves a detached range that selects nothing
     const rememberedOutput = (): HTMLElement | null => {
       const output = lastPointerOutput;
       if (!output || !output.isConnected) {
@@ -96,14 +85,12 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
       if (inEditableContext()) {
         return;
       }
-      // Own the chord only when in an output: the target, else the last click
-      // (not the stale selection anchor; see the header).
       const output =
         closestOutput(event.target as Node | null) ?? rememberedOutput();
       if (!output) {
         return;
       }
-      // We own this key: prevent Lumino's `notebook:select-all` from also running.
+      // prevent Lumino's `notebook:select-all` from also running
       event.preventDefault();
       event.stopPropagation();
       try {
@@ -118,7 +105,6 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
         /* no-op */
       }
     };
-    // Capture phase: decide before Lumino's keybindings consume Ctrl/Cmd+A.
     document.addEventListener('keydown', handler, true);
   }
 };

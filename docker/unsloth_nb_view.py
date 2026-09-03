@@ -2,23 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-# Build a categorized, Colab-like folder VIEW of the Unsloth notebooks.
-#
-# The canonical notebooks live flat under DEST/nb/<file>.ipynb (kept by
-# unsloth_sync_notebooks.sh). This builds a sibling dir of *relative symlinks*
-# grouped into folders mirroring the README headers:
-#   <VIEW>/01 Main Notebooks/Llama3_2_(1B_and_3B)_Conversational.ipynb
-#   <VIEW>/99 Other Notebooks/<anything on disk not linked from the README>
-# Symlinks so real files never move (the sync state machine skips them); the VIEW
-# is a disposable sibling of DEST, rebuilt on every boot.
-#
-# Categorization rules:
-#   * Section = nearest preceding `###` header; a header repeated across domains
-#     merges into one folder (first order).
-#   * Folder names cleaned (dashes/slashes -> spaces) and numbered `NN ` by first
-#     appearance so JupyterLab's sort keeps README order; "Other" is last.
-#   * A notebook linked under several sections lands in its first.
-#   * AMD-*.ipynb hidden unless --amd; unlinked nb/*.ipynb go to "Other Notebooks".
+# Build a categorized, Colab-like folder VIEW of the Unsloth notebooks: a disposable
+# sibling of DEST holding relative SYMLINKS, so real files never move and the sync
+# state machine skips them. Section = nearest preceding markdown header, folders
+# numbered `NN ` by first appearance so JupyterLab's sort keeps README order.
 #
 # Usage:
 #   unsloth_nb_view.py <DEST> <VIEW> [--amd]      build the symlink view
@@ -30,15 +17,12 @@ import re
 import sys
 import urllib.parse
 
-# nb/<file>.ipynb in any link form. Filenames use [\w.()-] plus %-escapes.
 _NB_RE = re.compile(r"nb/([\w.()%\-]+?\.ipynb)")
 _OTHER = "Other Notebooks"
 
 
 def clean_section(title):
-    """README header text -> a filesystem-friendly folder label."""
     title = title.strip().strip("#").strip()
-    # Strip a leading emoji/symbol run so the folder label is clean text.
     title = re.sub(r"^[^\w]+", "", title)
     title = title.replace("-", " ").replace("/", " ")
     title = re.sub(r"\s+", " ", title).strip()
@@ -46,25 +30,16 @@ def clean_section(title):
 
 
 def parse_readme(readme_path):
-    """Return an ordered list of (section_label, filename) pairs.
-
-    A notebook is intentionally cross-listed under several `###` headers in the
-    README (e.g. ModernBert under both "Embedding" and "BERT"), so that every
-    header becomes a populated folder. We therefore dedup per (section, file) --
-    a file shows up once in EACH section that lists it -- rather than globally.
-    Repeated headers across the Fine-tuning / Kaggle / AMD domains share a label
-    and so merge into one folder downstream.
-
-    filename is the urldecoded basename under nb/ (literal parens, matching disk).
-    """
+    """Ordered (section_label, filename) pairs, filename urldecoded. Dedup is per
+    (section, file), not global: the README deliberately cross-lists a notebook so
+    every header becomes a populated folder."""
     with open(readme_path, "r", encoding = "utf-8") as f:
         text = f.read()
 
     rows = []
     seen_pairs = set()
     section = None
-    # Reset on ANY markdown heading, not just `###`: `#`/`##` domain headers carry
-    # their own nb/*.ipynb tables, so matching only `###` mis-filed those links.
+    # any heading level: `#`/`##` domain headers carry their own nb/*.ipynb tables
     for line in text.splitlines():
         m = re.match(r"^#{1,6}\s+(.*)$", line)
         if m:
@@ -83,12 +58,10 @@ def parse_readme(readme_path):
 
 
 def _ordered_sections(rows):
-    """Section labels in first-appearance order, with Other Notebooks last."""
     order = []
     for section, _ in rows:
         if section not in order:
             order.append(section)
-    # Force the catch-all to the end even if the README defines it earlier.
     order = [s for s in order if s != _OTHER] + [_OTHER]
     return order
 
@@ -103,7 +76,6 @@ def build_view(
     if not os.path.isdir(nb_dir):
         raise SystemExit(f"no nb/ dir under {dest}")
 
-    # The VIEW may be a symlink to mounted storage; build inside its target.
     if os.path.islink(view):
         resolved = os.path.realpath(view)
         if not os.path.isdir(resolved):
@@ -115,7 +87,6 @@ def build_view(
     def allowed(fname):
         return amd or not fname.startswith("AMD-")
 
-    # section -> [filenames], preserving README order, AMD-filtered, on-disk only.
     by_section = {}
     placed = set()
     for section, fname in rows:
@@ -126,7 +97,6 @@ def build_view(
         by_section.setdefault(section, []).append(fname)
         placed.add(fname)
 
-    # Everything on disk that the README never linked -> Other Notebooks.
     for fname in sorted(os.listdir(nb_dir)):
         if not fname.endswith(".ipynb"):
             continue
@@ -138,10 +108,8 @@ def build_view(
     if _OTHER in by_section and _OTHER not in order:
         order.append(_OTHER)
 
-    # Rebuild VIEW: drop our own symlinks/empty folders, never the user's files
-    # (VIEW is also JupyterLab's landing dir). Ownership is keyed on DEST/nb --
-    # the only place our links ever point -- so a shortcut the user made to their
-    # own file elsewhere in the checkout survives the rebuild.
+    # keyed on DEST/nb, the only place our links point, so a user's own shortcut
+    # elsewhere survives the rebuild
     nb_real = os.path.realpath(nb_dir)
     _clear_view(view, nb_real)
     os.makedirs(view, exist_ok = True)
@@ -153,12 +121,11 @@ def build_view(
         for fname in by_section[section]:
             link = os.path.join(folder, fname)
             target = os.path.join(nb_dir, fname)
-            rel = os.path.relpath(target, folder)  # ../../unsloth-notebooks/nb/<file>
+            rel = os.path.relpath(target, folder)
             try:
                 if os.path.islink(link) and _points_into(link, nb_real):
-                    os.remove(link)  # replace our own stale symlink
+                    os.remove(link)
                 elif os.path.islink(link) or os.path.exists(link):
-                    # a real user file occupies this name: keep it, skip linking.
                     print(f"[unsloth-nb] view: keep user file, skip link {fname}", file = sys.stderr)
                     continue
                 os.symlink(rel, link)
@@ -169,15 +136,9 @@ def build_view(
 
 
 def _points_into(link, nb_real):
-    """True when a symlink resolves into DEST/nb, the dir we link FROM.
-
-    Every link this tool creates points at DEST/nb/<file>, so this is the
-    ownership test for cleanup: a user's own symlink (to a dataset, project,
-    mounted dir, or their own notebook saved elsewhere in the checkout) resolves
-    outside DEST/nb and must survive a rebuild -- matching on all of DEST deleted
-    those. realpath resolves a broken link's path string too, so stale links to
-    since-removed notebooks are still recognised as ours.
-    """
+    """The ownership test for cleanup: our links all point into DEST/nb, so a user's
+    own symlink resolves outside it and survives. realpath resolves a broken link's
+    path string too, so stale links still count as ours."""
     try:
         target = os.path.realpath(link)
     except OSError:
@@ -186,9 +147,8 @@ def _points_into(link, nb_real):
 
 
 def _clear_view(path, nb_real):
-    # Tear down a previously built VIEW in place. It is also JupyterLab's landing
-    # dir, so user files/symlinks must survive: unlink only symlinks we own (see
-    # _points_into) and rmdir only emptied folders. The VIEW root is never unlinked.
+    # VIEW is also JupyterLab's landing dir, so unlink only symlinks we own and rmdir
+    # only emptied folders; the VIEW root is never removed
     if os.path.islink(path) or not os.path.isdir(path):
         return
     for root, dirs, files in os.walk(path, topdown = False):
@@ -199,17 +159,16 @@ def _clear_view(path, nb_real):
                     os.remove(p)
                 except OSError:
                     pass
-            # a regular file / user symlink here is user-created -> keep it
         for name in dirs:
             p = os.path.join(root, name)
             try:
                 if os.path.islink(p):
                     if _points_into(p, nb_real):
-                        os.remove(p)  # our symlinked dir: unlink, never recurse
+                        os.remove(p)  # unlink, never recurse
                 else:
                     os.rmdir(p)  # succeeds only if we emptied it
             except OSError:
-                pass  # holds user files -> keep
+                pass
 
 
 def main(argv):

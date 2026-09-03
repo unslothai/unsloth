@@ -3,31 +3,17 @@
 
 """Route notebook `%pip` / `%uv` / `python -m pip` installs through the shim.
 
-The PATH shim (/opt/unsloth-nb/bin/{pip,pip3,uv} -> unsloth_pip_shim.py) only
-intercepts `!pip` / `!uv` shell cells. IPython's `%pip` / `%uv` LINE MAGICS run
-pip in-process, and `python -m pip` runs pip as a module -- both bypass PATH, so
-a notebook could still reinstall torch / transformers / vLLM and clobber the
-baked cu128 stack the shim is meant to protect.
-
-This closes that gap two ways, with no clobbering of the shell-escape path:
-  * `%pip` / `%pip3` / `%uv` are re-registered as line magics that delegate to
-    the shell (`get_ipython().system("pip ...")`); since /opt/unsloth-nb/bin is
-    first on PATH, that resolves to the shim. Overriding the real magic (rather
-    than rewriting cell text) means we only act when IPython actually dispatches
-    the magic -- a `%pip` inside a string is left untouched.
-  * a narrow input transformer rewrites an explicit `!python -m pip` /
-    `!python -m uv` shell line to `!pip` / `!uv`, so that form hits the shim too.
-
-UNSLOTH_NB_SHIM=1 is already exported by the startup hook and inherited by the
-subprocess, so the shim applies. Safe no-op outside IPython.
+The PATH shim only intercepts `!pip` shell cells, but `%pip` runs pip in-process and
+`python -m pip` runs it as a module. `%pip` / `%pip3` / `%uv` are re-registered as
+line magics that delegate to the shell -- overriding the MAGIC, not rewriting cell
+text, so a `%pip` inside a string is untouched -- and an input transformer rewrites
+an explicit `!python -m pip` line to `!pip`.
 """
 
 import re
 
-# Only the explicit `!<python> -m pip|uv ...` shell form. Transformers see the RAW
-# cell text (IPython expands `{sys.executable}` later), so the braced form and
-# quoted/bare interpreter paths must be matched here too, else module-pip bypasses
-# the shim.
+# Transformers see the RAW cell text (IPython expands `{sys.executable}` later), so
+# the braced form and quoted/bare interpreter paths must be matched here too.
 _PY_M_PIP = re.compile(
     r"""^(\s*)!\s*
     (?:
@@ -43,12 +29,12 @@ _PY_M_PIP = re.compile(
 
 
 def _rewrite_python_dash_m(lines):
-    """`!python -m pip install X` -> `!pip install X` (so it hits the PATH shim)."""
+    """`!python -m pip install X` -> `!pip install X`, which hits the PATH shim."""
     try:
         out = []
         for line in lines:
             body = line.rstrip("\n")
-            tail = line[len(body) :]  # preserve the trailing newline(s), if any
+            tail = line[len(body) :]  # keep the trailing newline(s)
             m = _PY_M_PIP.match(body)
             if m:
                 out.append(m.group(1) + "!" + m.group(2) + m.group(3) + tail)
@@ -69,7 +55,6 @@ def register_ipython():
 
     def _make(tool):
         def _magic(line):
-            # /opt/unsloth-nb/bin is first on PATH, so `pip`/`uv` here is the shim.
             return ip.system(tool + " " + line)
 
         return _magic

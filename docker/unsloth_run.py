@@ -4,18 +4,13 @@
 
 """unsloth-run: execute an unslothai/notebooks notebook unchanged, headless.
 
-The robust driven path for the Docker image: it reads the notebook, figures out
-which transformers version it wants (its install-cell pin, else the model-name
-tier), launches the kernel with that sidecar on PYTHONPATH so the whole kernel
-process uses a coherent transformers, and executes every cell with nbconvert.
-The notebook's own install cell still runs through the pip/uv shim, so it is safe
-and idempotent (the baked torch/vLLM stack is never clobbered).
+Resolves the transformers version the notebook wants (install-cell pin, else the
+model-name tier), launches the kernel with that sidecar on PYTHONPATH so the whole
+kernel process is coherent, and executes every cell with nbconvert.
 
 Usage:
   unsloth-run <notebook.ipynb | URL> [--out OUT.ipynb] [--timeout SECONDS]
               [--transformers X.Y.Z]   # force a version, skip auto-detect
-
-A raw github URL (raw.githubusercontent.com/.../nb/Foo.ipynb) is fetched first.
 """
 
 import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.request
@@ -30,20 +25,9 @@ _PIN_RE = re.compile(r"transformers\s*==\s*([0-9][0-9A-Za-z.\-]*)")
 _MODEL_RE = re.compile(r"""from_pretrained\(\s*['"]([^'"]+)['"]""")
 _MODEL_NAME_RE = re.compile(r"""model_name\s*=\s*['"]([^'"]+)['"]""")
 
-# Only an actual install invocation may supply the pin. A notebook's prose -- a
-# commented-out legacy workaround, a docstring, a printed message -- names
-# versions it does not install, and `want = pin or tier` below lets the first
-# textual match outrank the model-name tier. A stale `# !pip install
-# transformers==4.57.6` above a gemma-4-12b cell therefore clamps up to the
-# lowest eligible sidecar (5.5.0) instead of the 5.10.2 the model needs, and the
-# kernel is launched on it: nothing installs, so the pip shim never gets to
-# correct the marker or PYTHONPATH. Commenting out an install line is a routine
-# notebook edit, so match the invocation instead of the whole cell source.
-#
-# Covers `pip`/`pip3`, `!`/`%` magics, bare lines (%%bash cells), `uv pip`,
-# `<interpreter> -m pip` (`python3`, `{sys.executable}`, ...), options before
-# `install`, and any indent -- notebooks guard installs inside if/else, and
-# Unsloth's own install cells do exactly that.
+# Only an actual install invocation may supply the pin: `want = pin or tier` below
+# lets the first textual match outrank the model tier, so a commented-out install line
+# launches the kernel on the wrong sidecar and nothing runs to correct it.
 _INSTALL_RE = re.compile(
     r"""^[ \t]*(?![ \t]*\#)[!%]?[ \t]*
         (?: uv (?:[ \t]+-{1,2}\S+)* [ \t]+ )?
@@ -56,11 +40,8 @@ _INSTALL_RE = re.compile(
 
 
 def _strip_comment(line):
-    """Drop a trailing `# ...` comment from a shell/magic line.
-
-    Only a `#` at the start of a token counts, so the `#egg=`/`#subdirectory=`
-    fragment of a `git+https://...` requirement survives; quoted `#` is left
-    alone too."""
+    """Drop a trailing `# ...` from a shell/magic line. Only a `#` starting a token
+    counts, so a `git+https://...#egg=` fragment survives, as does a quoted #."""
     quote = None
     for i, ch in enumerate(line):
         if quote:
@@ -73,28 +54,19 @@ def _strip_comment(line):
     return line
 
 
-# A triple-quoted body is data, not code: a cell that builds a setup script or
-# documents a workaround can contain a line reading `!pip install transformers==X`
-# or a `from_pretrained("...")` that never executes. Blank those regions, keeping
-# newlines so line numbers and the continuation logic below are unaffected.
+# A triple-quoted body is data, not code. Blanked keeping newlines, so the
+# continuation logic below is unaffected.
 _TRIPLE_RE = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
 
 
 def _live_source(src):
-    """Cell source with triple-quoted bodies and comments blanked out.
-
-    Single-quoted strings are deliberately left intact: the model name this scans
-    for lives inside one (`from_pretrained("unsloth/...")`)."""
+    """Triple-quoted bodies and comments blanked out. Single-quoted strings stay
+    intact: the model name this scans for lives inside one."""
     blanked = _TRIPLE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), src)
     return "\n".join(_strip_comment(line) for line in blanked.splitlines())
 
 
 def _install_lines(src):
-    """The install-invocation text of a cell source, backslash continuations kept.
-
-    Real install cells split one command over several lines (`!uv pip install \\`
-    + a continuation carrying `"transformers==4.56.2"`), so a continued line stays
-    part of the invocation."""
     kept, cont = [], False
     for line in src.splitlines():
         if cont or _INSTALL_RE.match(line):
@@ -116,16 +88,11 @@ def _load(path_or_url):
 
 
 def _scan(nb):
-    """Return (pinned_transformers, first_model_name) from the notebook source."""
+    """(pinned_transformers, first_model_name); dead code must not count, as above."""
     pin = model = None
     for cell in nb.get("cells", []):
         if cell.get("cell_type") != "code":
             continue
-        # Same reasoning as the pin: a commented-out or triple-quoted model
-        # reference names a model the notebook does not load, and the FIRST match
-        # wins, so a stale `# from_pretrained("unsloth/qwen3.5-4b")` above the real
-        # gemma-4-12b call picks the lower sidecar tier. Swapping models by
-        # commenting the old line out is the most routine notebook edit there is.
         src = _live_source("".join(cell.get("source", [])))
         if pin is None:
             m = _PIN_RE.search(_install_lines(src))
@@ -139,16 +106,9 @@ def _scan(nb):
 
 
 def _makedirs_as_host(path):
-    """Create `path` owned by the nearest existing ancestor's owner.
-
-    mkdir(2) gives the new directory the CALLER's uid/gid; only the setgid bit
-    carries anything down from the parent. The container runs as root while
-    `-v $PWD:/workspace` is the host user's own tree, so `--out sub/dir/x.ipynb`
-    into a directory that does not exist yet leaves them a root-owned directory
-    they cannot write. _stage_metadata then derives the OUTPUT's owner from that
-    same just-created directory, so the notebook is root-owned too and both ends
-    of the path are unusable from the host.
-    """
+    """Create `path` owned by the nearest existing ancestor. mkdir(2) uses the CALLER's
+    uid/gid and only setgid carries down, so a new `--out sub/dir/` would be root-owned
+    and _stage_metadata would then give the OUTPUT that owner too."""
     path = os.path.abspath(path)
     missing = []
     probe = path
@@ -165,7 +125,6 @@ def _makedirs_as_host(path):
         anchor = os.stat(probe)
     except OSError:
         return
-    # Outermost first, so a partial failure still fixes what it can.
     for created in reversed(missing):
         try:
             os.chown(created, anchor.st_uid, anchor.st_gid)
@@ -174,24 +133,13 @@ def _makedirs_as_host(path):
 
 
 def _stage_metadata(staged, dest):
-    """Give the staged output the metadata the destination must end up with.
-
-    mkstemp() creates 0600 and nbconvert truncates that same inode, so the mode
-    survives os.replace(). Under the documented `-v $PWD:/workspace` layout the
-    container is root and the host user is not, so publishing as-is hands them an
-    output they cannot read, and overwriting an existing one drops its mode and
-    owner. Reuse the destination's metadata, else the umask-derived mode a plain
-    write would have produced. Best effort: a filesystem that refuses chmod/chown
-    must not cost the user their executed notebook.
-    """
+    """Give the staged output the metadata the destination must end up with: mkstemp()
+    creates 0600, nbconvert truncates that same inode, and os.replace carries it onto
+    the destination. Best effort."""
     try:
         st = os.stat(dest)
     except OSError:
-        # New output: no destination to copy from, so take the umask-derived mode
-        # a plain write would have produced and the OWNER of the directory it
-        # lands in. Under `-v $PWD:/workspace` that directory belongs to the host
-        # user, so without the chown they get a root-owned file they can read but
-        # not edit, which is the same complaint as the existing-output case.
+        # new output: the umask-derived mode a plain write would have produced
         try:
             umask = os.umask(0)
             os.umask(umask)
@@ -227,9 +175,6 @@ def main():
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
 
-    # Materialise the notebook for nbconvert. With --out, stage input + result as
-    # temp files next to the destination (same dir => atomic os.replace publish)
-    # and publish only on success, so a failed run can't destroy the old output.
     tmp_dir = None
     tmp_files = []
     publish_from = None
@@ -257,17 +202,14 @@ def main():
         out_path = src_path
 
     env = dict(os.environ)
-    env["UNSLOTH_NB_SHIM"] = "1"  # enable safe-install for the notebook's cells
-    # Per-run marker unless the caller pinned one: the shared default would leak
-    # this run's transformers pin into concurrent/later runs. An empty marker
-    # reads as "no pin", so pre-creating it is safe.
+    env["UNSLOTH_NB_SHIM"] = "1"
+    # per-run marker: the shared default leaks this run's pin into concurrent runs
     marker = env.get("UNSLOTH_NB_TF_MARKER")
     if not marker:
         fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
         os.close(fd)
         env["UNSLOTH_NB_TF_MARKER"] = marker
         tmp_files.append(marker)
-    # The pip/uv shim writes the marker; pre-seed it too so the kernel agrees.
     if want:
         os.makedirs(os.path.dirname(marker) or ".", exist_ok = True)
         open(marker, "w").write(want)
@@ -305,22 +247,13 @@ def main():
             try:
                 os.replace(publish_from, out_path)
             except OSError:
-                # `-v $PWD/out.ipynb:/workspace/out.ipynb` bind-mounts the OUTPUT
-                # FILE, which makes the destination a mount point, and rename(2)
-                # onto one returns EBUSY even though the file itself is perfectly
-                # writable. The executed notebook is already complete on disk at
-                # this point, so failing here threw away the entire run (the
-                # cleanup below deletes the staging file) for a publish step that
-                # can just as well write through the existing inode -- which is
-                # exactly what such a mount needs, since the host sees the inode,
-                # not the directory entry. Not atomic, unlike the rename, so it is
-                # only the fallback.
+                # rename(2) onto a bind-mounted OUTPUT FILE returns EBUSY even though
+                # the file is writable, and such a mount needs the inode write anyway
                 try:
                     with open(publish_from, "rb") as staged, open(out_path, "wb") as live:
                         shutil.copyfileobj(staged, live)
                 except OSError:
-                    # Neither publish worked. Keep the result rather than delete
-                    # it, and say where it is; a notebook run can be hours long.
+                    # keep the result rather than delete it: a run can be hours long
                     if publish_from in tmp_files:
                         tmp_files.remove(publish_from)
                     print(
@@ -330,7 +263,6 @@ def main():
                     )
                     raise
     finally:
-        # Clean up the temp dir and any staging files (already gone when published).
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors = True)
         for p in tmp_files:

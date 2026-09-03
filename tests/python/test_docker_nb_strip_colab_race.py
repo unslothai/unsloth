@@ -3,22 +3,10 @@
 
 """The Colab-intro cleanup must not overwrite a save it did not see.
 
-`unsloth_sync_notebooks.sh` forks the GitHub refresh into a DETACHED child before
-the entrypoint execs the container command, so JupyterLab is already serving
-$DEST while that child runs. When the refresh copied anything the child re-arms
-`finalize()`, which runs `unsloth_nb_strip_colab.py --state ... --dest ...`, i.e.
-`migrate()` -> `strip_notebook()` over every owned+unedited notebook.
-
-`strip_notebook` read the file, parsed it, serialised the cleaned copy and then
-`os.replace`d it unconditionally. A user save that landed in that window was
-destroyed, and `migrate` then recorded the cleaned file's hash, so the state
-machine treats the notebook as pristine forever after -- the same
-check-then-write hole that was closed in the refresh loop itself (the publish
-there now re-reads the hash immediately before the rename).
-
-Behavioural: the save is injected inside the window, while the helper serialises
-the cleaned copy (the widest part of it: json parse + dump of a notebook that is
-often megabytes). No docker, no network.
+`strip_notebook` read the file, serialised the cleaned copy and then `os.replace`d it
+unconditionally, while JupyterLab was already serving $DEST. A save landing in that
+window was destroyed, and `migrate` then recorded the cleaned hash, so the state
+machine treats the notebook as pristine forever after.
 """
 
 from __future__ import annotations
@@ -62,8 +50,6 @@ def write(path: Path, nb) -> None:
 
 @pytest.fixture
 def racing(strip, tmp_path: Path):
-    """Fire a user save inside the window: after strip_notebook read the file,
-    while it is serialising the cleaned copy."""
     real_dump = strip.json.dump
     state = {"save": None, "path": None, "fired": 0}
 
@@ -102,9 +88,8 @@ def test_a_save_during_the_cleanup_is_not_overwritten(strip, racing, tmp_path: P
 def test_the_recorded_hash_still_matches_the_file_after_a_racing_save(
     strip, racing, tmp_path: Path
 ):
-    # migrate() rewrites STATE with the post-strip hash. If the write above is
-    # allowed to clobber a save, the state ALSO says "pristine", so every later
-    # refresh happily overwrites the notebook again.
+    # migrate() rewrites STATE with the post-strip hash, so a clobbered save is also
+    # recorded as pristine and every later refresh overwrites it again
     dest = tmp_path / "unsloth-notebooks"
     dest.mkdir()
     path = dest / "Llama.ipynb"
@@ -129,8 +114,6 @@ def test_the_recorded_hash_still_matches_the_file_after_a_racing_save(
 
 
 def test_the_normal_no_race_cleanup_still_strips_and_rewrites(strip, tmp_path: Path):
-    # Guard the fix from over-reaching: with nobody else writing, the cleanup
-    # must still strip the Colab sentence and publish the result.
     path = tmp_path / "Llama.ipynb"
     original = notebook([INTRO, "\n", "# Llama\n"])
     write(path, copy.deepcopy(original))
@@ -143,8 +126,7 @@ def test_the_normal_no_race_cleanup_still_strips_and_rewrites(strip, tmp_path: P
 
 @pytest.fixture
 def racing_after_replace(strip, tmp_path: Path):
-    """Fire the save in the OTHER window: after os.replace has published the
-    cleaned copy, while migrate() is about to hash the live file."""
+    """The OTHER window: after os.replace published, before migrate() hashes."""
     real_replace = strip.os.replace
     state = {"save": None, "path": None, "fired": 0}
 
@@ -165,11 +147,7 @@ def racing_after_replace(strip, tmp_path: Path):
 def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
     strip, racing_after_replace, tmp_path: Path
 ):
-    # The recheck above closes the read-to-replace window, but migrate() then
-    # re-read the published file to update STATE. rename(2) is atomic; that
-    # second read is not part of it. A save landing in between was recorded as
-    # the sync-owned pristine hash, so the NEXT refresh overwrote the user's
-    # work -- the same shape as the publish in unsloth_sync_notebooks.sh.
+    # rename(2) is atomic, but migrate()'s re-read of the published file is not
     dest = tmp_path / "unsloth-notebooks"
     dest.mkdir()
     path = dest / "Llama.ipynb"
@@ -195,8 +173,7 @@ def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
 
 
 def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path: Path):
-    # Over-reach guard: with no save in flight, STATE must still adopt the hash
-    # of the cleaned notebook, or every later boot re-strips the same file.
+    # over-reach guard: STATE must adopt the cleaned hash, or every boot re-strips it
     dest = tmp_path / "unsloth-notebooks"
     dest.mkdir()
     path = dest / "Llama.ipynb"
@@ -211,13 +188,9 @@ def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path
 
 
 def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
-    """Third site of the publish-metadata hazard on this branch.
-
-    unsloth_sync_notebooks.sh records a bind-mounted notebook that matches the
-    baked template as managed WITHOUT copying it, precisely so the host user
-    keeps owning it. os.replace swaps the directory entry, so a staged tmp file
-    written by root would hand that notebook back root-owned and unwritable.
-    """
+    """A bind-mounted notebook matching the baked template is managed WITHOUT being
+    copied, so the host user keeps owning it -- and os.replace swaps the directory
+    entry, so a root-written staging file would hand it back root-owned."""
     import os
     import stat as _stat
 
@@ -238,7 +211,6 @@ def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
         ),
         encoding = "utf-8",
     )
-    # a mode a fresh root-written tmp file would NOT have under the usual umask
     os.chmod(nb_path, 0o640)
     before = _stat.S_IMODE(os.stat(nb_path).st_mode)
     assert before == 0o640
@@ -246,5 +218,4 @@ def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
     assert strip.strip_notebook(str(nb_path)) is True
     after = _stat.S_IMODE(os.stat(nb_path).st_mode)
     assert after == before, f"cleanup changed the mode {oct(before)} -> {oct(after)}"
-    # the strip really happened
     assert "To run this" not in nb_path.read_text(encoding = "utf-8")

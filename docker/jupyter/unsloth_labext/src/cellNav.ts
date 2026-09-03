@@ -9,12 +9,9 @@ import { CodeMirrorEditor } from '@jupyterlab/codemirror';
 import { INotebookTracker } from '@jupyterlab/notebook';
 
 /**
- * Colab-style cell navigation in BOTH command and edit mode.
- *
- * ArrowDown on a cell's last line (edit) or while selected (command) moves to the
- * next cell and aligns its TOP to the viewport; ArrowUp mirrors it. JupyterLab
- * centers tall cells, dropping the view mid-output. Settings can't fix this, so
- * we listen in the CAPTURE phase, detect a cell boundary, and scroll-to-top.
+ * Colab-style cell navigation: at a cell boundary, move to the next cell and align
+ * its TOP to the viewport. JupyterLab centers tall cells instead, dropping the view
+ * mid-output, and no setting changes that.
  */
 const cellNavPlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:cell-nav',
@@ -37,8 +34,6 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       if (!panel.node.contains(event.target as Node)) {
         return;
       }
-      // Never hijack arrows belonging to an interactive output (ipywidgets) or a
-      // form control; only the cell editor and command-mode cell nav.
       const targetEl = event.target as HTMLElement | null;
       if (targetEl) {
         if (targetEl.closest('.jp-OutputArea')) {
@@ -57,8 +52,6 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         if (!editor) {
           return;
         }
-        // While a completion popup is open the arrows belong to it; don't take
-        // over even at a cell boundary (common in one-line setup cells).
         if (
           document.querySelector(
             '.jp-Completer:not(.lm-mod-hidden), .cm-tooltip-autocomplete'
@@ -66,14 +59,9 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         ) {
           return;
         }
-        // Only take over at the cell boundary; else let CodeMirror move the
-        // cursor. `lineCount` counts LOGICAL lines, but JupyterLab wraps
-        // markdown and raw cell editors by default (StaticNotebook
-        // .defaultEditorConfig: markdown/raw lineWrap true), so the first and
-        // last logical line can own several visual rows -- the one-line markdown
-        // header every notebook opens with wraps to ~7. Ask CodeMirror whether
-        // it can still move one VISUAL line first, else those rows are
-        // unreachable: every arrow leaves the cell.
+        // `lineCount` counts LOGICAL lines, but JupyterLab wraps markdown and raw
+        // editors by default, so one logical line can own several visual rows and a
+        // logical test makes them unreachable: every arrow leaves the cell.
         const view = editor instanceof CodeMirrorEditor ? editor.editor : null;
         if (view) {
           const range = view.state.selection.main;
@@ -81,10 +69,7 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
           const from = view.coordsAtPos(range.head);
           const to =
             moved.head === range.head ? from : view.coordsAtPos(moved.head);
-          // moveVertically only returns the unchanged head at offset 0 /
-          // doc.length; elsewhere it clamps to the document edge, so a move that
-          // stays on the same visual row IS the editor edge and the cell
-          // boundary is the next stop.
+          // moveVertically returns an unchanged head only at the document edge
           if (from && to && Math.abs(to.top - from.top) > 1) {
             return;
           }
@@ -102,8 +87,7 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       if (target < 0 || target >= notebook.widgets.length) {
         return;
       }
-      // We own this key: stop CodeMirror and Lumino from also handling it and
-      // re-triggering the centering scroll we replace.
+      // stop Lumino re-triggering the centering scroll we replace
       event.preventDefault();
       event.stopPropagation();
       notebook.activeCellIndex = target;
@@ -119,8 +103,7 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       }
       if (cell) {
         const node = cell.node;
-        // Defer so this runs AFTER JupyterLab's own ensureFocus/centering scroll
-        // and wins the last write. block:'start' puts the cell input at the top.
+        // defer, so this wins over JupyterLab's own centering scroll
         requestAnimationFrame(() => {
           try {
             node.scrollIntoView({ block: 'start' });
@@ -130,7 +113,6 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         });
       }
     };
-    // Capture phase: decide before CodeMirror / Lumino consume the arrow keys.
     document.addEventListener('keydown', handler, true);
   }
 };

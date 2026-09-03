@@ -3,31 +3,14 @@
 
 """Colab-style arrow navigation must not swallow wrapped-line movement.
 
-`cellNav.ts` owns ArrowUp/ArrowDown in the capture phase and jumps to the
-previous/next cell when the cursor sits on the first/last line of the editor.
-That test used `editor.getCursorPosition().line` against `editor.lineCount`,
-both of which are LOGICAL (JupyterLab's CodeMirrorEditor: `get lineCount() {
-return this.doc.lines }`), while JupyterLab wraps markdown and raw cell editors
-by default (`StaticNotebook.defaultEditorConfig` -> `markdown: { lineWrap: true
-}`, `raw: { lineWrap: true }`; the image's `docker/jupyter/overrides.json` only
-sets `autoClosingBrackets`).
+`getCursorPosition().line` and `lineCount` are both LOGICAL, while JupyterLab wraps
+markdown and raw editors by default, so a one-line markdown header is
+line 0 == lineCount - 1 from every visual row and the wrapped rows are unreachable.
 
-So for a one-line markdown header -- what every Unsloth notebook opens with --
-`lineCount === 1`, the cursor is on line 0 == lineCount - 1 from every visual
-row, and BOTH arrows leave the cell: the wrapped rows in between cannot be
-reached at all. Measured in Chromium with CodeMirror 6 + EditorView.lineWrapping
-at the notebook's editor width: 1 logical line renders as 7 visual rows and the
-logical test hijacks the arrows on 7 of 7 rows, in both directions. The same
-measurement on an unwrapped code cell shows the visual test agreeing with the
-logical one on every row, so the Colab-style jump is unchanged there.
+CodeMirror's own answer is `EditorView.moveVertically(range, forward)`, which returns
+an unchanged head only at offset 0 / doc.length.
 
-CodeMirror's own answer is `EditorView.moveVertically(range, forward)`, which
-moves "to the next line (including wrapped lines)"; it returns the unchanged
-head only at offset 0 / doc.length, so a move that stays on the same visual row
-(same `coordsAtPos().top`) is the real editor edge.
-
-Static source guard: the labextension is only built inside Dockerfile.studio
-(`jlpm install && jlpm build:prod`), so there is no TS test runner in-repo.
+A static source guard: the labextension is only built inside Dockerfile.studio.
 """
 
 from __future__ import annotations

@@ -3,31 +3,12 @@
 
 """Regression guard for the notebook-sync race in the Unsloth Docker image.
 
-unsloth_sync_notebooks.sh populates /workspace/unsloth-notebooks on boot and then
-refreshes from GitHub in a DETACHED child, so container start is never blocked on
-a network fetch. The parent forked that child and exited immediately, which fired
-its `trap finalize EXIT` -- the Colab-intro strip plus the categorized-view
-rebuild -- while the child was concurrently `cp -a`-ing refreshed notebooks into
-the same tree and rewriting the same state file. Both processes also ran
-build_categorized_view, which tears down and rebuilds the symlink farm.
+The parent's `trap finalize EXIT` ran while the detached refresh child was copying
+into the same tree, and the lost writes were permanent: a notebook copied while the
+parent hashed it got a recorded hash that no longer matched, so every later boot read
+it as user-edited and skipped it.
 
-Six identical fresh-container boots reported "cleaned" 279 / 289 / 293 / 297 /
-300 / 306 / 307 / 315 / 330 notebooks; two consecutive `docker run`s of the same
-image printed 378 and 372. Worse than the noise, the lost writes were permanent:
-a notebook the child copied while the parent was hashing it ended up with a
-recorded hash that no longer matched the file, so the strip treated it as
-user-edited and skipped it on every later boot. That is where 10 of the 23
-notebooks still carrying the Colab intro came from. Setting
-UNSLOTH_SKIP_NOTEBOOK_REFRESH=1 -- i.e. never forking the child -- made the
-result stable and correctly idempotent, which is what pinned the cause.
-
-The fix keeps the refresh detached and fixes the ORDERING instead: one exclusive
-lock covers a whole invocation so the child cannot start work until the parent
-has exited, the parent runs the finalize explicitly BEFORE it forks (so the order
-holds even on a host without flock), the finalize is run-once, and the child
-re-arms it only when the refresh actually copied something.
-
-Static: parses the shell script. No docker, no GPU, no network.
+The refresh stays detached and the ORDERING is fixed instead.
 """
 
 from __future__ import annotations
@@ -48,9 +29,7 @@ def sync() -> str:
 
 
 def test_the_refresh_is_still_detached(sync: str):
-    # The whole point of the child is that a 60s ls-remote + clone must not delay
-    # container startup. A fix that simply made the refresh synchronous would
-    # pass every other test here and regress boot time.
+    # a synchronous refresh would pass every other test here and regress boot time
     assert re.search(
         r'UNSLOTH_NB_REFRESH_CHILD=1 "\$0" >/dev/null 2>&1 &', sync
     ), "the GitHub refresh must stay a detached child"
@@ -98,8 +77,6 @@ def test_finalize_runs_at_most_once(sync: str):
 
 
 def test_the_exit_trap_still_covers_the_early_exits(sync: str):
-    # Offline / no-git / UNSLOTH_SKIP_NOTEBOOK_REFRESH all exit before the fork
-    # site, and still need the view built.
     assert "trap 'finalize; lock_release' EXIT" in sync
 
 
@@ -137,12 +114,9 @@ def test_the_lock_lives_beside_the_state_it_protects(sync: str):
     )
 
 
-# --- concurrent-publish safety ------------------------------------------------
-# The detach above is deliberate, but entrypoint.sh runs `sync_notebooks` and then
-# `exec "$@"`, so the child is still copying while JupyterLab serves the same tree.
-# `cp -a` writes THROUGH the destination inode, so it both exposes half-written
-# JSON to a reader and destroys a save made after the recorded-hash check. The
-# publish therefore has to go via a same-dir temp plus an atomic rename.
+# entrypoint.sh runs `sync_notebooks` then `exec "$@"`, so the child is still copying
+# while JupyterLab serves the same tree, and `cp -a` writes THROUGH the destination
+# inode: half-written JSON to a reader, and a save after the hash check destroyed.
 
 
 def test_the_refresh_publishes_each_notebook_atomically(sync: str):
@@ -182,9 +156,7 @@ def test_a_pristine_pre_existing_file_is_not_rewritten_on_first_boot(sync: str):
     block = sync[sync.index('if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then') :]
     block = block[: block.index('mv "$STATE.tmp" "$STATE"')]
     assert "kept existing user file" in block
-    # A bind-mounted file whose bytes already match the template used to fall
-    # through to `cp -a`, i.e. --preserve=all stamping root:root, the baked mode
-    # and the build mtime onto the host user's own file. Record, don't copy.
+    # RECORDED, not copied: cp -a would stamp root:root onto the host user's file
     same = block.index("kept existing user file")
     tail = block[same:]
     assert tail.index("$STATE.tmp") < tail.index('cp -a "$TEMPLATE/$rel"'), (
@@ -194,12 +166,7 @@ def test_a_pristine_pre_existing_file_is_not_rewritten_on_first_boot(sync: str):
 
 
 def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
-    # rename(2) is atomic, but the hash taken AFTER it is a second, unprotected
-    # read: JupyterLab is already serving $DEST while the refresh child runs, so
-    # a save landing between the rename and that read is recorded as the
-    # sync-owned pristine version, and the NEXT refresh is then allowed to
-    # overwrite the user's work. The staging file is dot-prefixed and per-PID, so
-    # hashing it before publishing cannot race with anything.
+    # rename(2) is atomic, but a hash taken AFTER it is a second unprotected read
     block = sync[sync.index("while IFS= read -r -d '' f; do") :]
     block = block[: block.index("done < <(find")]
     assert re.search(
@@ -219,10 +186,8 @@ def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
     )
 
 
-# --- behavioural: the same race, driven end to end ---------------------------
-# The refresh child is re-entered directly (UNSLOTH_NB_REFRESH_CHILD=1), against
-# a LOCAL git remote, with a `mv` shim that performs the real rename and then
-# writes the user's bytes -- i.e. the Ctrl+S that lands inside the window.
+# the same race end to end, with an `mv` shim that renames for real and then writes
+# the user's bytes: the Ctrl+S that lands inside the window
 
 import hashlib  # noqa: E402
 import os  # noqa: E402
@@ -281,8 +246,6 @@ def _env(tmp_path: Path, remote: Path, dest: Path, *, save_bytes: str | None) ->
     if save_bytes is None:
         shim.write_text(f'#!/usr/bin/env bash\nexec "{real_mv}" "$@"\n', encoding = "utf-8")
     else:
-        # Rename for real, then land the user's save in the window between the
-        # rename and the hash the script records. Fires once, on the notebook only.
         shim.write_text(
             "#!/usr/bin/env bash\n"
             f'"{real_mv}" "$@" || exit $?\n'
@@ -316,8 +279,6 @@ def _recorded(dest: Path) -> str:
 
 
 def _seed(tmp_path: Path, body: str) -> Path:
-    # The baked template has to exist: phase 1 exits early without it, and the
-    # refresh child never runs.
     template = tmp_path / "template"
     template.mkdir(exist_ok = True)
     (template / "x.ipynb").write_text(body, encoding = "utf-8")
@@ -355,8 +316,6 @@ def test_a_save_landing_after_the_rename_is_not_recorded_as_pristine(tmp_path: P
 
 @behavioural
 def test_a_save_in_that_window_survives_the_next_refresh(tmp_path: Path):
-    # The consequence of the above: with the user's bytes recorded as pristine,
-    # the next refresh sees hash(dst) == recorded and overwrites their work.
     remote = _remote_with(tmp_path, "v1")
     _advance(remote, "v2")
     dest = _seed(tmp_path, "v1")
@@ -382,8 +341,6 @@ def test_a_save_in_that_window_survives_the_next_refresh(tmp_path: Path):
 
 @behavioural
 def test_an_unraced_refresh_still_publishes_and_records_upstream(tmp_path: Path):
-    # Over-reach guard: without a save in the window the refresh must still
-    # update the notebook and record the bytes it wrote.
     remote = _remote_with(tmp_path, "v1")
     _advance(remote, "v2")
     dest = _seed(tmp_path, "v1")

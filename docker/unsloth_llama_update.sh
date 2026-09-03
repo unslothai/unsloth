@@ -42,7 +42,7 @@ done
 
 [ -f "$FETCHER" ] || { echo "unsloth-llama-update: fetcher not found at $FETCHER" >&2; exit 1; }
 
-# Any python works (the fetcher is stdlib-only); prefer the Studio venv, then base.
+# the fetcher is stdlib-only, so any python works
 PY=""
 for cand in \
     "$STUDIO_HOME/unsloth_studio/bin/python" \
@@ -60,11 +60,9 @@ case "$(uname -m)" in
     *) echo "unsloth-llama-update: unsupported arch $(uname -m)" >&2; exit 1;;
 esac
 
-# Read the FULL release identity ("release_tag", e.g. b10715-mix-86bd2d3), because
-# that is what --check compares against resolve_latest_tag's tag_name. The marker's
-# "tag" is the normalized base build (b10715), so preferring it reported "an update
-# is available" forever on any install written by the in-app updater, which records
-# the two fields separately.
+# The FULL "release_tag" is what --check compares against resolve_latest_tag; the
+# marker's "tag" is the normalized base build, so preferring it reports "an update is
+# available" forever on any install the in-app updater wrote.
 installed_tag() {
     "$PY" - "$INSTALL_DIR" <<'PY' 2>/dev/null || echo "unknown"
 import json, os, sys
@@ -92,10 +90,8 @@ echo "[llama-update] installed:   $CUR"
 if [ "$CHECK_ONLY" = "1" ]; then
     LATEST="$(resolve_latest)"
     echo "[llama-update] latest:      ${LATEST:-unknown}"
-    # resolve_latest swallows every failure into "" (line 75), so an empty value
-    # means the lookup did not happen -- no network, proxy, GitHub down. Printing
-    # "up to date" there is the one answer --check must never give: it reports a
-    # state it could not observe. Say unknown and exit non-zero instead.
+    # resolve_latest swallows every failure into "", so an empty value means the
+    # lookup never happened; "up to date" would report a state it could not observe
     if [ -z "$LATEST" ]; then
         echo "[llama-update] could not reach the release feed; update status UNKNOWN" >&2
         echo "[llama-update] (retry once the container has network access)" >&2
@@ -109,25 +105,22 @@ if [ "$CHECK_ONLY" = "1" ]; then
     exit 0
 fi
 
-# Fetch into a sibling temp dir (same filesystem as INSTALL_DIR, so the swap is
-# an atomic rename), then swap. On any failure the existing install is untouched.
+# a sibling temp dir is on the same filesystem, so the swap is an atomic rename
 parent="$(dirname "$INSTALL_DIR")"
 
-# A named volume mounted AT the install dir can't be renamed (EBUSY), so the
-# whole-dir swap below would fail; detect the mount and swap the CONTENTS inside
-# the tree. UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides autodetection.
+# A named volume mounted AT the install dir cannot be renamed (EBUSY), so swap its
+# CONTENTS instead. UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides autodetection.
 IN_PLACE="${UNSLOTH_LLAMA_UPDATE_IN_PLACE:-}"
 if [ -z "$IN_PLACE" ]; then
     IN_PLACE=0
     if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$INSTALL_DIR" 2>/dev/null; then
         IN_PLACE=1
     elif [ "$(stat -c %d "$INSTALL_DIR" 2>/dev/null)" != "$(stat -c %d "$parent" 2>/dev/null)" ]; then
-        IN_PLACE=1   # filesystem boundary at the dir = a volume without mountpoint(1)
+        IN_PLACE=1   # filesystem boundary = a volume, on hosts without mountpoint(1)
     fi
 fi
 if [ "$IN_PLACE" = "1" ]; then
-    # Keep every move inside the mounted filesystem: work + backup live UNDER
-    # the install dir so each swap step is a same-fs rename within the volume.
+    # work + backup live UNDER the install dir, so every swap step is a same-fs rename
     work="$(mktemp -d "$INSTALL_DIR/.llamaupd.XXXXXX")"
     backup="$INSTALL_DIR/.old.$$"
 else
@@ -136,24 +129,19 @@ else
 fi
 swap_done=0
 drained=0
-# The exit handler must never delete $backup while it's the ONLY copy: restore the
-# old tree first, remove it only after the new tree is active. Signal traps run
-# the EXIT trap on HUP/INT/TERM too.
+# The exit handler must never delete $backup while it is the ONLY copy: restore
+# first, remove only once the new tree is active.
 cleanup() {
     if [ "$swap_done" -ne 1 ]; then
         if [ "$IN_PLACE" = "1" ]; then
-            # Contents-swap restore. Every old entry lives in exactly one of
-            # $backup / $INSTALL_DIR, so a same-named entry in the install dir is a
-            # half-moved NEW one: drop it, then move the old one back.
+            # every old entry lives in exactly one of $backup / $INSTALL_DIR, so a
+            # same-named entry in the install dir is a half-moved NEW one
             if [ -d "$backup" ]; then
                 _restore_fail=0
-                # The per-name loop below only sees entries the OLD tree had, so a
-                # file the new release introduced survives it and the "restored"
-                # dir ends up mixed-version -- ggml dlopens every libggml-*.so it
-                # finds next to the binaries. Once the drain finished, every
-                # remaining entry is a half-moved NEW one, so clear them all.
-                # Gated on "drained": before the drain completes an entry here can
-                # still be the ONLY copy of an old one, and deleting it loses data.
+                # The loop below only sees names the OLD tree had, so a file the
+                # new release introduced would survive into a mixed-version dir and
+                # ggml dlopens every libggml-*.so next to the binaries. Gated on
+                # "drained": before that, an entry here can be the only old copy.
                 if [ "$drained" = "1" ]; then
                     find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
                          ! -path "$work" ! -path "$backup" \
@@ -193,18 +181,16 @@ new="$work/llama.cpp"
 echo "[llama-update] fetching llama.cpp '$TAG' ($ARCH portable) ..."
 "$PY" "$FETCHER" "$TAG" "$ARCH" "$new"
 
-# Preserve the Studio ownership marker so setup.sh keeps recognising the dir.
+# preserve the Studio ownership marker so setup.sh keeps recognising the dir
 [ -e "$INSTALL_DIR/.unsloth-studio-owned" ] && touch "$new/.unsloth-studio-owned"
 
 echo "[llama-update] swapping into place ..."
 if [ "$IN_PLACE" = "1" ]; then
-    # The install dir is a mount point: swap its CONTENTS (all same-fs renames
-    # inside the volume). The trap's contents-restore covers any mid-swap abort.
     mkdir "$backup"
     find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
          ! -path "$work" ! -path "$backup" -exec mv -t "$backup" {} +
-    # Every old entry now lives in $backup, so from here the trap may clear the
-    # install dir before restoring. set -e means a failed drain never gets here.
+    # every old entry is now in $backup, so from here the trap may clear the install
+    # dir before restoring; set -e means a failed drain never reaches this
     drained=1
     if find "$new" -mindepth 1 -maxdepth 1 -exec mv -t "$INSTALL_DIR" {} +; then
         swap_done=1

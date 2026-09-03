@@ -3236,9 +3236,8 @@ case "$0" in
         [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
 esac
 
-# ── unsloth-zoo overlay ref (for --local installs) ──
 # Honor UNSLOTH_ZOO_REF so the Studio venv tracks the requested zoo (the Docker
-# publish workflow forwards one ref to both builds). Unset -> main.
+# publish workflow forwards one ref to both builds). Unset means main.
 _ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 _ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_REF}"
 

@@ -9,10 +9,8 @@ import { INotebookTracker, NotebookPanel } from '@jupyterlab/notebook';
 import { Cell } from '@jupyterlab/cells';
 
 /**
- * Colab "#@title" form cells. A code cell whose first line is `#@title Some Title`
- * renders in Colab as a titled, collapsed form. JupyterLab has no equivalent, so
- * inject a clickable title bar and hide the input via a CSS class (not
- * source_hidden, so metadata is never mutated). Clicking toggles the code.
+ * Colab "#@title" form cells: a clickable title bar that hides the input via a CSS
+ * class, NOT source_hidden, so the notebook metadata is never mutated.
  */
 
 const TITLE_RE = /^\s*#\s*@title\b[ \t]*(.*)$/;
@@ -95,7 +93,6 @@ function applyTitle(cell: Cell): void {
     node.classList.remove('unsloth-titled', 'unsloth-code-collapsed');
     return;
   }
-  // Drop trailing Colab form annotations, e.g. `{ display-mode: "form" }`.
   const title =
     (match[1] || '').replace(/\s*\{[^}]*\}\s*$/, '').trim() || 'Title';
   if (!bar) {
@@ -113,7 +110,6 @@ function applyTitle(cell: Cell): void {
       barEl.classList.toggle('unsloth-collapsed', collapsed);
     });
     node.insertBefore(barEl, node.firstChild);
-    // Collapsed by default the first time we decorate this cell (Colab default).
     node.classList.add('unsloth-code-collapsed');
     bar = barEl;
   }
@@ -136,9 +132,7 @@ const colabTitlePlugin: JupyterFrontEndPlugin<void> = {
         panel.content.widgets.forEach(applyTitle);
       };
       panel.revealed.then(scan).catch(() => undefined);
-      // Re-scan on cell add/remove/move or active-cell switch (covers editing a
-      // #@title line). applyTitle never re-collapses an existing bar, so manual
-      // expansions are preserved.
+      // applyTitle never re-collapses an existing bar, so manual expansions survive
       const model = panel.content.model;
       if (model) {
         model.cells.changed.connect(() => window.setTimeout(scan, 0));

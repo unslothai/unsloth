@@ -7030,9 +7030,8 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    # The unsloth-zoo git ref for the --local overlay is read where the overlay
-    # runs (_unsloth_zoo_ref / _unsloth_zoo_git_spec) so UNSLOTH_ZOO_REF reaches
-    # the metadata-repair reinstall path too, not just the two calls below.
+    # read where the overlay runs, so UNSLOTH_ZOO_REF reaches the metadata-repair
+    # reinstall path too, not just the two calls below
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
     # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)

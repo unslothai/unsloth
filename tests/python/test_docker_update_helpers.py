@@ -3,23 +3,12 @@
 
 """Behavioural guards for the two in-container update helpers of the Docker image.
 
-Both are `docker exec` entry points that mutate a running container, so a wrong
-answer costs an outage or a mixed-version install:
-
-* `unsloth-studio-update` swaps the Studio Python packages and then restarts the
-  service. It verifies the new backend imports first, but only warned -- so a
-  release that pulls in a dependency `--no-deps` did not install got the healthy
-  old process killed and replaced by one that cannot start. supervisord retries
-  `startretries` times, lands in FATAL and never leaves it on its own, so the
-  container serves nothing until someone exec's in.
-* `unsloth-llama-update --check` reported "up to date" when it could not reach
-  the release feed at all, and its in-place rollback only removed entries whose
-  names the OLD tree also had, leaving new-release-only shared objects beside
-  the restored files. ggml dlopen()s every `libggml-*.so` next to the binaries,
-  so that mix is loaded on the next GGUF run.
-
-These drive the real scripts with stub `pip` / `supervisorctl` / `python` /
-`mv` on PATH. No docker, no GPU, no network.
+* `unsloth-studio-update` only WARNED when the new backend failed to import, so a
+  release missing a `--no-deps` dependency replaced the healthy process with one that
+  cannot start; supervisord then lands in FATAL and never leaves it.
+* `unsloth-llama-update --check` reported "up to date" when it could not reach the
+  release feed, and its in-place rollback left new-release-only shared objects beside
+  the restored files, which ggml dlopen()s.
 """
 
 from __future__ import annotations
@@ -64,7 +53,6 @@ def _run(
     )
 
 
-# --- unsloth-studio-update ----------------------------------------------------
 
 
 def _studio_env(tmp_path: Path, *, import_ok: bool) -> dict:
@@ -122,13 +110,8 @@ def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_pa
 
 
 def _zoo_ref_env(tmp_path: Path, *, git_exit: int) -> dict:
-    """`--ref` env whose stub `git ls-remote` exits with `git_exit`.
-
-    Real exit codes, measured against github.com with git 2.43.0:
-      0    the zoo has the ref
-      2    reached the remote, no matching ref (`--exit-code`)
-      128  never reached the remote (DNS / TLS / auth / proxy)
-    """
+    """`--ref` env whose stub `git ls-remote` exits with `git_exit`. git's codes:
+    0 = has the ref, 2 = reached the remote with no match, 128 = never reached it."""
     env = _studio_env(tmp_path, import_ok = True)
     _stub(tmp_path / "bin", "git", f"exit {git_exit}\n")
     return env
@@ -160,10 +143,8 @@ def test_studio_update_falls_back_to_zoo_main_when_the_ref_is_absent(tmp_path: P
 
 
 def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_path: Path):
-    # `git ls-remote --exit-code` reserves status 2 for "reached the remote, no
-    # matching ref"; 128 means the lookup never happened. Treating the two alike
-    # pairs the requested unsloth revision with an unrelated zoo revision the
-    # moment the network recovers for the pip call, and they share a private API.
+    # treating 2 and 128 alike pairs the requested unsloth revision with an unrelated
+    # zoo one once the network recovers, across a private API
     env = _zoo_ref_env(tmp_path, git_exit = 128)
     res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
     calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
@@ -175,7 +156,6 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
     assert "--zoo-ref" in res.stderr, "the remedy must be printed"
 
 
-# --- unsloth-llama-update -----------------------------------------------------
 
 
 def _llama_env(
@@ -222,11 +202,8 @@ def test_llama_check_reports_up_to_date(tmp_path: Path):
 
 
 def test_llama_check_reads_the_full_release_tag_not_the_base_build(tmp_path: Path):
-    # A marker written by the in-app updater (studio/install_llama_prebuilt.py) splits
-    # the two: "tag" is the normalized base build, "release_tag" the full release. The
-    # latest pointer is always the full tag_name, so reading "tag" first compared
-    # b10715 against b10715-mix-86bd2d3 and offered an update on an install that was
-    # already current -- forever, since applying it never changed the answer.
+    # the latest pointer is always the full tag_name, so reading the normalized "tag"
+    # first offers an update forever on an install that is already current
     res = _llama_check(
         tmp_path,
         "b10715-mix-86bd2d3",
@@ -287,11 +264,8 @@ def _llama_inplace_env(tmp_path: Path, old: list[str], new: list[str]) -> dict:
         '.write(\'{"tag": "b2222-new"}\\n\')\n',
         encoding = "utf-8",
     )
-    # Fail the ACTIVATION move (-t <install dir>) AFTER it has moved the files, so
-    # the install dir is populated with the new tree and `find` still reports the
-    # failure -- the mid-swap abort the rollback exists for. The drain
-    # (-t <backup>) and the rollback's own per-file moves must keep working, so
-    # only that one invocation is broken.
+    # fail the ACTIVATION move AFTER it moved the files: the mid-swap abort the
+    # rollback exists for
     bin_dir = tmp_path / "bin"
     _stub(
         bin_dir,
@@ -313,10 +287,8 @@ def _llama_inplace_env(tmp_path: Path, old: list[str], new: list[str]) -> dict:
 
 
 def test_llama_rollback_leaves_no_new_release_files_behind(tmp_path: Path):
-    # "libggml-hexagon.so" exists only in the new release, so the rollback loop --
-    # which iterates the BACKUP's entries -- cannot see it. ggml dlopen()s every
-    # libggml-*.so sitting next to the binaries, so a leftover is loaded against
-    # the restored older libggml-base.so.
+    # only in the new release, so the rollback loop over the BACKUP's entries cannot
+    # see it, and ggml would dlopen it against the restored older libggml-base.so
     old = ["libggml-base.so", "libggml-cpu-icelake.so", "llama-cli"]
     new = [
         "libggml-base.so",
@@ -339,15 +311,11 @@ def test_llama_rollback_leaves_no_new_release_files_behind(tmp_path: Path):
 
 
 def test_llama_rollback_keeps_every_old_file_when_the_drain_is_interrupted(tmp_path: Path):
-    # The mirror image: abort while the OLD tree is still being moved into the
-    # backup. The entries left in the install dir are then the only copy of those
-    # old files, so clearing the directory before restoring would destroy them.
+    # the mirror image: mid-drain, the entries left in the install dir are the only copy
     old = ["libggml-base.so", "libggml-cpu-icelake.so", "llama-cli", "llama-quantize"]
     env = _llama_inplace_env(tmp_path, old, old)
     install = tmp_path / "llama.cpp"
-    # Fail the DRAIN (-t <install dir>/.old.<pid>) after moving only the first
-    # source, so half the old tree is still sitting in the install dir when the
-    # rollback runs. Those entries are then the only copy there is.
+    # fail the DRAIN after one source, so half the old tree is still in the install dir
     _stub(
         tmp_path / "bin",
         "mv",
@@ -366,11 +334,10 @@ def test_llama_rollback_keeps_every_old_file_when_the_drain_is_interrupted(tmp_p
         assert name in survivors, f"{name} was lost during an interrupted drain: {survivors}"
 
 
-# --- fetch_llama_prebuilt.py marker schema ------------------------------------
 
 
 def _fetcher_module():
-    """Import the build-time fetcher by path; it is stdlib-only and has a __main__ guard."""
+    """Import the build-time fetcher by path; stdlib-only, with a __main__ guard."""
     import importlib.util
 
     path = REPO_ROOT / "docker" / "fetch_llama_prebuilt.py"
@@ -390,8 +357,5 @@ def _fetcher_module():
     ],
 )
 def test_fetcher_normalizes_the_base_build_for_the_marker_tag(release_tag, expected):
-    # The baked marker must use the same "tag" = base build / "release_tag" = full
-    # release split that studio/install_llama_prebuilt.py writes. Baking the full mix
-    # tag into "tag" made the image and the in-app updater disagree, so Studio's
-    # installed-version display changed shape depending on which one ran last.
+    # the same split install_llama_prebuilt.py writes, or the two installers disagree
     assert _fetcher_module().base_build_tag(release_tag) == expected

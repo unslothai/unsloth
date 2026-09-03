@@ -762,19 +762,18 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     ):
         kwargs.pop("mm_token_type_ids", None)
 
-    # VLMs do not allow logits_to_keep. transformers >= 5.0 sets it itself in
-    # generate(), so pre-injecting is redundant there, and the arch walk below
-    # can pick a key the top-level model rejects. Skip the injection on v5+.
-    # The sentinel is the plain release, like every other v5 gate here: this
-    # Version() keeps only the leading numeric run and appends ".1" for a
-    # suffix, so "5.0.0.dev0" normalizes to 5.0.0.1 and 5.0.0 FINAL would
-    # compare below it and take the legacy branch. Prereleases still gate
-    # correctly, since 5.0.0.dev0 and 5.0.0rc1 both normalize to 5.0.0.1.
+    # VLMs do not allow logits_to_keep, and transformers >= 5.0 sets it itself in
+    # generate(), so pre-injecting there is redundant and the arch walk below can
+    # pick a key the top-level model rejects.
+    # The sentinel is the plain release: this Version() keeps only the leading
+    # numeric run and appends ".1" for a suffix, so a "5.0.0.dev0" sentinel would
+    # normalize to 5.0.0.1 and send 5.0.0 FINAL down the legacy branch. Prereleases
+    # still gate correctly, since they normalize to 5.0.0.1 either way.
     if Version(transformers_version) < Version("5.0.0"):
         global NUM_LOGITS_TO_KEEP
         if arch not in NUM_LOGITS_TO_KEEP:
             m = self
-            # Find which is used: num_logits_to_keep or logits_to_keep
+            # find which is used: num_logits_to_keep or logits_to_keep
             while hasattr(m, "model"):
                 if hasattr(m, "forward"):
                     keys = inspect.signature(m.forward).parameters.keys()
@@ -791,14 +790,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if key is not None and key not in kwargs and _unsloth_generate_accepts_kwarg(self, key):
             kwargs[key] = 1
     else:
-        # v5's own injection (generation/utils.py) is guarded by
-        # `"logits_to_keep" not in model_kwargs`, so it is a default, not an
-        # override: an explicit caller value survives and must not be dropped.
-        # Popping unconditionally silently rewrites logits_to_keep=0 (full
-        # sequence) into 1. Only strip a key this model would reject, which is
-        # what the strict validator raises on: num_logits_to_keep everywhere
-        # (renamed away in v5), and logits_to_keep on the VLMs whose top-level
-        # forward does not take it.
+        # v5's own injection is guarded by `"logits_to_keep" not in model_kwargs`,
+        # so it is a DEFAULT: an explicit caller value survives, and popping
+        # unconditionally would rewrite logits_to_keep=0 (full sequence) into 1.
+        # Strip only what the strict validator raises on: num_logits_to_keep
+        # everywhere (renamed away in v5), and logits_to_keep on the VLMs whose
+        # top-level forward does not take it.
         for _logits_kwarg in ("logits_to_keep", "num_logits_to_keep"):
             if _logits_kwarg in kwargs and not _unsloth_generate_accepts_kwarg(self, _logits_kwarg):
                 kwargs.pop(_logits_kwarg, None)

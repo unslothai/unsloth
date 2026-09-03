@@ -7,19 +7,18 @@ import json
 import re
 import sys
 
-# Lowercased substrings that mark a markdown cell as top/bottom boilerplate.
 _BOILERPLATE_MD = (
-    "to run this, press",  # Colab/AMD run announcement
+    "to run this, press",
     'press "*runtime*"',
-    "### news",  # News heading
-    "introducing **unsloth studio**",  # rotating announcement body
-    "you will learn how to do",  # announcement tail
-    "this notebook is licensed",  # announcement license line
-    "and we're done",  # footer opener
-    "this notebook and all unsloth notebooks are licensed",  # footer license
-    "join discord if you need help",  # footer
-    "star us on",  # footer
-    "some other resources",  # footer resources block
+    "### news",
+    "introducing **unsloth studio**",
+    "you will learn how to do",
+    "this notebook is licensed",
+    "and we're done",
+    "this notebook and all unsloth notebooks are licensed",
+    "join discord if you need help",
+    "star us on",
+    "some other resources",
 )
 
 
@@ -30,7 +29,6 @@ def _text(cell):
     return src.replace("\r\n", "\n").replace("\r", "\n")
 
 
-# Command fragments that mark a cell as the generated install cell.
 _INSTALL_MARKERS = (
     "pip install",
     "pip3-autoremove",
@@ -48,9 +46,6 @@ def _is_install_code(cell):
     low = t.lower()
     if any(m in low for m in _INSTALL_MARKERS):
         return True
-    # A %%capture / %%bash cell is boilerplate only if it also carries an install
-    # command (caught above); a bare one doing real setup is substantive, so hash
-    # it to avoid a false SAME on the boot refresh.
     return False
 
 
@@ -61,48 +56,31 @@ def _is_boilerplate_md(cell):
     return any(m in low for m in _BOILERPLATE_MD)
 
 
-# A `#` that opens a comment: at line start, or preceded by whitespace. A `#`
-# glued to the previous token is data, not a comment -- notably the fragment in
-# `pip install "git+https://host/repo#subdirectory=pkg"`, which selects the
-# package and has to stay in the signature.
+# A `#` glued to the previous token is data, not a comment: the fragment in
+# `pip install "git+https://host/repo#subdirectory=pkg"` selects the package.
 _COMMENT_RE = re.compile(r"(?:^|(?<=\s))#.*$", re.MULTILINE)
 
 
 def _normalize_install(text):
-    """Drop the cosmetic half of an install cell, keep what it installs.
-
-    Upstream regenerates this cell on every build, so its comments, blank lines
-    and spacing churn across every notebook for no functional reason. That churn
-    is why the cell used to be skipped outright -- but its package specs are the
-    other half and they are functional: a transformers bump or an added
-    dependency is a fix, and the image keys its transformers sidecar off this
-    cell (unsloth_pip_shim.py reads the pin from it). Skipping the whole cell
-    made such a fix invisible to the refresh forever, because SAME keeps the old
-    file AND re-records its old hash, so it never converges. Hash the cell with
-    only the cosmetics normalized away instead.
-    """
+    """Drop the cosmetic half of an install cell, keep what it installs. Its package
+    specs are functional and the image keys its transformers sidecar off them, so
+    skipping the whole cell hid an upstream fix forever: SAME keeps the old file AND
+    re-records its old hash."""
     lines = []
     for line in _COMMENT_RE.sub("", text).split("\n"):
         body = " ".join(line.split())
         if not body:
-            continue  # blank, or a line that was nothing but a comment
-        # Keep the INDENTATION. Upstream's install cell is an `if "COLAB_" not in
-        # ...: / else:` block, so a line's indent decides which runtime its
-        # `!pip install` runs on -- moving one out of the Colab-only branch is a
-        # functional change, not churn, and collapsing the indent away hashed it
-        # the same as leaving it in. SAME re-records the OLD hash, so such a
-        # notebook would never converge. Only the spacing WITHIN a line churns.
-        # Tabs are expanded so a tab/space rewrite alone still reads as cosmetic.
+            continue
+        # Keep the INDENTATION: the cell is an `if "COLAB_" not in ...:` block, so a
+        # line's indent decides which runtime it runs on. Only the spacing WITHIN a
+        # line churns, and tabs expand so a tab/space rewrite stays cosmetic.
         indent = line[: len(line) - len(line.lstrip())]
         lines.append(" " * len(indent.expandtabs(4)) + body)
     return "\n".join(lines)
 
 
 def middle_digest(path):
-    """sha256 over the (type, source) of every non-boilerplate cell, or None.
-
-    Install cells are hashed in normalized form rather than skipped.
-    """
+    """sha256 over the (type, source) of every non-boilerplate cell, or None."""
     try:
         with open(path, "r", encoding = "utf-8") as f:
             nb = json.load(f)

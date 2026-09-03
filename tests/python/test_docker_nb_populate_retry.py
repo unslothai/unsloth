@@ -3,18 +3,13 @@
 
 """First-boot population must not claim a commit it did not finish copying.
 
-`unsloth_sync_notebooks.sh` phase 1 lays the baked notebooks down, records what
-it wrote in `.unsloth_sync_state`, and stamps the template commit into
-`.unsloth_sync_commit`. A `cp -a` that fails (a destination subpath that is not
-a writable directory, a full disk) is skipped silently and gets no state entry,
-so phase 1b never restores it. Stamping the commit anyway told the phase 2
-refresh that this commit was already synced, so it exited early too, and the
-notebook was gone for good on an offline container.
+A `cp -a` that fails is skipped silently and gets no state entry, so phase 1b never
+restores it -- and stamping the commit anyway tells the phase 2 refresh it is already
+synced, so the notebook is gone for good on an offline container.
 
-Driven end to end against the real script with the refresh disabled, so these
-are offline assertions with no network and no git. The blocked path is a plain
-FILE where a directory has to be, which fails for root as well, so the test
-does not silently pass under a root CI container the way a chmod would.
+Driven end to end against the real script with the refresh disabled. The blocked path
+is a plain FILE where a directory has to be, which is ENOTDIR for root too, so this
+cannot silently pass under a root CI container the way a chmod would.
 """
 
 from __future__ import annotations
@@ -61,8 +56,7 @@ def _run(tmp_path: Path, template: Path, dest: Path) -> subprocess.CompletedProc
             os.environ,
             UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
             UNSLOTH_NOTEBOOKS_DIR = str(dest),
-            # Offline: phase 2 needs a clone, and the point here is that the
-            # offline half of the retry works on its own.
+            # phase 2 needs a clone; the offline half must retry on its own
             UNSLOTH_SKIP_NOTEBOOK_REFRESH = "1",
             UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
             UNSLOTH_KEEP_COLAB_INTRO = "1",
@@ -87,8 +81,7 @@ def test_a_failed_copy_leaves_the_commit_unstamped_and_retries_next_start(tmp_pa
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
-    # `sub` is a regular file, so `mkdir -p dest/sub` and the copy into it both
-    # fail with ENOTDIR, for root too.
+    # a regular file, so the copy into it is ENOTDIR for root too
     (dest / "sub").write_text("blocked", encoding = "utf-8")
 
     first = _run(tmp_path, template, dest)
@@ -103,7 +96,6 @@ def test_a_failed_copy_leaves_the_commit_unstamped_and_retries_next_start(tmp_pa
     )
     assert (dest / ".unsloth_sync_partial").exists()
 
-    # The obstruction clears (the operator fixes the mount, the disk drains).
     (dest / "sub").unlink()
 
     second = _run(tmp_path, template, dest)
@@ -118,7 +110,6 @@ def test_a_failed_copy_leaves_the_commit_unstamped_and_retries_next_start(tmp_pa
 
 @behavioural
 def test_a_clean_populate_stamps_the_commit_and_does_not_re_run(tmp_path: Path):
-    # Control: the retry gate must not turn every start back into a populate.
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
@@ -129,9 +120,8 @@ def test_a_clean_populate_stamps_the_commit_and_does_not_re_run(tmp_path: Path):
     before = _state(dest)
     assert set(before) == {"a.ipynb", "sub/b.ipynb"}
 
-    # An edit the user makes between starts. Phase 1 re-running would drop its
-    # managed record (the hash no longer matches the template), so the state
-    # staying identical is what proves the block was skipped.
+    # a re-run of phase 1 would drop this file's managed record, so an identical
+    # state is what proves the block was skipped
     (dest / "a.ipynb").write_text("edited", encoding = "utf-8")
 
     assert _run(tmp_path, template, dest).returncode == 0
@@ -141,8 +131,8 @@ def test_a_clean_populate_stamps_the_commit_and_does_not_re_run(tmp_path: Path):
 
 @behavioural
 def test_the_partial_marker_is_not_recorded_as_a_notebook(tmp_path: Path):
-    # record_state() walks every file under DEST; a new dotfile that is not in
-    # its skip list would be published to users as a notebook to sync.
+    # record_state() walks every file under DEST, so a dotfile missing from its skip
+    # list reaches users as a notebook to sync
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()

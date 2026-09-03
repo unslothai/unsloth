@@ -7,9 +7,8 @@
 #                       `docker logs` once JupyterLab is up.
 #   * on demand:     docker exec <container> unsloth-jupyter-tunnel --force
 #
-# The tunnel gives a public https URL that works from anywhere with no account
-# or open inbound port. JupyterLab still requires its password, so the notebook
-# is not open to the world; treat the URL as sensitive all the same.
+# The URL works from anywhere with no account or open inbound port. JupyterLab still
+# requires its password, but treat the URL as sensitive all the same.
 set -u
 
 FORCE=0
@@ -29,8 +28,7 @@ for _ in $(seq 1 90); do
     sleep 2
 done
 
-# Reuse a cloudflared already on the host (Studio caches one for its own
-# tunnel); otherwise fetch the static binary for this arch. No account needed.
+# Studio caches a cloudflared for its own tunnel; otherwise fetch the static binary.
 CFD=""
 for cand in \
     "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}/bin/cloudflared" \

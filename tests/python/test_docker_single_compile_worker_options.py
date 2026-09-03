@@ -3,25 +3,14 @@
 
 """Regression guard for the pinned-device single-compile-worker block.
 
-`docker --gpus '"device=N"'` sets NVIDIA_VISIBLE_DEVICES but not
-CUDA_VISIBLE_DEVICES, so Inductor's compile workers cannot enumerate the
-cgroup-pinned GPU and die with "Could not find an active GPU backend".
-unsloth/_gpu_init.py therefore forces one in-process compile thread.
+The trap: that block runs AFTER `import unsloth_zoo`, which has already built its
+module-level Inductor options dicts from the original thread count. Those snapshots go
+to torch.compile as `options`, which Inductor applies as a config patch outranking
+both TORCHINDUCTOR_COMPILE_THREADS and config.compile_threads, so replacing
+determine_compile_threads alone leaves every already-decorated compile site unguarded.
 
-The trap this pins: the block runs AFTER `import unsloth_zoo`, and that import
-chain (unsloth_zoo/__init__.py -> .temporary_patches -> .gpt_oss -> .common)
-has already built its module-level Inductor options dicts from the original
-4-32 thread count. Those dicts are plain snapshots handed to torch.compile as
-`options`, and Inductor applies `options` as a config patch that outranks both
-TORCHINDUCTOR_COMPILE_THREADS and torch._inductor.config.compile_threads. So
-replacing determine_compile_threads alone leaves the guard ineffective for
-every already-decorated compile site (rl_replacements, loss_utils,
-cross_entropy_loss, temporary_patches.utils, the gpt_oss fused MoE paths).
-
-Static + in-process: no docker, no GPU, no real torch compile. The guard block
-is extracted from the shipped source and executed against a synthetic
-unsloth_zoo module graph, so the test exercises the real code rather than a
-copy of it.
+The guard block is extracted from the shipped source and run against a synthetic
+unsloth_zoo module graph, so this exercises the real code rather than a copy.
 """
 
 from __future__ import annotations
@@ -51,7 +40,6 @@ def gpu_init_source() -> str:
 
 @pytest.fixture(scope = "module")
 def guard_block(gpu_init_source: str) -> str:
-    """The `if <sentinel> == "1":` block, verbatim from the shipped file."""
     start = re.search(
         r'^if os\.environ\.get\("%s", "0"\) == "1":$' % SENTINEL,
         gpu_init_source,
@@ -68,9 +56,6 @@ def guard_block(gpu_init_source: str) -> str:
 
 
 def test_guard_runs_after_unsloth_zoo_is_imported(gpu_init_source: str):
-    # The premise of the whole test: the zoo (and therefore its options dicts)
-    # is already live by the time the block runs, so rewriting the dicts is the
-    # only thing that can reach them.
     zoo_import = re.search(r"^    import unsloth_zoo$", gpu_init_source, re.MULTILINE)
     guard = re.search(
         r'^if os\.environ\.get\("%s", "0"\) == "1":$' % SENTINEL,
@@ -82,13 +67,8 @@ def test_guard_runs_after_unsloth_zoo_is_imported(gpu_init_source: str):
 
 
 def _install_fake_zoo(monkeypatch) -> dict:
-    """A stand-in for the zoo's post-import state on a 32-core host.
-
-    Mirrors the real shapes: one shared dict re-exported by several modules
-    (common -> loss_utils / rl_replacements / temporary_patches.utils) plus
-    separate per-model dicts (gpt_oss's fused variants), and the
-    functools.partial that closes over the shared dict.
-    """
+    """The zoo's post-import state in its real shapes: one shared dict re-exported by
+    several modules, per-model dicts, and a partial closing over the shared one."""
     shared = {"epilogue_fusion": True, "compile_threads": ORIGINAL_THREADS}
     fused = {"triton.cudagraphs": True, "compile_threads": ORIGINAL_THREADS}
     no_combo = {"combo_kernels": False, "compile_threads": ORIGINAL_THREADS}
@@ -157,7 +137,6 @@ def test_cached_options_dicts_are_rewritten(guard_block: str, monkeypatch):
     )
     assert state["fused"]["compile_threads"] == 1
     assert state["no_combo"]["compile_threads"] == 1
-    # The partial holds the same dict object, so the in-place rewrite reaches it.
     assert state["common"].torch_compile.keywords["options"]["compile_threads"] == 1
 
 
@@ -166,8 +145,6 @@ def test_guard_still_sets_env_config_and_function(guard_block: str, monkeypatch)
 
     assert os.environ["TORCHINDUCTOR_COMPILE_THREADS"] == "1"
     assert state["torch"]._inductor.config.compile_threads == 1
-    # Dicts built after this point (compiler.py, gpt_oss's runtime rebuilds) go
-    # through determine_compile_threads, which must now report 1.
     assert state["common"].determine_compile_threads() == 1
 
 

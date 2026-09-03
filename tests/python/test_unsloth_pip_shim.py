@@ -3,20 +3,8 @@
 
 """Regression tests for docker/unsloth_pip_shim.py.
 
-The shim sits ahead of the real pip/uv on PATH inside the Unsloth Docker
-notebook environment so a notebook `!pip install ...` / `!uv pip install ...`
-cell cannot clobber the baked, ABI-matched cu128 torch/vLLM/transformers stack.
-These tests drive main() with UNSLOTH_NB_SHIM=1 and capture the command it would
-os.execv, so we can assert what actually reaches the real tool. They cover:
-
-  * -e/--editable paired with its target (a protected editable drops the flag
-    too, so pip is never left a dangling `-e`);
-  * -P/--upgrade-package values filtered through the protected set (uv cannot be
-    told to refresh a baked package);
-  * direct wheel URL / local wheel path basenames parsed for protected
-    distribution names before URL passthrough.
-
-No GPU or network is required.
+Drives main() with UNSLOTH_NB_SHIM=1 and captures the os.execv command, so the
+assertions are on what actually reaches the real pip/uv.
 """
 
 from __future__ import annotations
@@ -37,8 +25,7 @@ TORCH_WHEEL_URL = (
 
 
 class _Exec(Exception):
-    """Raised by the patched os.execv so main() stops at the exec point and the
-    intended command is captured instead of replacing the test process."""
+    """Raised by the patched os.execv so main() stops here."""
 
     def __init__(self, path, argv):
         self.path = path
@@ -47,8 +34,7 @@ class _Exec(Exception):
 
 @pytest.fixture()
 def shim(tmp_path, monkeypatch):
-    """Load a fresh copy of the shim with the transformers marker pointed at a
-    temp file and os.execv patched to capture (not perform) the exec."""
+    """Fresh shim copy, marker in tmp_path, os.execv patched to capture the exec."""
     marker = tmp_path / "requested_transformers"
     monkeypatch.setenv("UNSLOTH_NB_TF_MARKER", str(marker))
     monkeypatch.setenv("UNSLOTH_NB_SHIM", "1")
@@ -62,17 +48,13 @@ def shim(tmp_path, monkeypatch):
         raise _Exec(path, argv)
 
     monkeypatch.setattr(mod.os, "execv", _fake_execv)
-    mod._marker_path = marker  # convenience for assertions
+    mod._marker_path = marker
     return mod
 
 
 def _run(shim, tool, args):
-    """Invoke the shim as `tool install <args>` and return (execd_tail, marker).
-
-    execd_tail is the argument list after the `install` verb that reached the
-    real tool, or None when the shim no-op'd (nothing left to install). marker is
-    the recorded transformers version, or None.
-    """
+    """(args after `install` that reached the real tool or None, recorded transformers
+    version or None). The injected trailing `--constraint <file>` pair is stripped."""
     if tool == "uv":
         argv = ["uv", "pip", "install", *args]
     else:
@@ -83,11 +65,6 @@ def _run(shim, tool, args):
             shim.main()
             execd = None
         except _Exec as exc:
-            # main() builds [REAL[tool]] + head + keep_args + the protected
-            # constraints pair; head ends with `install`, so everything after it
-            # is what we assert on. The trailing `--constraint <...>` pair is
-            # injected on EVERY install; strip it here so each test asserts on its
-            # own args (dedicated tests below cover the pair).
             i = exc.argv.index("install")
             execd = exc.argv[i + 1 :]
             if (
@@ -100,14 +77,8 @@ def _run(shim, tool, args):
     return execd, marker
 
 
-# --------------------------------------------------------------------------
-# Item 3541142907 -- pair -e/--editable with its target. A protected editable
-# drops the flag WITH its value (never `pip install -e snac`); an unprotected
-# editable is forwarded verbatim.
-# --------------------------------------------------------------------------
 UNSLOTH_VCS = "git+https://github.com/unslothai/unsloth.git#egg=unsloth"
 
-# Sentinel expectation: the whole command line is forwarded verbatim (execd == args).
 KEPT = object()
 
 
@@ -115,7 +86,7 @@ KEPT = object()
     "args, expected",
     [
         pytest.param(["-e", UNSLOTH_VCS, "snac"], ["snac"], id = "sep-protected"),
-        # nothing left to install -> no-op, no dangling -e
+        # a protected editable drops the flag WITH its value: never a dangling `-e`
         pytest.param(["-e", UNSLOTH_VCS], None, id = "sep-only-protected-noop"),
         pytest.param(["-e", "./localpkg"], KEPT, id = "sep-unprotected-kept"),
         pytest.param(["--editable=" + UNSLOTH_VCS, "snac"], ["snac"], id = "inline-protected"),
@@ -128,11 +99,6 @@ def test_editable_forms(shim, args, expected):
     assert execd == (args if expected is KEPT else expected), execd
 
 
-# --------------------------------------------------------------------------
-# Item 3541142906 -- filter uv -P/--upgrade-package values. `uv pip install
-# -P torch snac` must not let uv refresh baked torch; a pinned transformers
-# upgrade selector still feeds the sidecar marker.
-# --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "args, expected, expected_marker",
     [
@@ -140,7 +106,6 @@ def test_editable_forms(shim, args, expected):
         pytest.param(["--upgrade-package=transformers", "snac"], ["snac"], None, id = "inline"),
         pytest.param(["-P", "transformers==4.55.0", "snac"], ["snac"], "4.55.0", id = "tf-pin"),
         pytest.param(["-P", "requests", "requests"], KEPT, None, id = "unprotected-kept"),
-        # -P is not itself a target
         pytest.param(["-P", "torch"], None, None, id = "only-protected-noop"),
     ],
 )
@@ -150,10 +115,6 @@ def test_upgrade_package_forms(shim, args, expected, expected_marker):
     assert marker == expected_marker, marker
 
 
-# --------------------------------------------------------------------------
-# Item 3541142908 -- parse protected wheel basenames before URL passthrough
-# (a recognised protected wheel URL/path is dropped -> no-op).
-# --------------------------------------------------------------------------
 NUMPY_WHEEL_URL = "https://example.com/wheels/numpy-2.1.0-cp312-cp312-linux_x86_64.whl"
 
 
@@ -164,7 +125,6 @@ NUMPY_WHEEL_URL = "https://example.com/wheels/numpy-2.1.0-cp312-cp312-linux_x86_
         pytest.param(
             ["/tmp/torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"], None, id = "local-path"
         ),
-        # unsloth_zoo-*.whl normalises to unsloth-zoo, which is protected.
         pytest.param(
             ["https://example.com/unsloth_zoo-1.0-py3-none-any.whl"], None, id = "normalised"
         ),
@@ -183,17 +143,12 @@ def test_protected_wheel_in_requirements_file_dropped(shim, tmp_path):
         encoding = "utf-8",
     )
     execd, _ = _run(shim, "pip", ["-r", str(req)])
-    # The filtered requirements copy still installs snac; torch's wheel line is
-    # stripped. execd is `-r <filtered.txt>`.
     assert execd is not None and execd[0] == "-r"
     filtered = Path(execd[1]).read_text(encoding = "utf-8")
     assert "snac==1.2.0" in filtered
     assert "torch" not in filtered
 
 
-# --------------------------------------------------------------------------
-# Guardrails: the ordinary happy paths still work unchanged.
-# --------------------------------------------------------------------------
 def test_plain_package_passes_through(shim):
     execd, _ = _run(shim, "pip", ["omegaconf==2.3.1"])
     assert execd == ["omegaconf==2.3.1"], execd
@@ -210,9 +165,6 @@ def test_index_url_value_flag_kept_verbatim(shim):
     assert execd == ["--extra-index-url", "https://example.com/simple", "snac"], execd
 
 
-# --------------------------------------------------------------------------
-# Item 3541404842 -- filter editable entries INSIDE a requirements file.
-# --------------------------------------------------------------------------
 def test_editable_protected_in_requirements_file_dropped(shim, tmp_path):
     req = tmp_path / "reqs.txt"
     req.write_text(
@@ -223,7 +175,7 @@ def test_editable_protected_in_requirements_file_dropped(shim, tmp_path):
     assert execd is not None and execd[0] == "-r", execd
     filtered = Path(execd[1]).read_text(encoding = "utf-8")
     assert "snac==1.2.0" in filtered
-    assert "unsloth" not in filtered  # protected editable line stripped
+    assert "unsloth" not in filtered
 
 
 def test_editable_attached_protected_in_requirements_file_dropped(shim, tmp_path):
@@ -240,8 +192,6 @@ def test_editable_attached_protected_in_requirements_file_dropped(shim, tmp_path
 
 
 def test_editable_unprotected_in_requirements_file_kept(shim, tmp_path):
-    # An unprotected editable survives even when the file is otherwise rewritten
-    # (torch dropped); only protected editables are stripped.
     req = tmp_path / "reqs.txt"
     req.write_text(
         "-e ./localpkg\ntorch==2.11.0\nsnac==1.2.0\n",
@@ -255,9 +205,6 @@ def test_editable_unprotected_in_requirements_file_kept(shim, tmp_path):
     assert "torch" not in filtered
 
 
-# --------------------------------------------------------------------------
-# Item 3541404849 -- a nested -c constraint pin is not recorded as a request.
-# --------------------------------------------------------------------------
 def test_nested_constraint_transformers_pin_not_recorded(shim, tmp_path):
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("transformers==4.55.0\n", encoding = "utf-8")
@@ -265,13 +212,10 @@ def test_nested_constraint_transformers_pin_not_recorded(shim, tmp_path):
     req.write_text("-c constraints.txt\nsnac==1.2.0\n", encoding = "utf-8")
     execd, marker = _run(shim, "pip", ["-r", str(req)])
     assert execd is not None and execd[0] == "-r", execd
-    # A constraint pin is not an install request -> no sidecar marker written.
     assert marker is None, marker
 
 
 def test_nested_requirement_transformers_pin_recorded(shim, tmp_path):
-    # Contrast: a nested -r requirement DOES carry install requests, so its
-    # transformers pin is still recorded for the sidecar.
     nested = tmp_path / "nested.txt"
     nested.write_text("transformers==4.55.0\n", encoding = "utf-8")
     req = tmp_path / "reqs.txt"
@@ -281,13 +225,8 @@ def test_nested_requirement_transformers_pin_recorded(shim, tmp_path):
     assert marker == "4.55.0", marker
 
 
-# --------------------------------------------------------------------------
-# Item 3541404845 -- handle pip's attached short options (-rfile / -cfile /
-# etc). The attached `-e<target>` case lives in test_editable_forms above.
-# --------------------------------------------------------------------------
 def test_attached_short_requirement_file_filtered(shim, tmp_path):
-    # `pip install -rreqs.txt` (attached) must filter the file AND count as a
-    # target -- before the fix it fell through as an opaque option and no-op'd.
+    # attached `-rreqs.txt` must filter the file AND count as a target, or the cell no-ops
     req = tmp_path / "reqs.txt"
     req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
     execd, _ = _run(shim, "pip", ["-r" + str(req)])
@@ -313,11 +252,6 @@ def test_attached_short_upgrade_package_protected_dropped(shim):
     assert "torch" not in execd and "-P" not in execd
 
 
-# --------------------------------------------------------------------------
-# Item 3541773143 -- a bare wheel filename (no ./ or / prefix) is still a pip
-# target from the CWD, so its protected distribution must be parsed too
-# (`pip install torch-2.11.0-...whl` must not reinstall torch).
-# --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "args, expected",
     [
@@ -331,12 +265,7 @@ def test_bare_wheel_filename_forms(shim, args, expected):
     assert execd == (args if expected is KEPT else expected), execd
 
 
-# --------------------------------------------------------------------------
-# Item 3541773157 -- a protected VCS URL WITHOUT an #egg= fragment (the egg-less
-# form this repo recommends) must be dropped via its repo basename.
-# --------------------------------------------------------------------------
 def test_vcs_url_without_egg_protected_dropped(shim):
-    # git+https://github.com/huggingface/transformers.git -> transformers.
     execd, _ = _run(shim, "pip", ["git+https://github.com/huggingface/transformers.git", "snac"])
     assert execd == ["snac"], execd
 
@@ -352,17 +281,13 @@ def test_vcs_url_without_egg_unprotected_kept(shim):
     assert execd == [url], execd
 
 
-# --------------------------------------------------------------------------
-# Item 3541773153 -- refuse remote (URL) requirement / constraint files in shim
-# mode; their protected pins cannot be inspected before the real tool installs.
-# --------------------------------------------------------------------------
+# remote requirement/constraint files are refused: their pins cannot be inspected first
 R_URL = "https://example.com/reqs.txt"
 
 
 @pytest.mark.parametrize(
     "args, expected",
     [
-        # dropped, and no dangling -r left behind
         pytest.param(["-r", R_URL], None, id = "sep-r-only-noop"),
         pytest.param(["-r", R_URL, "snac"], ["snac"], id = "sep-r-target-kept"),
         pytest.param(["--requirement=" + R_URL, "snac"], ["snac"], id = "inline-r"),
@@ -376,8 +301,6 @@ def test_remote_requirement_and_constraint_urls_refused(shim, args, expected):
 
 
 def test_nested_remote_include_dropped(shim, tmp_path):
-    # A local reqs file that pulls a remote include must have that include
-    # stripped, not passed through for the real pip to fetch unfiltered.
     req = tmp_path / "reqs.txt"
     req.write_text("-r https://example.com/evil.txt\nsnac==1.2.0\n", encoding = "utf-8")
     execd, _ = _run(shim, "pip", ["-r", str(req)])
@@ -387,10 +310,7 @@ def test_nested_remote_include_dropped(shim, tmp_path):
     assert "example.com" not in filtered and "://" not in filtered
 
 
-# --------------------------------------------------------------------------
-# Item 3541773164 -- resolver-wide reinstall / ignore-installed flags are
-# stripped so they cannot rebuild already-satisfied baked deps.
-# --------------------------------------------------------------------------
+# resolver-wide reinstall / ignore-installed flags cannot rebuild satisfied baked deps
 def test_force_reinstall_flag_stripped(shim):
     execd, _ = _run(shim, "pip", ["--force-reinstall", "snac"])
     assert execd == ["snac"], execd
@@ -406,10 +326,6 @@ def test_uv_reinstall_flag_stripped(shim):
     assert execd == ["snac"], execd
 
 
-# --------------------------------------------------------------------------
-# Item 3541773168 -- uv's --reinstall-package selector is filtered through _KEEP
-# exactly like -P/--upgrade-package (both forms, no dangling flag).
-# --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "args, expected, expected_marker",
     [
@@ -427,9 +343,6 @@ def test_reinstall_package_forms(shim, args, expected, expected_marker):
     assert marker == expected_marker, marker
 
 
-# --------------------------------------------------------------------------
-# Item 3542096750 -- parse protected source archives (sdist / zip) too.
-# --------------------------------------------------------------------------
 SDIST_URL = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
 
 
@@ -439,7 +352,7 @@ SDIST_URL = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
         pytest.param([SDIST_URL, "snac"], ["snac"], id = "url-protected"),
         pytest.param(["torch-2.11.0.tar.gz"], None, id = "bare-protected"),
         pytest.param(["./transformers-4.55.0.zip", "snac"], ["snac"], id = "zip-protected"),
-        # flashinfer-python is protected; the name must survive the hyphen split.
+        # a hyphenated protected name must survive the sdist hyphen split
         pytest.param(["flashinfer-python-0.5.0.tar.gz"], None, id = "hyphenated-name"),
         pytest.param(["numpy-2.1.0.tar.gz"], KEPT, id = "unprotected-kept"),
     ],
@@ -449,10 +362,6 @@ def test_source_archive_forms(shim, args, expected):
     assert execd == (args if expected is KEPT else expected), execd
 
 
-# --------------------------------------------------------------------------
-# Item 3542096760 -- uv's PLURAL --requirements / --constraints go through the
-# same filter as the pip-style singular names.
-# --------------------------------------------------------------------------
 def test_uv_plural_requirements_filtered(shim, tmp_path):
     req = tmp_path / "reqs.txt"
     req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
@@ -473,17 +382,12 @@ def test_uv_plural_constraints_filtered(shim, tmp_path):
     assert "torch" not in filtered
 
 
-# --------------------------------------------------------------------------
-# Item 3542096764 -- neutralise --upgrade-strategy eager so a kept target cannot
-# eagerly rebuild already-satisfied baked deps.
-# --------------------------------------------------------------------------
+# --upgrade-strategy eager would let a kept target rebuild satisfied baked deps
 @pytest.mark.parametrize(
     "args, expected",
     [
         pytest.param(["-U", "--upgrade-strategy", "eager", "snac"], ["-U", "snac"], id = "eager"),
         pytest.param(["--upgrade-strategy=eager", "snac"], ["snac"], id = "inline-eager"),
-        # only-if-needed is pip's default, so dropping it is a harmless no-op that
-        # keeps the kept target installing normally.
         pytest.param(
             ["--upgrade-strategy", "only-if-needed", "snac"], ["snac"], id = "only-if-needed"
         ),
@@ -494,13 +398,9 @@ def test_upgrade_strategy_forms(shim, args, expected):
     assert execd == expected, execd
 
 
-# --------------------------------------------------------------------------
-# Resolver-level protection: every forwarded install carries a constraints file
-# pinning the installed protected packages, so a kept target's dependency on an
-# incompatible torch/transformers fails loudly instead of replacing the wheel.
-# --------------------------------------------------------------------------
+# every forwarded install carries a constraints file, so an incompatible dependency
+# fails loudly instead of replacing the wheel
 def _raw_execd(shim, tool, args):
-    """Like _run but WITHOUT stripping the injected constraint pair."""
     argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", argv)
@@ -512,24 +412,15 @@ def _raw_execd(shim, tool, args):
 
 
 class _FakeDist:
-    """Minimal stand-in for an importlib.metadata Distribution."""
-
     def __init__(self, name, version):
         self.metadata = {"Name": name}
         self.version = version
 
 
 def _fake_distributions(monkeypatch, *pairs):
-    """Pin what _protected_constraints_file sees as INSTALLED.
-
-    It reads the ambient environment via importlib.metadata.distributions, so
-    without this the outcome depends on whatever happens to be in the venv:
-    with no protected package installed it correctly returns None (see its
-    docstring) and no --constraint pair is appended. That made the assertion
-    below environment-dependent, and it surfaced as an IndexError on execd[-2]
-    rather than a readable failure. The shim imports the symbol inside the
-    function, so patch it at its source.
-    """
+    """Pin what _protected_constraints_file sees as INSTALLED, else the assertions
+    depend on the ambient venv. The shim imports it inside the function, so patch
+    it at its source."""
     monkeypatch.setattr(
         "importlib.metadata.distributions",
         lambda: [_FakeDist(n, v) for n, v in pairs],
@@ -552,9 +443,6 @@ def test_forwarded_install_carries_protected_constraints(shim, monkeypatch):
 
 
 def test_forwarded_install_without_protected_packages_has_no_constraints(shim, monkeypatch):
-    # The other half of the contract: with nothing protected installed there is
-    # nothing to pin, so the install must still be forwarded, just bare. This is
-    # the case a bare venv actually hits.
     _fake_distributions(monkeypatch, ("snac", "1.2.1"))
     execd = _raw_execd(shim, "pip", ["snac"])
     assert execd is not None, "the install must still be forwarded"
@@ -562,16 +450,12 @@ def test_forwarded_install_without_protected_packages_has_no_constraints(shim, m
 
 
 def test_noop_install_gets_no_constraints(shim):
-    # A cell whose only target is protected still no-ops (no exec at all).
     execd = _raw_execd(shim, "pip", ["torch"])
     assert execd is None
 
 
-# --------------------------------------------------------------------------
-# pip expands ${UPPERCASE} in requirements files AFTER the shim classifies the
-# literal text; classification must expand the same way or `${PKG}==...` with
-# PKG=torch walks straight past _KEEP.
-# --------------------------------------------------------------------------
+# pip expands ${UPPERCASE} in requirements files after the shim classifies the literal
+# text, so classification must expand the same way or `${PKG}==` walks past _KEEP
 def test_env_expanded_protected_requirement_dropped(shim, tmp_path, monkeypatch):
     monkeypatch.setenv("PKG", "torch")
     req = tmp_path / "reqs.txt"
@@ -596,15 +480,11 @@ def test_unset_env_reference_left_verbatim(shim, tmp_path, monkeypatch):
     req = tmp_path / "reqs.txt"
     req.write_text("${NOT_SET_ANYWHERE}==1.0\nsnac==1.2.0\n", encoding = "utf-8")
     execd, _ = _run(shim, "pip", ["-r", str(req)])
-    # Nothing protected detected -> the original file is forwarded unchanged
-    # (pip forwards unset references verbatim too).
     assert execd == ["-r", str(req)], execd
 
 
-# --------------------------------------------------------------------------
-# Filtered-copy write failures fail CLOSED: the original file pins protected
-# packages, so forwarding it would hand pip exactly what must be filtered.
-# --------------------------------------------------------------------------
+# a filtered-copy write failure must fail CLOSED: forwarding the original hands pip
+# exactly what must be filtered
 def test_filter_write_failure_refuses_original_file(shim, tmp_path, monkeypatch):
     req = tmp_path / "reqs.txt"
     req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
@@ -618,8 +498,6 @@ def test_filter_write_failure_refuses_original_file(shim, tmp_path, monkeypatch)
 
 
 def test_filter_write_failure_clean_file_passes_through(shim, tmp_path, monkeypatch):
-    # A file with nothing protected never needs the temp copy, so a broken
-    # TMPDIR must not block it.
     req = tmp_path / "reqs.txt"
     req.write_text("snac==1.2.0\n", encoding = "utf-8")
 
@@ -631,22 +509,14 @@ def test_filter_write_failure_clean_file_passes_through(shim, tmp_path, monkeypa
     assert path == str(req) and recorded is None and dropped == []
 
 
-# --------------------------------------------------------------------------
-# Item 3567875029 -- uv's --exact performs an exact SYNC (removes packages
-# outside the kept target's closure), so it is stripped like the other
-# resolver-wide destructive switches.
-# --------------------------------------------------------------------------
+# uv --exact is an exact SYNC: it removes packages outside the kept target's closure
 def test_uv_exact_flag_stripped(shim):
     execd, _ = _run(shim, "uv", ["--exact", "snac"])
     assert execd == ["snac"], execd
 
 
-# --------------------------------------------------------------------------
-# Item 3567875023 -- a local project directory naming a protected package
-# (pip install ./transformers, pip install -e ./unsloth) is filtered like the
-# wheel/sdist/VCS forms: a same-version dev build slips past the constraints
-# file, so the name must come from the project metadata.
-# --------------------------------------------------------------------------
+# a local project dir naming a protected package needs its name from the project
+# metadata: a same-version dev build slips past the constraints file
 def _make_local_project(tmp_path, dirname, project_name):
     proj = tmp_path / dirname
     proj.mkdir()
@@ -655,7 +525,6 @@ def _make_local_project(tmp_path, dirname, project_name):
 
 
 def test_local_dir_protected_by_metadata_dropped(shim, tmp_path):
-    # Directory name is innocuous; pyproject names a protected package.
     path = _make_local_project(tmp_path, "my-checkout", "transformers")
     execd, _ = _run(shim, "pip", [path, "snac"])
     assert execd == ["snac"], execd
@@ -669,7 +538,6 @@ def test_local_dir_protected_editable_dropped(shim, tmp_path):
 
 
 def test_local_dir_basename_fallback_setup_py(shim, tmp_path):
-    # No parseable name in metadata: setup.py + protected basename still drops.
     proj = tmp_path / "torch"
     proj.mkdir()
     (proj / "setup.py").write_text("from setuptools import setup\nsetup()\n")
@@ -690,13 +558,8 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
     assert execd == [str(plain)], execd
 
 
-# --------------------------------------------------------------------------
-# Item 3592835033 -- every uv/pip value-taking flag must be in _VALUE_FLAGS.
-# `--torch-backend cu128 torch` used to drop torch but keep the separated flag
-# pair, exec'ing uv with no target; `--extra torch snac` misread the extra NAME
-# "torch" as a target, leaving a dangling `--extra` that swallowed snac.
-
-
+# every uv/pip value-taking flag must be in _VALUE_FLAGS, or its VALUE is misread as
+# an install target (`--extra torch snac` swallowed snac behind a dangling --extra)
 @pytest.mark.parametrize(
     "tool, flag, value",
     [
@@ -712,8 +575,6 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
     ],
 )
 def test_value_flag_protected_only_noops(shim, tool, flag, value):
-    # The value must not be mistaken for an install target: with only a
-    # protected target the cell is a clean no-op, never a broken exec.
     execd, _ = _run(shim, tool, [flag, value, "torch"])
     assert execd is None, execd
 
@@ -732,19 +593,12 @@ def test_value_flag_pair_forwarded_with_kept_target(shim, tool, flag, value):
 
 
 def test_extra_value_is_not_a_protected_target(shim):
-    # `--extra torch` names an EXTRA, not the torch package: the pair stays and
-    # snac is not swallowed by a dangling --extra.
     execd, _ = _run(shim, "uv", ["--extra", "torch", "snac"])
     assert execd == ["--extra", "torch", "snac"], execd
 
 
 def test_uv_per_package_value_flags_classified(shim):
-    # uv spells a per-package variant of several resolver flags, and every one of
-    # them takes a value. A missing member makes the scanner read the PACKAGE NAME
-    # that follows as an install target. --prerelease-package arrived in uv 0.12
-    # next to the long-classified --prerelease and was the single omission the
-    # image build's selfcheck caught, so assert the whole family here: the next
-    # sibling upstream adds fails this test instead of the image build.
+    # the whole family, so the next sibling uv adds fails here, not in the image build
     known = shim._VALUE_FLAGS | shim._DROP_VALUE_FLAGS
     family = {
         "--config-settings-package",
@@ -775,18 +629,14 @@ def _value_flags_from_help(cmd):
     return flags
 
 
-# The help-derived drift guards are OPT-IN: repo CI runs whatever pip/uv are
-# current, so a hard assert would turn every upstream flag addition into a red
-# PR. The authoritative check runs at image BUILD time against the baked tools
-# (--unsloth-selfcheck-value-flags); set UNSLOTH_SHIM_FLAG_DRIFT_CHECK=1 locally.
+# opt-in: repo CI runs whatever pip/uv are current, so a hard assert would redden every
+# upstream flag addition. The image build's --unsloth-selfcheck-value-flags is
+# authoritative, being run against the baked tools.
 _DRIFT_OPT_IN = os.environ.get("UNSLOTH_SHIM_FLAG_DRIFT_CHECK") == "1"
 
 
 @pytest.mark.skipif(not _DRIFT_OPT_IN, reason = "opt-in: UNSLOTH_SHIM_FLAG_DRIFT_CHECK=1")
 def test_pip_help_value_flags_all_classified(shim):
-    # Drift guard: every value-taking flag `pip install --help` documents must
-    # be classified as value-taking by the shim, or its VALUE is misread as an
-    # install target (see --torch-backend above).
     known = shim._VALUE_FLAGS | shim._DROP_VALUE_FLAGS
     missing = _value_flags_from_help([sys.executable, "-m", "pip", "install", "--help"]) - known
     assert not missing, f"value flags missing from _VALUE_FLAGS: {sorted(missing)}"
@@ -802,11 +652,8 @@ def test_uv_help_value_flags_all_classified(shim):
     assert not missing, f"value flags missing from _VALUE_FLAGS: {sorted(missing)}"
 
 
-# --------------------------------------------------------------------------
-# Item 3592947879 -- a VCS @ref may contain a slash (@feature/foo); strip it
-# before the last-segment split, else the ref's basename dodges _KEEP.
-
-
+# a VCS @ref may contain a slash (@feature/foo); strip it before the last-segment
+# split, else the ref's basename dodges _KEEP
 @pytest.mark.parametrize(
     "url",
     [
@@ -832,17 +679,9 @@ def test_vcs_slash_ref_unprotected_kept(shim):
     assert execd == [url], execd
 
 
-# --------------------------------------------------------------------------
-# Item 3924399608 -- the protected-constraints pair must go BEFORE `--`.
-# `--` ends option parsing in pip (optparse handles a bare `--` explicitly) and
-# in uv, so anything after it is parsed as a requirement. Appending the pair to
-# a kept `pip install -- six` produced `-- six --constraint <file>`, which both
-# real tools reject with "Invalid requirement: '--constraint'" (reproduced
-# against pip 25.3 and uv 0.11.32), so a valid install cell failed outright.
-
-
+# the constraints pair must go BEFORE `--`: both pip and uv parse everything after
+# the terminator as a requirement and reject "Invalid requirement: '--constraint'"
 def _execd_full(shim, tool, args):
-    """The full argument list after `install`, constraints pair included."""
     argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", argv)
@@ -860,7 +699,6 @@ def test_constraints_precede_the_end_of_options_marker(shim, tool):
         f"the constraints pair lands after `--`, so the real tool parses "
         f"--constraint as a requirement and the cell fails: {execd}"
     )
-    # The user's own tokens keep their order and the terminator still guards them.
     assert execd[execd.index("--") :] == ["--", "snac"], execd
 
 
@@ -878,11 +716,8 @@ def test_without_a_terminator_the_pair_is_still_appended_last(shim, tool):
     assert execd[-2] == "--constraint", execd
 
 
-# PEP 503 says a distribution name compares equal under any run of `-`, `_` or
-# `.`, so `unsloth.zoo` IS `unsloth-zoo`. _canon has several early returns (direct
-# reference, #egg=, wheel filename, sdist filename, VCS basename) and each used to
-# collapse only "_", so a protected package spelled with a dot missed _KEEP
-# entirely and the shim let it replace the baked wheel.
+# PEP 503: a name compares equal under any run of `-`, `_` or `.`, so `unsloth.zoo`
+# IS `unsloth-zoo`. Every _canon early return must normalise, not just collapse "_".
 @pytest.mark.parametrize(
     "token",
     [
@@ -915,16 +750,12 @@ def test_prefix_and_plain_matches_normalize_too(shim, token, expected):
 
 
 def test_normalization_does_not_merge_distinct_distributions(shim):
-    # torch-directml / torch_tensorrt / torchsde are NOT torch and must pass through.
     for token in ("torch-directml==0.2", "torch_tensorrt==2.0", "torchsde==0.2"):
         assert shim._canon(token) not in shim._KEEP, token
 
 
-# pip documents --group as "Install a named dependency-group from a pyproject.toml
-# file" and --requirements-from-script as installing a script's PEP 723 deps, so
-# each IS the install target with no package on the command line. Treating them as
-# ordinary option/value pairs left the scan with no target, and the shim then
-# no-op'd while printing "ok" -- the cell silently installed nothing.
+# --group and --requirements-from-script ARE the install target, with no package on
+# the command line; as ordinary option/value pairs the shim no-op'd while printing "ok"
 @pytest.mark.parametrize(
     "args",
     [
@@ -947,4 +778,4 @@ def test_flag_only_or_fully_protected_cells_still_no_op(shim, args):
     argv = ["pip", "install", *args]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", argv)
-        shim.main()  # returns instead of exec'ing
+        shim.main()

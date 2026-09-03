@@ -17,13 +17,10 @@ set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
-# Default off so supervisord's %(ENV_UNSLOTH_JUPYTER_CLOUDFLARE)s autostart gate
-# resolves; set to 1 (docker run -e) to expose JupyterLab on a trycloudflare URL.
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
-# Make the runtime env visible to SSH login shells (which lack the `docker run -e`
-# vars). Secrets are excluded on purpose -- they stay in process env, never on
-# disk. shlex.quote() each value since this file is sourced by every login shell.
+# SSH login shells lack the `docker run -e` vars. Secrets are excluded on purpose,
+# and every value is shlex.quote()d because this file is sourced by every login shell.
 python - > /etc/profile.d/unsloth_env.sh <<'PY' || true
 import os, re, shlex
 keep   = re.compile(r"^(HF_|CUDA_|NCCL_|JUPYTER_|UNSLOTH_|WANDB_|TRITON_)|^PATH$")
@@ -33,8 +30,7 @@ for key, value in sorted(os.environ.items()):
         print(f"export {key}={shlex.quote(value)}")
 PY
 
-# Hash the Jupyter password with jupyter's helper; never store plaintext. No fixed
-# default: when JUPYTER_PASSWORD is unset, generate a random one and print it once.
+# never store plaintext, and never a fixed default: unset means random, printed once
 JUPYTER_CONFIG_DIR=/root/.jupyter
 JUPYTER_NOTE="password from JUPYTER_PASSWORD env"
 if [[ -f "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" ]]; then
@@ -58,18 +54,15 @@ c.ServerApp.open_browser = False
 c.ServerApp.root_dir = "/workspace"
 c.PasswordIdentityProvider.hashed_password = "${HASH}"
 EOF
-    # Land in the categorized notebook view, but only when it's enabled AND under
-    # root_dir (expressible as /lab/tree). Mirror unsloth_sync_notebooks.sh's
-    # gating so a relocated/disabled/unsynced view never points at a missing dir.
+    # mirror unsloth_sync_notebooks.sh's gating, or the view points at a missing dir
     _root_dir="/workspace"
     _view_dir="${UNSLOTH_NOTEBOOKS_VIEW_DIR:-/workspace/Unsloth Notebooks}"
     if [[ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" != "1" \
           && "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" != "1" \
           && "${_view_dir}" == "${_root_dir}/"* ]]; then
         _view_rel="${_view_dir#${_root_dir}/}"
-        # default_url must be set on BOTH ServerApp and LabApp (the lab app
-        # otherwise overrides ServerApp back to /lab). preferred_dir points the
-        # file browser at that folder; a literal space is URL-encoded to %20.
+        # default_url must be set on BOTH ServerApp and LabApp, or the lab app
+        # overrides ServerApp back to /lab
         cat >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<EOF
 c.ServerApp.default_url = "/lab/tree/${_view_rel}"
 c.LabApp.default_url = "/lab/tree/${_view_rel}"
@@ -78,8 +71,6 @@ EOF
     fi
 fi
 
-# sshd is enabled only when a public key is provided; root password login is never
-# allowed. Cloud GPU platforms (e.g. runpod-style hosts) inject PUBLIC_KEY.
 PUBLIC_SSH_KEY="${SSH_KEY:-${PUBLIC_KEY:-}}"
 export UNSLOTH_ENABLE_SSHD=false
 if [[ -n "${PUBLIC_SSH_KEY}" ]] && command -v sshd >/dev/null 2>&1; then
@@ -93,10 +84,8 @@ fi
 
 mkdir -p /workspace
 
-# This image ships under the GNU AGPLv3. Refuse to start if the Unsloth
-# attribution (Help/About, splash, login, theme, AGPLv3 license + source links)
-# is stripped or altered. The same checker runs as a jupyter_server extension and
-# at build time. Bypass for local dev: UNSLOTH_SKIP_BRANDING_CHECK=1 (not resale).
+# AGPLv3: refuse to start if the Unsloth attribution is stripped. The same checker
+# runs at build time and as a jupyter_server extension.
 if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     if ! /opt/unsloth-venv/bin/python -m unsloth_branding --verify; then
         echo "Refusing to start the container." >&2

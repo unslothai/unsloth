@@ -8,11 +8,8 @@ import {
 } from '@jupyterlab/application';
 
 /**
- * Colab-like chrome tweaks applied image-wide.
- *
- * Hide the right activity bar (Property Inspector / Debugger) by default.
- * JupyterLab has no settings key for this, so hide the strip with CSS and
- * collapse the right panel once on startup. Reopen from the View menu.
+ * Hide the right activity bar by default. There is no settings key for it, so the
+ * strip is hidden with CSS and the panel collapsed once on startup.
  */
 
 const STYLE_ID = 'unsloth-ui-chrome-style';
@@ -39,7 +36,6 @@ const uiChromePlugin: JupyterFrontEndPlugin<void> = {
   requires: [ILabShell],
   activate: (app: JupyterFrontEnd, shell: ILabShell): void => {
     injectStyle();
-    // Collapse the right area once restored so an expanded panel doesn't linger.
     app.restored
       .then(() => {
         try {

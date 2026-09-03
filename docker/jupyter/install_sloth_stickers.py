@@ -4,19 +4,15 @@
 
 """Install the Unsloth Studio sloth stickers for the JupyterLab login screen.
 
-The branded login page (login.html) shows a different sloth sticker on each
-visit, the same curated set Studio offers as profile avatars. The PNGs live in
-the Studio frontend (`studio/frontend/public/Sloth emojis/`), which is present
-in the studio image after install.sh runs. This copies the curated subset into
-jupyter_server's static dir as `sloth/01.png .. sloth/20.png` so the template
-can reference stable, space-free, auth-free URLs via `static_url(...)`.
+Copies the curated subset of `studio/frontend/public/Sloth emojis/` into
+jupyter_server's static dir as `sloth/01.png .. sloth/20.png`, so login.html can
+reference stable, space-free, auth-free `static_url(...)` paths.
 
 Usage:
     install_sloth_stickers.py --src "<Sloth emojis dir>" --dest "<static>/sloth"
 
-Fail-soft: a missing source file is skipped (login.html's onerror falls back to
-the Unsloth logo), and the script still exits 0 as long as at least one sticker
-was installed. Stdlib only.
+Fail-soft: a missing source file is skipped (login.html's onerror falls back to the
+Unsloth logo) and the script still exits 0 if at least one sticker was installed.
 """
 
 import argparse
@@ -24,8 +20,7 @@ import os
 import shutil
 import sys
 
-# Curated, in display order -> NN.png. Mirrors Studio's SLOTH_AVATARS: the square,
-# low-whitespace stickers that frame cleanly. Synced by hand; missing names skipped.
+# in display order -> NN.png; mirrors Studio's SLOTH_AVATARS, synced by hand
 CURATED = [
     "large sloth yay.png",
     "large sloth heart.png",
@@ -71,7 +66,6 @@ def main() -> int:
             print("  skip (%s): %s" % (error, name))
 
     print("installed %d/%d sloth stickers into %s" % (installed, len(CURATED), args.dest))
-    # Non-fatal, but an empty copy usually means a wrong --src, so signal it.
     return 0 if installed else 1
 
 

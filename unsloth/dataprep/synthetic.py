@@ -277,8 +277,8 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        # Accept both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM
-        # server on" (0.19), with the optional server index some versions insert.
+        # both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM server on"
+        # (0.19), with the optional server index some versions insert
         ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
@@ -294,8 +294,7 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            # vLLM >= 0.19 logs startup lines to STDERR; watching stdout alone
-            # makes a healthy server look like a timeout and get killed.
+            # vLLM >= 0.19 logs startup lines to STDERR
             ready_regex = ready_re,
             text = False,
         )
@@ -349,10 +348,8 @@ class SyntheticDataKit:
             wait = poll_interval if remaining is None else min(poll_interval, remaining)
             if self.stdout_capture.wait_for_ready(timeout = wait):
                 return
-            # vLLM >= 0.19 prints the startup banner on stderr, so a healthy
-            # server looks like a timeout when only stdout is watched. Checked
-            # before the exit/closed arms so a server that is ready on stderr is
-            # never reported as never having started.
+            # checked BEFORE the exit/closed arms, so a server that is ready on
+            # stderr is never reported as never having started
             if self.stderr_capture.wait_for_ready(timeout = 0):
                 return
             returncode = self.vllm_process.poll()

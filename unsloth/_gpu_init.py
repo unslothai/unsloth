@@ -126,10 +126,9 @@ del maybe_set_windows_rocm_bnb_version
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 # `docker --gpus '"device=N"'` sets NVIDIA_VISIBLE_DEVICES but not
-# CUDA_VISIBLE_DEVICES, so Inductor's compile-worker pool can't enumerate the
-# cgroup-pinned GPU ("Could not find an active GPU backend"). Force a single
-# in-process compile thread. Trigger only on pinned ids, not "all"/"none"/"void"/""
-# (the `--gpus all` default). Opt out with UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0.
+# CUDA_VISIBLE_DEVICES, so Inductor's compile-worker pool cannot enumerate the
+# cgroup-pinned GPU ("Could not find an active GPU backend"). Pinned ids only, not
+# "all"/"none"/"void"/"". Opt out with UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0.
 _nvd = os.environ.get("NVIDIA_VISIBLE_DEVICES", "").strip().lower()
 _cgroup_pinned = _nvd not in ("", "all", "none", "void")
 if (
@@ -137,7 +136,7 @@ if (
     and _cgroup_pinned
     and "CUDA_VISIBLE_DEVICES" not in os.environ
 ):
-    # Honour an existing thread count; always plant the sentinel for the zoo patch.
+    # honour an existing thread count, but always plant the sentinel
     if os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") in (None, "", "1"):
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
@@ -174,10 +173,8 @@ except ModuleNotFoundError:
 except:
     raise
 
-# Re-assert single-compile-worker after unsloth_zoo's patch_torch_compile (which
-# historically popped TORCHINDUCTOR_COMPILE_THREADS). Set the Inductor config
-# directly, patch the zoo's determine_compile_threads so later options dicts see 1,
-# and rewrite the ones it already built. No-op when the user opted out.
+# Re-assert after unsloth_zoo's patch_torch_compile, which historically popped
+# TORCHINDUCTOR_COMPILE_THREADS.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
         torch._inductor.config.compile_threads = 1
@@ -191,15 +188,13 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
             "determine_compile_threads",
             lambda: 1,
         )
-        # `import unsloth_zoo` above already executed temporary_patches, so its
-        # module-level options dicts (common.torch_compile_options and the fused
-        # per-model ones) are snapshots of the original 4-32 count; replacing the
-        # function only reaches dicts built from here on. Those snapshots are handed
-        # to torch.compile as `options`, which Inductor applies as a config patch
-        # that outranks both TORCHINDUCTOR_COMPILE_THREADS and the value set above,
-        # so a stale one still starts the worker pool this block exists to prevent.
-        # Rewrite them in place: each dict is shared by identity with every zoo
-        # module re-exporting it and with the functools.partial in `torch_compile`.
+        # `import unsloth_zoo` above already ran temporary_patches, so its
+        # module-level options dicts are snapshots of the original count and
+        # replacing the function only reaches dicts built from here on. Those
+        # snapshots go to torch.compile as `options`, which Inductor applies as a
+        # config patch outranking both the env var and the value set above. Rewrite
+        # them IN PLACE: each dict is shared by identity with every zoo module
+        # re-exporting it and with the functools.partial in `torch_compile`.
         for module in list(sys.modules.values()):
             name = getattr(module, "__name__", "")
             if name != "unsloth_zoo" and not name.startswith("unsloth_zoo."):

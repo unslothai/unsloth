@@ -3,29 +3,13 @@
 
 """`unsloth-run` must take its transformers pin from an install, not from prose.
 
-Headless selection is `want = --transformers or install-cell pin or model tier`
-(docker/unsloth_run.py), and the winner is prepended to the kernel's PYTHONPATH
-as a sidecar before a single cell runs. `_scan` used to regex the ENTIRE source
-of every code cell, so any text shaped like `transformers==X` won -- including a
-commented-out line or a string literal, which install nothing. Commenting out an
-install line is a routine notebook edit, and the damage is not hypothetical:
+`_scan` used to regex the ENTIRE source of every code cell, so a commented-out install
+line outranked the model tier and launched the kernel a tier short of the model it was
+about to load -- and no install runs, so the pip shim never corrects it either.
 
-    # !pip install --no-deps transformers==4.57.6      <- stale, does not run
-    ...
-    FastModel.from_pretrained("unsloth/gemma-4-12b-it")
-
-pin 4.57.6 beats tier 5.10.2, and 4.57.6 is below the vLLM floor so it clamps up
-to the lowest eligible sidecar, 5.5.0. gemma4-unified landed in transformers
-5.10.1, so the kernel comes up one tier short of the model it is about to load --
-and because no install actually runs, the pip shim never gets to correct either
-the marker or PYTHONPATH.
-
-The fix must not narrow the scan too far: 430 of the 561 shipped notebooks carry
-a pin, many of them on the CONTINUATION line of a multi-line `!uv pip install \\`
-or indented inside the `if "COLAB_" not in ...` guard. Those shapes are pinned
-below verbatim.
-
-No docker, no GPU, no network.
+The fix must not narrow the scan too far: most shipped notebooks carry a pin, many on
+the CONTINUATION line of a multi-line `!uv pip install \\` or indented inside the
+`if "COLAB_" not in ...` guard. Those shapes are pinned below verbatim.
 """
 
 from __future__ import annotations
@@ -44,7 +28,6 @@ RUN_PATH = REPO_ROOT / "docker" / "unsloth_run.py"
 
 
 def _load_run(sidecar_root):
-    """Import a fresh unsloth_run (and its compat) bound to a synthetic root."""
     prev = {k: os.environ.get(k) for k in ("UNSLOTH_TF_SIDECAR_ROOT", "UNSLOTH_TF_SIDECAR_MIN")}
     os.environ["UNSLOTH_TF_SIDECAR_ROOT"] = str(sidecar_root)
     os.environ.pop("UNSLOTH_TF_SIDECAR_MIN", None)
@@ -67,8 +50,6 @@ def _load_run(sidecar_root):
 
 @pytest.fixture()
 def sidecar_root(tmp_path):
-    """What the image actually ships: vLLM 0.26.0 drops 4.57.6 and 5.3.0, so the
-    surviving sidecars are 5.5.0 and 5.10.2 and the recorded floor is 5.5.0."""
     root = tmp_path / "tf-sidecars"
     for name in ("t_5_5_0", "t_5_10_2"):
         (root / name).mkdir(parents = True)
@@ -102,9 +83,6 @@ def _nb(*sources):
 GEMMA4_12B = 'model, tok = FastModel.from_pretrained("unsloth/gemma-4-12b-it")\n'
 
 
-# --------------------------------------------------------------------------
-# Prose must never be mistaken for an install request.
-# --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "cell",
     [
@@ -140,9 +118,6 @@ def test_a_mention_that_installs_nothing_is_not_a_pin(run_mod, cell):
     assert model == "unsloth/gemma-4-12b-it"
 
 
-# --------------------------------------------------------------------------
-# ...and every real install shape must still be seen.
-# --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "cell, expected",
     [
@@ -161,8 +136,7 @@ def test_a_mention_that_installs_nothing_is_not_a_pin(run_mod, cell):
         pytest.param("!pip -q install transformers==5.5.0\n", "5.5.0", id = "opt-before-install"),
         pytest.param("pip install transformers==5.5.0\n", "5.5.0", id = "bare-shell-cell"),
         pytest.param(
-            # Granite4.0.ipynb / the gpt-oss family: the pin lives on a
-            # backslash continuation, several lines below the invocation.
+            # the pin on a backslash continuation, several lines below the invocation
             "!uv pip install -qqq \\\n"
             '    {_torch} "triton>=3.3.0" {_numpy} torchvision bitsandbytes "transformers==4.56.2" \\\n'
             '    "unsloth[base] @ git+https://github.com/unslothai/unsloth"\n',
@@ -170,7 +144,7 @@ def test_a_mention_that_installs_nothing_is_not_a_pin(run_mod, cell):
             id = "backslash-continuation",
         ),
         pytest.param(
-            # Gemma4_(12B)_Text.ipynb: installs indented inside the Colab guard.
+            # installs indented inside the Colab guard
             "%%capture\n"
             "import os\n"
             'if "COLAB_" not in "".join(os.environ.keys()):\n'
@@ -187,20 +161,14 @@ def test_real_install_shapes_still_yield_their_pin(run_mod, cell, expected):
 
 
 def test_an_install_still_outranks_the_model_tier(run_mod):
-    # The pin is the notebook's own statement of what it was built against, so a
-    # REAL install must keep winning; only prose stops counting.
+    # a REAL install must keep outranking the tier; only prose stops counting
     pin, model = run_mod._scan(_nb("!pip install transformers==5.5.0\n", GEMMA4_12B))
     assert (pin, model) == ("5.5.0", "unsloth/gemma-4-12b-it")
 
 
-# --------------------------------------------------------------------------
-# End to end: what the kernel is actually launched with.
-# --------------------------------------------------------------------------
 def _launch(run_mod, monkeypatch, tmp_path, nb, name):
-    """Run main() up to the kernel launch and return what the kernel would see.
-
-    The per-run marker is a temp file main() deletes on the way out, so read it
-    at launch -- which is the only moment it matters."""
+    """What the kernel would see at launch; the per-run marker is a temp file main()
+    deletes on the way out, so it has to be read there."""
     src = tmp_path / f"{name}.ipynb"
     src.write_text(json.dumps(nb))
     seen = {}
@@ -216,7 +184,6 @@ def _launch(run_mod, monkeypatch, tmp_path, nb, name):
         seen["marker"] = Path(marker).read_text().strip() if marker else None
         return 0
 
-    # Swap the module's own handle, not the shared subprocess module.
     monkeypatch.setattr(run_mod, "subprocess", SimpleNamespace(call = fake_call))
     monkeypatch.setattr(sys, "argv", ["unsloth-run", str(src)])
     monkeypatch.delenv("UNSLOTH_NB_TF_MARKER", raising = False)

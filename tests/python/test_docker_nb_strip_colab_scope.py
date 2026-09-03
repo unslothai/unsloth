@@ -3,30 +3,12 @@
 
 """Regression guard for the Colab-intro strip in the Unsloth Docker image.
 
-Every generated Unsloth notebook opens with a Colab-only instruction ("To run
-this, press Runtime > Run all ...") that is wrong inside Docker, so the image
-strips it at sync time. The strip only ever inspected cells[0], and that missed
-23 of the 433 shipped notebooks:
+cells[0] alone misses two shapes: the badge in cells[0] with the sentence in cells[1],
+and the sentence wrapped in a single-line HTML comment.
 
-  * 21 put the Colab badge `<a href="https://colab.research.google.com/...">` in
-    cells[0] and the sentence in cells[1] -- Advanced_Llama3_2_(3B)_GRPO_LoRA,
-    Falcon_H1-Alpaca, FunctionGemma_(270M)-LMStudio, gpt-oss-(20B)-GRPO, ...
-  * 2 (NeMo-Gym-Multi-Environment, NeMo-Gym-Sudoku) wrap the sentence in a
-    single-line HTML comment, so a "line starts with the sentence" match never
-    fired even though the sentence IS in cells[0].
-
-Measured against the pristine baked template: a cells[0]-only strip left 23 of
-433 notebooks carrying the line, a leading-markdown-block strip leaves 0, and
-neither changes unsloth_nb_content_sig's middle digest for any of the 433 (which
-matters, because a changed digest makes the boot refresh re-copy and re-strip the
-notebook forever).
-
-The widening also has to stay narrow: the scan stops at the first non-markdown
-cell so it can never reach explanatory prose between code cells, and it stays
-idempotent so a second boot is a no-op.
-
-Static: imports the helper and feeds it in-memory notebooks. No docker, no GPU,
-no network.
+The widening has to stay narrow: the scan stops at the first non-markdown cell so it
+never reaches prose between code cells, it stays idempotent, and it must leave
+unsloth_nb_content_sig's middle digest alone or the boot refresh re-strips forever.
 """
 
 from __future__ import annotations
@@ -82,7 +64,6 @@ def has_intro(notebook):
 
 
 def test_intro_in_cell_zero_is_still_stripped(strip):
-    # The 386-notebook majority case must not regress.
     doc = nb(md(INTRO, "\n", BADGE), code("print(1)"))
     assert strip._strip_intro(doc) is True
     assert not has_intro(doc)
@@ -90,7 +71,6 @@ def test_intro_in_cell_zero_is_still_stripped(strip):
 
 
 def test_intro_in_cell_one_behind_the_badge_is_stripped(strip):
-    # 21 shipped notebooks; a cells[0]-only scan left every one of them.
     doc = nb(md(BADGE), md(INTRO, "\n", "You will learn how to do data prep.\n"), code("print(1)"))
     assert strip._strip_intro(doc) is True
     assert not has_intro(doc)
@@ -98,7 +78,6 @@ def test_intro_in_cell_one_behind_the_badge_is_stripped(strip):
 
 
 def test_intro_inside_a_single_line_html_comment_is_stripped(strip):
-    # NeMo-Gym-Multi-Environment / NeMo-Gym-Sudoku ship exactly this shape.
     commented = "<!-- " + INTRO.rstrip("\n") + " -->\n"
     doc = nb(md(commented, '<div class="align-center">\n'), code("print(1)"))
     assert strip._strip_intro(doc) is True
@@ -107,15 +86,14 @@ def test_intro_inside_a_single_line_html_comment_is_stripped(strip):
 
 
 def test_multi_line_html_comment_is_left_alone(strip):
-    # A comment that does NOT close on the same line must not be half-removed,
-    # or the surviving `<!--` swallows the rest of the cell when rendered.
+    # half-removing a multi-line comment leaves a `<!--` that swallows the cell
     doc = nb(md("<!-- " + INTRO, "still inside the comment\n", "-->\n"), code("print(1)"))
     assert strip._strip_intro(doc) is False
     assert has_intro(doc)
 
 
 def test_strip_stops_at_the_first_code_cell(strip):
-    # A markdown cell AFTER code is prose, not the header block: never touched.
+    # a markdown cell AFTER code is prose, not the header block
     later = md("Explanation.\n", INTRO)
     doc = nb(md(BADGE), code("print(1)"), later)
     assert strip._strip_intro(doc) is False

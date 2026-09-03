@@ -4,12 +4,8 @@
 
 """Cross-platform validation of the Unsloth Docker JupyterLab/notebook features.
 
-Runs WITHOUT Docker or a GPU, so it can execute on the Linux/macOS/Windows CI
-lanes. It exercises the actual notebook-helper logic (not just py_compile) and
-checks the shipped JupyterLab config + labextension source, so a regression in
-the notebook organisation, Colab compatibility, Colab-intro/widget stripping,
-sidecar-log gating, the labextension plugins, the JupyterLab defaults, or the
-login branding fails CI on every device.
+Runs WITHOUT Docker or a GPU, so it executes on every CI lane, and it exercises the
+real notebook-helper logic rather than py_compile.
 
 Usage:  python tests/validate_studio_features.py
 Exit 0 = all checks pass; non-zero = at least one failed.
@@ -42,27 +38,21 @@ def check(
         _failures.append(name)
 
 
-# 1. Colab cell-magic compatibility (#@title then %%capture)
 def test_colab_compat() -> None:
     print("colab cell-magic compat (unsloth_colab_compat):")
     m = importlib.import_module("unsloth_colab_compat")
     out = m.colab_cell_magic_fix(["#@title Setup\n", "%%capture\n", "!pip install x\n"])
     check("magic hoisted above #@title", out[0] == "%%capture\n" and "#@title Setup\n" in out)
-    # idempotent / already on top
     same = ["%%capture\n", "print(1)\n"]
     check("no-op when magic already first", m.colab_cell_magic_fix(same) == same)
-    # non-magic cell untouched
     plain = ["x = 1\n", "y = 2\n"]
     check("plain cell untouched", m.colab_cell_magic_fix(plain) == plain)
-    # content magic (%%writefile) NOT hoisted into the written file body
     wf = ["#@title Config\n", "%%writefile config.json\n", "{}\n"]
     check("content magic (%%writefile) left untouched", m.colab_cell_magic_fix(wf) == wf)
-    # safe magic with arg still hoisted
     bash = ["#@title Run\n", "%%bash\n", "echo hi\n"]
     check("safe magic (%%bash) hoisted", m.colab_cell_magic_fix(bash)[0] == "%%bash\n")
 
 
-# 2. Notebook categorisation (clean_section) + README parsing
 def test_nb_view() -> None:
     print("notebook view (unsloth_nb_view):")
     v = importlib.import_module("unsloth_nb_view")
@@ -78,7 +68,6 @@ def test_nb_view() -> None:
     )
 
 
-# 3. Colab-intro + stale-widget stripping
 def test_strip() -> None:
     print("notebook strip (unsloth_nb_strip_colab):")
     s = importlib.import_module("unsloth_nb_strip_colab")
@@ -132,11 +121,9 @@ def test_strip() -> None:
         ),
     )
     check("metadata.widgets removed", "widgets" not in nb["metadata"])
-    # idempotent
     check("strip idempotent", not s._strip_intro(nb) and not s._clean_widgets(nb))
 
 
-# 4. Sidecar-log gating
 def test_sidecar_log_gate() -> None:
     print("sidecar log gate (unsloth_nb_compat):")
     c = importlib.import_module("unsloth_nb_compat")
@@ -153,7 +140,6 @@ def test_sidecar_log_gate() -> None:
             os.environ["UNSLOTH_ENABLE_LOGGING"] = old
 
 
-# 5. JupyterLab defaults (overrides.json)
 def test_overrides() -> None:
     print("jupyterlab defaults (jupyter/overrides.json):")
     path = os.path.join(JUPYTER, "overrides.json")
@@ -161,7 +147,7 @@ def test_overrides() -> None:
     if not os.path.isfile(path):
         return
     with open(path, encoding = "utf-8") as f:
-        d = json.load(f)  # raises -> CI fails if invalid JSON
+        d = json.load(f)  # raises, so invalid JSON fails CI
     themes = d.get("@jupyterlab/apputils-extension:themes", {})
     check(
         "default theme = Unsloth Dark",
@@ -190,7 +176,6 @@ def test_overrides() -> None:
     )
 
 
-# 6. Labextension source (plugins) + login branding assets
 def test_labext_and_branding() -> None:
     print("labextension + branding assets:")
     pkg = os.path.join(LABEXT, "package.json")
@@ -200,8 +185,6 @@ def test_labext_and_branding() -> None:
             p = json.load(f)
         check("labext name unsloth-jupyterlab", p.get("name") == "unsloth-jupyterlab")
         check("labext themePath set", bool(p.get("jupyterlab", {}).get("themePath")))
-    # Concatenate every .ts module under src/ so plugins defined in their own
-    # files (cellNav, colabTitle, outputSelect, uiChrome) are all covered.
     src_dir = os.path.join(LABEXT, "src")
     all_src = ""
     if os.path.isdir(src_dir):
@@ -218,24 +201,18 @@ def test_labext_and_branding() -> None:
         "unsloth-jupyterlab:ui-chrome",
     ]:
         check(f"plugin present: {plug}", plug in all_src)
-    # The two newest plugins are also exported from index.ts (wired in).
     index = os.path.join(src_dir, "index.ts")
     index_src = open(index, encoding = "utf-8").read() if os.path.isfile(index) else ""
     check("outputSelect wired in index.ts", "outputSelectPlugin" in index_src)
     check("uiChrome wired in index.ts", "uiChromePlugin" in index_src)
-    # uiChrome hides the right activity bar; CTRL+A output-select selects nodes.
     check("right activity bar hidden", "jp-mod-right" in all_src and "display: none" in all_src)
     check("ctrl+A output select", "selectNodeContents" in all_src)
-    # The remembered pointer-down is only replaced by another pointer-down, but
-    # J/K/arrow cell navigation fires none, so it has to be revalidated (still in
-    # the document, still in the ACTIVE cell) before it is used as the fallback --
-    # otherwise Ctrl+A on a later cell selects the old output and swallows
-    # JupyterLab's notebook:select-all.
+    # the remembered pointer-down must be revalidated against the ACTIVE cell, or
+    # Ctrl+A on a later cell selects the old output
     check(
         "ctrl+A fallback revalidated",
         "isConnected" in all_src and "jp-mod-active" in all_src,
     )
-    # branding assets
     login = os.path.join(JUPYTER, "login.html")
     login_src = open(login, encoding = "utf-8").read() if os.path.isfile(login) else ""
     check("login.html branded", "unsloth-login-card" in login_src)

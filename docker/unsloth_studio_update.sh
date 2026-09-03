@@ -9,11 +9,8 @@
 #   docker exec <container> unsloth-studio-update --with-deps  # also update deps
 #   docker exec <container> unsloth-studio-update --no-restart # update, restart later
 #
-# Why not `unsloth studio update`: that command re-runs the full installer,
-# which re-probes the host GPU to pick torch wheels. In a CPU-only container
-# (run without --gpus) it finds no GPU and can downgrade torch to CPU/cu126,
-# breaking CUDA. This helper only touches the Studio packages, so it is safe in
-# both GPU and CPU containers.
+# Not `unsloth studio update`: that re-runs the full installer, which re-probes the
+# host GPU for torch wheels and in a CPU-only container downgrades torch to CPU/cu126.
 #
 # Persistence: the update is written to the container's writable layer, so it
 # survives `docker restart`. To keep it across a full `docker rm` + `docker run`
@@ -42,8 +39,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Resolve the Studio venv python. Prefer the venv directly; fall back to
-# following the launcher symlink ($STUDIO_HOME/bin/unsloth -> venv/bin/unsloth).
 PY=""
 for cand in \
     "$STUDIO_HOME/unsloth_studio/bin/python" \
@@ -61,22 +56,14 @@ version_of() { "$PY" -c "from importlib.metadata import version; print(version('
 echo "[studio-update] Studio venv: $PY"
 echo "[studio-update] before: unsloth $(version_of)"
 
-# Build the package specs. With --ref, install from git so you can track main
-# (or any branch/tag/sha); otherwise take the latest PyPI release.
 if [ -n "$REF" ]; then
     SPECS="git+https://github.com/unslothai/unsloth.git@${REF}#egg=unsloth"
-    # unsloth-zoo does NOT track unsloth's tags (different cadence). Use --zoo-ref
-    # if given; else the unsloth ref only when the zoo repo has it, falling back to
-    # main.
+    # unsloth-zoo does NOT track unsloth's tags
     _zoo_ref="$ZOO_REF"
     if [ -z "$_zoo_ref" ]; then
-        # Only "reached the remote, no matching ref" may fall through to main.
-        # git ls-remote --exit-code documents status 2 for that case; any other
-        # non-zero status (128 on DNS/TLS/auth/proxy failure) means the lookup
-        # never happened. Taking main there pairs the requested unsloth revision
-        # with an unrelated zoo revision as soon as the network recovers for the
-        # pip call below, and the two share a private API. Same rule the publish
-        # workflow applies when it freezes refs.
+        # git documents status 2 for "reached the remote, no matching ref"; any other
+        # non-zero means the lookup never happened, and falling through to main pairs
+        # the requested unsloth revision with an unrelated zoo one across a private API
         _ls_rc=0
         git ls-remote --exit-code https://github.com/unslothai/unsloth-zoo.git \
             "$REF" >/dev/null 2>&1 || _ls_rc=$?
@@ -103,11 +90,8 @@ fi
 
 echo "[studio-update] after:  unsloth $(version_of)"
 
-# Sanity: the backend must still import after the swap (a missing --no-deps
-# transitive dep shows up here). Restarting into code that cannot import kills a
-# process that is serving fine and leaves supervisord's studio program in FATAL
-# after startretries, which it never leaves on its own. Keep the running service
-# and fail instead, so the operator can add the dep or roll back with Studio up.
+# Restarting into code that cannot import kills a process that is serving fine and
+# leaves supervisord's studio program in FATAL, which it never leaves on its own.
 if ! "$PY" -c "import studio.backend.main" >/dev/null 2>&1; then
     echo "[studio-update] ERROR: 'import studio.backend.main' failed after update." >&2
     echo "[studio-update] A new dependency may be missing. Re-run with --with-deps:" >&2

@@ -3,20 +3,14 @@
 
 """The llama-server sanity probe must not accept the loader's failure message.
 
-`fetch_llama_prebuilt.py` runs each binary with `--version` and asserts on a
-substring of the combined output. For llama-server the substring is "version",
-and that is exactly the word the dynamic loader uses when it refuses to start a
-binary:
+The probe asserts on the substring "version" in the binary's output, which is exactly
+the word the dynamic loader uses when it refuses to start one:
 
     ./llama-server: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not
     found (required by ./llama-server)
 
-The program never reaches main and exits nonzero, but the substring matches, so
-the check passed and the image shipped a server that cannot run. Studio chat
-depends on it. The exit code is what separates the two cases.
-
-Driven end to end against the real probe with stub binaries on disk, so it needs
-no docker, no GPU and no llama.cpp download.
+The program never reaches main and exits nonzero, so the exit code is what separates
+the two cases. Driven end to end against the real probe with stub binaries on disk.
 """
 
 from __future__ import annotations
@@ -52,8 +46,7 @@ def fetch():
 
 
 def _stub(path: Path, output: str, rc: int) -> None:
-    # Quoted heredoc: the loader's message contains a backtick and a single
-    # quote, which an `echo "..."` would try to run as a command substitution.
+    # quoted heredoc: the message has a backtick an `echo` would run as a substitution
     path.write_text(
         "#!/usr/bin/env bash\n"
         "cat >&2 <<'UNSLOTH_EOF'\n"
@@ -91,8 +84,6 @@ def test_a_healthy_server_passes(fetch, tmp_path):
 
 @behavioural
 def test_the_quantize_probes_are_not_required_to_exit_zero(fetch, tmp_path):
-    # llama-quantize has no --version, so an unknown flag may exit nonzero on a
-    # perfectly healthy build. Only its banner is asserted.
     build_bin = _stubs(tmp_path, server_output = "version: 4589 (b9a9e6d)", server_rc = 0)
     _stub(tmp_path / "llama-quantize", "usage: llama-quantize [options]", 7)
     fetch.sanity_check_binaries(str(tmp_path), str(build_bin))
@@ -107,6 +98,5 @@ def test_a_server_with_no_banner_at_all_still_fails(fetch, tmp_path):
 
 
 def test_the_loader_message_really_does_contain_the_substring():
-    # The premise. If this ever stops holding, the exit-code requirement above
-    # is belt and braces rather than the load-bearing check it is today.
+    # the premise: without it the exit-code check above is only belt and braces
     assert "version" in GLIBC_FAILURE

@@ -2226,9 +2226,9 @@ try:
     # Xformers <= 0.0.32.post2 dispatches FA3 wrongly on Blackwell/RTX 50x: `capability >= (9, 0)`
     # matches SM 10.0/11.0/12.0 and runs sm_90a kernels on non-Hopper GPUs (CUDA error in
     # flash_fwd_launch_template.h:188). Fixed in 0.0.33 with `<= (9, 0)`; see
-    # facebookresearch/xformers#1329. is_available() as well as DEVICE_TYPE, because a CUDA-built
-    # torch on a driverless host (UNSLOTH_ALLOW_CPU=1, a docker build stage with no device) keeps
-    # DEVICE_TYPE at "cuda" and get_device_capability() would raise out of _lazy_init().
+    # facebookresearch/xformers#1329. is_available() as well as DEVICE_TYPE: a CUDA-built torch
+    # on a driverless host keeps DEVICE_TYPE at "cuda" and get_device_capability() would raise
+    # out of _lazy_init().
     if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
         major_version, minor_version = torch.cuda.get_device_capability()
         if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (

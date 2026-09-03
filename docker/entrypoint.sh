@@ -7,28 +7,22 @@
 # Bypass for offline tooling/docs/CI: docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# The image bakes CUDA 13 ptxas + NVRTC only for sm_103 (B300/GB300) and sm_121
-# (GB10/DGX Spark), which cu12.8 can't target. Both ship on >=580 drivers, which a
-# cu13 cubin needs. Every other arch uses cu12.8 on the 570-579 floor, where a
-# cu13 cubin can't load. Pick per DEVICE at boot: cu12.8 is the immutable default,
-# only sm_103/sm_121 switch Triton to cu13 ptxas and retarget the NVRTC symlink.
-# Best-effort: the default needs no write; only a non-root datacenter host can't switch.
+# CUDA 13 ptxas + NVRTC are baked only for sm_103 and sm_121, which cu12.8 cannot
+# target and which ship on >=580 drivers; every other arch is cu12.8 on the 570-579
+# floor, where a cu13 cubin cannot load. So the choice is per DEVICE at boot.
 select_cuda_jit_tools() {
     local caps="" cc nvrtc_dir need_cu13=0
     if command -v nvidia-smi >/dev/null 2>&1; then
         caps="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true; } )"
     fi
-    # Scan EVERY visible GPU (a sm_103/sm_121 part can sit behind an H100). If ANY
-    # needs cu13, switch the whole process -- those hosts run >=580 drivers.
+    # scan EVERY visible GPU: an sm_103/sm_121 part can sit behind an H100
     while IFS= read -r cc || [[ -n "${cc}" ]]; do
         cc="$(printf '%s' "${cc}" | tr -d '[:space:]')"
         case "${cc}" in
             10.3|12.1) need_cu13=1 ;;
         esac
     done <<< "${caps}"
-    # Non-datacenter / undetectable / CPU host: keep cu12.8 (needs no write). One
-    # exception: an earlier sm_103/sm_121 boot left libnvrtc.so.12 -> .cu13 that a
-    # 570-579 driver can't load -- reverse that (best-effort).
+    # reverse a .cu13 link an earlier sm_103/sm_121 boot left in the writable layer
     if [[ "${need_cu13}" -ne 1 ]]; then
         for nvrtc_dir in \
             /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
@@ -39,9 +33,6 @@ select_cuda_jit_tools() {
         done
         return 0
     fi
-    # Blackwell datacenter present: point Triton at cu13 ptxas and retarget each
-    # venv's libnvrtc.so.12 -> the cu13 alias. -z guard lets an explicit
-    # TRITON_PTXAS_PATH win. Covers the base + Studio venvs.
     if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
         export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
     fi
@@ -52,12 +43,9 @@ select_cuda_jit_tools() {
         ln -sf libnvrtc.so.12.cu13 "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
     done
 }
-# Best-effort: never let JIT-tool selection block container startup.
 select_cuda_jit_tools || true
 
-# Make unslothai/notebooks available under /workspace before the user command.
-# Best-effort, gated by UNSLOTH_SKIP_NOTEBOOK_SYNC, never blocks the container
-# (see unsloth_sync_notebooks.sh).
+# best-effort, gated by UNSLOTH_SKIP_NOTEBOOK_SYNC, never blocks the container
 sync_notebooks() {
     if [[ -x /usr/local/bin/unsloth-sync-notebooks ]]; then
         /usr/local/bin/unsloth-sync-notebooks || true
@@ -72,10 +60,8 @@ fi
 err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
-# CPU mode for hosts that can't pass a GPU (Docker Desktop, CPU Linux, CI). Covers
-# Jupyter, GGUF tooling, Studio chat; NOT training or loading a model. With
-# UNSLOTH_ALLOW_CPU=1 a missing GPU warns instead of failing; a visible GPU still
-# runs the checks below.
+# CPU mode covers Jupyter, GGUF tooling and Studio chat, but NOT training or loading
+# a model. A visible GPU still runs the checks below.
 if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
     if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
         warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
@@ -86,8 +72,8 @@ if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
     fi
 fi
 
-# Check 1: nvidia-smi is injected by nvidia-container-toolkit on a GPU request,
-# not baked in; a missing binary means "no GPU attached", same as an empty -L.
+# nvidia-smi is injected on a GPU request, not baked in, so a missing binary means
+# "no GPU attached", same as an empty -L
 if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
     err "No GPU visible inside the container."
     cat >&2 <<'MSG'
@@ -124,8 +110,6 @@ MSG
     exit 1
 fi
 
-# Check 2: torch can use the GPU. Catches host-driver-too-old (nvidia-smi
-# enumerates but CUDA contexts fail).
 python - >&2 <<'PY' || exit 1
 import sys
 import torch
@@ -146,7 +130,6 @@ print("Then upgrade the driver to match.")
 sys.exit(1)
 PY
 
-# Check 3: compute capability is supported.
 python - >&2 <<'PY' || exit 1
 import sys
 import torch
@@ -155,7 +138,6 @@ name = torch.cuda.get_device_name(0)
 n = torch.cuda.device_count()
 print(f"Unsloth container: {n} GPU(s). Primary: {name}  sm_{major}{minor}  bf16={torch.cuda.is_bf16_supported()}")
 
-# Image targets every current NVIDIA arch from Turing onward.
 SUPPORTED = (
     ("sm_75",  "Turing",       "T4, RTX 20-series, Quadro RTX"),
     ("sm_80",  "Ampere DC",    "A100, A30"),
@@ -179,9 +161,7 @@ if major < 8:
     print(f"NOTE: {name} is Turing (sm_{major}{minor}) -- bfloat16 is not supported.")
     print("      Unsloth will fall back to fp16. Training works but is slightly slower.")
 
-# Secondary devices: all GPUs are exposed by default, so an unsupported later
-# device only surfaces when a job pins to it. Device 0 is fatal above;
-# secondaries warn now while excluding them is still cheap.
+# an unsupported secondary only surfaces when a job pins to it, so warn now
 for d in range(1, n):
     dmaj, dmin = torch.cuda.get_device_capability(d)
     if dmaj < 7 or (dmaj == 7 and dmin < 5):
@@ -191,9 +171,8 @@ for d in range(1, n):
         print("         exclude it with CUDA_VISIBLE_DEVICES or --gpus device=<supported>.")
 PY
 
-# Upstream ships no CUDA 12 arm64 llama.cpp, so the arm64 image bakes cu13 while
-# torch (cu128) runs on 570+. A cu13 cubin can't load on 570-579, so below 580
-# GGUF export / Studio chat fail even though training works -- warn up front.
+# Upstream ships no CUDA 12 arm64 llama.cpp, so the arm64 image bakes cu13 while torch
+# runs on 570+: below 580, GGUF export and Studio chat fail even though training works.
 if [ "$(uname -m)" = "aarch64" ]; then
     _drv="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
     _drv_major="${_drv%%.*}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the unsloth-blackwell image on this B200 host (or any Linux host with Docker).
-# The build host's GPU is NOT used -- nvcc cross-compiles for sm_100 + sm_120.
+# Build the unsloth-blackwell image on any Linux host with Docker. The build host's
+# GPU is NOT used: nvcc cross-compiles.
 #
 # Usage:
 #   ./build.sh                 # builds unsloth-blackwell:latest pinned to unsloth main
@@ -18,9 +18,8 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
 UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 
-# llama.cpp prebuilt: default to the newest release, resolved here to a concrete
-# tag so the build-arg changes only on a new release (correct layer caching).
-# Pin for a frozen build: LLAMA_PREBUILT_TAG=b9596-mix-e6f2453 ./build.sh
+# Resolved to a concrete tag here, so the build-arg changes only on a new release and
+# layer caching stays correct. Pin with LLAMA_PREBUILT_TAG=... for a frozen build.
 resolve_latest_llama_tag() {
     curl -fsSL -o /dev/null -w '%{url_effective}' \
         "https://github.com/unslothai/llama.cpp/releases/latest" 2>/dev/null \
@@ -41,11 +40,8 @@ echo "  CUDA           ${CUDA_VERSION}  Ubuntu ${UBUNTU_VERSION}  Python ${PYTHO
 echo "  unsloth        @${UNSLOTH_REF}"
 echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
 echo "  llama.cpp      ${LLAMA_PREBUILT_TAG}"
-# Read the arch list back out of the Dockerfile rather than repeating it: the
-# hand-copied banner had already drifted, dropping 7.5 and so under-reporting
-# Turing support to anyone reading this output.
-# Bare filename: the script cd'd to its own directory above, so $0's dirname
-# would be applied a second time and break every relative invocation.
+# Read the arch list out of the Dockerfile rather than repeating it: the hand-copied
+# banner had already drifted. Bare filename because the script cd'd to its own dir.
 ARCH_LIST="$(sed -n 's/^[[:space:]]*TORCH_CUDA_ARCH_LIST="\([^"]*\)".*/\1/p' \
              Dockerfile | head -n1)"
 echo "  arch list      ${ARCH_LIST:-unknown}"

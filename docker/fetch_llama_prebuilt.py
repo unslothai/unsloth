@@ -3,29 +3,17 @@
 
 """Bake a pinned llama.cpp prebuilt into the Docker image, deterministically.
 
-Why not studio/install_llama_prebuilt.py: that resolver selects a bundle for
-the CURRENT host (nvidia-smi, /proc/driver/nvidia, installed CUDA runtime),
-which is exactly what an image build must not do -- a B200 build host, a
-GPU-less CI runner and a laptop must all produce byte-identical layers. This
-script instead pins release + asset by build target only:
+Not studio/install_llama_prebuilt.py: that resolver selects a bundle for the CURRENT
+host, where an image build must produce byte-identical layers everywhere. Pins release
+and asset by build target only:
 
     amd64 -> app-<tag>-linux-x64-cuda12-portable.tar.gz   (sm_70..sm_120)
     arm64 -> app-<tag>-linux-arm64-cuda13-portable.tar.gz (sm_90..sm_121)
 
-The portable bundles carry their own CUDA runtime libs and dynamically load
-the CUDA backend at runtime, so the same binaries also run CPU-only.
-
-Every download is sha256-verified against the release's own
-llama-prebuilt-sha256.json. The converter (convert_hf_to_gguf.py) and its
-gguf-py library are hydrated from the SAME release's source tarball so the
-tensor mappings match the binaries -- the layout unsloth_zoo's
-check_llama_cpp() expects: binaries, converter and gguf-py/ at the install
-dir root.
-
-The tag may be the literal "latest" (or empty), in which case the newest
-published release of RELEASE_REPO is resolved at build time by following the
-/releases/latest redirect (no API token, no API rate limit). Pass a concrete
-tag for a reproducible build.
+The portable bundles dlopen the CUDA backend, so the same binaries also run CPU-only.
+Every download is sha256-verified, and the converter + gguf-py come from the SAME
+release's source tarball so the tensor mappings match the binaries. A "latest" tag is
+resolved at build time; pass a concrete tag for a reproducible build.
 
 Usage (in the Dockerfile):
     python fetch_llama_prebuilt.py <tag|latest> <targetarch> <install_dir>
@@ -47,18 +35,12 @@ RELEASE_REPO = "unslothai/llama.cpp"
 
 def base_build_tag(tag: str) -> str:
     """Normalized upstream build out of a release tag: b10715 from b10715-mix-86bd2d3.
-
-    Studio's marker schema (studio/install_llama_prebuilt.py) records the base build
-    in "tag" and the full release in "release_tag", and its freshness check reads the
-    two differently (base for display, full for the up-to-date comparison). Mirrors
-    llama_cpp_freshness.parse_base_build; a tag that is not bNNNN is left alone.
-    """
+    Mirrors llama_cpp_freshness.parse_base_build; a tag that is not bNNNN is kept."""
     match = re.match(r"b(\d+)", tag.strip())
     return f"b{match.group(1)}" if match else tag.strip()
 
 
 def resolve_latest_tag(repo: str) -> str:
-    # Follow the /releases/latest redirect: no API token or rate limit.
     url = f"https://github.com/{repo}/releases/latest"
     request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-docker-build"})
     with urllib.request.urlopen(request, timeout = 60) as response:
@@ -106,24 +88,11 @@ def extracted_root(extract_dir: str) -> str:
 
 
 def sanity_check_binaries(install_dir, build_bin):
-    """Run each shipped binary once and refuse to publish a broken one.
-
-    A module-level function rather than inline in main() so the regression test
-    can drive it against stub binaries without exec'ing a slice of this file.
-    """
     checks = (
-        # llama-server DOES have --version, so a healthy run exits 0. The exit
-        # code is load-bearing here, not decoration: the loader's own failure
-        # message is `<binary>: libc.so.6: version `GLIBC_2.38' not found
-        # (required by ...)`, which contains the word this looks for, so the
-        # substring alone accepted a server that cannot reach main. Studio chat
-        # depends on it, so a broken one must not ship.
+        # exit 0 too: a dynamic-loader failure prints "version `GLIBC_...' not found",
+        # which the substring alone accepts even though it never reached main
         (os.path.join(install_dir, "llama-server"), "version", True),
-        # llama-quantize has no --version: healthy run prints usage (rc 0),
-        # loader failure rc 127. The exit code is not asserted for these two
-        # because an unknown flag is not required to exit 0 across builds; the
-        # "usage" banner is what a working binary produces and a loader failure
-        # never does.
+        # no --version, and an unknown flag need not exit 0, so only the banner counts
         (os.path.join(install_dir, "llama-quantize"), "usage", False),
         (os.path.join(build_bin, "llama-quantize"), "usage", False),
     )
@@ -172,7 +141,6 @@ def main() -> None:
         fetch(f"{base_url}/llama-prebuilt-sha256.json", sha_path)
         sums = json.load(open(sha_path))["artifacts"]
 
-        # Binaries: flat tarball, llama-quantize / llama-server / lib*.so at root.
         bundle_path = fetch_verified(base_url, bundle_name, sums, work)
         bundle_dir = os.path.join(work, "bundle")
         os.makedirs(bundle_dir)
@@ -186,8 +154,6 @@ def main() -> None:
             if os.path.isfile(target) and not entry.startswith("lib") and ".so" not in entry:
                 os.chmod(target, 0o755)
 
-        # Converter + gguf-py from the same-tag source tarball so tensor mappings
-        # match the binaries (mirrors unsloth_zoo's _hydrate_converter_sources).
         source_path = fetch_verified(base_url, source_name, sums, work)
         source_dir = os.path.join(work, "source")
         os.makedirs(source_dir)
@@ -206,15 +172,9 @@ def main() -> None:
         if os.path.isdir(conversion):
             shutil.copytree(conversion, os.path.join(install_dir, "conversion"), dirs_exist_ok = True)
 
-    # Make the baked marker readable by Studio's freshness check. The tarball keys
-    # off upstream_tag/source_repo, but the reader wants tag/release_tag/
-    # published_repo (the install_llama_prebuilt.py schema). setdefault() leaves an
-    # already-populated tarball untouched; no timestamp, so layers stay identical.
-    # "tag" is the NORMALIZED BASE build and "release_tag" the full release, the same
-    # split install_llama_prebuilt.py writes (llama_tag = bundle.upstream_tag vs
-    # bundle.release_tag). Writing the full mix tag into "tag" here made the two
-    # installers disagree, so Studio's installed-version display changed shape
-    # depending on whether the image bake or the in-app updater had run last.
+    # Studio's freshness check wants the install_llama_prebuilt.py schema: "tag" is the
+    # NORMALIZED BASE build, "release_tag" the full release. No timestamp, so layers
+    # stay identical.
     marker_path = os.path.join(install_dir, "UNSLOTH_PREBUILT_INFO.json")
     try:
         with open(marker_path) as f:
@@ -233,11 +193,9 @@ def main() -> None:
         f"release_tag={marker['release_tag']} published_repo={RELEASE_REPO}"
     )
 
-    # Mirror the install into build/bin/ via hardlinks (zero extra bytes) so
-    # Studio's setup.sh treats it as a complete local build and skips its
-    # source-build fallback (which would compile CPU-only llama.cpp over the baked
-    # CUDA bundle). Hardlinks keep $ORIGIN rpath and avoid a cycle when setup.sh
-    # relinks the root quantizer to build/bin/llama-quantize.
+    # Mirror into build/bin/ so Studio's setup.sh sees a complete local build and skips
+    # its source-build fallback, which would compile CPU-only llama.cpp over the baked
+    # CUDA bundle. Hardlinks keep the $ORIGIN rpath.
     build_bin = os.path.join(install_dir, "build", "bin")
     os.makedirs(build_bin, exist_ok = True)
     for entry in os.listdir(install_dir):
@@ -248,16 +206,11 @@ def main() -> None:
             except OSError:
                 shutil.copy2(source, os.path.join(build_bin, entry))
         elif os.path.islink(source):
-            # Mirror same-dir soname symlinks (libllama.so.0 -> ...); without them
-            # a binary relinked into build/bin fails $ORIGIN (loader wants soname).
             target = os.readlink(source)
             dest = os.path.join(build_bin, entry)
             if "/" not in target and not os.path.lexists(dest):
                 os.symlink(target, dest)
 
-    # Sanity: the server must run on a GPU-less host (CUDA backend is a dlopen'd
-    # plugin). Check the quantizer from both roots: setup.sh relinks the root copy
-    # to build/bin, so build/bin must resolve standalone.
     sanity_check_binaries(install_dir, build_bin)
     for required in (
         "llama-quantize",

@@ -3,31 +3,10 @@
 
 """The GitHub refresh must not take a bind-mounted notebook away from its owner.
 
-`unsloth_sync_notebooks.sh` publishes a refreshed notebook by copying the freshly
-cloned upstream file to a same-dir staging name and renaming it over the
-destination. rename(2) swaps the DIRECTORY ENTRY: the staged inode survives with
-its own owner and mode and the destination's inode is discarded, so the staged
-copy's root:root 0644 -- inherited from the clone via `cp -a` -- became the
-published file's identity.
-
-That matters because a host-owned file really can be under sync management. The
-first-boot populate adopts a pre-existing file whose bytes already match the
-baked template (the documented `-v $PWD/notebooks:/workspace/unsloth-notebooks`
-bind mount of the same checkout) and records it as managed WITHOUT copying,
-precisely so `cp -a` does not stamp the baked root:root over the host user's
-file. The refresh then undid that: measured in a container against a real bind
-mount, a managed notebook went from `65534:65534 0664` to `0:0 0644` across the
-publish and the host user could no longer write it.
-
-The fix is the bash twin of the one already applied to `unsloth_run.py`
-(`_stage_metadata` before its `os.replace`): give the staged copy the
-destination's mode and owner before the rename, best effort. The EBUSY
-single-file-bind-mount fallback gets the same treatment -- `cp -a` onto an
-existing inode chowns it too, a plain `cp` does not.
-
-Behavioural: runs the real script against a local git "remote". No docker, no
-network. The uid half needs root, so it is asserted statically here and was
-verified in a container; the mode half is exercised end to end.
+rename(2) swaps the DIRECTORY ENTRY, so the staged inode's root:root 0644 becomes the
+published file's identity -- and a host-owned file really can be under sync
+management, since first-boot populate adopts one matching the baked template WITHOUT
+copying. `cp -a` onto an existing inode chowns it too; plain `cp` does not.
 """
 
 from __future__ import annotations
@@ -52,8 +31,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 REL = "nb/Llama.ipynb"
-# The managed notebook's mode on the host. Deliberately neither 0644 nor 0664,
-# so the assertion holds whatever umask the clone is checked out under.
 HOST_MODE = 0o640
 
 
@@ -85,7 +62,6 @@ def _git(*args, cwd: Path):
 
 
 def _world(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Baked template, a host bind mount of the same bytes, and an upstream repo."""
     template = tmp_path / "template"
     (template / "nb").mkdir(parents = True)
     (template / REL).write_text(V1, encoding = "utf-8")
@@ -93,8 +69,6 @@ def _world(tmp_path: Path) -> tuple[Path, Path, Path]:
 
     dest = tmp_path / "dest"
     (dest / "nb").mkdir(parents = True)
-    # Same bytes as the template: populate adopts this as managed and leaves the
-    # host user's inode alone.
     (dest / REL).write_text(V1, encoding = "utf-8")
     os.chmod(dest / REL, HOST_MODE)
 
@@ -120,8 +94,6 @@ def _run(
         UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
         UNSLOTH_NOTEBOOKS_DIR = str(dest),
         UNSLOTH_NOTEBOOKS_REPO = str(remote),
-        # Run the refresh inline instead of forking it, so the assertions below
-        # are not racing a detached child.
         UNSLOTH_NB_REFRESH_CHILD = "1",
         UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
         UNSLOTH_KEEP_COLAB_INTRO = "1",
@@ -158,9 +130,7 @@ def test_the_refresh_keeps_the_destinations_metadata(tmp_path: Path):
 
 
 def test_the_ebusy_fallback_keeps_the_destinations_metadata(tmp_path: Path):
-    # A single-FILE bind mount cannot be renamed over. Model it with an `mv` that
-    # refuses only the staging rename, so the in-place copy fallback runs; it used
-    # to be `cp -a`, which chowns the destination inode it writes through.
+    # an `mv` that refuses only the staging rename models a single-FILE bind mount
     binp = tmp_path / "bin"
     binp.mkdir()
     stub = binp / "mv"
@@ -178,9 +148,6 @@ def test_the_ebusy_fallback_keeps_the_destinations_metadata(tmp_path: Path):
 
 
 def test_the_owner_half_is_applied_too(tmp_path: Path):
-    # Reproducing the reported 65534 -> 0 needs root, which the suite does not
-    # have; the container run that did have it showed exactly that. Pin the chown
-    # so a later edit cannot silently drop it and leave only the mode fixed.
     src = SYNC.read_text(encoding = "utf-8")
     block = src[src.index("stage_metadata() {") : src.index("cp_keep_meta() {")]
     assert 'chmod --reference="$2" "$1"' in block
@@ -199,25 +166,9 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
     reason = "root holds CAP_DAC_OVERRIDE, so chmod 0500 does not stop the write",
 )
 def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
-    """A publish that cannot be written must stay retryable.
-
-    Omitting the path from the state file while still stamping $SYNCED made the
-    next boot short-circuit on `remote == last`, so the notebook was never
-    retried; and the missing record makes a later refresh read the stale
-    destination as user-owned and keep it indefinitely.
-
-    The unwritable directory is made with chmod, which root bypasses entirely
-    ("CAP_DAC_OVERRIDE: bypass file read, write, and execute permission
-    checks"), so under a root container the publish succeeds, the marker
-    advances and this fails deterministically rather than catching anything.
-    The lane that runs it, studio-backend-ci's auto-discovered CPU job on
-    ubuntu-latest, is not root, so the coverage is kept where it works and the
-    skip only fires for someone running the suite inside a root container.
-    tests/python/test_docker_nb_populate_retry.py carries the same
-    "do not stamp a commit whose work failed" property for the populate phase
-    with a mechanism root cannot bypass: a regular file where a directory has
-    to be, which is ENOTDIR for everyone.
-    """
+    """A publish that cannot be written must stay retryable: stamping $SYNCED anyway
+    short-circuits the next boot on `remote == last`. Skipped under root, which
+    bypasses the chmod (CAP_DAC_OVERRIDE)."""
     template, dest, remote = _world(tmp_path)
     nb_dir = dest / "nb"
     os.chmod(nb_dir, 0o500)  # publish into nb/ now fails, DEST root stays writable
@@ -241,16 +192,11 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
         f"never retries; marker={marker!r} stdout={res.stdout!r} "
         f"stderr={res.stderr!r}"
     )
-    # and the file itself is untouched, so nothing was half-written
     assert (dest / REL).read_text(encoding = "utf-8") == V1
 
 
-# --- directories, not just the files inside them -------------------------------
-# stage_metadata / cp_keep_meta keep a published FILE's owner. mkdir(2) gives a
-# new DIRECTORY the caller's uid and only the setgid bit carries anything down,
-# so a category folder upstream adds landed root:root in the middle of a tree
-# whose files those two go out of their way to keep host-owned, and the user
-# could not write into it. Same defect as unsloth_run.py's output directory.
+# mkdir(2) gives a new DIRECTORY the caller's uid and only setgid carries down, so a
+# category folder upstream adds lands root:root and the user cannot write into it
 
 SYNC_SH = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
 
@@ -262,7 +208,6 @@ def _function_block(source: str, name: str) -> str:
 
 
 def _drive_mkdir_keep_owner(tmp_path: Path, target: Path) -> list:
-    """Run the real helper with `chown` replaced by a recorder on PATH."""
     source = SYNC_SH.read_text(encoding = "utf-8")
     block = _function_block(source, "mkdir_keep_owner")
 
@@ -317,10 +262,7 @@ def test_an_existing_notebook_directory_is_left_alone(tmp_path: Path):
 
 
 def test_every_directory_creating_site_routes_through_the_helper():
-    """The sibling guard. Three sites create directories inside $DEST: first-boot
-    populate, the every-boot restore of deleted notebooks, and the refresh
-    publish. Fixing one and leaving the others is how this class of bug keeps
-    coming back, so none of them may call bare mkdir on a $DEST path."""
+    """Three sites create directories inside $DEST; none may call bare mkdir."""
     source = SYNC_SH.read_text(encoding = "utf-8")
     body = source[source.index("mkdir_keep_owner() {") :]
     body = body[body.index("\n}\n") :]  # everything after the helper itself

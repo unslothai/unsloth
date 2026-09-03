@@ -13,14 +13,11 @@ from packaging.version import Version
 
 VISION_PATH = Path(__file__).parents[1] / "unsloth" / "models" / "vision.py"
 
-# unsloth_base_fast_generate gates its logits_to_keep injection on the installed
-# transformers, so the exec'd copy below needs the same two module globals
-# vision.py imports at its top. packaging and importlib.metadata rather than
-# unsloth_zoo.utils.Version and transformers.__version__: importing unsloth_zoo
-# pulls in bitsandbytes and CUDA, which is the whole reason this file rebuilds
-# the function from source instead of importing it. The exercised path does not
-# depend on the value -- NUM_LOGITS_TO_KEEP is seeded below, so neither branch
-# of the gate touches kwargs -- only on the names resolving.
+# The exec'd copy below needs the same two module globals vision.py imports at its
+# top. packaging and importlib.metadata rather than unsloth_zoo.utils.Version and
+# transformers.__version__, because importing unsloth_zoo pulls in bitsandbytes and
+# CUDA -- the whole reason this file rebuilds the function from source. Only the names
+# have to resolve: NUM_LOGITS_TO_KEEP is seeded below, so neither branch touches kwargs.
 TRANSFORMERS_VERSION = installed_version("transformers")
 
 

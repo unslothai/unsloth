@@ -3,13 +3,10 @@
 
 """Regression tests for docker/unsloth_nb_pip_magic.py.
 
-The input transformer rewrites explicit `!<python> -m pip|uv ...` shell lines
-to `!pip|uv ...` so they resolve to the PATH shim. IPython input transformers
-see the RAW cell text (brace expansion like `{sys.executable}` happens later,
-in the system() execution path), so the braced and absolute-interpreter forms
-notebooks use to target the running kernel must be rewritten too (item
-3567875025); only matching literal `python`/`py` let module-pip bypass the
-shim entirely.
+The input transformer rewrites `!<python> -m pip|uv ...` to `!pip|uv ...` so it
+resolves to the PATH shim. Transformers see the RAW cell text (brace expansion
+happens later, in the system() path), so the braced and absolute-interpreter forms
+notebooks use to target the running kernel must be rewritten too.
 """
 
 import importlib.util

@@ -3,21 +3,10 @@
 
 """Regression guard for the llama.cpp CUDA backend inside the Docker image.
 
-The portable llama.cpp bundle ships libggml-cuda.so and loads it with dlopen
-(ggml_backend_dl), but the bundle does NOT carry the CUDA math libraries it
-links against, and the CUDA runtime base image only carries libcudart. With no
-libcublas on the loader path the backend fails to load SILENTLY: llama.cpp
-prints nothing, `--list-devices` comes back empty and every GGUF request runs on
-the CPU. Measured on a B200 with gemma-4-E2B UD-Q4_K_XL: 1.6 tok/s instead of
-224 tok/s, a 140x regression that no functional test would have caught.
-
-The Dockerfile therefore has to do two things, and these tests pin both:
-  * put torch's bundled libcublas on the loader path (ld.so.conf.d, not
-    LD_LIBRARY_PATH, so llama.cpp's own $ORIGIN libs keep winning);
-  * fail the build when any non-driver dependency of libggml-cuda.so is still
-    unresolved, so a CPU-only image can never be published again.
-
-Static: parses the Dockerfile only. No docker, no GPU, no network.
+The portable bundle dlopens libggml-cuda.so but carries none of the CUDA math
+libraries it links against, and with no libcublas on the loader path the backend
+fails to load SILENTLY: nothing printed, `--list-devices` empty, every GGUF request
+on the CPU. These pin the two Dockerfile halves that prevent it.
 """
 
 from __future__ import annotations
@@ -52,8 +41,8 @@ def test_cublas_dir_is_registered_with_the_loader(dockerfile: str):
 
 
 def test_loader_config_is_not_ld_library_path(dockerfile: str):
-    # LD_LIBRARY_PATH is consulted BEFORE DT_RUNPATH, so it would let the venv's
-    # copies shadow llama.cpp's own $ORIGIN libs. ld.so.conf.d is consulted after.
+    # LD_LIBRARY_PATH is consulted BEFORE DT_RUNPATH and would let the venv's copies
+    # shadow llama.cpp's own $ORIGIN libs; ld.so.conf.d is consulted after
     assert "ld.so.conf.d/zz-unsloth-venv.conf" in dockerfile
     assert not re.search(
         r"ENV\s+LD_LIBRARY_PATH=.*site-packages/nvidia",
@@ -67,17 +56,13 @@ def test_build_fails_on_an_unresolved_cuda_backend(dockerfile: str):
     assert "ldd" in guard, "the guard must inspect the backend's dependencies"
     assert "not found" in guard
     assert "exit 1" in guard, "an unresolved backend must fail the build"
-    # The driver stub is injected by nvidia-container-toolkit at `docker run
-    # --gpus`, so it is never resolvable inside the build and must be exempt.
     assert re.search(
         r"grep -v .libcuda\\?\.so\\?\.1", guard
     ), "libcuda.so.1 must be exempt from the guard or every build fails"
 
 
 def test_guard_installs_the_matching_cublas_major(dockerfile: str):
-    # The amd64 bundle is CUDA 12 and torch already ships libcublas.so.12, but
-    # the arm64 bundle is CUDA 13. Deriving the major from ldd keeps the two
-    # legs correct without hardcoding either.
+    # the two arch bundles differ in CUDA major, so it must come from ldd
     guard = dockerfile[dockerfile.index("CUDA_SO=") :]
     assert (
         "nvidia-cublas-cu${major}" in guard
@@ -92,10 +77,8 @@ def test_guard_runs_after_the_prebuilt_is_fetched(dockerfile: str):
 
 
 def test_flashinfer_jit_cache_tracks_flashinfer(dockerfile: str):
-    # flashinfer raises at import when flashinfer-jit-cache and flashinfer-python
-    # disagree, and that exception kills the vLLM EngineCore, which is what
-    # Unsloth's GRPO fast_inference path runs on. A literal pin drifts the moment
-    # vLLM bumps its flashinfer requirement, so the version has to be derived.
+    # flashinfer raises at import when jit-cache and python disagree, killing the vLLM
+    # EngineCore GRPO fast_inference runs on. A literal pin would drift.
     assert (
         "flashinfer-jit-cache==${FI_VER}" in dockerfile
     ), "flashinfer-jit-cache must be pinned to the resolved flashinfer-python version"
@@ -109,10 +92,8 @@ def test_flashinfer_jit_cache_tracks_flashinfer(dockerfile: str):
 
 
 def test_cli_can_reach_the_studio_backend(dockerfile: str):
-    # unsloth_cli's train / export / chat / list-checkpoints import
-    # studio.backend.core.*, which needs structlog. It is a studio backend
-    # requirement rather than an unsloth[huggingface] one, so the base venv has
-    # to ask for it explicitly or the whole CLI dies on ModuleNotFoundError.
+    # unsloth_cli imports studio.backend.core.*, which needs structlog: a studio
+    # requirement, not an unsloth[huggingface] one, so the base venv must ask for it
     assert '"structlog"' in dockerfile, "the base venv must install structlog for unsloth_cli"
     assert (
         "from studio.backend.core.export import ExportBackend" in dockerfile
