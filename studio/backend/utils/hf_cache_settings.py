@@ -113,10 +113,20 @@ def _stored_cache_home() -> Optional[Path]:
     # get_app_setting CREATES and migrates studio.db, so reading unconditionally
     # built one on machines that had never opened Studio. No file and no imported
     # db module means there is no stored setting to find anyway.
+    # os.stat, not Path.exists: only a positively observed absence may skip the
+    # read. From 3.14 the path predicates answer through os.path, which reports
+    # EACCES and EIO as False, so a database we merely could not inspect would
+    # read as "no setting stored" and silently drop the user's chosen cache home
+    # back to the default or portable one. stat, not lstat as _nothing_at uses:
+    # the question here is whether sqlite would find a database, and it follows
+    # symlinks, so a dangling link is still absent rather than a reason to open
+    # the connection that would create the file behind it.
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
-            if not studio_db_path().exists():
+            try:
+                os.stat(studio_db_path())
+            except FileNotFoundError:
                 return None
     except Exception:  # noqa: BLE001 - fall through to the read on any doubt
         pass
