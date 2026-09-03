@@ -330,9 +330,9 @@ def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
         "build_kernel.py refuses outright"
     )
     per_pr, _, _ = _compose_argv("push", tmp_path)
-    assert "--with-studio" in per_pr, (
-        "no trigger packs Studio in any more, so the whole Studio payload runs nowhere"
-    )
+    assert (
+        "--with-studio" in per_pr
+    ), "no trigger packs Studio in any more, so the whole Studio payload runs nowhere"
     assert "--studio-args" in per_pr, per_pr
 
 
