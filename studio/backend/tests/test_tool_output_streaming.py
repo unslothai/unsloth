@@ -102,9 +102,9 @@ def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
     gate.write_text("go")
     deadline = time.monotonic() + _LEAK_WINDOW_S
     while time.monotonic() < deadline:
-        assert (
-            not sentinel.exists()
-        ), "a grandchild survived the process-group kill and wrote its sentinel"
+        assert not sentinel.exists(), (
+            "a grandchild survived the process-group kill and wrote its sentinel"
+        )
         time.sleep(0.02)
 
 
@@ -490,12 +490,7 @@ def test_python_exec_result_identical_with_streaming():
 
 def test_python_exec_streams_lines_incrementally():
     # The first of two sleep-separated prints must reach the callback well before exit.
-    code = (
-        "import time\n"
-        "print('first', flush=True)\n"
-        "time.sleep(1.0)\n"
-        "print('second', flush=True)\n"
-    )
+    code = "import time\nprint('first', flush=True)\ntime.sleep(1.0)\nprint('second', flush=True)\n"
     first_seen_at: list[float] = []
 
     def on_chunk(_text: str) -> None:

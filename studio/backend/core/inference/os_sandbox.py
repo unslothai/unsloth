@@ -306,7 +306,10 @@ def _runtime_read_paths() -> tuple[str, ...]:
 
 
 def _validate_runtime_paths(
-    paths: tuple[str, ...], workdir: str, *, include_system_roots: bool = False
+    paths: tuple[str, ...],
+    workdir: str,
+    *,
+    include_system_roots: bool = False,
 ) -> None:
     """User-managed runtimes may be read-only, but must not carry host IPC into the jail."""
     scan_roots: list[str] = []

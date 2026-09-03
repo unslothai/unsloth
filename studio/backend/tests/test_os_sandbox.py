@@ -317,9 +317,7 @@ def test_linux_system_roots_are_scanned_for_host_ipc(monkeypatch, tmp_path):
     )
 
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
-        os_sandbox._validate_runtime_paths(
-            (str(root),), str(workdir), include_system_roots = True
-        )
+        os_sandbox._validate_runtime_paths((str(root),), str(workdir), include_system_roots = True)
 
 
 def test_linux_system_roots_reject_nested_host_mounts(monkeypatch, tmp_path):
@@ -332,9 +330,7 @@ def test_linux_system_roots_reject_nested_host_mounts(monkeypatch, tmp_path):
     monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: (str(nested_mount),))
 
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "nested host mount"):
-        os_sandbox._validate_runtime_paths(
-            (str(root),), str(workdir), include_system_roots = True
-        )
+        os_sandbox._validate_runtime_paths((str(root),), str(workdir), include_system_roots = True)
 
 
 def test_linux_system_root_scan_does_not_prune_searchable_directory(monkeypatch, tmp_path):
@@ -348,9 +344,7 @@ def test_linux_system_root_scan_does_not_prune_searchable_directory(monkeypatch,
     run = Mock(return_value = subprocess.CompletedProcess([], 0, stdout = "", stderr = ""))
     monkeypatch.setattr(os_sandbox.subprocess, "run", run)
 
-    os_sandbox._validate_runtime_paths(
-        (str(root),), str(workdir), include_system_roots = True
-    )
+    os_sandbox._validate_runtime_paths((str(root),), str(workdir), include_system_roots = True)
 
     command = run.call_args.args[0]
     assert "-readable" not in command

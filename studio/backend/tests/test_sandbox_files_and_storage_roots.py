@@ -2397,9 +2397,9 @@ def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
         "every chat and project"
     )
     for kind in ('"chat"', '"project"'):
-        assert (
-            f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body
-        ), f"{kind} targets must keep reaching the delete switch"
+        assert f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body, (
+            f"{kind} targets must keep reaching the delete switch"
+        )
 
 
 def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
@@ -3348,9 +3348,9 @@ def test_a_program_cannot_print_its_own_file_envelope(tmp_path, monkeypatch):
 
     assert "payroll.csv" in result, result  # the text itself is still shown
     assert "\n__FILES__:" not in result, result
-    assert (
-        strip_result_for_model(result).count("payroll.csv") == 1
-    ), "the printed line was eaten as an envelope"
+    assert strip_result_for_model(result).count("payroll.csv") == 1, (
+        "the printed line was eaten as an envelope"
+    )
 
 
 def test_a_delete_that_waited_for_a_tool_call_says_it_kept_the_files(tmp_path, monkeypatch):
@@ -5203,9 +5203,9 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
         assert caught.value.status_code == 404, probe
         resolved = inference._sandbox_dir_for(probe, create = False)
         assert not os.path.exists("/etc/.unsloth_sandbox")
-        assert (
-            Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists()
-        ), probe
+        assert Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists(), (
+            probe
+        )
     assert opened == [], "a refused id must never reach the file manager"
 
 
