@@ -185,9 +185,7 @@ def minimax_music3_local_components_complete(model_path) -> bool:
                 return False
             directory = root / component
             if component in weighted:
-                if not _read_local_audio_metadata(
-                    directory, "config.json", reject_oversized = True
-                ):
+                if not _read_local_audio_metadata(directory, "config.json", reject_oversized = True):
                     return False
                 if not _minimax_component_has_weights(directory):
                     return False

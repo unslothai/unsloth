@@ -9349,9 +9349,7 @@ def test_an_incomplete_minimax_pipeline_is_not_switchable(tmp_path, monkeypatch)
         ("tokenizer/tokenizer.json", "not-json"),
     ),
 )
-def test_invalid_minimax_component_metadata_is_not_switchable(
-    tmp_path, relative_path, payload
-):
+def test_invalid_minimax_component_metadata_is_not_switchable(tmp_path, relative_path, payload):
     from core.inference import native_audio
 
     pipeline = _complete_minimax_pipeline(tmp_path)
