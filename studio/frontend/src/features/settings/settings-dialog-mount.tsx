@@ -8,6 +8,8 @@ import {
 import { useT } from "@/i18n";
 import { Suspense, lazy, useEffect, useState } from "react";
 import { isImeComposing } from "./hooks/use-shortcut";
+
+import { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 import { useSettingsDialogStore } from "./stores/settings-dialog-store";
 
 const SettingsDialog = lazy(() =>
@@ -35,11 +37,12 @@ function SettingsDialogLoading({ active }: { active: boolean }) {
 export function SettingsDialogMount({ active }: { active: boolean }) {
   const t = useT();
   const open = useSettingsDialogStore((state) => state.open);
-  const [mounted, setMounted] = useState(false);
+  const monitorOpen = useMonitorOverlayStore((state) => state.isOpen);
+  const [mounted, setMounted] = useState(open || monitorOpen);
 
   useEffect(() => {
-    if (open) setMounted(true);
-  }, [open]);
+    if (open || monitorOpen) setMounted(true);
+  }, [open, monitorOpen]);
 
   if (!active || !mounted) return null;
   return (

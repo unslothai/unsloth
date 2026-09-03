@@ -223,5 +223,10 @@ test("the lazy Settings mount survives an auth-route round trip", () => {
   assert.match(
     SETTINGS_MOUNT_SOURCE,
     /if \(!active \|\| !mounted\) return null;/,
+
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /const \[mounted, setMounted\] = useState\(open \|\| monitorOpen\)/,
   );
 });
