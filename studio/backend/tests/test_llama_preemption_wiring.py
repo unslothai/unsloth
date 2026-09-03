@@ -30,6 +30,26 @@ from core.inference.llama_preemption import (
 
 
 @pytest.fixture(autouse = True)
+def _isolate_process_wide_admission_state():
+    """The park budget and the queue registry are process-wide, not per test.
+
+    `_parked_total` in llama_admission is deliberately global: there is one executor and
+    base_url takes a fresh port on every load, so a per-queue budget would hand the same
+    allowance to each backend. That makes it shared state between tests, and a test that
+    parks without releasing starves every later one.
+
+    Caught by `test_parking_does_not_reopen_the_whole_cache` failing only when this file
+    ran after the preemption wiring suite, and passing alone. An order-dependent failure
+    is worse than a plain one: it moves whenever a test is added.
+    """
+    from core.inference.llama_admission import reset_llama_admission_queues
+
+    reset_llama_admission_queues()
+    yield
+    reset_llama_admission_queues()
+
+
+@pytest.fixture(autouse = True)
 def _clean_registry():
     reset_preemption_controllers()
     yield
