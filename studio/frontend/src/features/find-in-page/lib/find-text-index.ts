@@ -809,10 +809,16 @@ const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
 /** Every boundary in the index, once the search has asked about enough of them to be worth it.
  *  A seek is right for the handful of offsets an ordinary query reaches, and wrong for one that
- *  matches everywhere; the crossover is well below the point where either is slow. */
+ *  matches everywhere.
+ *
+ *  The threshold is a share of the index rather than a number, because the scan costs a pass over
+ *  the whole of it: a flat count is reached by a bounded pass on a big index, which then pays for
+ *  the whole document to answer ten thousand questions. Proportional, only a search whose own work
+ *  is proportional to the index gets there, which is exactly the one the scan is cheaper than. */
 const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
 const seekCounts = new WeakMap<FindTextIndex, number>();
 const SEEKS_BEFORE_SCAN = 4096;
+const SEEK_SHARE_BEFORE_SCAN = 6;
 
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
@@ -918,7 +924,11 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
   }
   const asked = (seekCounts.get(index) ?? 0) + 1;
   seekCounts.set(index, asked);
-  if (asked <= SEEKS_BEFORE_SCAN) return segments.containing(at)?.index === at;
+  const before = Math.max(
+    SEEKS_BEFORE_SCAN,
+    text.length >> SEEK_SHARE_BEFORE_SCAN,
+  );
+  if (asked <= before) return segments.containing(at)?.index === at;
   // A capped search anchored near the end walks the candidates up to three times, so a query
   // matching everywhere pays millions of seeks: one page of Hangul cost 2.1s at the 4M ceiling.
   const marks = new Uint8Array(text.length + 1);

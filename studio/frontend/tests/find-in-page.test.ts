@@ -2105,6 +2105,53 @@ test("an odd run longer than the window is not read as even", () => {
   }
 });
 
+test("a capped search does not segment the whole index to answer its first pass", () => {
+  // The scan that replaces the seeks costs a pass over the whole index, so what it is allowed to
+  // replace matters as much as that it exists. On a flat count a bounded pass reaches the
+  // threshold on a big enough index and pays for the entire document to answer ten thousand
+  // questions, which is slower than the seeks by a wide margin. Counted, not timed.
+  const probe = `
+    let scans = 0;
+    let seeks = 0;
+    const Real = Intl.Segmenter;
+    Intl.Segmenter = class {
+      constructor(...args) { this.inner = new Real(...args); }
+      segment(input) {
+        const segments = this.inner.segment(input);
+        return {
+          containing: (at) => { seeks += 1; return segments.containing(at); },
+          [Symbol.iterator]: () => { scans += 1; return segments[Symbol.iterator](); },
+        };
+      }
+    };
+    const { buildTextIndex, findMatches, MAX_MATCHES, MAX_NODE_CHARS } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const el = (tagName, childNodes) => ({
+      nodeType: 1, tagName, childNodes, getAttribute: () => null,
+    });
+    const nodes = [];
+    for (let at = 0; at < 2000000; at += MAX_NODE_CHARS) {
+      nodes.push({ nodeType: 3, data: "\uac00".repeat(MAX_NODE_CHARS) });
+    }
+    const index = buildTextIndex(el("DIV", [el("P", nodes)]));
+    // Anchored at the top, so the cap stops the search after one bounded pass.
+    const found = findMatches(index, "\uac00", MAX_MATCHES, 0);
+    if (found.length !== MAX_MATCHES) throw new Error("expected a capped search, got " + found.length);
+    if (scans !== 0) throw new Error("segmented the whole index for a bounded pass: " + scans);
+    if (seeks > 4 * MAX_MATCHES) throw new Error("seeks: " + seeks);
+  `;
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+});
+
 test("a query that matches everywhere stops seeking the segmenter per candidate", () => {
   // `containing` seeks, which is why it replaced segmenting whole blocks, and a seek per candidate
   // is the shape that undoes: a capped search anchored near the end walks the candidates up to
