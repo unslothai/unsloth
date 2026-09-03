@@ -348,14 +348,8 @@ export function buildTextIndex(
             separated = true;
             // The far side of a separator standing for dropped text is a boundary only when
             // neither side reaches the other, which the kept context is chosen to be enough to say.
-            if (
-              pendingClip !== null &&
-              reaches(
-                pendingClip,
-                String.fromCodePoint(data.codePointAt(0) as number),
-              )
-            ) {
-              unsafe.add(length);
+            if (pendingClip !== null) {
+              markReached(pendingClip, data, length, unsafe);
             }
             // Parity is what makes a regional indicator pair, and it is counted from the
             // separator, so an odd run left behind takes the next indicator with it and displaces
@@ -400,7 +394,11 @@ export function buildTextIndex(
             unsafe.add(length);
           }
           pendingSeparator = true;
-          pendingClip = clipContext(data.slice(take));
+          // Over the whole node, not just what was dropped: a chain of linkers or a run of
+          // indicators can begin before the cut, and its anchor and its parity are what the
+          // junction turns on. Reading only the far side declared a chain anchorless and a run
+          // shorter than it is.
+          pendingClip = clipContext(data);
         }
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike, preserved);
@@ -528,8 +526,9 @@ const LINKER_PATTERN =
 /** The letters GB9c joins, either side of the linker (InCB=Consonant). Same sweep again: every
  *  letter its own script's linker binds to a copy of itself, where two bare copies stay apart.
  *  Without it a linker behind the boundary joined whatever followed, full stop or Latin letter. */
-const CONSONANT_PATTERN =
-  /[\u{915}-\u{939}\u{958}-\u{95f}\u{978}-\u{97f}\u{995}-\u{9a8}\u{9aa}-\u{9b0}\u{9b2}\u{9b6}-\u{9b9}\u{9dc}-\u{9dd}\u{9df}\u{9f0}-\u{9f1}\u{a95}-\u{aa8}\u{aaa}-\u{ab0}\u{ab2}-\u{ab3}\u{ab5}-\u{ab9}\u{af9}\u{b15}-\u{b28}\u{b2a}-\u{b30}\u{b32}-\u{b33}\u{b35}-\u{b39}\u{b5c}-\u{b5d}\u{b5f}\u{b71}\u{c15}-\u{c28}\u{c2a}-\u{c39}\u{c58}-\u{c5a}\u{d15}-\u{d3a}\u{1000}-\u{102a}\u{103f}\u{1050}-\u{1055}\u{105a}-\u{105d}\u{1061}\u{1065}-\u{1066}\u{106e}-\u{1070}\u{1075}-\u{1081}\u{108e}\u{1780}-\u{17b3}\u{1a20}-\u{1a54}\u{1b0b}-\u{1b0c}\u{1b13}-\u{1b33}\u{1b45}-\u{1b4c}\u{1b83}-\u{1ba0}\u{1bae}-\u{1baf}\u{1bbb}-\u{1bbd}\u{a989}-\u{a98b}\u{a98f}-\u{a9b2}\u{a9e0}-\u{a9e4}\u{a9e7}-\u{a9ef}\u{a9fa}-\u{a9fe}\u{aa60}-\u{aa6f}\u{aa71}-\u{aa73}\u{aa7a}\u{aa7e}-\u{aa7f}\u{aae0}-\u{aaea}\u{abc0}-\u{abda}\u{10a00}\u{10a10}-\u{10a13}\u{10a15}-\u{10a17}\u{10a19}-\u{10a35}\u{11103}-\u{11126}\u{11144}\u{11147}\u{11380}-\u{11389}\u{1138b}\u{1138e}\u{11390}-\u{113b5}\u{11900}-\u{11906}\u{11909}\u{1190c}-\u{11913}\u{11915}-\u{11916}\u{11918}-\u{1192f}\u{11a00}\u{11a0b}-\u{11a32}\u{11a50}\u{11a5c}-\u{11a83}\u{11f04}-\u{11f10}\u{11f12}-\u{11f33}]/u;
+const CONSONANT_RANGES =
+  "\\u{915}-\\u{939}\\u{958}-\\u{95f}\\u{978}-\\u{97f}\\u{995}-\\u{9a8}\\u{9aa}-\\u{9b0}\\u{9b2}\\u{9b6}-\\u{9b9}\\u{9dc}-\\u{9dd}\\u{9df}\\u{9f0}-\\u{9f1}\\u{a95}-\\u{aa8}\\u{aaa}-\\u{ab0}\\u{ab2}-\\u{ab3}\\u{ab5}-\\u{ab9}\\u{af9}\\u{b15}-\\u{b28}\\u{b2a}-\\u{b30}\\u{b32}-\\u{b33}\\u{b35}-\\u{b39}\\u{b5c}-\\u{b5d}\\u{b5f}\\u{b71}\\u{c15}-\\u{c28}\\u{c2a}-\\u{c39}\\u{c58}-\\u{c5a}\\u{d15}-\\u{d3a}\\u{1000}-\\u{102a}\\u{103f}\\u{1050}-\\u{1055}\\u{105a}-\\u{105d}\\u{1061}\\u{1065}-\\u{1066}\\u{106e}-\\u{1070}\\u{1075}-\\u{1081}\\u{108e}\\u{1780}-\\u{17b3}\\u{1a20}-\\u{1a54}\\u{1b0b}-\\u{1b0c}\\u{1b13}-\\u{1b33}\\u{1b45}-\\u{1b4c}\\u{1b83}-\\u{1ba0}\\u{1bae}-\\u{1baf}\\u{1bbb}-\\u{1bbd}\\u{a989}-\\u{a98b}\\u{a98f}-\\u{a9b2}\\u{a9e0}-\\u{a9e4}\\u{a9e7}-\\u{a9ef}\\u{a9fa}-\\u{a9fe}\\u{aa60}-\\u{aa6f}\\u{aa71}-\\u{aa73}\\u{aa7a}\\u{aa7e}-\\u{aa7f}\\u{aae0}-\\u{aaea}\\u{abc0}-\\u{abda}\\u{10a00}\\u{10a10}-\\u{10a13}\\u{10a15}-\\u{10a17}\\u{10a19}-\\u{10a35}\\u{11103}-\\u{11126}\\u{11144}\\u{11147}\\u{11380}-\\u{11389}\\u{1138b}\\u{1138e}\\u{11390}-\\u{113b5}\\u{11900}-\\u{11906}\\u{11909}\\u{1190c}-\\u{11913}\\u{11915}-\\u{11916}\\u{11918}-\\u{1192f}\\u{11a00}\\u{11a0b}-\\u{11a32}\\u{11a50}\\u{11a5c}-\\u{11a83}\\u{11f04}-\\u{11f10}\\u{11f12}-\\u{11f33}";
+const CONSONANT_PATTERN = new RegExp(`[${CONSONANT_RANGES}]`, "u");
 
 /** How far back a dropped tail is read for context. Every rule that chains allows any number of
  *  links in the middle, so there has to be a stop somewhere; past it the junction is called
@@ -661,23 +660,47 @@ function hangulJoins(before: string, after: string | null): boolean {
 
 /** What a rule reaching past the window could still take on its right: GB9c wants a letter there,
  *  GB11 a pictograph. Anything else and what the chain hangs from cannot change the answer. */
-const REACHABLE_PATTERN = /[\p{L}\p{Extended_Pictographic}]/u;
+const REACHABLE_PATTERN = new RegExp(
+  `[${CONSONANT_RANGES}\\p{Extended_Pictographic}]`,
+  "u",
+);
 
 /** Whether the grapheme `context` ends on carries on into `point`. Unknown, and so yes, only where
  *  the context ran out of window and `point` is something a rule out there could still reach. */
-function reaches(context: ClipContext, point: string): boolean {
+function reaches(context: ClipContext, point: string, crossed = ""): boolean {
+  const left = context.tail + crossed;
   if (context.partial) {
     if (REACHABLE_PATTERN.test(point)) return true;
     // Parity reaches as far as its run does, and a context that ran out of window cannot say how
     // far that is: the kept tail can read even while the run behind it is odd.
-    if (
-      REGIONAL_INDICATOR_PATTERN.test(point) &&
-      trailingRegionals(context.tail) > 0
-    ) {
+    if (REGIONAL_INDICATOR_PATTERN.test(point) && trailingRegionals(left) > 0) {
       return true;
     }
   }
-  return continuesGrapheme(context.tail + point, context.tail.length);
+  return continuesGrapheme(left + point, left.length);
+}
+
+/** How far past a seam a chain left by a cut is followed. Every rule that chains allows any number
+ *  of links, so this stops where `CLIP_CONTEXT_LIMIT` does and for the same reason. */
+const CHAIN_AHEAD_LIMIT = CLIP_CONTEXT_LIMIT;
+
+/** Mark every offset the chain a cut left can still reach, not only the one at the seam: the chain
+ *  runs on into the next node, so a linker at the seam carries the doubt to the letter it joins. */
+function markReached(
+  clip: ClipContext,
+  data: string,
+  from: number,
+  unsafe: Set<number>,
+): void {
+  let crossed = "";
+  for (let at = 0, seen = 0; at < data.length && seen < CHAIN_AHEAD_LIMIT; ) {
+    const point = String.fromCodePoint(data.codePointAt(at) as number);
+    if (!reaches(clip, point, crossed)) return;
+    unsafe.add(from + at);
+    crossed += point;
+    at += point.length;
+    seen += 1;
+  }
 }
 
 /**

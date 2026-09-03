@@ -2152,6 +2152,91 @@ test("a query that matches everywhere stops seeking the segmenter per candidate"
   assert.equal(run.status, 0, run.stderr);
 });
 
+test("a cut reads back past itself for the anchor and the parity of what it split", () => {
+  // The context a cut leaves was built from the dropped side alone, so a chain whose anchor was
+  // retained looked anchorless and a run of indicators looked shorter than it is. Both are read
+  // over the whole node now, since the cut is a place in the text and not a place on the page.
+  const cons = "\u0915";
+  const linker = "\u094d";
+  const joined = "\u0937";
+  const pictograph = String.fromCodePoint(0x1f469);
+  const flag = (at: number) => String.fromCodePoint(0x1f1e6 + at);
+  // The anchor is on the retained side and the linker is dropped: the three make one grapheme.
+  const conjunct = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 1) + cons + linker),
+        text(joined),
+      ]),
+    ]),
+  );
+  assert.deepEqual(findMatches(conjunct, joined, 10), []);
+  // Same shape for GB11: a retained pictograph, a dropped ZWJ, a pictograph after the seam.
+  const zwj = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 2) + pictograph + "\u200d"),
+        text(pictograph),
+      ]),
+    ]),
+  );
+  assert.deepEqual(findMatches(zwj, pictograph, 10), []);
+  // Parity counts the retained indicators too: the page pairs across the cut, so the two after
+  // the seam are not a flag however they read in the index.
+  const parity = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 2) + flag(0) + flag(1) + flag(2)),
+        text(flag(3) + flag(4)),
+      ]),
+    ]),
+  );
+  assert.deepEqual(findMatches(parity, flag(3) + flag(4), 10), []);
+});
+
+test("the chain a cut leaves is followed past the seam, not only to it", () => {
+  // The doubt a cut leaves does not stop at the first character of the next node: a linker there
+  // carries it to the letter it joins. Found by putting chain characters on both sides of the cut,
+  // which the junction fuzz had never done, and it cut a grapheme rather than merely losing one.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 1) + "\u0937" + "\u094d"),
+        text("\u17d2\u1000a"),
+      ]),
+    ]),
+  );
+  // The consonant after the seam is inside the grapheme the cut split, so it starts nothing.
+  assert.deepEqual(findMatches(index, "\u1000", 10), []);
+  // What lies past the end of the chain is still findable, or the fence has eaten the feature.
+  assert.equal(findMatches(index, "a", MAX_MATCHES).length > 0, true);
+});
+
+test("an unknown anchor reaches only what a rule could actually take", () => {
+  // A context that outran its window leaves the anchor unknown, and that matters only where a rule
+  // could still reach: GB9c wants a consonant on its right and GB11 a pictograph. Every letter was
+  // treated as reachable, so a plain one after an overlong run of marks could not be found.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS) + "\u0301".repeat(40)),
+        text("bcd"),
+      ]),
+    ]),
+  );
+  assert.equal(findMatches(index, "b", 10).length, 1);
+  // A consonant there is still in doubt, because that is the case the window ran out on.
+  const indic = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS) + "\u0301".repeat(40)),
+        text("\u0915"),
+      ]),
+    ]),
+  );
+  assert.deepEqual(findMatches(indic, "\u0915", 10), []);
+});
+
 test("a run resuming after an odd cut keeps the flags it really shows", () => {
   // A cut that drops an odd number of indicators leaves the run behind it pairing off one early,
   // so the flags on the page sit between the ones the index text would find. Calling the whole
