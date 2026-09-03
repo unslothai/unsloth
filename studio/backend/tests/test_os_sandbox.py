@@ -589,7 +589,7 @@ def test_live_filesystem_proc_devices_and_interpreter_boundary(
         os.dup2(source_fd, high_fd, inheritable = True)
         os.close(source_fd)
         code = f"""
-import errno, json, os, sqlite3, ssl, zlib
+import _sqlite3, _ssl, errno, json, os, sqlite3, ssl, zlib
 
 def denied_read(path):
     try:
@@ -618,7 +618,13 @@ assert not os.path.exists('/proc/{os.getpid()}/environ')
 assert os.read(0, 1) == b''
 for path in ('/run', '/var/run', '/dev/kvm', '/dev/sda', '/dev/dri', '/dev/fuse'):
     assert not os.path.exists(path), path
-for path in ({sys.executable!r}, json.__file__, sqlite3.__file__, ssl.__file__, zlib.__file__):
+runtime_paths = [
+    {sys.executable!r}, json.__file__, sqlite3.__file__, ssl.__file__,
+    _sqlite3.__file__, _ssl.__file__,
+]
+if getattr(zlib, '__file__', None):
+    runtime_paths.append(zlib.__file__)
+for path in runtime_paths:
     with open(path, 'rb') as stream:
         assert stream.read(1)
 for path in ({sys.executable!r}, '/etc/passwd'):
