@@ -106,7 +106,13 @@ def check(label: str, expected, actual) -> None:
         FAILS.append(label)
 
 
-def _probe(prefix: Path, home: Path, systmp: Path, *, materialize: bool = False) -> dict:
+def _probe(
+    prefix: Path,
+    home: Path,
+    systmp: Path,
+    *,
+    materialize: bool = False,
+) -> dict:
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": str(home),
