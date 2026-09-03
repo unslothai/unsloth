@@ -338,9 +338,9 @@ def inspect_seed_dataset(
         allow_ambient_token = allow_ambient_token,
     )
     preview_size = int(payload.preview_size)
-    if not cache_reads_authorized(
-        token, repo_id = dataset_name, repo_type = "dataset"
-    ) and (hf_env_offline() or isinstance(token, str)):
+    if not cache_reads_authorized(token, repo_id = dataset_name, repo_type = "dataset") and (
+        hf_env_offline() or isinstance(token, str)
+    ):
         # Offline, `datasets` satisfies a streaming load from its own cache and the sentinel
         # never reaches an authorization check. An explicit token that cannot reach the
         # repo is the same leak online: the cache never consults the credential.

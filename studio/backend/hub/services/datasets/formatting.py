@@ -310,9 +310,7 @@ def _load_any_cached_hf_preview_slice(
     # Both paths return real rows off disk without asking the Hub: the raw slice reads the
     # snapshot, the processed one loads with local_files_only=True and drops the falsy
     # sentinel. Refuse the whole disk route here; the handler then answers 404.
-    if not cache_reads_authorized(
-        hf_token, repo_id = request.dataset_name, repo_type = "dataset"
-    ):
+    if not cache_reads_authorized(hf_token, repo_id = request.dataset_name, repo_type = "dataset"):
         return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
     if cached_preview is not None:

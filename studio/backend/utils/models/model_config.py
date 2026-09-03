@@ -580,9 +580,7 @@ def load_model_config(
         and not is_local_path(model_name)
         and not cache_reads_authorized(token, repo_id = model_name)
     ):
-        raise OSError(
-            f"config.json for {model_name} is not available to an unauthorized caller"
-        )
+        raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")
 
     if token:
         return AutoConfig.from_pretrained(
