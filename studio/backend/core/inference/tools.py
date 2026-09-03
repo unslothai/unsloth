@@ -36,6 +36,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather
 # than held back from the room in advance. See its definition for why that matters.
 from .context_window import _RESULT_NOTICE_RESERVE
+from .os_sandbox import SandboxLaunchSpec, prepare_tool_launch
 
 # The window of the model THIS request is served by, set by execute_tool for the call's
 # duration. Left unset, the budget falls back to the process-global probe, which is right
@@ -7099,7 +7100,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
-def _sandbox_preexec():
+def _sandbox_preexec_impl(*, apply_no_new_privs: bool, apply_nproc: bool) -> None:
     """Best-effort sandbox setup for sandboxed subprocesses (modules are
     resolved at import time so the forked child runs no imports)."""
     try:
@@ -7113,10 +7114,11 @@ def _sandbox_preexec():
         pass
 
     if _libc is not None:
-        try:
-            _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
-        except (OSError, AttributeError):
-            pass
+        if apply_no_new_privs:
+            try:
+                _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+            except (OSError, AttributeError):
+                pass
 
         try:
             _libc.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG = SIGKILL
@@ -7129,11 +7131,12 @@ def _sandbox_preexec():
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
-        try:
-            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
-        except (ValueError, OSError, AttributeError):
-            pass
+        if apply_nproc:
+            try:
+                nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+                _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+            except (ValueError, OSError, AttributeError):
+                pass
         try:
             _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except (ValueError, OSError):
@@ -7158,6 +7161,21 @@ def _sandbox_preexec():
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _sandbox_preexec() -> None:
+    _sandbox_preexec_impl(apply_no_new_privs = True, apply_nproc = True)
+
+
+def _sandbox_launcher_preexec() -> None:
+    """Limits safe for a native sandbox launcher before it enters isolation.
+
+    A setuid Bubblewrap helper cannot start under ``no_new_privs``. NPROC is
+    installed by a tiny interpreter wrapper after Bubblewrap enters the new
+    namespace; applying the per-host-UID limit to the launcher can make its
+    required fork fail on a busy host. All other existing limits remain.
+    """
+    _sandbox_preexec_impl(apply_no_new_privs = False, apply_nproc = False)
 
 
 def _bypass_preexec():
@@ -16034,6 +16052,7 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    prepared_launch = None
     workdir = _get_workdir(session_id)
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
     # one session by design. Retaining a result in either, under a path the next chat can
@@ -16061,6 +16080,23 @@ def _python_exec(
             # Match the sandboxed Python path without changing bypass shell I/O.
             safe_env = dict(safe_env)
             safe_env["PYTHONIOENCODING"] = "utf-8"
+        launch_argv = (sys.executable, "-u", tmp_path)
+        launch_preexec = _bypass_preexec if disable_sandbox else _sandbox_preexec
+        if not disable_sandbox:
+            prepared_launch = prepare_tool_launch(
+                SandboxLaunchSpec(
+                    argv = launch_argv,
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = _sandbox_preexec,
+                    launcher_preexec_fn = _sandbox_launcher_preexec,
+                )
+            )
+            launch_argv = prepared_launch.argv
+            workdir = prepared_launch.workdir
+            safe_env = prepared_launch.env
+            launch_preexec = prepared_launch.preexec_fn
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16071,9 +16107,13 @@ def _python_exec(
             errors = "replace",
             cwd = workdir,
             env = safe_env,
+            close_fds = True,
         )
+        if not disable_sandbox:
+            popen_kwargs["stdin"] = subprocess.DEVNULL
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if launch_preexec is not None:
+                popen_kwargs["preexec_fn"] = launch_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
@@ -16081,7 +16121,7 @@ def _python_exec(
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        proc = subprocess.Popen(launch_argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
@@ -16158,6 +16198,8 @@ def _python_exec(
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
         _forget_tool_pid(locals().get("proc"))
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
@@ -16208,6 +16250,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared_launch = None
     try:
         workdir = _get_workdir(session_id)
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
@@ -16218,6 +16261,23 @@ def _bash_exec(
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        launch_argv = tuple(_get_shell_cmd(command))
+        launch_preexec = _bypass_preexec if disable_sandbox else _sandbox_preexec
+        if not disable_sandbox:
+            prepared_launch = prepare_tool_launch(
+                SandboxLaunchSpec(
+                    argv = launch_argv,
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = _sandbox_preexec,
+                    launcher_preexec_fn = _sandbox_launcher_preexec,
+                )
+            )
+            launch_argv = prepared_launch.argv
+            workdir = prepared_launch.workdir
+            safe_env = prepared_launch.env
+            launch_preexec = prepared_launch.preexec_fn
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16229,13 +16289,17 @@ def _bash_exec(
             errors = "replace",
             cwd = workdir,
             env = safe_env,
+            close_fds = True,
         )
+        if not disable_sandbox:
+            popen_kwargs["stdin"] = subprocess.DEVNULL
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if launch_preexec is not None:
+                popen_kwargs["preexec_fn"] = launch_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        proc = subprocess.Popen(launch_argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
@@ -16292,3 +16356,5 @@ def _bash_exec(
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
+        if prepared_launch is not None:
+            prepared_launch.cleanup()

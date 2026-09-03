@@ -34,6 +34,8 @@ if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
 from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+from core.inference import os_sandbox
+from core.inference import tools as tools_module
 from core.inference.tool_stream_exec import (
     TOOL_OUTPUT_STREAM_MAX_CHARS,
     stream_tool_execution,
@@ -41,6 +43,30 @@ from core.inference.tool_stream_exec import (
 from core.inference.tools import _bash_exec, _python_exec
 
 from test_llama_cpp_tool_loop import _done, _make_backend, _sse
+
+
+@pytest.fixture(autouse = True)
+def _tool_lifecycle_backend_on_unqualified_hosts(monkeypatch):
+    """Keep lifecycle tests portable without qualifying an unsupported host.
+
+    The dedicated OS-sandbox tests own fail-closed and live enforcement proof.
+    This module isolates streaming/timeout/cancellation behavior, so on Windows,
+    WSL, containers, or a host lacking the native primitive it substitutes only
+    the backend preparation step and still runs the real child lifecycle.
+    """
+    if os_sandbox.sandbox_capability().qualified:
+        return
+
+    def prepare(spec):
+        return os_sandbox.PreparedSandboxLaunch(
+            argv = spec.argv,
+            workdir = spec.workdir,
+            env = spec.env,
+            preexec_fn = spec.preexec_fn,
+            backend = "test-lifecycle-passthrough",
+        )
+
+    monkeypatch.setattr(tools_module, "prepare_tool_launch", prepare)
 
 
 # ── grandchild-survival probes ───────────────────────────────────

@@ -1124,7 +1124,16 @@ def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch):
         return real_adopt(pid)
 
     monkeypatch.setattr(pl, "adopt_pid", watching_adopt)
-    tools._python_exec("print('hi')", session_id = "__LOCALID_adopt01")
+    # This test owns process-lifetime recording, not platform qualification.
+    # Unsupported hosts exercise the explicit Full/Bypass launch; qualified
+    # Qualified Linux hosts exercise the native sandbox wrapper end to end.
+    from core.inference.os_sandbox import sandbox_capability
+
+    tools._python_exec(
+        "print('hi')",
+        session_id = "__LOCALID_adopt01",
+        disable_sandbox = not sandbox_capability().qualified,
+    )
     assert seen, "the tool subprocess was never recorded"
     # And it is not left on the record once it has exited.
     assert all(pid not in pl._tracked_pids for pid in seen), pl._tracked_pids
