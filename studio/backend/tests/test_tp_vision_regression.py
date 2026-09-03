@@ -9,8 +9,10 @@ any mmproj/MTP GGUF that fit on one card. The fix makes the skip self-healing:
 tensor is tried by default and recorded per (binary, model) only on a real abort.
 
 load_model is too entangled to drive end-to-end, so these tests inspect the
-source / drive the pure helpers. The headline test pins the set of TP-drop
-conditions, so a new silent drop fails CI. No GPU; fully deterministic.
+source / drive the pure helpers. That holds for ordering and binding invariants;
+anything observable in the launched argv belongs in test_llama_cpp_placement.py
+instead, driven through its _launch harness. The headline test pins the set of
+TP-drop conditions, so a new silent drop fails CI. No GPU; fully deterministic.
 """
 
 from __future__ import annotations
@@ -123,19 +125,24 @@ def _tensor_parallel_false_drop_guards() -> list[str]:
 
 
 # Every condition that may flip a requested tensor_parallel back to False. Adding
-# one must be conscious: update this allowlist and keep multi-GPU where possible.
+# one must be conscious: update this allowlist, keep multi-GPU where possible, and
+# strip the extras split-mode group so the drop cannot be undone by a user flag.
 _ALLOWED_TP_DROP_GUARDS = {
     # Capability: --split-mode tensor aborted for this (binary, model) (#6415).
     # Self-healing -- tried by default, skipped only after a real abort (vs #6416).
-    "tensor_parallel and self._tensor_split_aborts(binary, model_identifier)",
+    "tensor_parallel and self._tensor_split_aborts(binary, model_identifier, _planned_cache_pair)",
+    # Capability: this llama.cpp already refused a quantized KV cache under a
+    # tensor split (pre-b9455, ggml-org/llama.cpp#23792). Binary-wide rather than
+    # per model+pair, since the refusal covers every model and every quantized
+    # type; a non-quantized pair still gets its tensor split.
+    "tensor_parallel and self._tensor_quant_kv_unsupported_binary(binary, _planned_cache_pair)",
     # Capacity: tensor needs >= 2 GPUs clearing the compute-buffer reserve. Gated
     # on plan_tp (not raw tensor_parallel) so manual mode skips this planner (#6414).
     "plan_tp and len(tp_gpus) < 2",
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.
     "_tp_weight_budget_mib <= _tp_required_mib",
     # Manual mode, Auto layers: --fit owns memory and is incompatible with a
-    # tensor split, so TP is dropped (surfaced via logger.info) before the
-    # cache-drop, so a quantized KV survives into the --fit load (#6414).
+    # tensor split, so TP is dropped (surfaced via logger.info) (#6414).
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers < 0)",
     # Manual mode, explicit layers: a tensor split still needs >= 2 GPUs in use.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers >= 0) and (self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2)",
@@ -161,8 +168,9 @@ def test_tensor_parallel_drop_sites_match_allowlist():
         f"  unexpected (new) : {sorted(found - _ALLOWED_TP_DROP_GUARDS)}\n"
         f"  missing (removed): {sorted(_ALLOWED_TP_DROP_GUARDS - found)}\n"
         "A new drop means a user's TP request is ignored for a new reason -- "
-        "review it, keep multi-GPU where possible, surface it, then update "
-        "_ALLOWED_TP_DROP_GUARDS."
+        "review it, keep multi-GPU where possible, surface it, strip the extras "
+        "split-mode group with strip_split_mode_only so the drop cannot be undone "
+        "by a user flag, then update _ALLOWED_TP_DROP_GUARDS."
     )
 
 
@@ -202,7 +210,10 @@ def test_tensor_split_gate_is_self_healing_not_blanket():
     """Skip is conditional on a recorded (binary, model) abort, not a blanket
     is_vision disable (the #6416 regression)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert "self._tensor_split_aborts(binary, model_identifier)" in src
+    assert "self._tensor_split_aborts(" in src
+    # Keyed by the planned KV pair too: since ggml-org/llama.cpp#23792 a tensor
+    # abort can be specific to one cache type, so the latch must not generalise.
+    assert "binary, model_identifier, _planned_cache_pair" in src
     assert "if tensor_parallel and is_vision:" not in src
     assert "if tensor_parallel and effective_is_vision:" not in src
 
@@ -210,7 +221,7 @@ def test_tensor_split_gate_is_self_healing_not_blanket():
 def test_tensor_split_skip_documents_layer_split_fallback():
     """When the skip fires (known-bad binary+model), it states the fallback."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    gate = src.find("self._tensor_split_aborts(binary, model_identifier)")
+    gate = src.find("self._tensor_split_aborts(")
     assert gate != -1
     block = src[gate : gate + 600]
     assert "layer split" in block, "the skip should state it falls back to layer split"
@@ -220,9 +231,11 @@ def test_tensor_split_abort_recorded_early_on_first_spawn():
     """Recorded on the first spawn showing the marker, before the flash-attn-off
     retry (which can't run tensor so drops the marker) -- else it loops (oobabooga, #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
+    idx = src.find("LlamaCppBackend._record_tensor_split_abort(")
     assert idx != -1, "load_model must record a (binary, model) tensor-split abort"
-    guard = src[max(0, idx - 600) : idx]
+    # 900, not 600: the block now also explains why the pre-b9455 quantized-KV
+    # refusal is latched here rather than by the signal-crash helper below it.
+    guard = src[max(0, idx - 900) : idx]
     assert "self._tensor_parallel" in guard
     assert (
         "_should_record_tensor_split_abort" in guard
@@ -388,7 +401,7 @@ def test_tensor_split_abort_raises_early_to_layer_fallback():
     # gated on the marker-plus-crash helper, which also drives the record just above
     guard = src[max(0, raise_idx - 600) : raise_idx]
     assert "_should_record_tensor_split_abort" in guard
-    rec_idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
+    rec_idx = src.find("LlamaCppBackend._record_tensor_split_abort(")
     assert rec_idx != -1 and rec_idx < raise_idx
 
 
@@ -431,7 +444,7 @@ def test_tensor_split_layer_min_gpus_bump_requires_tensor_request():
     for node in ast.walk(fn):
         if isinstance(node, ast.If):
             test_src = ast.unparse(node.test)
-            if "self._tensor_split_aborts(binary, model_identifier)" not in test_src:
+            if "self._tensor_split_aborts(" not in test_src:
                 continue
             body = "\n".join(ast.unparse(n) for n in node.body)
             if "_layer_min_gpus" in body:
@@ -600,17 +613,27 @@ def test_should_record_tensor_split_abort_decision():
     assert f(0xC0000005, "") is False
 
 
-def test_fit_off_retry_skipped_on_split_axis_abort():
+def test_fit_off_retry_skipped_on_a_tensor_capability_crash():
     """The fit-independent --fit off retry is skipped on the split-axis marker, else
-    the model crashes a second time before the latch records it (reviewer.py, #6659)."""
+    the model crashes a second time before the latch records it (reviewer.py, #6659).
+
+    The same skip now also covers the pre-b9455 refusal of a quantized KV cache in
+    tensor mode (ggml-org/llama.cpp#23792): both are capabilities the binary lacks,
+    so a second spawn to let it offload cannot help and costs a full model load.
+    Hence the guard's name is _tensor_capability_crash rather than the split-axis
+    one it started as.
+    """
     src = inspect.getsource(LlamaCppBackend.load_model)
     retry = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
     assert retry != -1
     guard = src[max(0, retry - 1000) : retry]
     assert "_fit_retry_allowed" in guard and "_startup_crashed" in guard
     assert (
-        "not _split_axis_crash" in guard
-    ), "the fit-off retry must be skipped when the crash is a split-axis abort"
+        "not _tensor_capability_crash" in guard
+    ), "the fit-off retry must be skipped when the crash is a tensor capability limit"
+    # Both markers feed it, so neither can be dropped without this failing.
+    assert "_is_tensor_split_assert" in src
+    assert "_is_tensor_quant_kv_unsupported" in src
 
 
 def test_is_abort_exit_recognizes_windows_crt_abort():

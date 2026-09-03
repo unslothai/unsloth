@@ -102,7 +102,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
@@ -111,13 +111,20 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
+      - name: Lockfile supply-chain audit (pre-install scan)
+        # Must run BEFORE any `npm install` (including the Tauri CLI
+        # install below). Lifecycle scripts in a compromised lockfile
+        # would otherwise execute inside this runner before the audit
+        # gets a chance to refuse the lockfile.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
       - name: Install pinned Tauri CLI (matches release-desktop.yml)
         # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
         # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
+        # audit (lockfile_supply_chain_audit.py) above is the practical
+        # defence against the npm postinstall-dropper class -- it fires
+        # BEFORE any tarball runs, on the injection pattern itself
+        # rather than an advisory-DB lookup.
         run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI version
@@ -125,9 +132,6 @@ jobs:
           out="$(npx --prefix studio tauri --version)"
           echo "$out"
           [ "$out" = "tauri-cli 2.10.1" ] || { echo "::error::expected tauri-cli 2.10.1, got $out"; exit 1; }
-
-      - name: Lockfile supply-chain audit (pre-install scan)
-        run: python3 scripts/lockfile_supply_chain_audit.py
 
       - name: Frontend build (npm ci, vite)
         working-directory: studio/frontend
@@ -329,7 +333,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
@@ -368,10 +372,34 @@ jobs:
 
   macos-unit-tests:
     name: Rust unit tests (macos)
-    # Not macos-14: it browns out from 2026-10-05 and is removed 2026-11-02,
-    # which the other macOS workflows here have already moved off. Both are
-    # Apple Silicon, so this job keeps testing the arm64 paths.
-    runs-on: macos-15
+    # macos-26, not macos-15, on a measurement rather than a preference. Both are
+    # free Apple Silicon standard runners, so this is the same class of machine.
+    #
+    # studio-mac-install-matrix runs both images from ONE matrix, so their queues
+    # can be compared on identical commits and identical triggers. Over 163 jobs
+    # per leg:
+    #
+    #                   exec med   exec p90   queue p90
+    #     macos-15          160s       713s      20667s
+    #     macos-26          176s       597s       3866s
+    #
+    # The medians say the two are the same machine. The queue p90 says they are
+    # not the same pool: macos-15 is 5.3x worse in the tail, five and a half hours
+    # against one. That tail is what sets this repo's wall clock -- the census
+    # behind it found every commit's last finisher to be this job, minutes of work
+    # behind hours of waiting -- and the median hides it completely, because the
+    # median wait on both images is zero.
+    #
+    # The likely cause is the macos-14 retirement (brownouts 2026-10-05, removal
+    # 2026-11-02): everything migrated onto macos-15, including this job, and
+    # macos-26 was left comparatively empty. That also means this is a fact about
+    # today's pool and not a property of the image, so it is worth re-measuring
+    # rather than assuming. The comparison above is one query against the install
+    # matrix and can be re-run whenever the queue looks wrong again.
+    #
+    # Not macos-14 for the retirement above; all three are Apple Silicon, so the
+    # arm64 paths are still what gets tested.
+    runs-on: macos-26
     # A cold cache compiles both the debug and the release dependency tree.
     timeout-minutes: 45
     steps:
@@ -385,7 +413,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by

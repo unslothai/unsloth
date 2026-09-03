@@ -668,7 +668,7 @@ def assert_settled_verdict(sample: Sample, chat_only: bool, reason, label: str) 
 
 @contextmanager
 def booted(port: int, log: Path, env: dict):
-    """Boot a Studio with ``env``, polling /api/health from before it can answer."""
+    """Boot an Unsloth with ``env``, polling /api/health from before it can answer."""
     base = f"http://127.0.0.1:{port}"
     poller = HealthPoller(base)
     poller.start()

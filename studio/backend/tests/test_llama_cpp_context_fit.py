@@ -6,7 +6,7 @@
 Guards two regressions in ``LlamaCppBackend.load_model``:
 
 1. Auto mode (``n_ctx == 0``) when weights exceed every GPU subset's free
-   memory: auto-pick should fall back to 4096 (a usable slider value) rather
+   memory: auto-pick should fall back to 8192 (a useful chat context) rather
    than leaving native ctx. User can still drag higher onto ``--fit on``.
 2. Explicit ctx must never be silently shrunk: when KV overflows fittable
    weights, honor the explicit ctx with ``--fit on`` flexing ``-ngl``.
@@ -76,6 +76,7 @@ except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import (
+    _AUTO_OFFLOAD_CTX,
     _APPLE_UNIFIED_MEMORY_FRACTION,
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
@@ -89,7 +90,7 @@ from core.inference.llama_server_args import parse_ctx_override, resolve_request
 # ---------------------------------------------------------------------------
 
 GIB = 1024**3
-FALLBACK_CTX = 4096
+FIT_MIN_CTX = 4096
 
 
 def _make_backend(
@@ -218,8 +219,8 @@ def _drive(
                     matched = True
                     break
             if not matched:
-                effective_ctx = min(FALLBACK_CTX, effective_ctx)
-                # Mirror llama_cpp.py: re-check fit at FALLBACK_CTX.
+                effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
+                # Mirror llama_cpp.py: re-check fit at the Auto offload context.
                 if effective_ctx > 0:
                     for n_gpus in range(1, len(ranked) + 1):
                         subset = ranked[:n_gpus]
@@ -233,10 +234,12 @@ def _drive(
     elif gpus:
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
-            effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
+            effective_ctx = (
+                min(_AUTO_OFFLOAD_CTX, effective_ctx) if effective_ctx > 0 else _AUTO_OFFLOAD_CTX
+            )
     elif apple_budget_mib > 0 and effective_ctx > 0:
         # Mirrors the Apple unified-memory branch in load_model: flat MTP reserve
-        # off the budget up front (no-op at 0), sparse-KV floors to FALLBACK_CTX,
+        # off the budget up front (no-op at 0), sparse-KV floors to FIT_MIN_CTX,
         # only auto context shrinks.
         native_ctx_for_cap = context_length or effective_ctx
         apple_fit_budget_mib = int(apple_budget_mib * max(0.0, 1.0 - flat_mtp_reserve))
@@ -254,10 +257,10 @@ def _drive(
             max_available_ctx = (
                 cap
                 if cap_footprint_mib <= apple_fit_budget_mib
-                else min(FALLBACK_CTX, native_ctx_for_cap)
+                else min(FIT_MIN_CTX, native_ctx_for_cap)
             )
         else:
-            max_available_ctx = min(FALLBACK_CTX, native_ctx_for_cap)
+            max_available_ctx = min(FIT_MIN_CTX, native_ctx_for_cap)
         if not explicit_ctx:
             effective_ctx = max_available_ctx
 
@@ -286,7 +289,7 @@ class TestAutoModeWeightsExceedVRAM:
             gpus = [(0, 97_000)],
             native_ctx = 196608,
         )
-        assert plan["c_arg"] == FALLBACK_CTX
+        assert plan["c_arg"] == _AUTO_OFFLOAD_CTX
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
         # UI slider ceiling stays at native: user can drag higher and get
@@ -300,12 +303,12 @@ class TestAutoModeWeightsExceedVRAM:
             gpus = [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
             native_ctx = 131072,
         )
-        assert plan["c_arg"] == FALLBACK_CTX
+        assert plan["c_arg"] == _AUTO_OFFLOAD_CTX
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
 
     def test_no_kv_metadata_auto(self):
-        """File-size-only fallback path also defaults to 4096."""
+        """File-size-only fallback path uses the same 8192 default."""
         plan = _drive(
             n_ctx = 0,
             model_gib = 131,
@@ -313,7 +316,7 @@ class TestAutoModeWeightsExceedVRAM:
             native_ctx = 196608,
             can_estimate_kv = False,
         )
-        assert plan["c_arg"] == FALLBACK_CTX
+        assert plan["c_arg"] == _AUTO_OFFLOAD_CTX
         assert plan["use_fit"] is True
 
 
@@ -362,12 +365,12 @@ class TestExplicitCtxRespectsUser:
 
     def test_explicit_at_fallback_on_too_big(self):
         plan = _drive(
-            n_ctx = FALLBACK_CTX,
+            n_ctx = _AUTO_OFFLOAD_CTX,
             model_gib = 131,
             gpus = [(0, 97_000)],
             native_ctx = 196608,
         )
-        assert plan["c_arg"] == FALLBACK_CTX
+        assert plan["c_arg"] == _AUTO_OFFLOAD_CTX
         assert plan["use_fit"] is True
 
     def test_explicit_below_floor_honored(self):
@@ -438,7 +441,7 @@ class TestFittableAutoPickRegressions:
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
-        assert plan["c_arg"] > FALLBACK_CTX
+        assert plan["c_arg"] > FIT_MIN_CTX
 
     def test_medium_model_needs_multi_gpu(self):
         plan = _drive(
@@ -913,7 +916,7 @@ class TestAppleBranchEndToEnd:
             native_ctx = 262144,
             apple_budget_mib = 20_000,
         )
-        assert plan["c_arg"] == FALLBACK_CTX
+        assert plan["c_arg"] == FIT_MIN_CTX
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
 
@@ -973,8 +976,7 @@ class TestAppleMtpFlatReserve:
 
 
 class TestAppleNoKvMetadataFloor:
-    """Sparse KV metadata floors the auto context to FALLBACK_CTX (like the
-    discrete file-size-only fallback) instead of launching at native."""
+    """Sparse KV metadata keeps Apple's safety floor instead of native context."""
 
     def test_sparse_kv_floors_auto_context(self):
         plan = _drive(
@@ -985,7 +987,7 @@ class TestAppleNoKvMetadataFloor:
             can_estimate_kv = False,
             apple_budget_mib = 23_000,
         )
-        assert plan["c_arg"] == FALLBACK_CTX  # not native 262144
+        assert plan["c_arg"] == FIT_MIN_CTX  # not native 262144
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
 

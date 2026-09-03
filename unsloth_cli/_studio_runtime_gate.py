@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Coordinate Windows launches that consume the Tauri-managed Studio environment."""
+"""Coordinate launches that consume the Tauri-managed Unsloth environment."""
 
 from __future__ import annotations
 
@@ -19,10 +19,12 @@ from typing import Iterator, Mapping
 _RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironment-"
 _PATH_RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironmentPath-"
 _RUNTIME_GATE_HANDOFF_ENV = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF"
+_RUNTIME_GATE_ACQUIRE_ENV = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE"
+_POSIX_RUNTIME_LOCK_FILE = ".studio-runtime.lock"
 
 
 class StudioRuntimeGateBusy(RuntimeError):
-    """The managed Studio environment is being installed or repaired."""
+    """The managed Unsloth environment is being installed or repaired."""
 
 
 class _SidAndAttributes(ctypes.Structure):
@@ -71,6 +73,28 @@ def _resolved_windows_path(path: Path) -> str:
     if drive and tail and not tail.rstrip("\\/"):
         return drive + "\\"
     return resolved.rstrip("\\/")
+
+
+def resolve_windows_powershell() -> str:
+    r"""Resolve Windows PowerShell without relying solely on ``PATH`` (#9440).
+
+    Public because the install path spawns PowerShell from more than this module: powershell.exe
+    lives in a SUBDIRECTORY of System32, so ``CreateProcess``'s implicit system-directory lookup
+    never finds it and a caller whose PATH omits that entry gets ``WinError 2`` instead.
+    """
+    import shutil
+
+    on_path = shutil.which("powershell.exe")
+    if on_path:
+        return on_path
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    builtin = ntpath.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if os.path.isfile(builtin):
+        return builtin
+    pwsh = shutil.which("pwsh.exe")
+    if pwsh:
+        return pwsh
+    return "powershell.exe"
 
 
 def _canonical_windows_path(path: Path) -> str:
@@ -175,11 +199,37 @@ def _current_windows_user_sid() -> str:
 
 
 @contextlib.contextmanager
-def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -> Iterator[bool]:
-    """Hold the shared Windows launch gate through backend admission."""
+def studio_runtime_launch_guard(
+    studio_home: Path,
+    *,
+    inherited: bool = False,
+    wait: bool = False,
+) -> Iterator[bool]:
+    """Hold the shared launch gate through backend admission."""
 
-    if sys.platform != "win32" or inherited:
+    if inherited and wait:
+        raise ValueError("a runtime gate cannot be inherited and acquired")
+    if inherited:
         yield False
+        return
+
+    if sys.platform != "win32":
+        import fcntl
+
+        studio_home.mkdir(parents = True, exist_ok = True)
+        lock_file = (studio_home / _POSIX_RUNTIME_LOCK_FILE).open("a+b")
+        try:
+            try:
+                flags = fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB
+                fcntl.flock(lock_file.fileno(), flags)
+            except BlockingIOError as exc:
+                raise StudioRuntimeGateBusy(str(lock_file.name)) from exc
+            yield True
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
         return
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
@@ -201,7 +251,8 @@ def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
 
-    wait_result = kernel32.WaitForSingleObject(handle, 0)
+    timeout = 0xFFFFFFFF if wait else 0
+    wait_result = kernel32.WaitForSingleObject(handle, timeout)
     if wait_result not in (0x00000000, 0x00000080):  # WAIT_OBJECT_0, WAIT_ABANDONED
         kernel32.CloseHandle(handle)
         if wait_result == 0x00000102:  # WAIT_TIMEOUT
@@ -254,7 +305,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         "[Console]::Out.Write(($items|ConvertTo-Json -Compress))"
     )
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        [resolve_windows_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
         encoding = "utf-8",
@@ -264,13 +315,13 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"Could not inspect running processes before Studio update: {detail}")
+        raise RuntimeError(f"Could not inspect running processes before Unsloth update: {detail}")
 
     try:
         payload = json.loads(result.stdout or "[]")
     except json.JSONDecodeError as error:
         raise RuntimeError(
-            f"Could not decode the running-process list before Studio update: {error}"
+            f"Could not decode the running-process list before Unsloth update: {error}"
         ) from error
     processes = payload if isinstance(payload, list) else [payload]
     process_by_pid = {
@@ -279,15 +330,10 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if int(process.get("ProcessId") or -1) > 0
     }
 
-    # The updater may itself have been entered through the managed console shim,
-    # so exempt verified launcher ancestors only: a managed backend that starts
-    # an update as its child must still block replacement.
-    #
-    # venv\Scripts\python.exe is a redirector (bpo-34977): it starts base Python
-    # as a child and waits, so a venv launch arrives as python.exe -> us. Our
-    # image is then the base interpreter while sys.executable still names the
-    # redirector, which identifies our direct parent as that launcher rather
-    # than a live consumer. Exempt that one hop only; above it must be a shim.
+    # Exempt verified launcher ancestors only: a managed backend starting an update as its child must
+    # still block replacement.
+    # venv Scripts\python.exe is a redirector (bpo-34977), so exempt that one hop: our image is base
+    # Python while sys.executable names the shim.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
     self_executable = (process_by_pid.get(os.getpid()) or {}).get("ExecutablePath")
@@ -341,13 +387,17 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         ):
             name = process.get("Name") or "process"
             raise RuntimeError(
-                "The managed Studio environment is in use by "
+                "The managed Unsloth environment is in use by "
                 f"{name} (PID {process_id}). Stop that process, then retry the update."
             )
 
 
 def consume_runtime_gate_handoff() -> bool:
     return os.environ.pop(_RUNTIME_GATE_HANDOFF_ENV, None) == "1"
+
+
+def consume_runtime_gate_acquire() -> bool:
+    return os.environ.pop(_RUNTIME_GATE_ACQUIRE_ENV, None) == "1"
 
 
 def runtime_gate_child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:

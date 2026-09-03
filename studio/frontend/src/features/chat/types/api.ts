@@ -20,6 +20,7 @@ export interface BackendModelDetails {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -91,6 +92,17 @@ export interface LoadModelRequest {
   n_batch?: number | null;
   /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
   n_ubatch?: number | null;
+  /** weight loading mode (--load-mode): auto/none/mmap/mlock/mmap+mlock/dio.
+   *  Omit/null = llama.cpp's own `auto`. Settings -> Model Memory overrides it. */
+  load_mode?: string | null;
+  /** KV cache dtype for the DRAFT model's context (--spec-draft-type-k/-v);
+   *  omit/null = llama.cpp default f16. Only reaches the command line when the
+   *  load attaches a separate draft model. */
+  spec_draft_cache_type?: string | null;
+  /** context checkpoints per slot (--ctx-checkpoints); omit/null = default 32, 0 disables */
+  ctx_checkpoints?: number | null;
+  /** host prompt cache size in MiB (--cache-ram); omit/null = default 8192, 0 disables, -1 unlimited */
+  cache_ram?: number | null;
   /**
    * Pass-through llama-server args, one argv token per entry, appended after
    * Unsloth's own flags so llama.cpp's last-wins parser takes these. Flags Unsloth
@@ -104,6 +116,12 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /**
+   * Load a vision-capable GGUF without its mmproj, freeing the VRAM the
+   * projector would occupy. Image input is unavailable for the session;
+   * text generation is unaffected.
+   */
+  disable_vision?: boolean | null;
   /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
    *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
    *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
@@ -118,6 +136,9 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** Native audio (TTS / music) only: "cpu" holds the weights in system RAM
+   *  rather than the GPU. Ignored for every non-audio model. */
+  audio_device?: "auto" | "cpu" | "gpu";
 }
 
 export interface ValidateModelResponse {
@@ -161,6 +182,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
@@ -217,6 +239,7 @@ export interface LoadModelResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -229,6 +252,7 @@ export interface LoadModelResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -237,6 +261,7 @@ export interface LoadModelResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
@@ -251,11 +276,17 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
+  /** Image input is off because the user asked, not because the mmproj is missing. */
+  vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   cpu_fallback_reason?: CpuFallbackReason | null;
-  /** How Studio recovered after a multimodal projector failed at startup. */
+  /** How Unsloth recovered after a multimodal projector failed at startup. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
@@ -276,6 +307,14 @@ export interface LoadModelResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** load mode (--load-mode) the load was invoked with; null = default */
+  requested_load_mode?: string | null;
+  /** draft KV cache dtype the load was invoked with; null = default */
+  requested_spec_draft_cache_type?: string | null;
+  /** checkpoints (--ctx-checkpoints) the load was invoked with; null = default */
+  requested_ctx_checkpoints?: number | null;
+  /** host prompt cache (--cache-ram) the load was invoked with; null = default */
+  requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
 }
@@ -305,6 +344,7 @@ export interface InferenceStatusResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   loading: string[];
   loaded: string[];
   inference?: {
@@ -324,11 +364,13 @@ export interface InferenceStatusResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
   mlx_kv_bits_requested?: number | null;
@@ -342,6 +384,12 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
+  /** Image input is off because the user asked, not because the mmproj is missing. */
+  vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
@@ -350,8 +398,8 @@ export interface InferenceStatusResponse {
   mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
-  /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
-   * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
+  /** The context the active load was invoked with (0 = let the backend choose); re-seeds
+   * the pin on hydration. Null where the serving backend records no request. */
   requested_context_length?: number | null;
   /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
@@ -367,6 +415,14 @@ export interface InferenceStatusResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** load mode (--load-mode) the active load was invoked with; null = default */
+  requested_load_mode?: string | null;
+  /** draft KV cache dtype the active load was invoked with; null = default */
+  requested_spec_draft_cache_type?: string | null;
+  /** checkpoints (--ctx-checkpoints) the active load was invoked with; null = default */
+  requested_ctx_checkpoints?: number | null;
+  /** host prompt cache (--cache-ram) the active load was invoked with; null = default */
+  requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
   n_layers?: number | null;
@@ -558,8 +614,11 @@ export interface OpenAIChatCompletionsRequest {
   min_p?: number;
   repetition_penalty?: number;
   presence_penalty?: number;
+  /** Omitted when unset, which leaves the server to draw its own seed. */
+  seed?: number;
   image_base64?: string;
   audio_base64?: string;
+  video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   reasoning_effort?:
@@ -583,6 +642,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** The replayed tool calls came from Studio's own local tool loop. */
+  studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
   /**
@@ -611,6 +672,12 @@ export interface OpenAIChatCompletionsRequest {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
+  /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
+  context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
+  /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
+  context_policy?: "checkpoint" | "rolling";
+  /** Extra share of the prompt budget to drop when a rolling compaction fires. */
+  compaction_headroom_ratio?: number;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
@@ -684,4 +751,49 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  context_truncated?: {
+    dropped_messages: number;
+    prompt_tokens_before?: number;
+    prompt_tokens_after?: number;
+    context_length?: number;
+    fits: boolean;
+    // Present when the evicted turns were archived and searched. Counts only, never
+    // message text: this rides an SSE chunk that reaches the client.
+    archived_messages?: number;
+    recalled_chunks?: number;
+    // Present only when `fits` is false: the floor the conversation cannot go below, and
+    // how much of it is the message just sent. Together they say whether the history or
+    // that one message is the problem, i.e. whether "shorten the conversation" helps.
+    irreducible_tokens?: number;
+    latest_turn_tokens?: number;
+    // Whether `latest_turn_tokens` is a real token count or the four-characters-a-token
+    // estimate the fit falls back to when nothing could price the turn at all. A turn the
+    // template renders as nothing on its own is priced by difference and stays exact.
+    // Only the counted one may be quoted as the turn's size.
+    latest_turn_exact?: boolean;
+    // The floor both counts above carry: what a rendered prompt costs with no messages in
+    // it, which on a tool-enabled request is the whole tool catalogue. Subtract it before
+    // comparing them, or the catalogue is blamed on the turn. Absent from an older server,
+    // where zero reproduces the old behaviour.
+    shared_prompt_tokens?: number;
+    // Where the compaction boundary sits in the messages THIS request was sent with.
+    // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
+    // times cannot advance the boundary past the turns actually evicted.
+    boundary_messages?: number;
+    // The text the boundary landed ON, so the count can be re-derived by position. A count
+    // is only valid against the transcript it was counted on, and deleting an already
+    // evicted prompt shortens that transcript; without the anchor the replayed count then
+    // evicts live turns instead. Carried through untouched, like boundary_messages.
+    boundary_anchor?: string;
+    // How much extra trim the fit that set the boundary above used. Replayed against the
+    // request's own ratio: a boundary cut under more headroom than the caller now asks for
+    // is discarded, so lowering the setting hands the history back.
+    boundary_headroom_ratio?: number;
+    // Whose message that is: in a tool loop the last one is often a tool result rather
+    // than anything the user typed.
+    latest_turn_role?: string;
+    // The prompt's share of the window (context_length minus the reply reserve), which is
+    // what one turn must fit inside. Not re-derived here: the formula lives in the fit.
+    prompt_target?: number;
+  };
 }

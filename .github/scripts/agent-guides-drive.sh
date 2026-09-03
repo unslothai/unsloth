@@ -8,8 +8,8 @@
 # already installed, so a failure here means the documented recipe in
 # unsloth_cli/commands/start.py no longer produces a working flow.
 #
-# Self-updating: for all six agents (claude, codex, hermes, openclaw,
-# opencode, pi) we obtain the exact env + command from
+# Self-updating: for all seven agents (claude, codex, hermes, openclaw,
+# opencode, pi, dsh) we obtain the exact env + command from
 # `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
 # exercised automatically.
 #
@@ -194,7 +194,12 @@ run_timed() {  # $1=outfile, rest=command
     echo "[$AGENT] last 40 lines before timeout:"; tail -40 "$out" 2>/dev/null || true
     [ -s "$out" ] || guide_fail "invoke timed out after ${TIMEOUT}s having printed nothing (headless-TTY hang -- the recipe likely needs a non-interactive/print flag)"
     TIMED_OUT=1
-    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; judging the turn on its assertions instead of calling it guide drift."
+    # State the fact, not the verdict. Three callers (connection, resume,
+    # attribution-ab) have no assertion that can rescue a partial turn and treat
+    # a cap as fatal on purpose, so promising that the turn will be judged on its
+    # assertions was wrong for exactly the cases most likely to hit it -- and it
+    # is what a reader sees immediately above the error that contradicts it.
+    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; whether that is fatal is the caller's call."
   fi
   return "$rc"
 }
@@ -220,7 +225,11 @@ parse_connect() {
   # here, the same intent as claude/codex's per-call bypass flags.
   local yolo=()
   [ -n "${CONNECT_YOLO:-}" ] && yolo=(--yolo)
-  if ! unsloth start "$AGENT" --no-launch "${yolo[@]}" --api-key "$UNSLOTH_API_KEY" > "$raw" 2>&1; then
+  # dsh's `--profile headless`: its default recipe opens the browser UI instead.
+  # shellcheck disable=SC2206
+  local passthrough=(${CONNECT_START_ARGS:-})
+  if ! unsloth start "$AGENT" --no-launch "${yolo[@]}" --api-key "$UNSLOTH_API_KEY" \
+      "${passthrough[@]}" > "$raw" 2>&1; then
     cat_redacted "$raw"
     guide_fail "'unsloth start ${AGENT} --no-launch' exited non-zero"
   fi
@@ -290,6 +299,18 @@ crosscheck_contract() {
         grep -q '"openai-completions"' "$cfg" \
           || echo "::warning::Pi provider api is no longer 'openai-completions' (write_pi_config)"
         cp "$cfg" "$REDACTED_DIR/pi-models.json"
+      fi
+      ;;
+    dsh)
+      grep -q 'UNSLOTH_API_KEY' "$raw" \
+        || guide_fail "dsh env key is no longer UNSLOTH_API_KEY (start.py _DSH_ENV_KEY)"
+      home="$(raw_env DSH_HOME)"
+      [ -n "$home" ] || guide_fail "DSH_HOME missing from connect output (start.py dsh())"
+      cfg="$home/settings.yaml"
+      if [ -f "$cfg" ]; then
+        grep -q 'openai-completions' "$cfg" \
+          || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_config)"
+        cp "$cfg" "$REDACTED_DIR/dsh-settings.yaml"
       fi
       ;;
   esac
@@ -391,6 +412,12 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   # CONNECT_ENV_EXTRA / CONNECT_CMD_OVERRIDE let a caller (attribution-ab) flip a
   # session knob without editing the user's config; empty -> use what start.py emitted.
   local cmd="${CONNECT_CMD_OVERRIDE:-$CONNECT_CMD}"
+  # A bare V2 recipe ends in --standalone for the TUI. Once this driver adds the
+  # run subcommand, V2 requires that option after run instead of before it.
+  if [ "$AGENT" = opencode ] && [[ "$cmd" == *" --standalone" ]] && [ "${1:-}" = run ]; then
+    cmd="${cmd% --standalone}"
+    set -- run --standalone "${@:2}"
+  fi
   {
     echo "set -uo pipefail"
     echo "$CONNECT_ENV"
@@ -424,6 +451,7 @@ case "$MODE" in
   connection)
     PROMPT='Reply with exactly the single word: pong'
     OUT="$LOGS_DIR/${AGENT}-connection.txt"
+    case "$AGENT" in dsh) CONNECT_START_ARGS='--profile headless' ;; esac
     parse_connect
     crosscheck_contract
     # claude/codex run in print mode via the flags start.py emits
@@ -450,6 +478,17 @@ case "$MODE" in
     # report "connection OK" for a recipe that printed a banner and then blocked
     # on a headless prompt -- the exact failure this job exists to catch.
     rc=$?
+    # Two different failures, and pointing both at start.py costs an
+    # investigation. A cap means the launch command was fine and the turn never
+    # came back: on 2026-08-19 codex printed a correct banner (right provider,
+    # right model) and then sat on `ERROR: Reconnecting... 1/5` for the whole
+    # 600s. Nothing about the documented flow had drifted, and guide_fail said it
+    # had. It is still fatal -- see the note above on why a cap cannot be waived
+    # here -- but it is reported as what it is.
+    if [ "${TIMED_OUT:-0}" = 1 ]; then
+      echo "::error::[$AGENT] the documented launch command started but never completed a turn within ${TIMEOUT}s. The recipe in ${CONNECT_REF} is not implicated: the transcript above shows what the CLI was doing when the cap hit. A connection or model-server failure looks like this; so does a headless prompt, which prints nothing at all." >&2
+      exit 1
+    fi
     [ "$rc" -eq 0 ] || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
     assert_reply "$OUT"
     echo "[$AGENT] connection OK"
@@ -471,7 +510,11 @@ case "$MODE" in
     # from the repo root BEFORE cd-ing into the scratch work dir. opencode/openclaw
     # gate tool approval through their config (prompting by default), so file-edit
     # opts them into auto-approval to run edits/commands headlessly.
-    case "$AGENT" in opencode|openclaw) CONNECT_YOLO=1 ;; esac
+    case "$AGENT" in
+      opencode|openclaw) CONNECT_YOLO=1 ;;
+      # A headless run has nobody to answer dsh's approval asks.
+      dsh) CONNECT_YOLO=1; CONNECT_START_ARGS='--profile headless' ;;
+    esac
     parse_connect
     crosscheck_contract
     # File-edit needs real tools, so we cannot zero them as in connection.

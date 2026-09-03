@@ -50,6 +50,36 @@ HARNESS_SOURCE = (Path(__file__).resolve().parent / "playwright_heavy_thread.py"
 )
 
 
+def _sync_api_stub() -> types.ModuleType:
+    """A `playwright.sync_api` that answers for every name a harness may import off it.
+
+    The stub lands in `sys.modules` at collection time and stays there for the rest of the
+    session, so it is not just this file's import that reads it: any later test that imports a
+    harness gets these names instead of the real package's. A stub that spelled out only the
+    names THIS file's harness needs therefore broke the others -- `playwright_strip_ansi_smoke`
+    also imports `Page` and `expect`, and got `cannot import name 'Page' from
+    'playwright.sync_api' (unknown location)` in the CPU job, from a stub two files away.
+
+    Every name resolves to a callable that raises, so the stub can satisfy an import without a
+    harness quietly measuring a browser that is not there. Dunders are left to fail: pytest and
+    inspect probe those, and answering them makes the stub look like a package.
+    """
+    module = types.ModuleType("playwright.sync_api")
+
+    def __getattr__(name: str):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+
+        def unavailable(*args, **kwargs):
+            raise RuntimeError(f"playwright is not installed: {name} needs a real browser")
+
+        unavailable.__name__ = name
+        return unavailable
+
+    module.__getattr__ = __getattr__
+    return module
+
+
 def _load_harness():
     """Import the harness module without needing a browser.
 
@@ -57,15 +87,18 @@ def _load_harness():
     this file calls. Stubbing it keeps these tests runnable in the CPU test job, where the
     Playwright package is not installed, rather than skipping the arithmetic along with the
     browser.
+
+    The probe imports the name off the submodule rather than the top-level package: a partial
+    install leaves `playwright` importable while `playwright.sync_api` resolves to an empty
+    namespace, which is the same failure with a longer traceback.
     """
     os.environ.setdefault("PW_ART_DIR", str(TEMP_ROOT / "artifacts"))
     if "playwright.sync_api" not in sys.modules:
         try:
-            import playwright.sync_api  # noqa: F401
+            from playwright.sync_api import sync_playwright  # noqa: F401
         except ImportError:
             package = types.ModuleType("playwright")
-            module = types.ModuleType("playwright.sync_api")
-            module.sync_playwright = None
+            module = _sync_api_stub()
             package.sync_api = module
             sys.modules["playwright"] = package
             sys.modules["playwright.sync_api"] = module
@@ -505,12 +538,16 @@ def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
 
 def clean_cell() -> dict:
     """One (engine, size) cell that harness_failures() has nothing to say about."""
-    per_cycle = {"images": 3, "codeBlocks": 7}
+    per_cycle = {"images": 3, "codeBlocks": 7, "codeChars": 12000}
     counts = {
         "messages": 20,
         "domNodes": 4000,
         "codeBlocks": 7,
+        "codeChars": 12660,
         "highlightedTokens": 3000,
+        "fenceBlocks": 5,
+        "deferredFences": 2,
+        "unhighlightedMountedFences": 0,
         "images": 3,
         "actionBars": 10,
         "tooltipTriggers": 30,
@@ -584,6 +621,36 @@ def discriminating_report() -> dict:
 def test_a_clean_cell_produces_no_harness_failure() -> None:
     # The guards below are only worth anything if they are silent on a good run.
     assert HARNESS.harness_failures(results_with(clean_cell()), discriminating_report()) == []
+
+
+def test_deferred_fences_are_not_a_harness_failure() -> None:
+    # THE POINT OF MEASURING CHARACTERS. A real, complete thread now holds far fewer highlighted
+    # tokens than before the default moved: 1,322 against 3,216 for one cycle, measured, with the
+    # fixture untouched. The harness must not call that broken.
+    cell = copy.deepcopy(clean_cell())
+    cell["counts"]["deferredFences"] = 4
+    cell["counts"]["highlightedTokens"] = 300
+    assert HARNESS.harness_failures(results_with(cell), discriminating_report()) == []
+
+
+def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
+    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this
+    # still does. Tokens are left HIGH so only the character floor can fail: a thread whose code
+    # blocks quietly emptied still renders, still scrolls and still curves, of something else.
+    cell = copy.deepcopy(clean_cell())
+    cell["counts"]["codeChars"] = 6000
+    cell["counts"]["highlightedTokens"] = 99999
+    failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
+    assert any("6000 codeChars, short of the 12000" in f for f in failures), failures
+
+
+def test_a_fence_that_is_neither_deferred_nor_highlighted_is_a_harness_failure() -> None:
+    # The other half of the old token floor, per block: one block stuck on streamdown's
+    # unhighlighted fallback passed the total as long as the rest made it up.
+    cell = copy.deepcopy(clean_cell())
+    cell["counts"]["unhighlightedMountedFences"] = 1
+    failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
+    assert any("mounted but unhighlighted" in f for f in failures), failures
 
 
 def test_a_scroll_that_never_settled_is_a_harness_failure() -> None:
@@ -778,10 +845,19 @@ def floor_row(
     }
 
 
-def test_reopen_declares_the_one_paint_floor_it_pays() -> None:
-    """Reopen is driven by a React state update, so the count check straight after openThread()
-    always still sees the unmounted tree and the loop always waits at least one paint."""
-    assert HARNESS.declared_floor("reopen ms") == 1
+def test_reopen_subtracts_only_the_observation_floor() -> None:
+    """A CONSTANT, and one. Reopen is driven by a React state update, so the count check straight
+    after openThread() always still sees the unmounted tree and the loop always waits out one
+    paint before a finished reopen can be observed at all. That wait is the instrument.
+
+    Every further wait is not. The poll shares the rAF queue with the application's own commits,
+    so on a progressive-mount build those waits are the application mounting rows and the time in
+    them is real convergence latency. Reading the measured `paintWaits` here subtracted all of
+    them, which is a subtraction that grows with thread size and differs between the two arms of
+    a comparison -- it removed ~800ms from one arm's 300K cell and ~33ms from the other's."""
+    floored = HARNESS.declared_floor("reopen ms")
+    assert not callable(floored), "reopen ms reads its floor from the row again"
+    assert floored == 1 == HARNESS.REOPEN_OBSERVATION_FLOOR, floored
 
 
 def test_a_matching_floor_declaration_is_accepted() -> None:
@@ -789,14 +865,44 @@ def test_a_matching_floor_declaration_is_accepted() -> None:
     assert HARNESS.floor_declaration_problems(floor_row(1)) == []
 
 
-def test_a_floor_declared_below_the_waits_paid_is_rejected() -> None:
-    problems = HARNESS.floor_declaration_problems(floor_row(2))
-    assert len(problems) == 1 and "subtracts 1" in problems[0], problems
+def test_a_multi_commit_reopen_is_not_a_mis_declared_floor() -> None:
+    """The progressive mount window mounts a long thread over several frames, so `ms` -- which
+    runs until messageCount() reaches `before` -- spans one paint wait per widening commit. Ten is
+    an ordinary reading at 100K, not a harness fault, and reporting it as one stops the run after
+    every measurement has already been taken."""
+    assert HARNESS.floor_declaration_problems(floor_row(10)) == []
 
 
-def test_a_floor_declared_above_the_waits_paid_is_rejected() -> None:
+def test_subtracting_a_floor_the_reopen_never_paid_is_a_failure() -> None:
+    """The other side of the lower bound. Equality is no longer required, so the check has to
+    still catch the direction that invents time: a cell whose reopen resolved without waiting a
+    paint at all, while the axis removes one."""
     problems = HARNESS.floor_declaration_problems(floor_row(0))
-    assert len(problems) == 1 and "paid 0 paint wait" in problems[0], problems
+    assert len(problems) == 1 and "never waited out" in problems[0], problems
+
+
+def test_the_progressive_mount_frames_stay_in_the_reopen_number() -> None:
+    """End to end, and the regression this file exists to hold.
+
+    Two arms of one comparison at the same size: a single-commit build that pays one wait and a
+    progressive-mount build that pays twenty-four for the same 220 messages. Subtracting the
+    measured count made the slower arm read as the faster one. Only the shared observation floor
+    comes out, so the arms stay ordered the way the clock ordered them."""
+    pick = next(p for name, p, _f in HARNESS.GROWTH_AXES if name == "reopen ms")
+    floored = HARNESS.declared_floor("reopen ms")
+
+    def cell(ms: float, waits: int) -> dict:
+        return {"paint_floor_ms": 33.3, "actions": {"reopen": {"ms": ms, "paintWaits": waits}}}
+
+    def value(ms: float, waits: int) -> float:
+        row = cell(ms, waits)
+        return round(pick(row) - HARNESS.resolve_floor(floored, row) * row["paint_floor_ms"], 1)
+
+    single_commit = value(2184.1, 1)
+    progressive = value(2329.7, 24)
+    assert single_commit == 2150.8, single_commit
+    assert progressive == 2296.4, progressive
+    assert progressive > single_commit, (progressive, single_commit)
 
 
 def test_an_unreported_wait_count_is_a_failure_not_a_skip() -> None:
@@ -1251,7 +1357,31 @@ def test_whole_window_axes_use_the_measured_floor(name) -> None:
     assert floored({"actions": {action: {"paint_waits": 20}}}) == 20
 
 
-@pytest.mark.parametrize("name", ("jump painted ms", "menu open+close ms", "reopen ms"))
+def test_reopen_is_a_partial_window_axis_with_a_constant_floor() -> None:
+    """Reopen is the third kind, and it is neither of the two below.
+
+    `ms` is measured from `reopenStarted`, so it does not span the recorder window and cannot take
+    the window's `paint_waits`. It cannot take its own `paintWaits` either, because that count is
+    a property of how many frames the APPLICATION took to mount, which is the thing the axis is
+    measuring. What it carries is one observation wait, always, on every build.
+    """
+    floored = axis_floor("reopen ms")
+    assert not callable(floored), "reopen ms reads a per-row wait count again"
+    assert floored == HARNESS.REOPEN_OBSERVATION_FLOOR == 1, floored
+
+
+def test_the_reopen_wall_axis_does_not_take_the_window_count_either() -> None:
+    """`reopen wall ms` spans the close loop and the reopen loop, so the window's `paint_waits`
+    carries the progressive mount's commit frames for the same reason `reopen ms` does. Its
+    honest floor is the two terminal observation waits, one per loop. Every other action keeps
+    the measured window count, where those waits really are harness idle between driven steps."""
+    floored = axis_floor("reopen wall ms")
+    assert not callable(floored), "reopen wall ms reads the window count again"
+    assert floored == 2, floored
+    assert callable(axis_floor("scroll wall ms")), "the other wall axes lost their measured floor"
+
+
+@pytest.mark.parametrize("name", ("jump painted ms", "menu open+close ms"))
 def test_partial_window_axes_keep_their_declared_floor(name) -> None:
     """The other half of the rule, and it is not symmetry for its own sake.
 

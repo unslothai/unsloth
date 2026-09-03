@@ -128,9 +128,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
 
     names = [step.get("name") for step in publish["steps"]]
-    assert names.index("Wait for the build matrix") < names.index(
-        "Publish versioned release assets"
-    )
+    assert names.index("Wait for the build matrix") < names.index("Publish release assets")
     # And it has to clear before the assets are pulled, or the download races the
     # legs and publish-release dies on artifacts that do not exist yet.
     download = next(
@@ -188,7 +186,7 @@ def test_post_publish_scan_job_holds_no_release_credentials():
 
 def test_versioned_release_hides_updater_signature_assets():
     steps = _workflow()["jobs"]["publish-release"]["steps"]
-    publish = next(step for step in steps if step.get("name") == "Publish versioned release assets")
+    publish = next(step for step in steps if step.get("name") == "Publish release assets")
 
     assert '[[ "$asset" == *.sig ]] || release_assets+=("$asset")' in publish["run"]
     assert '"${release_assets[@]}"' in publish["run"]
@@ -264,8 +262,27 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     steps = {step.get("name"): step for step in job["steps"]}
     gate = steps["Check for desktop bundles"]
     assert gate["id"] == "gate"
+    assert gate["env"]["REPAIR_POINTER"] == "${{ inputs.repair_pointer }}"
+    # A repair dispatch must never be turned away by the state it exists to repair.
+    assert "[ \"$REPAIR_POINTER\" = 'true' ]" in gate["run"]
+    assert "grep -q '^Unsloth-Desktop-'" in gate["run"]
     # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
+    # Completeness is judged over the four public downloads, in whichever naming
+    # scheme the release was built with. tests/security/test_desktop_updater_pointer.py
+    # executes the classification; these only pin that all three steps share it.
+    for step_name in (
+        "Check for desktop bundles",
+        "Validate updater metadata",
+        "Mark published release as GitHub latest",
+    ):
+        run = steps[step_name]["run"]
+        for suffix in ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe"):
+            assert suffix in run, (step_name, suffix)
+        assert "Unsloth-Desktop" in run, step_name
+        # Every release published before the rename carries the version in each
+        # filename; refusing those would make the workflow unusable on all of them.
+        assert "version" in run, step_name
 
     for name in (
         "Download updater metadata",
@@ -310,8 +327,12 @@ def test_the_updater_workflow_is_manual_dispatch_only():
         assert "github.event" not in condition, condition
 
     # Dropping the release trigger is only safe while the pointer repair stays reachable.
-    carry = next(
-        step for step in job["steps"] if step.get("name") == "Carry desktop metadata forward"
+    restore = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Restore latest complete Desktop release"
     )
-    assert "inputs.repair_pointer" in carry["if"]
+    assert "inputs.repair_pointer" in restore["if"]
+    assert "gh release upload" not in restore["run"]
+    assert "-f make_latest=true" in restore["run"]
     assert triggers["workflow_dispatch"]["inputs"]["repair_pointer"]["default"] is False

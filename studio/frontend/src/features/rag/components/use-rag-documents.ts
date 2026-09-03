@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { consumeNativePathToken } from "@/features/native-intents";
+import {
+  consumeNativePathToken,
+  type NativeIntent,
+} from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -47,6 +50,17 @@ export type RagUploadItem =
 
 export function fileItems(files: FileList | File[]): RagUploadItem[] {
   return Array.from(files).map((file) => ({ kind: "file" as const, file }));
+}
+
+/** A registered desktop drop, addressed by path token rather than bytes. */
+export function uploadItemFromIntent(intent: NativeIntent): RagUploadItem {
+  return {
+    kind: "native",
+    token: intent.path.token,
+    name: intent.displayLabel,
+    sizeBytes: intent.path.sizeBytes,
+    modifiedMs: intent.path.modifiedMs,
+  };
 }
 
 function itemName(item: RagUploadItem): string {

@@ -13,7 +13,7 @@ for 3.
 Four workflows used to declare `push: branches: [main]` with no `paths:` filter while their
 `pull_request` trigger was carefully scoped. The effect was invisible on a PR and only
 appeared after merge: commit 6371f46a changes README.md and nothing else, and it started
-`Mac Studio GGUF CI`, `Mac Studio UI + API + Update CI`, `Mac Studio Install Matrix CI` and
+`Mac Unsloth GGUF CI`, `Mac Unsloth UI + API + Update CI`, `Mac Unsloth Install Matrix CI` and
 `Unsloth Tauri CI` -- seven macOS legs, 40% over the entire account cap, for a
 documentation typo. Every one of those runs then queued behind the others.
 
@@ -286,4 +286,66 @@ def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
     assert not triggered, (
         f"a README-only commit still starts macOS jobs: {triggered}. That was the "
         f"original symptom: seven macOS legs against a five-slot cap for a docs typo."
+    )
+
+
+# Images GitHub still schedules. macos-14 is absent deliberately: brownouts from
+# 2026-10-05, removal 2026-11-02. Add to this set when GitHub ships an image, and
+# remove from it when GitHub announces a retirement -- the removal is the point,
+# because that is when this guard starts naming the jobs that have to move.
+LIVE_MACOS_IMAGES = {
+    "macos-15",
+    "macos-15-intel",
+    "macos-26",
+    "macos-26-intel",
+    "macos-latest",
+}
+
+
+def _macos_labels():
+    """Every concrete macOS image any job can be scheduled onto, with its origin."""
+    found = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
+        if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
+            continue
+        for jid, job in doc["jobs"].items():
+            if not isinstance(job, dict):
+                continue
+            # runs-on plus the matrix it may select from: a retired image hides in
+            # an `include:` list just as easily as in a literal runs-on.
+            blob = str(job.get("runs-on", ""))
+            strategy = job.get("strategy") or {}
+            blob += str((strategy.get("matrix") or {}) if isinstance(strategy, dict) else "")
+            # Only things shaped like a GitHub image name. The loose MACOS pattern
+            # used elsewhere in this file also matches build targets that merely
+            # contain "macos" -- release-desktop's matrix carries `macos-aarch64`,
+            # which is a Rust triple's nickname and never a runner label. Every
+            # real macOS image is macos-latest or macos-<version>[-intel].
+            for label in re.findall(r"\bmacos-(?:latest|\d+(?:-intel)?)\b", blob, re.I):
+                found.append((path.name, jid, label.lower()))
+    return found
+
+
+def test_no_job_targets_a_retired_macos_image() -> None:
+    """
+    macos-14's retirement is already written into three comments in this repo, each
+    explaining why some job moved off it. Comments do not fail, so the next
+    retirement will be discovered the same way this one was: by a job that stops
+    being scheduled, on a runner pool nobody is watching.
+
+    This is the cheap version of that discovery. It cannot know GitHub's roadmap,
+    but it does force the retirement to be recorded in one place, and it names
+    every job that has to move on the day someone records it.
+    """
+    labels = _macos_labels()
+    assert labels, "no macOS labels found at all; this guard would pass vacuously"
+
+    retired = sorted(
+        f"{name}:{jid} -> {label}" for name, jid, label in labels if label not in LIVE_MACOS_IMAGES
+    )
+    assert not retired, (
+        f"these jobs target a macOS image not in LIVE_MACOS_IMAGES: {retired}. Either "
+        f"GitHub ships it and it belongs in the set, or it is retired and these jobs "
+        f"need moving before they stop being scheduled."
     )

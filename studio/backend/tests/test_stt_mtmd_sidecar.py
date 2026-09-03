@@ -224,6 +224,27 @@ def test_a_switch_to_a_missing_model_keeps_the_working_one(spawned, monkeypatch)
     sidecar.unload()
 
 
+def test_path_save_restarts_warm_mtmd_server(spawned, monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    made, _, _ = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar.load("qwen3-asr-0.6b")
+    monkeypatch.setattr(
+        llama_cpp_path_settings,
+        "_path_revision",
+        llama_cpp_path_settings.custom_llama_cpp_path_revision() + 1,
+    )
+
+    sidecar.load("qwen3-asr-0.6b")
+
+    assert len(made) == 2
+    assert made[0].poll() is not None
+    assert sidecar.loaded_model == "qwen3-asr-0.6b"
+    sidecar.unload()
+
+
 def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch):
     made, _, _ = spawned
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
@@ -1083,7 +1104,7 @@ def test_download_probe_is_memoised_then_dropped_when_a_download_ends(monkeypatc
 
 
 def test_download_probe_expires(monkeypatch):
-    """A cache emptied outside Studio is noticed without a restart."""
+    """A cache emptied outside Unsloth is noticed without a restart."""
     mtmd_mod._forget_downloaded_probe()
     monkeypatch.setattr(mtmd_mod, "_DOWNLOADED_PROBE_TTL_SECONDS", 0.0)
     calls = []

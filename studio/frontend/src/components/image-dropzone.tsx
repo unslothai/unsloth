@@ -116,7 +116,10 @@ export function ImageDropzone({
 
   if (value) {
     return (
-      <div className={cn("relative overflow-hidden rounded-[10px] border border-border", className)}>
+      <div
+        data-reload-snapshot-sensitive
+        className={cn("relative overflow-hidden rounded-[10px] border border-border", className)}
+      >
         <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
         <Tooltip>
           <TooltipTrigger asChild={true}>

@@ -66,6 +66,11 @@ PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
     ("notebooks-ci.yml", "api-introspect"),
+    # Installs a 709-line Colab pip-freeze, eight matrix legs at once, and each leg
+    # downloads the identical set. It is cron and dispatch only, so none of that is
+    # on a pull request's critical path -- but eight ubuntu runners holding a 25
+    # minute cap contend for the same pool every other job queues against.
+    ("notebooks-ci.yml", "smoke-install"),
     ("studio-backend-ci.yml", "pytest"),
     ("studio-backend-ci.yml", "repo-cpu-tests"),
     ("studio-export-capability-ci.yml", "capability"),
@@ -96,8 +101,8 @@ def _jobs():
                 yield name, jid, job
 
 
-def _or_alternatives(expr: str) -> list[str]:
-    """``expr`` split on its TOP-LEVEL ``||``, ignoring ``||`` inside parens or quotes."""
+def _split_top(expr: str, op: str) -> list[str]:
+    """``expr`` split on its TOP-LEVEL ``op``, ignoring occurrences in parens or quotes."""
     parts, depth, quote, buf, i = [], 0, "", [], 0
     while i < len(expr):
         ch = expr[i]
@@ -114,7 +119,7 @@ def _or_alternatives(expr: str) -> list[str]:
         elif ch == ")":
             depth -= 1
             buf.append(ch)
-        elif ch == "|" and depth == 0 and expr[i : i + 2] == "||":
+        elif depth == 0 and expr[i : i + 2] == op:
             parts.append("".join(buf))
             buf = []
             i += 2
@@ -126,27 +131,71 @@ def _or_alternatives(expr: str) -> list[str]:
     return parts
 
 
+def _balanced(expr: str) -> bool:
+    """Whether parentheses in ``expr`` are balanced outside quotes."""
+    depth, quote = 0, ""
+    for ch in expr:
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
 # A POSITIVE equality against main, in either quote style. `!=` must not match: an
 # expression restricting a save to everything EXCEPT main is the exact inversion of the
 # rule, and a substring search for "refs/heads/main" accepts it.
 _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
+# A whole leaf that is nothing but the equality, in either operand order.
+_LEAF_MAIN = re.compile(
+    r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
+)
 
 
 def _restricted_to_main(expr: str) -> bool:
     """Whether ``expr`` can only be true on ``refs/heads/main``.
 
-    Every alternative of a top-level `||` has to carry the main check, because `||` is how
-    a condition GAINS refs: `github.ref == 'refs/heads/main' || github.event_name ==
-    'pull_request'` mentions main and runs on every PR. Requiring the check in each
-    alternative is conservative -- it rejects some conditions that happen to be safe -- and
-    that is the right direction for a guard whose failure mode is a silently refilled cache.
+    Evaluated over the whole boolean structure. `||` is how a condition GAINS refs, so an
+    OR restricts only if EVERY branch restricts; `&&` narrows, so an AND restricts if ANY
+    branch does. Parentheses are descended into: splitting only the top level accepted
+    `always() && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')`,
+    which runs on every pull request. Anything negated is refused rather than reasoned
+    about, since `!(github.ref == 'refs/heads/main')` contains a positive main equality
+    and means its exact opposite.
 
-    Structural rather than a substring test because three shapes all contain the literal
-    "refs/heads/main" while permitting PR saves: a `!=` comparison, an `||` that admits
-    another event, and the check appearing only inside one branch of one.
+    Structural rather than a substring test because several shapes contain the literal
+    "refs/heads/main" while permitting PR saves, and the failure mode of this guard is a
+    silently refilled cache.
     """
-    alternatives = _or_alternatives(expr)
-    return bool(expr.strip()) and all(_MAIN_ONLY.search(a) for a in alternatives)
+    if not expr.strip():
+        return False
+
+    def restricted(part: str) -> bool:
+        part = part.strip()
+        while part.startswith("(") and part.endswith(")") and _balanced(part[1:-1]):
+            part = part[1:-1].strip()
+        ors = _split_top(part, "||")
+        if len(ors) > 1:
+            return all(restricted(p) for p in ors)
+        ands = _split_top(part, "&&")
+        if len(ands) > 1:
+            return any(restricted(p) for p in ands)
+        if re.search(r"!(?!=)", part):
+            return False
+        # The leaf must BE the equality, not contain it. Searching inside accepted
+        # every wrapper that quotes it and inverts it: `(...) == false`, `... != true`,
+        # and `startsWith(..., 'false')`, which is true off main because GitHub casts
+        # the inner boolean to a string. A whitelist ends the class.
+        return bool(_LEAF_MAIN.fullmatch(part))
+
+    return restricted(expr)
 
 
 @pytest.mark.parametrize(
@@ -168,6 +217,26 @@ def _restricted_to_main(expr: str) -> bool:
         # A `||` inside a string or parenthesised sub-expression is not a top-level split.
         ("github.ref == 'refs/heads/main' && contains(x, 'a||b')", True),
         ("", False),
+        # A `||` inside parens is still a `||`; splitting only the top level read this
+        # as one alternative carrying the main equality and accepted it.
+        (
+            "always() && (github.ref == 'refs/heads/main' "
+            "|| github.event_name == 'pull_request')",
+            False,
+        ),
+        # Contains a positive main equality and means its exact opposite.
+        ("!(github.ref == 'refs/heads/main')", False),
+        # Parenthesised but genuinely restricted, so the fix is not over-rejection.
+        ("(github.ref == 'refs/heads/main') && always()", True),
+        # Comparing the equality to a boolean inverts it while still containing it.
+        ("(github.ref == 'refs/heads/main') == false", False),
+        ("github.ref == 'refs/heads/main' != true", False),
+        # String functions cast the inner boolean, so these are true only OFF main.
+        ("startsWith(github.ref == 'refs/heads/main', 'false')", False),
+        ("contains(github.ref == 'refs/heads/main', 'false')", False),
+        # The reversed operand order is the same guard and stays accepted.
+        ("'refs/heads/main' == github.ref", True),
+        ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
     ],
 )
 def test_the_main_only_expression_check_reads_the_expression(expr, restricted):
@@ -192,14 +261,14 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
     offenders = []
     for name, steps in _composite_actions():
         for step in steps:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             if "actions/cache" not in uses or "/restore@" in uses:
                 continue
             if "refs/heads/main" not in str(step.get("if", "")):
-                offenders.append(f"action {name}: {step.get('name') or uses}")
+                offenders.append(f"action {name}: {step.get('name') or step.get('uses')}")
     for name, jid, job in _jobs():
         for step in job.get("steps") or []:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             # setup-python's `cache:` is a save too, and an invisible one: the action
             # registers a post-step (`post: dist/cache-save/index.js` in its own
             # action.yml) that runs after the job on whatever ref it ran on, with no
@@ -215,7 +284,7 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
             if not saves:
                 continue
             if not _restricted_to_main(str(step.get("if", ""))):
-                offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
+                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
     assert not offenders, (
         "these steps save a cache on whatever ref they run on, so every PR writes its own "
         "copy and evicts the copy on main that all PRs share:\n  " + "\n  ".join(offenders)
@@ -235,7 +304,7 @@ def test_no_job_uses_setup_pythons_built_in_pip_cache():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", "")) and (step.get("with") or {}).get("cache")
+        if "setup-python" in _uses(step) and (step.get("with") or {}).get("cache")
     ]
     assert not offenders, (
         f"these jobs use setup-python's built-in cache, which saves on every ref with no "
@@ -357,7 +426,7 @@ def test_the_pip_cache_save_action_is_gated_on_the_default_branch():
         (REPO / ".github" / "actions" / "pip-cache-save" / "action.yml").read_text(encoding = "utf-8")
     )
     steps = (doc.get("runs") or {}).get("steps") or []
-    saves = [s for s in steps if "actions/cache" in str(s.get("uses", ""))]
+    saves = [s for s in steps if "actions/cache" in _uses(s)]
     assert saves, "pip-cache-save no longer saves anything"
     for s in saves:
         cond = str(s.get("if", ""))
@@ -365,6 +434,35 @@ def test_the_pip_cache_save_action_is_gated_on_the_default_branch():
             "the pip cache save is no longer gated on the default branch, so all nine call "
             "sites went back to writing PR-scoped entries at once"
         )
+
+
+def test_the_pip_cache_key_carries_the_interpreter_minor_not_its_patch():
+    """
+    A key field more specific than anything the workflows request is pure churn.
+
+    No step in this repo pins a patch version: 53 ask for '3.12' and the one matrix
+    offers '3.11' and '3.13'. So the patch is whatever the hosted image ships that
+    week, and putting it in the key duplicates the ENTIRE cache each time GitHub
+    bumps it. Measured 2026-08-20: two entries alike in everything but 3.12.13 vs
+    3.12.14 held 10.85 and 11.21 GiB, 44% of the 50 GiB budget between them, with the
+    same pairing in 10 of the 12 pip entries.
+
+    Nothing goes red when that happens. The cache simply sits at 99% full and evicts
+    entries someone else was about to read, which is the failure this whole file is
+    about.
+    """
+    body = (REPO / ".github" / "actions" / "pip-cache-restore" / "action.yml").read_text(
+        encoding = "utf-8"
+    )
+    assert 'print("%d.%d" % sys.version_info[:2])' in body, (
+        "the pip cache key no longer derives the interpreter version as a minor. If it "
+        "went back to sys.version_info[:3], every runner-image patch bump silently "
+        "doubles the largest family in the cache."
+    )
+    assert "sys.version_info[:3]" not in body, (
+        "the pip cache key is back to the full patch version, which duplicated 22.06 "
+        "GiB across two otherwise identical entries the last time it was measured"
+    )
 
 
 def _workflows_by_name():
@@ -401,9 +499,9 @@ def test_the_cold_install_lanes_never_restore_a_cache():
         if name not in cold:
             continue
         for step in job.get("steps") or []:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             if "actions/cache" in uses:
-                offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
+                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
             if "setup-python" in uses and (step.get("with") or {}).get("cache"):
                 offenders.append(f"{name}:{jid}: setup-python cache on a cold-install lane")
     assert not offenders, "a cold-install lane must not be warmed by a cache:\n  " + "\n  ".join(
@@ -422,8 +520,7 @@ def test_every_setup_python_step_still_pins_an_interpreter():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", ""))
-        and not (step.get("with") or {}).get("python-version")
+        if "setup-python" in _uses(step) and not (step.get("with") or {}).get("python-version")
     ]
     assert not offenders, f"setup-python without an explicit python-version: {offenders}"
 
@@ -450,14 +547,14 @@ def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed(
             if s.get("id") and re.search(r"install|download|build|prime", str(s.get("run", "")))
         }
         for step in steps:
-            uses = str(step.get("uses", ""))
+            uses = _uses(step)
             if "actions/cache" not in uses or "/restore@" in uses:
                 continue
             cond = str(step.get("if", ""))
             if "always()" not in cond:
                 continue  # not force-run, so a failed producer already skips it
             if not any(f"steps.{pid}.outcome" in cond for pid in producers if pid):
-                offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
+                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
     assert not offenders, (
         "these cache saves run under always() without checking that the step which "
         "produced the payload succeeded, so a partial download can be stored under an "
@@ -489,7 +586,7 @@ def test_every_cache_key_path_resolves_where_the_job_checked_out():
         # rather than reported. A checkout with no `repository:` is this repo by definition.
         own_prefixes, foreign_prefixes = [], []
         for s in steps:
-            if "actions/checkout" not in str(s.get("uses", "")):
+            if "actions/checkout" not in _uses(s):
                 continue
             with_ = s.get("with") or {}
             prefix = str(with_.get("path") or "").strip("/")
@@ -550,7 +647,7 @@ def test_no_setup_python_step_declares_a_cache_path_without_a_cache():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", ""))
+        if "setup-python" in _uses(step)
         and (step.get("with") or {}).get("cache-dependency-path")
         and not (step.get("with") or {}).get("cache")
     ]
@@ -578,7 +675,7 @@ def test_local_action_references_use_the_nested_checkout_path():
         checkout_dirs = [
             str((s.get("with") or {}).get("path")).rstrip("/")
             for s in steps
-            if "actions/checkout" in str(s.get("uses", "")) and (s.get("with") or {}).get("path")
+            if "actions/checkout" in _uses(s) and (s.get("with") or {}).get("path")
         ]
         if not checkout_dirs:
             continue
@@ -589,5 +686,213 @@ def test_local_action_references_use_the_nested_checkout_path():
     assert not offenders, (
         "these local action references are workspace-root-relative in a job that checks "
         "the repo out into a subdirectory, so the runner cannot find the action:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+# --- Playwright browser caches -------------------------------------------------------
+#
+# The engines are ~470 MB each and four workflows download them, keyed by
+# `ms-playwright-<os>-<version>-<engine token>-<generation>`. test_ui_shard_engines.py
+# enforces the token against the SHARDS, so a chromium-only job cannot restore a
+# three-engine entry. What it cannot see is the other direction, ACROSS jobs: two jobs
+# installing the same engines under two keys. Nothing breaks, which is why it survived.
+# Measured 2026-09-01, four live entries holding two distinct payloads:
+#
+#     467 MiB  ms-playwright-Linux-1.62.0-cfw-v1     ui-indicator
+#     467 MiB  ms-playwright-Linux-1.62.0-cfw-v2     ui-smoke chat/banner   <- same bytes
+#     269 MiB  ms-playwright-Linux-1.62.0-c-v2       studio-frontend-ci
+#     269 MiB  ms-playwright-Linux-1.62.0-sbench-v1  studiobench            <- same bytes
+#
+# Both came from one mistake: a key rewritten in one call site and not its twin. #9283
+# moved ui-smoke to `-<engine_key>-v2` and left ui-indicator on `-cfw-v1` four hundred
+# lines below its last hunk; #9296 minted `-sbench-v1` three days after `-c-v2` already
+# meant "chromium on Linux". Each bought a second copy of identical bytes.
+#
+# Derived from the workflows, so a fifth consumer with a novel token fails HERE.
+
+_PW_EXPR = re.compile(r"\$\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
+# `install-deps` cannot match: `install` must be followed by whitespace.
+_PW_INSTALL = re.compile(r"playwright\s+install\s+([^\n|&;]+)")
+
+PW_ENGINES = ("chromium", "firefox", "webkit")
+
+
+def _uses(step):
+    """A step's `uses`, casefolded: GitHub resolves owner/repo case-insensitively.
+
+    `Actions/Cache/Save@v6` is the same action, so a case-sensitive match let a writer
+    skip these guards. The ref after `@` is case-sensitive but nothing here matches on
+    it, and local `./.github/actions/...` paths are compared raw.
+    """
+    return str(step.get("uses", "")).casefold()
+
+
+def _matrix_rows(job) -> list[dict]:
+    """One substitution map per job the matrix can actually produce.
+
+    The base lists are expanded, not just `include`. `ui-smoke` declares its shards in a
+    base `shard: [chat, extra, banner, picker]` and uses `include` only to attach
+    `engines`/`engine_key` to each, so reading `include` alone happens to give the right
+    four rows today -- and would silently skip a shard added to the base list without a
+    matching include entry, which GitHub still runs, with those fields empty. The empty
+    engine set then trips the assertion in the caller, which is the point.
+
+    GitHub's own order: expand the base lists, apply `exclude`, then apply `include`.
+    An include merges into a combination when it overwrites none of that combination's
+    original values, so one that names no base key at all merges into EVERY row rather
+    than becoming a row of its own. An include that fits nowhere adds a row.
+    """
+    matrix = (job.get("strategy") or {}).get("matrix") or {}
+    if not isinstance(matrix, dict):
+        return [{}]
+    include = [r for r in (matrix.get("include") or []) if isinstance(r, dict)]
+    exclude = [r for r in (matrix.get("exclude") or []) if isinstance(r, dict)]
+    base_keys = [
+        k for k, v in matrix.items() if k not in ("include", "exclude") and isinstance(v, list)
+    ]
+
+    combos = [{}]
+    for k in base_keys:
+        combos = [{**c, k: v} for c in combos for v in matrix[k]]
+
+    # Exclude first, and it is processed before include, so include can add a
+    # combination back. A partial exclude drops every row agreeing on the keys it names.
+    def excluded(combo):
+        return any(all(str(combo.get(k)) == str(v) for k, v in ex.items()) for ex in exclude)
+
+    combos = [c for c in combos if not excluded(c)]
+
+    rows, matched = [], set()
+    for combo in combos:
+        row = dict(combo)
+        for i, inc in enumerate(include):
+            # Mergeable when it overwrites nothing original. Keys outside the base
+            # matrix are additions and never block; requiring a shared key instead
+            # dropped a metadata-only include out of every row and into a phantom one.
+            if all(str(inc[k]) == str(combo[k]) for k in set(inc) & set(combo)):
+                row.update(inc)
+                matched.add(i)
+        rows.append(row)
+    rows += [inc for i, inc in enumerate(include) if i not in matched]
+    if not rows:
+        return [{}]
+    return [{f"matrix.{k}": str(v) for k, v in row.items()} for row in rows]
+
+
+def _resolve(text: str, row: dict) -> str:
+    """Substitute this row's `matrix.*` values, leaving every other expression intact.
+
+    `runner.os` and `steps.pw.outputs.version` stay unresolved on purpose: they are
+    identical across these jobs, so leaving them literal makes two keys comparable as
+    strings without pretending to know what the runner will produce.
+    """
+    return _PW_EXPR.sub(lambda m: row.get(m.group(1), m.group(0)), text)
+
+
+_PRIMARY_KEY = re.compile(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.cache-primary-key\s*\}\}")
+
+
+def _forwarded_key(key: str, steps: list, row: dict) -> str:
+    """Resolve `steps.<id>.outputs.cache-primary-key` to the key that step restored.
+
+    `actions/cache/restore` re-exports the key it was given under that output, and a save
+    commonly forwards it instead of respelling the string. Comparing the literal would
+    make a forwarding save look like a different key from its own restore -- and matching
+    on the key text alone made the save invisible to this file entirely, so a save later
+    pointed at an unrelated cache step's key would not have been noticed.
+    """
+    m = _PRIMARY_KEY.fullmatch(key.strip())
+    if not m:
+        return key
+    for step in steps:
+        if step.get("id") == m.group(1):
+            return _resolve(str((step.get("with") or {}).get("key", "")), row)
+    return key
+
+
+def _playwright_jobs():
+    """(label, engines, restore_keys, save_keys) for every job that caches the engines."""
+    for name, jid, job in _jobs():
+        steps = job.get("steps") or []
+        installs = [
+            m.group(1) for step in steps for m in _PW_INSTALL.finditer(str(step.get("run", "")))
+        ]
+        cache_steps = [
+            step
+            for step in steps
+            if "actions/cache" in _uses(step)
+            and "ms-playwright" in str((step.get("with") or {}).get("path", ""))
+        ]
+        if not cache_steps:
+            continue
+        for row in _matrix_rows(job):
+            engines = {
+                word
+                for spec in installs
+                for word in _resolve(spec, row).split()
+                if word in PW_ENGINES
+            }
+            restore, save = [], []
+            for step in cache_steps:
+                key = _resolve(str((step.get("with") or {}).get("key", "")), row)
+                key = _forwarded_key(key, steps, row)
+                # actions/cache folds the path into the entry version, so two steps
+                # sharing a key but not a path address DIFFERENT caches; comparing keys
+                # alone would call such a pair aligned while every run re-downloaded.
+                ident = (key, _resolve(str((step.get("with") or {}).get("path", "")), row))
+                (restore if "/restore@" in str(step["uses"]) else save).append(ident)
+            shard = row.get("matrix.shard") or row.get("matrix.engine_key")
+            label = f"{name}:{jid}" + (f"[{shard}]" if shard else "")
+            yield label, frozenset(engines), restore, save
+
+
+def test_playwright_caches_key_the_same_engines_the_same_way():
+    """One engine set, one key -- in both directions.
+
+    A key naming engines it does not hold is the dangerous direction and is already
+    covered per-shard. This is the wasteful one: two keys holding the same engines means
+    a second copy of the same bytes and a download nobody needed to pay for twice.
+    """
+    by_engines, by_key = {}, {}
+    for label, engines, restore, save in _playwright_jobs():
+        assert engines, (
+            f"{label} caches ~/.cache/ms-playwright but no step names an engine to "
+            f"install, so this guard cannot tell what the entry holds"
+        )
+        for key in restore + save:
+            by_engines.setdefault(engines, {}).setdefault(key, []).append(label)
+            by_key.setdefault(key, {}).setdefault(engines, []).append(label)
+
+    split = {
+        " ".join(sorted(engines)): {f"{k} @ {pth}": sorted(set(v)) for (k, pth), v in keys.items()}
+        for engines, keys in by_engines.items()
+        if len(keys) > 1
+    }
+    assert not split, (
+        "these engine sets are cached under more than one key, so each extra key is a "
+        f"duplicate copy of the same browsers: {split}"
+    )
+
+    shared = {
+        f"{key} @ {pth}": {" ".join(sorted(e)): sorted(set(v)) for e, v in engines.items()}
+        for (key, pth), engines in by_key.items()
+        if len(engines) > 1
+    }
+    assert not shared, (
+        "these keys are used for more than one engine set, so a job can restore a hit "
+        f"that is missing an engine it will try to launch: {shared}"
+    )
+
+
+def test_every_playwright_cache_saves_under_the_key_it_restored():
+    """A save that drifts from its restore refills a key nothing reads, forever."""
+    offenders = [
+        f"{label}: restores {sorted(set(restore))}, saves {sorted(set(save))}"
+        for label, _engines, restore, save in _playwright_jobs()
+        if save and sorted(set(restore)) != sorted(set(save))
+    ]  # identities are (key, path); a save matching on only one of the two is drift
+    assert not offenders, (
+        "these jobs save the Playwright engines under a key they did not restore:\n  "
         + "\n  ".join(offenders)
     )

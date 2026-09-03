@@ -107,6 +107,7 @@ def _req(**kw):
         mcp_enabled = None,
         tool_choice = None,
         tools = None,
+        response_format = None,
         messages = [_msg()],
         model_extra = {},
     )
@@ -142,7 +143,7 @@ class TestRequestStatesToolIntent:
     def test_response_format_is_a_contract(self):
         # The tool loop would break structured output; the GGUF passthrough
         # already exempts these requests from the policy.
-        payload = _req(model_extra = {"response_format": {"type": "json_object"}})
+        payload = _req(response_format = {"type": "json_object"})
         assert _request_states_tool_intent(payload) is True
 
     def test_empty_tools_reads_as_omitted(self):
@@ -191,7 +192,7 @@ class TestSafetensorsGateHonorsStatedIntent:
 
     def test_response_format_keeps_structured_output(self):
         set_tool_policy_default(True)
-        payload = _req(model_extra = {"response_format": {"type": "json_object"}})
+        payload = _req(response_format = {"type": "json_object"})
         assert _sf_tools_on(payload) is False
 
     def test_explicit_ask_still_claims_a_catalog(self):

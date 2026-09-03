@@ -3,9 +3,12 @@
 
 import asyncio
 import importlib.util
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 
 def _seed_route_source() -> str:
@@ -221,6 +224,70 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     # Another block starts with its own untouched budget.
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
+
+
+# A desktop drop names a local file of any size, so the cap has to be enforced
+# on its stat. Reading first let a multi-gigabyte drop into backend memory
+# before the 413 (#9036).
+def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    huge = tmp_path / "corpus.txt"
+    huge.write_bytes(b"x" * 64)
+
+    reads: list[str] = []
+    real_open = Path.open
+
+    def tracking_open(self, *args, **kwargs):
+        reads.append(self.name)
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES", 32)
+    monkeypatch.setattr(
+        seed_route,
+        "verify_native_path_lease",
+        lambda *a, **k: SimpleNamespace(canonical_path = huge),
+        raising = False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.native_path_leases",
+        SimpleNamespace(
+            NativePathLeaseError = RuntimeError,
+            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = huge),
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
+        )
+    assert excinfo.value.status_code == 413
+    assert reads == [], "the file was opened before the size check"
+
+
+# The block's remaining budget bounds the read too, so a file that grew between
+# the stat and the read cannot slip past it.
+def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    dropped = tmp_path / "notes.txt"
+    dropped.write_bytes(b"y" * 64)
+
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES", 16)
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.native_path_leases",
+        SimpleNamespace(
+            NativePathLeaseError = RuntimeError,
+            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = dropped),
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
+        )
+    assert excinfo.value.status_code == 413
 
 
 class _BlockPlugin:

@@ -1,5 +1,5 @@
 use crate::diagnostics::{self, BackendLog, DiagnosticsState};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use process_wrap::std::*;
 use regex::Regex;
 use std::collections::VecDeque;
@@ -12,30 +12,336 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
-// An AppImage can be launched from an activated Python environment. Keep the
-// host library path the thin bundle needs, but do not let PYTHONHOME/PYTHONPATH
-// shadow the managed Studio environment.
+// Where the AppRun parks the host LD_LIBRARY_PATH it must keep away from the bundle.
+#[cfg(target_os = "linux")]
+const APPIMAGE_HOST_LIBRARY_PATH: &str = "UNSLOTH_HOST_LD_LIBRARY_PATH";
+
+// Keep AppImage GUI paths and Python overrides out of managed host Python.
+#[cfg(target_os = "linux")]
+fn scrub_appimage_library_path() -> Option<std::ffi::OsString> {
+    let appdir = std::env::var_os("APPDIR")?;
+    let library_path = std::env::var_os("LD_LIBRARY_PATH")
+        .or_else(|| std::env::var_os(APPIMAGE_HOST_LIBRARY_PATH))?;
+    let host_paths: Vec<_> = std::env::split_paths(&library_path)
+        .filter(|path| !path.starts_with(&appdir))
+        .collect();
+    if host_paths.is_empty() {
+        None
+    } else {
+        std::env::join_paths(host_paths).ok()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_scrubbed_appimage_library_path(cmd: &mut Command) {
+    cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
+    match scrub_appimage_library_path() {
+        Some(library_path) => {
+            cmd.env("LD_LIBRARY_PATH", library_path);
+        }
+        None => {
+            cmd.env_remove("LD_LIBRARY_PATH");
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        apply_scrubbed_appimage_library_path(cmd);
+
+        if let Some(path) = appdir_entries_demoted("PATH") {
+            cmd.env("PATH", path);
+        }
+        for name in APPIMAGE_GUI_ONLY_VARS {
+            cmd.env_remove(name);
+        }
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
     }
 }
 
+// Restore a host-safe environment before launching browsers and file managers.
+#[cfg(target_os = "linux")]
+const APPIMAGE_GUI_ONLY_VARS: &[&str] = &[
+    "FONTCONFIG_FILE",
+    "GIO_MODULE_DIR",
+    "GIO_EXTRA_MODULES",
+    "GTK_PATH",
+    "GTK_EXE_PREFIX",
+    "GTK_DATA_PREFIX",
+    "GTK_IM_MODULE_FILE",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GSETTINGS_SCHEMA_DIR",
+    "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "GST_PLUGIN_PATH",
+    "GST_PLUGIN_PATH_1_0",
+    "GST_PLUGIN_SCANNER",
+    "GST_PLUGIN_SCANNER_1_0",
+    "GST_PTP_HELPER_1_0",
+    "GST_REGISTRY_REUSE_PLUGIN_SCANNER",
+    "QT_PLUGIN_PATH",
+    "PERLLIB",
+];
+
+#[cfg(target_os = "linux")]
+fn appdir_entries_demoted(name: &str) -> Option<std::ffi::OsString> {
+    let appdir = std::env::var_os("APPDIR")?;
+    let value = std::env::var_os(name)?;
+    let (bundled, host): (Vec<_>, Vec<_>) =
+        std::env::split_paths(&value).partition(|path| path.starts_with(&appdir));
+    if bundled.is_empty() {
+        return None;
+    }
+    std::env::join_paths(host.into_iter().chain(bundled)).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn scrub_appimage_launcher_env(cmd: &mut Command) {
+    if std::env::var_os("APPIMAGE").is_none() {
+        return;
+    }
+    apply_scrubbed_appimage_library_path(cmd);
+    if let Some(path) = appdir_entries_demoted("PATH") {
+        cmd.env("PATH", path);
+    }
+    for name in APPIMAGE_GUI_ONLY_VARS {
+        cmd.env_remove(name);
+    }
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+}
+
+/// Open a target detached with a host-safe environment.
+#[cfg(target_os = "linux")]
+pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    let mut last_error = None;
+    for mut cmd in open::commands(target.as_ref()) {
+        scrub_appimage_launcher_env(&mut cmd);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        // The same double fork plus setsid the `open` crate uses, so the
+        // launcher outlives us; waiting reaps the intermediate child.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                match libc::fork() {
+                    -1 => return Err(std::io::Error::last_os_error()),
+                    0 => (),
+                    _ => libc::_exit(0),
+                }
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let _ = child.wait();
+                return Ok(());
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("no launcher is available")))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    open::that_detached(target)
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
+        match scrub_appimage_library_path() {
+            Some(library_path) => {
+                cmd.env("LD_LIBRARY_PATH", library_path);
+            }
+            None => {
+                cmd.env_remove("LD_LIBRARY_PATH");
+            }
+        }
+        if let Some(path) = appdir_entries_demoted("PATH") {
+            cmd.env("PATH", path);
+        }
+        for name in APPIMAGE_GUI_ONLY_VARS {
+            cmd.env_remove(name);
+        }
+
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod appimage_environment_tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn appimage_isolated_path() -> &'static OsStr {
+        OsStr::new("/tmp/.mount_Unsloth/usr/lib")
+    }
+
+    fn env_contains_name(env: &str, name: &str) -> bool {
+        let prefix = format!("{name}=");
+        env.lines().any(|line| line.starts_with(&prefix))
+    }
+
+    #[test]
+    fn std_managed_child_drops_appimage_gui_and_python_paths() {
+        let _guard = env_lock();
+        let old_appimage = std::env::var_os("APPIMAGE");
+        let old_appdir = std::env::var_os("APPDIR");
+        let old_library_path = std::env::var_os("LD_LIBRARY_PATH");
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_Unsloth/usr/lib:/opt/cuda/lib64:/private/runtime",
+        );
+        std::env::set_var("PATH", "/tmp/.mount_Unsloth/usr/bin:/usr/bin:/bin");
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("PYTHONHOME", "/activated/python")
+            .env("PYTHONPATH", "/activated/modules");
+        for name in APPIMAGE_GUI_ONLY_VARS {
+            cmd.env(name, format!("/tmp/.mount_Unsloth/gui-runtime/{name}"));
+        }
+        scrub_appimage_python_env(&mut cmd);
+        let output = cmd.output().expect("run isolated child");
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64:/private/runtime"));
+        // The bundled xdg-utils must not shadow the host copies for a child
+        // that reaches the desktop, but they stay available as a fallback.
+        assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
+        assert!(!env.contains(appimage_isolated_path().to_string_lossy().as_ref()));
+        assert!(!env.contains("PYTHONHOME="));
+        assert!(!env.contains("PYTHONPATH="));
+        for name in APPIMAGE_GUI_ONLY_VARS {
+            assert!(
+                !env_contains_name(&env, name),
+                "managed AppImage child inherited {name}: {env}"
+            );
+        }
+        for (key, old_value) in [
+            ("APPIMAGE", old_appimage),
+            ("APPDIR", old_appdir),
+            ("LD_LIBRARY_PATH", old_library_path),
+            ("PATH", old_path),
+        ] {
+            match old_value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    fn managed_child_recovers_the_library_path_the_apprun_parked() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", APPIMAGE_HOST_LIBRARY_PATH]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        // The AppRun cleared it so the host copies could not outrank the bundle.
+        std::env::remove_var("LD_LIBRARY_PATH");
+        std::env::set_var(
+            APPIMAGE_HOST_LIBRARY_PATH,
+            "/tmp/.mount_Unsloth/usr/lib:/opt/rocm/lib",
+        );
+        let mut cmd = Command::new("/usr/bin/env");
+        scrub_appimage_python_env(&mut cmd);
+        let output = cmd.output().expect("run managed child");
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(env.lines().any(|line| line == "LD_LIBRARY_PATH=/opt/rocm/lib"), "{env}");
+        assert!(!env_contains_name(&env, APPIMAGE_HOST_LIBRARY_PATH), "{env}");
+        for (key, value) in old {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    fn native_package_child_keeps_caller_environment() {
+        let _guard = env_lock();
+        let old_appimage = std::env::var_os("APPIMAGE");
+        std::env::remove_var("APPIMAGE");
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("LD_LIBRARY_PATH", appimage_isolated_path())
+            .env("PYTHONHOME", "/activated/python")
+            .env("PYTHONPATH", "/activated/modules");
+        for name in APPIMAGE_GUI_ONLY_VARS {
+            cmd.env(name, format!("/native/gui-runtime/{name}"));
+        }
+        scrub_appimage_python_env(&mut cmd);
+        let output = cmd.output().expect("run native-package child");
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(env.contains("LD_LIBRARY_PATH=/tmp/.mount_Unsloth/usr/lib"));
+        assert!(env.contains("PYTHONHOME=/activated/python"));
+        assert!(env.contains("PYTHONPATH=/activated/modules"));
+        for name in APPIMAGE_GUI_ONLY_VARS {
+            assert!(
+                env_contains_name(&env, name),
+                "native-package child unexpectedly lost {name}: {env}"
+            );
+        }
+        if let Some(value) = old_appimage {
+            std::env::set_var("APPIMAGE", value);
+        }
+    }
+
+    #[test]
+    fn host_launcher_child_keeps_the_bundle_off_the_host_runtime() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", "PATH"]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        std::env::set_var(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_Unsloth/usr/lib:/opt/cuda/lib64",
+        );
+        std::env::set_var("PATH", "/tmp/.mount_Unsloth/usr/bin:/usr/bin:/bin");
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("FONTCONFIG_FILE", "/tmp/.mount_Unsloth/usr/etc/fonts/fonts.conf")
+            .env("GTK_PATH", "/tmp/.mount_Unsloth/usr/lib/gtk-3.0")
+            .env("QT_PLUGIN_PATH", "/tmp/.mount_Unsloth/usr/lib/qt5/plugins")
+            .env("PYTHONPATH", "/tmp/.mount_Unsloth/usr/share/pyshared");
+        scrub_appimage_launcher_env(&mut cmd);
+        let output = cmd.output().expect("run host launcher");
+        let env = String::from_utf8(output.stdout).unwrap();
+        // The host's own GLib binaries must win, and the bundled tools stay last.
+        assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64"));
+        assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
+        assert!(!env.contains("FONTCONFIG_FILE="));
+        assert!(!env.contains("GTK_PATH="));
+        assert!(!env.contains("QT_PLUGIN_PATH="));
+        assert!(!env.contains("PYTHONPATH="));
+        for (key, value) in old {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 }
 
 #[cfg(windows)]
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
-#[cfg(windows)]
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
 #[derive(Debug)]
@@ -49,6 +355,23 @@ impl Drop for StudioManagedRuntimeLaunchGuard {
         unsafe {
             let _ = windows_sys::Win32::System::Threading::ReleaseMutex(self.handle);
             let _ = windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct StudioManagedRuntimeLaunchGuard {
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for StudioManagedRuntimeLaunchGuard {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }
     }
 }
@@ -67,7 +390,7 @@ fn acquire_named_studio_runtime_launch_guard(
     };
     if handle.is_null() {
         return Err(format!(
-            "Could not create the Studio runtime lock: {}",
+            "Could not create the Unsloth runtime lock: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -90,7 +413,7 @@ fn acquire_named_studio_runtime_launch_guard(
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
             Err(format!(
-                "Could not acquire the Studio runtime lock: {error}"
+                "Could not acquire the Unsloth runtime lock: {error}"
             ))
         }
     }
@@ -112,7 +435,7 @@ fn current_windows_user_sid() -> Result<String, String> {
     let mut token = std::ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(format!(
-            "Could not open the Windows user token for the Studio runtime lock: {}",
+            "Could not open the Windows user token for the Unsloth runtime lock: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -124,7 +447,7 @@ fn current_windows_user_sid() -> Result<String, String> {
         }
         if required == 0 {
             return Err(format!(
-                "Could not size the Windows user SID for the Studio runtime lock: {}",
+                "Could not size the Windows user SID for the Unsloth runtime lock: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -142,7 +465,7 @@ fn current_windows_user_sid() -> Result<String, String> {
         } == 0
         {
             return Err(format!(
-                "Could not read the Windows user SID for the Studio runtime lock: {}",
+                "Could not read the Windows user SID for the Unsloth runtime lock: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -150,14 +473,14 @@ fn current_windows_user_sid() -> Result<String, String> {
         let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
         let sid = token_user.User.Sid;
         if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
-            return Err("Windows returned an invalid user SID for the Studio runtime lock".into());
+            return Err("Windows returned an invalid user SID for the Unsloth runtime lock".into());
         }
 
         let authority_ptr = unsafe { GetSidIdentifierAuthority(sid) };
         let count_ptr = unsafe { GetSidSubAuthorityCount(sid) };
         if authority_ptr.is_null() || count_ptr.is_null() {
             return Err(
-                "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                "Could not inspect the Windows user SID for the Unsloth runtime lock".into(),
             );
         }
         let authority = unsafe { (*authority_ptr).Value }
@@ -170,7 +493,7 @@ fn current_windows_user_sid() -> Result<String, String> {
             let sub_authority = unsafe { GetSidSubAuthority(sid, index) };
             if sub_authority.is_null() {
                 return Err(
-                    "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                    "Could not inspect the Windows user SID for the Unsloth runtime lock".into(),
                 );
             }
             sid_text.push_str(&format!("-{}", unsafe { *sub_authority }));
@@ -190,11 +513,41 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
     acquire_named_studio_runtime_launch_guard(&name)
 }
 
-/// Serialize creation of managed-environment children with install/repair.
-///
-/// The guard ends when the sync operation returns. The installer takes the same
-/// mutex then scans for managed processes, so holding it through child creation
-/// closes the race without carrying a thread-owned Win32 mutex across an await.
+#[cfg(unix)]
+fn acquire_file_studio_runtime_launch_guard(
+    home: &std::path::Path,
+) -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    use std::os::fd::AsRawFd;
+
+    std::fs::create_dir_all(home)
+        .map_err(|error| format!("Could not create the Studio runtime lock directory: {error}"))?;
+    let path = home.join(".studio-runtime.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|error| format!("Could not open the Studio runtime lock: {error}"))?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(StudioManagedRuntimeLaunchGuard { file });
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return Err(
+            "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
+                .to_string(),
+        );
+    }
+    Err(format!("Could not acquire the Studio runtime lock: {error}"))
+}
+
+#[cfg(unix)]
+fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    acquire_file_studio_runtime_launch_guard(&crate::diagnostics::studio_dir())
+}
+
+/// serialize managed-environment child creation with install and repair.
 #[cfg(windows)]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,
@@ -212,14 +565,44 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
         let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
         return with_named_studio_runtime_launch_guard(&name, operation);
     }
-    #[cfg(not(windows))]
-    operation()
+    #[cfg(unix)]
+    {
+        let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
+        return operation();
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        operation()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod posix_studio_runtime_launch_guard_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_a_second_launcher_until_the_first_releases_the_file_lock() {
+        let home = tempfile::tempdir().unwrap();
+        let first = acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+        let path = home.path().to_path_buf();
+        let error = std::thread::spawn(move || {
+            acquire_file_studio_runtime_launch_guard(&path)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        assert!(error.contains("installation is modifying"));
+
+        drop(first);
+        acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+    }
 }
 
 #[cfg(windows)]
 fn normalized_existing_windows_path(path: &std::path::Path) -> Result<String, String> {
     let resolved = std::fs::canonicalize(path)
-        .map_err(|error| format!("Could not resolve managed Studio path {:?}: {error}", path))?;
+        .map_err(|error| format!("Could not resolve managed Unsloth path {:?}: {error}", path))?;
     Ok(resolved
         .to_string_lossy()
         .trim_end_matches(['\\', '/'])
@@ -231,15 +614,15 @@ fn windows_ordinal_ignore_case_equal(left: &[u16], right: &[u16]) -> Result<bool
     use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
 
     let left_length = i32::try_from(left.len())
-        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+        .map_err(|_| "Normalized Unsloth path exceeds Win32 comparison limits".to_string())?;
     let right_length = i32::try_from(right.len())
-        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+        .map_err(|_| "Normalized Unsloth path exceeds Win32 comparison limits".to_string())?;
     let comparison = unsafe {
         CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
     };
     if comparison == 0 {
         return Err(format!(
-            "Could not compare normalized Studio paths: {}",
+            "Could not compare normalized Unsloth paths: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -302,7 +685,7 @@ fn process_image_path(process_id: u32) -> Option<std::path::PathBuf> {
 }
 
 /// Reject an update when a process image runs from the target venv or the exact
-/// supported Studio shim.
+/// supported Unsloth shim.
 ///
 /// Callers must hold the runtime launch mutex across the whole mutation: this
 /// scan finds older consumers, and the gate blocks new launches after it.
@@ -330,13 +713,13 @@ pub(crate) fn ensure_managed_environment_is_idle(
             .and_then(std::path::Path::parent)
             .ok_or_else(|| {
                 format!(
-                    "Could not determine the managed Studio environment for {:?}",
+                    "Could not determine the managed Unsloth environment for {:?}",
                     managed_binary
                 )
             })?;
         let studio_home = venv.parent().ok_or_else(|| {
             format!(
-                "Could not determine the managed Studio root for {:?}",
+                "Could not determine the managed Unsloth root for {:?}",
                 managed_binary
             )
         })?;
@@ -350,7 +733,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(format!(
-                "Could not inspect running processes before Studio update: {}",
+                "Could not inspect running processes before Unsloth update: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -367,7 +750,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                     return Ok(());
                 }
                 return Err(format!(
-                    "Could not enumerate running processes before Studio update: {}",
+                    "Could not enumerate running processes before Unsloth update: {}",
                     std::io::Error::from_raw_os_error(error as i32)
                 ));
             }
@@ -388,7 +771,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                                 .unwrap_or(entry.szExeFile.len());
                             let name = String::from_utf16_lossy(&entry.szExeFile[..name_length]);
                             return Err(format!(
-                                "The managed Studio environment is in use by {} (PID {}). Stop that process, then retry the update.",
+                                "The managed Unsloth environment is in use by {} (PID {}). Stop that process, then retry the update.",
                                 name, entry.th32ProcessID
                             ));
                         }
@@ -402,7 +785,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                         break;
                     }
                     return Err(format!(
-                        "Could not finish enumerating running processes before Studio update: {}",
+                        "Could not finish enumerating running processes before Unsloth update: {}",
                         std::io::Error::from_raw_os_error(error as i32)
                     ));
                 }
@@ -498,7 +881,7 @@ mod studio_runtime_launch_guard_tests {
         with_named_studio_runtime_launch_guard(&name, || Ok(())).unwrap();
     }
 
-    // Since issue #8490 the long-lived Studio image is Scripts\python.exe, not
+    // Since issue #8490 the long-lived Unsloth image is Scripts\python.exe, not
     // Scripts\unsloth.exe. ensure_managed_environment_is_idle matches by venv
     // root, so both must still register as "the environment is in use" -- a
     // miss here would let an update mutate a venv somebody is running.
@@ -548,7 +931,7 @@ mod studio_runtime_launch_guard_tests {
         let managed_binary = target_root.join("Scripts").join("unsloth.exe");
 
         let error = ensure_managed_environment_is_idle(&managed_binary).unwrap_err();
-        assert!(error.contains("managed Studio environment is in use"));
+        assert!(error.contains("managed Unsloth environment is in use"));
     }
 
     #[test]
@@ -909,6 +1292,64 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
+/// Longest single line we will hand to `tauri.log`. Matches the phase log's own cap, which
+/// already trimmed these; without it the same line was capped on one sink and not the other.
+pub(crate) const MAX_BACKEND_LOG_LINE_BYTES: usize = 16 * 1024;
+
+/// Keep only the last frame of a carriage-return progress redraw.
+///
+/// We read to `\n`, so a tqdm or pip bar arrives as every frame it ever drew concatenated
+/// into one line, across three sinks: one "Loading weights" bar measured 5086 bytes. Only
+/// the final frame carries information. Text with no interior `\r` is returned untouched,
+/// and a bar whose last frame is empty keeps the last non-empty one rather than a blank line.
+///
+/// `_TeeStream._last_frame` in studio/backend/run.py applies this same rule to this same
+/// input for the session log, so the two sinks stay interchangeable for a reader.
+pub(crate) fn collapse_progress_frames(text: &str) -> &str {
+    if !text.contains('\r') {
+        return text;
+    }
+    text.rsplit('\r')
+        .find(|frame| !frame.trim().is_empty())
+        // All frames blank, so the line is blank. Return a frame, not the whole text, which
+        // still holds the `\r` we were asked to collapse away.
+        .unwrap_or_else(|| text.rsplit('\r').next().unwrap_or(""))
+}
+
+/// True when the line is one of the backend's own structured access-log records **and it
+/// reports success**.
+///
+/// These already reach the phase log (stream-tagged and stamped) and the backend's own
+/// session log, so a third copy in `tauri.log` was pure duplication: 4056 of 5308 lines on
+/// an idle 4h session, pushing real failures out of the 5 MiB window inside a day.
+///
+/// The 2xx check is the point. The backend's heartbeat suppressor exempts non-2xx so a
+/// failing poll logs every time, and `tauri.log` is where a watchdog going red gets read.
+/// A record with no `status_code` we cannot vouch for, so it keeps INFO too.
+///
+/// For the records this *does* match, "debug" means dropped, not demoted: `setup_logging`
+/// in main.rs builds every logger at `LevelFilter::Info` with no `RUST_LOG` to raise it,
+/// so `log::max_level()` is `Info` -- including under backend `--verbose`, which emits
+/// *more* of them. Deliberate: `append_phase_line` below runs before this decision, and
+/// both that log and the session log are already offered by the support report and by
+/// Settings > Logs. Nothing is lost; it moves one source over in the picker.
+fn is_backend_access_log_line(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return false;
+    };
+    if value.get("event").and_then(|event| event.as_str()) != Some("request_completed") {
+        return false;
+    }
+    matches!(
+        value.get("status_code").and_then(|code| code.as_u64()),
+        Some(200..=299)
+    )
+}
+
 /// Windows `CREATE_NO_WINDOW` flag — suppresses console windows for child processes.
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -979,7 +1420,9 @@ fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> boo
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
-fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn find_unsloth_binary_in_studio_dir(
+    studio: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     // New layout (upstream scripts >= March 2026)
     let new_base = studio.join("unsloth_studio");
     // Old layout (bundled scripts, older upstream)
@@ -1334,8 +1777,9 @@ fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf])
 /// so a late-mounting profile recovers, and never falls back to a temp dir.
 pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     let windirs = windows_roots();
+    let appdir = std::env::var_os("APPDIR").map(std::path::PathBuf::from);
     if let Ok(cwd) = std::env::current_dir() {
-        if !is_unusable_cwd(&cwd, &windirs) {
+        if !is_unusable_cwd(&cwd, &windirs, appdir.as_deref()) {
             return Ok(cwd);
         }
     }
@@ -1345,7 +1789,16 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
 /// The directories the CLI guard refuses to run from, and only those. The rest of
 /// the Windows tree still disqualifies a *home*, but a child already running from
 /// C:\Windows\Temp keeps doing so: the guard allowed that before this change.
-fn is_unusable_cwd(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bool {
+///
+/// Managed children must not inherit the AppImage's read-only `$APPDIR/usr` directory.
+fn is_unusable_cwd(
+    path: &std::path::Path,
+    windirs: &[std::path::PathBuf],
+    appdir: Option<&std::path::Path>,
+) -> bool {
+    if appdir.is_some_and(|appdir| path.starts_with(appdir)) {
+        return true;
+    }
     windirs.iter().any(|windir| {
         ["System32", "SysWOW64"]
             .iter()
@@ -1446,7 +1899,7 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
-    // uv reads this as written and Studio treats a non-blank value as
+    // uv reads this as written and Unsloth treats a non-blank value as
     // authoritative, so an update would install from a different cache.
     "UV_CACHE_DIR",
     "TRANSFORMERS_CACHE",
@@ -1588,7 +2041,7 @@ const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE", "MLX_IBV_DEVICES"];
 
 /// Names whose readers disagree about %VAR%: huggingface_hub expands HF_HOME
 /// (and the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE,
-/// and Studio expands SENTENCE_TRANSFORMERS_HOME, but Studio's own
+/// and Unsloth expands SENTENCE_TRANSFORMERS_HOME, but Unsloth's own
 /// hf_cache_settings does not, so it reads %LOCALAPPDATA%\hf as a relative
 /// folder. Expanding before deciding settles it: both readers then see one
 /// absolute path. Scoped to these names because a directory really called
@@ -1751,7 +2204,7 @@ fn names_a_path(name: &str, value: &str) -> bool {
 }
 
 /// Names every managed spawn removes before starting the child: Tauri uses the
-/// legacy Studio root whatever the environment says. Resolving one can only
+/// legacy Unsloth root whatever the environment says. Resolving one can only
 /// invent a failure for a value the child is never going to see.
 const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
 
@@ -2281,7 +2734,7 @@ mod tests {
 
     // Quarantine takes the unsigned stub and leaves the environment intact. The
     // finder gates the backend, the updater and the install-status probe, so a None
-    // here reports "not installed" for a Studio that still runs.
+    // here reports "not installed" for an Unsloth that still runs.
     #[cfg(windows)]
     #[test]
     fn a_quarantined_stub_is_still_a_managed_install() {
@@ -2746,7 +3199,6 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
-    #[cfg(windows)]
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // A backend started while the job is disarmed is the orphan this guards
@@ -2860,8 +3312,8 @@ pub fn start_backend(
         return Err(msg);
     }
 
-    #[cfg(windows)]
-    cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+    cmd.env_remove(STUDIO_RUNTIME_GATE_HANDOFF_ENV);
+    cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1");
 
     if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {
         cmd.env(
@@ -3009,6 +3461,7 @@ pub fn start_backend(
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3016,6 +3469,7 @@ pub fn start_backend(
                 stdout,
                 &app_handle,
                 &state_clone,
+                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 false,
@@ -3028,6 +3482,7 @@ pub fn start_backend(
     if let Some(stderr) = stderr {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3035,6 +3490,7 @@ pub fn start_backend(
                 stderr,
                 &app_handle,
                 &state_clone,
+                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 true,
@@ -3045,6 +3501,40 @@ pub fn start_backend(
     }
 
     Ok(generation)
+}
+
+pub(crate) fn request_staged_rollback_restart(app: &AppHandle, state: &BackendState) -> bool {
+    let home = diagnostics::studio_dir();
+    let recovered = match with_studio_runtime_launch_guard(|| {
+        if state
+            .lock()
+            .map(|process| process.has_owned_backend())
+            .unwrap_or(true)
+        {
+            return Ok(false);
+        }
+        crate::staged_update::recover_failed_activation(&home, || {})
+    }) {
+        Ok(recovered) => recovered,
+        Err(error) => {
+            error!("Staged backend rollback failed: {error}");
+            false
+        }
+    };
+    if !recovered {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    match crate::schedule_staged_rollback_relaunch(app) {
+        Ok(()) => app.exit(0),
+        Err(error) => {
+            error!("Could not schedule staged rollback relaunch: {error}");
+            app.request_restart();
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    app.request_restart();
+    true
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
@@ -3138,9 +3628,57 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
+fn pending_backend_validation(
+    required: Option<&str>,
+    readiness: &crate::desktop_backend_owner::OwnedBackendReadiness,
+    observed: Option<&str>,
+    torch_warm_in_progress: bool,
+) -> (bool, bool) {
+    let Some(required) = required else {
+        return (true, false);
+    };
+    let accepted = !torch_warm_in_progress
+        && matches!(
+            readiness,
+            crate::desktop_backend_owner::OwnedBackendReadiness::Ready
+        )
+        && observed.is_some_and(|observed| {
+            crate::desktop_update_policy::compare_versions(observed, required) >= 0
+        });
+    (accepted, !accepted && !torch_warm_in_progress)
+}
+
+fn staged_probe_requires_immediate_rejection(reason: &str) -> bool {
+    matches!(
+        reason,
+        "desktop_protocol_incompatible"
+            | "desktop_auth_unsupported"
+            | "desktop_manageability_unsupported"
+            | "desktop_backend_ownership_unsupported"
+            | "desktop_auth_secret_missing"
+            | "desktop_auth_secret_rejected"
+            | "desktop_auth_token_rejected"
+            | "desktop_auth_token_response_invalid"
+            | "desktop_backend_version_invalid"
+    )
+}
+
+fn roll_back_rejected_staged_backend(
+    app: &AppHandle,
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    diagnostics_state: &DiagnosticsState,
+) {
+    let stopped = stop_backend(state, shutdown, Some(diagnostics_state));
+    if stopped.is_err() || !request_staged_rollback_restart(app, state) {
+        let _ = app.emit("server-crashed", ());
+    }
+}
+
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
+    shutdown: ShutdownFlag,
     diagnostics_state: DiagnosticsState,
     session_id: String,
     generation: u64,
@@ -3148,6 +3686,10 @@ async fn validate_candidate_port(
     deadline: std::time::Instant,
 ) {
     let started = std::time::Instant::now();
+    let pending = crate::staged_update::pending_versions(&diagnostics::studio_dir());
+    let pending_backend_version = pending
+        .as_ref()
+        .map(|versions| versions.backend_version.as_str());
     let owner = {
         let proc = match state.lock() {
             Ok(proc) => proc,
@@ -3175,6 +3717,7 @@ async fn validate_candidate_port(
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let mut verified_late = false;
+    let mut validated_backend_version = None;
     let valid = loop {
         // Before the probe, not just after a failed one: the announcement
         // itself can arrive past the deadline on a very slow start, and the
@@ -3183,17 +3726,62 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
-        let ok = if let Some(owner) = owner.clone() {
-            matches!(
-                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
+        let (ok, reject_staged) = if let Some(owner) = owner.clone() {
+            let (probe, torch_warm_in_progress) = if pending_backend_version.is_some() {
+                crate::desktop_backend_owner::probe_owned_backend_state_for_staged_activation(
+                    owner,
+                    Some(port),
+                )
+                .await
+            } else {
+                (
+                    crate::desktop_backend_owner::probe_owned_backend_state(
+                        owner,
+                        Some(port),
+                        false,
+                    )
                     .await,
+                    false,
+                )
+            };
+            match probe {
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
-                    crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
-                ) if verified_port == port
-            )
+                    crate::desktop_backend_owner::VerifiedOwnedBackend {
+                        port: verified_port,
+                        readiness,
+                        backend_version,
+                        ..
+                    },
+                ) => {
+                    let owned_port = verified_port == port;
+                    let (version_matches, reject_version) = pending_backend_validation(
+                        pending_backend_version,
+                        &readiness,
+                        backend_version.as_deref(),
+                        torch_warm_in_progress,
+                    );
+                    if owned_port && version_matches {
+                        validated_backend_version = backend_version;
+                    }
+                    (owned_port && version_matches, owned_port && reject_version)
+                }
+                crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable {
+                    reason, ..
+                } if pending_backend_version.is_some() => {
+                    (false, staged_probe_requires_immediate_rejection(&reason))
+                }
+                _ => (false, false),
+            }
+        } else if pending_backend_version.is_some() {
+            (false, true)
         } else {
-            generic_backend_health_ok(port).await
+            (generic_backend_health_ok(port).await, false)
         };
+        if reject_staged {
+            warn!("Staged backend failed authenticated version validation");
+            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
+            return;
+        }
         if ok {
             // A probe that started in time can still finish late. Emitting
             // server-port after the watchdog's server-start-timeout strands the
@@ -3223,6 +3811,14 @@ async fn validate_candidate_port(
     };
 
     if !valid {
+        if pending_backend_version.is_some()
+            && crate::staged_update::pending_versions(&diagnostics::studio_dir()).is_some()
+            && std::time::Instant::now() >= deadline
+        {
+            warn!("Staged backend validation timed out");
+            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
+            return;
+        }
         if verified_late {
             warn!(
                 "Backend port {} verified after the start deadline; not emitting",
@@ -3264,6 +3860,23 @@ async fn validate_candidate_port(
             false
         }
     };
+
+    let activation_confirmed = if should_emit && pending_backend_version.is_some() {
+        validated_backend_version.as_deref().is_some_and(|version| {
+            crate::staged_update::confirm_activated(&diagnostics::studio_dir(), version)
+        })
+    } else {
+        true
+    };
+    if should_emit && !activation_confirmed {
+        if let Ok(mut proc) = state.lock() {
+            if proc.generation == generation && proc.port == Some(port) {
+                proc.port = None;
+            }
+        }
+        warn!("Staged backend confirmation changed during validation");
+        return;
+    }
 
     info!(
         "Validated backend port candidate {} valid={} emit={} in {}ms",
@@ -3387,6 +4000,7 @@ fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
     state: &BackendState,
+    shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
     backend_log: &BackendLog,
     is_stderr: bool,
@@ -3408,7 +4022,8 @@ fn read_output_stream<R: std::io::Read>(
                 break;
             }
             Ok(_) => {
-                let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
+                let raw = String::from_utf8_lossy(trim_line_endings(&buf));
+                let text = collapse_progress_frames(&raw).to_owned();
                 let log_line = if is_stderr {
                     format!("[stderr] {}", text)
                 } else {
@@ -3456,12 +4071,14 @@ fn read_output_stream<R: std::io::Read>(
                 if let Some(port) = candidate_port {
                     let app_handle = app.clone();
                     let state_clone = Arc::clone(state);
+                    let shutdown_clone = Arc::clone(shutdown);
                     let diagnostics_clone = diagnostics_state.clone();
                     let session_id = backend_log.session_id.clone();
                     tauri::async_runtime::spawn(async move {
                         validate_candidate_port(
                             app_handle,
                             state_clone,
+                            shutdown_clone,
                             diagnostics_clone,
                             session_id,
                             generation,
@@ -3472,7 +4089,19 @@ fn read_output_stream<R: std::io::Read>(
                     });
                 }
 
-                info!("[backend] {}", log_line);
+                // Keeping the successful access records out leaves tauri.log for the startup
+                // banner, hardware lines, stderr, tracebacks and failed requests.
+                if is_backend_access_log_line(&text) {
+                    debug!("[backend] {}", log_line);
+                } else if log_line.len() > MAX_BACKEND_LOG_LINE_BYTES {
+                    let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+                    while end > 0 && !log_line.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    info!("[backend] {} [line truncated]", &log_line[..end]);
+                } else {
+                    info!("[backend] {}", log_line);
+                }
 
                 let _ = app.emit("server-log", &log_line);
             }
@@ -3571,6 +4200,9 @@ fn read_output_stream<R: std::io::Read>(
             );
         }
         if emit_crash {
+            if request_staged_rollback_restart(app, state) {
+                return;
+            }
             error!("Backend process stdout closed unexpectedly (crash detected)");
             let _ = app.emit("server-crashed", ());
         }
@@ -3588,7 +4220,7 @@ fn read_output_stream<R: std::io::Read>(
 /// was emitted, so the window sat on the startup screen with nothing reported. Seen on
 /// Windows CI, which logged "process is still running" for a PID that was already gone.
 ///
-/// Returning None still means "genuinely alive", which matters because Studio may close
+/// Returning None still means "genuinely alive", which matters because Unsloth may close
 /// its own stdout once logging moves to the session log, so stdout EOF alone must not
 /// be read as death. Same poll shape as `wait_for_child_exit` below.
 fn exit_status_after_stdout_closed(child: &mut Box<dyn ChildWrapper + Send>) -> Option<String> {
@@ -3922,6 +4554,179 @@ fn stop_backend_inner(
     result
 }
 
+#[cfg(test)]
+mod backend_log_line_tests {
+    use super::*;
+
+    #[test]
+    fn plain_line_is_untouched() {
+        assert_eq!(collapse_progress_frames("Hardware detected: ROCm"), "Hardware detected: ROCm");
+        assert_eq!(collapse_progress_frames(""), "");
+    }
+
+    #[test]
+    fn progress_bar_keeps_only_the_final_frame() {
+        let bar = "Loading weights:   0%| | 0/617\rLoading weights:  47%| | 288/617\rLoading weights: 100%|#| 617/617";
+        assert_eq!(collapse_progress_frames(bar), "Loading weights: 100%|#| 617/617");
+    }
+
+    #[test]
+    fn trailing_blank_frame_falls_back_to_the_last_real_one() {
+        assert_eq!(collapse_progress_frames("Map:  50%\rMap: 100%\r   "), "Map: 100%");
+    }
+
+    #[test]
+    fn an_all_blank_line_never_keeps_its_carriage_returns() {
+        // The log handle appends the platform terminator itself, so a `\r` that survives
+        // here lands as "\r\r\n" in the file on Windows.
+        for line in ["\r", "\r\r\r", "   \r   "] {
+            assert!(
+                !collapse_progress_frames(line).contains('\r'),
+                "collapse left a carriage return in {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crlf_line_keeps_its_payload() {
+        // read_output_stream trims the terminator before collapsing, so a CRLF's `\r` is
+        // never read as a redraw ending in an empty frame. Every line a Windows child
+        // relays arrives in this shape.
+        let raw = b"Hardware detected: NVIDIA GeForce RTX 4090\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(
+            collapse_progress_frames(&trimmed),
+            "Hardware detected: NVIDIA GeForce RTX 4090"
+        );
+    }
+
+    #[test]
+    fn a_crlf_terminated_bar_still_collapses() {
+        let raw = b"Map:  50%\rMap: 100%\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(collapse_progress_frames(&trimmed), "Map: 100%");
+    }
+
+    #[test]
+    fn a_crlf_json_record_stays_parseable() {
+        let raw = b"{\"event\": \"request_completed\", \"status_code\": 200}\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        let line = collapse_progress_frames(&trimmed);
+        assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "{line:?}");
+        assert!(is_backend_access_log_line(line));
+    }
+
+    #[test]
+    fn a_marker_line_survives_the_collapse() {
+        // read_output_stream runs the TAURI_PORT regex against the collapsed text, so a
+        // marker that shares its line with a redraw must still be the frame we keep.
+        for raw in [
+            &b"TAURI_PORT=8888\n"[..],
+            &b"TAURI_PORT=8888\r\n"[..],
+            &b"Loading weights:  47%\rTAURI_PORT=8888\r\n"[..],
+        ] {
+            let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+            assert_eq!(collapse_progress_frames(&trimmed), "TAURI_PORT=8888", "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn truncation_lands_on_a_character_boundary() {
+        let line = "\u{1f680}".repeat(MAX_BACKEND_LOG_LINE_BYTES);
+        let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        // Slicing at `end` must not panic and must stay under the cap.
+        assert!(end <= MAX_BACKEND_LOG_LINE_BYTES);
+        assert_eq!(line[..end].len(), end);
+    }
+
+    #[test]
+    fn access_log_records_are_recognised() {
+        assert!(is_backend_access_log_line(
+            r#"{"timestamp": "2026-08-13T14:22:11Z", "level": "info", "event": "request_completed", "path": "/api/liveness", "status_code": 200}"#
+        ));
+        assert!(is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/models/local", "status_code": 204}"#
+        ));
+    }
+
+    #[test]
+    fn failed_access_records_keep_their_info_line() {
+        // A watchdog probe going red is the case tauri.log exists for; the backend logs
+        // every one of these (the heartbeat suppressor is 2xx-only) and so must we.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness", "status_code": 503}"#
+        ));
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/train/start", "status_code": 401}"#
+        ));
+        // No status at all: not a record we can vouch for.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness"}"#
+        ));
+    }
+
+    #[test]
+    fn other_structured_events_and_plain_text_are_not() {
+        assert!(!is_backend_access_log_line(
+            r#"{"level": "info", "event": "engine_stats", "gen_tok_s": 64.9}"#
+        ));
+        assert!(!is_backend_access_log_line("TAURI_PORT=8888"));
+        // Mentioning the event name in free text must not silence the line.
+        assert!(!is_backend_access_log_line("saw request_completed in the trace"));
+        // Truncated JSON is not a record we can vouch for, so it keeps its INFO line.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "status_code": 200"#
+        ));
+    }
+}
+
+/// The same corpus the backend checks itself against.
+///
+/// Two implementations of "a successful access record", in two languages and two
+/// processes: the backend decides whether to emit the line at all, and the shell decides
+/// whether to mirror it into `tauri.log`. They can drift, and the CRLF handling in the
+/// progress-frame collapsers already did drift once. Reading one file from both sides
+/// turns a change to the rule on either side red on the other.
+#[cfg(test)]
+mod shared_access_log_fixture_tests {
+    use super::*;
+
+    #[test]
+    fn every_shared_case_agrees_with_the_desktop_filter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../backend/tests/fixtures/access_log_records.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read the shared fixture at {path:?}: {e}"));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&raw).expect("the shared fixture is not valid JSON");
+        let cases = fixture["cases"]
+            .as_array()
+            .expect("the shared fixture has no `cases` array");
+        assert!(!cases.is_empty(), "the shared fixture is empty, so this test proves nothing");
+
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("<unnamed>");
+            let line = case["line"].as_str().unwrap_or_else(|| {
+                panic!("case {name:?} has no `line`");
+            });
+            let keep = case["keep"]
+                .as_bool()
+                .unwrap_or_else(|| panic!("case {name:?} has no boolean `keep`"));
+            // keep=false means the line IS a successful access record, which is exactly
+            // when the filter returns true and the line drops to debug.
+            assert_eq!(
+                is_backend_access_log_line(line),
+                !keep,
+                "case {name:?}: {}",
+                case["why"].as_str().unwrap_or("no rationale recorded")
+            );
+        }
+    }
+}
+
 // A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
 // and so did every CLI child, where the Python CLI refuses to run. These pin the
 // replacement directory and that each command carries it.
@@ -4000,7 +4805,7 @@ mod managed_cli_working_dir_tests {
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
             "HF_HOME" => Some("cache".to_string()),
-            // A name the child keeps: the two Studio roots are removed for
+            // A name the child keeps: the two Unsloth roots are removed for
             // every managed spawn, so they are never pinned.
             "UNSLOTH_COMPILE_LOCATION" => Some("  studio  ".to_string()),
             "OLLAMA_MODELS" => Some("D:\\models".to_string()),
@@ -4730,6 +5535,29 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn a_mounted_appimage_is_never_a_managed_child_working_directory() {
+        let appdir = PathBuf::from("/tmp/.mount_Unsloth1a2b3c");
+        for unusable in ["/tmp/.mount_Unsloth1a2b3c", "/tmp/.mount_Unsloth1a2b3c/usr"] {
+            assert!(
+                is_unusable_cwd(std::path::Path::new(unusable), &[], Some(&appdir)),
+                "{unusable} must be replaced"
+            );
+        }
+        for usable in ["/home/me/projects", "/tmp/.mount_Other/usr"] {
+            assert!(
+                !is_unusable_cwd(std::path::Path::new(usable), &[], Some(&appdir)),
+                "{usable} must be kept"
+            );
+        }
+        // A native package sets no APPDIR, so nothing changes for it.
+        assert!(!is_unusable_cwd(
+            std::path::Path::new("/tmp/.mount_Unsloth1a2b3c/usr"),
+            &[],
+            None
+        ));
+    }
+
+    #[test]
     fn only_the_folders_the_cli_refuses_count_as_unusable() {
         let windirs = [PathBuf::from("C:\\Windows")];
         for unusable in [
@@ -4739,7 +5567,7 @@ mod managed_cli_working_dir_tests {
             "\\\\?\\C:\\Windows\\System32",
         ] {
             assert!(
-                is_unusable_cwd(std::path::Path::new(unusable), &windirs),
+                is_unusable_cwd(std::path::Path::new(unusable), &windirs, None),
                 "{unusable} must be replaced"
             );
         }
@@ -4752,7 +5580,7 @@ mod managed_cli_working_dir_tests {
             "C:\\Users\\me\\projects",
         ] {
             assert!(
-                !is_unusable_cwd(std::path::Path::new(usable), &windirs),
+                !is_unusable_cwd(std::path::Path::new(usable), &windirs, None),
                 "{usable} must be kept"
             );
         }
@@ -5293,6 +6121,99 @@ mod managed_cli_working_dir_tests {
             backend_args(8888),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
+    }
+
+    #[test]
+    fn pending_activation_requires_a_ready_backend_at_or_above_the_required_version() {
+        use crate::desktop_backend_owner::OwnedBackendReadiness;
+
+        assert_eq!(
+            pending_backend_validation(None, &OwnedBackendReadiness::Ready, None, false),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.1"),
+                false
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.8.4"),
+                false
+            ),
+            (false, true)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.2"),
+                false
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Stale {
+                    reason: "desktop_backend_version_too_old".to_string()
+                },
+                Some("2026.9.1"),
+                false
+            ),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn pending_activation_waits_for_authenticated_backend_warmup() {
+        use crate::desktop_backend_owner::OwnedBackendReadiness;
+
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.1"),
+                true
+            ),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn pending_activation_retries_transient_authenticated_probe_failures() {
+        for reason in [
+            "desktop_login_probe_failed",
+            "desktop_auth_secret_probe_failed",
+            "desktop_auth_secret_probe_http_500 Internal Server Error",
+            "desktop_auth_health_unverified",
+            "error sending request for url",
+        ] {
+            assert!(!staged_probe_requires_immediate_rejection(reason));
+        }
+    }
+
+    #[test]
+    fn pending_activation_rejects_completed_incompatibility_evidence() {
+        for reason in [
+            "desktop_protocol_incompatible",
+            "desktop_auth_unsupported",
+            "desktop_manageability_unsupported",
+            "desktop_backend_ownership_unsupported",
+            "desktop_auth_secret_missing",
+            "desktop_auth_secret_rejected",
+            "desktop_auth_token_rejected",
+            "desktop_auth_token_response_invalid",
+            "desktop_backend_version_invalid",
+        ] {
+            assert!(staged_probe_requires_immediate_rejection(reason));
+        }
     }
 
     // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:

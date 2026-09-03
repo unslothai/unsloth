@@ -4,6 +4,16 @@
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
+const NATIVE_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
+
+const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
+
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
 export function shouldDiscoverCommunityModels(
@@ -18,6 +28,28 @@ export function shouldRecommendCommunityModels(
   return policy === "recommended";
 }
 
+/** Maps detected audio runtime types to the media tag used by Chat routing. */
+export function audioPipelineTagFor(
+  audioType?: string | null,
+  isLocalCheckpoint = false,
+  isLora = false,
+): string | undefined {
+  if (!audioType) return undefined;
+  if (audioType === "whisper")
+    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
+  if (isLora && NATIVE_AUDIO_TYPES.has(audioType)) return undefined;
+  return TTS_CODECS.has(audioType) || NATIVE_AUDIO_TYPES.has(audioType)
+    ? "text-to-speech"
+    : undefined;
+}
+
+export function nativeAudioCheckpointIsLoadable(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  return !audioType || !NATIVE_AUDIO_TYPES.has(audioType) || exportType === "merged";
+}
+
 /** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD
  * artifacts are handled by the catalog before this gate, so an uncurated row must
  * identify a non-GGUF Whisper checkpoint. */
@@ -29,6 +61,7 @@ export function communityAudioRowIsRunnable({
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   isStt: boolean;
   isTts: boolean;
@@ -37,6 +70,7 @@ export function communityAudioRowIsRunnable({
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
   if (!isStt && !isTts) {
     return true;
@@ -51,18 +85,63 @@ export function communityAudioRowIsRunnable({
     return evidence.some((value) => value.includes("whisper"));
   }
 
+  if (audioType && NATIVE_AUDIO_TYPES.has(audioType)) return true;
+
   // The main-slot TTS backend decodes only the four codec families below.
   // Hub's text-to-speech tag also covers Bark, VITS, SpeechT5, and many other
   // architectures that can load as language models but cannot emit a WAV here.
   // Llasa is NOT here despite being a well-known TTS family: it speaks XCodec2, which
   // AudioCodecManager cannot decode, so admitting it produced a row that loaded and then
   // failed at generation. The list and the comment above must stay in step.
+  const normalizedAudioType = (audioType ?? "").toLowerCase();
+  if (["snac", "bicodec", "dac"].includes(normalizedAudioType)) return true;
+  if (normalizedAudioType === "csm") return !isGguf;
   const family = evidence.find((value) =>
     /(?:^|[-_./])(orpheus|csm|spark-?tts|outetts|oute-?tts)(?:$|[-_./])/.test(value),
   );
   if (!family) return false;
   // llama.cpp intentionally has no CSM decoder; CSM is Transformers-only.
   return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
+}
+
+/** A GGUF llama.cpp cannot decode, however it was found: CSM is Transformers-only, so it
+ * never loads in llama-server. Beside communityAudioRowIsRunnable's list to stay in step. */
+export function speechGgufIsUndecodable({
+  isGguf,
+  id,
+  baseModel,
+  tags,
+}: {
+  isGguf: boolean;
+  id: string;
+  baseModel?: string | null;
+  tags?: readonly string[] | null;
+}): boolean {
+  if (!isGguf) return false;
+  return [id, baseModel ?? "", ...(tags ?? [])]
+    .map((value) => value.toLowerCase())
+    .some((value) => CSM_PATH_SEGMENT.test(value));
+}
+
+/** `csm` as its own path or name segment. The separator class carries a BACKSLASH as well as a
+ * slash: this is handed local checkpoint paths, and on Windows `C:\models\csm-1b\model.gguf`
+ * reads as one long segment to a posix-only class, and clears. */
+const CSM_PATH_SEGMENT = /(?:^|[-_./\\])csm(?:$|[-_./\\])/;
+
+/** Whether a fine-tuned or exported row is a CSM checkpoint in a GGUF container, which no
+ * runtime here decodes. `audioType` is read off the checkpoint by the backend, so it holds
+ * even where nothing in the path says "csm". */
+export function localAudioRowIsUndecodableGguf({
+  audioType,
+  exportType,
+  isDirectGguf = false,
+}: {
+  audioType?: string | null;
+  exportType?: string | null;
+  isDirectGguf?: boolean;
+}): boolean {
+  const isGguf = exportType === "gguf" || isDirectGguf;
+  return isGguf && (audioType ?? "").toLowerCase() === "csm";
 }
 
 /** Whether an audio pick from the chat picker may be routed to the Audio page.
@@ -77,9 +156,11 @@ export function audioPickIsRoutable({
   isGguf,
   isCurated,
   isLocalCheckpoint = false,
+  taskFromGgufArch = false,
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   id: string;
   task: string | null | undefined;
@@ -87,16 +168,31 @@ export function audioPickIsRoutable({
   isCurated: boolean;
   /** Trained or exported here, so its codec was read off the checkpoint itself. */
   isLocalCheckpoint?: boolean;
+  /** Filesystem inventory row: its task came from reading the GGUF's own architecture. */
+  taskFromGgufArch?: boolean;
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
+  // GGUF speech tasks have two provenances: Orpheus retains the ordinary llama
+  // architecture and is runnable by Audio's SNAC path; the dedicated CSM speech
+  // architectures remain unsupported. Unknown old-backend rows fail closed.
+  if (taskFromGgufArch && isGguf && task === "text-to-speech") {
+    const codec = (audioType ?? "").toLowerCase();
+    if (codec === "csm" || !codec) return false;
+    return ["snac", "bicodec", "dac"].includes(codec);
+  }
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
   // judge, and the family-name heuristic it applies would reject it on its directory
   // name. Its task came from the backend reading the checkpoint, which is the stronger
   // signal, and the Audio page lists it off that same tag.
   if (isLocalCheckpoint) {
+    // Provenance says nothing about the decoder: a CSM GGUF found on disk is as
+    // unrunnable as a cached one, and routing it hands Audio a row it cannot show after
+    // the ?model= handoff already evicted the chat model.
+    if (speechGgufIsUndecodable({ isGguf, id, baseModel, tags })) return false;
     return (
       task === "text-to-speech" || task === "automatic-speech-recognition"
     );
@@ -112,6 +208,7 @@ export function audioPickIsRoutable({
     baseModel,
     tags,
     libraryName,
+    audioType,
   });
 }
 
@@ -123,13 +220,25 @@ export function macTtsHubRowIsRunnable({
   isTts,
   isGguf,
   hasRunnableGgufSibling,
+  audioType,
 }: {
   isMac: boolean;
   isTts: boolean;
   isGguf: boolean;
   hasRunnableGgufSibling: boolean;
+  audioType?: string | null;
 }): boolean {
-  return !isMac || !isTts || isGguf || hasRunnableGgufSibling;
+  return (
+    !isMac ||
+    !isTts ||
+    isGguf ||
+    hasRunnableGgufSibling ||
+    Boolean(
+      audioType &&
+      NATIVE_AUDIO_TYPES.has(audioType) &&
+      audioType !== "minimax_music3",
+    )
+  );
 }
 
 export function taskCatalogFormatMatches(

@@ -169,7 +169,7 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
 def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
     # A second client starting the same download is accepted and gets the live job's
     # transport, which reads exactly like a fresh Xet start. Only this flag separates
-    # them, and the Studio download notice keys off it.
+    # them, and the Unsloth download notice keys off it.
     monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())

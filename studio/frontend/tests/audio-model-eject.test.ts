@@ -32,13 +32,105 @@ test("Audio exposes the shared picker eject action only while idle", () => {
 test("Speak eject unloads the live main model and cancels stale auto-load", () => {
   assert.match(
     source,
-    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{ model_path: activeModel \}\)/,
+    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
   );
   assert.match(
     source,
     /pendingStagedTtsLoad\.current = null;[\s\S]*stagedTtsLoadDeferred\.current = false;[\s\S]*stageTtsDownload\(\[\]\)/,
   );
   assert.match(source, /await unloadModel[\s\S]*await refreshStatus\(\)/);
+});
+
+test("Speak eject asks about running chats before tearing anything down", () => {
+  // Unforced, the backend refused with a 409 the page could only print as a toast.
+  assert.match(
+    source,
+    /const activeModel = status\?\.active_model;[\s\S]*confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*\)/,
+  );
+  // Declining leaves the page as it was: the staged download dies only past the check.
+  assert.match(
+    source,
+    /if \(!stopDecision\.proceed\) \{\s*setBusy\(null\);\s*return;\s*\}\s*\n\s*\/\/ An old managed completion[\s\S]*invalidatePendingStagedTts\(\);/,
+  );
+  // Queues would otherwise start a fresh run on the model this eject removes.
+  assert.match(
+    source,
+    /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*await unloadModel/,
+  );
+});
+
+test("a Speak load asks the same question and forces from the answer", () => {
+  assert.match(
+    source,
+    /const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+  );
+  // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
+  assert.match(
+    source,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
+  );
+  // Declining releases the slot and drops the queued pick, which would else re-ask.
+  assert.match(
+    source,
+    /if \(!stopDecision\.proceed\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;[\s\S]*?pendingRoutedTtsPick\.current = null;\s*return;\s*\}/,
+  );
+  assert.match(
+    source,
+    /load_request_id: loadRequestId,\s*force_cancel_active: stopDecision\.forceCancelActive,/,
+  );
+});
+
+test("a Speak load stops local queues only once /load is going out", () => {
+  // loadModel prepares the stored HF token first and returns without sending when the
+  // token is invalid and the user picks replace or dismisses the warning. Cancelling
+  // before that call discarded accepted sends and queued prompts for a swap that never
+  // happened, leaving the old model resident and the work gone.
+  assert.match(
+    source,
+    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\},/,
+  );
+  assert.doesNotMatch(
+    source,
+    /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*const res = await loadModel\(/,
+  );
+});
+
+test("a model swap holds Chat's lifecycle gate across the question", () => {
+  // Without the gate a queue can materialize while the dialog is open, so it is missing
+  // from the snapshot the answer was given for: the eject's blanket queue stop then hits
+  // work nobody confirmed stopping, and a load started in that window 409s again.
+  assert.match(
+    source,
+    /ttsLoadInFlight\.current = true;[\s\S]{0,400}?const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);\s*if \(lifecycleLease === null\) \{[\s\S]*?return;\s*\}[\s\S]{0,200}?const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+  );
+  // Released before the queued replay, which needs the gate for its own attempt.
+  assert.match(
+    source,
+    /if \(activeRef\.current\) await refreshStatus\(\);\s*ttsLoadInFlight\.current = false;[\s\S]{0,120}?releaseLifecycle\(\);[\s\S]*?replayQueuedTtsPick\(\);/,
+  );
+  // Eject takes it before it goes busy, so it is held across its own question too.
+  assert.match(
+    source,
+    /const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);[\s\S]{0,300}?setBusy\("unloading"\);[\s\S]{0,400}?confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",/,
+  );
+  assert.match(
+    source,
+    /\} finally \{\s*useChatRuntimeStore\.getState\(\)\.endModelLoading\(lifecycleLease\);\s*\}/,
+  );
+});
+
+test("a load confirmed after Audio is hidden is deferred, not sent", () => {
+  // pendingTtsLoad is still null while the dialog is open, so the deactivation effect has
+  // nothing to abort. Sending anyway let a hidden page replace the visible page's model.
+  assert.match(
+    source,
+    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*\};\s*return;\s*\}/,
+  );
+  // The activation effect replays exactly that queue, so the pick is not lost.
+  assert.match(
+    source,
+    /if \(!active\) \{[\s\S]*?\n    \}\s*\n\s*\/\/[\s\S]*?replayQueuedTtsPick\(\);/,
+  );
 });
 
 test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
@@ -109,7 +201,7 @@ test("a dictation model this page did not load survives a mode switch", () => {
   // Eject unloaded a model this page never loaded. Model only, not model plus engine: a
   // "gguf" pick without whisper-server is served by the Transformers fallback and reports
   // residency under that engine, so requiring the requested engine leaked the sidecar.
-  assert.match(source, /claim !== null && claim === sttLoadedModel;/);
+  assert.match(source, /claim !== null &&\s*claim === sttLoadedModel;/);
   // Ownership is claimed after a successful load, not before it: claiming up front left the
   // flag set when a download was cancelled while the backend kept the previous resident
   // model, so leaving Transcribe unloaded another surface's model.

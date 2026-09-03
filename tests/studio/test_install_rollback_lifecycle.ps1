@@ -12,7 +12,12 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 
-$helperNames = @(
+# The six functions under test. Extracting only these is what broke when #9501 added a
+# sibling helper they call: the list is maintained by hand, so it goes stale the moment
+# a helper grows a dependency, and the failure surfaces as "not recognized" inside an
+# unrelated case rather than as a missing extraction. Extract the transitive closure
+# instead, so a new callee is picked up without anyone remembering to add it here.
+$subjectNames = @(
     "Start-StudioVenvRollback",
     "Remove-StudioVenvTreeWithRetry",
     "Test-StudioVenvRollbackMustBePreserved",
@@ -20,19 +25,79 @@ $helperNames = @(
     "Restore-StudioVenvRollback",
     "Complete-StudioVenvRollback"
 )
-foreach ($name in $helperNames) {
-    $fn = $ast.FindAll({ param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
-    }, $true)
-    if ($fn.Count -ne 1) { throw "expected exactly one $name in install.ps1, found $($fn.Count)" }
-    Invoke-Expression $fn[0].Extent.Text
+
+$definitions = @{}
+foreach ($node in $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
+}, $true)) {
+    if ($definitions.ContainsKey($node.Name)) {
+        throw "install.ps1 defines $($node.Name) more than once; the extraction cannot tell which one is under test"
+    }
+    $definitions[$node.Name] = $node
 }
+
+foreach ($name in $subjectNames) {
+    if (-not $definitions.ContainsKey($name)) {
+        throw "expected $name in install.ps1, found no definition (renamed or removed?)"
+    }
+}
+
+# Sinks this file stubs below. The walk stops at them, so their own dependencies (ANSI
+# colouring and the like) are not dragged in for functions that are replaced anyway.
+$stubbedNames = @("substep", "Write-StudioLine")
+
+# Breadth-first over the call graph, following only names install.ps1 itself defines.
+# Anything else is a real cmdlet or one of the stubs below and must not be extracted.
+$extracted = [System.Collections.Generic.List[string]]::new()
+$seen = @{}
+$queue = [System.Collections.Generic.Queue[string]]::new()
+foreach ($name in $subjectNames) { $queue.Enqueue($name) }
+while ($queue.Count -gt 0) {
+    $name = $queue.Dequeue()
+    if ($seen.ContainsKey($name)) { continue }
+    $seen[$name] = $true
+    $extracted.Add($name)
+    foreach ($call in $definitions[$name].Body.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.CommandAst]
+    }, $true)) {
+        $callee = $call.GetCommandName()
+        if ($callee -and $definitions.ContainsKey($callee) -and
+            $stubbedNames -notcontains $callee -and -not $seen.ContainsKey($callee)) {
+            $queue.Enqueue($callee)
+        }
+    }
+}
+
+foreach ($name in $extracted) { Invoke-Expression $definitions[$name].Extent.Text }
+
+$pulledIn = @($extracted | Where-Object { $subjectNames -notcontains $_ })
+if ($pulledIn.Count -gt 0) { Write-Host "Extracted dependencies: $($pulledIn -join ', ')" }
 
 function substep { param([string]$Message, [string]$Color) }
 # The rollback helpers report through install.ps1's UTF-8 stdout sink on their warn
 # and error branches. None of the cases below take one today, but this file runs
 # under "Stop", so an undefined sink would abort the suite rather than fail a check.
 function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
+
+# Fail here, with the caller named, rather than 60 lines further down as "the term X is
+# not recognized" inside whichever case happened to reach it first. The closure above
+# makes an install.ps1-defined callee unreachable by construction; this catches the rest,
+# including a helper that calls a sink this file forgot to stub.
+$unresolved = [System.Collections.Generic.List[string]]::new()
+foreach ($name in $extracted) {
+    foreach ($call in $definitions[$name].Body.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.CommandAst]
+    }, $true)) {
+        $callee = $call.GetCommandName()
+        if (-not $callee) { continue }
+        if (-not (Get-Command -Name $callee -ErrorAction SilentlyContinue)) {
+            $unresolved.Add("$callee (called by $name)")
+        }
+    }
+}
+if ($unresolved.Count -gt 0) {
+    throw "extracted helpers call commands that do not resolve: $(($unresolved | Sort-Object -Unique) -join '; ')"
+}
 
 $failures = 0
 function Check($name, $condition) {

@@ -32,9 +32,11 @@ from hub.utils.gguf import (
     gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
+    is_imatrix_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
+from hub.utils.hf_tokens import ANONYMOUS_CACHE_IDENTITY, HfTokenArg, is_anonymous
 from hub.utils.state_dir import RepoType
 
 from hub.utils.hf_cache_state import (
@@ -45,10 +47,10 @@ from hub.utils.hf_cache_state import (
     latest_snapshot_dir,
     repo_cache_dir_has_incomplete_blobs,
 )
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
-# Inventory is invalidated explicitly on every app-driven cache mutation, so
-# this TTL only bounds staleness from out-of-band edits while skipping re-walks
-# on rapid UI navigation.
+# Inventory is invalidated explicitly on every app-driven cache mutation, so this TTL only bounds
+# staleness from out-of-band edits.
 _HF_CACHE_SCANS_TTL_SECONDS = 15.0
 _GGUF_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 # transformers shard naming: each shard names the set's total.
@@ -67,9 +69,8 @@ class _HfCacheScanFlight:
 _hf_cache_scans_flight: Optional[_HfCacheScanFlight] = None
 _hf_cache_scans_result: Optional[list] = None
 _hf_cache_scans_cached_at: float = 0.0
-# Bumped on every invalidation. A scan tags itself with the epoch it began
-# under; an invalidation mid-scan changes the epoch so the in-flight result is
-# neither cached nor served to callers that arrived after the mutation.
+# A scan tags itself with the epoch it began under, so an invalidation mid-scan makes the in-flight
+# result neither cached nor served to callers that arrived after the mutation.
 _hf_cache_scans_epoch: int = 0
 
 _T = TypeVar("_T")
@@ -120,9 +121,8 @@ def all_hf_cache_scans() -> list:
             return list(_hf_cache_scans_result)
         start_epoch = _hf_cache_scans_epoch
         flight = _hf_cache_scans_flight
-        # Only coalesce onto an in-flight scan from the current epoch; one that
-        # began before an intervening invalidation is superseded so
-        # post-mutation callers never receive pre-mutation data.
+        # Only coalesce onto an in-flight scan from the current epoch, so post-mutation callers never
+        # receive pre-mutation data.
         if flight is None or flight.epoch != start_epoch:
             flight = _HfCacheScanFlight(event = threading.Event(), epoch = start_epoch)
             _hf_cache_scans_flight = flight
@@ -180,7 +180,7 @@ _HF_REPO_TYPES = frozenset({"model", "dataset", "space"})
 
 
 # Mirrors huggingface_hub's Cached{File,Revision,Repo}Info field-for-field; frozen because
-# HFCacheInfo.delete_revisions() set-diffs ``revisions``.
+# HFCacheInfo.delete_revisions() set-diffs revisions.
 @dataclass(frozen = True)
 class _RecoveredFileInfo:
     file_name: str
@@ -251,13 +251,12 @@ def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
     return refs_by_commit
 
 
-def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
-    """Rebuild the scan entry for a repo dropped *solely* over leftover refs.
+def _recover_repo_dropped_by_scan(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
+    """Recover readable revisions from a repo omitted by ``scan_cache_dir``.
 
-    ``scan_cache_dir`` omits an intact repo when a ``refs/<branch>`` names a commit with no
-    ``snapshots/<commit>/`` dir, which ``snapshot_download`` creates by writing ``refs/main`` before
-    fetching the first file, hiding the repo from every inventory endpoint. Read-only: pruning the
-    ref cannot be race-free. None whenever anything other than leftover refs failed the scan.
+    Dangling refs, broken snapshot links, and stray snapshot files can hide an otherwise usable
+    repo. Skip those bad entries and rebuild a read-only row from the intact files. Return None
+    when nothing remains or the on-disk state does not explain the omission.
     """
     identity = _hf_repo_identity(repo_dir.name)
     if identity is None:
@@ -277,16 +276,20 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     blob_stats: dict[Path, object] = {}
     revisions: set[_RecoveredRevisionInfo] = set()
     dangling = dict(refs_by_commit)
+    # Entries that explain why upstream dropped the repo.
+    skipped = 0
     for snapshot in snapshot_entries:
         if snapshot.name in _CACHE_ENTRIES_TO_IGNORE:
             continue
         try:
             if not snapshot.is_dir():
-                # Upstream treats a file here as corruption; defer to it.
-                return None
-            entries = sorted(snapshot.rglob("*"))
+                # A stray file is not a revision.
+                skipped += 1
+                continue
+            entries = drop_appledouble_metadata(sorted(snapshot.rglob("*")))
         except OSError:
-            return None
+            skipped += 1
+            continue
         files: set[_RecoveredFileInfo] = set()
         for entry in entries:
             try:
@@ -295,8 +298,9 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
                 blob_path = entry.resolve()
                 stat = blob_stats.get(blob_path) or blob_path.stat()
             except OSError:
-                # Broken symlink / unreadable blob: upstream raises here too.
-                return None
+                # Keep the revision; broken links remain a separate partial signal.
+                skipped += 1
+                continue
             blob_stats[blob_path] = stat
             files.add(
                 _RecoveredFileInfo(
@@ -313,7 +317,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
                 max(f.blob_last_modified for f in files) if files else snapshot.stat().st_mtime
             )
         except OSError:
-            return None
+            skipped += 1
+            continue
         revisions.add(
             _RecoveredRevisionInfo(
                 commit_hash = snapshot.name,
@@ -327,8 +332,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     # Nothing fetched yet, so the repo is not on disk.
     if not revisions:
         return None
-    # Every ref resolved, so upstream dropped this repo for some other reason.
-    if not dangling:
+    # Nothing here explains why upstream omitted the repo.
+    if not dangling and not skipped:
         return None
     try:
         repo_stats = repo_dir.stat()
@@ -350,8 +355,8 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     )
 
 
-def _with_repos_hidden_by_dangling_refs(scan, cache_root: Path):
-    """Add back the repos ``scan_cache_dir`` dropped over a dangling ref."""
+def _with_repos_dropped_by_scan(scan, cache_root: Path):
+    """Add back the repos ``scan_cache_dir`` dropped over one bad entry."""
     try:
         repo_dirs = sorted(entry for entry in cache_root.iterdir() if "--" in entry.name)
     except OSError:
@@ -368,14 +373,15 @@ def _with_repos_hidden_by_dangling_refs(scan, cache_root: Path):
         try:
             if str(repo_dir.resolve(strict = False)) in scanned:
                 continue
-            entry = _recover_repo_hidden_by_dangling_refs(repo_dir)
+            entry = _recover_repo_dropped_by_scan(repo_dir)
         except (OSError, RuntimeError, ValueError):
             continue
         if entry is None:
             continue
         logger.info(
-            "Recovered HF cache repo %s hidden by a dangling ref (%d revision(s) on disk)",
+            "Recovered HF cache repo %s hidden by %s (%d revision(s) on disk)",
             entry.repo_id,
+            "a dangling ref" if _repo_has_a_dangling_ref(repo_dir) else "an unreadable entry",
             len(entry.revisions),
         )
         recovered.append(entry)
@@ -403,7 +409,7 @@ def _compute_all_hf_cache_scans() -> list:
             scan = scan_cache_dir(cache_dir = str(cache_root))
             # Only a warned-about scan can hide a repo, so never walk a healthy cache twice.
             if getattr(scan, "warnings", None):
-                scan = _with_repos_hidden_by_dangling_refs(scan, cache_root)
+                scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
         except Exception as exc:
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
@@ -433,13 +439,18 @@ def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
         return None
 
 
-def token_fingerprint(hf_token: Optional[str]) -> str:
+def token_fingerprint(hf_token: HfTokenArg) -> str:
     """16-char SHA256 prefix used as a cache-key qualifier for gated repos.
 
     Lets per-token size/snapshot caches refuse to serve a previously
     fetched value back to a different token (a private/gated repo's
     metadata is only valid for the credential that fetched it).
+
+    A forced-anonymous caller is a different credential from one that may still fall
+    back to the ambient token, so it takes its own identity.
     """
+    if is_anonymous(hf_token):
+        return ANONYMOUS_CACHE_IDENTITY
     if not hf_token:
         return ""
     return hashlib.sha256(hf_token.encode()).hexdigest()[:16]
@@ -614,9 +625,8 @@ def default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
 def _repo_has_a_dangling_ref(repo_cache_dir: Path) -> bool:
     """Whether ANY ref under ``refs/`` names a commit with no snapshot dir.
 
-    ``_default_ref_names_an_absent_snapshot`` only checks ``refs/main``, but the recovery admits a
-    repo over a leftover ref of any name, so the two must agree or a repo recovered over
-    ``refs/stale`` is judged as though upstream had published it.
+    Check every ref because recovery is not limited to ``refs/main``. Repos recovered only for
+    unreadable entries correctly return False.
     """
     refs_by_commit = _read_refs_by_commit(repo_cache_dir / "refs")
     if refs_by_commit is None:
@@ -710,8 +720,8 @@ def _repo_cache_dir_has_snapshot_legacy_partial(
 ) -> bool:
     if _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(repo_cache_dir, snapshot_dir):
         return True
-    # ``.incomplete`` blobs carry no revision, so they need attributing. Judged on this row's
-    # weights alone: a torn quant beside them is another row's payload, not this one's.
+    # ".incomplete" blobs carry no revision, so they need attributing; judged on this row's weights
+    # alone, since a torn quant beside them is another row's payload.
     if snapshot_dir is not None and not _repo_signal_applies_to_snapshot(
         repo_cache_dir, snapshot_dir, quants = False
     ):
@@ -777,12 +787,20 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
+        if (
+            not is_gguf_filename(rel)
+            or is_mmproj_filename(rel)
+            or is_mtp_drafter_path(rel)
+            or is_imatrix_filename(rel)
+        ):
+            continue
+        # Metadata vouching for a quant marks a torn snapshot ready: a set whose sidecars are all present
+        # answers the shard count exactly as the real files would.
+        if is_appledouble_metadata(path):
             continue
         quant = gguf_variant_key(rel)
-        # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
-        # quant. Judged with the loader's label, since the two extractors disagree on
-        # F16-be-checkpoint-Q4_K_M and this file must not mark Q4_K_M complete.
+        # A big-endian build is never offered, so it cannot vouch for the quant; judged with the loader's
+        # label, since the two extractors disagree on F16-be-checkpoint-Q4_K_M.
         from utils.models.model_config import _extract_quant_label as _loader_quant
 
         if is_big_endian_gguf_path(rel, _loader_quant(rel)):
@@ -975,7 +993,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     unreachable_root: set[str] = set()
     unreadable: set[str] = set()
     try:
-        paths = list(snapshot_dir.rglob("*"))
+        paths = drop_appledouble_metadata(list(snapshot_dir.rglob("*")))
     except OSError:
         return None
     for path in paths:
@@ -1067,12 +1085,12 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         if _required_config_is_unreadable(snapshot_dir / config_name, config_empty):
             unreadable.update(formats)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
-    # from_pretrained never globs, so shards with no index are invisible and neither serve nor veto.
-    # An unusable index is picked and failed on instead.
+    # from_pretrained never globs, so shards with no index are invisible and neither serve nor veto; an
+    # unusable index is picked and failed on instead.
     unloadable: set = set()
     invisible: set = set()
-    # Selected by its own name, so it counts even when the walk grouped no shard of it, and it
-    # carries its own paths: every weight_map entry resolves against the index.
+    # Selected by its own name, so it counts even when the walk grouped no shard of it, and every
+    # weight_map entry resolves against the index.
     root_indexes: set[str] = set()
     unusable_root_indexes: set[str] = set()
     for suffix, canonical in _LOADER_WEIGHT_NAMES["base"].items():
@@ -1130,9 +1148,8 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         with index_path.open(encoding = "utf-8") as handle:
             index = json.load(handle)
     except (OSError, UnicodeDecodeError, ValueError, RecursionError):
-        # RecursionError (deeply nested json) escapes every caller's fail-open guard. The loader
-        # parses this index with the same json module, so one too deep to parse there cannot serve
-        # its shards here either.
+        # RecursionError escapes every caller's fail-open guard, and the loader parses this index with the
+        # same json module, so one too deep to parse there cannot serve its shards here either.
         return True
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
@@ -1143,16 +1160,15 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         if not isinstance(shard, str) or not shard:
             return True
         parts = PurePosixPath(shard.replace("\\", "/"))
-        # is_absolute() is per flavour: PurePosixPath reads "C:/weights/x.safetensors" as a relative
-        # subdirectory called "C:", but the join below is a platform Path, so on Windows that name
-        # replaces the index directory outright. A drive is never part of a shard name.
+        # is_absolute() is per flavour: PurePosixPath reads "C:/weights/x.safetensors" as a relative "C:"
+        # subdirectory, but the join below is a platform Path, so on Windows that name replaces the
+        # index directory outright.
         windows = PureWindowsPath(shard)
         if parts.is_absolute() or ".." in parts.parts or windows.is_absolute() or windows.drive:
             return True
         shards.add(parts)
     named = {shard.name for shard in shards}
-    # Coverage matters only for the family this index describes: one it names nothing of is stale
-    # content beside it, which the loader never reads because it opens weight_map and nothing else.
+    # Coverage matters only for the family this index describes: the loader opens weight_map and nothing else.
     if not family_files <= named and not named.isdisjoint(family_files):
         return True
     for shard in shards:
@@ -1164,7 +1180,7 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         except (OSError, ValueError):
             return True
     # A shard names its own total, so an index listing one of a set has to list the whole set: the
-    # loader opens exactly what is mapped and silently drops whatever the map leaves out.
+    # loader silently drops whatever the map leaves out.
     declared: dict[tuple[str, str, int], set[int]] = {}
     for shard in shards:
         match = _WEIGHT_SHARD_RE.search(shard.name)
@@ -1202,15 +1218,14 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 # The loader opens this name first and finds it empty. Same exemption as below.
                 return kind == wanted or wanted not in payload.ungrouped
             if canonical_empty is False:
-                # Only the row's own kind proves it loads, and it vetoes nothing once that kind's
-                # payload is here but names no family.
+                # Only the row's own kind proves it loads, and it vetoes nothing once that kind's payload is here
+                # but names no family.
                 return kind != wanted and wanted not in payload.ungrouped
-            # from_pretrained reads the snapshot root, so only families named there are judged; a
-            # subdirectory layout is carried by ungrouped instead.
+            # from_pretrained reads the snapshot root, so only families named there are judged; a subdirectory
+            # layout is carried by ungrouped instead.
             if kind == "base" and suffix in payload.root_indexes:
-                # Selected and loaded for exactly what it names, wherever those paths point, so
-                # judge its contents rather than this walk's families: a numbered file it names
-                # nothing of is never read. The next name is never tried.
+                # Selected and loaded for exactly what it names, wherever those paths point, so judge its contents
+                # rather than this walk's families; the next name is never tried.
                 if suffix in payload.unusable_root_indexes:
                     return kind == wanted or wanted not in payload.ungrouped
                 return kind != wanted and wanted not in payload.ungrouped
@@ -1285,6 +1300,9 @@ def _recovered_snapshot_cannot_serve(
     manifest and ``.incomplete``/broken-symlink all read false and a snapshot short a shard looks
     runnable; its contents are the only evidence left. Scoped to the dangling case: where the ref
     resolves, upstream already publishes the row.
+
+    Other recovered cases retain their own evidence: broken links mark the repo partial, while a
+    stray snapshot file never represented a revision.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return False
@@ -1560,23 +1578,23 @@ def _current_revisions(repo_info):
     return revisions
 
 
-# One definition of "the denoiser is on disk", shared by the repo-wide and the snapshot-scoped
-# check so the two cannot drift into disagreeing about the same directory.
+# One definition of "the denoiser is on disk", shared by the repo-wide and snapshot-scoped checks so
+# the two cannot drift into disagreeing about the same directory.
 _DENOISER_DIRS = ("transformer", "unet")
 _DENOISER_WEIGHT_SUFFIXES = (".safetensors", ".bin")
-# The two names a default load can end up opening at the component root: the safetensors one
-# _get_model_file is asked for first, and the .bin the pickle fallback under it drops to.
+# The two names a default load can open at the component root: the safetensors one _get_model_file
+# asks for first, and the .bin its pickle fallback drops to.
 _DEFAULT_DENOISER_WEIGHTS = frozenset(
     f"diffusion_pytorch_model{suffix}" for suffix in _DENOISER_WEIGHT_SUFFIXES
 )
-# The one sharded index a default load resolves: use_safetensors unset coerces to True, and
+# The one sharded index a default load resolves: use_safetensors unset coerces to True and
 # _fetch_index_file then builds only _add_variant(SAFE_WEIGHTS_INDEX_NAME, variant), so with
 # variant unset this exact name. Our load path passes neither (core/inference/{diffusion,video}.py).
 _SELECTED_DENOISER_INDEX = "diffusion_pytorch_model.safetensors.index.json"
 
 
 def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
-    """Whether *snapshot* itself carries a ROOT ``model_index.json``.
+    """Whether *snapshot* carries a conventional or modular root pipeline index.
 
     The snapshot-scoped twin of :func:`repo_has_pipeline_index`, for callers that already know the
     ONE directory their row loads from. ``from_pretrained`` reads the manifest at the root of the
@@ -1585,13 +1603,16 @@ def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
     if snapshot is None:
         return False
     try:
-        return (Path(snapshot) / "model_index.json").is_file()
+        root = Path(snapshot)
+        return (root / "model_index.json").is_file() or (
+            root / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 
 
 def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
-    """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
+    """The denoiser subdirs this pipeline's root manifest declares, or None.
 
     Read off the manifest rather than the fixed ``_DENOISER_DIRS`` pair because multi-DiT pipelines
     carry more than one (Ideogram 4 adds ``unconditional_transformer/``, Wan 2.2's A14B experts
@@ -1603,7 +1624,10 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
     prove absent and the caller must not hunt for directories that layout never had.
     """
     try:
-        with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
+        manifest_path = snapshot / "model_index.json"
+        if not manifest_path.is_file():
+            manifest_path = snapshot / "modular_model_index.json"
+        with manifest_path.open("r", encoding = "utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError, RecursionError):
         # RecursionError (deeply nested json) would escape the caller's fail-open guard.
@@ -1617,9 +1641,9 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         name = key.lower()
         if name != "unet" and "transformer" not in name:
             continue
-        # A component is a [library, class] pair keyed by its directory; [null, null] means
-        # deliberately absent (Wan 2.2's 5B transformer_2). Anything else names no directory to
-        # infer (ACE-STEP maps "transformer" to a config dict), so leave it to the loader.
+        # A component is a [library, class] pair keyed by its directory; [null, null] means deliberately
+        # absent (Wan 2.2's 5B transformer_2), and anything else names no directory to infer (ACE-STEP
+        # maps "transformer" to a config dict).
         if not isinstance(value, (list, tuple)) or not any(v for v in value):
             continue
         found.append(key)
@@ -1636,7 +1660,6 @@ def _denoiser_index_shards(index: Path) -> Optional[set[str]]:
         with index.open("r", encoding = "utf-8") as fh:
             weight_map = json.load(fh).get("weight_map")
     except (OSError, ValueError, AttributeError, RecursionError):
-        # RecursionError (deeply nested json) would escape the caller's fail-open guard.
         return None
     if not isinstance(weight_map, dict):
         return None
@@ -1672,28 +1695,25 @@ def _component_weights_complete(component: Path) -> bool:
     So with no selected index there are exactly two names left, the pair ``_get_model_file`` is
     handed, and every other weight in the directory is one ``from_pretrained`` never resolves.
     """
-    # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
-    # swallow that OSError and read as "no weights".
+    # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would swallow
+    # that OSError and read as "no weights".
     next(component.iterdir(), None)
-    # Existence alone makes the component sharded (``is_sharded`` comes from ``is_file()``), so an
-    # index we cannot read is not no-evidence here, it IS the failure. ``is_file()`` is also the
-    # loader's own test, so a dangling snapshot symlink is absent to both.
+    # Existence alone makes the component sharded (is_sharded comes from is_file()), so an index we
+    # cannot read IS the failure; is_file() is the loader's own test too.
     selected = component / _SELECTED_DENOISER_INDEX
     if selected.is_file():
         if _index_cannot_serve_its_shards(selected, set()):
             return False
-        # The loader opens exactly what ``weight_map`` lists and reads each one as a checkpoint,
-        # so a map naming something that is not a weight file -- a ``config.json`` a corrupt fetch
-        # left behind -- fails at load however present that file is.
+        # The loader opens exactly what weight_map lists and reads each one as a checkpoint, so a map naming
+        # a config.json a corrupt fetch left behind fails at load however present that file is.
         shards = _denoiser_index_shards(selected)
         return bool(shards) and all(
             name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES) for name in shards
         )
-    # No index, so the component is not sharded to the loader either, and ``_get_model_file`` is
-    # asked for the safetensors default and then the ``.bin`` under it and opens nothing else. A
-    # weight under any other name is one ``from_pretrained`` never resolves: a numbered shard is
-    # reachable only THROUGH an index, a dtype twin only under a matching ``variant``, and a
-    # ``model.safetensors`` or adapter sidecar never at all.
+    # No index means the component is not sharded to the loader either, and _get_model_file opens only
+    # the safetensors default and the .bin under it: a numbered shard is reachable only THROUGH an
+    # index, a dtype twin only under a matching variant, and a model.safetensors or adapter sidecar
+    # never at all.
     return any((component / name).is_file() for name in _DEFAULT_DENOISER_WEIGHTS)
 
 
@@ -1717,14 +1737,14 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         root = Path(snapshot)
         declared = _manifest_denoiser_components(root)
         if declared is not None:
-            # all(()) is True: a manifest declaring no denoiser has none to prove absent, so it
-            # reads complete rather than being hunted for one it never had.
+            # all(()) is True: a manifest declaring no denoiser has none to prove absent, so it reads complete
+            # rather than being hunted for one it never had.
             return not all(
                 (root / name).is_dir() and _component_weights_complete(root / name)
                 for name in declared
             )
-        # Unreadable manifest: either fixed name will do, since a UNet pipeline has no
-        # transformer/ and a DiT one no unet/.
+        # Unreadable manifest: either fixed name will do, since a UNet pipeline has no transformer/ and a
+        # DiT one no unet/.
         return not any(
             (root / name).is_dir() and _component_weights_complete(root / name)
             for name in _DENOISER_DIRS
@@ -1989,3 +2009,31 @@ def partial_transport_for(
         hub_cache = hub_cache,
     )
     return manifest.transport if manifest is not None else None
+
+
+def partial_resume_available(
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str] = None,
+    repo_cache_dir: Optional[Path] = None,
+) -> bool:
+    """Whether THIS partial can be picked up byte for byte, rather than whether some partial
+    somewhere could be.
+
+    Both verdicts have to agree: the transport this row reports, and the registry's per-file
+    check, which rejects a 1.18+ nonce partial nothing will reopen. The installed
+    huggingface_hub cannot answer it alone, since a cache shared with a newer environment
+    holds partials this one can never continue.
+    """
+    from hub.utils import download_registry
+
+    if partial_transport_for(repo_type, repo_id, variant, repo_cache_dir) != "http":
+        return False
+    # Same root the transport was read from: a row can be displayed from a remembered, legacy or custom
+    # cache, and the active root neither holds its partials nor shares its manifest scope.
+    return download_registry.is_resumable_partial(
+        repo_type,
+        repo_id,
+        variant,
+        root = _hub_cache_for_repo_dir(repo_cache_dir),
+    )

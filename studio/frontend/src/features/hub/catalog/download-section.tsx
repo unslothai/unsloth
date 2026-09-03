@@ -11,6 +11,7 @@ export function DownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
@@ -20,6 +21,7 @@ export function DownloadSection({
   preferredGgufFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
+  gpuCount,
   systemRamGb,
   cachePath,
   knownBytes,
@@ -28,12 +30,15 @@ export function DownloadSection({
   onEject,
   onTrain,
   onChange,
+  showMemoryBar = true,
+  mediaRuntime = false,
 }: {
   repoId: string;
   isGguf: boolean;
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
@@ -43,6 +48,7 @@ export function DownloadSection({
   preferredGgufFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
+  gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
   knownBytes?: number | null;
@@ -51,6 +57,10 @@ export function DownloadSection({
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs, which do not load through
+   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  showMemoryBar?: boolean;
+  mediaRuntime?: boolean;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -63,6 +73,7 @@ export function DownloadSection({
         preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
+        gpuCount={gpuCount}
         systemRamGb={systemRamGb}
         cachePath={cachePath}
         isPartial={isPartial}
@@ -70,6 +81,8 @@ export function DownloadSection({
         onUseInChat={onUseInChat}
         onEject={onEject}
         onChange={onChange}
+        showMemoryBar={showMemoryBar}
+        mediaRuntime={mediaRuntime}
       />
     );
   }
@@ -79,6 +92,7 @@ export function DownloadSection({
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
+      partialResumable={partialResumable}
       modelFormat={modelFormat}
       canRun={canRun}
       isActive={isActive}

@@ -144,6 +144,12 @@ def _build_app(backend, *, wrap_in_thread: bool):
     async def health():
         return {"status": "ok"}
 
+    @app.get("/loop-thread")
+    async def loop_thread():
+        # An async route body runs on the event loop, so this is the loop's thread id.
+        # Tests compare it against the thread detect_audio_type actually ran on.
+        return {"ident": threading.get_ident()}
+
     if wrap_in_thread:
 
         @app.get("/probe")
@@ -193,22 +199,113 @@ def _drive_concurrent_probe_and_health(
     return max(latencies), elapsed, latencies
 
 
-# The bound stays where it was. What changes is that a stall has to REPRODUCE.
-#
-# Measured, with the shim's 0.6 + 0.6 second delays: the blocking route holds /health
-# for 1.72s and does it every time (1.719, 1.729, 1.721, 1.719, 1.727 over five runs),
-# while the to_thread route answers in 2 to 10 ms. A blocked loop is not a coin flip.
-# What IS a coin flip is the runner descheduling a thread for a couple of hundred
-# milliseconds, which is what failed this test on a single 0.261s sample among eleven
-# 0.0013s ones.
-#
-# So the measurement is repeated and one clean run is enough. Widening the bound
-# instead would have opened a blind range between the old limit and the new one, and
-# the obvious alternatives do not work here: only ONE sample is slow even when the loop
-# is fully blocked, because the health probes share a connection and serialise behind
-# the stall, so neither a median nor a count of slow samples can tell the two apart.
+# Used only by the canary below, which asserts a LOWER bound: that the pre-#5642 route
+# does hold /health. Measured with the shim's 0.6 + 0.6 second delays, the blocking route
+# holds it for 1.72s and does so every time (1.719, 1.729, 1.721, 1.719, 1.727 over five
+# runs), so contention can only push that number further above the bound, never below it.
 _MAX_HEALTH_LATENCY_SEC = 0.25
-_STALL_ATTEMPTS = 3
+
+# Neither a latency budget nor a performance claim. Every wait it bounds is either
+# satisfied in milliseconds or never satisfied at all, so all it decides is how long a
+# genuine deadlock takes to be reported instead of hanging the job. The work underneath
+# it is a handful of loopback requests against a local uvicorn, so no amount of CPU
+# contention brings a correct run near it.
+_DEADLOCK_GUARD_SEC = 30.0
+
+
+class _GatedProbe:
+    """A slow synchronous detect_audio_type whose duration the test controls.
+
+    It announces that it has started (``entered``) and then parks on ``released``
+    rather than sleeping. While it is parked the route is in exactly the state the
+    old wall-clock bound was trying to sample -- a blocking call in flight -- except
+    that the state now persists until the test ends it, so nothing has to be timed.
+
+    It also records the thread it ran on, which is the property itself: the call
+    belongs on a worker thread, not on the event loop's.
+    """
+
+    def __init__(self, result = "snac") -> None:
+        self.entered = threading.Event()
+        self.released = threading.Event()
+        self.result = result
+        self.calls = 0
+        self.thread_ident: int | None = None
+
+    def __call__(self):
+        self.calls += 1
+        self.thread_ident = threading.get_ident()
+        self.entered.set()
+        # Deliberately the LONGEST wait in the file. If the route is blocking the loop,
+        # the /health calls have to be the ones that give up first, because they are the
+        # ones that can say so; a gate that let go earlier would unblock the loop, let
+        # those calls succeed late, and turn a clear diagnosis into a confusing one.
+        # This is a last-resort release so the server can still shut down.
+        if not self.released.wait(_DEADLOCK_GUARD_SEC * 3):
+            raise AssertionError(
+                f"the gated probe was never released within {_DEADLOCK_GUARD_SEC * 3}s; "
+                "the test body failed before it got that far"
+            )
+        return self.result
+
+    def release(self) -> None:
+        self.released.set()
+
+
+def _gated_app(gate: _GatedProbe):
+    """The fixed route shape, with the blocking call replaced by the gate."""
+    backend = _make_backend(_free_port())
+    backend.detect_audio_type = gate
+    return _build_app(backend, wrap_in_thread = True)
+
+
+def _loop_thread_ident(base_url: str) -> int:
+    with httpx.Client(timeout = _DEADLOCK_GUARD_SEC) as c:
+        return int(c.get(f"{base_url}/loop-thread").json()["ident"])
+
+
+def _fire_probe(base_url: str) -> dict:
+    with httpx.Client(timeout = _DEADLOCK_GUARD_SEC) as c:
+        r = c.get(f"{base_url}/probe")
+    assert r.status_code == 200, f"/probe returned {r.status_code}"
+    return r.json()
+
+
+def _health_burst(
+    base_url: str,
+    n_per_worker: int,
+    *,
+    workers: int = 1,
+) -> list[int]:
+    """Fire ``workers * n_per_worker`` /health requests and return their status codes.
+
+    A blocked event loop does not show up here as a slow-but-finished request, it shows
+    up as one that never answers, so a read timeout is reported with the request index
+    and the measured wait rather than being allowed to surface as a bare httpx error.
+    """
+    codes: list[int] = []
+    lock = threading.Lock()
+
+    def burst() -> None:
+        with httpx.Client(timeout = _DEADLOCK_GUARD_SEC) as c:
+            for i in range(n_per_worker):
+                t0 = time.perf_counter()
+                try:
+                    r = c.get(f"{base_url}/health")
+                except httpx.TimeoutException as exc:
+                    raise AssertionError(
+                        f"/health #{i + 1} of {n_per_worker} went unanswered for "
+                        f"{time.perf_counter() - t0:.1f}s while a synchronous "
+                        f"detect_audio_type was in flight, so the event loop is blocked "
+                        f"on that call ({exc!r})"
+                    ) from exc
+                with lock:
+                    codes.append(r.status_code)
+
+    with ThreadPoolExecutor(max_workers = workers) as pool:
+        for f in [pool.submit(burst) for _ in range(workers)]:
+            f.result()
+    return codes
 
 
 # (1) Behavioural canary
@@ -225,25 +322,46 @@ def test_buggy_route_blocks_event_loop():
 
 
 def test_fixed_route_keeps_event_loop_responsive():
-    """to_thread-wrapped call leaves the event loop free."""
-    attempts = []
-    for _ in range(_STALL_ATTEMPTS):
-        with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
-            backend = _make_backend(shim.port)
-            app = _build_app(backend, wrap_in_thread = True)
-            port = _free_port()
-            with _UvicornServerThread(app, port = port) as uv:
-                max_lat, probe_t, lats = _drive_concurrent_probe_and_health(
-                    f"http://127.0.0.1:{uv.port}"
+    """The to_thread-wrapped call leaves the event loop free to serve other routes.
+
+    This used to be twelve /health latencies compared against 250 ms, retried up to
+    three times. The 250 ms was a proxy: what the fix buys is that the blocking call
+    runs off the event loop thread, and a descheduled runner thread can falsify the
+    proxy on its own. It did, on a single 0.261s sample among eleven 0.0013s ones,
+    with the code entirely correct.
+
+    Nothing here is timed. The blocking call is held open, twelve /health requests are
+    answered while it is held, and only then is it released, so the ordering is the
+    evidence. On the pre-#5642 shape the blocked loop cannot answer /health, the
+    release never comes, and the run deadlocks rather than merely running late -- a
+    faster or slower machine does not change that, so this cannot flake into a pass
+    either.
+    """
+    gate = _GatedProbe()
+    with _UvicornServerThread(_gated_app(gate), port = _free_port()) as uv:
+        base = f"http://127.0.0.1:{uv.port}"
+        loop_ident = _loop_thread_ident(base)
+        with ThreadPoolExecutor(max_workers = 1) as pool:
+            probe_f = pool.submit(_fire_probe, base)
+            try:
+                assert gate.entered.wait(_DEADLOCK_GUARD_SEC), (
+                    f"/probe did not reach detect_audio_type within "
+                    f"{_DEADLOCK_GUARD_SEC}s, so the request never got that far"
                 )
-        assert probe_t >= 0.5
-        attempts.append((max_lat, lats))
-        if max_lat < _MAX_HEALTH_LATENCY_SEC:
-            return
-    assert False, (
-        f"/health stalled past {_MAX_HEALTH_LATENCY_SEC}s on every one of "
-        f"{_STALL_ATTEMPTS} runs, so it is the route and not the runner: "
-        f"{[round(worst, 3) for worst, _ in attempts]} (last run: {attempts[-1][1]})"
+                codes = _health_burst(base, 12)
+                assert codes == [200] * 12, f"/health returned {codes}"
+                # Nothing has released the call, so all twelve were answered with a
+                # synchronous detect_audio_type still in flight. That is the property.
+                assert not gate.released.is_set()
+                assert not probe_f.done(), "/probe returned before the gate was released"
+            finally:
+                gate.release()
+            assert probe_f.result(_DEADLOCK_GUARD_SEC) == {"audio_type": "snac"}
+    assert gate.calls == 1, f"detect_audio_type ran {gate.calls} times, expected 1"
+    assert gate.thread_ident is not None
+    assert gate.thread_ident != loop_ident, (
+        "detect_audio_type ran on the event loop thread itself, so the asyncio.to_thread "
+        "wrapper is gone and #5642 is back"
     )
 
 
@@ -441,36 +559,42 @@ def test_50_concurrent_probes_complete_without_deadlock():
 
 
 def test_100_concurrent_healths_during_slow_probe_all_responsive():
-    """100 /health across 8 threads during a slow /probe: latency stays bounded with the fix."""
-    with FakeLlamaServer(tok_delay = 0.4, detok_delay = 0.4) as shim:
-        backend = _make_backend(shim.port)
-        app = _build_app(backend, wrap_in_thread = True)
-        port = _free_port()
-        with _UvicornServerThread(app, port = port) as uv:
-            base = f"http://127.0.0.1:{uv.port}"
+    """104 /health across 8 connections are all answered while a slow /probe is in flight.
 
-            def probe():
-                with httpx.Client(timeout = 30.0) as c:
-                    return c.get(f"{base}/probe").status_code
+    The old assertion was that the worst of those 104 latencies stayed under 350 ms.
+    That is a claim about the machine as much as about the route, and it is not the
+    thing the fix guarantees: what matters is that none of the 104 SERIALISE behind
+    the probe. Reaching for it through a threshold also made the test worse the more
+    concurrency it added, since a wider burst is a bigger sample of the worst case.
 
-            def health_burst(n):
-                lats = []
-                with httpx.Client(timeout = 10.0) as c:
-                    for _ in range(n):
-                        t0 = time.perf_counter()
-                        assert c.get(f"{base}/health").status_code == 200
-                        lats.append(time.perf_counter() - t0)
-                return lats
-
-            with ThreadPoolExecutor(max_workers = 9) as pool:
-                probe_f = pool.submit(probe)
-                time.sleep(0.05)  # let probe enter detect_audio_type first
-                health_fs = [pool.submit(health_burst, 13) for _ in range(8)]
-                assert probe_f.result(60.0) == 200
-                latencies = [x for f in health_fs for x in f.result(60.0)]
-    assert len(latencies) == 104
-    max_lat = max(latencies)
-    assert max_lat < 0.35, f"100-burst max latency {max_lat:.3f}s exceeds 350 ms"
+    So the burst is now required to finish IN FULL before the probe is allowed to
+    return at all. It also no longer waits 0.05s hoping the probe got into
+    detect_audio_type first; it waits on the call announcing that it did.
+    """
+    gate = _GatedProbe()
+    with _UvicornServerThread(_gated_app(gate), port = _free_port()) as uv:
+        base = f"http://127.0.0.1:{uv.port}"
+        loop_ident = _loop_thread_ident(base)
+        with ThreadPoolExecutor(max_workers = 1) as pool:
+            probe_f = pool.submit(_fire_probe, base)
+            try:
+                assert gate.entered.wait(_DEADLOCK_GUARD_SEC), (
+                    f"/probe did not reach detect_audio_type within "
+                    f"{_DEADLOCK_GUARD_SEC}s, so the request never got that far"
+                )
+                codes = _health_burst(base, 13, workers = 8)
+                assert len(codes) == 104, f"collected {len(codes)} responses, expected 104"
+                assert set(codes) == {200}, f"/health returned {sorted(set(codes))}"
+                assert not gate.released.is_set()
+                assert not probe_f.done(), "/probe returned before the gate was released"
+            finally:
+                gate.release()
+            assert probe_f.result(_DEADLOCK_GUARD_SEC) == {"audio_type": "snac"}
+    assert gate.calls == 1, f"detect_audio_type ran {gate.calls} times, expected 1"
+    assert gate.thread_ident != loop_ident, (
+        "detect_audio_type ran on the event loop thread itself, so the asyncio.to_thread "
+        "wrapper is gone and #5642 is back"
+    )
 
 
 # (5) Drift / regression guards on the production source

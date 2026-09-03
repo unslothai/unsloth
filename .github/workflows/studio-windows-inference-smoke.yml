@@ -28,6 +28,8 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
       - 'tests/studio_setup_ps1/**'
       # The PowerShell unit tests this workflow runs live here. Without this a
@@ -191,6 +193,18 @@ jobs:
       # jobs. Gating it on `!cancelled()` would install onto a runner whose
       # pinned Python or Node never materialised, and every phase below gates on
       # assert-prebuilt, which would then pass and hide the real failure.
+
+      # 96s of a ~257s install on Windows (`[72s] building frontend...` -> `[168s]
+      # frontend built`, 37% of it), spent in five Windows jobs on every commit to
+      # produce byte-identical output. The key hashes exactly the paths
+      # studio/setup.ps1:3526-3549 checks before rebuilding, so a hit means the build
+      # inputs are byte-identical; the action's own reasoning, and the assertion that
+      # a hit was actually REUSED rather than rebuilt, live in
+      # .github/actions/frontend-dist-restore and -save.
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
       - name: Install Unsloth (--local, --no-torch)
         id: install
         timeout-minutes: 25
@@ -221,6 +235,15 @@ jobs:
             Tee-Object -FilePath logs/install.log |
             ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: asserts the hit was reused (a `building
+      # frontend` line after a hit fails the job -- otherwise the cache costs a
+      # download, saves nothing, and still reports a hit), then saves on main only.
+      - name: Save the built frontend
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         id: assert-prebuilt
@@ -253,7 +276,7 @@ jobs:
       # key on THIS step rather than on assert-prebuilt. shim only runs when
       # assert-prebuilt succeeded, so `steps.shim.outcome == 'success'` implies
       # the assertion passed and additionally catches a missing shim, which
-      # would otherwise let all three phases boot a Studio that is not on PATH.
+      # would otherwise let all three phases boot an Unsloth that is not on PATH.
       - name: Add Unsloth shim to GITHUB_PATH
         id: shim
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
@@ -272,7 +295,12 @@ jobs:
         id: sdks
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         timeout-minutes: 10
-        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: python -m pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       # Phase 1's environment and model cache sit HERE, after the shared
       # preamble, not before it. They used to run before the installer, which is
@@ -402,13 +430,27 @@ jobs:
           # the whole job. The Unsloth backend's _wait_for_health now
           # catches httpx.ReadError too; this retry layer covers the
           # cases the backend can't recover from on its own.
+          #
+          # speculative_type=off and n_parallel=1 are what make the determinism
+          # assertion in the next step answerable. llama-server's README: "the
+          # logits are not guaranteed to be bit-for-bit identical for different
+          # batch" sizes. A non-MTP GGUF otherwise takes the --spec-default branch,
+          # which is live n-gram drafting, not the absence of a drafter: the server
+          # logs "draft acceptance = 0.46875 (30 accepted / 64 generated)". Its
+          # draft pool is built from text the server has already seen, so the FIRST
+          # turn-1 request after a load drafts nothing and decodes one token at a
+          # time while every later one verifies a ~32-token draft in one batch, and
+          # check(runner(), runner()) always compares the cold replay against a warm
+          # one. n_parallel=1 also drops --kv-unified, whose shared-pool occupancy is
+          # a second input to the batch. The other phases of this workflow keep both
+          # defaults, so the shipped path stays covered.
           LOAD_OK=0
           for attempt in 1 2 3; do
             HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
               -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
               -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
               --max-time 600 \
-              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048,\"speculative_type\":\"off\",\"n_parallel\":1}")
             if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
             echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
             cat /tmp/load.json || true
@@ -442,7 +484,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -934,7 +976,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -1323,7 +1365,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped

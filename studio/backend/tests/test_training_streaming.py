@@ -469,6 +469,7 @@ def test_streaming_start_happy_path_reaches_backend():
         current_job_id = "job_test",
         is_training_active = lambda: False,
         start_training = _start_training,
+        peek_start_request = lambda request_id: None,
         reserve_start_request = lambda request_id, job_id: ("reserved", start_record),
         resolve_start_request = lambda *args, **kwargs: start_record,
     )

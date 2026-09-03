@@ -29,10 +29,36 @@ for _up in _iso.parents:
         break
 # -----------------------------------------------------------------------------------
 
+# --- shared test helpers on sys.path -----------------------------------------------
+# tests/_shared holds no package marker and pytest only puts a *test file's* own
+# directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
+# cannot reach it by import. Adding it here (this conftest is collected for anything
+# under tests/) is what lets all four levels share one module rather than each growing
+# a private copy -- see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
+import sys as _sys  # noqa: E402
+
+_shared_dir = _iso.parent / "_shared"
+if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
+    _sys.path.insert(0, str(_shared_dir))
+# -----------------------------------------------------------------------------------
+
 import importlib.util
 import os
 import sys
 import types
+
+import pytest
+
+
+@pytest.fixture(autouse = True)
+def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
+    """Mechanism: tests/_shared/installer_venv_root.py.
+
+    Imported inside the body because tests/_shared reaches sys.path further down this file,
+    and an autouse fixture must not depend on where in the module it is defined.
+    """
+    from installer_venv_root import contain_installer_venv_root
+    contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
 def _has_real_accelerator() -> bool:
@@ -139,6 +165,10 @@ def _install_device_type_stub(name: str) -> None:
     stub.device_synchronize = lambda *a, **k: None
     stub.device_empty_cache = lambda *a, **k: None
     stub.device_is_bf16_supported = lambda *a, **k: False
+    stub.arch_lacks_bf16 = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    )
+    stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 
 

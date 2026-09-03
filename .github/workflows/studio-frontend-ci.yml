@@ -22,8 +22,15 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
+      - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/playwright_keyboard_shortcuts.py'
+      - 'tests/studio/playwright_find_in_page.py'
+      - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
+      - 'tests/studio/playwright_code_block_flicker.py'
+      - 'tests/studio/_code_block_flicker_analysis.py'
+      - 'tests/studio/test_code_block_flicker_contract.py'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
@@ -56,8 +63,10 @@ jobs:
     # Two browser smokes (~50s) plus the Chromium install now sit inside this.
     # 20 was not a budget, it was the bound on the Chromium install: the step had
     # none of its own, so the job timeout was what eventually stopped it, and it
-    # stopped everything after it too. That step is bounded at 16 now, so this can
-    # be sized for the work plus that worst case.
+    # stopped everything after it too. That step carries its own bound now -- 33m,
+    # covering the two guarded helper calls it authorises -- so this is sized for
+    # the work plus that worst case, and stays above it so the STEP timeout is what
+    # fires first and names itself.
     timeout-minutes: 40
     defaults:
       run:
@@ -173,11 +182,21 @@ jobs:
       - name: Built bundle must not contain Unsloth's unstable_Provider call site
         run: |
           set -e
-          JS=$(ls dist/assets/index-*.js | head -1)
-          HITS=$(grep -c 'unstable_Provider:' "$JS" || echo 0)
+          # `ls | head` takes its status from head, so a missed glob leaves JS
+          # empty and set -e never sees it. grep would then exit 2 on "" and the
+          # guard would pass on a bundle nobody looked at.
+          JS=$(ls dist/assets/index-*.js 2>/dev/null | head -1)
+          if [ ! -f "$JS" ]; then
+            echo "::error::no dist/assets/index-*.js to scan, so the build produced no main bundle"
+            exit 1
+          fi
+          # `|| true`, not `|| echo 0`: on no match grep -c PRINTS 0 and exits 1,
+          # so the fallback appended a second line and the -gt below died with
+          # "integer expression expected" on every green run.
+          HITS=$(grep -c 'unstable_Provider:' "$JS" || true)
           echo "main bundle: $JS"
-          echo "unstable_Provider: hits=$HITS (assistant-ui internals contribute up to 3)"
-          if [ "$HITS" -gt 3 ]; then
+          echo "unstable_Provider: hits=${HITS:-0} (assistant-ui internals contribute up to 3)"
+          if [ "${HITS:-0}" -gt 3 ]; then
             echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Unsloth bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
             exit 1
           fi
@@ -201,22 +220,159 @@ jobs:
       # Smokes go last: every step carries an implicit success(), so running them ahead of
       # the build gates let one red smoke skip the build and all three bundle assertions.
       # Costs nothing here, since each smoke starts its own vite server and reads no dist/.
-      # `--with-deps` shells out to apt, so this is an apt step wearing a different
-      # name and it fails the same way. On 2026-08-19 it sat here for 16m38s, the
-      # job hit `timeout-minutes: 20`, and the run was reported as "cancelled" with
-      # the browser smokes and the lifecycle tests below simply skipped. Bounded at
-      # 2 x 420s because the browser download is genuinely large; a third attempt
-      # would not fit the budget and the first two already cover a mirror hiccup.
+      #
+      # The install below was `playwright install --with-deps chromium`. That flag
+      # shells out to apt, so it was an apt step wearing a different name and it
+      # failed the same way: it once sat here for 16m38s, the job hit its
+      # `timeout-minutes`, and the run was reported as "cancelled" with the browser
+      # smokes and the lifecycle tests below simply skipped. It was still failing on
+      # 2026-08-19 (job 96072994354): 9 packages, 21.1 MB, `fonts-wqy-zenhei
+      # [7472 kB]` alone taking 5m50s off azure.archive.ubuntu.com, both 420s
+      # attempts dying mid-download -- the same mirror and the same package that took
+      # the webkit shards down in #9289.
+      #
+      # So it is split the way studio-ui-smoke.yml splits it: engine download, then a
+      # launch probe, then apt ONLY if the probe says the libraries are missing. The
+      # 2 x 420s budget stays: it is the engine download that is genuinely large, and
+      # a third attempt would not fit the step timeout.
+      - name: Pin the Playwright version so the browser cache has a key
+        id: pw
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install 'playwright>=1.45,<2' pytest
+          echo "version=$(python3 -c 'from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Keys deliberately IDENTICAL to the chromium-only shards in
+      # studio-ui-smoke.yml (engine token `c`): same runner image, same Playwright
+      # version, same single engine, so the same entry is correct for both and this
+      # job starts warm off whatever main saved there. Diverging the key here would
+      # cost a second copy of the same bytes against a budget measured at 99.3% full.
+      - name: Restore the Playwright browser cache
+        id: pw-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
+
+      - name: Restore the apt archive cache (chromium's .deb set)
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: apt-archives-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-c-v1
+
       - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
-        timeout-minutes: 17
+        # Two helper calls now, not one -- the engine download and the apt
+        # transaction are separated -- so the authorised worst case doubles:
+        # 2 x (2 x 420s + 125s lock wait) = 1930s. 17m used to cover one call and
+        # would now cut the last attempt off mid-download, which
+        # test_the_retry_budget_fits_inside_the_step_timeout fails the build for.
+        #
+        # Both calls are guarded, so the common path spends none of this: the engine
+        # download is skipped on a browser-cache hit, and apt is skipped entirely
+        # when the probe says the libraries are already there. This budget is only
+        # reachable when the cache misses AND the image is missing libraries AND the
+        # mirror is degraded -- which is the run that used to fail outright.
+        timeout-minutes: 33
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '420'
+          # `--with-deps` used to run apt unconditionally here, and apt's own retries
+          # multiplied every stalled transfer inside the attempt budget. Observed on
+          # main 2026-08-19 (job 96072994354): 9 packages, 21.1 MB, and
+          # `fonts-wqy-zenhei [7472 kB]` alone took 5m50s off
+          # azure.archive.ubuntu.com -- both 420s attempts died mid-download and the
+          # job failed. Same mirror and the same package that took the webkit shards
+          # down in #9289.
+          APT_ACQUIRE_RETRIES: '0'
         run: |
-          python3 -m pip install 'playwright>=1.45,<2' pytest
-          bash .github/scripts/retry-with-apt-lock.sh \
-            python3 -m playwright install --with-deps chromium
+          # The engine first, and WITHOUT --with-deps. That flag makes playwright run
+          # its own `apt-get update` internally, which is the one apt call this repo
+          # cannot restructure -- so it is not used. A CDN download and an apt
+          # transaction are two different failures and they are separated here, the
+          # same way studio-ui-smoke.yml separates them.
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python3 -m playwright install chromium
+          fi
+
+          # Then ask whether the system libraries are actually missing instead of
+          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # nearly all of them; when it does, this skips an apt update and a
+          # transaction that would install nothing. Launching the engine is the
+          # honest test of that -- it is what the smokes below are about to do.
+          probe() {
+            python3 - "$@" <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+
+          missing = []
+          with sync_playwright() as p:
+              for name in sys.argv[1:]:
+                  try:
+                      browser = getattr(p, name).launch()
+                      browser.close()
+                  except Exception as exc:
+                      missing.append(f"{name}: {type(exc).__name__}")
+          if missing:
+              print("engines that will not start: " + "; ".join(missing))
+              sys.exit(1)
+          print("chromium launches; system libraries are present")
+          PY
+          }
+
+          if probe chromium; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
+          else
+            echo "system libraries are missing, installing them"
+            # Hand apt last run's .debs before it goes looking for them. apt checks
+            # each file against its index and re-fetches only what does not match, so
+            # a stale cache costs a download rather than a wrong install.
+            if [ -d "${{ github.workspace }}/.apt-archives" ]; then
+              sudo cp "${{ github.workspace }}"/.apt-archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+              echo "seeded $(ls "${{ github.workspace }}"/.apt-archives/*.deb 2>/dev/null | wc -l) cached .deb files"
+            fi
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python3 -m playwright install-deps chromium
+            # Harvest for next time: apt keeps what it installed in the archive dir
+            # until something runs `apt-get clean`, so this is exactly what it used.
+            mkdir -p "${{ github.workspace }}/.apt-archives"
+            sudo cp /var/cache/apt/archives/*.deb "${{ github.workspace }}/.apt-archives/" 2>/dev/null || true
+            sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/.apt-archives" || true
+            # Fail loudly rather than proceeding into smokes that cannot launch a
+            # browser: without this the real error surfaces later as an opaque
+            # per-test timeout in whichever smoke happens to run first.
+            probe chromium
+          fi
+
+      # Both saves are main-only, the rule every cache in this repo follows: a
+      # PR-scoped entry can only be restored by re-runs of that same PR while still
+      # counting against the shared budget, evicting the copy every PR can read.
+      #
+      # And NOT under always(). These keys are immutable, so a save that runs after a
+      # failed install would store a half-downloaded engine or a partial .deb set
+      # under the key every later run reads, and no later run could replace it. The
+      # implicit success() is what makes the payload trustworthy;
+      # test_cache_budget_discipline.py fails the build if either save reaches for
+      # always() again.
+      - name: Save the Playwright browser cache
+        if: github.ref == 'refs/heads/main' && steps.pw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw-cache.outputs.cache-primary-key }}
+
+      - name: Save the apt archive cache
+        if: github.ref == 'refs/heads/main' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
 
       # Browserless, but imports the harnesses (hence playwright), so it sits after the
       # install. Covers the Windows teardown branch no runner here executes.
@@ -227,7 +383,8 @@ jobs:
             tests/studio/test_autoscroll_harness_contract.py \
             tests/studio/test_heavy_thread_harness_contract.py \
             tests/studio/test_heavy_thread_measurement_integrity.py \
-            tests/studio/test_heavy_thread_gap_contract.py -q
+            tests/studio/test_heavy_thread_gap_contract.py \
+            tests/studio/test_code_block_flicker_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
@@ -245,6 +402,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
+      # A gate, not a measurement. The released and streamdown variants are positive controls
+      # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
+      # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
+      # fallback the index.css override exists for.
+      - name: Browser smoke for code block flicker
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_FLICKER_ENGINES: chromium
+        run: python3 tests/studio/playwright_code_block_flicker.py
+
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all
       # a PR gate can afford. The measurement this harness exists for is the three-engine,
@@ -259,14 +426,47 @@ jobs:
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
 
+      # A failure means dismissal triggered an unconfirmed delete.
+      - name: Browser check for non-modal menu dismissal
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+
       # The settings panels are fetched on first view, so only a browser can answer whether
       # every tab renders and deep-opens land (and abandoned ones do not come back).
       - name: Browser smoke for the settings tab panels
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
 
+      # A listener is not a pure function: what a chord does to a focused button, to a
+      # text field, on auto-repeat, or under AltGr is only answerable in a browser, and
+      # the node suite pins those through source text. Chromium here because that is what
+      # this job installs; SMOKE_ENGINES=chromium,firefox,webkit runs the same checks
+      # against all three when the matcher or the reserved sets change.
+      - name: Browser smoke for keyboard shortcuts
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_keyboard_shortcuts.py
+
+      # The node suite reaches the flatten, the offset map and the search, which are pure.
+      # A Range has no geometry off a document, CSS.highlights paints nothing, and a chord
+      # the browser owns cannot be taken from it in a unit test, so the count, the walk and
+      # the teardown are only answerable here. The run also degrades the engine three ways:
+      # no highlight registry, a checkVisibility that honours only the historic option
+      # names, and no checkVisibility at all, which between them are Firefox below 140,
+      # Chrome 105-120, and the WebKitGTK the desktop build is handed. Chromium here
+      # because that is what this job installs; SMOKE_ENGINES=chromium,firefox,webkit
+      # runs all three locally.
+      - name: Browser smoke for find in page
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_find_in_page.py
+
+      - name: Browser smoke for tool activity collapse
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_ENGINE: chromium
+        run: python3 tests/studio/playwright_tool_activity.py --json
+
       # A panel that cannot be fetched is new with lazy loading, and nothing above the
-      # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
+      # root-mounted dialog catches, so unguarded it unmounts Unsloth, not one panel.
       - name: Browser smoke for a settings panel that cannot load
         working-directory: ${{ github.workspace }}
         env:
@@ -297,13 +497,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-smoke-artifacts
-          # Four of the five smokes write logs/playwright-<name>; the settings smoke writes a
-          # JSON report instead, under its own name, so a bare playwright-* glob uploaded
-          # everything EXCEPT the report of the smoke that had just failed.
+          # Include the settings and dismissal probe reports as well as playwright-* logs.
           path: |
             logs/playwright-*
             logs/settings_tabs_report.json
             logs/settings_tabs_blocked_report.json
+            logs/pw/
           retention-days: 3
           if-no-files-found: ignore
 

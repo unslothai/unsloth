@@ -16,9 +16,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
+from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
+from utils.utils import hf_env_offline
 from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
@@ -37,6 +40,7 @@ from models.data_recipe import (
     SeedInspectUploadRequest,
     UnstructuredFileUploadResponse,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -66,8 +70,8 @@ UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-# Frontend-generated upload namespace (UUID4 hex). Legacy node ids (n1, ...)
-# never match: those directories can be shared by several recipes.
+# Frontend-generated upload namespace (UUID4 hex); legacy node ids (n1, ...) never match,
+# since those directories can be shared by several recipes.
 _UPLOAD_UID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -94,14 +98,14 @@ def _normalize_optional_text(value: str | None) -> str | None:
     return trimmed if trimmed else None
 
 
-def _list_hf_data_files(*, dataset_name: str, token: str | None) -> list[str]:
+def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import HfHubHTTPError
     except ImportError:
         return []
     try:
-        api = HfApi()
+        api = HfApi(token = token)
         repo_files = api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
         return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
     except (HfHubHTTPError, OSError, ValueError):
@@ -154,7 +158,7 @@ def _build_stream_load_kwargs(
     dataset_name: str,
     split: str,
     subset: str | None,
-    token: str | None,
+    token: HfTokenArg,
     data_file: str | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
@@ -162,13 +166,12 @@ def _build_stream_load_kwargs(
         "split": split,
         "streaming": True,
         "trust_remote_code": False,
+        "token": token,
     }
     if data_file:
         kwargs["data_files"] = [data_file]
     if subset:
         kwargs["name"] = subset
-    if token:
-        kwargs["token"] = token
     return kwargs
 
 
@@ -316,7 +319,9 @@ def _read_preview_rows_from_multi_files(
 
 
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
-def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
+def inspect_seed_dataset(
+    payload: SeedInspectRequest, allow_ambient_token: bool = Depends(allow_ambient_hf_token)
+) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
     if not dataset_name or dataset_name.count("/") < 1:
         raise HTTPException(
@@ -337,8 +342,21 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
-    token = _normalize_optional_text(payload.hf_token)
+    # From the caller, like every other Hub-reaching route: a hardcoded False would take
+    # the ambient fallback from UI sessions too.
+    token = hf_token_arg(
+        _normalize_optional_text(payload.hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
     preview_size = int(payload.preview_size)
+    if is_anonymous(token) and hf_env_offline():
+        # Offline, `datasets` satisfies a streaming load from its own cache and the sentinel
+        # never reaches an authorization check, so a previously cached private dataset would
+        # come back as rows. The check-format path refuses the same way.
+        raise HTTPException(
+            status_code = 404,
+            detail = "Dataset preview is not available without Hub authorization.",
+        )
 
     preview_rows: list[dict[str, Any]] = []
     data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
@@ -438,44 +456,114 @@ def _get_block_total_size(block_dir: Path) -> int:
             continue
         if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
             continue
+        # remove_unstructured_file keys on the name up to the first dot.
+        if is_appledouble_metadata(f):
+            continue
         total += f.stat().st_size
     return total
 
 
-@router.post("/seed/upload-unstructured-file")
-async def upload_unstructured_file(
-    file: UploadFile = FastAPIFile(...), block_id: str = Form(...)
-) -> UnstructuredFileUploadResponse:
-    _validate_safe_id(block_id, "block_id")
-
-    original_filename = file.filename or "upload"
-    ext = Path(original_filename).suffix.lower()
-    if ext not in UNSTRUCTURED_ALLOWED_EXTS:
-        raise HTTPException(
-            400,
-            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
-        )
-
-    content = await file.read()
-    size_bytes = len(content)
-
-    if size_bytes == 0:
-        raise HTTPException(400, "Empty file not allowed")
-
+def _require_within_budget(size_bytes: int, budget: int) -> None:
+    """413 on the tighter of the per-file cap and what the block has left."""
     if size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES:
         raise HTTPException(
             413,
             f"File too large ({size_bytes} bytes). Maximum is {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}.",
         )
-
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
-    ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir)
-    if current_total + size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES:
+    if size_bytes > budget:
         raise HTTPException(
             413,
             f"Total upload limit ({UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}) exceeded",
         )
+
+
+def _require_unstructured_ext(filename: str) -> str:
+    """Reject an unsupported type before any bytes are read."""
+    ext = Path(filename).suffix.lower()
+    if ext not in UNSTRUCTURED_ALLOWED_EXTS:
+        raise HTTPException(
+            400,
+            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
+        )
+    return ext
+
+
+def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
+    """Read a desktop drop; returns (filename, content).
+
+    The webview never names a path directly: Rust signs what the OS handed it,
+    and this re-verifies and re-stats that grant before reading a byte. Same
+    contract as the RAG route's ``_save_native_path_upload``.
+
+    ``budget`` is what is still allowed for this block. The path is a local file
+    of any size, so it is refused on its stat rather than after a multi-gigabyte
+    read, and the read itself stops one byte past the budget in case the file
+    grew between the two.
+    """
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = "attach",
+            expected_kind = "attachment",
+            expected_path_type = "file",
+            allowed_suffixes = sorted(UNSTRUCTURED_ALLOWED_EXTS),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    _require_unstructured_ext(grant.canonical_path.name)
+    try:
+        size_bytes = grant.canonical_path.stat().st_size
+    except OSError as exc:
+        raise HTTPException(400, "Dropped file could not be read.") from exc
+    _require_within_budget(size_bytes, budget)
+
+    try:
+        with grant.canonical_path.open("rb") as source:
+            content = source.read(budget + 1)
+    except OSError as exc:
+        raise HTTPException(400, "Dropped file could not be read.") from exc
+    _require_within_budget(len(content), budget)
+    return grant.canonical_path.name, content
+
+
+@router.post("/seed/upload-unstructured-file")
+async def upload_unstructured_file(
+    file: UploadFile | None = FastAPIFile(None),
+    block_id: str = Form(...),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+) -> UnstructuredFileUploadResponse:
+    _validate_safe_id(block_id, "block_id")
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    # Reads 0 for a block with no directory yet, so this does not create one for
+    # an upload that is about to be refused.
+    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
+
+    # Desktop drops arrive as a signed path.
+    # Tauri hands the webview a path, never a File (#9036); isinstance, not a truth test, since an unfilled Form param
+    # is still truthy.
+    lease = native_path_lease if isinstance(native_path_lease, str) else None
+    if lease:
+        original_filename, content = _read_native_drop(lease, budget)
+    elif file is not None and hasattr(file, "read"):
+        original_filename = file.filename or "upload"
+        # Before the read: a rejected 500 MB upload must not be pulled into memory first.
+        _require_unstructured_ext(original_filename)
+        content = await file.read()
+    else:
+        raise HTTPException(400, "No file was provided.")
+
+    ext = Path(original_filename).suffix.lower()
+    size_bytes = len(content)
+
+    if size_bytes == 0:
+        raise HTTPException(400, "Empty file not allowed")
+
+    _require_within_budget(size_bytes, budget)
+    ensure_dir(block_dir)
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"

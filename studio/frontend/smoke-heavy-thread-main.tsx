@@ -19,7 +19,7 @@
 //   typescript fence     a second language, so one grammar is not the whole Shiki story
 //   python tool call     collapsible card with a code-execution result pane
 //   bash tool call       code_execution card, the other result-pane shape
-//   html artifact        a full ```html document, which Studio collapses into an artifact card
+//   html artifact        a full ```html document, which Unsloth collapses into an artifact card
 //   render_html tool     the HTML canvas artifact, as a tool part rather than a fence
 //   svg fence            a highlighted fence that also renders an inline <img> preview
 //   image parts          a raster PNG data URL and a unique SVG data URL, as image content parts
@@ -63,10 +63,9 @@ import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
 // The local runtime's thread list item reports a synthetic `__LOCALID_...` remoteId, which is
-// truthy, so the fork-count badge really does fire one GET per assistant message. Answering them
-// here, before anything mounts, keeps that off the wire entirely; answering them from the
-// Playwright side instead would put a round trip to another process inside a timed region, once
-// per assistant message.
+// truthy, so the fork-count badges really do ask the backend. Answering them here, before anything
+// mounts, keeps that off the wire entirely; answering them from the Playwright side instead would
+// put a round trip to another process inside a timed region.
 // An explicit allowlist, never a blanket `/api/` match. A blanket match resolves EVERY request the
 // measured interactions make before Playwright emits it, so `stray_api_requests` stays at zero and
 // the fan-out this harness exists to detect becomes invisible to it. Narrowing it is what made the
@@ -76,11 +75,20 @@ import "./src/index.css";
 // returns, so no round trip lands inside a timed region. Anything NOT listed here goes to the
 // network and trips the stray counter, which is the point.
 const STUBBED_API: ReadonlyArray<readonly [RegExp, string]> = [
-  // One GET per assistant message: the synthetic `__LOCALID_...` remoteId is truthy, so the badge
-  // really does ask. `{ count: 0 }`, not `{}`: getForkCount returns `data.count`, and
-  // `undefined <= 0` is false, so an empty body renders a badge reading "undefined forks" on every
-  // assistant message and adds DOM in proportion to thread size, the axis being measured.
-  [/\/api\/chat\/threads\/[^/]+\/messages\/[^/]+\/forks$/, '{"count":0}'],
+  // The fork-count badges. One GET per THREAD, not per message: fork-count-store subscribes once
+  // per rendered thread and refreshes on CHAT_HISTORY_UPDATED_EVENT, which the delete action
+  // fires, so the harness provokes it during seeding and again inside the measured actions.
+  //
+  // The endpoint used to be per message, `/threads/{id}/messages/{id}/forks` answering
+  // `{"count":n}`, and that is the shape this allowlist was written against. The per-thread
+  // endpoint replaced it and this entry was not moved with it, so every one of these went to the
+  // dev server and the run failed its own stray-request check. Match the shape the app actually
+  // requests, and answer with the body it actually returns: `getThreadForkCounts` reads
+  // `data.counts` and builds a Map from it, so `{"counts":{}}` is "no message has forks" and
+  // renders no badge on any message. An empty `{}` body would leave the same empty Map today, but
+  // it is not what the endpoint returns, and a stub that answers a shape the endpoint never sends
+  // is how this drifted in the first place.
+  [/\/api\/chat\/threads\/[^/]+\/forks$/, '{"counts":{}}'],
   // The delete action's own persistence. deleteThreadMessage syncs the exported repository
   // whenever remoteId is truthy, which the synthetic id always is, so this is the fixture
   // maintaining itself rather than app fan-out. Left on the wire it is 3 round trips inside the
@@ -226,7 +234,7 @@ function jsonFence(index: number, targetChars: number): string {
 }
 
 function htmlArtifact(index: number, targetChars: number): string {
-  // A full document, which is what Studio treats as an artifact rather than as a code block,
+  // A full document, which is what Unsloth treats as an artifact rather than as a code block,
   // and it draws on a <canvas> so the fixture carries the shape users call a canvas artifact.
   const head = [
     "<!doctype html>",
@@ -257,7 +265,7 @@ function htmlArtifact(index: number, targetChars: number): string {
 }
 
 function svgFence(index: number, targetChars: number): string {
-  // Studio renders a highlighted fence AND an inline <img> preview for an svg fence, so this one
+  // Unsloth renders a highlighted fence AND an inline <img> preview for an svg fence, so this one
   // block buys both a Shiki pass and an image decode. No <script>, no on*= handlers, no
   // <foreignObject>: any of those make the preview refuse to render and the block silently
   // becomes an ordinary code fence.
@@ -577,11 +585,20 @@ const EXPECTED_PER_CYCLE: Record<string, number> = {
   artifactCards: 2,
   // python, typescript, json, svg, the html document, and the two tool result panes.
   codeBlocks: 7,
-  // Shiki is async and per block, so a <pre> exists long before it is highlighted. A floor under
-  // the token count is what tells a finished thread apart from one still building itself; a
-  // settled-looking count of 577 against the 3216 a whole cycle produces is a real measured
-  // failure of the naive "it stopped moving" gate.
-  highlightedTokens: 2500,
+  /*
+   * THE CODE ITSELF, in characters: the one size measure deferral cannot move.
+   *
+   * This was a floor of 2,500 highlighted tokens, doing two jobs at once. Off-screen fences now
+   * render as a plain shell, so tokens partly measure where the viewport is: the same fixture
+   * renders 1,322 per cycle where it rendered 3,216. Characters do not move, because the shell
+   * carries the same text node: 12,660 for one cycle and 51,081 for four (2 of 5 and 15 of 20
+   * fences deferred), and Chromium, Firefox and WebKit each report 12,660 to the character.
+   *
+   * Floor 12,000 against 12,660; a cycle is seven blocks averaging ~1,800 chars, so losing any one
+   * block still fails. The other job, telling a settled thread from one still building itself, is
+   * now `unhighlightedMountedFences`, asked per block.
+   */
+  codeChars: 12000,
 };
 
 /**
@@ -773,6 +790,33 @@ function HeavyThreadApi({
           domNodes: document.getElementsByTagName("*").length,
           codeBlocks: document.querySelectorAll("pre").length,
           highlightedTokens: document.querySelectorAll("pre code span").length,
+          /*
+           * HOW MUCH CODE IS ON THE PAGE. `highlightedTokens` cannot answer that any more: a
+           * deferred fence renders as a plain shell, so tokens measure where the reader is
+           * looking. The shell holds the same text node the highlighted block holds (which is
+           * also why selection, clipboard and find-in-page are identical across the two states),
+           * so characters read the same either way and still drop if the fixture loses code.
+           */
+          codeChars: Array.from(document.querySelectorAll("pre code")).reduce(
+            (total, node) => total + (node.textContent?.length ?? 0),
+            0,
+          ),
+          fenceBlocks: document.querySelectorAll('[data-streamdown="code-block"]').length,
+          deferredFences: document.querySelectorAll("[data-unsloth-fence-deferred]").length,
+          /*
+           * A fence that is NEITHER deferred NOR highlighted, at rest: the settlement half of the
+           * old token floor, asked per block. Streamdown mounts a code block on its own
+           * unhighlighted fallback and colours it from a passive effect, so this state exists for
+           * a frame on any build and a settled thread must hold none. Stronger than a floor on
+           * the total, which one stuck block passes as long as the others make up the count.
+           */
+          unhighlightedMountedFences: Array.from(
+            document.querySelectorAll('[data-streamdown="code-block"]'),
+          ).filter(
+            (block) =>
+              !block.hasAttribute("data-unsloth-fence-deferred") &&
+              block.querySelector("pre code span") === null,
+          ).length,
           toolParts: document.querySelectorAll(".aui-tool-fallback-root").length,
           // The collapsible CONTENT ELEMENT, which Radix keeps in the tree for its collapse
           // animation. It is present whether the card is open or shut, so it counts cards, not

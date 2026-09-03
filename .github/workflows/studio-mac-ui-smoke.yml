@@ -22,7 +22,7 @@
 # and asserting the machine is clean -- that is the teardown for the whole job,
 # so nothing needing Unsloth installed may follow it.
 
-name: Mac Studio UI + API + Update + Inference CI
+name: Mac Unsloth UI + API + Update + Inference CI
 
 on:
   pull_request:
@@ -44,6 +44,11 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'
@@ -84,6 +89,11 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'
@@ -637,7 +647,12 @@ jobs:
         id: sdks-chat
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         timeout-minutes: 5
-        run: pip install 'openai>=1.50' 'anthropic>=0.40'
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-chat
@@ -696,10 +711,23 @@ jobs:
         # curl already caps itself at --max-time 600; +2 for process overhead.
         timeout-minutes: 12
         run: |
+          # speculative_type=off and n_parallel=1 are what make the determinism
+          # assertion in the next step answerable. llama-server's README: "the
+          # logits are not guaranteed to be bit-for-bit identical for different
+          # batch" sizes. A non-MTP GGUF otherwise takes the --spec-default branch,
+          # which is live n-gram drafting, not the absence of a drafter: the server
+          # logs "draft acceptance = 0.46875 (30 accepted / 64 generated)". Its
+          # draft pool is built from text the server has already seen, so the FIRST
+          # turn-1 request after a load drafts nothing and decodes one token at a
+          # time while every later one verifies a ~32-token draft in one batch, and
+          # check(runner(), runner()) always compares the cold replay against a warm
+          # one. n_parallel=1 also drops --kv-unified, whose shared-pool occupancy is
+          # a second input to the batch. The other phases of this workflow keep both
+          # defaults, so the shipped path stays covered.
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
             --max-time 600 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048,\"speculative_type\":\"off\",\"n_parallel\":1}" \
             | jq '{status, display_name, is_gguf, context_length}'
 
       - name: Multi-turn determinism via OpenAI + Anthropic SDKs
@@ -1265,7 +1293,12 @@ jobs:
         id: sdks-vision
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         timeout-minutes: 5
-        run: pip install 'openai>=1.50' 'anthropic>=0.40'
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-vision

@@ -3,7 +3,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for custom/env-mode stable-diffusion.cpp removal in scripts/uninstall.sh.
 #
-# A custom Studio (UNSLOTH_STUDIO_HOME=<root>) installs its native diffusion build beside
+# A custom Unsloth (UNSLOTH_STUDIO_HOME=<root>) installs its native diffusion build beside
 # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
 # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py). Uninstall must remove that sibling too, or
 # a stale build lingers and a fresh install's finder can pick it up. Tested hermetically:
@@ -67,8 +67,8 @@ grep -q '_remove_path' "$DEFAULT_FILE" || { echo "FAIL: default fragment missing
 # shellcheck disable=SC1090
 . "$HELPERS_FILE"
 
-# make_studio <root> : a valid custom Studio root (share/studio.conf owner marker) plus its
-# sibling <parent>/stable-diffusion.cpp build carrying the Studio owner marker, each with a
+# make_studio <root> : a valid custom Unsloth root (share/studio.conf owner marker) plus its
+# sibling <parent>/stable-diffusion.cpp build carrying the Unsloth owner marker, each with a
 # file so removal is observable.
 make_studio() {
     mkdir -p "$1/share"
@@ -112,9 +112,9 @@ assert_nodir "shared-parent root B removed"               "$p2/studioB"
 assert_nodir "shared-parent root C removed"               "$p2/studioC"
 assert_nodir "shared sibling stable-diffusion.cpp removed" "$p2/stable-diffusion.cpp"
 
-# 3. A sibling stable-diffusion.cpp WITHOUT the Studio owner marker (a user's own checkout,
+# 3. A sibling stable-diffusion.cpp WITHOUT the Unsloth owner marker (a user's own checkout,
 #    even a built one, beside a custom root -- or one left when UNSLOTH_SD_CPP_PATH points
-#    Studio elsewhere) is KEPT, though the Studio root itself is still removed.
+#    Unsloth elsewhere) is KEPT, though the Unsloth root itself is still removed.
 p3="$_TMP_ROOT/inst3"
 mkdir -p "$p3/studioD/share"; : > "$p3/studioD/share/studio.conf"
 mkdir -p "$p3/stable-diffusion.cpp/build/bin"
@@ -132,7 +132,7 @@ _custom_studio_roots() { printf '%s\n' "$p1/studioA"; }  # a now-removed root ->
 run_loop
 assert_dir "default-mode sd.cpp untouched by custom loop" "$HOME/.unsloth/stable-diffusion.cpp"
 
-# 5. Default-mode ~/.unsloth/stable-diffusion.cpp WITH the Studio owner marker (a real Studio
+# 5. Default-mode ~/.unsloth/stable-diffusion.cpp WITH the Unsloth owner marker (a real Unsloth
 #    default install) IS removed by the default-mode line.
 rm -rf "$HOME/.unsloth/stable-diffusion.cpp"
 mkdir -p "$HOME/.unsloth/stable-diffusion.cpp/build/bin"
@@ -142,7 +142,7 @@ run_default_removal
 assert_nodir "default-mode owned sd.cpp removed" "$HOME/.unsloth/stable-diffusion.cpp"
 
 # 6. Default-mode ~/.unsloth/stable-diffusion.cpp WITHOUT the marker -- a user's own checkout at
-#    the default path (or a pre-marker Studio build) -- is KEPT, mirroring the custom-root guard,
+#    the default path (or a pre-marker Unsloth build) -- is KEPT, mirroring the custom-root guard,
 #    so uninstall never deletes a user file.
 rm -rf "$HOME/.unsloth/stable-diffusion.cpp"
 mkdir -p "$HOME/.unsloth/stable-diffusion.cpp"
@@ -183,14 +183,14 @@ mkdir -p "$p7/stable-diffusion.cpp/build/bin"
 _custom_studio_roots() { printf '%s\n' "$p7"; }
 assert_lists "nested <root>/stable-diffusion.cpp is stopped before removal" "$p7/stable-diffusion.cpp"
 
-# 8. A root this run does NOT delete (no Studio sentinels) keeps its unowned nested build running.
+# 8. A root this run does NOT delete (no Unsloth sentinels) keeps its unowned nested build running.
 p8="$_TMP_ROOT/inst8/studioF"
 mkdir -p "$p8/stable-diffusion.cpp/build/bin"
 : > "$p8/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker: the user's own build
 _custom_studio_roots() { printf '%s\n' "$p8"; }
-assert_not_lists "unowned nested build under a non-Studio root is left running" "$p8/stable-diffusion.cpp"
+assert_not_lists "unowned nested build under a non-Unsloth root is left running" "$p8/stable-diffusion.cpp"
 
-# 8b. But under a real Studio root, which the loop deletes wholesale, the unmarked nested build is
+# 8b. But under a real Unsloth root, which the loop deletes wholesale, the unmarked nested build is
 #     stopped anyway: the current-root finder can select it without a marker, and deleting the tree
 #     around a live server just leaves it holding its port.
 p8b="$_TMP_ROOT/inst8b/studioF2"
@@ -198,7 +198,7 @@ mkdir -p "$p8b/share" "$p8b/stable-diffusion.cpp/build/bin"
 : > "$p8b/share/studio.conf"
 : > "$p8b/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker
 _custom_studio_roots() { printf '%s\n' "$p8b"; }
-assert_lists "unmarked nested build under a doomed Studio root is stopped" "$p8b/stable-diffusion.cpp"
+assert_lists "unmarked nested build under a doomed Unsloth root is stopped" "$p8b/stable-diffusion.cpp"
 
 # 9. The legacy sibling an older build installed is still listed (it is still deleted).
 p9="$_TMP_ROOT/inst9"
@@ -228,7 +228,7 @@ assert_nodir "nested stable-diffusion.cpp removed with its root" "$p11/studioI/s
 assert_nodir "its custom root removed"                           "$p11/studioI"
 
 
-# ── A Studio home that is itself a symlink ────────────────────────────────────────────────────
+# ── An Unsloth home that is itself a symlink ────────────────────────────────────────────────────
 #
 # The old build derived the sd.cpp root with a plain `dirname "$UNSLOTH_STUDIO_HOME"`, so for
 # UNSLOTH_STUDIO_HOME=<link> the tree it installed sits beside the LINK. _custom_studio_roots
@@ -265,12 +265,12 @@ run_lexical_removal
 assert_dir "symlinked home: unowned sd.cpp beside the link kept" "$p14/stable-diffusion.cpp"
 assert_not_lists "symlinked home: unowned sd.cpp beside the link is left running" "$p14/stable-diffusion.cpp"
 
-# 14b. A stale or mistyped home is not a Studio root, and the lexical pass must apply the same
+# 14b. A stale or mistyped home is not an Unsloth root, and the lexical pass must apply the same
 #      ownership check the canonical loop does: "<parent>/typo" must not take the marked
 #      <parent>/stable-diffusion.cpp belonging to a different, valid install.
 p14b="$_TMP_ROOT/inst14b"
 mkdir -p "$p14b/other/share" "$p14b/stable-diffusion.cpp"
-: > "$p14b/other/share/studio.conf"          # somebody else's Studio, sharing the parent
+: > "$p14b/other/share/studio.conf"          # somebody else's Unsloth, sharing the parent
 : > "$p14b/stable-diffusion.cpp/sd-cli"
 : > "$p14b/stable-diffusion.cpp/.unsloth-studio-owned"
 UNSLOTH_STUDIO_HOME="$p14b/typo"             # never existed

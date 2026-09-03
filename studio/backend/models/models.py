@@ -153,14 +153,15 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
-    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field
-    # that exists only on the hub twin is dropped by pydantic without a word, and a qualified
-    # row falls back to rendering its whole relative path.
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that
+    # exists only on the hub twin is dropped by pydantic without a word and a qualified row falls back
+    # to rendering its whole relative path.
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -220,7 +221,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -250,6 +251,10 @@ class LocalModelInfo(BaseModel):
         description = "HF pipeline task inferred from a GGUF's architecture "
         "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
         "Images picker show only diffusion GGUFs.",
+    )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
     )
 
 
@@ -283,6 +288,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    status: str = Field(
+        default = "ok",
+        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+    )
 
 
 class BrowseEntry(BaseModel):
