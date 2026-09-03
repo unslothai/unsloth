@@ -659,7 +659,11 @@ def test_export_backend_forwards_the_sentinel_into_the_gguf_lora_conversion(
 
         @staticmethod
         def save_pretrained_gguf(
-            save_directory, tokenizer, save_method = None, quantization_method = None, token = None
+            save_directory,
+            tokenizer,
+            save_method = None,
+            quantization_method = None,
+            token = None,
         ):
             seen["token"] = token
 
