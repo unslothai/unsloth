@@ -10,6 +10,12 @@ ownership sentinel proves `DIR` already holds a flat Unsloth install: the in-ven
 with an already-nested `DIR/studio/unsloth_studio` excluded FIRST because the
 last two sit at `DIR` in BOTH layouts.
 
+The two sentinels outside the venv must also NAME it, so the fixtures below are
+generated in the shape their writer emits rather than touched into existence.
+test_portable_flat_sentinel_identity.py owns that half and cross-checks it
+against the real block lifted out of install.sh; this file stays on the layout
+decision itself.
+
 Deciding on the bare existence of `DIR/unsloth_studio` instead makes the
 resolvers disagree with the installer by construction, and `UNSLOTH_HOME=DIR`
 with no `UNSLOTH_STUDIO_HOME` is enough to hit it: an empty leftover directory of
@@ -83,6 +89,33 @@ def check(label: str, expected, actual) -> None:
         FAILS.append(label)
 
 
+def sq(value: str) -> str:
+    """The `'` -> `'\\''` escaping every install.sh writer applies to a path."""
+    return value.replace("'", "'\\''")
+
+
+def gen_conf(root: Path, venv: Path) -> None:
+    """share/studio.conf as create_studio_shortcuts writes it: the UNSLOTH_EXE
+    line NAMES the venv it vouches for, which is what makes it evidence."""
+    (root / "share").mkdir(parents = True, exist_ok = True)
+    (root / "share" / "studio.conf").write_text(
+        f"UNSLOTH_EXE='{sq(str(venv))}/bin/unsloth'\nexport UNSLOTH_PORTABLE=1\n"
+    )
+
+
+def gen_shim(root: Path, venv: Path) -> None:
+    """bin/unsloth as the --portable block generates it, ending in its exec line."""
+    (root / "bin").mkdir(parents = True, exist_ok = True)
+    shim = root / "bin" / "unsloth"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f"export UNSLOTH_HOME='{sq(str(root))}'\n"
+        "export UNSLOTH_PORTABLE=1\n"
+        f"exec '{sq(str(venv))}/bin/unsloth' \"$@\"\n"
+    )
+    shim.chmod(0o755)
+
+
 def both(label: str, expected: Path, env_extra: dict, home: Path) -> None:
     """Both resolvers must answer *expected*, and so must agree with each other."""
     r = _run(env_extra, home)
@@ -112,21 +145,24 @@ def main() -> int:
         print("\n[2] a stray venv name cannot relocate a REAL nested install")
         # share/studio.conf and bin/unsloth sit at <root> in both layouts, so
         # without the nested exclusion first these two sentinels would say flat.
+        # Both are generated naming the NESTED venv, which is what the existing
+        # install really recorded, so the exclusion is the only thing deciding.
         stray = root("nested-with-stray")
         (stray / "studio" / "unsloth_studio").mkdir(parents = True)
         (stray / "unsloth_studio").mkdir()
-        (stray / "share").mkdir()
-        (stray / "share" / "studio.conf").write_text("")
-        (stray / "bin").mkdir()
-        (stray / "bin" / "unsloth").write_text("")
+        gen_conf(stray, stray / "studio" / "unsloth_studio")
+        gen_shim(stray, stray / "studio" / "unsloth_studio")
         both("nested + stray venv", stray / "studio", {"UNSLOTH_HOME": str(stray)}, home)
 
         print("\n[3] a genuine flat install still resolves FLAT")
         # One case per sentinel: the requirement must not collapse into never-flat.
+        # The two sentinels outside the venv are generated in the shape their
+        # writer emits, since a bare file of the right NAME is no longer proof;
+        # see test_portable_flat_sentinel_identity.py for that half.
         for label, build in (
             ("owned marker", lambda p: (p / "unsloth_studio" / OWNED).write_text("")),
-            ("share/studio.conf", lambda p: (p / "share" / "studio.conf").write_text("")),
-            ("bin/unsloth shim", lambda p: (p / "bin" / "unsloth").write_text("")),
+            ("share/studio.conf", lambda p: gen_conf(p, p / "unsloth_studio")),
+            ("bin/unsloth shim", lambda p: gen_shim(p, p / "unsloth_studio")),
         ):
             flat = root("flat-" + label.split("/")[0].replace(" ", "-"))
             (flat / "unsloth_studio").mkdir(parents = True)
@@ -138,8 +174,7 @@ def main() -> int:
         print("\n[4] the nested layout install.sh builds by default")
         nested = root("nested")
         (nested / "studio" / "unsloth_studio").mkdir(parents = True)
-        (nested / "share").mkdir()
-        (nested / "share" / "studio.conf").write_text("")
+        gen_conf(nested, nested / "studio" / "unsloth_studio")
         both("plain nested", nested / "studio", {"UNSLOTH_HOME": str(nested)}, home)
 
         no_venv = root("fresh")
