@@ -135,9 +135,7 @@ def test_every_created_level_is_chowned_to_the_nearest_existing_ancestor(
     # rather than observed because chowning to another uid needs root.
     anchor = os.stat(tmp_path)
     chowned = []
-    monkeypatch.setattr(
-        runner.os, "chown", lambda p, u, g: chowned.append((str(p), u, g))
-    )
+    monkeypatch.setattr(runner.os, "chown", lambda p, u, g: chowned.append((str(p), u, g)))
 
     runner._makedirs_as_host(str(tmp_path / "sub" / "dir"))
 
@@ -185,7 +183,9 @@ def test_an_existing_output_directory_is_left_alone(runner, tmp_path):
     runner._makedirs_as_host(str(existing))
     after = os.stat(existing)
     assert (after.st_uid, after.st_gid, after.st_mode) == (
-        before.st_uid, before.st_gid, before.st_mode,
+        before.st_uid,
+        before.st_gid,
+        before.st_mode,
     )
 
 

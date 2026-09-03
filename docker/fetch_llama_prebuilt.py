@@ -148,7 +148,7 @@ def sanity_check_binaries(install_dir, build_bin):
             raise SystemExit(
                 f"FAIL: {binary} --version exited {out.returncode}; the banner text is "
                 f"not enough on its own because a dynamic-loader failure prints "
-                f"\"version `GLIBC_...' not found\" too\n{banner[:400]}"
+                f'"version `GLIBC_...\' not found" too\n{banner[:400]}'
             )
 
 
