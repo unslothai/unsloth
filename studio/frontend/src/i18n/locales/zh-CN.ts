@@ -50,6 +50,13 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    find: {
+      label: "在页面中查找",
+      previous: "上一个匹配项",
+      next: "下一个匹配项",
+      close: "关闭查找",
+      truncated: "此页面过长，无法搜索全部内容。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -220,6 +227,10 @@ export const zhCN = {
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
+        findInPage: {
+          label: "在页面中查找",
+          description: "搜索此页面上的文本",
+        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",
@@ -479,6 +490,12 @@ export const zhCN = {
           "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
+        sttDeviceLabel: "加载到",
+        sttDeviceAuto: "有 GPU 时使用 GPU",
+        sttDeviceCpu: "CPU 内存",
+        sttDeviceAutoDescription: "有 GPU 时使用 GPU，否则使用 CPU。",
+        sttDeviceCpuDescription:
+          "将模型保留在系统内存中。转写速度较慢，但不占用显存。",
         sttModelSearchPlaceholder: "搜索模型",
         sttModelSearching: "正在搜索 Hugging Face…",
         sttModelValidating: "正在检查 Whisper 兼容性…",
@@ -673,7 +690,7 @@ export const zhCN = {
         sectionTitle: "模型自动切换（OpenAI API）",
         enable: "按请求切换模型",
         enableDescription:
-          "在提供服务前，加载 API 请求中指定的已下载 GGUF。默认关闭。",
+          "在提供服务前，加载 API 请求中指定的已下载模型。默认关闭。",
         idleUnload: "空闲自动卸载",
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
@@ -810,6 +827,16 @@ export const zhCN = {
         copied: "路径已复制",
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
+      },
+      repairInstall: {
+        label: "修复安装",
+        description:
+          "对托管环境重新运行安装程序。如果未检测到 GPU 或应用无法启动，可使用此功能。",
+        action: "修复安装",
+        confirmTitle: "要修复此安装吗？",
+        confirmDescription:
+          "停止服务器并重新运行安装程序，为本机 GPU 重新安装 PyTorch。聊天记录和设置会保留。这可能需要几分钟。",
+        confirmAction: "立即修复",
       },
       resetPreferences: {
         sectionTitle: "危险区域",
@@ -1061,6 +1088,8 @@ export const zhCN = {
         currentLoad: "当前负载",
         free: "{value} 可用",
         noGpu: "无可见 GPU",
+        gpuUnusable: "GPU 不可用",
+        gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
       },
       gpu: {
         title: "GPU 设备",
@@ -1069,6 +1098,10 @@ export const zhCN = {
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
+        noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
+        mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
+        mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
+        unusableDevice: "不可用",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1189,7 +1222,7 @@ export const zhCN = {
       description:
         "使用 unsloth start 将 Claude Code、Codex 等编程智能体连接到本地模型。",
       intro:
-        "可将 Claude Code、Codex、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
+        "可将 Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
       readDocs: "查看文档",
       copy: "复制",
       copied: "已复制",
@@ -1350,6 +1383,13 @@ export const zhCN = {
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
       },
+      currentDate: {
+        label: "告诉模型今天的日期",
+        description:
+          "在提示词中加入当前日期，让联网搜索和 Deep Research 查找最新来源，而不是按模型训练数据的截止时间推断。",
+        loadError: "无法加载当前日期设置",
+        saveError: "无法更新当前日期设置",
+      },
       tools: {
         collapseByDefault: "默认折叠工具活动",
         collapseByDefaultDescription:
@@ -1372,6 +1412,11 @@ export const zhCN = {
         blockedBanner: "已阻止来自 {hosts} 的 {count} 个外部资源。",
         blockedBannerPlural: "已阻止来自 {hosts} 的 {count} 个外部资源。",
         blockedBannerAction: "允许此 Canvas",
+        blockedTitle: "Canvas 网络访问已关闭",
+        blockedHint:
+          "在“设置 → 聊天”中开启“{setting}”以允许 Canvas 加载外部资源，或仅对此 Canvas 允许。",
+        blockedSettingsAction: "打开设置",
+        blockedDismiss: "关闭",
       },
       data: "数据",
       exportHistory: "导出聊天记录",
@@ -1440,6 +1485,8 @@ export const zhCN = {
       archivedImagesDescription: "查看和管理你归档的图片。",
       archivedVideos: "已归档的视频",
       archivedVideosDescription: "查看和管理你归档的视频。",
+      archivedAudio: "已归档的音频",
+      archivedAudioDescription: "查看和管理你归档的音频片段。",
       manageAction: "管理",
       manageChats: "管理聊天",
       manageChatsDescription: "选择多个聊天进行移动、置顶、归档、导出或删除。",
@@ -1615,7 +1662,7 @@ export const zhCN = {
         desktopChecking: "正在检查更新",
         desktopCheckingDescription: "通常只需几秒钟。",
         desktopAvailable: "桌面应用 {version} 已可用",
-        desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
+        desktopAvailableDescription: "立即更新，更新将在后台准备。你可以继续工作，准备好后再重启。",
         desktopExternalServer:
           "请在启动服务器的终端中运行 `unsloth studio update`。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
@@ -1623,11 +1670,17 @@ export const zhCN = {
         desktopCheckFailedDescription: "请检查网络连接后重试。",
         desktopCurrent: "桌面应用已是最新版本",
         desktopCurrentDescription: "Unsloth 会继续自动检查更新。",
+        desktopPreparingDescription: "更新正在后台准备中。你可以继续工作。",
+        desktopReadyToRestartDescription: "一切就绪。重启即可完成更新安装。",
+        desktopReadyToInstallDescription: "应用更新已下载。请完成后端更新以安装该版本。",
         checkForUpdates: "检查更新",
         checkAgain: "再次检查",
         retryCheck: "重试",
         checking: "正在检查...",
+        preparing: "正在准备...",
         updateNow: "立即更新",
+        restartToUpdate: "重启以更新",
+        finishUpdate: "完成更新",
         openReleasePage: "打开发布页面",
         unknownInstall:
           "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请使用上面的命令。",

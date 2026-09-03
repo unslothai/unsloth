@@ -9,6 +9,9 @@ import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  markdownRenderKey,
+  markdownRenderScope,
+  parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
@@ -116,7 +119,7 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoBlocks(remend(input)),
+        parseMarkdownIntoRenderableBlocks(remend(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }
@@ -155,6 +158,31 @@ test("mid-string remend repairs use the sticky full-document fallback", () => {
     const next = cache.update(appended);
     assert.equal(next.markdown, remend(appended));
   }
+});
+
+test("link references and definitions stay in one rendered document", () => {
+  const usage = `Before [reference][math-ref].\n\n${paragraphs(20)}`;
+  const cache = new IncrementalMarkdownCache();
+  cache.update(usage);
+  const generation = cache.renderGeneration;
+
+  const complete = `${usage}[math-ref]: https://example.com/reference`;
+  const render = cache.update(complete);
+  assert.equal(cache.renderGeneration, generation);
+  assert.notEqual(markdownRenderScope(usage), markdownRenderScope(complete));
+  assert.notEqual(
+    markdownRenderKey(`${usage}[math-ref]: `),
+    markdownRenderKey(complete),
+  );
+  assert.equal(render.markdown, remend(complete));
+  assert.deepEqual(render.parseMarkdownIntoBlocks(render.markdown), [
+    remend(complete),
+  ]);
+  assert.deepEqual(parseMarkdownIntoRenderableBlocks(complete), [complete]);
+  assert.equal(
+    (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
 });
 
 test("a transient marker imbalance can recover incremental parsing", () => {

@@ -370,6 +370,8 @@ export async function validateModel(
       tensor_parallel: payload.tensor_parallel ?? false,
       disable_vision: payload.disable_vision ?? false,
       gpu_ids: payload.gpu_ids,
+      // Takes no VRAM, so validate must not preflight it and refuse what /load takes.
+      audio_device: payload.audio_device ?? null,
       // Manual placement is an explicit override: Auto layers use llama.cpp --fit, a pinned
       // layer count is owned by the user. Tell validate so it applies the same policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
@@ -492,8 +494,7 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded quant; optional for older backends. */
   last_modified?: number;
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
@@ -505,6 +506,9 @@ export interface CachedGgufRepo {
    * for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte. False on a GGUF repo row by design:
+   *  transport is per quant, so the repo cannot answer for all of them. */
+  partial_resumable?: boolean;
   capabilities?: CachedRepoCapabilities | null;
 }
 
@@ -517,6 +521,7 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
+  hfToken?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -529,6 +534,7 @@ export async function getGgufDownloadProgress(
   });
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
@@ -553,18 +559,23 @@ export interface DownloadProgressResponse {
 
 export async function getDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/download-progress?${params}`);
+  const response = await authFetch(`/api/models/download-progress?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow(response);
 }
 
 export async function getDatasetDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
   const response = await authFetch(
     `/api/hub/datasets/download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
@@ -603,6 +614,7 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
 }
 
@@ -635,14 +647,16 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
   /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;
+  /** Whether that partial can be continued byte for byte, rather than restarting its file. */
+  partial_resumable?: boolean;
   /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
   single_file?: boolean;
   /** True for an sd.cpp companion mirror (VAE / text encoders, no denoiser): listed so it can be seen and deleted, never offered as a load. */
@@ -1128,6 +1142,29 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
+/** The server owns this message and will reject every save of it.
+ *
+ * Distinct from a transient failure: retrying can never succeed, so callers must stop
+ * rather than back off. Without this the per-chunk autosave treated the rejection as an
+ * anonymous error and re-sent on the next chunk for the whole generation.
+ */
+/** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
+const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
+const CONFLICT_KIND_PROTECTED = "protected";
+
+export class ChatMessageProtectedError extends Error {
+  readonly messageId: string;
+  readonly threadId: string;
+
+  constructor(threadId: string, messageId: string, detail?: string) {
+    // Keep the server's wording: a manual edit surfaces this text to the user.
+    super(detail || `Message ${messageId} is server-managed and cannot be edited`);
+    this.name = "ChatMessageProtectedError";
+    this.threadId = threadId;
+    this.messageId = messageId;
+  }
+}
+
 export async function saveChatMessage(
   message: MessageRecord,
   options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
@@ -1143,6 +1180,21 @@ export async function saveChatMessage(
       body: JSON.stringify(message),
     },
   );
+  // Two failures share this status: a protected message, where the autosave must stop, and
+  // a thread-id collision, which the caller must see or the message is lost. Only the header
+  // separates them, so anything else (an older backend included) takes the normal error path.
+  if (
+    response.status === 409 &&
+    response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
+  ) {
+    // Read here, not in parseJsonOrThrow: a body is single-use.
+    const body = await response.json().catch(() => null);
+    throw new ChatMessageProtectedError(
+      message.threadId,
+      message.id,
+      formatApiErrorBody(body) ?? undefined,
+    );
+  }
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
   // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
   // edit is one deliberate change and publishes at once.

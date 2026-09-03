@@ -2,12 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  CPT_TARGET_MODULES,
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_CPT,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
   TARGET_MODULES,
+  resolveCptTargetModules,
 } from "@/config/training";
 import { isAdapterMethod } from "@/types/training";
 import type { TrainingMethod } from "@/types/training";
@@ -29,30 +29,36 @@ type TrainingMethodStatePatch = Partial<
   >
 >;
 
-function getCptTrainingPatch(): TrainingMethodStatePatch {
+function getCptTrainingPatch(
+  currentTargetModules: readonly string[],
+): TrainingMethodStatePatch {
   return {
     loraRank: 128,
     loraAlpha: 32,
     loraVariant: "rslora",
-    targetModules: CPT_TARGET_MODULES,
+    targetModules: resolveCptTargetModules(currentTargetModules),
     datasetFormat: "raw",
     trainOnCompletions: false,
   };
 }
 
-export function getCptModelDefaultsPatch(): TrainingMethodStatePatch {
+export function getCptModelDefaultsPatch(
+  currentTargetModules: readonly string[] = DEFAULT_HYPERPARAMS.targetModules,
+): TrainingMethodStatePatch {
   return {
-    ...getCptTrainingPatch(),
+    ...getCptTrainingPatch(currentTargetModules),
     learningRate: LR_DEFAULT_CPT,
   };
 }
 
-function getRestoreFromCptPatch(): TrainingMethodStatePatch {
+function getRestoreFromCptPatch(
+  targetModulesBeforeCpt: string[] | null,
+): TrainingMethodStatePatch {
   return {
     loraRank: DEFAULT_HYPERPARAMS.loraRank,
     loraAlpha: DEFAULT_HYPERPARAMS.loraAlpha,
     loraVariant: DEFAULT_HYPERPARAMS.loraVariant,
-    targetModules: TARGET_MODULES,
+    targetModules: targetModulesBeforeCpt ?? TARGET_MODULES,
   };
 }
 
@@ -87,7 +93,10 @@ function resolveTrainingMethodLearningRate(
 export function buildTrainingMethodPatch(
   state: Pick<
     TrainingConfigState,
-    "trainingMethod" | "trainingMethodProvenance" | "datasetFormat"
+    | "trainingMethod"
+    | "trainingMethodProvenance"
+    | "datasetFormat"
+    | "targetModules"
   >,
   nextMethod: TrainingMethod,
 ): TrainingMethodStatePatch {
@@ -101,14 +110,19 @@ export function buildTrainingMethodPatch(
     )
       ? null
       : state.datasetFormat;
-    Object.assign(patch, getCptTrainingPatch());
+    provenance.targetModulesBeforeCpt = [...state.targetModules];
+    Object.assign(patch, getCptTrainingPatch(state.targetModules));
   }
   if (prevMethod === "cpt" && nextMethod !== "cpt") {
-    Object.assign(patch, getRestoreFromCptPatch());
+    Object.assign(
+      patch,
+      getRestoreFromCptPatch(provenance.targetModulesBeforeCpt),
+    );
     if (provenance.datasetFormatBeforeCpt !== null) {
       patch.datasetFormat = provenance.datasetFormatBeforeCpt;
     }
     provenance.datasetFormatBeforeCpt = null;
+    provenance.targetModulesBeforeCpt = null;
   }
 
   const learningRate = resolveTrainingMethodLearningRate(

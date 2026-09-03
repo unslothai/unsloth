@@ -54,6 +54,7 @@ export async function resumeTrainingRun(runId: string): Promise<boolean> {
         payload.hf_dataset,
         true,
         payload.project_name ?? "",
+        payload.hf_token,
       );
 
     // Upgrade consent first, then the custom-code gate, like a fresh start: a resume
