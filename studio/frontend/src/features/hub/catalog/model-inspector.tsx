@@ -57,6 +57,7 @@ import { DatasetDownloadSection } from "./dataset-download-section";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
+import { modelDownloadState } from "./model-download-state";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
@@ -504,6 +505,7 @@ export const ModelInspector = memo(function ModelInspector({
     );
   }
 
+  const downloadState = modelDownloadState(model);
   const updatedRaw = model.updatedAt
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
@@ -614,10 +616,7 @@ export const ModelInspector = memo(function ModelInspector({
           <InspectorDownloadSlot>
             <DatasetDownloadSection
               repoId={model.hubRepoId}
-              isDownloaded={model.isDownloaded}
-              isPartial={model.isPartial ?? false}
-              partialTransport={model.partialTransport ?? null}
-              partialResumable={model.partialResumable === true}
+              {...downloadState}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onChange={onInventoryChange}
@@ -673,10 +672,7 @@ export const ModelInspector = memo(function ModelInspector({
               mediaRuntime={runsOnMediaRuntime}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
-              isDownloaded={model.isDownloaded}
-              isPartial={model.isPartial ?? false}
-              partialTransport={model.partialTransport ?? null}
-              partialResumable={model.partialResumable === true}
+              {...downloadState}
               modelFormat={model.modelFormat}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}

@@ -777,11 +777,7 @@ def test_native_picked_gguf_template_read_through_lease():
     assert '${nativePathToken ?? ""}' in hook
 
 
-def test_model_load_guard_is_cross_instance():
-    """The in-flight load guard must consult the shared store pick (not only the
-    per-hook ref) and ejectModel must refuse while any instance is loading:
-    three live useChatModelRuntime instances exist (chat page, hub page, hub
-    gear dialog)."""
+def test_model_load_guard_uses_shared_store_state():
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "useChatRuntimeStore.getState().loadingModelPick" in src
     assert "clearLoadingModelPick" in src

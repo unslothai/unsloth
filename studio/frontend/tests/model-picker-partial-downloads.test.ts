@@ -10,6 +10,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import type {
+  CachedInventoryRow,
+  DiscoverRow,
+  LocalInventoryRow,
+  SelectedModelView,
+} from "../src/features/hub/types.ts";
+import { downloadActionLabel } from "../src/features/hub/catalog/use-download-card-state.ts";
+import { modelDownloadState } from "../src/features/hub/catalog/model-download-state.ts";
+import { registerStoreStubResolver } from "./helpers/kit.ts";
+
+registerStoreStubResolver();
+
+const { useSelectedModelView } = await import(
+  "../src/features/hub/hooks/use-selected-model-view.ts"
+);
 
 function read(path: string): string {
   return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
@@ -152,24 +170,201 @@ test("complete and partial are alternatives, never both dots on one row", () => 
   );
 });
 
-test("selecting a partial opens its download instead of claiming the weights", () => {
+test("selecting a picker partial opens its download instead of claiming the weights", () => {
   // isDownloaded is what the load path reads. Hard-coding true on these rows sent a torn snapshot
   // straight to a load that fails on the missing shards -- the reason they were hidden at all.
   assert.ok(
     PICKERS.includes("isDownloaded: !isPartial,"),
     "the pick reports what is actually on disk",
   );
-  // The Hub no longer creates a runnable settings target. Its selected view carries
-  // completeness and partial state separately into the download cards instead.
-  const hubSelectedView = read(
-    "../src/features/hub/hooks/use-selected-model-view.ts",
-  );
-  assert.ok(hubSelectedView.includes("isDownloaded: !selectedCachedRow.partial,"));
-  assert.ok(
-    hubSelectedView.includes(
-      "isPartial: selectedCachedRow.partial ?? false,",
-    ),
-  );
+});
+
+test("Hub selections preserve download completeness and continuation state", () => {
+  const capabilities = {
+    canTrain: false,
+    canChat: false,
+    canDelete: true,
+    canDownload: true,
+    requiresVariant: false,
+    supportsLora: false,
+    supportsVision: false,
+  };
+  const cached: CachedInventoryRow = {
+    kind: "cache",
+    id: "cache:safetensors:Org%2FModel",
+    loadId: "Org/Model",
+    repoId: "Org/Model",
+    owner: "Org",
+    repo: "Model",
+    isGguf: false,
+    modelFormat: "safetensors",
+    capabilities,
+    bytes: 128,
+    partial: true,
+    partialTransport: "http",
+    partialResumable: true,
+  };
+  const localHfCache: LocalInventoryRow = {
+    kind: "local",
+    id: "hf_cache:safetensors:Org%2FModel",
+    loadId: "Org/Model",
+    repoId: "Org/Model",
+    owner: "Org",
+    title: "Model",
+    source: "hf_cache",
+    sourceLabel: "Hugging Face cache",
+    path: "/cache/models--Org--Model",
+    isGguf: false,
+    modelFormat: "safetensors",
+    capabilities,
+    updatedAt: 1,
+    partial: true,
+    partialTransport: "xet",
+    partialResumable: false,
+  };
+  const discover: DiscoverRow = {
+    id: "Org/Model",
+    owner: "Org",
+    repo: "Model",
+    result: {
+      id: "Org/Model",
+      downloads: 0,
+      likes: 0,
+      isGguf: false,
+    },
+    isAvailableOnDevice: false,
+    isPartialOnDevice: true,
+    summary: "Model",
+    capabilities: [],
+  };
+  const base = {
+    selectedDiscoverRow: null,
+    selectedCachedRow: null,
+    selectedLocalRow: null,
+    selectedHfResult: null,
+    isDatasetMode: false,
+  } satisfies Parameters<typeof useSelectedModelView>[0];
+
+  const cases: Array<{
+    name: string;
+    input: Parameters<typeof useSelectedModelView>[0];
+    kind: SelectedModelView["kind"];
+    downloaded: boolean;
+    partial: boolean;
+    transport: string | null;
+    resumable: boolean;
+    action: "Download" | "Resume" | "Continue";
+  }> = [
+    {
+      name: "direct cache row",
+      input: { ...base, selectedCachedRow: cached },
+      kind: "cache",
+      downloaded: false,
+      partial: true,
+      transport: "http",
+      resumable: true,
+      action: "Resume",
+    },
+    {
+      name: "discovery row backed by a cache row",
+      input: { ...base, selectedDiscoverRow: discover, selectedCachedRow: cached },
+      kind: "discover",
+      downloaded: false,
+      partial: true,
+      transport: "http",
+      resumable: true,
+      action: "Resume",
+    },
+    {
+      name: "discovery row backed by a local HF-cache row",
+      input: {
+        ...base,
+        selectedDiscoverRow: discover,
+        selectedLocalRow: localHfCache,
+      },
+      kind: "discover",
+      downloaded: false,
+      partial: true,
+      transport: "xet",
+      resumable: false,
+      action: "Continue",
+    },
+    {
+      name: "direct local HF-cache row",
+      input: { ...base, selectedLocalRow: localHfCache },
+      kind: "cache",
+      downloaded: false,
+      partial: true,
+      transport: "xet",
+      resumable: false,
+      action: "Continue",
+    },
+    {
+      name: "discovery partial awaiting its inventory row",
+      input: { ...base, selectedDiscoverRow: discover },
+      kind: "discover",
+      downloaded: false,
+      partial: true,
+      transport: null,
+      resumable: false,
+      action: "Continue",
+    },
+    {
+      name: "complete cache row",
+      input: {
+        ...base,
+        selectedCachedRow: {
+          ...cached,
+          partial: false,
+          partialTransport: null,
+          partialResumable: false,
+        },
+      },
+      kind: "cache",
+      downloaded: true,
+      partial: false,
+      transport: null,
+      resumable: false,
+      action: "Download",
+    },
+  ];
+
+  for (const entry of cases) {
+    const result = { current: null as SelectedModelView | null };
+    function Harness() {
+      result.current = useSelectedModelView(entry.input);
+      return null;
+    }
+    renderToStaticMarkup(createElement(Harness));
+    assert.ok(result.current, entry.name);
+    assert.equal(result.current.kind, entry.kind, entry.name);
+    assert.equal(result.current.isDownloaded, entry.downloaded, entry.name);
+    assert.equal(result.current.isPartial, entry.partial, entry.name);
+    assert.equal(result.current.partialTransport, entry.transport, entry.name);
+    assert.equal(result.current.partialResumable, entry.resumable, entry.name);
+    const downloadState = modelDownloadState(result.current);
+    assert.deepEqual(
+      downloadState,
+      {
+        isDownloaded: entry.downloaded,
+        isPartial: entry.partial,
+        partialTransport: entry.transport,
+        partialResumable: entry.resumable,
+      },
+      entry.name,
+    );
+    assert.equal(
+      downloadActionLabel(
+        downloadState.isPartial,
+        downloadState.partialResumable,
+      ),
+      entry.action,
+      entry.name,
+    );
+  }
+
+  const inspector = read("../src/features/hub/catalog/model-inspector.tsx");
+  assert.equal(inspector.split("{...downloadState}").length - 1, 2);
 });
 
 test("listing a partial never makes it auto-loadable", () => {
