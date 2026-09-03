@@ -49,10 +49,15 @@ def _flex_is_dgx_spark():
         _smi = "nvidia-smi"
         if shutil.which(_smi) is None and os.path.exists("/usr/lib/wsl/lib/nvidia-smi"):
             _smi = "/usr/lib/wsl/lib/nvidia-smi"
+        # text = True alone decodes with locale.getencoding(), which is the ANSI
+        # codepage on Windows and ASCII under a C/POSIX locale, so a non-ASCII
+        # adapter name would mojibake the token match below or raise.
         out = subprocess.run(
             [_smi, "--query-gpu=name", "--format=csv,noheader"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         names = (out.stdout or "").upper()
