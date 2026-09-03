@@ -37,7 +37,7 @@ _VENDOR_LIST = "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
 @pytest.fixture(scope = "module")
 def helper():
     """The shipped function, without importing unsloth (it `del`s the name at import)."""
-    tree = ast.parse(_GPU_INIT.read_text())
+    tree = ast.parse(_GPU_INIT.read_text(encoding = "utf-8"))
     names = (_HELPER, "_nvidia_smi_gpu_name", "_cuda_visible_devices_hides_nvidia")
     wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert _HELPER in [n.name for n in wanted]
@@ -80,7 +80,7 @@ def test_every_raise_site_is_wrapped():
     device_type when `__init__` skipped it, and unsloth's own device_type, which repeats
     zoo's detection WITHOUT the UNSLOTH_ZOO_DISABLE_GPU_INIT branch and so still raises
     after zoo answered "cpu". The helper must outlive all three, hence `del` comes last."""
-    tree = ast.parse(_GPU_INIT.read_text())
+    tree = ast.parse(_GPU_INIT.read_text(encoding = "utf-8"))
     handlers = [
         n
         for n in ast.walk(tree)
