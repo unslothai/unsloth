@@ -169,7 +169,7 @@ def test_v5_leaves_other_kwargs_alone():
 
 
 def test_source_has_no_unconditional_pop():
-    src = open(VISION).read()
+    src = open(VISION, encoding = "utf-8").read()
     assert (
         'kwargs.pop("logits_to_keep", None)\n        kwargs.pop("num_logits_to_keep", None)'
         not in src

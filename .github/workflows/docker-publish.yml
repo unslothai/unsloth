@@ -47,10 +47,17 @@ env:
   IMAGE_NAME: unsloth/unsloth
 
 # Serialise per-ref runs so two pushes don't both retag :latest from different
-# commits. Don't cancel in-progress -- the build is expensive and a half-built
-# image is worse than a briefly stale :latest.
+# commits, EXCEPT on main, where each commit gets its own group. A shared group
+# does not queue a main burst, it discards it: GitHub cancels any PENDING run
+# the moment a newer one is queued, and cancel-in-progress only governs runs
+# already executing. So the shared group would not have serialised two main
+# pushes at all, it would have published nothing for the earlier one. The cost
+# is that two main commits can now race to retag :latest; the tag is mutable and
+# the next push corrects it, where a cancelled run leaves that commit with no
+# image at all. tests/studio/test_main_runs_survive_merge_bursts.py enforces
+# this shape across every workflow that runs on a main push.
 concurrency:
-  group: docker-publish-${{ github.ref }}
+  group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: false
 
 # Least-privilege default for GITHUB_TOKEN. Pushes use Docker Hub registry creds,

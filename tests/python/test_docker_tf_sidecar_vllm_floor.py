@@ -69,7 +69,7 @@ SHIPPED_PINS = [
 @pytest.fixture(scope = "module")
 def dockerfile() -> str:
     assert DOCKERFILE.is_file(), f"missing {DOCKERFILE}"
-    return DOCKERFILE.read_text()
+    return DOCKERFILE.read_text(encoding = "utf-8")
 
 
 @pytest.fixture(scope = "module")
@@ -169,7 +169,7 @@ def test_build_skips_the_gate_when_vllm_is_absent(sidecar_block: str):
 
 
 def test_compat_reads_the_floor_the_build_writes():
-    assert ".vllm_min_transformers" in COMPAT_PATH.read_text(), (
+    assert ".vllm_min_transformers" in COMPAT_PATH.read_text(encoding = "utf-8"), (
         "unsloth_nb_compat must read the floor the Dockerfile records, not a "
         "literal that rots on the next vLLM bump"
     )

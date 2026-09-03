@@ -44,7 +44,7 @@ SYNC = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
 @pytest.fixture(scope = "module")
 def sync() -> str:
     assert SYNC.is_file(), f"missing {SYNC}"
-    return SYNC.read_text()
+    return SYNC.read_text(encoding = "utf-8")
 
 
 def test_the_refresh_is_still_detached(sync: str):

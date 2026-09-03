@@ -34,7 +34,7 @@ DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
 @pytest.fixture(scope = "module")
 def dockerfile() -> str:
     assert DOCKERFILE.is_file(), f"missing {DOCKERFILE}"
-    return DOCKERFILE.read_text()
+    return DOCKERFILE.read_text(encoding = "utf-8")
 
 
 def test_cublas_dir_is_registered_with_the_loader(dockerfile: str):
