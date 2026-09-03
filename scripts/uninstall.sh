@@ -114,7 +114,17 @@ _sd_cpp_sibling_bases() {
     {
         _custom_studio_roots 2>/dev/null
         _custom_studio_roots lexical 2>/dev/null
-    } | awk '!seen[$0]++'
+    } | awk '!seen[$0]++' | while IFS= read -r _sb; do
+        # Studio roots only. _custom_studio_roots also emits the MASTER root of a nested
+        # portable install, whose parent is one level above the install, so an sd-server
+        # belonging to a NEIGHBOURING install would be signalled there. The master root's own
+        # <root>/stable-diffusion.cpp is already covered by the loop above. Same flat-first
+        # test as the removal loop; see the comment there.
+        if [ ! -d "$_sb/unsloth_studio" ] && [ -d "$_sb/studio/unsloth_studio" ]; then
+            continue
+        fi
+        printf '%s\n' "$_sb"
+    done
 }
 
 # pkill resident sd-server / sd-cli under an owned sd.cpp root before that tree is removed (a live
@@ -566,7 +576,27 @@ _unsloth_uninstall_main() {
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
+        # Is this entry a Studio root, or the MASTER root above one? _custom_studio_roots emits
+        # both (UNSLOTH_HOME and studio.conf's `export UNSLOTH_HOME` name the master root, the
+        # UNSLOTH_EXE walk names the Studio root), and the legacy sibling cleanup below takes
+        # each entry's PARENT, which is one level too high for a master root. Decided BEFORE the
+        # removal, which takes the layout this reads with it. Flat test first, matching
+        # storage_roots.studio_root(): a root holding the venv directly IS the Studio root, and
+        # there the parent walk is the path an older build really used. Positive evidence of the
+        # nested venv is required rather than assumed, so an install with no venv either way
+        # keeps the behaviour it had.
+        _custom_is_master=0
+        if [ ! -d "$_custom_root/unsloth_studio" ] && [ -d "$_custom_root/studio/unsloth_studio" ]; then
+            _custom_is_master=1
+        fi
         _remove_root_recording_db "$_custom_root"
+        # A master root is not a Studio root, so there is no legacy sibling to walk to: the one
+        # an older build wrote for a nested install is <root>/stable-diffusion.cpp, already gone
+        # with the tree above. Walking anyway names <parent>/stable-diffusion.cpp, a path this
+        # install never used and a separate installation beside the portable root can own.
+        if [ "$_custom_is_master" = 1 ]; then
+            continue
+        fi
         # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
         # <root>/stable-diffusion.cpp, so the removal above already took it. Older builds put it
         # BESIDE the root at <parent>/stable-diffusion.cpp (find_sd_cpp_binary derived it from
@@ -596,6 +626,11 @@ _unsloth_uninstall_main() {
         # a path that is not there), and without this "/parent/typo" would take the marked
         # /parent/stable-diffusion.cpp of somebody else's Unsloth with it.
         _is_studio_root "$_lex_root" || continue
+        # The same master-root exclusion the canonical pass makes: this pass takes the parent
+        # too, so a nested portable master root would reach one level above the install here.
+        if [ ! -d "$_lex_root/unsloth_studio" ] && [ -d "$_lex_root/studio/unsloth_studio" ]; then
+            continue
+        fi
         _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
         [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
         # The deny list is string-based, so it has to see the RESOLVED path: the lexical form can
