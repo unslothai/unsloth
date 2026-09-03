@@ -152,11 +152,17 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         try:
-            is_cache_repo = (p / "snapshots").is_dir()
+            cache_repo_dir = p if (p / "snapshots").is_dir() else None
         except OSError:
             return None
-        if is_cache_repo:
-            selected = _resolve_gguf_load_snapshot(p)
+        if (
+            cache_repo_dir is None
+            and p.parent.name == "snapshots"
+            and p.parent.parent.name.startswith("models--")
+        ):
+            cache_repo_dir = p.parent.parent
+        if cache_repo_dir is not None:
+            selected = _resolve_gguf_load_snapshot(cache_repo_dir)
             if selected is None:
                 load_dir = p
                 variants, _ = list_local_gguf_variants(str(load_dir))

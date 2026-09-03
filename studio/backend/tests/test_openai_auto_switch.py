@@ -1891,6 +1891,37 @@ def test_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     assert resolver.local_servable_model(info) == (True, ("UD-Q4_K_XL",))
 
 
+def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
+    """Inactive cache rows point at a snapshot but still select complete weights."""
+    import os
+    from pathlib import Path
+    import routes.models as models_route
+
+    repo = tmp_path / "models--org--Repo"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    newer = repo / "snapshots" / "companion-revision" / "MTP"
+    newer.mkdir(parents = True)
+    (newer / "mtp-model-Q8_0.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer.parent, (2_000, 2_000))
+
+    [info] = models_route._scan_hf_cache(
+        tmp_path,
+        active_cache = False,
+        classify_format = False,
+    )
+    assert Path(info.path) == newer.parent.resolve()
+
+    entry = resolver._local_gguf_entry("org/Repo", info)
+
+    assert entry is not None
+    assert Path(entry.load_path) == old
+    assert entry.variants == ("Q4_K_M",)
+
+
 def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
     """A cache row must load from its exact repo directory, not a case-folded peer."""
     import os
