@@ -488,11 +488,18 @@ Environment:
             if ($seen.Add($norm)) { Write-Output $norm }
         }
 
+        # IsNullOrWhiteSpace + .Trim(), the same pair install.ps1:783-788 resolves the
+        # install destination with. Bare truthiness is what breaks here: PowerShell
+        # calls " " true, so an UNSLOTH_STUDIO_HOME of spaces used to win the
+        # precedence test, STUDIO_HOME was never looked at, and the real custom
+        # install kept its tree and its studio.db. Trimming here NARROWS nothing --
+        # a blank value names no install -- and the branch order is untouched, so a
+        # genuinely set UNSLOTH_STUDIO_HOME still suppresses STUDIO_HOME.
         $envRoot = $null
-        if ($env:UNSLOTH_STUDIO_HOME) {
-            $envRoot = $env:UNSLOTH_STUDIO_HOME
-        } elseif ($env:STUDIO_HOME) {
-            $envRoot = $env:STUDIO_HOME
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+            $envRoot = $env:UNSLOTH_STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+            $envRoot = $env:STUDIO_HOME.Trim()
         }
         if ($envRoot) {
             $expandedEnv = _ExpandTilde $envRoot
@@ -1040,7 +1047,9 @@ Environment:
     Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
-    if (-not $env:UNSLOTH_STUDIO_HOME -and -not $env:STUDIO_HOME) {
+    # Same whitespace rule as the resolver above: a blank override discovered no custom
+    # root, so the "re-export it and re-run" hint is exactly what the user still needs.
+    if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME) -and [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         Write-Host ""
         Write-Host "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"
         Write-Host "pointing at a custom directory, re-run this script with the same variable"
