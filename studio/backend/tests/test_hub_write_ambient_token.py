@@ -1271,3 +1271,33 @@ def test_cancelling_an_ambient_worker_leaves_a_replacement_store_alone():
     finally:
         o._proc = None
         o._discard_token_store()
+
+
+def test_a_failed_load_retires_the_worker_and_its_token_store(monkeypatch):
+    """A load that fails after unsloth persisted the caller's token left both alive."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    shut = {}
+
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: shut.setdefault("store", cfg["hf_token_store"]))
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: None)
+    monkeypatch.setattr(
+        o, "_wait_response", lambda *a, **kw: {"success": False, "message": "OOM during load"}
+    )
+
+    def _shutdown(timeout = 10.0):
+        shut["called"] = True
+        o._discard_token_store()
+        return True
+
+    monkeypatch.setattr(o, "_shutdown_subprocess", _shutdown)
+
+    ok, message = o.load_checkpoint(checkpoint_path = "owner/model", allow_ambient = False)
+
+    assert ok is False and "OOM" in message
+    assert shut.get("called"), "a failed load must retire the worker"
+    assert shut["store"] and not os.path.exists(shut["store"])

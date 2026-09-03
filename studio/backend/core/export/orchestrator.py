@@ -572,6 +572,11 @@ class ExportOrchestrator:
                 else:
                     error = resp.get("message", "Failed to load checkpoint")
                     logger.error("Failed to load checkpoint: %s", error)
+                    # A failed load leaves the worker alive holding nothing useful, and
+                    # unsloth may already have persisted the caller's token into its private
+                    # store. Retire both rather than leaving the credential until the next
+                    # load; the next one spawns a fresh worker anyway.
+                    self._shutdown_subprocess(timeout = 5)
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
