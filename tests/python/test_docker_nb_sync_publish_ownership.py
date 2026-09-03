@@ -194,6 +194,10 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
     ), "a brand-new notebook has no destination metadata to inherit"
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root holds CAP_DAC_OVERRIDE, so chmod 0500 does not stop the write",
+)
 def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
     """A publish that cannot be written must stay retryable.
 
@@ -201,6 +205,18 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
     next boot short-circuit on `remote == last`, so the notebook was never
     retried; and the missing record makes a later refresh read the stale
     destination as user-owned and keep it indefinitely.
+
+    The unwritable directory is made with chmod, which root bypasses entirely
+    ("CAP_DAC_OVERRIDE: bypass file read, write, and execute permission
+    checks"), so under a root container the publish succeeds, the marker
+    advances and this fails deterministically rather than catching anything.
+    The lane that runs it, studio-backend-ci's auto-discovered CPU job on
+    ubuntu-latest, is not root, so the coverage is kept where it works and the
+    skip only fires for someone running the suite inside a root container.
+    tests/python/test_docker_nb_populate_retry.py carries the same
+    "do not stamp a commit whose work failed" property for the populate phase
+    with a mechanism root cannot bypass: a regular file where a directory has
+    to be, which is ENOTDIR for everyone.
     """
     template, dest, remote = _world(tmp_path)
     nb_dir = dest / "nb"
