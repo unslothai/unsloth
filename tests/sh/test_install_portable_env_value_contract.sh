@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Regression test: UNSLOTH_PORTABLE means the same thing to the installer and the runtime.
 #
-# storage_roots.portable_mode() reads every nonblank value except 0/false/off/no as ON, while
-# install.sh used a truthy allowlist (1/true/yes/on) and read everything else as OFF. So
+# storage_roots.portable_mode() used to read every nonblank value except 0/false/off/no as ON,
+# while install.sh used a truthy allowlist (1/true/yes/on) and read everything else as OFF. So
 # UNSLOTH_PORTABLE=enabled -- or a typo like `flase` -- installed the normal roots with no
 # portable marker while the backend running in that same environment considered itself
 # portable and redirected the HF caches, TORCH_HOME and the projects root, reverting again on
-# the next launch that carried no such variable. install.ps1 already fails the install for
+# the next launch that carried no such variable. install.ps1 already failed the install for
 # exactly those values.
 #
 # Neither silent reading is safe on its own: guessing ON relocates the tree of a user who
 # spelled "off" as `disabled`, guessing OFF is the split above. So the installer refuses a
-# value that is on neither list. The Python probe at the end pins WHY: it fails if the runtime
-# ever stops disagreeing, which is the day this guard could be relaxed.
+# value on neither list, and the runtime now reads through the same two allowlists and treats
+# anything else as no opinion. Both halves are tested here because the bug was the DISAGREEMENT
+# between them, not either one alone: sections 1-4 pin the installer's three answers, and the
+# Python probe in section 5 pins that the runtime gives the same three for the same values.
 set -u
 HERE="$(CDPATH= cd -P -- "$(dirname "$0")" && pwd -P)"
 ROOT="$HERE/../.."
@@ -102,8 +104,9 @@ _sh_off="$(printf '%s\n' "$blockA" | sed -n "s/^    ''|\(.*\)) ;;$/\1/p" | head 
     | tr '|' '\n' | sort | tr '\n' ' ')"
 check "install.sh accepts the same off-list" "$_ps1_off" "$_sh_off"
 
-# ── 5. The runtime half: the values refused above are exactly the ones the backend would
-# have read as portable. Delete this section only when portable_mode() stops guessing too.
+# ── 5. The runtime half: the backend reads the same three answers out of the same value.
+# The refused set and the runtime's no-opinion set have to stay the SAME set, so this section
+# drives the real resolver over the very values sections 1-3 drove install.sh over.
 if command -v python3 > /dev/null 2>&1; then
     PROBE="$T/probe.py"
     cat > "$PROBE" <<'PYEOF'
@@ -113,35 +116,108 @@ from utils.paths import storage_roots as sr
 sr._setup_cache_env()
 print("__JSON__" + json.dumps({
     "portable": sr.portable_mode(),
+    # The portable-only redirections: set from _portable_cache_defaults and from
+    # nowhere else, so "null" here is proof the tree was left alone rather than
+    # proof the variable is unpopular.
     "torch_home": os.environ.get("TORCH_HOME"),
+    "projects_home": os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME"),
+    "datasets_cache": os.environ.get("HF_DATASETS_CACHE"),
 }))
 PYEOF
-    probe() { # value field
+    # A genuine portable tree: a master root, which is what actually makes an install
+    # portable. Kept next to the normal-tree HOMEs so both shapes see the same value.
+    PROOT="$T/portable root"
+    mkdir -p "$PROOT/studio"
+
+    # One python3 launch per environment, read out field by field: a probe costs an
+    # interpreter start plus the backend import, and this section needs several fields
+    # from most of them.
+    probe_json() { # value [master-root]
         _h="$(new_home)"
         mkdir -p "$_h/.unsloth/studio/unsloth_studio/bin"
-        _pout=$(env -i HOME="$_h" PATH="$PATH" _BACKEND="$BACKEND" UNSLOTH_PORTABLE="$1" \
-            python3 "$PROBE" 2>"$T/perr")
+        if [ -n "${2:-}" ]; then
+            _pout=$(env -i HOME="$_h" PATH="$PATH" _BACKEND="$BACKEND" \
+                UNSLOTH_PORTABLE="$1" UNSLOTH_HOME="$2" python3 "$PROBE" 2>"$T/perr")
+        else
+            _pout=$(env -i HOME="$_h" PATH="$PATH" _BACKEND="$BACKEND" \
+                UNSLOTH_PORTABLE="$1" python3 "$PROBE" 2>"$T/perr")
+        fi
+        # Kept for 5f: the backend's logger writes to stdout, so the notice arrives
+        # interleaved with the payload line rather than on perr.
+        printf '%s\n' "$_pout" > "$T/pout"
         _pjson=$(printf '%s\n' "$_pout" | sed -n 's/^__JSON__//p')
         if [ -z "$_pjson" ]; then
-            printf '  FAIL  storage_roots probe produced no output\n%s\n' "$(cat "$T/perr")"
-            fails=$((fails + 1))
+            # fails++ here would land in the $( ) subshell, so report and hand back a
+            # sentinel that cannot equal any expected value.
+            printf '  FAIL  storage_roots probe produced no output for UNSLOTH_PORTABLE=%s\n%s\n' \
+                "$1" "$(cat "$T/perr")" >&2
             printf 'probe-failed'
             return 0
         fi
-        printf '%s' "$_pjson" | _FIELD="$2" python3 -c \
+        printf '%s' "$_pjson"
+    }
+    field() { # json field
+        case "$1" in probe-failed) printf 'probe-failed'; return 0 ;; esac
+        printf '%s' "$1" | _FIELD="$2" python3 -c \
             'import json,os,sys; v=json.load(sys.stdin)[os.environ["_FIELD"]]; print("null" if v is None else str(v).lower() if isinstance(v,bool) else v)'
     }
+
+    # 5a. The ON list means the same at both ends: these are the values that turn a tree
+    # the installer set up normally into a portable one.
+    for v in 1 true yes on " TRUE " " on "; do
+        check "the runtime reads '$v' as portable" true "$(field "$(probe_json "$v")" portable)"
+    done
+
+    # 5b. The OFF list, likewise.
+    for v in 0 false off no FALSE " no "; do
+        check "the runtime reads '$v' as normal" false "$(field "$(probe_json "$v")" portable)"
+    done
+
+    # 5c. And the refused set is now exactly the runtime's no-opinion set. This is the
+    # assertion the whole guard rests on: for every value install.sh refuses in section 3,
+    # a normal tree stays normal, and none of the portable-only variables get pinned. If
+    # portable_mode() ever goes back to guessing, the install refused in section 3 and the
+    # relocation seen here are the same split this file exists to prevent.
+    for v in enabled flase 2 bogus disabled ENABLED " enabled " "-1"; do
+        _j="$(probe_json "$v")"
+        check "the runtime does not read '$v' as portable" false "$(field "$_j" portable)"
+        check "and pins no TORCH_HOME for '$v'" null "$(field "$_j" torch_home)"
+        check "and pins no projects root for '$v'" null "$(field "$_j" projects_home)"
+        check "and pins no datasets cache for '$v'" null "$(field "$_j" datasets_cache)"
+    done
+
+    # 5d. No opinion is a fall-through, not a veto. A real portable install carries its
+    # root, and the root is what makes it portable, so the same unrecognized value that
+    # cannot opt a normal tree IN must not strand a portable one either. Getting this
+    # wrong would scatter a running install's caches back across the host.
     for v in enabled flase 2 bogus disabled; do
-        check "the runtime really reads '$v' as portable" true "$(probe "$v" portable)"
+        check "a portable root survives '$v'" true "$(field "$(probe_json "$v" "$PROOT")" portable)"
     done
+    # Not just a boolean: the redirection itself still has to follow the root.
+    _pj="$(probe_json enabled "$PROOT")"
+    check "and TORCH_HOME follows the portable root" "$PROOT/studio/cache/torch" \
+        "$(field "$_pj" torch_home)"
+    check "and the projects root follows it too" "$PROOT/studio/projects" \
+        "$(field "$_pj" projects_home)"
+
+    # 5e. An explicit OFF is the same fall-through, and always was: it declines to opt a
+    # normal install in rather than vetoing a root. Pinned here because 5c leans on the
+    # unrecognized values behaving exactly like these.
     for v in 0 false off no; do
-        check "the runtime reads '$v' as normal" false "$(probe "$v" portable)"
+        check "an explicit '$v' does not veto a portable root" true \
+            "$(field "$(probe_json "$v" "$PROOT")" portable)"
     done
-    # Not just a boolean: this is the redirection the installer would not have matched.
-    case "$(probe enabled torch_home)" in
-        */.unsloth/studio/cache/torch) check "and redirects TORCH_HOME under the studio root" ok ok ;;
-        *) check "and redirects TORCH_HOME under the studio root" ok "$(probe enabled torch_home)" ;;
+
+    # 5f. Silently ignoring the value is what made the old split invisible, so the runtime
+    # says so, names the value as typed, and stays quiet for a value it understands.
+    probe_json Enabled > /dev/null
+    case "$(cat "$T/pout")" in
+        *UNSLOTH_PORTABLE*Enabled*) check "the runtime warns, quoting the value as typed" ok ok ;;
+        *) check "the runtime warns, quoting the value as typed" ok "missing: $(cat "$T/pout")" ;;
     esac
+    probe_json 1 > /dev/null
+    # grep -c exits 1 on no match, so read the count, not the status.
+    check "and says nothing for a value it understands" 0 "$(grep -c UNSLOTH_PORTABLE "$T/pout")"
 else
     printf '  SKIP  storage_roots probe (no python3)\n'
 fi
