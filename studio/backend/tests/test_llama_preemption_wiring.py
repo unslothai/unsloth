@@ -1134,6 +1134,67 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         assert occupancy["resident"] == 27592
         assert [slot for slot, _ in occupancy["idle"]] == [0, 2], "largest idle first"
 
+    def test_generated_tokens_count_as_residency(self):
+        """The undercount that made every watermark diagnostic come back innocent.
+
+        `/slots` reports the prompt. The tokens decoded since occupy cells too, and on a
+        chat writing a long answer they are most of it. Sampled live 2026-09-03 while one
+        slot decoded: reported 12632, decoded 6323, true 18955, in a 16384 cache, against
+        a ceiling of 14312. The watermark never fired because the number it watches never
+        passed the ceiling.
+        """
+        from core.inference.llama_preemption import read_slot_occupancy
+
+        slots = [
+            {
+                "id": 0,
+                "is_processing": True,
+                "n_prompt_tokens": 12632,
+                "next_token": [{"n_decoded": 6323}],
+            },
+        ]
+        occupancy = read_slot_occupancy(lambda: slots)
+        assert occupancy["resident"] == 18955, (
+            "a decoding slot holds its prompt AND everything it has generated"
+        )
+
+    def test_a_finished_slot_is_not_counted_twice(self):
+        """An idle slot's prompt cache already holds the whole sequence it produced, so
+        adding a stale n_decoded on top would count the generated half twice."""
+        from core.inference.llama_preemption import read_slot_occupancy
+
+        slots = [
+            {
+                "id": 0,
+                "is_processing": False,
+                "n_prompt_tokens_cache": 9000,
+                "next_token": [{"n_decoded": 4000}],
+            },
+        ]
+        assert read_slot_occupancy(lambda: slots)["resident"] == 9000
+
+    def test_the_decoded_count_is_read_from_either_shape(self):
+        """llama-server nests it in a one-element list here and a bare object elsewhere."""
+        from core.inference.llama_preemption import read_slot_occupancy
+
+        for shape in ([{"n_decoded": 500}], {"n_decoded": 500}):
+            slots = [
+                {"id": 0, "is_processing": True, "n_prompt_tokens": 1000,
+                 "next_token": shape},
+            ]
+            assert read_slot_occupancy(lambda: slots)["resident"] == 1500, shape
+
+    def test_a_missing_or_malformed_next_token_reads_as_zero(self):
+        """An occupancy read that raises takes the whole watermark sweep with it."""
+        from core.inference.llama_preemption import read_slot_occupancy
+
+        for shape in (None, [], "nonsense", {"n_decoded": "abc"}, {}):
+            slots = [
+                {"id": 0, "is_processing": True, "n_prompt_tokens": 1000,
+                 "next_token": shape},
+            ]
+            assert read_slot_occupancy(lambda: slots)["resident"] == 1000, shape
+
     def test_an_unreadable_endpoint_is_not_an_empty_cache(self):
         from core.inference.llama_preemption import read_slot_occupancy
 

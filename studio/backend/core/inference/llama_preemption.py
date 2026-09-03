@@ -1313,6 +1313,25 @@ class ControllerPreemptionPolicy:
         self._controller.note_resumed(self._gen_id)
 
 
+def _slot_decoded(slot: dict) -> int:
+    """Tokens this slot has generated so far, from `/slots`.
+
+    llama-server nests it under ``next_token``, which is a one-element LIST in the builds
+    seen here and a bare object in others. Both shapes are read, and anything else
+    answers zero rather than raising: an occupancy read that throws would take the whole
+    watermark sweep down with it.
+    """
+    raw = slot.get("next_token")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        return max(0, int(raw.get("n_decoded") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
     """Tokens actually resident in the cache, INCLUDING slots that are idle.
 
@@ -1346,6 +1365,24 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
             )
         except (TypeError, ValueError):
             tokens = 0
+        # Plus what it has GENERATED, which is the term this was missing and the reason
+        # every watermark diagnostic came back innocent while chats died. `/slots`
+        # reports the prompt; the tokens decoded since occupy cells too, and on a chat
+        # writing a long answer they are most of it. Sampled live 2026-09-03 at four
+        # second intervals while one slot decoded:
+        #
+        #     reported= 6880 decoded= 571 true= 7451
+        #     reported=12632 decoded=6323 true=18955
+        #
+        # 18955 cells in a 16384 cache, reported as 12632 against a ceiling of 14312. The
+        # watermark could not fire because the figure it watches never moved past it, and
+        # the buffer was being asked to cover a 6000 token undercount.
+        #
+        # Only while processing. A finished slot's prompt cache already holds the whole
+        # sequence it produced, so `n_prompt_tokens_cache` covers it and adding a stale
+        # `n_decoded` on top would count the generated half twice.
+        if slot.get("is_processing"):
+            tokens += _slot_decoded(slot)
         resident += max(0, tokens)
         if not slot.get("is_processing") and tokens > 0:
             idle.append((slot.get("id"), max(0, tokens)))
