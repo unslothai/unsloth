@@ -118,9 +118,7 @@ def test_whitespace_only_roots_are_replaced(portable_root: Path) -> None:
     assert env["UNSLOTH_LLAMA_CPP_PATH"] == str(portable_root / "llama.cpp")
 
 
-def test_whitespace_only_studio_home_does_not_suppress_the_resolved_root(
-    tmp_path: Path,
-) -> None:
+def test_whitespace_only_studio_home_does_not_suppress_the_resolved_root(tmp_path: Path) -> None:
     """A blank UNSLOTH_STUDIO_HOME is already ignored by _resolve_studio_home."""
     root = tmp_path / "opt" / "unsloth"
     _make_portable_install(root)
@@ -137,8 +135,11 @@ def test_whitespace_only_studio_home_does_not_suppress_the_resolved_root(
         [sys.executable, "-c", PROBE], env = env, capture_output = True, text = True, timeout = 300
     )
     payload = next(
-        (json.loads(line[len("__JSON__") :]) for line in proc.stdout.splitlines()
-         if line.startswith("__JSON__")),
+        (
+            json.loads(line[len("__JSON__") :])
+            for line in proc.stdout.splitlines()
+            if line.startswith("__JSON__")
+        ),
         None,
     )
     assert payload is not None, f"{proc.stdout[-2000:]}\n{proc.stderr[-3000:]}"

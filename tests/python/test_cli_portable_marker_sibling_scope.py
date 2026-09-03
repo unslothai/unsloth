@@ -92,7 +92,11 @@ print("__JSON__" + json.dumps({
 """
 
 
-def _run(env_extra: dict, home: Path, probe: str = CLI_PROBE) -> dict:
+def _run(
+    env_extra: dict,
+    home: Path,
+    probe: str = CLI_PROBE,
+) -> dict:
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": str(home),
@@ -158,7 +162,9 @@ def main() -> int:
         check("sibling: exports no UNSLOTH_PORTABLE", None, r["portable_flag"])
         check("sibling: llama.cpp stays under the sibling", str(sibling / "llama.cpp"), r["llama"])
         check("sibling: node stays under the sibling", str(sibling / "node"), r["node"])
-        check("sibling: whisper stays under the sibling", str(sibling / "whisper.cpp"), r["whisper"])
+        check(
+            "sibling: whisper stays under the sibling", str(sibling / "whisper.cpp"), r["whisper"]
+        )
         # The whole point of the export: with UNSLOTH_HOME in the environment the
         # backend stops consulting the marker at all and just believes the CLI.
         check("sibling: backend agrees there is no master root", None, r["backend_master"])
@@ -189,7 +195,9 @@ def main() -> int:
 
         print("\n[4] the activated nested venv, the case the marker exists for")
         r = _run({"_PREFIX": str(nested_prefix)}, home)
-        check("nested venv: resolves the nested Studio root", str(master / "studio"), r["studio_home"])
+        check(
+            "nested venv: resolves the nested Studio root", str(master / "studio"), r["studio_home"]
+        )
         check("nested venv: treated as a custom root", True, r["custom"])
         check("nested venv: finds the master root", str(master), r["master"])
         check("nested venv: exports the master root", str(master), r["exported_home"])
@@ -247,19 +255,13 @@ def main() -> int:
         cased = tmp / "cased"
         (cased / "Studio" / "unsloth_studio" / "bin").mkdir(parents = True)
         (cased / MARKER).write_text(f"{cased}\n")
-        r = _run(
-            {"_STUDIO_HOME": str(cased / "Studio"), "_PLATFORM": "darwin"}, home, FOLD_PROBE
-        )
+        r = _run({"_STUDIO_HOME": str(cased / "Studio"), "_PLATFORM": "darwin"}, home, FOLD_PROBE)
         check("darwin: Studio inherits the parent marker", str(cased), r["master"])
         check("darwin: Studio reads as installer-managed", True, r["managed"])
-        r = _run(
-            {"_STUDIO_HOME": str(cased / "Studio"), "_PLATFORM": "linux"}, home, FOLD_PROBE
-        )
+        r = _run({"_STUDIO_HOME": str(cased / "Studio"), "_PLATFORM": "linux"}, home, FOLD_PROBE)
         check("linux: Studio is a distinct directory, so no inherit", None, r["master"])
         # Lowercase must not depend on the fold, or the fold becomes the whole rule.
-        r = _run(
-            {"_STUDIO_HOME": str(master / "studio"), "_PLATFORM": "linux"}, home, FOLD_PROBE
-        )
+        r = _run({"_STUDIO_HOME": str(master / "studio"), "_PLATFORM": "linux"}, home, FOLD_PROBE)
         check("linux: lowercase studio still inherits", str(master), r["master"])
         # And the fold must not turn every child into a match on macOS.
         r = _run({"_STUDIO_HOME": str(sibling), "_PLATFORM": "darwin"}, home, FOLD_PROBE)
