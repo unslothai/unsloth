@@ -125,6 +125,12 @@ DEFAULT_RECLAIM_BARRIER_POLL_S = 0.05
 # what any request may occupy.
 DEFAULT_RESUME_WAIT_TIMEOUT_S = 90.0
 
+# The absolute bound on one resume wait, as a multiple of the stall timeout above. Only
+# reached when the cache keeps moving but never has room for THIS chat, which the stall
+# detector cannot distinguish from healthy queueing. 20 x 90s = 30 minutes, comfortably
+# longer than the slowest answer measured here and still finite.
+MAX_RESUME_WAIT_MULTIPLE = 20
+
 
 class LlamaStreamPreempted(Exception):
     """The upstream stream was aborted to free KV, not abandoned.
@@ -808,6 +814,20 @@ class PreemptionController:
         with self._lock:
             return self._committed_locked()
 
+    def progress_signature(self) -> tuple:
+        """What a waiter watches to tell "busy" from "stuck".
+
+        Only two things can end a wait for room: the cache gives some back, or a holder
+        leaves. Both are visible here. Growth is deliberately NOT progress -- other chats
+        decoding into the cache is the opposite of room appearing -- so a waiter that
+        reset its patience on any change at all would never time out.
+        """
+        with self._lock:
+            return (
+                self._committed_locked(),
+                frozenset(p.gen_id for p in self._participants.values() if p.holds_kv),
+            )
+
     def _buffer_locked(self) -> int:
         return preemption_buffer_tokens(
             self._budget, draft_tokens = self._draft_tokens, slots = self._slots
@@ -1139,16 +1159,49 @@ class ControllerPreemptionPolicy:
         # Wait for the cache to actually have room before taking the lease back. Without
         # this the queue hands a resume out on its own optimistic accounting and the next
         # watermark sweep evicts the same chat again, which is thrash, not scheduling.
-        deadline = time.monotonic() + timeout
+        # The clock measures STALL, not elapsed time. A flat wall-clock deadline cannot
+        # tell a system that is working from one that is stuck, and both happen here: a
+        # chat waiting behind a 10k-token answer waits minutes through healthy progress,
+        # while a genuine deadlock shows nothing moving at all. Measured 2026-09-03,
+        # 90 seconds of wall clock killed two chats outright while the cache was steadily
+        # turning over.
+        #
+        # So the deadline resets whenever the cache gives room back or a holder leaves,
+        # and expires only after `timeout` seconds in which neither happened. That still
+        # ends the failure this bound was added for -- three paused chats and a 33 minute
+        # hang with NOTHING decoding, which registers as a stall immediately -- while a
+        # chat that is merely queued behind live work keeps its place.
+        #
+        # `hard_deadline` is the backstop for the case the stall detector cannot see: a
+        # cache that keeps churning while this particular chat is never quite served.
+        started = time.monotonic()
+        deadline = started + timeout
+        hard_deadline = started + timeout * MAX_RESUME_WAIT_MULTIPLE
+        last = self._controller.progress_signature()
         # Fresh reading before the first question, not just the cached one: this is the
         # grant that lets a chat back in carrying its whole replayed partial.
         self._controller.refresh_residency()
         while not self._controller.room_for(self._gen_id, want):
             self._controller.refresh_residency()
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            current = self._controller.progress_signature()
+            if current != last:
+                committed, holders = current
+                was_committed, was_holders = last
+                # Room appeared, or somebody finished and is about to give theirs back.
+                if committed < was_committed or not (was_holders <= holders):
+                    deadline = now + timeout
+                last = current
+            if now >= deadline:
                 _log.info(
-                    "llama preemption gave-up: gen_id=%s want=%s (no room within %ss)",
+                    "llama preemption gave-up: gen_id=%s want=%s (no progress for %ss)",
                     self._gen_id, want, timeout,
+                )
+                return False
+            if now >= hard_deadline:
+                _log.info(
+                    "llama preemption gave-up: gen_id=%s want=%s (still unserved after "
+                    "%ss of a moving cache)", self._gen_id, want, round(now - started, 1),
                 )
                 return False
             time.sleep(0.1)

@@ -575,6 +575,117 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         )
         assert policy.await_resume(timeout = 0.01) is False
 
+    @staticmethod
+    def _waiting_policy(controller, gen_id, tokens):
+        """A policy that actually reaches the wait loop.
+
+        await_resume short-circuits before the loop when the participant has no lease
+        (nothing to take back) or no event loop (nothing to take it back ON), so a stub
+        for each is the only way to exercise the thing under test.
+        """
+        import asyncio
+        import threading
+
+        class _Lease:
+            is_released = False
+            tokens = 0
+
+            async def resume_async(self, want, **kwargs):
+                return True
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target = loop.run_forever, daemon = True)
+        thread.start()
+        controller.register(
+            gen_id, lease = _Lease(), tokens = tokens, signal = PreemptSignal()
+        )
+        policy = ControllerPreemptionPolicy(
+            controller, gen_id, PreemptSignal(), loop = loop
+        )
+        return policy, loop
+
+    @staticmethod
+    def _shutdown(loop):
+        loop.call_soon_threadsafe(loop.stop)
+
+    def test_a_stalled_wait_still_ends(self):
+        """The hang this bound exists for: nothing decoding, nothing moving.
+
+        A full cache that nobody is draining produces no progress at all, so the stall
+        deadline expires on schedule and the turn finishes with what it has.
+        """
+        import time
+
+        controller = PreemptionController("stalled")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("holder", tokens = 14000, signal = PreemptSignal())
+        controller.note_tokens("holder", 14000)  # measured, and going nowhere
+        policy, loop = self._waiting_policy(controller, "waiter", 8000)
+        try:
+            started = time.monotonic()
+            assert policy.await_resume(timeout = 0.5) is False
+            elapsed = time.monotonic() - started
+        finally:
+            self._shutdown(loop)
+        assert 0.4 < elapsed < 5.0, f"stall must end near the timeout, took {elapsed}s"
+
+    def test_progress_buys_more_patience_than_the_wall_clock_allows(self):
+        """The defect that killed two live chats: 90s of wall clock against an answer
+        that legitimately takes minutes, while the cache was steadily turning over.
+
+        Room is released from another thread AFTER the flat deadline would have fired.
+        A wall-clock bound gives up; a stall bound waits, because the cache kept giving
+        room back the whole time.
+        """
+        import threading
+        import time
+
+        controller = PreemptionController("progressing")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("holder", tokens = 14000, signal = PreemptSignal())
+        controller.note_tokens("holder", 14000)
+
+        stop = threading.Event()
+
+        def drain():
+            # Room appearing, a little at a time, for well longer than `timeout`.
+            held = 14000
+            while not stop.is_set() and held > 1000:
+                time.sleep(0.05)
+                held -= 200
+                controller.note_tokens("holder", held)
+
+        worker = threading.Thread(target = drain, daemon = True)
+        worker.start()
+        policy, loop = self._waiting_policy(controller, "waiter", 4000)
+        try:
+            started = time.monotonic()
+            policy.await_resume(timeout = 0.3)
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+            worker.join(timeout = 5)
+            self._shutdown(loop)
+        assert elapsed > 0.4, (
+            f"gave up after {elapsed}s despite the cache draining throughout; a stall "
+            "deadline must reset on progress"
+        )
+
+    def test_growth_is_not_progress(self):
+        """Otherwise the deadline never expires: other chats decoding into the cache is
+        the opposite of room appearing, and resetting on it would restore the hang."""
+        controller = PreemptionController("growing")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("a", tokens = 1000, signal = PreemptSignal())
+        controller.observe("a", 0)
+        controller.note_resident(1000)
+        before = controller.progress_signature()
+        controller.observe("a", 5000)
+        after = controller.progress_signature()
+        assert after != before, "the signature must move when occupancy moves"
+        assert after[0] > before[0], "and growth must be visible as growth"
+        assert after[1] == before[1], "with the same holders"
+
     def test_the_events_reach_the_logger_studio_actually_configures(self):
         """`paused` never appeared in the live log, which read as "the handshake never
         ran". The handshake may well have run: the module was writing to a stdlib
