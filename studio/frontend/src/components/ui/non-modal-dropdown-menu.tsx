@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ComponentProps, ReactNode, RefObject } from "react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -23,13 +23,19 @@ export function NonModalDropdownMenu({
   children: ReactNode;
 } & ComponentProps<typeof DropdownMenuContent>) {
   const triggerRef = useRef<HTMLButtonElement>(null);
+  // `DropdownMenuContent` animates out, so Radix keeps it mounted for the whole exit animation.
+  // The guard is mount-scoped, so an ungated one goes on watching `document` after the menu has
+  // closed and swallows the next click the user makes. Gate it on the open state instead.
+  const [open, setOpen] = useState(false);
   return (
-    <DropdownMenu modal={false}>
+    <DropdownMenu modal={false} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild={true}>
         {trigger(triggerRef)}
       </DropdownMenuTrigger>
       <DropdownMenuContent {...contentProps}>
-        <MenuDismissGuard triggerRef={triggerRef} />
+        {/* Arming survives this unmount: `arm` registers on `document`, so the click owed by the
+            dismissing press is still swallowed after the guard itself has gone. */}
+        {open ? <MenuDismissGuard triggerRef={triggerRef} /> : null}
         {children}
       </DropdownMenuContent>
     </DropdownMenu>
