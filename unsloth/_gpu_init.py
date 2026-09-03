@@ -176,22 +176,47 @@ except:
 
 # Re-assert single-compile-worker after unsloth_zoo's patch_torch_compile (which
 # historically popped TORCHINDUCTOR_COMPILE_THREADS). Set the Inductor config
-# directly and patch the zoo's determine_compile_threads so every options dict
-# sees 1. No-op when the user opted out.
+# directly, patch the zoo's determine_compile_threads so later options dicts see 1,
+# and rewrite the ones it already built. No-op when the user opted out.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
         torch._inductor.config.compile_threads = 1
     except Exception:
         pass
     os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
-    try:
+
+    def _force_single_compile_worker_in_zoo():
         setattr(
             importlib.import_module("unsloth_zoo.temporary_patches.common"),
             "determine_compile_threads",
             lambda: 1,
         )
+        # `import unsloth_zoo` above already executed temporary_patches, so its
+        # module-level options dicts (common.torch_compile_options and the fused
+        # per-model ones) are snapshots of the original 4-32 count; replacing the
+        # function only reaches dicts built from here on. Those snapshots are handed
+        # to torch.compile as `options`, which Inductor applies as a config patch
+        # that outranks both TORCHINDUCTOR_COMPILE_THREADS and the value set above,
+        # so a stale one still starts the worker pool this block exists to prevent.
+        # Rewrite them in place: each dict is shared by identity with every zoo
+        # module re-exporting it and with the functools.partial in `torch_compile`.
+        for module in list(sys.modules.values()):
+            name = getattr(module, "__name__", "")
+            if name != "unsloth_zoo" and not name.startswith("unsloth_zoo."):
+                continue
+            try:
+                values = list(vars(module).values())
+            except Exception:
+                continue
+            for value in values:
+                if isinstance(value, dict) and "compile_threads" in value:
+                    value["compile_threads"] = 1
+
+    try:
+        _force_single_compile_worker_in_zoo()
     except Exception:
         pass
+    del _force_single_compile_worker_in_zoo
 
 from unsloth_zoo.device_type import (
     is_hip,
