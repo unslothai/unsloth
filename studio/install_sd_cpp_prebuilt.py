@@ -63,6 +63,10 @@ INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
 # Marks the directory as one Unsloth created, so an uninstall never wipes a user's own tree.
 OWNERSHIP_MARKER = ".unsloth-studio-owned"
 
+# storage_roots.PORTABLE_MARKER, written by install.sh at the master root of a portable install.
+# Spelled out because this script must run standalone, before the backend package is importable.
+PORTABLE_MARKER = ".unsloth-portable-root"
+
 
 def accelerator_class(accelerator: Optional[str]) -> str:
     """The accelerator an install actually serves. ``auto`` resolves to the plain build, so it and
@@ -369,6 +373,29 @@ def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
         raise RuntimeError(f"sha256 mismatch for {path.name}: expected {want.lower()}, got {got}")
 
 
+def _root_is_portable_master(root: Path) -> bool:
+    """Whether *root* is itself the master root of a portable install, so that ``rm -rf <root>``
+    is advertised to remove the whole of it and nothing may be hung off ``root.parent``.
+
+    The standalone half of ``sd_cpp_engine._root_is_portable_master``, in the same order and on the
+    same two signals install.sh leaves behind: UNSLOTH_HOME, which setup.sh exports, and the marker
+    install.sh writes AT the master root of a flat install (a nested one carries it one level above
+    the Studio root, where it names the parent rather than *root*). The engine additionally reads
+    the in-root master-root record, which install.sh writes for the nested layout only and which
+    therefore never names *root* itself."""
+    env_master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if env_master:
+        master = Path(env_master).expanduser()
+        try:
+            return master.resolve() == root.resolve()
+        except (OSError, ValueError):
+            return master == root
+    try:
+        return (root / PORTABLE_MARKER).is_file()
+    except OSError:
+        return False
+
+
 def default_install_dir() -> Path:
     """``<UNSLOTH_STUDIO_HOME>/stable-diffusion.cpp``, else the legacy
     ``~/.unsloth/stable-diffusion.cpp``.
@@ -378,6 +405,13 @@ def default_install_dir() -> Path:
     *under* the Unsloth home, so side-by-side Unsloth instances stay isolated and nothing outside
     the home is ever claimed. The legacy default home ``~/.unsloth/studio`` still maps
     to ``~/.unsloth/stable-diffusion.cpp`` so an existing install is reused.
+
+    Except when that legacy home is ALSO the portable master root, which is what
+    ``install.sh --portable`` with UNSLOTH_STUDIO_HOME already set, and ``--root`` pointed at the
+    existing default install, both produce. The remap hangs the tree off ``root.parent`` there,
+    outside the one directory the install advertises as deletable, so this is the WRITE that would
+    leave a managed runtime behind after ``rm -rf <root>``. A nested master at ``~/.unsloth`` still
+    remaps: it owns that level, and its llama.cpp, node and whisper.cpp sit beside studio/ in it.
 
     Kept byte-identical in meaning to ``sd_cpp_engine.managed_install_root``; the two
     are separate because this script must run standalone, before the backend package is
@@ -397,7 +431,9 @@ def default_install_dir() -> Path:
     except (OSError, ValueError):
         root = root.absolute()
         is_legacy = root == legacy_studio
-    return legacy if is_legacy else root / "stable-diffusion.cpp"
+    if not is_legacy:
+        return root / "stable-diffusion.cpp"
+    return root / "stable-diffusion.cpp" if _root_is_portable_master(root) else legacy
 
 
 def _make_executable(path: Path) -> None:
