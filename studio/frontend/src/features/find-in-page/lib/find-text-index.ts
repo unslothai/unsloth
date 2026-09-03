@@ -975,6 +975,17 @@ const MIN_SEEK_BUDGET_MS = 8;
  *  block is measured, so what accumulates is the real cost and not a sample of it. */
 const SEEK_BLOCK = 32;
 
+/** Drop a block left open by a search that ended inside one. It is wall time being measured, and
+ *  between two searches that is the reader thinking: a query needing fewer than a block's worth of
+ *  checks otherwise billed the pause before the next one to it, and bought a scan out of nothing.
+ *  What is dropped is under a block of seeks, which the budget will not miss. */
+function endSeekWindow(index: FindTextIndex): void {
+  const cost = seekCosts.get(index);
+  if (cost === undefined) return;
+  cost.seen = (cost.seen ?? 0) - ((cost.seen ?? 0) % SEEK_BLOCK);
+  cost.since = 0;
+}
+
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
 
@@ -1207,6 +1218,7 @@ export function findMatches(
 ): FindMatch[] {
   const needle = normalizeQuery(query);
   if (needle === null) return [];
+  endSeekWindow(index);
   const head = collectMatches(index, needle, limit, 0);
   // Before resolving the anchor, so an under-cap query never pays for it.
   if (head.length < limit) return head;

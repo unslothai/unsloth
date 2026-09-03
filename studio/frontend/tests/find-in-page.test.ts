@@ -2110,6 +2110,53 @@ test("an odd run longer than the window is not read as even", () => {
   }
 });
 
+test("the time between two searches is not charged to either", () => {
+  // The budget is wall time, and it is measured in blocks, so a search that ends inside one leaves
+  // the clock running. The next search closes that block and is billed for everything in between,
+  // which is the reader thinking. Two cheap queries and a pause bought a whole-index scan.
+  const probe = `
+    let scans = 0;
+    const Real = Intl.Segmenter;
+    Intl.Segmenter = class {
+      constructor(...args) { this.inner = new Real(...args); }
+      segment(input) {
+        const segments = this.inner.segment(input);
+        return {
+          containing: (at) => segments.containing(at),
+          [Symbol.iterator]: () => { scans += 1; return segments[Symbol.iterator](); },
+        };
+      }
+    };
+    const { buildTextIndex, findMatches, MAX_MATCHES } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const el = (tagName, childNodes) => ({
+      nodeType: 1, tagName, childNodes, getAttribute: () => null,
+    });
+    // Hangul, so every candidate is past the fast path and does ask the segmenter.
+    const syllable = (at) => String.fromCodePoint(0xac00 + (at % 11172));
+    let body = "";
+    for (let at = 0; at < 100000; at += 1) body += syllable(at);
+    const index = buildTextIndex(el("DIV", [el("P", [{ nodeType: 3, data: body }])]));
+    const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+    // Each query needs well under a block of checks, so on its own none can reach the budget.
+    for (let round = 1; round <= 4; round += 1) {
+      findMatches(index, syllable(round * 13) + syllable(round * 13 + 1), MAX_MATCHES);
+      await wait(60);
+    }
+    if (scans !== 0) throw new Error("bought a scan out of the pauses between searches");
+  `;
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+});
+
 test("what a seek is allowed to cost is time, not a number of them", () => {
   // A seek is not one price. Into a page of Hangul it is 0.2us and into a page of flags 1236us,
   // six thousand to one on the same length of text, so any count is far too small for one and far
