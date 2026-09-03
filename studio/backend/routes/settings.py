@@ -1591,7 +1591,13 @@ def _fill_target_id(target_id: str) -> str:
     return target_id
 
 
-# One override write at a time. A save stores its target key and then reads the map back
+# One override write at a time. A save stores its target key and then reads the map back to retire the other spelling of
+# the same cached repo, and a remove clears up to four keys, each its own transaction: atomic on their own, but not as a
+# sequence. This route is a plain `def`, so FastAPI runs it in a threadpool, and two clients saving one quant under both
+# spellings (the repo id the picker sends and the snapshot path an upgraded install still holds) could each write before
+# either cleanup ran and then retire the other's row, leaving no override at all from two saves that both returned 200.
+# Serialize the whole handler instead: overrides are written by a settings edit, never on a hot path, and the server
+# runs one process.
 _override_write_lock = threading.Lock()
 
 
@@ -1733,7 +1739,11 @@ def update_openai_auto_switch_override(
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
             if legacy_id and legacy_id not in target_ids:
                 removed_keys.append(legacy_id)
-            # The mirror image of the carry-over above: a save under repo:QUANT copies
+            # The mirror image of the carry-over above: a save under repo:QUANT copies the flags off a legacy bare
+            # `repo` entry and leaves it in place, and the loader falls back to it when the qualified key misses, so
+            # clearing only the qualified key hands the same flags straight back and the forget does nothing. Nothing in
+            # the UI can reach that bare entry. Only once it is nobody else's fallback, though: it backs every quant
+            # with no entry of its own, so forgetting Q4 must not strip Q8.
             bare_id = _bare_model_id(payload.model_id)
             if (
                 bare_id
@@ -2648,7 +2658,8 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Offline: subdir probes would hit the network and hang; the offline gate walks
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the whole cached snapshot, so no
+        # load-subdir hints are needed.
         if local_only_load:
             load_subdirs = ()
         else:

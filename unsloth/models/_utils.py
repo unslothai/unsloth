@@ -3724,10 +3724,8 @@ def patch_peft_fast_inference(model):
 
         model.load_lora = functools.partial(load_lora, model)
 
-        # Without an engine there was no `save_lora` at all, and `save_lora` needs none: it is `save_pretrained`
-        # over the adapter. Gating it on the engine gave `fast_inference = False` GRPO runs `AttributeError:
-        # 'Lfm2ForCausalLM' object has no attribute 'save_lora'`. Set only when absent, so a model carrying its
-        # own keeps it.
+        # An engine keeps the Zoo helper it has always had: vLLM reads the saved adapter back through its own LoRA
+        # loader, so what that file may carry is its call, not one to change here.
         if not hasattr(model, "save_lora"):
             try:
                 from unsloth_zoo.vllm_utils import save_lora
