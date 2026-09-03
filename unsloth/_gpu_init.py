@@ -146,8 +146,13 @@ def _reraise_device_type_error_with_gpu_hint(exception):
     """
     # `raise exception`, never a bare `raise`: inside the nvidia-smi except handler a
     # bare raise would re-raise the OSError from the probe instead of the original.
+    # Match "ROCm", NOT "AMD": zoo's ROCm repair hint always opens with "an AMD ROCm GPU",
+    # while its generic no-accelerator message lists AMD as a supported vendor ("Unsloth
+    # currently only works on NVIDIA, AMD and Intel GPUs.") -- and that generic message is
+    # what a torch older than 2.6 gets, since get_device_type only reaches the shorter
+    # "cannot find any torch accelerator" text behind `hasattr(torch, "accelerator")`.
     message = str(exception)
-    if "ROCm" in message or "AMD" in message:
+    if "ROCm" in message:
         raise exception
     try:
         smi = subprocess.run(
