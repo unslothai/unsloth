@@ -261,10 +261,7 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
 
 
 def _probe_remote_gguf_audio_type(
-    repo_id: str,
-    gguf_filename: str,
-    hf_token: Optional[str],
-    revision: Optional[str],
+    repo_id: str, gguf_filename: str, hf_token: Optional[str], revision: Optional[str]
 ) -> tuple[Optional[str], bool]:
     """Read enough of one Hub GGUF to classify its vocabulary, without downloading it."""
     try:

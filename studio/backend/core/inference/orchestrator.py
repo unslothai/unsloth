@@ -426,7 +426,9 @@ class InferenceOrchestrator:
             self._top_models_ready.set()
 
     def _spawn_subprocess(
-        self, config: dict, cache_environment: Optional[Mapping[str, str]] = None
+        self,
+        config: dict,
+        cache_environment: Optional[Mapping[str, str]] = None,
     ) -> None:
         """Spawn a new inference subprocess."""
         from utils.transformers_version import (

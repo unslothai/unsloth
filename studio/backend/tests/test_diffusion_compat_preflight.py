@@ -361,7 +361,11 @@ def test_a_large_custom_prefix_keeps_the_interrupting_deadline(monkeypatch):
         def __exit__(self, *_exc):
             return False
 
-    def _get(_url, headers = None, **_kwargs):
+    def _get(
+        _url,
+        headers = None,
+        **_kwargs,
+    ):
         ranges.append((headers or {}).get("Range"))
         return _Trickle()
 

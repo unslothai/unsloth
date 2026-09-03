@@ -4023,9 +4023,7 @@ def test_gguf_bicodec_preflight_stages_weights_and_pinned_source(monkeypatch):
         "bicodec", "/local/model.gguf", True, "caller-token"
     )
 
-    assert calls == [
-        (None, {"hf_token": "caller-token", "local_files_only": False}),
-    ]
+    assert calls == [(None, {"hf_token": "caller-token", "local_files_only": False})]
 
 
 def test_bicodec_resolver_uses_the_active_cache(tmp_path, monkeypatch):

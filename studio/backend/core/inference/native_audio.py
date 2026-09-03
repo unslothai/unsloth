@@ -174,10 +174,9 @@ def higgs_tts2_codec_local_complete(codec_path: str) -> bool:
         if root.is_file():
             root = root.parent
         config = _read_local_audio_metadata(root, "config.json", reject_oversized = True)
-        return (
-            str(config.get("model_type") or "").lower() == "higgs_audio_v2_tokenizer"
-            and _minimax_component_has_weights(root, "model")
-        )
+        return str(
+            config.get("model_type") or ""
+        ).lower() == "higgs_audio_v2_tokenizer" and _minimax_component_has_weights(root, "model")
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return False
 

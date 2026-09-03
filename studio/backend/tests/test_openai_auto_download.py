@@ -1758,9 +1758,7 @@ def test_a_sidecarless_speech_repo_is_probed_from_the_selected_gguf(hub, monkeyp
         return "bicodec", True
 
     monkeypatch.setattr(auto_dl, "_probe_remote_gguf_audio_type", _probe)
-    refusal = asyncio.run(
-        auto_dl.maybe_auto_download("unsloth/tts-GGUF:Q8_0", require_speech = True)
-    )
+    refusal = asyncio.run(auto_dl.maybe_auto_download("unsloth/tts-GGUF:Q8_0", require_speech = True))
 
     assert refusal.code == "model_downloading"
     assert seen == [
@@ -1791,7 +1789,11 @@ def test_the_remote_gguf_probe_is_bounded_pinned_and_uses_the_caller_token(monke
         def __exit__(self, *_args):
             return None
 
-    def _url(repo, filename, revision = None):
+    def _url(
+        repo,
+        filename,
+        revision = None,
+    ):
         seen["url"] = (repo, filename, revision)
         return "https://example.invalid/model.gguf"
 
@@ -1809,6 +1811,7 @@ def test_the_remote_gguf_probe_is_bounded_pinned_and_uses_the_caller_token(monke
 
     monkeypatch.setattr(diffusion_compat, "_ranged_stream", _stream)
     monkeypatch.setattr(diffusion_compat, "_iter_body", lambda _response, _size: [b"abc", b"def"])
+
     def _classify(data):
         seen["prefix"] = data
         return "bicodec", True
@@ -1821,9 +1824,7 @@ def test_the_remote_gguf_probe_is_bounded_pinned_and_uses_the_caller_token(monke
     assert seen["url"] == ("org/tts", "model-Q4.gguf", "pinned-sha")
     assert seen["token"] == "caller-token"
     assert seen["prefix"] == b"abcdef"
-    assert seen["request"][1]["Range"] == (
-        f"bytes=0-{auto_dl._REMOTE_GGUF_SPEECH_PROBE_BYTES - 1}"
-    )
+    assert seen["request"][1]["Range"] == (f"bytes=0-{auto_dl._REMOTE_GGUF_SPEECH_PROBE_BYTES - 1}")
 
 
 def test_a_speech_request_does_not_download_an_unsupported_gguf_codec(hub, monkeypatch):
