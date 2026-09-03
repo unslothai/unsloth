@@ -667,29 +667,78 @@ class PreemptionController:
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
                 return True
-            ceiling = max(0, self._budget - self._buffer_locked())
-            ledger_others = sum(
-                p.tokens
-                for gid, p in self._participants.items()
-                if p.holds_kv and gid != gen_id
-            )
-            # Resident cells count too, minus whatever this generation itself still
-            # holds, or an idle slot's leftovers would be invisible here exactly as they
-            # were to the watermark. Reading only the ledger said "yes, resume" against a
-            # cache an idle slot had already filled.
-            others = ledger_others
-            if self._resident is not None:
-                mine = self._participants.get(gen_id)
-                others = max(others, self._resident - (mine.tokens if mine else 0))
-            need = max(0, int(want or 0))
-            others = max(0, others)
-            if others + need <= ceiling:
+            return self._room_for_locked(gen_id, want)
+
+    def try_grant_resume(self, gen_id: str, want: int) -> bool:
+        """Decide there is room AND take it, without letting go of the lock between.
+
+        `room_for` only answers a question, and two paused chats asking it at the same
+        moment both get yes: PAUSED is not in `_HOLDS_KV`, so neither appears in the
+        other's arithmetic, and nothing books the space between the answer and the
+        prefill that follows it. Both then resume and prefill together.
+
+        That is the run that produced 3 context-exhaustion errors and 4 speculative
+        sub-batch errors (upstream #24840) on 2026-09-03 with three chats waiting at
+        once, while the sampled residency never once passed the ceiling -- because the
+        overflow happened inside a single prefill, between two samples, and the ledger
+        had never been told the room was spoken for. The run before it, with fewer
+        simultaneous waiters, was completely clean.
+
+        So book it here. The grant marks the participant DECODING and charges it `want`
+        immediately, which is what makes the next caller see the room as taken. It is
+        marked unmeasured on purpose: its cells were freed when it paused and its prefill
+        has not happened yet, so `want` must be ADDED to the resident figure rather than
+        compared with it, exactly like any other chat that has not prefilled.
+
+        Roll back with `note_resume_failed` if the resume does not go through, or the
+        booking becomes room nobody is using.
+        """
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
                 return True
-            # Outgrew the shared ceiling: it can still run once it has the cache to
-            # itself, and it must, or it waits for room that no eviction can ever make.
-            if need > ceiling and others == 0:
-                return need <= self._solo_ceiling_locked()
-            return False
+            if not self._room_for_locked(gen_id, want):
+                return False
+            participant = self._participants.get(gen_id)
+            if participant is not None:
+                need = max(0, int(want or 0))
+                participant.tokens = max(participant.tokens, need)
+                participant.base_tokens = max(participant.base_tokens, need)
+                participant.measured = False
+                participant.state = ParticipantState.DECODING
+            return True
+
+    def note_resume_failed(self, gen_id: str) -> None:
+        """Give back a grant whose resume never happened."""
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is not None and participant.state == ParticipantState.DECODING:
+                participant.state = ParticipantState.PAUSED
+
+    def _room_for_locked(self, gen_id: str, want: int) -> bool:
+        """The arithmetic behind `room_for`, callable by a holder of the lock."""
+        ceiling = max(0, self._budget - self._buffer_locked())
+        ledger_others = sum(
+            p.tokens
+            for gid, p in self._participants.items()
+            if p.holds_kv and gid != gen_id
+        )
+        # Resident cells count too, minus whatever this generation itself still holds, or
+        # an idle slot's leftovers would be invisible here exactly as they were to the
+        # watermark. Reading only the ledger said "yes, resume" against a cache an idle
+        # slot had already filled.
+        others = ledger_others
+        if self._resident is not None:
+            mine = self._participants.get(gen_id)
+            others = max(others, self._resident - (mine.tokens if mine else 0))
+        need = max(0, int(want or 0))
+        others = max(0, others)
+        if others + need <= ceiling:
+            return True
+        # Outgrew the shared ceiling: it can still run once it has the cache to itself,
+        # and it must, or it waits for room that no eviction can ever make.
+        if need > ceiling and others == 0:
+            return need <= self._solo_ceiling_locked()
+        return False
 
     def observe(self, gen_id: str, generated: int) -> List["Participant"]:
         """Live growth during generation, and the eviction check that follows it.
@@ -1181,7 +1230,9 @@ class ControllerPreemptionPolicy:
         # Fresh reading before the first question, not just the cached one: this is the
         # grant that lets a chat back in carrying its whole replayed partial.
         self._controller.refresh_residency()
-        while not self._controller.room_for(self._gen_id, want):
+        # try_grant_resume, not room_for: the room has to be BOOKED at the instant it is
+        # found, or two chats waiting at once both find the same space and both take it.
+        while not self._controller.try_grant_resume(self._gen_id, want):
             self._controller.refresh_residency()
             now = time.monotonic()
             current = self._controller.progress_signature()
@@ -1212,6 +1263,10 @@ class ControllerPreemptionPolicy:
             # The future's own timeout is a backstop for a loop that never runs the
             # coroutine at all; resume_async is already bounded by timeout_s.
             got = bool(future.result(timeout = timeout + 5.0))
+            if not got:
+                # The grant above booked the room. Nothing is going to use it, so hand it
+                # back rather than leave the ledger holding space for a chat that stopped.
+                self._controller.note_resume_failed(self._gen_id)
             _log.info(
                 "llama preemption %s: gen_id=%s want=%s",
                 "resumed" if got else "gave-up", self._gen_id, want,

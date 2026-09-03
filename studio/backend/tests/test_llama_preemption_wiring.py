@@ -608,6 +608,49 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
     def _shutdown(loop):
         loop.call_soon_threadsafe(loop.stop)
 
+    def test_two_waiters_cannot_both_be_granted_the_same_room(self):
+        """The 2026-09-03 run 2 failure: 3 context-exhaustion errors and 4 speculative
+        sub-batch errors while sampled residency never once passed the ceiling.
+
+        `room_for` only answers a question. PAUSED is not in `_HOLDS_KV`, so two paused
+        chats asking at the same moment do not appear in each other's arithmetic and both
+        get yes, then both prefill. The overflow happens inside one prefill, between two
+        residency samples, which is why the watermark never saw it.
+        """
+        controller = PreemptionController("double-grant")
+        controller.configure(budget = 16384, kv_unified = True, slots = 4)
+        for gen_id in ("a", "b"):
+            controller.register(gen_id, tokens = 9000, signal = PreemptSignal())
+            controller.set_state(gen_id, ParticipantState.PAUSED)
+
+        snapshot = controller.snapshot()
+        ceiling = snapshot.budget - snapshot.buffer
+        # Each fits alone; together they do not. That is exactly the shape that crashed.
+        assert 9000 <= ceiling < 18000, ceiling
+
+        assert controller.room_for("a", 9000) is True
+        assert controller.room_for("b", 9000) is True, (
+            "the question is answered the same way twice, which is the bug"
+        )
+
+        assert controller.try_grant_resume("a", 9000) is True
+        assert controller.try_grant_resume("b", 9000) is False, (
+            "the second waiter must be refused: the first has already booked the room"
+        )
+
+    def test_a_grant_that_does_not_resume_is_handed_back(self):
+        controller = PreemptionController("grant-rollback")
+        controller.configure(budget = 16384, kv_unified = True, slots = 4)
+        for gen_id in ("a", "b"):
+            controller.register(gen_id, tokens = 9000, signal = PreemptSignal())
+            controller.set_state(gen_id, ParticipantState.PAUSED)
+        assert controller.try_grant_resume("a", 9000) is True
+        assert controller.try_grant_resume("b", 9000) is False
+        controller.note_resume_failed("a")
+        assert controller.try_grant_resume("b", 9000) is True, (
+            "room booked by a resume that never happened must not stay booked"
+        )
+
     def test_a_stalled_wait_still_ends(self):
         """The hang this bound exists for: nothing decoding, nothing moving.
 
@@ -1571,7 +1614,7 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
         from core.inference import llama_preemption
 
         body = _await_resume_body(Path(llama_preemption.__file__).read_text())
-        spin = body.index("while not self._controller.room_for")
+        spin = body.index("while not self._controller.try_grant_resume")
         assert body.index("cannot_ever_fit(") < spin, (
             "a chat larger than the cache would spin until its client gave up"
         )
@@ -1631,7 +1674,7 @@ class TestTheResumeGrantReadsTheCacheAfresh:
         from core.inference import llama_preemption
 
         body = _await_resume_body(Path(llama_preemption.__file__).read_text())
-        first_ask = body.index("while not self._controller.room_for")
+        first_ask = body.index("while not self._controller.try_grant_resume")
         assert body.index("refresh_residency()") < first_ask, (
             "the first grant would be decided on a cached figure"
         )
