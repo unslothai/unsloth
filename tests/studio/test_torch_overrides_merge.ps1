@@ -3,18 +3,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of install.sh's
 # _build_unsloth_torch_overrides. It folds a caller-supplied UV_OVERRIDE file into the frozen
-# torch-trio pins without corrupting that caller's content:
-#   - non-ASCII requirement lines survive (an ascii-encoded rewrite turns them into "?")
-#   - the merged file stays beside the caller's override, because uv resolves `-r nested.txt`
-#     inside an override file relative to THAT file's own directory
-# AST-extracted and run in-process -- no venv, no network, no uv needed.
+# torch-trio pins without corrupting it: non-ASCII lines must survive (an ascii-encoded rewrite
+# turns them into "?"), and the merged file must stay beside the caller's override, because uv
+# resolves `-r nested.txt` inside an override file relative to THAT file's own directory.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
 
 $ErrorActionPreference = "Stop"
 $installPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "install.ps1")
 $installPath = (Resolve-Path $installPath).Path
 
-# --- Parse install.ps1 (also a syntax gate) and extract the helper ---
+# Parse install.ps1 (also a syntax gate) and extract the helper.
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
@@ -35,7 +33,7 @@ function Check($name, $cond) {
 # The helper reads $SkipTorch from its enclosing scope.
 $SkipTorch = $false
 
-# A stand-in interpreter: the helper only calls it as `& $PythonExe -c <code>` and reads the printed `name==version` lines.
+# Stand-in interpreter: the helper only calls it as `& $PythonExe -c <code>` and reads the printed `name==version` lines.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-ovtest-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $fakePy = Join-Path $work "fakepython"
@@ -50,7 +48,6 @@ $savedOverride = $env:UV_OVERRIDE
 $made = @()
 
 try {
-    # ---- 1. caller override in its own directory, with a relative include ----
     $callerDir = Join-Path $work "callerdir"
     New-Item -ItemType Directory -Path $callerDir -Force | Out-Null
     $nested = Join-Path $callerDir "nested.txt"
@@ -68,7 +65,6 @@ try {
 
     $mergedText = [System.IO.File]::ReadAllText($merged)
 
-    # The two regressions under test.
     Check "non-ASCII caller requirement survives the merge (no '?' substitution)" `
         ($mergedText -match "caf${acute}pkg==1\.0" -and $mergedText -notmatch 'caf\?pkg')
     Check "merged file sits where the caller's relative includes still resolve" `
@@ -86,7 +82,6 @@ try {
     Check "merged file has no UTF-8 BOM" `
         (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF))
 
-    # ---- 2. no caller override: nothing relative to preserve, trio only ----
     Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
     $bare = New-UnslothTorchOverridesFile -PythonExe $fakePy
     $made += $bare
@@ -98,7 +93,6 @@ try {
              $bareText -match 'torchaudio==2\.11\.0')
     }
 
-    # ---- 3. --no-torch short circuit ----
     $SkipTorch = $true
     Check "returns null under --no-torch" ($null -eq (New-UnslothTorchOverridesFile -PythonExe $fakePy))
     $SkipTorch = $false

@@ -574,8 +574,7 @@ _GUARD_FILE=$(mktemp)
 # The guard calls _python_is_skipped, _discard_venv_for_recreate and _uv_venv_arm64,
 # so the skip list, its reader, and the replacement helpers have to come along or the
 # version check silently never fires and the recreate loses the venv it was handed.
-# The awk header pattern is the loose "independent Apple Silicon venv" substring, so it keeps
-# matching whichever wording of the guard comment install.sh ships.
+# The awk header pattern is the loose "independent Apple Silicon venv" substring, so it keeps matching whichever wording install.sh ships.
 {
     printf 'substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"

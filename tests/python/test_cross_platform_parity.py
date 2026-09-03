@@ -533,10 +533,9 @@ class TestKnown211SetParity:
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments
-        # rather than a blanket "<2.11.0 appears nowhere", because Get-XpuTorchSpecs keeps a curated
-        # sub-2.11 cap for the whl/xpu index. The XPU CPU fallback is not part of that carve-out: it
-        # uses the plain whl/cpu index, so it moved to the 2.11 line with the rest.
+        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments, not a
+        # blanket "<2.11.0 appears nowhere", because Get-XpuTorchSpecs keeps a curated sub-2.11 cap for the
+        # whl/xpu index. The XPU CPU fallback uses the plain whl/cpu index, so it is not part of that.
         for _stale in (
             '$_pinTorchSpec = "torch>=2.4,<2.11.0"',
             '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"',
@@ -546,7 +545,6 @@ class TestKnown211SetParity:
             assert (
                 _stale not in text
             ), f"install.ps1 must not retain the <2.11.0 default torch line: {_stale}"
-        # The bounded trio must actually be built and passed to the install command.
         # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
             "$_torchSpecs = @($_pinTorchSpec, $_pinVisionSpec, $_pinAudioSpec)" in text

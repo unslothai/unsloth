@@ -82,7 +82,6 @@ def _is_windows_arm64() -> bool:
 
 
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
-# Detected ROCm (major, minor) -> best PyTorch wheel tag, checked newest-first (>=).
 _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (7, 2): "rocm7.2",  # torch 2.11.0
     (7, 1): "rocm7.1",  # torch 2.11.0
@@ -181,7 +180,6 @@ _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
 _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
 
 # Per-tag pip specs for the repair/update path. Must land on the same wheels a fresh install.sh run
-# picks, else `studio update` silently downgrades the venv.
 _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     # Floored at 2.11 (the _grouped_mm bug), matching install.sh's rocm7.2|gfx* case.
     "rocm7.2": (
@@ -189,8 +187,7 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
         "torchvision>=0.26.0,<0.27.0",
         "torchaudio>=2.11.0,<2.12.0",
     ),
-    # rocm7.1 also serves a paired 2.11 trio, so it takes install.sh's widened DEFAULT range: no
-    # _grouped_mm floor applies, but a <2.11 cap would force-reinstall 2.10 over a freshly resolved 2.11.
+    # rocm7.1 also serves a paired 2.11 trio, so it takes install.sh's widened DEFAULT range: no floor, but a <2.11 cap would force-reinstall 2.10 over a freshly resolved 2.11.
     "rocm7.1": (
         "torch>=2.4,<2.12.0",
         "torchvision>=0.19,<0.27.0",
@@ -292,7 +289,6 @@ _CPU_TORCH_PKG_SPEC: tuple[str, str, str] = _CUDA_TORCH_PKG_SPEC
 
 # Byte-identical to the non-XPU arm of install.ps1's $_fix*Spec scalars, NOT _CUDA_TORCH_PKG_SPEC:
 # `studio update` must repair to the same wheels install.ps1 does. On the 2.11 line with install.ps1's
-# default trio; the xpu arm keeps its curated sub-2.11 cap in _XPU_TORCH_PKG_SPEC and is picked first.
 _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.4,<2.12.0",
     "torchvision>=0.19,<0.27.0",
@@ -548,7 +544,6 @@ _ROCM_WINDOWS_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR") or "https://repo.amd.com/rocm/whl"
 )
 
-# gfx arch → AMD index arch-family suffix; each family is a separate pip index on repo.amd.com.
 _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
     "gfx1201": "gfx120X-all",
     "gfx1200": "gfx120X-all",  # RDNA 4
@@ -719,7 +714,6 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
         try:
             with open(path, encoding = "utf-8") as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
-            # Length guard for single-component versions (e.g. "6\n").
             if len(parts) >= 2:
                 _record("ROCm version file", int(parts[0]), int(parts[1]))
                 break
@@ -1078,7 +1072,6 @@ def _detect_windows_gfx_arch() -> str | None:
         except Exception:
             pass
 
-    # 3. amd-smi fallback (runtime-only Radeon installs lack hipinfo); off on Windows without a HIP SDK (UAC prompt).
     amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         for _args in (("static", "--asic"), ("list",)):
@@ -1702,7 +1695,6 @@ def _has_rocm_gpu() -> bool:
         exe = shutil.which(cmd[0])
         if not exe:
             continue
-        # Skip amd-smi on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt).
         if cmd[0] == "amd-smi" and not _amd_smi_allowed():
             continue
         try:
@@ -3421,7 +3413,6 @@ def _ensure_cpu_torch() -> None:
         "   torch is a GPU build but an explicit CPU index is pinned -- reinstalling "
         f"CPU torch from {_strip_index_url_credentials(pin)}"
     )
-    # Pin the supported torch family (the /cpu index now serves 2.11+).
     _torch_pkg, _vision_pkg, _audio_pkg = _CPU_TORCH_PKG_SPEC
     pip_install(
         "CPU torch repair",
@@ -4318,7 +4309,6 @@ def _ensure_rocm_torch() -> None:
                 f"   {gfx_arch or 'pinned ROCm index'} (Windows) -- installing torch from "
                 f"{_strip_index_url_credentials(index_url)}"
             )
-            # Pin companions like install.ps1/setup.ps1 so the per-arch index resolves an ABI-consistent trio.
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
                 gfx_arch, ("torch", "torchvision", "torchaudio")
             )
@@ -4521,7 +4511,6 @@ def _ensure_rocm_torch() -> None:
                 _arch_index_url = _amd_arch_index_url(_selected_gfx)
                 _arch_index_pkgs = (
                     "torch>=2.11.0,<2.12.0",
-                    # Pin companions to 2.11.x (exclusive --index-url could resolve ABI-mismatched).
                     "torchvision>=0.26.0,<0.27.0",
                     "torchaudio>=2.11.0,<2.12.0",
                 )
@@ -4978,7 +4967,6 @@ _RECORDED_TORCH_TAG_PINNED = install_manifest.recorded_torch_flavor_was_pinned()
 # UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
 # "cpu"; empty = standalone `studio update`, where we re-detect).
 _TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
-# Standalone update with an explicit pin: derive the backend from the override leaf (mirrors install.sh).
 if not _TORCH_BACKEND:
     _idx_override = (
         os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
@@ -5016,7 +5004,6 @@ def _torch_step_label(suffix: str) -> str:
 
 
 # -- Verbosity control ----------------------------------------------------------
-# Default: minimal in-place progress bar; UNSLOTH_VERBOSE=1 restores full per-step output.
 VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
 # Progress bar state -- update _TOTAL if you add/remove steps in install_python_stack().
@@ -5306,8 +5293,7 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
-# Skipped when torch is unavailable (Intel Mac GGUF-only): torch extensions or a hard
-# ``Requires-Dist: torch``, plus ``librosa``, whose numba chain fails from source on Intel Mac (#5046).
+# Skipped when torch is unavailable (Intel Mac GGUF-only): torch extensions or a hard ``Requires-Dist: torch``, plus ``librosa``, whose numba chain fails from source on Intel Mac (#5046).
 NO_TORCH_SKIP_PACKAGES = {
     "torch-stoi",
     "timm",
@@ -6281,7 +6267,6 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     cmd = ["uv", "pip", "install"]
     if UV_NEEDS_SYSTEM:
         cmd.append("--system")
-    # Always pass --python so uv targets the right env (uv can ignore an activated venv, e.g. Colab).
     cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
     # No --torch-backend by default (torch is pre-installed), and never on a pinned-index command: UV_TORCH_BACKEND would defeat the pin.
@@ -6291,8 +6276,7 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     return cmd
 
 
-# uv resolves --index-url at LOWEST priority, so inherited index env vars silently defeat a pinned
-# torch repair; neutralise these for pinned installs. UV_CONFIG_FILE is stripped + UV_NO_CONFIG=1.
+# uv resolves --index-url at LOWEST priority, so inherited index env vars silently defeat a pinned torch repair; neutralise them (UV_CONFIG_FILE stripped, UV_NO_CONFIG=1).
 _UV_INDEX_ENV_VARS = (
     "UV_CONFIG_FILE",
     "UV_DEFAULT_INDEX",
@@ -6943,7 +6927,6 @@ def install_python_stack() -> int:
     # absent torch as a stale venv, and tries to delete the running environment.
     install_manifest.set_no_torch_marker(NO_TORCH)
 
-    # 1. Try uv for faster installs (before pip upgrade -- uv venvs omit pip).
     USE_UV = _bootstrap_uv()
 
     # 2. Ensure pip is available (uv venvs from install.sh omit pip).
@@ -7081,7 +7064,6 @@ def install_python_stack() -> int:
             package_name,
         )
     else:
-        # Update path: upgrade only unsloth + unsloth-zoo, preserving the pre-installed torch.
         _progress("base packages")
         desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
         unsloth_spec = (
@@ -7127,7 +7109,6 @@ def install_python_stack() -> int:
         # CPU pin over an XPU venv would leave XPU triton under a CPU torch.
         _ensure_xpu_triton()
 
-    # Windows + AMD GPU: warn if ROCm torch was not installed.
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
         # Validate actual AMD GPU presence (not just tool existence).
         import re as _re_win

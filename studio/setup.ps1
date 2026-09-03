@@ -141,8 +141,7 @@ $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
 
-# UNSLOTH_NPM_REGISTRY: opt-in --registry splat for corporate proxies behind the frontend .npmrc
-# registry lock (min-release-age/save-exact stay in force). Empty = no-op.
+# UNSLOTH_NPM_REGISTRY: opt-in --registry splat past the frontend .npmrc registry lock (corporate proxies).
 $NpmRegistryArgs = @()
 if ($env:UNSLOTH_NPM_REGISTRY) {
     $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
@@ -156,12 +155,10 @@ foreach ($a in $args) {
         break
     }
 }
-# Propagate verbose to child processes (process-scoped).
 if ($script:UnslothVerbose) {
     $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
-# CUDA toolkit state, published by Resolve-CudaToolkit (Phase 4 source build only).
 $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
@@ -191,7 +188,6 @@ $IsPipInstall = -not (Test-Path $FrontendDir)
 # Helper functions
 # ─────────────────────────────────────────────
 
-# Reload ALL environment variables from registry (picks up installer changes: Path, CUDA_PATH, etc).
 function Refresh-Environment {
     foreach ($level in @('Machine', 'User')) {
         $vars = [System.Environment]::GetEnvironmentVariables($level)
@@ -231,8 +227,7 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
-# Add a directory to the persistent User PATH. Direct registry access preserves REG_EXPAND_SZ;
-# Append (default) keeps existing tools first, Prepend is for must-win entries.
+# Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442).
 function Add-ToUserPath {
     param(
         [Parameter(Mandatory = $true)][string]$Directory,
@@ -592,7 +587,6 @@ function Get-InstalledLlamaPrebuiltRelease {
     return $message
 }
 
-# Find nvcc on PATH, CUDA_PATH, or standard toolkit dirs; $null if not found.
 function Find-Nvcc {
     param([string]$MaxVersion = "")
 
@@ -663,7 +657,6 @@ function Write-CudaDriverToolkitMismatch {
     substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
 }
 
-# Detect CUDA Compute Capability via nvidia-smi (e.g. "89" for RTX 4090); $null on failure.
 function Get-CudaComputeCapability {
     # $NvidiaSmiExe is an absolute path that survives Refresh-Environment.
     $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
@@ -673,11 +666,9 @@ function Get-CudaComputeCapability {
     if (-not $smiExe) { return $null }
 
     try {
-        # Bounded so a wedged nvidia-smi can't hang setup.
         $raw = Invoke-NvidiaSmiBounded $smiExe @('--query-gpu=compute_cap', '--format=csv,noheader')
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
 
-        # Multiple GPUs: take the first.
         $cap = ($raw -split "`n")[0].Trim()
         if ($cap -match '^(\d+)\.(\d+)$') {
             $major = $Matches[1]
@@ -689,8 +680,7 @@ function Get-CudaComputeCapability {
     return $null
 }
 
-# Does an nvcc binary support a given sm_ arch? Via `nvcc --list-gpu-code` (CUDA 11.6+); $false on
-# older toolkits, which safely falls back to scanning/PTX.
+# --list-gpu-code emits sm_* (CUDA 11.6+), --list-gpu-arch compute_*; $false on older toolkits falls back to PTX.
 function Test-NvccArchSupport {
     param([string]$NvccExe, [string]$Arch)
     try {
@@ -702,7 +692,6 @@ function Test-NvccArchSupport {
     }
 }
 
-# Highest sm_ arch an nvcc binary supports (e.g. "90" for CUDA 12.4); $null on failure.
 function Get-NvccMaxArch {
     param([string]$NvccExe)
     try {
@@ -807,8 +796,7 @@ function Get-NvidiaCu126Verdict {
 function Get-CudaFamilyCappedForPreTuring {
     param([string]$Family, [string]$SmiExe)
     if ($Family -notin @('cu128', 'cu130')) { return $Family }
-    # torch 2.11.0+cu128 dropped Volta (sm_75..sm_120; 2.10.0+cu128 still had sm_70), so with the
-    # pin at 2.11 a pre-Turing host is stranded on cu128 as on cu130. Both families take the 75 floor.
+    # torch 2.11.0+cu128 dropped Volta (2.10.0+cu128 still shipped sm_70), so cu128 now strands a pre-Turing host as cu130 does.
     $legacyFloorSm = 75
     $verdict = Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm
     if (-not $verdict) { return $Family }
@@ -841,9 +829,7 @@ function Get-PytorchCudaTag {
     if (-not $smiExe) { return "cu126" }
 
     try {
-        # Bounded so a wedged nvidia-smi can't hang setup.
         $output = Invoke-NvidiaSmiBounded $smiExe
-        # Newer drivers print "CUDA UMD Version: X.Y"; accept both spellings.
         if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
@@ -861,7 +847,6 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
-# Trim trailing slashes from the URL path only, preserving ?query / #fragment. Shared.
 function Trim-IndexPathSlashes {
     param([string]$Url)
     $value = $Url.Trim()
@@ -872,8 +857,6 @@ function Trim-IndexPathSlashes {
     return $value.Substring(0, $idx).TrimEnd('/') + $value.Substring($idx)
 }
 
-# Explicit torch-index pin (UNSLOTH_TORCH_INDEX_URL verbatim, or _FAMILY joined to the mirror base),
-# shared so a pin wins over GPU probing. Parity with the other installers.
 function Get-PinnedTorchIndexUrl {
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
         return (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL)
@@ -885,8 +868,7 @@ function Get-PinnedTorchIndexUrl {
     return $null
 }
 
-# Last path segment of a wheel index URL, query/fragment dropped, so .../cu128?token=x classifies as
-# cu128. Classification only; shared with the py / install.sh extractors.
+# Query/fragment dropped first, so .../cu128?token=x classifies as cu128 instead of reinstalling every update.
 function Get-TorchIndexLeaf {
     param([string]$Url)
     if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
@@ -895,48 +877,41 @@ function Get-TorchIndexLeaf {
     return ($path.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
 }
 
-# Redact index-URL credentials (userinfo + ?query= + #fragment) from captured installer
-# output before printing on failure; uv/pip echo the failing --index-url verbatim.
+# Redact index-URL credentials (userinfo + ?query= + #fragment) from captured installer output, which echoes the failing --index-url verbatim.
 function Redact-InstallOutput {
     param([string]$Text)
     if (-not $Text) { return $Text }
     $Text = $Text -replace '(https?://)[^/@\s`]+@', '$1<redacted>@'
     $Text = $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
-    # #token=... fragment is as sensitive as a query.
     return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
 }
 
-# AMD per-arch leaves needing the torch 2.11 floor (_grouped_mm bug). Must match the install-spec path below and the other installers.
+# _grouped_mm bug: these leaves need the torch 2.11 floor. Must match the install-spec path and the other installers.
 function Test-RocmGfx211Leaf {
     param([string]$Leaf)
     return @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152') -contains $Leaf
 }
 
-# rocmX.Y versions KNOWN to ship torch 2.11 (rocm7.2 only; no speculative floor). Must match _ROCM_KNOWN_TORCH211_VERSIONS.
+# rocm7.2 only; never floor an unknown newer rocm. Must match _ROCM_KNOWN_TORCH211_VERSIONS.
 function Test-RocmKnown211Version {
     param([int]$Major, [int]$Minor)
     return ($Major -eq 7 -and $Minor -eq 2)
 }
 
-# True only for a real CUDA family leaf: EXACT cu+digits (cu118, cu128). A bare 'cu*' glob would
-# match "custom"/"current" and rebuild every run. Mirrors _is_cuda_family_leaf.
+# A bare 'cu*' glob would match "custom"/"current" and rebuild the venv every run. Mirrors _is_cuda_family_leaf.
 function Test-CudaFamilyLeaf {
     param([string]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
     return $Leaf -match '^cu[0-9]+$'
 }
 
-# True only for a real pip ROCm family leaf: EXACT rocm<digits>[.<digits>] or gfx<digit>. A leaf that
-# merely starts with rocm (rocm-rel-7.2.1) is a custom pin the verbatim path owns, so anchor the
-# match. Mirrors _is_pip_rocm_family_leaf / install.sh.
+# Anchored: rocm-rel-7.2.1 merely starts with rocm and is a custom pin the verbatim path owns. Mirrors _is_pip_rocm_family_leaf.
 function Test-PipRocmFamilyLeaf {
     param([string]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
     return ($Leaf -match '^gfx[0-9]') -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
 }
 
-# Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns @{ Expected; Installed } so the
-# caller rebuilds when they differ. Mirrors _rocm_pin_family_mismatch.
 function Get-RocmPinStaleTags {
     param([string]$PinLeaf, [string]$TorchVersion)
     $_pinRocm = [regex]::Match($PinLeaf, '^rocm(\d+)\.(\d+)')
@@ -955,7 +930,6 @@ function Get-RocmPinStaleTags {
 
     if ($PinLeaf -like 'gfx*') {
         if (Test-RocmGfx211Leaf $PinLeaf) {
-            # AMD per-arch 2.11 wheel: satisfied only with BOTH a 2.11 release AND a three-part rocm tag.
             $installed = if ($_instIs211 -and $_instPerArch) { "rocm-perarch(torch>=2.11)" } else { "rocm-generic-or-old" }
             return @{ Expected = "rocm-perarch(torch>=2.11)"; Installed = $installed }
         }
@@ -967,7 +941,6 @@ function Get-RocmPinStaleTags {
         }
     }
 
-    # Major-only rocm pin (rocm7): compare majors only. Any +rocm7.x wheel satisfies it.
     if ($_pinMajorOnly.Success) {
         $_pinMaj = [int]$_pinMajorOnly.Groups[1].Value
         if ($_instVer) {
@@ -982,8 +955,7 @@ function Get-RocmPinStaleTags {
 
     # rocmX.Y pin.
     if ($_pinVer -and $_instVer) {
-        # Both readable: exact compare, folding in the 2.11 release requirement of a KNOWN-2.11 pin
-        # (a +rocm7.2 wheel drifted to 2.12 shares the tag but violates the spec).
+        # A +rocm7.2 wheel drifted to 2.12 shares the tag but violates the spec, so fold the release into the tag.
         $_pinKnown211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
         $_instOn211 = $_instRel.Success -and [int]$_instRel.Groups[1].Value -eq 2 -and [int]$_instRel.Groups[2].Value -eq 11
         if ($_pinKnown211 -and -not $_instOn211) {
@@ -993,10 +965,8 @@ function Get-RocmPinStaleTags {
     }
     $_pinNeeds211 = $false
     if ($_pinRocm.Success) {
-        # Only KNOWN-2.11 rocm (rocm7.2) is on the 2.11 line. Matches _ROCM_KNOWN_TORCH211_VERSIONS.
         $_pinNeeds211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
     }
-    # Fallback (installed rocm version unreadable): compare on the 2.11 line.
     $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
     return @{
         Expected  = if ($_pinNeeds211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
@@ -1278,8 +1248,7 @@ function Test-CmakeSupportsGenerator {
 }
 
 function Test-CmakeListsGenerator {
-    # Does `cmake --help` list the generator? A VS-bundled cmake can drive VS 2026 below the 4.2
-    # floor, so probe rather than trust the version. (#6473)
+    # Probe rather than trust the version: a VS-bundled cmake can drive VS 2026 below the 4.2 floor. (#6473)
     param([Parameter(Mandatory)][string]$Generator)
     $help = & cmake --help 2>$null | Out-String
     if (-not $help) { return $false }
@@ -1298,7 +1267,6 @@ function Test-CmakeCanDriveGenerator {
 }
 
 function Add-DefaultCmakeToPath {
-    # Prepend the default CMake dir so a fresh winget cmake wins over an older one on PATH. (#6473)
     $cmakeDefaults = @(
         "$env:ProgramFiles\CMake\bin",
         "${env:ProgramFiles(x86)}\CMake\bin",
@@ -1315,9 +1283,7 @@ function Add-DefaultCmakeToPath {
 }
 
 function Get-FallbackVsGenerator {
-    # Newest pre-2026 VS whose generator the current cmake can drive, when the VS 2026 generator is
-    # unusable. vswhere first (non-default roots like D:\), then Program Files. Returns
-    # @{ Generator; InstallPath } or $null. (#6473)
+    # Newest pre-2026 VS whose generator this cmake can drive. vswhere first, for non-default roots like D:\. (#6473)
     $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
 
     # install path if it holds a usable cl.exe, else $null
@@ -1374,8 +1340,7 @@ function Get-FallbackVsGenerator {
     return $null
 }
 
-# VS version label -> cmake generator. productLineVersion is the year for VS <= 2022 but internal
-# major "18" for VS 2026, and dir names use either form, so accept both.
+# productLineVersion is the year for VS <= 2022 but the internal major "18" for VS 2026, and dir names use either form.
 function Resolve-VsGeneratorFromLabel {
     param([string]$Label)
     if (-not $Label) { return $null }
@@ -1438,8 +1403,7 @@ function Find-VsBuildTools {
     return $null
 }
 
-# Install CMake + VS Build Tools, deferred from Phase 1 so the prebuilt path skips the multi-GB
-# install. Source builds only. CMake is best-effort, VS is required (exit 1).
+# Deferred from Phase 1 so the prebuilt path never pays for the multi-GB install.
 function Ensure-BuildToolsForLlamaSourceBuild {
     # CMake
     if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) {
@@ -1682,8 +1646,7 @@ function Invoke-SetupCommand {
         # Reset to avoid stale values from prior native commands.
         $global:LASTEXITCODE = 0
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
-            # Merge stderr into stdout (PS 5.1 stderr records flip $? even on exit 0), redacting per
-            # record so verbose mode can't bypass the quiet path's index-URL redaction.
+            # PS 5.1 turns stderr records into $? = $false even on exit 0; redact per record so verbose cannot bypass the quiet path.
             & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         } else {
             $output = & $Command 2>&1 | Out-String
@@ -1799,8 +1762,6 @@ function substep {
 }
 
 function Show-NpmRegistryHint {
-    # Guidance when a frontend/OXC npm/bun install fails behind a corporate proxy. Never switches
-    # registries automatically; no-op if UNSLOTH_NPM_REGISTRY is set.
     if ($env:UNSLOTH_NPM_REGISTRY) { return }
     $mirror = $env:NPM_CONFIG_REGISTRY
     if (-not $mirror) {
@@ -1965,8 +1926,7 @@ if (-not $StageRoot) {
 # ============================================
 # 1a. GPU detection
 # ============================================
-# Run nvidia-smi under a WaitForExit timeout, since a wedged driver can block during init/reset.
-# Returns combined stdout+stderr, "" on timeout/failure.
+# A wedged driver can block nvidia-smi during init or after a reset; WaitForExit bounds it.
 function Invoke-NvidiaSmiBounded {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
@@ -2001,8 +1961,7 @@ function Invoke-NvidiaSmiBounded {
     }
 }
 
-# nvidia-smi -L lists at least one real GPU: a driverless smi exits 0 listing no GPU, which would
-# mark an AMD host NVIDIA, so require a "GPU <n>:" data row.
+# A driverless nvidia-smi exits 0 listing no GPU, which would mark an AMD host NVIDIA, so require a "GPU <n>:" row.
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
     $out = Invoke-NvidiaSmiBounded $Exe @('-L')
@@ -2018,7 +1977,6 @@ try {
         $NvidiaSmiExe = $nvSmiCmd.Source
     }
 } catch {}
-# Fallback: nvidia-smi may not be on PATH though a GPU + driver exist -- check default dirs.
 if (-not $HasNvidiaSmi) {
     $nvSmiDefaults = @(
         "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
@@ -2037,20 +1995,17 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
-# Run amd-smi without a UAC prompt: it auto-elevates to read GPU/APU memory (a confusing mid-install
-# DiskPart prompt). RunAsInvoker forces un-elevated; on failure the WMI name -> gfx fallback resolves the arch.
+# amd-smi auto-elevates to read GPU/APU memory, popping a confusing mid-install DiskPart UAC prompt; RunAsInvoker forces un-elevated.
 function Invoke-AmdSmiNoElevate {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
         [Parameter(Position = 1)][string[]]$SmiArgs = @(),
         [int]$TimeoutSec = 30
     )
-    # RunAsInvoker blocks the auto-elevation/UAC prompt; the timeout bounds a flaky amd-smi.
     $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
     $env:__COMPAT_LAYER = 'RunAsInvoker'
     try {
-        # [Process]::Start, NOT Start-Process -PassThru, which leaves .ExitCode $null on PS 5.1 and
-        # kills detection. Async reads drain the pipes; amd-smi args have no spaces.
+        # [Process]::Start, NOT Start-Process -PassThru, which leaves .ExitCode $null on PS 5.1 and kills detection.
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $Exe
         $psi.Arguments = ($SmiArgs -join ' ')
@@ -2198,13 +2153,11 @@ function Resolve-ShadowingGfxPick {
     return $discreteArch
 }
 if (-not $HasNvidiaSmi) {
-    # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin. Ignore the venv hipInfo.exe: an AMD wheel,
-    # not a HIP SDK, so amd-smi would still auto-elevate. Cf. _path_inside_venv().
+    # Ignore the venv hipInfo.exe: an AMD wheel, not a HIP SDK, so amd-smi would still auto-elevate. Cf. _path_inside_venv().
     function Test-HipinfoIsVenvInternal {
         param([AllowNull()][string]$HipinfoPath)
         if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
-        # VenvDir/VIRTUAL_ENV can be unset this early, so also derive the venv from the setup python
-        # + default Unsloth home, else the venv hipInfo isn't caught.
+        # VenvDir/VIRTUAL_ENV can be unset this early, so derive the venv from the setup python + default home too.
         $venvRoots = @()
         if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
         $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
@@ -2213,7 +2166,6 @@ if (-not $HasNvidiaSmi) {
             try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
         }
         if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
-        # A custom Unsloth home moves the venv off the default path; seed it too.
         $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
         if ($studioHomeEnv) {
             # Expand a leading ~ like the canonical resolver; else GetFullPath keeps the literal ~.
@@ -2237,12 +2189,11 @@ if (-not $HasNvidiaSmi) {
         }
         return $false
     }
-    # Keep the first non-venv hipinfo; -CommandType Application skips an alias/function named hipinfo.
+    # -CommandType Application skips an alias or function named hipinfo.
     $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
         Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
         Select-Object -First 1
     if (-not $hipinfoExe) {
-        # First non-venv bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
         $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
         foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
             $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
@@ -2288,7 +2239,6 @@ if (-not $HasNvidiaSmi) {
                     substep "[INFO] hipinfo exited with code $LASTEXITCODE but reported gcnArchName -- treating as ROCm-capable (see #6043)" "Cyan"
                 }
             } elseif ($LASTEXITCODE -ne 0) {
-                # hipinfo returned a HIP runtime error with no gcnArchName (no ROCm device), or crashed early.
                 $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
                 substep "[WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" "Yellow"
                 substep "       $firstLine" "Yellow"
@@ -2296,9 +2246,7 @@ if (-not $HasNvidiaSmi) {
             }
         } catch {}
     }
-    # amd-smi fallback when hipinfo is unavailable ('list' + 'static --asic' give the gfx arch). Probe
-    # only with a HIP SDK present or on opt-in, since amd-smi can pop a UAC prompt RunAsInvoker cannot
-    # suppress; an explicit UNSLOTH_ENABLE_AMD_SMI opt-out wins.
+    # amd-smi can pop a UAC prompt RunAsInvoker cannot suppress, so probe only with a HIP SDK present or on opt-in; an explicit opt-out wins.
     $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
     $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
     if (-not $HasROCm -and $amdSmiAllowed) {
@@ -2308,9 +2256,7 @@ if (-not $HasNvidiaSmi) {
                 $smiOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('list')
                 if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                     $HasROCm = $true
-                    # Attempt 1: newer amd-smi embeds the gfx arch in list output. Collect ALL gfx tokens
-                    # in output order (no dedup) so HIP/ROCR_VISIBLE_DEVICES picks the runtime-visible
-                    # GPU's arch, assuming amd-smi lists GPUs in HIP enumeration order.
+                    # ALL gfx tokens in output order, no dedup, so HIP/ROCR_VISIBLE_DEVICES indexes into it (amd-smi lists in HIP enumeration order).
                     $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
                         ForEach-Object { $_.Groups[1].Value.ToLower() })
                     if ($allGfxArches.Count -gt 0) {
@@ -2343,8 +2289,7 @@ if (-not $HasNvidiaSmi) {
             } catch {}
         }
     }
-    # WMI fallback: marketing name only, never a gfx arch. $HasROCm stays false (runtime unconfirmed),
-    # but $ROCmGpuLabel feeds the name-based arch inference below.
+    # WMI gives a marketing name, never a gfx arch, so $HasROCm stays false; $ROCmGpuLabel feeds the name-based inference below.
     if (-not $HasROCm) {
         try {
             # Keep every AMD adapter, not just the first: WMI orders controllers as the
@@ -2418,8 +2363,7 @@ if (-not $HasNvidiaSmi) {
             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
             substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
         }
-        # 2. Best-effort name -> arch lookup (most-specific first), covering only arches the ROCm
-        #    prebuilts support; unknown names fall back to CPU.
+        # 2. Name -> arch, most-specific first; unknown names fall back to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
                 @{ P = "9070|9080|R9700";                                     A = "gfx1201" }  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
@@ -2741,7 +2685,6 @@ if ($LongPathsEnabled) {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
-        # Elevated process sets the registry key (triggers UAC prompt).
         $proc = Start-Process -FilePath "reg.exe" `
             -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
@@ -2840,7 +2783,7 @@ Ensure-VCRedist
 # ============================================
 # 1c. CMake (only needed for a llama.cpp SOURCE build -- detection only)
 # ============================================
-# Detection only: the prebuilt path needs no compiler. A source build gets CMake from Ensure-BuildToolsForLlamaSourceBuild.
+# Detection only; a source build gets CMake from Ensure-BuildToolsForLlamaSourceBuild.
 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 if ($HasCmake) {
     step "cmake" "$(cmake --version | Select-Object -First 1)"
@@ -2851,7 +2794,6 @@ if ($HasCmake) {
 # ============================================
 # 1d. Visual Studio Build Tools (only needed for a llama.cpp SOURCE build -- detection only)
 # ============================================
-# Detection only; install is deferred to Ensure-BuildToolsForLlamaSourceBuild.
 $CmakeGenerator = $null
 $VsInstallPath = $null
 $vsResult = Find-VsBuildTools
@@ -2868,23 +2810,19 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
-# Invoked lazily before a Phase 4 source build (the prebuilt path needs no local toolkit). Under
-# -RequireOrExit the source build is committed, so hard-fail when no driver-compatible toolkit can be
-# found or installed; otherwise best-effort, only setting the flag.
+# Lazy: the prebuilt path needs no local toolkit. -RequireOrExit hard-fails when no driver-compatible one is found.
 function Resolve-CudaToolkit {
     param([switch]$RequireOrExit)
 # Toolkit major must be <= the driver's max CUDA major; a newer-major toolkit fails at runtime.
 
 $DriverMaxCuda = $null
 try {
-    # Bounded so a wedged smi can't hang. test_resolve_cuda_toolkit.ps1 extracts this function alone,
-    # without Invoke-NvidiaSmiBounded in scope, so fall back to direct invocation.
+    # test_resolve_cuda_toolkit.ps1 extracts this function alone, without Invoke-NvidiaSmiBounded in scope.
     $smiOut = if (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
         Invoke-NvidiaSmiBounded $NvidiaSmiExe
     } else {
         & $NvidiaSmiExe 2>&1 | Out-String
     }
-    # Newer drivers report "CUDA UMD Version: X.Y"; accept both.
     if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
         substep "driver supports up to CUDA $DriverMaxCuda"
@@ -2897,8 +2835,7 @@ if ($CudaArch) {
     substep "GPU Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)"
 }
 
-# Find a toolkit compatible with the driver AND the GPU. Prefer CUDA_PATH when it is driver-compatible
-# and supports the GPU arch, else scan side-by-side installs to avoid header/binary mismatches.
+# Prefer CUDA_PATH when it is driver-compatible and supports the GPU arch; scanning side-by-side installs avoids header/binary mismatches.
 $IncompatibleToolkit = $null
 $NvccPath = $null
 
@@ -2948,7 +2885,6 @@ if ($DriverMaxCuda) {
                 }
             }
         } else {
-            # No side-by-side match: use a major-compatible toolkit on PATH/CUDA_PATH, else record it too-new.
             $AnyNvcc = Find-Nvcc
             if ($AnyNvcc) {
                 $NvccOut = & $AnyNvcc --version 2>&1 | Out-String
@@ -3062,7 +2998,6 @@ $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
 # CudaToolkitDir: MSBuild property the CUDA .targets checks; trailing backslash required (.targets appends subpaths).
 [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
-# Persist CUDA_PATH to User registry so the compatible toolkit is used in future sessions.
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
 substep "Persisted CUDA_PATH=$CudaToolkitRoot to user environment"
 # Clear versioned CUDA_PATH_V* vars in this process so cmake/MSBuild can't find a conflicting install.
@@ -3087,9 +3022,7 @@ if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
     substep "Persisted CUDA bin dir to user PATH"
 }
 
-# -- Ensure CUDA <-> Visual Studio integration files exist --
-# CUDA installed before VS Build Tools leaves the MSBuild .targets/.props missing and cmake fails with
-# "No CUDA toolset found", so copy them from the CUDA extras dir.
+# CUDA installed before VS Build Tools leaves the MSBuild .targets/.props missing and cmake fails with "No CUDA toolset found".
 if ($VsInstallPath -and $CudaToolkitRoot) {
     $vsCustomizations = Get-VcBuildCustomizationsDir -VsInstallPath $VsInstallPath -Generator $CmakeGenerator
     $cudaExtras = Join-Path $CudaToolkitRoot "extras\visual_studio_integration\MSBuildExtensions"
@@ -3101,7 +3034,6 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                 Copy-Item "$cudaExtras\*" $vsCustomizations -Force -ErrorAction Stop
                 substep "CUDA VS integration files installed"
             } catch {
-                # Direct copy failed (needs admin); try elevated copy.
                 try {
                     $copyCmd = "Copy-Item '$cudaExtras\*' '$vsCustomizations' -Force"
                     Start-Process powershell -ArgumentList "-NoProfile -Command $copyCmd" -Verb RunAs -Wait -ErrorAction Stop
@@ -3128,7 +3060,6 @@ step "cuda" $NvccPath
 substep "CUDA_PATH      = $CudaToolkitRoot"
 substep "CudaToolkitDir = $CudaToolkitRoot\"
 
-# $CudaArch was detected earlier (it influenced toolkit selection); just log final state.
 if (-not $CudaArch) {
     substep "could not detect compute capability -- cmake will use defaults" "Yellow"
 }
@@ -3143,7 +3074,6 @@ if ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
     $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
     step "rocm" $rocmVerLabel
 } elseif ($script:ROCmGfxArch) {
-    # GPU works via AMD's bundled-runtime ROCm wheels; HIP SDK optional.
     step "rocm" "GPU via bundled ROCm wheels ($script:ROCmGfxArch) -- HIP SDK optional" "Cyan"
 } elseif ($script:ROCmUnsupportedGfxArch) {
     # Naming the HIP SDK here would read as "install it and this resolves"; on a
@@ -3156,7 +3086,6 @@ if ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
 # ============================================
 # 1f. Node.js / npm (skip if pip-installed or Tauri -- only needed for frontend build)
 # ============================================
-# Frontend and OXC share this Node floor. Returns system | bundled | skip.
 function Get-NodeDecision {
     param(
         [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
@@ -3239,9 +3168,7 @@ if (-not $IsPipInstall) {
     }
     $NodeDir = Join-Path $NodeParent "node"
 
-    # Probe system node/npm without aborting setup: under -ErrorAction Stop a bare `node -v` for an
-    # absent/broken node throws past 2>$null, so guard with Get-Command + try/catch. An empty version
-    # makes Get-NodeDecision return "bundled".
+    # Under -ErrorAction Stop a bare `node -v` for an absent or broken node throws past 2>$null; an empty version means "bundled".
     $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
     $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
     $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
@@ -3252,7 +3179,6 @@ if ($IsPipInstall) {
 } elseif ($SkipFrontend) {
     step "frontend" "bundled (Tauri)"
 } else {
-    # Provision Node process-local, only when the build or OXC needs it.
     if ($NodeSource -eq "system") {
         substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
     } elseif ($NodeSource -eq "bundled") {
@@ -3262,8 +3188,7 @@ if ($IsPipInstall) {
     }
 }
 
-# Conda CPython breaks torch's c10.dll loading on Windows, and a venv built from it inherits
-# base_prefix, so check the executable path AND sys.base_prefix.
+# Conda CPython breaks torch's c10.dll load, and a venv built from it inherits base_prefix, so check both.
 $CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
 function Test-IsConda {
     param([string]$Exe)
@@ -3275,14 +3200,12 @@ function Test-IsConda {
     return $false
 }
 
-# 1g. Python (>= 3.11 and < 3.14). Prefer UNSLOTH_SETUP_PYTHON (what install.ps1 built the venv with)
-# or the existing venv python, before re-probing a system where a 3.14 or WindowsApps stub leads PATH.
+# 1g. Python (>= 3.11 and < 3.14). Prefer the already-validated UNSLOTH_SETUP_PYTHON / venv python over a PATH probe a 3.14 or WindowsApps stub would lead.
 function Resolve-ReusedSetupPython {
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_SETUP_PYTHON) -and
         (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
         return $env:UNSLOTH_SETUP_PYTHON
     }
-    # Standalone setup/update (install.ps1 did not run): derive the venv python from the studio root.
     $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
             elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
             else { Join-Path $env:USERPROFILE ".unsloth\studio" }
@@ -3339,7 +3262,7 @@ if ($ReusedSetupPython) {
     }
 }
 
-# Fall back to every py.exe on PATH. -All is required: PS 5.1 returns only the first launcher without it.
+# -All is required: PS 5.1 returns only the first py launcher without it.
 $PyLaunchers = if ($PythonOk) { @() } else { @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue) }
 
 foreach ($PyLauncher in $PyLaunchers) {
@@ -3410,7 +3333,6 @@ $ScriptsDir = python -c "import os, sysconfig; p = sysconfig.get_path('scripts',
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
     # Append (not Prepend) -- this dir has other pip scripts; shim handles unsloth.
     if (Add-ToUserPath -Directory $ScriptsDir) {
-        # Add to current process for immediate availability.
         $ProcessPathEntries = $env:PATH.Split(';')
         if (-not ($ProcessPathEntries | Where-Object { $_.TrimEnd('\') -eq $ScriptsDir })) {
             $env:PATH = "$ScriptsDir;$env:PATH"
@@ -3468,7 +3390,7 @@ if ($SkipFrontend) {
     }
 }
 
-# Provision Node only when the frontend build or the OXC runtime install needs it. System Node stays read-only.
+# Provision Node only when the frontend build or the OXC runtime install needs it; system Node stays read-only.
 $NeedNodeForSetup = (-not $IsPipInstall) -and ($NeedFrontendBuild -or (Test-Path $OxcValidatorDir))
 if ($NeedNodeForSetup) {
     if ($NodeSource -eq "skip") {
@@ -3508,7 +3430,6 @@ if ($NeedNodeForSetup) {
         if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
             New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
         }
-        # Windows Node zip ships node.exe + npm.cmd at the root; prepend it (this process only).
         $env:PATH = "$NodeDir;" + $env:PATH
         # Keep npm and module resolution inside the isolated Node.
         $env:NPM_CONFIG_PREFIX = $NodeDir
@@ -3536,7 +3457,6 @@ if ($NeedNodeForSetup) {
             }
         }
     } else {
-        # system Node satisfies requirements; use as-is (no global bun -- the build falls back to npm).
         step "node" "$SysNodeVersion | npm $SysNpmVersion (system)"
     }
 }
@@ -3544,8 +3464,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-StudioLine ""
     substep "building frontend..."
 
-    # Tailwind v4's oxide scanner respects parent .gitignore, and a Python venv's "*" .gitignore hides
-    # .tsx sources, so temporarily hide any such file and restore it afterwards.
+    # Tailwind v4's oxide scanner respects parent .gitignore, and a venv's "*" hides the .tsx sources.
     $HiddenGitignores = @()
     $WalkDir = (Get-Item $FrontendDir).Parent.FullName
     while ($WalkDir -and $WalkDir -ne [System.IO.Path]::GetPathRoot($WalkDir)) {
@@ -3562,15 +3481,13 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         $WalkDir = Split-Path $WalkDir -Parent
     }
 
-    # Use bun if available (faster install), else npm. Bun is only the package manager; Node runs the build.
     $prevEAP_npm = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
 
     $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
 
-    # bun's package cache can corrupt (metadata but no bin/lib), so bun install exits 0 with binaries
-    # missing. Validate afterwards, clear the cache and retry once, then fall back to npm.
+    # A corrupt bun cache (metadata but no bin/lib) still exits 0, so validate, clear the cache, retry once, then fall back to npm.
     if ($UseBun) {
         Write-StudioLine "   Using bun for package install (faster)" -ForegroundColor DarkGray
         $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
@@ -3578,7 +3495,6 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
         $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
         if ($bunExit -eq 0 -and $hasTsc -and $hasVite) {
-            # bun install succeeded, binaries present
         } elseif ($bunExit -eq 0) {
             Write-StudioLine "   bun install exited 0 but critical binaries are missing, clearing cache and retrying..." -ForegroundColor Yellow
             if (Test-Path "node_modules") {
@@ -3616,7 +3532,6 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
 
-    # Always run the build via npm (Node runtime avoids bun Windows runtime issues).
     $buildExit = Invoke-SetupCommand { npm run build }
     if ($buildExit -ne 0) {
         Pop-Location
@@ -3660,7 +3575,6 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = $prevEAP_oxc
     step "oxc runtime" "installed"
 } elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
-    # No npm on PATH: skip rather than abort; the runtime resolver degrades. Mirrors setup.sh.
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
@@ -3675,10 +3589,8 @@ Remove-AgentInstructionFiles -Roots @(
 Write-StudioLine ""
 substep "setting up Python environment..."
 
-# Find Python, skipping Anaconda/Miniconda (conda's torch c10.dll issue). Standalone CPython is fine.
 $PythonCmd = $null
 
-# 0. Reuse the interpreter install.ps1 built the venv with (already validated, non-conda).
 if ($ReusedSetupPython) {
     try {
         $out = & $ReusedSetupPython --version 2>&1 | Out-String
@@ -3691,8 +3603,6 @@ if ($ReusedSetupPython) {
     } catch { }
 }
 
-# 1. Try the Python Launcher (py.exe) first. -All enumerates every launcher (PS 5.1 returns only the
-#    first without it); search each for a supported, non-conda interpreter.
 $PyLaunchersResolve = if ($PythonCmd) { @() } else { @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue) }
 foreach ($pyLauncher in $PyLaunchersResolve) {
     if ($pyLauncher.Source -match $CondaSkipPattern) { continue }
@@ -3715,7 +3625,6 @@ foreach ($pyLauncher in $PyLaunchersResolve) {
     if ($PythonCmd) { break }
 }
 
-# 2. Fall back to scanning python3.x / python3 / python on PATH (-All looks past conda entries).
 if (-not $PythonCmd) {
     foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
         foreach ($cmdInfo in @(Get-Command $candidate -All -ErrorAction SilentlyContinue)) {
@@ -4014,8 +3923,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # Digit-gated like the install selection: a custom rocm-* leaf (rocm-current /
             # rocm-rel-7.2.1) is NOT a ROCm family and must not be stale-compared.
             if (Test-PipRocmFamilyLeaf $_pinLeaf) {
-                # Keep a pinned ROCm/gfx leaf specific (a generic "rocm" would mask rocm6.4 -> gfx1151).
-                # Get-RocmPinStaleTags uses the same 2.11 allowlist as the install path.
+                # Keep the pinned leaf specific: a generic "rocm" would mask a rocm6.4 -> gfx1151 family change.
                 $_rocmTags = Get-RocmPinStaleTags -PinLeaf $_pinLeaf -TorchVersion $torchVer
                 $expectedTorchTag  = $_rocmTags.Expected
                 $installedTorchTag = $_rocmTags.Installed
@@ -4265,8 +4173,7 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
     }
 }
 
-# pip/python write to stderr even on success, which -ErrorAction Stop turns terminating on PS 5.1;
-# lower to "Continue" for the pip/python section.
+# pip/python write to stderr even on success, which -ErrorAction Stop turns terminating on PS 5.1.
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
@@ -4581,9 +4488,7 @@ Assert-VenvActivated -VenvDir $VenvDir
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
-    # An explicit --index-url must win: inherited uv/pip index vars otherwise pull CPU torch over the
-    # CUDA/ROCm build (#6898), so drop them for pinned installs (the pip fallback honours PIP_* too).
-    # UV_NO_CONFIG=1 plus dropping UV_CONFIG_FILE stops a uv.toml index outranking the pin.
+    # An explicit --index-url must win: inherited uv/pip index vars otherwise pull CPU torch over the CUDA/ROCm build (#6898), and UV_NO_CONFIG=1 plus dropping UV_CONFIG_FILE stops a uv.toml index outranking the pin.
     $saved = @{}
     $pinned = @($Args_) -contains '--index-url'
     if ($pinned) {
@@ -4886,8 +4791,7 @@ if ($script:UnslothVerbose) {
     Fast-Install --upgrade pip | Out-Null
 }
 
-# Pre-install PyTorch with CUDA support: the default Windows PyPI wheel is CPU-only, so use PyTorch's
-# CUDA index (tag from the driver's max CUDA; the wheels bundle their own runtime).
+# The default Windows PyPI torch wheel is CPU-only; the CUDA-index wheels bundle their own runtime.
 
 # Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
 # paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
@@ -4903,7 +4807,6 @@ if (-not $StageRoot) {
 }
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
-# Explicit pin (URL or family) wins over GPU probing and suppresses the AMD reroute below.
 $PinnedTorchIndexUrl = Get-PinnedTorchIndexUrl
 $TorchIndexPinned = [bool]$PinnedTorchIndexUrl
 if ($PinnedTorchIndexUrl) {
@@ -4934,13 +4837,10 @@ if ($PinnedTorchIndexUrl) {
     $CuTag = "cpu"
 }
 
-# ── AMD Windows ROCm torch override ──
 # AMD's arch-specific pip index (repo.amd.com/rocm/whl/{arch}/); wheels bundle their own runtime.
 $ROCmGfxArch = $script:ROCmGfxArch
 $ROCmIndexUrl = $null
-# Install AMD ROCm wheels when ROCm is confirmed OR a gfx arch is known (name-inferred on Adrenalin-only
-# hosts): the per-arch wheels bundle the runtime, so torch.cuda.is_available() is True without a HIP SDK
-# and Unsloth leaves chat-only. A failed ROCm install falls back to CPU.
+# Also when only a gfx arch is known (name-inferred): the per-arch wheels bundle the runtime, so torch.cuda.is_available() is True with no HIP SDK and Unsloth leaves chat-only.
 if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
     # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
@@ -4951,8 +4851,7 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
         "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
         "gfx1152" = "torch>=2.11.0,<2.12.0"
     }
-    # Companions kept in sync with the torch ceiling so pip finds a consistent trio (AMD publishes each
-    # independently). Matches _ROCM_TORCH_PKG_SPECS["rocm7.2"]; bump all three ceilings together.
+    # Companions bounded to the torch ceiling so pip resolves a consistent trio (AMD publishes each independently); bump all three together.
     $torchvisionFloorMap = @{
         "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
         "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
@@ -4970,28 +4869,23 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     if ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
     } elseif ($ROCmGfxArch) {
-        # GPU arch detected but not in the supported wheel map -- warn why torch is CPU-only.
         substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
         substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx90a, gfx908" "Yellow"
     } else {
-        # HIP SDK present but gcnArchName unreadable -- warn rather than silently CPU torch.
         substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
         substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
     }
 }
 
-# A pinned gfx*/rocm index skips the auto-reroute above; route it through the ROCm path with the same
-# floor/companions the unpinned AMD path uses (mirrors install.ps1), else the CUDA branch resolves a
-# known-bad wheel for gfx115x/gfx120x/rocm>=7.2.
+# A pinned gfx*/rocm index skips the auto-reroute above, and the CUDA branch would resolve a known-bad wheel for gfx115x/gfx120x/rocm>=7.2.
 if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
     $_pinLeaf = Get-TorchIndexLeaf $PinnedTorchIndexUrl
     $_pinRocm211 = $false
     # Anchor ($) so a suffixed custom leaf (rocm7.2-private) falls through to the verbatim install.
     if ($_pinLeaf -match '^rocm(\d+)\.(\d+)$') {
-        # Only KNOWN-2.11 rocm (rocm7.2) gets the floor. Matches Test-RocmKnown211Version.
         $_pinRocm211 = Test-RocmKnown211Version -Major ([int]$Matches[1]) -Minor ([int]$Matches[2])
     }
-    # Only the 2.11 gfx arches need the floor. Reuse Test-RocmGfx211Leaf so this and the stale check never diverge.
+    # Reuse Test-RocmGfx211Leaf so this allowlist and the stale-venv check never diverge.
     $_pinGfx211 = Test-RocmGfx211Leaf $_pinLeaf
     if ($_pinGfx211 -or $_pinRocm211) {
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
@@ -5000,7 +4894,6 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
         $ROCmAudioSpec  = "torchaudio>=2.11.0,<2.12.0"
         substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchSpec" "Cyan"
     } elseif (Test-PipRocmFamilyLeaf $_pinLeaf) {
-        # Other gfx / older rocm (<=7.1) ship torch <2.11: route via the ROCm path with bare specs, as install.ps1 does.
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
         $ROCmTorchSpec  = "torch"
         $ROCmVisionSpec = "torchvision"
@@ -5010,7 +4903,7 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
 
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
-# Full URL pin verbatim; family pin already set $CuTag. On ROCm-install failure the fallback uses the CPU index.
+# On a ROCm-install failure the fallback uses the CPU index, not the ROCm pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
 # Declared outside the guard: the bitsandbytes and Triton passes read it from outside too, and
@@ -5035,10 +4928,7 @@ if ($ROCmIndexUrl) {
     if ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
-    # Release preservation (twin of install.sh's _previous_torch_pin): install.ps1 exports the previous
-    # venv's exact torch RELEASE via UNSLOTH_KEPT_TORCH. Substitute the kept trio unless it conflicts
-    # with a >=2.11 floor already in $ROCmTorchSpec, restoring the computed specs and retrying once on
-    # failure. Without the env var nothing changes and the loop runs exactly once.
+    # Release preservation (twin of install.sh's _previous_torch_pin): keep UNSLOTH_KEPT_TORCH unless it conflicts with a >=2.11 floor, retrying once with the computed specs.
     $_rocmKeptActive = $false
     $_rocmOrigTorch = $ROCmTorchSpec; $_rocmOrigVision = $ROCmVisionSpec; $_rocmOrigAudio = $ROCmAudioSpec
     if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
@@ -5051,8 +4941,7 @@ if ($ROCmIndexUrl) {
         }
     }
     while ($true) {
-        # Built above the verbose branch (a splat assigned inside it is unset on the other), and rebuilt
-        # every pass because the kept-release retry below restores the computed specs.
+        # Built here, not inside the verbose branch (a splat assigned there is unset on the other path), and rebuilt for the retry.
         $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)
         if ($WinArm64NoAudio) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
         if ($script:UnslothVerbose) {
@@ -5130,9 +5019,7 @@ if ($XpuIndexUrl) {
 
 if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback -or $XpuCpuFallback)) {
     substep "installing PyTorch (CPU-only)..."
-    # After an AMD ROCm fallback, force-reinstall so a partial ROCm torch (which satisfies the CPU
-    # torch>= range) is replaced by the CPU build, and likewise on a pin change. Build the array
-    # directly: an if-expression @splat enumerates chars.
+    # force-reinstall after a ROCm fallback or a pin change (a partial ROCm torch satisfies the CPU torch>= range); build the array directly, since an if-expression @splat enumerates chars.
     $cpuForce = @()
     if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
     # Same after an Intel XPU fallback: a partial +xpu torch satisfies the CPU torch>= range.
@@ -5157,9 +5044,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
-    # Release preservation: keep install.ps1's exported UNSLOTH_KEPT_TORCH release, which resolves to the
-    # correct cpu-flavor build off the /cpu index. On failure, restore the computed specs and retry once;
-    # without the env var nothing changes and the loop runs exactly once.
+    # Release preservation: the kept release resolves to the correct cpu-flavor build off the /cpu index; retry once with the computed specs.
     $_cpuKeptActive = $false
     $_cpuOrigTorch = $cpuTorchSpec; $_cpuOrigVision = $cpuVisionSpec; $_cpuOrigAudio = $cpuAudioSpec
     if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
@@ -5170,8 +5055,6 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_cpuKeptActive = $true
     }
     while ($true) {
-        # Built above the verbose branch (a splat assigned inside it is unset on the other), and rebuilt
-        # every pass because the kept-release retry below restores the computed specs.
         $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec, $cpuAudioSpec)
         if ($WinArm64NoAudio) { $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec) }
         if ($script:UnslothVerbose) {
@@ -5196,8 +5079,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 } elseif (-not $ROCmIndexUrl -and -not $XpuIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
-    # --force-reinstall on a pin change: PEP 440 ignores +cuXXX, so an installed wheel satisfies bare
-    # torch and a cu126 -> cu128 change would never apply.
+    # PEP 440 ignores +cuXXX, so an installed wheel satisfies bare torch and a cu126 -> cu128 change never applies without --force-reinstall.
     $cudaForce = @()
     if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
         $cudaForce = @("--force-reinstall")
@@ -5213,9 +5095,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $cudaVisionSpec = "torchvision>=0.19,<0.27.0"
         $cudaAudioSpec = "torchaudio>=2.4,<2.12.0"
     }
-    # Release preservation: keep install.ps1's exported UNSLOTH_KEPT_TORCH release so a re-run reinstalls
-    # the same CUDA build (+cuXXX follows this index). On failure, restore the computed specs and retry
-    # once; without the env var nothing changes and the loop runs once.
+    # Release preservation: keep the same release across re-runs (+cuXXX follows this index); retry once with the computed specs.
     $_cudaKeptActive = $false
     $_cudaOrigTorch = $cudaTorchSpec; $_cudaOrigVision = $cudaVisionSpec; $_cudaOrigAudio = $cudaAudioSpec
     if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
@@ -5226,8 +5106,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_cudaKeptActive = $true
     }
     while ($true) {
-        # A custom pin whose leaf is not cpu (a corporate /simple mirror) lands an ARM64 host here, so
-        # this branch drops torchaudio too. Rebuilt every pass for the kept-release retry below.
+        # A custom pin whose leaf is not cpu (a corporate /simple mirror) lands an ARM64 host here, so drop torchaudio.
         $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)
         if ($WinArm64NoAudio) { $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec) }
         if ($script:UnslothVerbose) {
@@ -5670,8 +5549,7 @@ if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateD
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-# Every host installs the fork's app-* prebuilts (GPU CUDA/ROCm + CPU windows-cpu/windows-arm64);
-# ggml-org artifacts are no longer used by default. Mirrors setup.sh.
+# Every host installs the fork's app-* prebuilts; ggml-org artifacts are no longer used by default.
 $HelperReleaseRepo = "unslothai/llama.cpp"
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
@@ -5781,8 +5659,7 @@ if ($LocalLlamaCppSrc) {
         Exit-SetupFailure "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc"
     }
     $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
-    # Reusing a local dir disables prebuilt + source build, so a runnable llama-server.exe must exist.
-    # Accept any layout LlamaCppBackend._layout_candidates() resolves.
+    # A local dir disables prebuilt + source build, so accept any layout LlamaCppBackend._layout_candidates() resolves.
     $LocalLlamaServerFound = $false
     $LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)
     foreach ($_cand in @(
@@ -5814,14 +5691,11 @@ if ($LocalLlamaCppSrc) {
             substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install" "Yellow"
         }
     } else {
-        # Fail clearly rather than junction an unbuilt/wrong-platform checkout with no usable binary.
         if (-not $LocalLlamaServerFound) {
             step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
             Exit-SetupFailure "No llama-server.exe was found under $ResolvedLocal"
         }
-        # For an existing junction/symlink delete only the link via DirectoryInfo.Delete(): Remove-Item
-        # -Recurse -Force can traverse a reparse point and wipe the real dir on PS 5.1. Use Get-Item
-        # -Force, not Test-Path, which reads false on a broken junction and leaves a dangling link.
+        # Delete only the link: Remove-Item -Recurse -Force can traverse a reparse point and wipe the real dir on PS 5.1. Get-Item -Force, not Test-Path, which reads false on a broken junction and leaves the dangling link.
         $existing = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
         if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
             # A link reads Present, so the probe below cannot cover a denied
@@ -5890,17 +5764,13 @@ if ($LocalLlamaCppLinked) {
     }
     if ($llamaDirState -eq "Readable") {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
-        # Wrong-kind existing install: remove it so the installer downloads the right variant instead of skipping on tag match.
         $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
         # Readable state leaves only marker presence to decide here.
         if (Test-PathQuiet -Path $existingMetaPath -PathType Leaf) {
             try {
                 $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                # A ROCm host may carry windows-rocm or the windows-hip fallback, and a name-inferred gfx
-                # arch counts as ROCm-capable; the CPU branch covers windows-cpu and windows-arm64.
-                # Currently inert: write_prebuilt_metadata persists no install_kind, so $existingKind is
-                # always null. Keep $expectedKinds in sync first.
+                # A ROCm host may carry windows-rocm or the windows-hip fallback; the CPU branch covers windows-cpu and windows-arm64. Currently inert: write_prebuilt_metadata persists no install_kind, so $existingKind is always null.
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
@@ -5925,9 +5795,7 @@ if ($LocalLlamaCppLinked) {
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"
         }
-        # Forward the resolved gfx arch so the per-gfx ROCm prebuilt is picked even when the probe can't
-        # confirm the runtime. --rocm-gfx is authoritative and implies ROCm, so the GPU prebuilt is
-        # selected with $HasROCm false (gating on $HasROCm gave Strix Halo CPU).
+        # --rocm-gfx is authoritative and implies ROCm, so the GPU prebuilt is picked with $HasROCm false (gating on it gave Strix Halo CPU).
         if ($script:ROCmGfxArch) {
             $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
         }
@@ -5968,7 +5836,6 @@ if ($LocalLlamaCppLinked) {
         }
         try {
             if ($script:UnslothVerbose) {
-                # Live output while still capturing for the error log.
                 $prebuiltLog = Join-Path $env:TEMP "unsloth-prebuilt-$PID.log"
                 & python @prebuiltArgs 2>&1 | Tee-Object -FilePath $prebuiltLog | Out-Host
                 $prebuiltExit = $LASTEXITCODE
@@ -6150,11 +6017,9 @@ if ($StageRoot -and $NeedLlamaSourceBuild) {
 # ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
-# llama-server needs OpenSSL for -hf downloads; ShiningLight.OpenSSL.Dev ships headers + libs cmake finds.
 $OpenSslAvailable = $false
 
 if ($NeedLlamaSourceBuild) {
-    # Already installed? (look for the include dir)
     $OpenSslRoots = @(
         'C:\Program Files\OpenSSL-Win64',
         'C:\Program Files\OpenSSL',
@@ -6198,8 +6063,6 @@ if ($NeedLlamaSourceBuild) {
 # ==========================================================================
 #  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export
 # ==========================================================================
-# Builds at ~/.unsloth/llama.cpp (shared by the inference server + GGUF export): llama-server (HTTPS if
-# OpenSSL) and llama-quantize. git/cmake/VS came from Phase 1; the CUDA Toolkit is resolved lazily below.
 $OriginalLlamaCppDir = $LlamaCppDir
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -6207,7 +6070,7 @@ $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 $HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 
-# Does the existing llama-server match the current GPU mode? A CUDA binary on a now-CPU-only machine rebuilds.
+# A CUDA binary on a now-CPU-only machine, or the reverse, must be rebuilt.
 $NeedRebuild = $false
 # A forced compile, a pinned PR or a custom source skips the prebuilt path and its
 # phase 3.4 denial guard, so this can be the first probe to read inside the tree.
@@ -6238,8 +6101,6 @@ if ($llamaBinState -eq "Present") {
     }
 }
 
-# Install build tools now, not eagerly in Phase 1, so the prebuilt path stays fast. Same condition as
-# the chain below: a source build runs only when needed and no usable binary exists.
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
     -not ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
 if ($WillBuildLlamaFromSource) {
@@ -6294,7 +6155,6 @@ if ($LocalLlamaCppLinked) {
 } elseif (-not $HasCmakeForBuild) {
     Write-StudioLine ""
     if (-not $HasNvidiaSmi) {
-        # CPU-only machines depend entirely on llama-server for GGUF chat -- cmake required.
         substep "CMake is required to build llama-server for GGUF chat mode." "Yellow"
         substep "Continuing setup without llama.cpp build." "Yellow"
         substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
@@ -6304,16 +6164,13 @@ if ($LocalLlamaCppLinked) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
-    # Finalize the VS generator BEFORE Resolve-CudaToolkit, which copies the CUDA .targets into the
-    # current generator's dir and a later swap would strand them. The CMake 4.2 gate for VS 2026 is
-    # checked only here, so a VS 2026 + cmake < 4.2 host can still use the prebuilt. (#6473)
+    # Finalize the VS generator BEFORE Resolve-CudaToolkit, which copies the CUDA .targets into the current generator's dir. The CMake 4.2 gate for VS 2026 is checked only here, so a VS 2026 + cmake < 4.2 host can still use the prebuilt. (#6473)
     if ($CmakeGenerator -match 'Visual Studio 18\b') {
         if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
             $cmakeVerObj = Get-CmakeVersion
             $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
             substep "CMake $cmakeVerStr cannot drive the Visual Studio 2026 generator (need 4.2+ or a VS-bundled cmake) -- updating via winget..." "Yellow"
             if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
-                # upgrade first, then prepend the default dir so the new cmake wins over an older one.
                 try {
                     Invoke-SetupCommand { winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
                     Refresh-Environment
@@ -6329,7 +6186,6 @@ if ($LocalLlamaCppLinked) {
                 }
             }
             if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
-                # cmake still can't drive VS 2026; before failing, fall back to an older installed VS.
                 $fallback = Get-FallbackVsGenerator
                 if ($fallback) {
                     substep "CMake cannot drive $CmakeGenerator; falling back to $($fallback.Generator)" "Yellow"
@@ -6345,15 +6201,14 @@ if ($LocalLlamaCppLinked) {
         substep "CMake can drive the $CmakeGenerator generator"
     }
 
-    # CUDA resolved here (fail fast), after the final VS generator so its .targets land in the toolset cmake uses.
+    # After the final VS generator, so the CUDA .targets land in the toolset cmake uses.
     if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
 
     Write-StudioLine ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
     } elseif ($HasROCm -or $script:ROCmGfxArch) {
-        # AMD GPU in the CPU-only source-build fallback: a HIP source build needs the full HIP SDK, and
-        # GPU acceleration comes from the per-gfx ROCm prebuilt, which failed if we got here.
+        # A HIP source build needs the full HIP SDK; GPU acceleration comes from the per-gfx ROCm prebuilt, which failed if we got here.
         $_amdArch = if ($script:ROCmGfxArch) { $script:ROCmGfxArch } else { "ROCm" }
         substep "[WARN] AMD GPU ($_amdArch) detected, but the GPU-accelerated ROCm" "Yellow"
         substep "       llama.cpp prebuilt could not be installed -- falling back to a CPU build." "Yellow"
@@ -6370,14 +6225,13 @@ if ($LocalLlamaCppLinked) {
     # Start total build timer
     $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
 
-    # git/cmake write to stderr even on success, which -ErrorAction Stop turns terminating on PS 5.1; lower for the build.
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
 
     $BuildOk = $true
     $FailedStep = ""
 
-    # Re-sanitize CUDA_PATH_V* vars: Refresh-Environment may have repopulated conflicting versioned vars from the Machine registry.
+    # Refresh-Environment may have repopulated conflicting CUDA_PATH_V* from the Machine registry.
     if ($HasNvidiaSmi -and $CudaToolkitRoot) {
         $cudaPathVars2 = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
         foreach ($v2 in $cudaPathVars2) {
@@ -6631,7 +6485,6 @@ if ($LocalLlamaCppLinked) {
             '-G', $CmakeGenerator,
             '-Wno-dev'
         )
-        # Tell cmake where VS is (bypasses registry lookup).
         if ($VsInstallPath) {
             $CmakeArgs += "-DCMAKE_GENERATOR_INSTANCE=$VsInstallPath"
         }
@@ -6654,14 +6507,12 @@ if ($LocalLlamaCppLinked) {
             # UNSLOTH_LLAMA_CUDA_ARCHS (e.g. "120" or "89;86") forces the build arch, matching setup.sh.
             $CudaArchOverride = if ($env:UNSLOTH_LLAMA_CUDA_ARCHS) { ($env:UNSLOTH_LLAMA_CUDA_ARCHS -replace '\s', '') } else { '' }
             if ((-not $CudaArch) -and (-not $CudaArchOverride)) {
-                # No detectable compute capability (#5854): -DGGML_CUDA=ON with no arch builds a PTX-only
-                # binary, so build CPU instead. UNSLOTH_LLAMA_CUDA_ARCHS=120 forces CUDA.
+                # No compute capability (#5854): -DGGML_CUDA=ON with no arch builds a PTX-only binary. UNSLOTH_LLAMA_CUDA_ARCHS=120 forces CUDA.
                 substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build)." "Yellow"
                 $CmakeArgs += '-DGGML_CUDA=OFF'
             } else {
                 $CmakeArgs += '-DGGML_CUDA=ON'
-                # Accept a host MSVC newer than nvcc's whitelist, which otherwise aborts with "unsupported
-                # Microsoft Visual Studio version". Via env, after Refresh-Environment, idempotent.
+                # Accept a host MSVC newer than nvcc's whitelist, which otherwise aborts with "unsupported Microsoft Visual Studio version".
                 $nvccAllowFlag = '-allow-unsupported-compiler'
                 if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
                     $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
@@ -6680,7 +6531,7 @@ if ($LocalLlamaCppLinked) {
                     if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
                         $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
                     } else {
-                        # GPU arch too new for this toolkit -- fall back to highest supported (PTX JITs at runtime).
+                        # Arch too new for this toolkit: fall back to the highest supported (PTX JITs for the real GPU at runtime).
                         $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
                         if ($maxArch) {
                             $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
@@ -6744,7 +6595,7 @@ if ($LocalLlamaCppLinked) {
     }
 
     # -- Step E: Build the DiffusionGemma visual server (optional, best-effort) --
-    # Example target from llama.cpp PR #24423; serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+    # Example target from llama.cpp PR #24423.
     if ($BuildOk) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }
@@ -6853,8 +6704,7 @@ substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not 
 substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 Write-StudioLine ""
 
-# Match setup.sh: exit non-zero for degraded llama.cpp when called from install.ps1 (SKIP_STUDIO_BASE=1)
-# so the installer detects it; direct 'studio update' stays successful.
+# Exit non-zero for degraded llama.cpp only under install.ps1 (SKIP_STUDIO_BASE=1); direct 'studio update' stays successful.
 if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     # Tauri mode reports instead of aborting, exactly as setup.sh does. install.ps1
     # turns any non-zero status from here into Exit-InstallFailure, and install.rs
