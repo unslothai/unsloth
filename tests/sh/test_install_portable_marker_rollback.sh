@@ -27,9 +27,10 @@ check() { # name expected actual
 blk() { awk "$1" "$INSTALL"; }
 blockA="$(blk '/^# ── Parse flags ──$/ {grab=1} grab {print} /^        _UNSLOTH_ROOT="\$HOME\/\.unsloth"$/ {seen=1} seen && /^fi$/ {exit}')"
 blockB="$(blk '/^_resolve_studio_destinations\(\) \{$/ {grab=1} grab {print} grab && /^\}$/ {exit}')"
-# Just the four slot variables: the helpers that read them live inside blockR, beside the
-# venv rollback, and the two writers record inline so each stays runnable on its own.
-blockM="$(blk '/^_PORTABLE_MARKER_PATH_1=""$/ {grab=1} grab {print} /^_PORTABLE_MARKER_PRIOR_2=""$/ {exit}')"
+# Just the slot variables -- the four marker slots and the launcher pair beside them: the
+# helpers that read them live inside blockR, beside the venv rollback, and the two writers
+# record inline so each stays runnable on its own.
+blockM="$(blk '/^_PORTABLE_MARKER_PATH_1=""$/ {grab=1} grab {print} /^_PORTABLE_SHIM_BACKUP=""$/ {exit}')"
 blockE="$(blk '/^_export_portable_roots\(\) \{$/ {grab=1} grab {print} grab && /^\}$/ {exit}')"
 blockD="$(blk '/^_clear_stale_portable_marker\(\) \{$/ {grab=1} grab {print} grab && /^\}$/ {exit}')"
 blockR="$(blk '/^_VENV_ROLLBACK_DIR=""$/ {grab=1} grab {print} /^trap ._on_install_signal 143. TERM$/ {exit}')"
@@ -38,6 +39,9 @@ blockR="$(blk '/^_VENV_ROLLBACK_DIR=""$/ {grab=1} grab {print} /^trap ._on_insta
 case "$blockA" in *"--portable) _PORTABLE_MODE=true ;;"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'_STUDIO_HOME_REDIRECT=env'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
 case "$blockM" in *'_PORTABLE_MARKER_PRIOR_2'*) : ;; *) echo "FAIL: blockM extraction broke"; exit 1 ;; esac
+# The portable launcher rolls back on the same handlers; its slot is declared with them.
+# tests/sh/test_install_portable_shim_conversion.sh is what exercises it.
+case "$blockM" in *'_PORTABLE_SHIM_BACKUP'*) : ;; *) echo "FAIL: blockM lost the launcher slot"; exit 1 ;; esac
 case "$blockE" in *'.unsloth-portable-root'*) : ;; *) echo "FAIL: blockE extraction broke"; exit 1 ;; esac
 case "$blockE" in *'_PORTABLE_MARKER_PRIOR_1'*) : ;; *) echo "FAIL: blockE stopped recording the publish"; exit 1 ;; esac
 case "$blockD" in *'.unsloth-portable-root'*) : ;; *) echo "FAIL: blockD extraction broke"; exit 1 ;; esac

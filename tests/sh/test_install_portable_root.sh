@@ -38,6 +38,8 @@ case "$blockC" in *"UV_CACHE_DIR="*) : ;; *) echo "FAIL: blockC extraction broke
 case "$blockC" in *"UV_PYTHON_INSTALL_DIR="*) : ;; *) echo "FAIL: blockC lost the uv python dir"; exit 1 ;; esac
 case "$blockC" in *"UV_PYTHON_BIN_DIR="*) : ;; *) echo "FAIL: blockC lost the uv python bin dir"; exit 1 ;; esac
 case "$blockC" in *"NPM_CONFIG_CACHE="*) : ;; *) echo "FAIL: blockC lost the npm cache"; exit 1 ;; esac
+# bun reads none of npm's configuration, so the npm pin above does not cover it.
+case "$blockC" in *"BUN_INSTALL_CACHE_DIR="*) : ;; *) echo "FAIL: blockC lost the bun cache"; exit 1 ;; esac
 case "$blockC" in *"CUDA_CACHE_PATH="*) : ;; *) echo "FAIL: blockC lost the cuda cache"; exit 1 ;; esac
 case "$blockC" in *"PIP_CACHE_DIR="*) : ;; *) echo "FAIL: blockC lost the pip cache"; exit 1 ;; esac
 
@@ -229,7 +231,8 @@ shim_block="$(awk '
 ' "$INSTALL")"
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UNSLOTH_STUDIO_HOME UNSLOTH_LLAMA_CPP_PATH \
          UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR UV_NO_MODIFY_PATH \
-         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH PIP_CACHE_DIR; do
+         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE BUN_INSTALL_CACHE_DIR \
+         CUDA_CACHE_PATH PIP_CACHE_DIR; do
     case "$shim_block" in
         *"export $v="*) printf '  PASS  %s\n' "portable shim exports $v" ;;
         *) printf '  FAIL  %s\n' "portable shim exports $v"; fails=$((fails+1)) ;;
@@ -242,7 +245,8 @@ esac
 
 conf_block="$(sed -n '/studio.conf: exe path/,/studio\.conf"$/p' "$INSTALL")"
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR \
-         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE CUDA_CACHE_PATH PIP_CACHE_DIR; do
+         UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE BUN_INSTALL_CACHE_DIR \
+         CUDA_CACHE_PATH PIP_CACHE_DIR; do
     case "$conf_block" in
         *"export $v="*) printf '  PASS  %s\n' "studio.conf exports $v" ;;
         *) printf '  FAIL  %s\n' "studio.conf exports $v"; fails=$((fails+1)) ;;
