@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 import struct
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +18,101 @@ from utils.models.gguf_metadata import classify_gguf_tts_audio_prefix, read_gguf
 def _string(value: str) -> bytes:
     data = value.encode()
     return struct.pack("<Q", len(data)) + data
+
+
+def test_snac_codec_load_uses_the_preflighted_snapshot(monkeypatch):
+    from core.inference.audio_codecs import AudioCodecManager
+
+    calls = []
+
+    class _Model:
+        def to(self, device):
+            calls.append(("device", device))
+            return self
+
+        def eval(self):
+            return self
+
+    class _Snac:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            calls.append((source, kwargs))
+            return _Model()
+
+    monkeypatch.setitem(sys.modules, "snac", SimpleNamespace(SNAC = _Snac))
+    manager = AudioCodecManager()
+    manager.load_codec("snac", "cpu", model_repo_path = "/staged/snac-snapshot")
+
+    assert calls[0][0] == "/staged/snac-snapshot"
+    assert calls[1] == ("device", "cpu")
+
+
+def test_dac_codec_load_uses_the_preflighted_weights(monkeypatch):
+    from core.inference import audio_codecs
+
+    calls = []
+
+    class _Config:
+        def __init__(self, **kwargs):
+            calls.append(("config", kwargs))
+
+    class _Processor:
+        def __init__(self, config):
+            self.audio_codec = object()
+
+    monkeypatch.setattr(audio_codecs, "ensure_outetts_source", lambda: "/pinned/outetts")
+    monkeypatch.setattr(
+        audio_codecs,
+        "ensure_dac_speech_weights",
+        lambda: pytest.fail("staged DAC weights were reacquired"),
+    )
+    monkeypatch.setattr(
+        audio_codecs,
+        "import_outetts_module",
+        lambda name, _source: SimpleNamespace(
+            AudioProcessor = _Processor,
+            ModelConfig = _Config,
+        ),
+    )
+
+    manager = audio_codecs.AudioCodecManager()
+    manager.load_codec("dac", "cpu", model_repo_path = "/captured/dac.pth")
+
+    assert calls == [
+        (
+            "config",
+            {
+                "tokenizer_path": None,
+                "device": "cpu",
+                "audio_codec_path": "/captured/dac.pth",
+            },
+        )
+    ]
+
+
+def test_gguf_bicodec_load_uses_the_preflighted_repository(monkeypatch):
+    from core.inference import audio_codecs, llama_cpp
+
+    calls = []
+
+    class _Manager:
+        def load_codec(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(audio_codecs, "AudioCodecManager", _Manager)
+    monkeypatch.setattr(
+        audio_codecs,
+        "resolve_bicodec_repo_path",
+        lambda *_a, **_k: pytest.fail("staged BiCodec repository was reacquired"),
+    )
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._arch_gate_forced_cpu = True
+    llama_cpp.LlamaCppBackend._codec_mgr = None
+
+    backend.init_audio_codec("bicodec", "/captured/spark")
+
+    assert calls == [(('bicodec', 'cpu'), {'model_repo_path': '/captured/spark'})]
+    llama_cpp.LlamaCppBackend._codec_mgr = None
 
 
 def _write_gguf(

@@ -1508,6 +1508,8 @@ class InferenceOrchestrator:
         audio_device: Optional[str] = None,
         on_prior_worker_released: Optional[Callable[[], None]] = None,
         cache_environment: Optional[Mapping[str, str]] = None,
+        anonymous_hf_access: bool = False,
+        audio_codec_path: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1548,6 +1550,10 @@ class InferenceOrchestrator:
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
             }
+            if anonymous_hf_access:
+                sub_config["anonymous_hf_access"] = True
+            if audio_codec_path is not None:
+                sub_config["audio_codec_path"] = audio_codec_path
             if audio_device_forces_cpu(audio_device) and is_native_audio_model(model_name):
                 # Choosing a card for a load that takes none harms it twice: several
                 # GPUs are rejected as unsupported sharding, and required_gb becomes

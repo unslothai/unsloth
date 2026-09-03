@@ -50,8 +50,9 @@ def _bicodec_assets_complete(repo_path: Path) -> bool:
 def resolve_bicodec_repo_path(
     model_repo_path: Optional[str] = None,
     *,
-    hf_token: Optional[str] = None,
+    hf_token: Optional[str] | bool = None,
     local_files_only: Optional[bool] = None,
+    cache_dir: Optional[str] = None,
 ) -> str:
     """Resolve and stage the Spark repository that owns the BiCodec assets."""
     from huggingface_hub import snapshot_download
@@ -94,8 +95,14 @@ def resolve_bicodec_repo_path(
     root = Path(
         snapshot_download(
             repo_id,
-            token = hf_token.strip() if hf_token and hf_token.strip() else None,
-            cache_dir = active_hf_hub_cache(),
+            token = (
+                False
+                if hf_token is False
+                else hf_token.strip()
+                if hf_token and hf_token.strip()
+                else None
+            ),
+            cache_dir = cache_dir or active_hf_hub_cache(),
             local_files_only = hf_env_offline() if local_files_only is None else local_files_only,
         )
     )
@@ -145,11 +152,11 @@ class AudioCodecManager:
     ) -> None:
         """Load the appropriate codec for the given audio type."""
         if audio_type == "snac":
-            self._load_snac(device)
+            self._load_snac(device, model_repo_path)
         elif audio_type == "bicodec":
             self._load_bicodec(device, model_repo_path)
         elif audio_type == "dac":
-            self._load_dac(device)
+            self._load_dac(device, model_repo_path)
         elif audio_type == "csm":
             pass  # CSM decoding is built into the model (output_audio=True)
         else:
@@ -157,7 +164,7 @@ class AudioCodecManager:
 
     # ── Lazy loaders ─────────────────────────────────────────────
 
-    def _load_snac(self, device: str) -> None:
+    def _load_snac(self, device: str, model_repo_path: Optional[str] = None) -> None:
         if self._snac_model is not None:
             return
         from snac import SNAC
@@ -165,7 +172,10 @@ class AudioCodecManager:
 
         # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
-            SNAC.from_pretrained("hubertsiuzdak/snac_24khz", cache_dir = active_hf_hub_cache())
+            SNAC.from_pretrained(
+                model_repo_path or "hubertsiuzdak/snac_24khz",
+                cache_dir = active_hf_hub_cache(),
+            )
             .to(device)
             .eval()
         )
@@ -193,7 +203,7 @@ class AudioCodecManager:
         self._codec_devices["bicodec"] = device
         logger.info(f"Loaded BiCodec tokenizer from {tokenizer_path}")
 
-    def _load_dac(self, device: str) -> None:
+    def _load_dac(self, device: str, audio_codec_path: Optional[str] = None) -> None:
         if self._dac_audio_codec is not None:
             return
         outetts_code_dir = ensure_outetts_source()
@@ -206,12 +216,12 @@ class AudioCodecManager:
             "outetts.models.config",
             outetts_code_dir,
         ).ModelConfig
-        audio_codec_path = ensure_dac_speech_weights()
+        resolved_audio_codec_path = audio_codec_path or ensure_dac_speech_weights()
 
         dummy_config = OuteTTSModelConfig(
             tokenizer_path = None,
             device = device,
-            audio_codec_path = str(audio_codec_path),
+            audio_codec_path = str(resolved_audio_codec_path),
         )
         processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec

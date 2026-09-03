@@ -818,7 +818,9 @@ class NativeAudioBackend:
         self.loading_models: set[str] = set()
 
     @staticmethod
-    def _token_kwargs(hf_token: Optional[str]) -> dict[str, str]:
+    def _token_kwargs(hf_token: Optional[str] | bool) -> dict[str, str | bool]:
+        if hf_token is False:
+            return {"token": False}
         token = str(hf_token or "").strip()
         return {"token": token} if token else {}
 

@@ -56,6 +56,12 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
+    if hf_token is False:
+        return False
+    return hf_token.strip() if isinstance(hf_token, str) and hf_token.strip() else None
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -334,9 +340,10 @@ class InferenceBackend:
         max_seq_length: int = 2048,
         dtype = None,
         load_in_4bit: bool = True,
-        hf_token: Optional[str] = None,
+        hf_token: Optional[str] | bool = None,
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        audio_codec_path: Optional[str] = None,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
         # Keep the token so the native-template fallback can fetch a
@@ -404,7 +411,7 @@ class InferenceBackend:
                         auto_model = CsmForConditionalGeneration,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -420,7 +427,9 @@ class InferenceBackend:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
                         base_path = config.base_model
-                        abs_repo_path = resolve_bicodec_repo_path(base_path, hf_token = hf_token)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            base_path, hf_token = hf_token
+                        )
 
                         logger.info(
                             f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}"
@@ -432,7 +441,7 @@ class InferenceBackend:
                             attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
-                            token = hf_token if hf_token and hf_token.strip() else None,
+                            token = _hf_token_for_loader(hf_token),
                             trust_remote_code = trust_remote_code,
                         )
                     elif config.is_local and os.path.isdir(config.path):
@@ -444,13 +453,17 @@ class InferenceBackend:
                         llm_path = os.path.join(config.path, "LLM")
                         if not os.path.isdir(llm_path):
                             llm_path = config.path
-                        abs_repo_path = resolve_bicodec_repo_path(config.path, hf_token = hf_token)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         logger.info(
                             f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
                         )
                     else:
                         # Base model: download full HF repo, load from /LLM subfolder
-                        abs_repo_path = resolve_bicodec_repo_path(config.path, hf_token = hf_token)
+                        abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
+                            config.path, hf_token = hf_token
+                        )
                         llm_path = os.path.join(abs_repo_path, "LLM")
                         logger.info(
                             f"Spark-TTS: repo at {abs_repo_path}, loading LLM from {llm_path}"
@@ -466,7 +479,7 @@ class InferenceBackend:
                             attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
-                            token = hf_token if hf_token and hf_token.strip() else None,
+                            token = _hf_token_for_loader(hf_token),
                             trust_remote_code = trust_remote_code,
                         )
 
@@ -483,7 +496,7 @@ class InferenceBackend:
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -501,7 +514,7 @@ class InferenceBackend:
                         whisper_task = "transcribe",
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastModel.for_inference(model)
@@ -529,7 +542,7 @@ class InferenceBackend:
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
                         device_map = device_map,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     FastLanguageModel.for_inference(model)
@@ -539,7 +552,9 @@ class InferenceBackend:
                 # Load external codec for TTS audio types
                 # (Whisper is ASR, audio_vlm is audio input — neither needs one)
                 if audio_type not in ("whisper", "audio_vlm"):
-                    model_repo_path = self.models[model_name].get("model_repo_path")
+                    model_repo_path = audio_codec_path or self.models[model_name].get(
+                        "model_repo_path"
+                    )
                     self._audio_codec_manager.load_codec(
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
@@ -571,7 +586,7 @@ class InferenceBackend:
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
-                    token = hf_token if hf_token and hf_token.strip() else None,
+                    token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                 )
 
@@ -603,7 +618,7 @@ class InferenceBackend:
 
                     processor = AutoProcessor.from_pretrained(
                         processor_source,
-                        token = hf_token if hf_token and hf_token.strip() else None,
+                        token = _hf_token_for_loader(hf_token),
                         trust_remote_code = trust_remote_code,
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
@@ -620,7 +635,7 @@ class InferenceBackend:
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
-                    token = hf_token if hf_token and hf_token.strip() else None,
+                    token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                 )
 

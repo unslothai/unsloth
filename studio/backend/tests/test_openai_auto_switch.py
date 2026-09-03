@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -109,6 +110,8 @@ class _LoadRecorder:
         *,
         current_request_counted = False,
         cache_environment = None,
+        anonymous_hf_access = False,
+        speech_codec_path = None,
     ):
         # Mirror the production load boundary before recording any replacement.
         await inference_route._wait_for_model_switch_idle(
@@ -116,6 +119,8 @@ class _LoadRecorder:
         )
         self.calls.append(request)
         self.cache_environment = cache_environment
+        self.anonymous_hf_access = anonymous_hf_access
+        self.speech_codec_path = speech_codec_path
         if self.fail:
             from fastapi import HTTPException
             raise HTTPException(status_code = 503, detail = "load failed")
@@ -3720,6 +3725,32 @@ def test_require_speech_allows_a_speech_target(monkeypatch):
     assert len(rec.calls) == 1
 
 
+def test_python39_rejects_higgs_before_replacing_the_resident_model(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/higgs", None, "org/higgs"),
+        backend = backend,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "higgs_tts2")
+    monkeypatch.setattr(inference_route.sys, "version_info", (3, 9))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/higgs", object(), "tester", require_speech = True
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert "Python 3.10" in json.dumps(exc.value.detail)
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
 def test_speech_switch_threads_only_the_callers_hf_token(monkeypatch):
     from starlette.requests import Request
 
@@ -3756,6 +3787,7 @@ def test_speech_switch_threads_only_the_callers_hf_token(monkeypatch):
 
     assert preflight == [("snac", "/local/B.gguf", True, "caller-token")]
     assert rec.calls[0].hf_token == "caller-token"
+    assert rec.anonymous_hf_access is False
 
 
 def test_missing_speech_codec_assets_are_rejected_before_switch(monkeypatch):
@@ -3787,27 +3819,63 @@ def test_missing_speech_codec_assets_are_rejected_before_switch(monkeypatch):
     assert rec.calls == []
 
 
-def test_snac_codec_preflight_stages_the_active_cache(monkeypatch):
+def test_snac_codec_preflight_stages_and_pins_the_active_cache(tmp_path, monkeypatch):
     import huggingface_hub
     from utils import hf_cache_settings, utils
 
     calls = []
     monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
-    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: "/active/cache")
+    cache_paths = hf_cache_settings.HuggingFaceCachePaths(
+        tmp_path / "hf", tmp_path / "hf" / "hub", tmp_path / "hf" / "xet", "studio"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: cache_paths)
     monkeypatch.setattr(
         huggingface_hub,
         "snapshot_download",
-        lambda repo_id, **kwargs: calls.append((repo_id, kwargs)),
+        lambda repo_id, **kwargs: calls.append((repo_id, kwargs)) or "/active/snac-snapshot",
     )
 
-    inference_route._preflight_speech_codec_for_switch("snac", "/local/model", False)
+    result = inference_route._preflight_speech_codec_for_switch("snac", "/local/model", False)
 
     assert calls == [
         (
             "hubertsiuzdak/snac_24khz",
-            {"cache_dir": "/active/cache", "local_files_only": True},
+            {
+                "token": False,
+                "cache_dir": str(cache_paths.hub_cache),
+                "local_files_only": True,
+            },
         )
     ]
+    assert result.cache_environment["HF_HUB_CACHE"] == str(cache_paths.hub_cache)
+    assert result.codec_path == "/active/snac-snapshot"
+
+
+def test_snac_switch_passes_the_staged_snapshot_to_the_gguf_load(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+    result = inference_route._SpeechCodecPreflightResult(
+        {"HF_HUB_CACHE": "/old/hub", "HF_XET_CACHE": "/old/xet"},
+        "/old/hub/snapshots/snac",
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "snac")
+    monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", lambda *_a: result)
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "tester", require_speech = True
+        )
+    )
+
+    assert recorder.cache_environment == result.cache_environment
+    assert recorder.speech_codec_path == result.codec_path
 
 
 def test_higgs_tts2_preflight_stages_the_resolved_companion(tmp_path, monkeypatch):
@@ -3854,6 +3922,42 @@ def test_higgs_tts2_preflight_stages_the_resolved_companion(tmp_path, monkeypatc
     ]
 
 
+def test_higgs_preflight_is_explicitly_anonymous_without_a_caller_token(tmp_path, monkeypatch):
+    import huggingface_hub
+    from core.inference import native_audio
+    from utils import hf_cache_settings, utils
+
+    codec = tmp_path / "codec"
+    codec.mkdir()
+    (codec / "config.json").write_text(
+        json.dumps({"model_type": "higgs_audio_v2_tokenizer"}), encoding = "utf-8"
+    )
+    (codec / "model.safetensors").write_bytes(_safetensors_bytes())
+    cache_paths = hf_cache_settings.HuggingFaceCachePaths(
+        tmp_path / "hf", tmp_path / "hf" / "hub", tmp_path / "hf" / "xet", "studio"
+    )
+    tokens = []
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: cache_paths)
+    monkeypatch.setattr(
+        native_audio,
+        "native_audio_security_targets",
+        lambda path, audio_type, token: tokens.append(("metadata", token))
+        or [path, "acme/higgs-codec"],
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda _repo, **kwargs: tokens.append(("snapshot", kwargs["token"])) or str(codec),
+    )
+
+    inference_route._preflight_speech_codec_for_switch(
+        "higgs_tts2", "/local/higgs", False
+    )
+
+    assert tokens == [("metadata", False), ("snapshot", False)]
+
+
 def test_higgs_preflight_cache_snapshot_survives_a_settings_change(tmp_path, monkeypatch):
     import huggingface_hub
     from core.inference import native_audio
@@ -3881,13 +3985,13 @@ def test_higgs_preflight_cache_snapshot_survives_a_settings_change(tmp_path, mon
     )
     monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *_a, **_k: str(codec))
 
-    cache_environment = inference_route._preflight_speech_codec_for_switch(
+    result = inference_route._preflight_speech_codec_for_switch(
         "higgs_tts2", "/local/higgs", False, "caller-token"
     )
 
     assert hf_cache_settings.get_hf_cache_paths() == new_paths
-    assert cache_environment["HF_HUB_CACHE"] == str(old_paths.hub_cache)
-    assert cache_environment["HF_XET_CACHE"] == str(old_paths.xet_cache)
+    assert result.cache_environment["HF_HUB_CACHE"] == str(old_paths.hub_cache)
+    assert result.cache_environment["HF_XET_CACHE"] == str(old_paths.xet_cache)
 
 
 def test_higgs_switch_passes_the_staged_cache_snapshot_to_the_loader(monkeypatch):
@@ -3916,6 +4020,7 @@ def test_higgs_switch_passes_the_staged_cache_snapshot_to_the_loader(monkeypatch
 
     assert len(recorder.calls) == 1
     assert recorder.cache_environment == cache_environment
+    assert recorder.anonymous_hf_access is True
 
 
 def test_partial_higgs_tts2_companion_is_rejected_before_switch(tmp_path, monkeypatch):
@@ -4009,21 +4114,66 @@ def test_empty_local_higgs_tts2_companion_is_rejected_before_switch(tmp_path, mo
 
 def test_gguf_bicodec_preflight_stages_weights_and_pinned_source(monkeypatch):
     from core.inference import audio_codecs
-    from utils import utils
+    from utils import hf_cache_settings, utils
 
     calls = []
     monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    cache_paths = hf_cache_settings.HuggingFaceCachePaths(
+        Path("/captured"), Path("/captured/hub"), Path("/captured/xet"), "studio"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: cache_paths)
     monkeypatch.setattr(
         audio_codecs,
         "resolve_bicodec_repo_path",
-        lambda path, **kwargs: calls.append((path, kwargs)),
+        lambda path, **kwargs: calls.append((path, kwargs)) or "/captured/spark",
     )
 
     inference_route._preflight_speech_codec_for_switch(
         "bicodec", "/local/model.gguf", True, "caller-token"
     )
 
-    assert calls == [(None, {"hf_token": "caller-token", "local_files_only": False})]
+    assert calls == [
+        (
+            None,
+            {
+                "hf_token": "caller-token",
+                "local_files_only": False,
+                "cache_dir": str(cache_paths.hub_cache),
+            },
+        )
+    ]
+
+
+def test_bicodec_preflight_is_explicitly_anonymous_without_a_caller_token(monkeypatch):
+    from core.inference import audio_codecs
+    from utils import hf_cache_settings, utils
+
+    calls = []
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    cache_paths = hf_cache_settings.HuggingFaceCachePaths(
+        Path("/captured"), Path("/captured/hub"), Path("/captured/xet"), "studio"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: cache_paths)
+    monkeypatch.setattr(
+        audio_codecs,
+        "resolve_bicodec_repo_path",
+        lambda path, **kwargs: calls.append((path, kwargs)) or "/captured/spark",
+    )
+
+    inference_route._preflight_speech_codec_for_switch(
+        "bicodec", "/local/model.gguf", True
+    )
+
+    assert calls == [
+        (
+            None,
+            {
+                "hf_token": False,
+                "local_files_only": False,
+                "cache_dir": str(cache_paths.hub_cache),
+            },
+        )
+    ]
 
 
 def test_bicodec_resolver_uses_the_active_cache(tmp_path, monkeypatch):
@@ -4112,18 +4262,27 @@ def test_bicodec_resolver_rejects_an_incomplete_local_export(tmp_path):
 
 
 def test_dac_codec_preflight_stages_source_and_verified_weights(monkeypatch):
-    from utils import third_party_source, utils
+    from utils import hf_cache_settings, third_party_source, utils
 
     calls = []
     monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    cache_paths = hf_cache_settings.HuggingFaceCachePaths(
+        Path("/captured"), Path("/captured/hub"), Path("/captured/xet"), "studio"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: cache_paths)
     monkeypatch.setattr(third_party_source, "ensure_outetts_source", lambda: calls.append("source"))
     monkeypatch.setattr(
-        third_party_source, "ensure_dac_speech_weights", lambda: calls.append("weights")
+        third_party_source,
+        "ensure_dac_speech_weights",
+        lambda **kwargs: calls.append(("weights", kwargs)) or "/captured/dac.pth",
     )
 
     inference_route._preflight_speech_codec_for_switch("dac", "/local/model", False)
 
-    assert calls == ["source", "weights"]
+    assert calls == [
+        "source",
+        ("weights", {"hub_cache": cache_paths.hub_cache, "hf_token": False}),
+    ]
 
 
 def test_an_explicitly_empty_audio_model_still_restores_the_stash(monkeypatch):

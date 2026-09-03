@@ -1448,12 +1448,19 @@ def test_load_retry_keeps_the_captured_cache_environment(monkeypatch):
     assert o.load_model(
         type("Config", (), {"identifier": "m", "gguf_variant": None})(),
         cache_environment = cache_environment,
+        anonymous_hf_access = True,
+        audio_codec_path = "/old/hub/snapshots/codec",
     )
     assert [environment for _config, environment in spawned] == [
         cache_environment,
         cache_environment,
     ]
     assert [config["disable_xet"] for config, _environment in spawned] == [False, True]
+    assert all(config["anonymous_hf_access"] for config, _environment in spawned)
+    assert all(
+        config["audio_codec_path"] == "/old/hub/snapshots/codec"
+        for config, _environment in spawned
+    )
 
 
 def test_load_model_reaps_worker_after_inactivity_timeout(monkeypatch):

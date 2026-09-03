@@ -49,7 +49,7 @@ import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, asynccontextmanager, contextmanager
-from dataclasses import fields as dataclass_fields, replace
+from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
 import re as _re
@@ -7301,35 +7301,58 @@ def _target_speech_audio_type(
         return None
 
 
+@dataclass(frozen = True)
+class _SpeechCodecPreflightResult:
+    cache_environment: Optional[dict[str, str]] = None
+    codec_path: Optional[str] = None
+
+
 def _preflight_speech_codec_for_switch(
     audio_type: str,
     load_path: str,
     is_gguf: bool,
     hf_token: Optional[str] = None,
-) -> Optional[dict[str, str]]:
+) -> _SpeechCodecPreflightResult:
     """Stage codec assets that the post-load speech path otherwise fetches too late."""
     from utils.utils import hf_env_offline
 
     offline = hf_env_offline()
+    hub_token = hf_token or False
     if audio_type == "snac":
         from huggingface_hub import snapshot_download
-        from utils.hf_cache_settings import active_hf_hub_cache
-        snapshot_download(
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
+        staged = snapshot_download(
             "hubertsiuzdak/snac_24khz",
-            cache_dir = active_hf_hub_cache(),
+            token = hub_token,
+            cache_dir = str(cache_paths.hub_cache),
             local_files_only = offline,
         )
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}), str(staged))
     elif audio_type == "bicodec":
         from core.inference.audio_codecs import resolve_bicodec_repo_path
-        resolve_bicodec_repo_path(
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
+        staged = resolve_bicodec_repo_path(
             None if is_gguf else load_path,
-            hf_token = hf_token,
+            hf_token = hub_token,
             local_files_only = offline,
+            cache_dir = str(cache_paths.hub_cache),
         )
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}), str(staged))
     elif audio_type == "dac":
         from utils.third_party_source import ensure_dac_speech_weights, ensure_outetts_source
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
         ensure_outetts_source()
-        ensure_dac_speech_weights()
+        staged = ensure_dac_speech_weights(
+            hub_cache = cache_paths.hub_cache,
+            hf_token = hub_token,
+        )
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}), str(staged))
     elif audio_type == "higgs_tts2":
         from core.inference.native_audio import (
             higgs_tts2_codec_local_complete,
@@ -7339,7 +7362,7 @@ def _preflight_speech_codec_for_switch(
         from utils.hf_cache_settings import get_hf_cache_paths
 
         cache_paths = get_hf_cache_paths()
-        companions = native_audio_security_targets(load_path, audio_type, hf_token)[1:]
+        companions = native_audio_security_targets(load_path, audio_type, hub_token)[1:]
         if not companions:
             raise RuntimeError("Higgs TTS 2 exposes no companion audio tokenizer.")
         for companion in companions:
@@ -7349,7 +7372,7 @@ def _preflight_speech_codec_for_switch(
                 if local_companion.exists()
                 else snapshot_download(
                     companion,
-                    token = hf_token,
+                    token = hub_token,
                     cache_dir = str(cache_paths.hub_cache),
                     local_files_only = offline,
                 )
@@ -7359,8 +7382,8 @@ def _preflight_speech_codec_for_switch(
         # The worker must read from the cache proven complete above. Settings can
         # change while this request waits for the lifecycle gate, so do not let
         # spawn re-read the mutable active cache after the resident worker exits.
-        return cache_paths.child_env({})
-    return None
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}))
+    return _SpeechCodecPreflightResult()
 
 
 _AUDIO_IMAGE_INPUT_DETAIL = (
@@ -8550,6 +8573,18 @@ async def _maybe_auto_switch_model(
                         param = "model",
                     ),
                 )
+            from core.inference.native_audio import PYTHON310_AUDIO_TYPES
+
+            if speech_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "The requested text-to-speech model requires Python 3.10 or newer in Studio.",
+                        status = 400,
+                        code = "unsupported_runtime",
+                        param = "model",
+                    ),
+                )
             # Same rule as the post-load check below, applied before the swap: MiniMax
             # needs a description, and finding that out afterwards costs the resident model.
             if speech_budget is not None:
@@ -8602,15 +8637,23 @@ async def _maybe_auto_switch_model(
         ):
             await _preflight_image_for_switch(image_preflight, target_is_gguf)
         speech_cache_environment = None
+        speech_codec_path = None
         if speech_type is not None:
             try:
-                speech_cache_environment = await asyncio.to_thread(
+                speech_preflight_result = await asyncio.to_thread(
                     _preflight_speech_codec_for_switch,
                     speech_type,
                     target_id,
                     target_is_gguf,
                     caller_hf_token,
                 )
+                if isinstance(speech_preflight_result, _SpeechCodecPreflightResult):
+                    speech_cache_environment = speech_preflight_result.cache_environment
+                    speech_codec_path = speech_preflight_result.codec_path
+                elif isinstance(speech_preflight_result, dict):
+                    # Compatibility for narrow test/plugin seams that returned the
+                    # original cache-environment mapping before codec paths were pinned.
+                    speech_cache_environment = speech_preflight_result
             except Exception:
                 raise HTTPException(
                     status_code = 503,
@@ -8726,6 +8769,10 @@ async def _maybe_auto_switch_model(
                             load_internal_kw = dict(durable_cancel_kw)
                             if speech_cache_environment is not None:
                                 load_internal_kw["cache_environment"] = speech_cache_environment
+                            if speech_codec_path is not None:
+                                load_internal_kw["speech_codec_path"] = speech_codec_path
+                            if speech_type is not None and caller_hf_token is None:
+                                load_internal_kw["anonymous_hf_access"] = True
                             try:
                                 await _load_model_impl(
                                     LoadRequest(**load_kwargs),
@@ -13712,6 +13759,8 @@ async def _load_model_impl(
     allow_gpu_owner_eviction: bool = True,
     load_cancel_event: Optional[threading.Event] = None,
     cache_environment: Optional[dict[str, str]] = None,
+    anonymous_hf_access: bool = False,
+    speech_codec_path: Optional[str] = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -14051,6 +14100,8 @@ async def _load_model_impl(
                 placement = placement,
                 n_parallel = _n_parallel,
             )
+            if speech_codec_path is not None:
+                gguf_intent = replace(gguf_intent, audio_codec_path = speech_codec_path)
             same_loaded_model = llama_backend.matches_load_source(gguf_intent)
             if same_loaded_model and config.gguf_hf_repo and llama_backend.gguf_path:
                 gguf_intent = replace(
@@ -14557,6 +14608,10 @@ async def _load_model_impl(
         # claim is all that stops a second pipeline allocating over a resident model).
         # load_model fires it in between; the post-load release covers a re-taken claim.
         _release_chat_after_teardown = (lambda: release(CHAT)) if not chat_load_needs_gpu else None
+        anonymous_hf_kw = {"anonymous_hf_access": True} if anonymous_hf_access else {}
+        speech_codec_kw = (
+            {"audio_codec_path": speech_codec_path} if speech_codec_path is not None else {}
+        )
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
@@ -14579,6 +14634,8 @@ async def _load_model_impl(
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
                 cache_environment = cache_environment,
+                **anonymous_hf_kw,
+                **speech_codec_kw,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
