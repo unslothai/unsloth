@@ -865,7 +865,9 @@ def test_token_store_survives_the_shutdown_of_the_worker_it_replaces(monkeypatch
             return True
 
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **kw: o._discard_token_store() or True)
+    monkeypatch.setattr(
+        o, "_shutdown_subprocess", lambda *a, **kw: o._discard_token_store() or True
+    )
     monkeypatch.setattr(
         o, "_spawn_subprocess", lambda cfg: spawned.update(cfg) or (_ for _ in ()).throw(_Boom())
     )
