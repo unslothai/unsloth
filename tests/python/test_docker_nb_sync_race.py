@@ -202,17 +202,17 @@ def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
     # hashing it before publishing cannot race with anything.
     block = sync[sync.index("while IFS= read -r -d '' f; do") :]
     block = block[: block.index("done < <(find")]
-    assert re.search(r'staged="\$\(hash_of "\$new"\)"', block), (
-        "the published hash must be taken from the staging copy"
-    )
-    assert block.index('staged="$(hash_of "$new")"') < block.index('mv -f "$new" "$dst"'), (
-        "the staged hash must be taken BEFORE the rename that publishes it"
-    )
+    assert re.search(
+        r'staged="\$\(hash_of "\$new"\)"', block
+    ), "the published hash must be taken from the staging copy"
+    assert block.index('staged="$(hash_of "$new")"') < block.index(
+        'mv -f "$new" "$dst"'
+    ), "the staged hash must be taken BEFORE the rename that publishes it"
     publish = block.index('mv -f "$new" "$dst"')
     tail = block[publish:]
-    assert re.search(r"printf '%s  %s\\n' \"\$staged\" \"\$rel\"", tail), (
-        "the state line must record the staged hash, not a re-read of $dst"
-    )
+    assert re.search(
+        r"printf '%s  %s\\n' \"\$staged\" \"\$rel\"", tail
+    ), "the state line must record the staged hash, not a re-read of $dst"
     assert not re.search(r"printf '%s  %s\\n' \"\$\(hash_of \"\$dst\"\)\"", tail), (
         "re-reading $dst after the rename adopts whatever save landed in that "
         "window as the pristine version"
@@ -224,10 +224,10 @@ def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
 # a LOCAL git remote, with a `mv` shim that performs the real rename and then
 # writes the user's bytes -- i.e. the Ctrl+S that lands inside the window.
 
-import hashlib          # noqa: E402
-import os               # noqa: E402
-import shutil           # noqa: E402
-import subprocess       # noqa: E402
+import hashlib  # noqa: E402
+import os  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
 
 _NEEDS = ("bash", "git", "sha256sum", "mv")
 
@@ -249,8 +249,10 @@ def _git(cwd: Path, *args: str) -> None:
         capture_output = True,
         env = dict(
             os.environ,
-            GIT_AUTHOR_NAME = "t", GIT_AUTHOR_EMAIL = "t@e",
-            GIT_COMMITTER_NAME = "t", GIT_COMMITTER_EMAIL = "t@e",
+            GIT_AUTHOR_NAME = "t",
+            GIT_AUTHOR_EMAIL = "t@e",
+            GIT_COMMITTER_NAME = "t",
+            GIT_COMMITTER_EMAIL = "t@e",
         ),
     )
 
@@ -337,16 +339,18 @@ def test_a_save_landing_after_the_rename_is_not_recorded_as_pristine(tmp_path: P
     subprocess.run(
         ["bash", str(SYNC)],
         env = _env(tmp_path, remote, dest, save_bytes = "USER EDIT"),
-        capture_output = True, text = True, timeout = 180,
+        capture_output = True,
+        text = True,
+        timeout = 180,
     )
     live = (dest / "x.ipynb").read_text()
     assert live == "USER EDIT", f"the shim did not land the save: {live!r}"
-    assert _recorded(dest) != _sha256(dest / "x.ipynb"), (
-        "the user's own save was recorded as the sync-owned pristine version"
-    )
-    assert _recorded(dest) == hashlib.sha256(b"v2").hexdigest(), (
-        "the recorded hash must be the bytes this refresh published"
-    )
+    assert _recorded(dest) != _sha256(
+        dest / "x.ipynb"
+    ), "the user's own save was recorded as the sync-owned pristine version"
+    assert (
+        _recorded(dest) == hashlib.sha256(b"v2").hexdigest()
+    ), "the recorded hash must be the bytes this refresh published"
 
 
 @behavioural
@@ -359,17 +363,21 @@ def test_a_save_in_that_window_survives_the_next_refresh(tmp_path: Path):
     subprocess.run(
         ["bash", str(SYNC)],
         env = _env(tmp_path, remote, dest, save_bytes = "USER EDIT"),
-        capture_output = True, text = True, timeout = 180,
+        capture_output = True,
+        text = True,
+        timeout = 180,
     )
     _advance(remote, "v3")
     subprocess.run(
         ["bash", str(SYNC)],
         env = _env(tmp_path, remote, dest, save_bytes = None),
-        capture_output = True, text = True, timeout = 180,
+        capture_output = True,
+        text = True,
+        timeout = 180,
     )
-    assert (dest / "x.ipynb").read_text() == "USER EDIT", (
-        "the user's notebook edit was overwritten by the upstream refresh"
-    )
+    assert (
+        dest / "x.ipynb"
+    ).read_text() == "USER EDIT", "the user's notebook edit was overwritten by the upstream refresh"
 
 
 @behavioural
@@ -382,7 +390,9 @@ def test_an_unraced_refresh_still_publishes_and_records_upstream(tmp_path: Path)
     subprocess.run(
         ["bash", str(SYNC)],
         env = _env(tmp_path, remote, dest, save_bytes = None),
-        capture_output = True, text = True, timeout = 180,
+        capture_output = True,
+        text = True,
+        timeout = 180,
     )
     assert (dest / "x.ipynb").read_text() == "v2"
     assert _recorded(dest) == hashlib.sha256(b"v2").hexdigest()

@@ -184,14 +184,14 @@ def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
 
     strip.migrate(str(state), str(dest))
 
-    assert racing_after_replace["fired"] == 1, (
-        "the window was never exercised; this test would pass vacuously"
-    )
+    assert (
+        racing_after_replace["fired"] == 1
+    ), "the window was never exercised; this test would pass vacuously"
     recorded = state.read_text(encoding = "utf-8").split("  ", 1)[0]
     assert json.loads(path.read_text(encoding = "utf-8")) == edited
-    assert recorded != strip._sha256(str(path)), (
-        "the user's own save was recorded as the cleaned, sync-owned version"
-    )
+    assert recorded != strip._sha256(
+        str(path)
+    ), "the user's own save was recorded as the cleaned, sync-owned version"
 
 
 def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path: Path):

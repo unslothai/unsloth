@@ -4495,7 +4495,12 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
         remove_tree(staging_dir)
 
 
-def move_install_dir_aside(src: Path, dst: Path, *, busy_retry: bool = False) -> None:
+def move_install_dir_aside(
+    src: Path,
+    dst: Path,
+    *,
+    busy_retry: bool = False,
+) -> None:
     """Move an existing install dir to ``dst`` (a unique, non-existent sibling).
 
     os.replace is the fast path. On a cross-device link (EXDEV -- e.g. moving the

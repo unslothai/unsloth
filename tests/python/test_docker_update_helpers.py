@@ -167,9 +167,7 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
     env = _zoo_ref_env(tmp_path, git_exit = 128)
     res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
     calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
-    assert "STUB-PIP" not in calls, (
-        "a transport failure must not install anything:\n" + calls
-    )
+    assert "STUB-PIP" not in calls, "a transport failure must not install anything:\n" + calls
     assert res.returncode != 0, "an unresolvable zoo ref must not report success"
     assert "has no ref" not in res.stdout, (
         "an unreachable remote must not be reported as a missing ref:\n" + res.stdout
