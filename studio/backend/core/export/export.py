@@ -55,8 +55,8 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 
-def _cache_snapshot_repo(local_path: str) -> Optional[str]:
-    """The repository a Hugging Face cache snapshot path belongs to, else None.
+def _cache_snapshot_ref(local_path: str) -> Optional[Tuple[str, Optional[str]]]:
+    """The repository and revision a Hugging Face cache snapshot path holds, else None.
 
     A path under ``models--org--repo/snapshots/<rev>`` is local only in spelling: it is the
     operator's copy of a Hub repo, and /hub/cached-models hands API callers exactly these
@@ -67,10 +67,10 @@ def _cache_snapshot_repo(local_path: str) -> Optional[str]:
         ref = _hf_cache_snapshot_ref(local_path)
     except Exception:
         return None
-    return ref[0] if ref else None
+    return (ref[0], ref[1]) if ref else None
 
 
-def _remote_load_targets(checkpoint_path: str) -> List[str]:
+def _remote_load_targets(checkpoint_path: str) -> List[Tuple[str, Optional[str]]]:
     """Every Hugging Face repository a load of *checkpoint_path* will reach.
 
     Three shapes count. A repo id names one directly. An absolute cache snapshot path is
@@ -83,10 +83,10 @@ def _remote_load_targets(checkpoint_path: str) -> List[str]:
     Only a genuinely local checkpoint directory is exempt as itself: it holds no Hub
     repository's content.
     """
-    targets: List[str] = []
-    named = _cache_snapshot_repo(checkpoint_path)
+    targets: List[Tuple[str, Optional[str]]] = []
+    named = _cache_snapshot_ref(checkpoint_path)
     if named is None and not is_local_path(checkpoint_path):
-        named = checkpoint_path
+        named = (checkpoint_path, None)
     if named:
         targets.append(named)
     try:
@@ -95,14 +95,17 @@ def _remote_load_targets(checkpoint_path: str) -> List[str]:
     except Exception as exc:
         logger.debug("Could not resolve a base for '%s': %s", checkpoint_path, exc)
         base = None
+    resolved = None
     if base:
-        base = _cache_snapshot_repo(base) or (None if is_local_path(base) else base)
-    if base and base not in targets:
-        targets.append(base)
+        resolved = _cache_snapshot_ref(base) or (None if is_local_path(base) else (base, None))
+    if resolved and resolved[0] not in {t[0] for t in targets}:
+        targets.append(resolved)
     return targets
 
 
-def _anonymous_access_allowed(repo_id: str, offline: bool) -> Tuple[bool, str]:
+def _anonymous_access_allowed(
+    repo_id: str, offline: bool, revision: Optional[str] = None
+) -> Tuple[bool, str]:
     """Whether an anonymous caller may be served a cache-backed load of *repo_id*.
 
     The question is not whether the files are on disk; it is whether this caller could have
@@ -118,7 +121,9 @@ def _anonymous_access_allowed(repo_id: str, offline: bool) -> Tuple[bool, str]:
             "callers unauthenticated. Supply hf_token, or retry when the Hub is reachable."
         )
     try:
-        info = HfApi().model_info(repo_id, token = False)
+        # The exact revision, not just the id: a cached snapshot can outlive the visibility
+        # it was fetched under, and an id can be deleted and recreated by someone else.
+        info = HfApi().model_info(repo_id, revision = revision, token = False)
     except Exception as exc:
         logger.info("Anonymous access check refused '%s': %s", repo_id, exc)
         return False, (
@@ -600,8 +605,8 @@ class ExportBackend:
             # caller never named. That leaves reading a private base through a crafted local
             # adapter_config, which needs a separate write onto this host.
             if is_anonymous(token):
-                for target in _remote_load_targets(checkpoint_path):
-                    allowed, why = _anonymous_access_allowed(target, local_files_only)
+                for target, revision in _remote_load_targets(checkpoint_path):
+                    allowed, why = _anonymous_access_allowed(target, local_files_only, revision)
                     if not allowed:
                         return False, why
 

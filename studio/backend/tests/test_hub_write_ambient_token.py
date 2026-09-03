@@ -683,7 +683,7 @@ def test_offline_anonymous_load_will_not_read_the_operators_cache(
     monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
     # Isolate the offline branch; the online authorization check has its own tests.
     monkeypatch.setattr(
-        export_backend_module, "_anonymous_access_allowed", lambda repo, off: (not off, "refused")
+        export_backend_module, "_anonymous_access_allowed", lambda repo, off, revision = None: (not off, "refused")
     )
 
     backend = export_backend_module.ExportBackend()
@@ -724,7 +724,9 @@ def test_weight_loader_never_gets_none_for_an_anonymous_caller(monkeypatch, hf_t
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
     monkeypatch.setattr(
-        export_backend_module, "_anonymous_access_allowed", lambda repo, off: (True, "")
+        export_backend_module,
+        "_anonymous_access_allowed",
+        lambda repo, off, revision = None: (True, ""),
     )
     monkeypatch.setattr(
         export_backend_module,
@@ -964,11 +966,7 @@ def test_anonymous_access_check_reads_the_gated_flag(monkeypatch, gated, private
     info.private = private
 
     class _Api:
-        def model_info(
-            self,
-            repo_id,
-            token = None,
-        ):
+        def model_info(self, repo_id, revision = None, token = None):
             assert token is False, "the check must ask anonymously"
             if raises:
                 raise RuntimeError("401")
@@ -1002,13 +1000,13 @@ def test_a_remote_adapters_base_is_authorized_too(monkeypatch):
         lambda path, token: "owner/private-base",
     )
     assert export_backend_module._remote_load_targets("owner/public-adapter") == [
-        "owner/public-adapter",
-        "owner/private-base",
+        ("owner/public-adapter", None),
+        ("owner/private-base", None),
     ]
 
     checked = []
 
-    def _check(repo, offline):
+    def _check(repo, offline, revision = None):
         checked.append(repo)
         return (repo != "owner/private-base", "refused")
 
@@ -1146,11 +1144,12 @@ def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_
     snap = tmp_path / "models--meta-llama--Llama-3.1-8B-Instruct" / "snapshots" / "abc123"
     snap.mkdir(parents = True)
 
-    assert (
-        export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
+    assert export_backend_module._cache_snapshot_ref(str(snap)) == (
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "abc123",
     )
     assert export_backend_module._remote_load_targets(str(snap)) == [
-        "meta-llama/Llama-3.1-8B-Instruct"
+        ("meta-llama/Llama-3.1-8B-Instruct", "abc123")
     ]
     # A plain training checkpoint with no adapter base has nothing to authorize.
     plain = tmp_path / "outputs" / "my-run"
@@ -1161,7 +1160,7 @@ def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_
     monkeypatch.setattr(
         export_backend_module,
         "_anonymous_access_allowed",
-        lambda repo, offline: (checked.append(repo), (False, "refused"))[1],
+        lambda repo, offline, revision = None: (checked.append(repo), (False, "refused"))[1],
     )
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
@@ -1213,13 +1212,15 @@ def test_a_local_adapters_remote_base_is_authorized(monkeypatch, tmp_path):
     )
     (tmp_path / "adapter_model.safetensors").touch()
 
-    assert export_backend_module._remote_load_targets(str(tmp_path)) == ["operator/private-base"]
+    assert export_backend_module._remote_load_targets(str(tmp_path)) == [
+        ("operator/private-base", None)
+    ]
 
     checked = []
     monkeypatch.setattr(
         export_backend_module,
         "_anonymous_access_allowed",
-        lambda repo, offline: (checked.append(repo), (False, "refused"))[1],
+        lambda repo, offline, revision = None: (checked.append(repo), (False, "refused"))[1],
     )
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
@@ -1351,3 +1352,28 @@ def test_cancelling_an_already_dead_worker_still_removes_its_store():
     finally:
         o._proc = None
         o._discard_token_store()
+
+
+def test_the_cached_revision_is_what_gets_authorized(monkeypatch):
+    """A snapshot can outlive the visibility it was fetched under, and an id can be deleted
+    and recreated by someone else, so the id alone is not the question."""
+    from core.export import export as export_backend_module
+
+    asked = {}
+
+    class _Api:
+        def model_info(self, repo_id, revision = None, token = None):
+            asked["revision"] = revision
+
+            class _Info:
+                gated = False
+                private = False
+
+            return _Info()
+
+    monkeypatch.setattr(export_backend_module, "HfApi", _Api)
+    ok, _why = export_backend_module._anonymous_access_allowed(
+        "owner/repo", offline = False, revision = "deadbeef"
+    )
+    assert ok is True
+    assert asked["revision"] == "deadbeef"

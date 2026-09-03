@@ -181,14 +181,17 @@ class ExportOrchestrator:
         """
         self._cancel_requested = True
         proc = self._proc
-        # Captured with proc: this runs without the lock, so a reload can install a new
-        # worker and a new store while we are in join(), and that one is not ours to delete.
+        # Read after proc, and re-checked against it before either cleanup below. This runs
+        # without the lock, so a reload can swap in a new worker and a new store between any
+        # two statements here, and an old process paired with the replacement's store would
+        # delete a live worker's credential directory.
         store = getattr(self, "_token_store", None)
         if proc is None or not proc.is_alive():
-            # Nothing to cancel, but it may have died holding a store. Pinned, because this
-            # is the one liveness check that runs without the lock: a load may already be
-            # between allocating the next store and spawning the worker for it.
-            self._discard_token_store(only = store)
+            # Nothing to cancel, but it may have died holding a store. Only if no reload has
+            # swapped in a worker since we read: then this pair is stale and the store we
+            # read belongs to the live one. The next liveness check reaps whatever is left.
+            if self._proc is proc:
+                self._discard_token_store(only = store)
             return False
         logger.info(
             "Export cancel requested: terminating export subprocess (pid=%s)",
@@ -213,7 +216,8 @@ class ExportOrchestrator:
         # pulling the directory out from under it would both break its Hub calls and let it
         # recreate an untracked one. It is discarded by the next shutdown instead.
         if not proc.is_alive():
-            self._discard_token_store(only = store)
+            if self._proc is proc:
+                self._discard_token_store(only = store)
         else:
             logger.warning(
                 "Export subprocess survived cancellation; keeping its token store until it exits"
