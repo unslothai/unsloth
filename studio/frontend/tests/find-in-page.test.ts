@@ -2379,6 +2379,60 @@ test("the chain a cut leaves is followed past the seam, not only to it", () => {
   assert.equal(findMatches(index, "a", MAX_MATCHES).length > 0, true);
 });
 
+test("a CRLF is one grapheme, which the fast path has to know about", () => {
+  // The fast path rests on nothing below U+0300 joining, and CR before LF is the one thing there
+  // that does (GB3). I proved the rest by sweeping every code point under U+0300 and excluded the
+  // line breaks on the grounds that a collapsed newline is its own grapheme. In a `<pre>` it is
+  // not collapsed, the pair arrives intact, and all four characters the shortcut looks at are
+  // ASCII, so it answered without asking anyone.
+  const fence = el("PRE", [text("line\r\nnext")]);
+  withStyles(new Map([[fence, { whiteSpace: "pre" }]]), () => {
+    const index = buildTextIndex(fence);
+    assert.equal(index.segments[0].preserved, true);
+    assert.equal(index.text.includes("\r\n"), true);
+    // The feed alone is the back half of a grapheme, so it is not a match on its own.
+    assert.deepEqual(findMatches(index, "\n", 10), []);
+    assert.deepEqual(findMatches(index, "\nnext", 10), []);
+    // Asked for whole it is, and so is everything that was findable before.
+    assert.equal(findMatches(index, "\r\n", 10).length, 1);
+    assert.equal(findMatches(index, "\r\nnext", 10).length, 1);
+    assert.equal(findMatches(index, "next", 10).length, 1);
+  });
+  // A feed with no return in front of it is its own grapheme and still findable.
+  const alone = el("PRE", [text("line\nnext")]);
+  withStyles(new Map([[alone, { whiteSpace: "pre" }]]), () => {
+    assert.equal(findMatches(buildTextIndex(alone), "\n", 10).length, 1);
+  });
+});
+
+test("a node left out entirely still says whether the end was a boundary", () => {
+  // With one code unit of room left and a pair next, there is no room for the pair, so the whole
+  // node goes. That is not a reason to call the end unknown: the node is still there to be read,
+  // and its first code point answers it, exactly as the ceiling check above does. Assuming
+  // otherwise threw away the last match in the index.
+  const nodes = [];
+  for (
+    let at = 0;
+    at < MAX_INDEX_CHARS - 1 - MAX_NODE_CHARS;
+    at += MAX_NODE_CHARS
+  ) {
+    nodes.push(text("z".repeat(MAX_NODE_CHARS)));
+  }
+  const used = nodes.length * MAX_NODE_CHARS;
+  nodes.push(text(`${"z".repeat(MAX_INDEX_CHARS - 2 - used)}Q`));
+  nodes.push(text(`${String.fromCodePoint(0x1f600)}tail`));
+  const index = buildTextIndex(el("DIV", [el("P", nodes)]));
+  // One unit short of the ceiling, so the pair could not fit and the node was dropped whole.
+  assert.equal(index.text.length, MAX_INDEX_CHARS - 1);
+  assert.equal(index.truncated, true);
+  // The emoji begins its own grapheme, so what the index ends on is a boundary and stays findable.
+  assert.equal(findMatches(index, "Q", 10).length, 1);
+  // And when the next node does join, the end is still unknown.
+  const joining = [...nodes.slice(0, -1), text("́tail")];
+  const joined = buildTextIndex(el("DIV", [el("P", joining)]));
+  assert.deepEqual(findMatches(joined, "Q", 10), []);
+});
+
 test("a cut never falls between the halves of a pair", () => {
   // Keeping the leading half leaves a code unit that is not a character. It reads as a grapheme of
   // its own, so a match could end against it, inside what the page draws as one thing: a node

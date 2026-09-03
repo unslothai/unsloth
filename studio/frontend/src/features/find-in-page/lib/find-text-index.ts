@@ -465,7 +465,19 @@ export function buildTextIndex(
           take -= 1;
         if (take <= 0) {
           truncated = true;
-          if (!separated) unsafe.add(length);
+          // The whole of this node is being left out, and its first code point says whether the
+          // end reached so far is a boundary, exactly as at the ceiling above. Assuming it was
+          // not lost the last match in the index whenever the next thing along began its own
+          // grapheme, which one code unit of room and an astral character is enough to cause.
+          if (
+            !separated &&
+            reachesFromParts(
+              parts,
+              String.fromCodePoint(data.codePointAt(0) as number),
+            )
+          ) {
+            unsafe.add(length);
+          }
           full = true;
           return;
         }
@@ -680,6 +692,12 @@ function recentTail(parts: readonly string[]): string {
     tail = parts[at] + tail;
   }
   return tail;
+}
+
+/** Whether the text indexed so far runs on into `point`. Nothing was dropped between them, so the
+ *  kept tail answers it outright rather than through a clip's window. */
+function reachesFromParts(parts: readonly string[], point: string): boolean {
+  return reaches(clipContext(recentTail(parts)), point);
 }
 
 /** As much of the end of `dropped` as the junction can turn on: the run of things a rule chains
@@ -986,6 +1004,14 @@ function endSeekWindow(index: FindTextIndex): void {
   cost.since = 0;
 }
 
+/** The one thing below U+0300 that joins (GB3), and so the one exception to the fast path below.
+ *  A newline is its own grapheme everywhere the index collapses whitespace, which is everywhere
+ *  but a `<pre>`, and there the pair arrives intact and a search for the feed alone landed
+ *  between them. */
+function splitsCrlf(text: string, at: number): boolean {
+  return at > 0 && text.charCodeAt(at - 1) === 13 && text.charCodeAt(at) === 10;
+}
+
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
 
@@ -1036,6 +1062,8 @@ function alignsToGraphemes(
   // begin or end with one, so Latin prose pays four comparisons.
   if (
     !cut &&
+    !splitsCrlf(text, start) &&
+    !splitsCrlf(text, end) &&
     !(start > 0 && JOINS_GRAPHEME.test(text[start - 1])) &&
     !JOINS_GRAPHEME.test(text[start]) &&
     !JOINS_GRAPHEME.test(text[end - 1]) &&
