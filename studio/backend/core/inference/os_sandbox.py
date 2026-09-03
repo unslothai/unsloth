@@ -506,6 +506,7 @@ class LinuxBubblewrapBackend:
             "--die-with-parent",
             "--new-session",
             "--unshare-all",
+            "--unshare-user",
             "--disable-userns",
             "--cap-drop",
             "ALL",

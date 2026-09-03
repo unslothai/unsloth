@@ -193,6 +193,7 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     assert "--die-with-parent" in argv
     assert "--new-session" in argv
     assert "--unshare-all" in argv
+    assert "--unshare-user" in argv
     assert "--disable-userns" in argv
     assert "os.execvpe" in argv[argv.index("-c") + 1]
     assert argv[argv.index("--cap-drop") + 1] == "ALL"
