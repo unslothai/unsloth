@@ -646,7 +646,16 @@ def test_tauri_preflight_scrubs_studio_home_env():
 # The three storage_roots.py resolvers that CHOOSE a data root, as opposed to the ones that
 # join a subdirectory onto whatever they chose. Every environment variable read inside them
 # moves the desktop's databases, assets and caches, so every one has to be scrubbed.
-_ROOT_CHOOSING_RESOLVERS = ("unsloth_home", "portable_mode", "studio_root")
+# _env_unsloth_home is the env-reading half of unsloth_home once that grows an on-disk
+# fallback and has to be split to break the cycle with studio_root. Absent resolvers are
+# skipped rather than failed, so this holds for whichever spelling a branch carries, and
+# the union is what has to be non-empty.
+_ROOT_CHOOSING_RESOLVERS = (
+    "unsloth_home",
+    "_env_unsloth_home",
+    "portable_mode",
+    "studio_root",
+)
 
 
 def _root_moving_env_names() -> set[str]:
@@ -659,13 +668,17 @@ def _root_moving_env_names() -> set[str]:
         encoding = "utf-8"
     )
     names: set[str] = set()
+    seen = 0
     for resolver in _ROOT_CHOOSING_RESOLVERS:
-        start = source.index(f"\ndef {resolver}(")
+        marker = f"\ndef {resolver}("
+        if marker not in source:
+            continue
+        seen += 1
+        start = source.index(marker)
         end = source.index("\ndef ", start + 1)
-        body = source[start:end]
-        found = set(re.findall(r'os\.environ\.get\(\s*"([A-Z][A-Z0-9_]*)"', body))
-        assert found, f"storage_roots.{resolver} reads no environment variable any more"
-        names |= found
+        names |= set(re.findall(r'os\.environ\.get\(\s*"([A-Z][A-Z0-9_]*)"', source[start:end]))
+    assert seen, "none of the root-choosing resolvers exist under these names any more"
+    assert names, "the root-choosing resolvers read no environment variable any more"
     return names
 
 
