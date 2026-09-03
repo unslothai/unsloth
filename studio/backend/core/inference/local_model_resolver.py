@@ -157,6 +157,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         if (
             cache_repo_dir is None
+            and getattr(info, "source", None) == "hf_cache"
             and p.parent.name == "snapshots"
             and p.parent.parent.name.startswith("models--")
         ):
@@ -167,14 +168,22 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
                 load_dir = p
                 variants, _ = list_local_gguf_variants(str(load_dir))
             else:
-                variants, _has_vision, complete, load_dir = selected
+                selected_variants, _has_vision, complete, load_dir = selected
+                variants, _ = list_local_gguf_variants(str(load_dir))
                 if complete:
                     complete_keys = {str(quant).casefold() for quant in complete}
+                    complete_files = {
+                        str(variant.filename).casefold()
+                        for variant in selected_variants
+                        if getattr(variant, "filename", None)
+                        and getattr(variant, "quant", None)
+                        and str(variant.quant).casefold() in complete_keys
+                    }
                     variants = [
                         variant
                         for variant in variants
-                        if getattr(variant, "quant", None)
-                        and str(variant.quant).casefold() in complete_keys
+                        if getattr(variant, "filename", None)
+                        and str(variant.filename).casefold() in complete_files
                     ]
         else:
             load_dir = p

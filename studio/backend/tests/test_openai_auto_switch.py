@@ -1987,6 +1987,25 @@ def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
     assert entry.variants == ("Q4_K_M",)
 
 
+def test_selected_snapshot_preserves_local_variant_labels(tmp_path):
+    """Snapshot selection must not change persisted local variant identities."""
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Repo"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-small.gguf").write_bytes(b"small")
+    (snapshot / "model-large.gguf").write_bytes(b"larger")
+
+    entry = resolver._local_gguf_entry(
+        "org/Repo",
+        SimpleNamespace(id = "org/Repo", path = str(repo)),
+    )
+
+    assert entry is not None
+    assert set(entry.variants) == {"small", "large"}
+
+
 def test_model_dir_with_empty_snapshots_keeps_root_gguf(tmp_path):
     """A regular model dir is not an HF cache just because snapshots/ exists."""
     from types import SimpleNamespace
@@ -2043,6 +2062,8 @@ def _revision_pair(root, complete: bool):
     (old / "model-Q8_0.gguf").write_bytes(b"GGUF stub")
     name = "model-Q4_K_M.gguf" if complete else "model-Q4_K_M-00001-of-00003.gguf"
     (new / name).write_bytes(b"GGUF stub")
+    os.utime(old, (1_000, 1_000))
+    os.utime(new, (2_000, 2_000))
     return old, new
 
 
