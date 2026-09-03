@@ -131,8 +131,12 @@ sys.path.insert(0, {backend!r})
 import os, re
 from pathlib import Path
 src = Path({backend!r}, "main.py").read_text(encoding = "utf-8")
-start = src.index('if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:')
+# Anchored on the master-root lookup rather than the `if`, because the guard
+# reads _MASTER_ROOT and a slice starting at the `if` would not define it.
+start = src.index('from utils.paths.storage_roots import unsloth_home as _unsloth_home')
 end = src.index('# The studio bundles unsloth_zoo', start)
+if 'if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT' not in src[start:end]:
+    raise AssertionError("the extracted slice no longer contains the export guard")
 from utils.paths.storage_roots import studio_root as _studio_root
 _LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
 _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
@@ -183,3 +187,31 @@ def test_main_leaves_a_plain_custom_root_alone(tmp_path):
 
     assert result["exported"] == str(explicit / "llama.cpp")
     assert result["marked"] == [str(explicit / "llama.cpp")]
+
+
+def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
+    # A portable install pointed at the legacy Studio path owns llama.cpp beside
+    # it, at <root>/llama.cpp. Guarding on the legacy equality alone skipped the
+    # export, so a bare `uvicorn main:app` in a fresh shell left unsloth_zoo on
+    # ~/.unsloth/llama.cpp and never saw the installed runtime.
+    home = tmp_path / "home"
+    legacy = home / ".unsloth" / "studio"
+    legacy.mkdir(parents = True)
+    result = _main_probe(
+        {"HOME": str(home), "USERPROFILE": str(home),
+         "UNSLOTH_HOME": str(legacy), "UNSLOTH_STUDIO_HOME": str(legacy)}
+    )
+
+    assert result["exported"] == str(legacy / "llama.cpp")
+    assert result["marked"] == [str(legacy / "llama.cpp")]
+
+
+def test_main_still_exports_nothing_without_a_master_root(tmp_path):
+    # The other half: a plain legacy install has no master root, so the guard
+    # must stay closed rather than pinning the default it already resolves to.
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    result = _main_probe({"HOME": str(home), "USERPROFILE": str(home)})
+
+    assert result["exported"] is None
+    assert result["marked"] == []
