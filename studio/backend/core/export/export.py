@@ -90,7 +90,9 @@ def _looks_like_remote_adapter(checkpoint_path: str, token: HfTokenArg) -> bool:
 
 
 def _remote_load_targets(
-    checkpoint_path: str, token: HfTokenArg = False, offline: bool = False
+    checkpoint_path: str,
+    token: HfTokenArg = False,
+    offline: bool = False,
 ) -> Iterator[Tuple[str, Optional[str]]]:
     """Every Hugging Face repository a load of *checkpoint_path* will reach, named first.
 
@@ -663,9 +665,7 @@ class ExportBackend:
                     for target, revision in _remote_load_targets(
                         checkpoint_path, token, local_files_only
                     ):
-                        allowed, why = _access_allowed(
-                            target, local_files_only, token, revision
-                        )
+                        allowed, why = _access_allowed(target, local_files_only, token, revision)
                         if not allowed:
                             return False, why
                 except _BaseUnresolved:

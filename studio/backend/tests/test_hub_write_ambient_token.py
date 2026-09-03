@@ -1544,9 +1544,9 @@ def test_an_air_gapped_load_of_a_plain_cached_model_still_works(monkeypatch):
     )
 
     # Offline: no adapter probe, no refusal, just the named target.
-    assert list(
-        export_backend_module._remote_load_targets("owner/plain", "hf_caller", True)
-    ) == [("owner/plain", None)]
+    assert list(export_backend_module._remote_load_targets("owner/plain", "hf_caller", True)) == [
+        ("owner/plain", None)
+    ]
 
     reached = {}
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
