@@ -131,9 +131,17 @@ class ExportOrchestrator:
         return self._export_active
 
     def is_worker_alive(self) -> bool:
-        """True while the persistent export subprocess is running (op or idle)."""
+        """True while the persistent export subprocess is running (op or idle).
+
+        Reaps on the way out, like the internal check: utils/transformers_version.py calls
+        this one directly, so a worker that died while idle would otherwise keep its private
+        token store until something else happened to look.
+        """
         proc = self._proc
-        return proc is not None and proc.is_alive()
+        if proc is not None and proc.is_alive():
+            return True
+        self._reap_dead_worker()
+        return False
 
     def was_cancelled(self) -> bool:
         """True if the in-flight (or most recent) run was cancelled by the user."""
@@ -367,6 +375,7 @@ class ExportOrchestrator:
         Pinning to ``None`` is meaningful, and means the cancelled worker had no store, so
         there is nothing of ours to remove; that is why the default is a separate sentinel.
         """
+        import os
         import shutil
 
         store = getattr(self, "_token_store", None)
@@ -376,6 +385,12 @@ class ExportOrchestrator:
             return
         if store:
             shutil.rmtree(store, ignore_errors = True)
+            if os.path.exists(store):
+                # ignore_errors hid the failure (a locked file on Windows, say). Keep the
+                # pointer so the next shutdown or reap retries rather than losing the path
+                # to a directory that may hold a caller's token.
+                logger.warning("Could not remove the export token store %s; keeping it", store)
+                return
         # Compare and clear: rmtree can block, and a reload may have installed a replacement
         # while it ran. Nulling unconditionally would orphan that live worker's store.
         # getattr: the attribute is created lazily, so a never-loaded orchestrator reaching

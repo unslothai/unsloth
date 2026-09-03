@@ -681,11 +681,15 @@ def test_offline_anonymous_load_will_not_read_the_operators_cache(
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: offline)
     monkeypatch.setattr(export_backend_module, "detect_audio_type", _fake_detect)
+    monkeypatch.setattr(export_backend_module, "_looks_like_remote_adapter", lambda p, t: False)
     # Isolate the offline branch; the online authorization check has its own tests.
     monkeypatch.setattr(
         export_backend_module,
-        "_anonymous_access_allowed",
-        lambda repo, off, revision = None: (not off, "refused"),
+        "_access_allowed",
+        lambda repo, off, tok = False, revision = None: (
+            (not off) or tok not in (False, None),
+            "refused",
+        ),
     )
 
     backend = export_backend_module.ExportBackend()
@@ -727,9 +731,10 @@ def test_weight_loader_never_gets_none_for_an_anonymous_caller(monkeypatch, hf_t
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
     monkeypatch.setattr(
         export_backend_module,
-        "_anonymous_access_allowed",
-        lambda repo, off, revision = None: (True, ""),
+        "_access_allowed",
+        lambda repo, off, tok = False, revision = None: (True, ""),
     )
+    monkeypatch.setattr(export_backend_module, "_looks_like_remote_adapter", lambda p, t: False)
     monkeypatch.setattr(
         export_backend_module,
         "detect_audio_type",
@@ -957,41 +962,34 @@ def test_cancelling_an_export_discards_the_token_store():
 
 
 @pytest.mark.parametrize(
-    "gated,private,raises,allowed",
+    "denies,token,allowed",
     [
-        (False, False, False, True),
-        ("manual", False, False, False),
-        (False, True, False, False),
-        (False, False, True, False),
+        (False, False, True),          # public, anonymous
+        (True, False, False),          # gated or private, anonymous
+        (False, "hf_caller", True),    # the caller's token can read it
+        (True, "hf_caller", False),    # a token is not access: it lacks the grant
     ],
 )
-def test_anonymous_access_check_reads_the_gated_flag(monkeypatch, gated, private, raises, allowed):
-    """A gated repo's metadata is public and only its files are held back, so model_info
-    succeeding is not access."""
+def test_access_check_asks_whether_this_credential_can_read_the_repo(
+    monkeypatch, denies, token, allowed
+):
+    """auth_check is the real question. model_info succeeding is not access: a gated repo's
+    metadata is public, and a token that lacks the grant still resolves it."""
     from core.export import export as export_backend_module
 
-    class _Info:
-        pass
+    asked = {}
 
-    info = _Info()
-    info.gated = gated
-    info.private = private
+    def _auth_check(repo_id, token = None, **kw):
+        asked["repo"] = repo_id
+        asked["token"] = token
+        if denies:
+            raise RuntimeError("GatedRepoError")
 
-    class _Api:
-        def model_info(
-            self,
-            repo_id,
-            revision = None,
-            token = None,
-        ):
-            assert token is False, "the check must ask anonymously"
-            if raises:
-                raise RuntimeError("401")
-            return info
-
-    monkeypatch.setattr(export_backend_module, "HfApi", _Api)
-    ok, _why = export_backend_module._anonymous_access_allowed("owner/repo", offline = False)
+    monkeypatch.setattr("huggingface_hub.auth_check", _auth_check)
+    ok, _why = export_backend_module._access_allowed("owner/repo", offline = False, token = token)
     assert ok is allowed
+    assert asked["repo"] == "owner/repo"
+    assert asked["token"] == token, "the caller's own credential is what gets verified"
 
 
 def test_anonymous_access_check_refuses_when_it_cannot_ask(monkeypatch):
@@ -1001,7 +999,7 @@ def test_anonymous_access_check_refuses_when_it_cannot_ask(monkeypatch):
         pytest.fail("offline must not reach the Hub")
 
     monkeypatch.setattr(export_backend_module, "HfApi", _boom)
-    ok, why = export_backend_module._anonymous_access_allowed("owner/repo", offline = True)
+    ok, why = export_backend_module._access_allowed("owner/repo", offline = True)
     assert ok is False
     assert "Hub is unreachable" in why
 
@@ -1016,22 +1014,19 @@ def test_a_remote_adapters_base_is_authorized_too(monkeypatch):
         "get_base_model_from_lora_identifier",
         lambda path, token: "owner/private-base",
     )
-    assert export_backend_module._remote_load_targets("owner/public-adapter") == [
+    assert list(export_backend_module._remote_load_targets("owner/public-adapter", False)) == [
         ("owner/public-adapter", None),
         ("owner/private-base", None),
     ]
 
     checked = []
 
-    def _check(
-        repo,
-        offline,
-        revision = None,
-    ):
+    def _check(repo, offline, tok = False, revision = None):
         checked.append(repo)
         return (repo != "owner/private-base", "refused")
 
-    monkeypatch.setattr(export_backend_module, "_anonymous_access_allowed", _check)
+    monkeypatch.setattr(export_backend_module, "_access_allowed", _check)
+    monkeypatch.setattr(export_backend_module, "_looks_like_remote_adapter", lambda p, t: False)
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
     monkeypatch.setattr(
@@ -1169,19 +1164,19 @@ def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_
         "meta-llama/Llama-3.1-8B-Instruct",
         "abc123",
     )
-    assert export_backend_module._remote_load_targets(str(snap)) == [
+    assert list(export_backend_module._remote_load_targets(str(snap), False)) == [
         ("meta-llama/Llama-3.1-8B-Instruct", "abc123")
     ]
     # A plain training checkpoint with no adapter base has nothing to authorize.
     plain = tmp_path / "outputs" / "my-run"
     plain.mkdir(parents = True)
-    assert export_backend_module._remote_load_targets(str(plain)) == []
+    assert list(export_backend_module._remote_load_targets(str(plain), False)) == []
 
     checked = []
     monkeypatch.setattr(
         export_backend_module,
-        "_anonymous_access_allowed",
-        lambda repo, offline, revision = None: (checked.append(repo), (False, "refused"))[1],
+        "_access_allowed",
+        lambda repo, offline, tok = False, revision = None: (checked.append(repo), (False, "refused"))[1],
     )
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
@@ -1233,15 +1228,15 @@ def test_a_local_adapters_remote_base_is_authorized(monkeypatch, tmp_path):
     )
     (tmp_path / "adapter_model.safetensors").touch()
 
-    assert export_backend_module._remote_load_targets(str(tmp_path)) == [
+    assert list(export_backend_module._remote_load_targets(str(tmp_path), False)) == [
         ("operator/private-base", None)
     ]
 
     checked = []
     monkeypatch.setattr(
         export_backend_module,
-        "_anonymous_access_allowed",
-        lambda repo, offline, revision = None: (checked.append(repo), (False, "refused"))[1],
+        "_access_allowed",
+        lambda repo, offline, tok = False, revision = None: (checked.append(repo), (False, "refused"))[1],
     )
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
@@ -1398,7 +1393,8 @@ def test_the_cached_revision_is_what_gets_authorized(monkeypatch):
             return _Info()
 
     monkeypatch.setattr(export_backend_module, "HfApi", _Api)
-    ok, _why = export_backend_module._anonymous_access_allowed(
+    monkeypatch.setattr("huggingface_hub.auth_check", lambda repo_id, token = None, **kw: None)
+    ok, _why = export_backend_module._access_allowed(
         "owner/repo", offline = False, revision = "deadbeef"
     )
     assert ok is True
@@ -1435,3 +1431,85 @@ def test_discarding_a_store_does_not_orphan_a_replacement_installed_mid_removal(
     finally:
         real_rmtree(replacement, ignore_errors = True)
         o._token_store = None
+
+
+def test_a_store_that_could_not_be_removed_is_kept_for_the_next_attempt(monkeypatch):
+    """rmtree(ignore_errors=True) hides a locked file on Windows; forgetting the path then
+    strands whatever token is in it."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+    with open(os.path.join(store, "token"), "w") as fh:
+        fh.write("hf_caller_own_token")
+
+    monkeypatch.setattr("shutil.rmtree", lambda *a, **kw: None)  # the silent-failure case
+    o._discard_token_store()
+    assert o._token_store == store, "an unremoved store must stay tracked"
+
+    monkeypatch.undo()
+    o._discard_token_store()
+    assert o._token_store is None and not os.path.exists(store)
+
+
+def test_the_public_liveness_method_reaps_too():
+    """utils/transformers_version.py calls is_worker_alive() directly for the sidecar repair
+    check, so it has to reap as well."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+
+    class _Dead:
+        def is_alive(self):
+            return False
+
+    o._proc = _Dead()
+    assert o.is_worker_alive() is False
+    assert o._proc is None
+    assert not os.path.exists(store)
+
+
+def test_an_unresolvable_remote_adapter_base_refuses_the_load(monkeypatch):
+    """The resolver returns None for a transient failure as well as for a plain model repo,
+    and the base is what a public adapter would hide a private repo behind."""
+    from core.export import export as export_backend_module
+    from utils.models import model_config
+
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda path, token: None
+    )
+    monkeypatch.setattr(export_backend_module, "_looks_like_remote_adapter", lambda p, t: True)
+
+    with pytest.raises(export_backend_module._BaseUnresolved):
+        list(export_backend_module._remote_load_targets("owner/adapter", False))
+
+    # A plain model repo resolves to None too, but does not look like an adapter.
+    monkeypatch.setattr(export_backend_module, "_looks_like_remote_adapter", lambda p, t: False)
+    assert list(export_backend_module._remote_load_targets("owner/plain", False)) == [
+        ("owner/plain", None)
+    ]
+
+    # And the load surfaces it as a refusal rather than an exception.
+    monkeypatch.setattr(export_backend_module, "_looks_like_remote_adapter", lambda p, t: True)
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
+    # The adapter itself is readable; it is only its base that cannot be resolved.
+    monkeypatch.setattr(
+        export_backend_module,
+        "_access_allowed",
+        lambda repo, off, tok = False, revision = None: (True, ""),
+    )
+    monkeypatch.setattr(
+        export_backend_module,
+        "detect_audio_type",
+        lambda *a, **kw: pytest.fail("must refuse before touching the cache"),
+    )
+    backend = export_backend_module.ExportBackend()
+    ok, message = backend.load_checkpoint(checkpoint_path = "owner/adapter", hf_token = False)
+    assert ok is False
+    assert "Could not determine the base model" in message
