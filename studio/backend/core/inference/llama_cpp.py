@@ -1496,10 +1496,16 @@ def _archive_branch_chain(
 
 
 def _archive_as_wire(messages: Optional[list[dict]]) -> list[dict]:
-    """Project persisted rows and wire messages into boundary-counting wire units."""
+    """Project persisted rows and wire messages into boundary-counting wire units.
+
+    Unsanitised: `_branch_boundary_anchor` writes the anchor off the request itself, so a
+    projection that rewrote assistant text here would look for something nobody wrote. A
+    client sending the tokens raw, which the Studio one never does, then found no anchor
+    and replayed the stale count instead of rebasing it.
+    """
     try:
         from core.rag import conversation_archive
-        return conversation_archive._as_wire(list(messages or ()))
+        return conversation_archive._as_wire(list(messages or ()), sanitise_assistant = False)
     except Exception:
         return list(messages or ())
 
@@ -27575,18 +27581,38 @@ class LlamaCppBackend:
                 yield response, first_token_deadline
 
     @staticmethod
-    def _sse_event_has_generated_output(event: str) -> bool:
-        """Return true when a complete SSE event carries model-generated output."""
+    def _sse_event_payload(event: str) -> Optional[dict]:
+        """Decode one complete SSE event's ``data:`` payload, or None."""
         payload_lines = [
             line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
         ]
         if not payload_lines:
-            return False
+            return None
         try:
             data = json.loads("\n".join(payload_lines))
         except (TypeError, json.JSONDecodeError):
-            return False
-        if not isinstance(data, dict):
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _sse_event_prefill_progress(event: str) -> Optional[float]:
+        """Return the reported processed prompt tokens, if present."""
+        data = LlamaCppBackend._sse_event_payload(event)
+        if data is None:
+            return None
+        progress = data.get("prompt_progress")
+        if not isinstance(progress, dict):
+            return None
+        try:
+            return float(progress.get("processed"))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _sse_event_has_generated_output(event: str) -> bool:
+        """Return true when a complete SSE event carries model-generated output."""
+        data = LlamaCppBackend._sse_event_payload(event)
+        if data is None:
             return False
         if data.get("type") == "diffusion_frame":
             return True
@@ -27618,6 +27644,7 @@ class LlamaCppBackend:
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
+        last_prefill_progress: Optional[float] = None
         prefill_sse_buffer = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -27640,6 +27667,13 @@ class LlamaCppBackend:
                             starts_output = True
                             prefill_sse_buffer = ""
                             break
+                        # Renew only on increasing progress so repeated events still time out.
+                        processed = LlamaCppBackend._sse_event_prefill_progress(event)
+                        if processed is not None and (
+                            last_prefill_progress is None or processed > last_prefill_progress
+                        ):
+                            last_prefill_progress = processed
+                            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 if chunk and starts_output:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
@@ -28050,8 +28084,9 @@ class LlamaCppBackend:
         retry_max_tokens = max_tokens
         retry_context_overflow = context_overflow
         retry_preflight_context_length = None
+        # Progress events let advancing prefills renew the first-token deadline.
+        payload["return_progress"] = True
         if perf_callback is not None:
-            payload["return_progress"] = True
             payload["timings_per_token"] = True
         if logit_bias:
             payload["logit_bias"] = logit_bias
@@ -29119,8 +29154,9 @@ class LlamaCppBackend:
                 "frequency_penalty": frequency_penalty,
             }
 
+            # Progress events feed the first-token deadline; timings stay opt-in.
+            payload["return_progress"] = True
             if perf_callback is not None:
-                payload["return_progress"] = True
                 payload["timings_per_token"] = True
             if logit_bias:
                 payload["logit_bias"] = logit_bias
@@ -31624,8 +31660,9 @@ class LlamaCppBackend:
         _apply_seeded_llama_request(stream_payload, seed)
         stream_payload["stream_options"] = {"include_usage": True}
 
+        # Progress events feed the first-token deadline; timings stay opt-in.
+        stream_payload["return_progress"] = True
         if perf_callback is not None:
-            stream_payload["return_progress"] = True
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []
@@ -32514,7 +32551,10 @@ class LlamaCppBackend:
         if LlamaCppBackend._codec_mgr is None:
             LlamaCppBackend._codec_mgr = AudioCodecManager()
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # A second allocation: on CUDA for a zero-offload server it would hold VRAM the
+        # load is classified as not holding, which is what lets the route skip
+        # arbitration and survive training.
+        device = "cuda" if torch.cuda.is_available() and not self.holds_no_vram else "cpu"
         model_repo_path = None
 
         # BiCodec needs a repo with BiCodec/ weights -- download canonical SparkTTS

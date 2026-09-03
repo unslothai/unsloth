@@ -503,7 +503,7 @@ def maybe_auto_start_lan_access(app) -> bool:
     try:
         start_lan_access(app)
     except Exception as exc:
-        # an optional preference must never take the whole server down
+        # an optional preference must never take the whole server down with it
         logger.info("LAN access auto-start skipped: %s", exc)
         return False
     return True
