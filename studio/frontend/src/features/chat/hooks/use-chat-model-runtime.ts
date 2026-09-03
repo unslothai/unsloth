@@ -1783,12 +1783,12 @@ export function useChatModelRuntime() {
               mlx_kv_bits: loadMlxKvBits ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
-              // The control lives in the GGUF advanced settings, so it holds no
-              // count a non-GGUF load could have meant. That load takes the
-              // width through the API instead.
-              n_parallel: isGguf ? loadNParallel : null,
-              // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
-              // so neither a transformers load nor a diffusion GGUF carries them.
+              n_parallel: loadNParallel,
+              // Sent only once known, and [] is the explicit "launch with none":
+              // the flags are llama-server's, so a transformers load never carries
+              // them, and neither does a diffusion GGUF: that one is GGUF-shaped but
+              // runs through the visual runner, which builds its command without
+              // these, so sending them would record arguments the process never got.
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
                 ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                 : {}),
@@ -1898,13 +1898,9 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed. Neither this form nor diffusion
-            // sends a count, so a click-time count on either would mint a phantom
-            // override a saved preset carries onto a GGUF. What a non-GGUF load
-            // committed through the API is read back from the response instead.
             const committedSlots =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNParallel ?? null)
                 : null;
             // same rule for the batch sizes: gguf-only llama-server flags
