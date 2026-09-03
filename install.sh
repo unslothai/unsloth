@@ -6674,7 +6674,12 @@ if [ "$_PORTABLE_MODE" = true ]; then
     echo ""
     substep "portable install; everything lives in:"
     substep "  $UNSLOTH_ROOT"
-    substep "launch it with $_LOCAL_BIN/unsloth studio"
+    # Single-quoted like the removal command below and the deferred launch hint further
+    # down, both of which quote this same path: an explicitly supported root holding a
+    # space or a glob character otherwise prints a command the shell splits or expands,
+    # so the two launch instructions in one summary would contradict each other.
+    _launch_shim=$(printf '%s' "$_LOCAL_BIN/unsloth" | sed "s/'/'\\\\''/g")
+    substep "launch it with '$_launch_shim' studio"
     # Nothing was written outside the root, so removing the tree removes the install.
     _uninstall_root=$(printf '%s' "$UNSLOTH_ROOT" | sed "s/'/'\\\\''/g")
     substep "remove it with:"
