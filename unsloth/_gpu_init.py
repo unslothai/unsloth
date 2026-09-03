@@ -185,10 +185,13 @@ def _reraise_device_type_error_with_gpu_hint(exception):
             f"Note: CUDA_VISIBLE_DEVICES is set to {mask!r}. If that mask selects no "
             f"installed GPU, it alone explains this and no torch reinstall will help.\n"
         )
-    # sys.executable, all three wheels, no concrete cuXXX: install.sh builds its own Studio
-    # venv and would leave THIS interpreter broken, a lone torch upgrade leaves a stale
-    # torchvision that torchvision_compatibility_check() rejects, and the newest CUDA family
-    # drops pre-Turing GPUs (install.sh `_cap_cuda_family_for_pre_turing`).
+    # The documented install rather than a hand-rolled pip line, which kept being wrong in a
+    # new way each round: it left torchvision, torchaudio and xformers built for the old
+    # torch, `--upgrade` could cross unsloth's supported ceiling, a hardcoded cuXXX drops
+    # pre-Turing GPUs, and an interpolated sys.executable breaks on a path with a space.
+    # `--torch-backend=auto` reads the installed driver and picks the index (uv docs,
+    # "Using uv with PyTorch"); unsloth's own metadata bounds the versions. install.sh is
+    # NOT the answer here: it builds its own Studio venv and leaves this interpreter broken.
     raise NotImplementedError(
         f"Unsloth: an NVIDIA GPU ({gpu_name}) is present -- nvidia-smi sees it -- but this "
         f"PyTorch build cannot use it (torch.cuda.is_available() is False).\n"
@@ -196,10 +199,11 @@ def _reraise_device_type_error_with_gpu_hint(exception):
         f"or platform, which is common on DGX Spark GB10 and other aarch64 hosts.\n"
         f"PyTorch was compiled with CUDA: {torch_cuda_build}.\n"
         f"{mask_note}"
-        f"Fix: replace torch, torchvision and torchaudio together in this environment:\n"
-        f"    {sys.executable} -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cuXXX\n"
-        f"choosing cuXXX at https://pytorch.org/get-started/locally/ -- the newest family is "
-        f"not always the right one, since recent cu128/cu130 wheels drop pre-Turing GPUs."
+        f"Fix: reinstall torch in the environment that raised this ({sys.executable}). "
+        f"Unsloth's documented install picks the CUDA build from your driver and repairs "
+        f"torchvision, torchaudio and xformers with it:\n"
+        f"    uv pip install --reinstall unsloth --torch-backend=auto\n"
+        f"Setup and non-uv instructions: https://github.com/unslothai/unsloth#-install"
     ) from exception
 
 

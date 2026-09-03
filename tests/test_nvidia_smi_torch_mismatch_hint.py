@@ -9,13 +9,16 @@
   `_cvd_hides_nvidia`). Other masks can resolve to nothing too, so the message names them.
 - No answer from nvidia-smi: the probe returns None, so the re-raise happens outside the
   handler and no probe traceback lands ahead of the real error.
-- The printed command, which must replace all three wheels and pick no concrete cuXXX.
+- The printed command, which points at the documented install instead of a hand-rolled
+  pip line that kept leaving one of torchvision, torchaudio, xformers or the version
+  ceiling wrong.
 """
 
 from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -85,21 +88,23 @@ def test_generic_failure_gets_the_reinstall_hint(helper, monkeypatch, message):
     assert excinfo.value.__cause__ is original
 
 
-def test_hint_repairs_the_whole_torch_trio(helper, monkeypatch):
+def test_hint_points_at_the_documented_install(helper, monkeypatch):
+    """A hand-rolled pip line was wrong in a new way every round. The documented install
+    resolves the whole set from the driver, so the message carries no versions, no CUDA
+    family and no interpolated path inside the command."""
     _smi(monkeypatch)
 
     with pytest.raises(NotImplementedError) as excinfo:
         helper(NotImplementedError(_NO_ACCELERATOR))
 
-    command = next(line for line in str(excinfo.value).splitlines() if "pip install" in line)
-    assert "torchvision" in command and "torchaudio" in command
-    # This interpreter, not install.sh: that builds its own Studio venv under
-    # $STUDIO_HOME and would leave the environment that raised the error untouched.
-    assert command.strip().startswith(f"{sys.executable} -m pip install")
-    assert "install.sh" not in str(excinfo.value)
-    # No concrete family: cu128/cu130 have no kernels for pre-Turing cards.
-    assert "/cuXXX" in command
-    assert "cu126" not in command and "cu128" not in command and "cu130" not in command
+    message = str(excinfo.value)
+    command = next(line for line in message.splitlines() if "pip install" in line).strip()
+    assert command == "uv pip install --reinstall unsloth --torch-backend=auto"
+    # install.sh builds its own Studio venv and would leave this interpreter broken, so the
+    # message names the interpreter instead, as prose the shell never has to quote.
+    assert "install.sh" not in message
+    assert sys.executable in message and sys.executable not in command
+    assert not re.search(r"cu\d{3}|torch[<>=]", command)
 
 
 def test_rocm_advice_passes_through_without_probing(helper, monkeypatch):
