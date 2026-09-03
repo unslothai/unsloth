@@ -22,9 +22,10 @@ export const BUDGET = {
   // Raised for the audio placement control: same build both sides, merge base
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  // Find in page is carried eagerly rather than split behind `lazy`: the shell prevents the chord's
-  // default before the chunk would exist, so an early press gets no native find and no bar either,
-  // and idle warming never runs on Safari, which keeps requestIdleCallback behind a flag.
+  // Find in page is carried eagerly rather than split behind `lazy`, since the shell prevents the
+  // chord's default before the chunk would exist and idle warming never runs on Safari, which
+  // keeps requestIdleCallback behind a flag. It fits inside the ceiling above with 6.0 KB spare,
+  // so it does not raise it.
   transferBytes: 1_620_000,
   rawBytes: 5_500_000,
 };
