@@ -214,6 +214,19 @@ def _portable_master_root() -> Optional[Path]:
     return _portable_marker_root()
 
 
+def _env_unset_or_blank(name: str) -> bool:
+    """Whether *name* is missing, empty, or whitespace-only.
+
+    The same predicate install.sh applies through _trim_ws and storage_roots'
+    _setup_cache_env applies to every cache default, so all three agree on what
+    counts as already set. It matters here because a whitespace-only value is a
+    RELATIVE path: uv, npm and pip would resolve " " against the working
+    directory and write outside the portable root, which is the exact escape
+    this recovery exists to prevent.
+    """
+    return not (os.environ.get(name) or "").strip()
+
+
 _PORTABLE_CONF_EXPORT = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
@@ -265,9 +278,11 @@ def _ensure_studio_env_exported() -> None:
     # a plain one, which must keep exporting nothing.
     if not _STUDIO_HOME_IS_CUSTOM and _portable_marker_root() is None:
         return
-    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
-    # suppress the inferred custom root.
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+    # Blank-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
+    # suppress the inferred custom root. _resolve_studio_home already ignored
+    # such a value, so keeping it here would export a root the CLI itself does
+    # not use.
+    if _env_unset_or_blank("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     # When override == legacy default, llama.cpp stays at ~/.unsloth/llama.cpp.
     try:
@@ -281,18 +296,20 @@ def _ensure_studio_env_exported() -> None:
     _master = _portable_master_root()
     if _master is not None:
         _llama_dir = _master / "llama.cpp"
-        if not os.environ.get("UNSLOTH_HOME"):
+        # _portable_master_root() already discarded a whitespace-only UNSLOTH_HOME,
+        # so test it the same way rather than preserving what it ignored.
+        if _env_unset_or_blank("UNSLOTH_HOME"):
             os.environ["UNSLOTH_HOME"] = str(_master)
         # Without these, an activated-venv `unsloth studio update` hands setup.sh a
         # bare environment and uv/npm repopulate ~/.cache and ~/.local/bin.
         for _name, _value in _portable_root_env(_master).items():
-            if not os.environ.get(_name):
+            if _env_unset_or_blank(_name):
                 os.environ[_name] = _value
     elif _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+    if _env_unset_or_blank("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
 
