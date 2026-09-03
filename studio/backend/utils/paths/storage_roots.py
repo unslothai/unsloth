@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import ntpath
 import os
@@ -597,6 +598,32 @@ def _data_designer_defaults(root: Path) -> dict[str, str]:
     return pinned
 
 
+def _torch_runtime_tag() -> str:
+    """Name the extension cache after the runtime that builds into it.
+
+    torch.utils.cpp_extension._get_build_directory appends a
+    ``py<ver>_<accelerator>`` folder to the DEFAULT root only, never to a
+    TORCH_EXTENSIONS_DIR we supply, so pinning a flat path drops the isolation
+    that keeps a py313/cu128 build from being loaded by a py312/cu126 one.
+    torch/version.py is generated, imports nothing, and carries the same build
+    identity torch.version.cuda is read from, so parse it rather than importing
+    torch on the startup path.
+    """
+    tag = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
+    try:
+        origin = getattr(importlib.util.find_spec("torch"), "origin", None)
+        if origin:
+            text = (Path(origin).parent / "version.py").read_text(encoding = "utf-8")
+            found = re.search(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", text, re.MULTILINE)
+            if found:
+                tag += "_" + re.sub(r"[^A-Za-z0-9.]+", "-", found.group(1))
+    except (ImportError, OSError, ValueError, AttributeError):
+        # No torch installed yet, or a half-built source tree. The interpreter
+        # tag alone still isolates more than the flat path it replaces.
+        pass
+    return tag
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -620,7 +647,10 @@ def _setup_cache_env() -> None:
         # torch.hub checkpoints) stays where the other tools look, except in
         # portable mode.
         "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
-        "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions"),
+        # Keep torch's ABI-isolation folder: it only inserts one when
+        # TORCH_EXTENSIONS_DIR is unset, so a flat pin would let two runtimes
+        # sharing this root overwrite and import each other's .so.
+        "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions" / _torch_runtime_tag()),
         # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
         "CUDA_CACHE_PATH": str(root / "cuda"),
         "NUMBA_CACHE_DIR": str(root / "numba"),

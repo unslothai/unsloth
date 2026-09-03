@@ -588,3 +588,73 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     assert result["rc"] == str(config / "matplotlibrc")
     assert result["dpi"] == 222.0
     assert result["style"] is True
+
+
+def _fake_torch_on_path(tmp_path, label, version):
+    """A torch that has a version.py and explodes if anything imports it."""
+    pkg = tmp_path / label / "torch"
+    pkg.mkdir(parents = True)
+    (pkg / "__init__.py").write_text("raise AssertionError('torch was imported')\n")
+    (pkg / "version.py").write_text(f"__version__ = {version!r}\ncuda = None\n")
+    return str(tmp_path / label)
+
+
+@contextlib.contextmanager
+def _only_torch(entry):
+    saved_path = list(sys.path)
+    saved_module = sys.modules.pop("torch", None)
+    sys.path.insert(0, entry)
+    importlib.invalidate_caches()
+    try:
+        yield
+    finally:
+        sys.path[:] = saved_path
+        if saved_module is not None:
+            sys.modules["torch"] = saved_module
+        importlib.invalidate_caches()
+
+
+def test_torch_extension_cache_keeps_an_abi_folder(tmp_path):
+    # torch appends py<ver>_<accelerator> to its DEFAULT root only, so pinning
+    # TORCH_EXTENSIONS_DIR has to carry that isolation itself.
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    pinned = Path(os.environ["TORCH_EXTENSIONS_DIR"])
+    assert str(pinned).startswith(str(tmp_path / "studio"))
+    assert pinned.parent.name == "torch-extensions"
+    assert pinned.name != "torch-extensions", "extension cache is shared across runtimes"
+    assert pinned.name.startswith(f"py{sys.version_info.major}{sys.version_info.minor}")
+
+
+def test_torch_extension_cache_separates_incompatible_builds(tmp_path):
+    sr = _load_storage_roots()
+
+    tags = []
+    for label, version in (("a", "2.9.1+cu128"), ("b", "2.9.1+cu126")):
+        with _only_torch(_fake_torch_on_path(tmp_path, label, version)):
+            tags.append(sr._torch_runtime_tag())
+
+    assert tags[0] != tags[1], f"two torch builds shared one extension dir: {tags[0]}"
+    assert "cu128" in tags[0] and "cu126" in tags[1]
+    # Path-safe: no '+' or other separators survive into the directory name.
+    assert all(part.replace(".", "").replace("-", "").replace("_", "").isalnum() for part in tags)
+
+
+def test_torch_extension_tag_survives_a_missing_torch(tmp_path):
+    # First launch, before the venv has torch: still isolated by interpreter.
+    sr = _load_storage_roots()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    with _only_torch(str(empty)):
+        saved = list(sys.path)
+        try:
+            sys.path[:] = [str(empty)]
+            tag = sr._torch_runtime_tag()
+        finally:
+            sys.path[:] = saved
+
+    abi = getattr(sys, "abiflags", "")
+    assert tag == f"py{sys.version_info.major}{sys.version_info.minor}{abi}"
