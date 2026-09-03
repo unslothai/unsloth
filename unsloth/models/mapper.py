@@ -94,10 +94,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llama-2-7b-chat",
         "meta-llama/Llama-2-7b-chat-hf",
     ),
-    "unsloth/llama-2-7b-chat-bnb-4bit" : (
-        "unsloth/llama-2-7b-chat",
-        "meta-llama/Llama-2-7b-chat-hf",
-    ),
     "unsloth/Mixtral-8x7B-v0.1-unsloth-bnb-4bit" : (
         "unsloth/Mixtral-8x7B-v0.1",
         "mistralai/Mixtral-8x7B-v0.1",
@@ -1384,6 +1380,11 @@ __INT_TO_FLOAT_MAPPER = \
     ),
     "unsloth/Kimi-K2-Instruct-BF16" : (
         "unsloth/Kimi-K2-Instruct",
+    ),
+    "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit" : (
+        "unsloth/Muse-Glimmer-30B",
+        "meta-models/Muse-Glimmer-30B",
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
     ),
 }
 

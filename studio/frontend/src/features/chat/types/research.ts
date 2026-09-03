@@ -11,7 +11,13 @@ export type ResearchRunStatus =
   | "completed"
   | "failed";
 
-export type ResearchPhase = "planning" | "decision" | "synthesis" | "unknown";
+export type ResearchPhase =
+  | "planning"
+  | "decision"
+  | "synthesis_audit"
+  | "synthesis"
+  | "synthesis_recovery"
+  | "unknown";
 export type ResearchAction = "search" | "fetch";
 
 export interface ResearchPlanStep {
@@ -82,6 +88,8 @@ export interface ResearchBudgets {
   maxSources: number;
   modelTimeoutSeconds: number;
   toolTimeoutSeconds: number;
+  // Optional: runs created before this budget existed do not carry it.
+  firstOutputTimeoutSeconds?: number;
 }
 
 export interface ResearchWebsitePolicy {
@@ -137,6 +145,9 @@ export type ResearchEventType =
   | "run.started"
   | "plan.ready"
   | "run.approved"
+  | "phase.started"
+  | "phase.progress"
+  | "phase.ended"
   | "reasoning.updated"
   | "step.started"
   | "source.added"
@@ -157,6 +168,7 @@ export interface ResearchEventData {
   resumed?: boolean;
   phase?: ResearchPhase;
   callId?: string;
+  label?: string;
   reasoningDelta?: string;
   reasoningOffset?: number;
   position?: number;

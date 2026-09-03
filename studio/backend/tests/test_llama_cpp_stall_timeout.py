@@ -99,6 +99,44 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     assert clock["t"] >= _STALL_TIMEOUT * 0.5
 
 
+def test_prompt_progress_keeps_the_prefill_read_timeout():
+    progress = (
+        'data: {"choices":[{"delta":{"role":"assistant","content":null}}],'
+        '"prompt_progress":{"processed":512,"cache":0,"time_ms":64}}\n\n'
+    )
+
+    output = 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+    fragments = (progress[:32], progress[32:], output[:24], output[24:])
+
+    class Response:
+        request = _types.SimpleNamespace(extensions = {"timeout": {"read": _PREFILL_TIMEOUT}})
+
+        @staticmethod
+        def iter_text():
+            yield from fragments
+
+        @staticmethod
+        def close():
+            return None
+
+    iterator = LlamaCppBackend._iter_text_cancellable(
+        Response(),
+        first_token_deadline = llama_cpp_mod.time.monotonic() + _PREFILL_TIMEOUT,
+        post_first_chunk_read_timeout_s = _STALL_TIMEOUT,
+    )
+
+    assert next(iterator) == fragments[0]
+    assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
+    assert next(iterator) == fragments[1]
+    assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
+    # A generated-output event switches timeouts only after its delimiter is complete.
+    assert next(iterator) == fragments[2]
+    assert Response.request.extensions["timeout"]["read"] > _STALL_TIMEOUT
+    assert next(iterator) == fragments[3]
+    assert Response.request.extensions["timeout"]["read"] == _STALL_TIMEOUT
+    iterator.close()
+
+
 def test_prefill_timeout_used_when_no_live_override(monkeypatch):
     """Without a lowered live timeout, the wrapper honors the passed prefill timeout, so the normal first-token wait is unchanged."""
     clock = {"t": 0.0}

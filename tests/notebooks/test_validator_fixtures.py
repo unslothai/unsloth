@@ -224,14 +224,23 @@ def test_environment_classifier(path, expected):
 # ---------- Integration: walk the live notebooks repo (skipped if absent) -- #
 
 
-def _live_notebooks_dir() -> Path | None:
-    candidates = [
-        Path(__file__).resolve().parents[3] / "notebooks",  # workspace sibling
-        Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
-    ]
+def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
+    if candidates is None:
+        candidates = [
+            Path(__file__).resolve().parents[3] / "notebooks",  # workspace sibling
+            Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
+        ]
     for p in candidates:
-        if (p / "update_all_notebooks.py").is_file():
-            return p
+        # is_file() only swallows ENOENT/ENOTDIR; an unreadable candidate raises
+        # EACCES on Python <= 3.13 (3.14 suppresses it, gh-101357). These are
+        # absolute paths outside the repo, so on a shared machine one can belong
+        # to another user. The skipif decorators below call this at import time,
+        # so a raise here aborts collection of the whole file.
+        try:
+            if (p / "update_all_notebooks.py").is_file():
+                return p
+        except OSError:
+            continue
     return None
 
 
@@ -270,3 +279,32 @@ def test_lint_smoke_no_module_errors():
     )
     # rc=0 means clean, rc=1 means findings reported, rc=2 means crash.
     assert rc.returncode in (0, 1), rc.stderr[-2000:]
+
+
+def test_live_notebooks_dir_skips_an_unreadable_candidate(tmp_path):
+    """An unreadable candidate must read as absent rather than raise.
+
+    The skipif decorators above call ``_live_notebooks_dir`` at import time, so an
+    uncaught EACCES there aborts collection of this whole file, taking the entire
+    Repo tests (CPU) job with it. The candidates are absolute paths outside the repo,
+    so on a shared machine one of them can belong to another user.
+    """
+    blocked_parent = tmp_path / "blocked"
+    blocked = blocked_parent / "notebooks"
+    blocked.mkdir(parents = True)
+    (blocked / "update_all_notebooks.py").write_text("")
+    readable = tmp_path / "readable" / "notebooks"
+    readable.mkdir(parents = True)
+    (readable / "update_all_notebooks.py").write_text("")
+
+    blocked_parent.chmod(0o000)
+    try:
+        try:
+            (blocked / "update_all_notebooks.py").is_file()
+        except OSError:
+            pass
+        else:
+            pytest.skip("filesystem does not enforce the permission (root?)")
+        assert _live_notebooks_dir([blocked, readable]) == readable
+    finally:
+        blocked_parent.chmod(0o755)

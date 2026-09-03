@@ -1,0 +1,458 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Regression leg for issue #8490: Windows Application Control blocks the
+# generated unsloth.exe console launcher, and the installer died on it at
+# "Running studio setup".
+#
+# The launcher pip generates for `[project.scripts] unsloth` is an unsigned PE
+# wrapper. AppLocker, WDAC and Smart App Control deny it. The managed python.exe
+# beside it is a copy of the signed CPython binary and still runs, so every
+# internal invocation goes through the interpreter instead.
+#
+# This job installs a local AppLocker policy that denies ONLY the generated
+# Scripts\unsloth.exe, for a purpose-made standard user, then requires the FULL
+# installer to SUCCEED under it. That inverts the maintainer's original
+# reproduction, which asserted the failure. The runner is ephemeral and the
+# policy is still removed in the final cleanup.
+#
+# What must hold under the deny rule:
+#   1. The deny rule is really enforced. A negative control runs the stub as the
+#      denied user on purpose and requires Windows error 1260 plus AppLocker
+#      event 8004. Enforcement cannot be inferred from the installer instead:
+#      the whole point of the fix is that nothing executes the stub, so a
+#      correct run produces no block event of its own, and Test-AppLockerPolicy
+#      only predicts a decision, it never records one. Without this control a
+#      policy that silently failed to apply would let a green installer run
+#      masquerade as a fix.
+#   2. install.ps1 exits 0 (the setup handoff no longer runs the stub) and never
+#      trips the block itself.
+#   3. bin\unsloth.cmd, the policy-safe PATH shim, runs the CLI.
+#
+# UNSLOTH_STUDIO_HOME is pinned to a fixed path for every step. The deny rule
+# names one absolute file, and the installer under test runs as a DIFFERENT user
+# whose profile install.ps1 would otherwise resolve on its own: without the pin
+# the job can install somewhere the rule never covered and pass having proved
+# nothing. Start-Process -Credential -LoadUserProfile gives the child the target
+# user's environment block rather than this job's, so the probe wrappers set the
+# variable themselves rather than relying on inheritance.
+
+name: Windows Application Control CI
+
+on:
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'studio/setup.ps1'
+      - 'unsloth_cli/**'
+      - 'studio/src-tauri/src/process.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'studio/src-tauri/src/commands.rs'
+      - 'studio/src-tauri/src/desktop_auth.rs'
+      - 'studio/src-tauri/src/preflight/managed.rs'
+      - 'pyproject.toml'
+      - '.github/workflows/windows-application-control-ci.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  applocker-denied-launcher:
+    name: installer survives a denied unsloth.exe
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    env:
+      # Outside any user profile, so the admin who installs and the standard
+      # user who re-runs the installer resolve the same absolute paths.
+      UNSLOTH_STUDIO_HOME: 'C:\Users\Public\issue-8490-home'
+      UNSLOTH_PROBE_ROOT: 'C:\Users\Public\issue-8490-application-control'
+      UNSLOTH_PROBE_USER: 'AppLockerProbe'
+      UNSLOTH_PROBE_PASSWORD: 'Us8490!Probe'
+      # Not --tauri: the desktop mode refuses UNSLOTH_STUDIO_HOME, and the pinned home is
+      # what makes the file the deny rule names the file the installer actually creates.
+      # The blocked call site is the same in both modes, and the shell path additionally
+      # exercises the PATH shim and the launch instructions this fix changed.
+      UNSLOTH_SKIP_AUTOSTART: '1'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create the managed install and generated launcher
+        shell: powershell
+        env:
+          UNSLOTH_VERBOSE: '1'
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File .\install.ps1 --no-torch *>&1 |
+            Tee-Object -FilePath logs\baseline-install.log
+          $installerExit = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($installerExit -ne 0) {
+            Write-Host "::error::Baseline desktop install failed with exit $installerExit."
+            exit 1
+          }
+
+          # The exact file the deny rule will name. install.ps1 puts the venv at
+          # <UNSLOTH_STUDIO_HOME>\unsloth_studio, so this is fully determined by
+          # the pinned home rather than by whose profile is running.
+          $unslothExe = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          if (-not (Test-Path -LiteralPath $unslothExe -PathType Leaf)) {
+            Write-Host "::error::Baseline install did not create $unslothExe."
+            exit 1
+          }
+          Write-Host "Baseline install created: $unslothExe"
+
+      - name: Enforce a narrow AppLocker deny rule for a standard user
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $probeUser = $env:UNSLOTH_PROBE_USER
+          $probePassword = $env:UNSLOTH_PROBE_PASSWORD
+          & net.exe user $probeUser $probePassword /add /passwordchg:no
+          if ($LASTEXITCODE -ne 0) { throw "Could not create $probeUser (exit $LASTEXITCODE)" }
+          $probeAccount = [System.Security.Principal.NTAccount]::new($env:COMPUTERNAME, $probeUser)
+          $probeSid = $probeAccount.Translate(
+            [System.Security.Principal.SecurityIdentifier]
+          ).Value
+
+          $blockedExe = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          $escapedBlockedExe = [System.Security.SecurityElement]::Escape($blockedExe)
+          $allowId = [guid]::NewGuid()
+          $denyId = [guid]::NewGuid()
+          $policy = @"
+          <AppLockerPolicy Version="1">
+            <RuleCollection Type="Exe" EnforcementMode="Enabled">
+              <FilePathRule Id="$allowId" Name="Allow all other executables" Description="Keep the hosted runner usable" UserOrGroupSid="S-1-1-0" Action="Allow">
+                <Conditions>
+                  <FilePathCondition Path="*" />
+                </Conditions>
+              </FilePathRule>
+              <FilePathRule Id="$denyId" Name="Block generated Unsloth console launcher" Description="Regression guard for issue 8490" UserOrGroupSid="$probeSid" Action="Deny">
+                <Conditions>
+                  <FilePathCondition Path="$escapedBlockedExe" />
+                </Conditions>
+              </FilePathRule>
+            </RuleCollection>
+          </AppLockerPolicy>
+          "@
+          $policyPath = Join-Path $PWD 'logs\applocker-policy.xml'
+          $policy | Set-Content -LiteralPath $policyPath -Encoding UTF8
+
+          & sc.exe config AppIDSvc start= auto
+          if ($LASTEXITCODE -ne 0) { throw "Could not configure AppIDSvc (exit $LASTEXITCODE)" }
+          Start-Service -Name AppIDSvc
+          Set-AppLockerPolicy -XmlPolicy $policyPath
+          & gpupdate.exe /target:computer /force
+          if ($LASTEXITCODE -ne 0) { throw "gpupdate failed (exit $LASTEXITCODE)" }
+          # AppIDSvc reads the effective policy when it starts. Starting it first
+          # and setting the policy afterwards left the service enforcing nothing,
+          # and the first run of this job watched the stub launch happily for the
+          # denied user. Restart AFTER the policy is in place, every time.
+          Restart-Service -Name AppIDSvc -Force
+          (Get-Service -Name AppIDSvc).WaitForStatus('Running', [timespan]::FromSeconds(60))
+
+          Get-AppLockerPolicy -Effective -Xml |
+            Set-Content -LiteralPath logs\applocker-effective.xml -Encoding UTF8
+
+          $probeIdentity = "$env:COMPUTERNAME\$probeUser"
+          Test-AppLockerPolicy -XmlPolicy $policyPath -Path $blockedExe -User $probeIdentity |
+            Format-List * | Out-File -LiteralPath logs\applocker-test.txt -Encoding utf8
+          $policyTest = Get-Content -LiteralPath logs\applocker-test.txt -Raw
+          if ($policyTest -notmatch 'Denied') {
+            throw "Test-AppLockerPolicy did not deny $blockedExe for $probeIdentity.`n$policyTest"
+          }
+
+          & icacls.exe $env:UNSLOTH_STUDIO_HOME `
+            /grant "${probeUser}:(OI)(CI)M" /T /C /Q | Out-File logs\icacls.txt
+          if ($LASTEXITCODE -ne 0) { throw "Could not grant the probe user access (exit $LASTEXITCODE)" }
+          Write-Host "AppLocker will block only $blockedExe for standard user $probeIdentity."
+
+      - name: Negative control -- the denied user really cannot run the stub
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # The probe user needs a writable place to work; its own profile is
+          # created by -LoadUserProfile.
+          $probeRoot = $env:UNSLOTH_PROBE_ROOT
+          New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
+          & icacls.exe $probeRoot /grant "$($env:UNSLOTH_PROBE_USER):(OI)(CI)M" /Q | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not grant access to $probeRoot" }
+
+          (Get-Date).ToString('o') |
+            Set-Content -LiteralPath logs\negative-control-started-at.txt
+
+          # Run the stub on purpose, as the denied user, and require Windows to
+          # refuse it with ERROR_ACCESS_DISABLED_BY_POLICY. This is the only
+          # thing in the job that generates a block event, because everything
+          # else is supposed to avoid the stub entirely.
+          $blockedExe = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          $wrapperTemplate = @'
+          $ErrorActionPreference = 'Stop'
+          try {
+              & '__BLOCKED_EXE__' --version
+          } catch {
+              # $LASTEXITCODE says nothing here: no process was created, so it
+              # holds whatever the previous native command left behind.
+              $ex = $_.Exception
+              while ($null -ne $ex) {
+                  if ($ex -is [System.ComponentModel.Win32Exception] -and
+                      $ex.NativeErrorCode -eq 1260) { exit 0 }
+                  if ($ex.HResult -eq -2147023636) { exit 0 }
+                  $ex = $ex.InnerException
+              }
+              Write-Output "unexpected failure: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+              exit 91
+          }
+          exit 90
+          '@
+          $wrapper = $wrapperTemplate.Replace('__BLOCKED_EXE__', $blockedExe.Replace("'", "''"))
+          $wrapperPath = Join-Path $probeRoot 'invoke-blocked-exe.ps1'
+          $wrapper | Set-Content -LiteralPath $wrapperPath -Encoding UTF8
+          $controlOut = Join-Path $probeRoot 'control-stdout.log'
+          $controlErr = Join-Path $probeRoot 'control-stderr.log'
+          New-Item -ItemType File -Force -Path $controlOut, $controlErr | Out-Null
+
+          $securePassword = ConvertTo-SecureString $env:UNSLOTH_PROBE_PASSWORD -AsPlainText -Force
+          $credential = [System.Management.Automation.PSCredential]::new(
+            "$env:COMPUTERNAME\$($env:UNSLOTH_PROBE_USER)",
+            $securePassword
+          )
+          # Enforcement goes live asynchronously: the service has to load the
+          # policy and the user's token has to pick it up, and neither is
+          # signalled. Retry rather than sample once, or the job fails on timing
+          # and reports a regression that is not there.
+          $exitCode = $null
+          foreach ($attempt in 1..12) {
+            $process = Start-Process -FilePath powershell.exe `
+              -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $wrapperPath) `
+              -Credential $credential -LoadUserProfile -WorkingDirectory $probeRoot `
+              -RedirectStandardOutput $controlOut -RedirectStandardError $controlErr `
+              -Wait -PassThru
+            $exitCode = $process.ExitCode
+            # One file per attempt. Enforcement was observed going live on the
+            # fourth try, and a single overwritten log left the evidence artifact
+            # showing an earlier attempt's output next to a passing step, which
+            # reads like a contradiction.
+            "attempt ${attempt}: exit $exitCode" |
+              Set-Content -LiteralPath "logs\negative-control-$attempt.log" -Encoding UTF8
+            Get-Content -LiteralPath $controlOut, $controlErr |
+              Add-Content -LiteralPath "logs\negative-control-$attempt.log" -Encoding UTF8
+            Copy-Item -LiteralPath "logs\negative-control-$attempt.log" `
+              -Destination logs\negative-control.log -Force
+            Write-Host "attempt ${attempt}: exit $exitCode"
+            if ($exitCode -eq 0) { break }
+            Start-Sleep -Seconds 10
+          }
+          Get-Content -LiteralPath logs\negative-control.log | Write-Host
+
+          if ($exitCode -eq 90) {
+            Write-Host "::error::$blockedExe ran for the denied user. The AppLocker policy is not enforced, so the rest of this job would prove nothing."
+            exit 1
+          }
+          if ($exitCode -ne 0) {
+            Write-Host "::error::The negative control failed for an unexpected reason (exit $exitCode); enforcement is unproven."
+            exit 1
+          }
+          Write-Host 'PASS: the denied user cannot start the generated launcher (Windows error 1260).'
+
+      - name: Require the installer to succeed with the launcher denied
+        shell: powershell
+        env:
+          UNSLOTH_VERBOSE: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          (Get-Date).ToString('o') | Set-Content -LiteralPath logs\install-started-at.txt
+
+          $probeRoot = $env:UNSLOTH_PROBE_ROOT
+          & icacls.exe $PWD /grant "$($env:UNSLOTH_PROBE_USER):(OI)(CI)RX" /T /C /Q | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not grant repo read access to the probe user" }
+
+          # Re-run the whole installer as the denied user. This is the path that
+          # regressed in issue #8490: the setup handoff must reach the CLI
+          # through the managed interpreter, never through the blocked stub.
+          $wrapperTemplate = @'
+          $ErrorActionPreference = 'Continue'
+          # Set here, not inherited: -Credential -LoadUserProfile hands the child
+          # the probe user's environment block, so without this install.ps1 would
+          # resolve that user's own profile and install outside the deny rule.
+          $env:UNSLOTH_STUDIO_HOME = '__HOME__'
+          $env:UNSLOTH_SKIP_AUTOSTART = '1'
+          Set-Location -LiteralPath '__REPO__'
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File .\install.ps1 --no-torch *>&1
+          exit $(if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 })
+          '@
+          # Two statements, not a chain with the dot at end of line: this step
+          # runs under Windows PowerShell 5.1, which does not accept that
+          # continuation. Both values are single-quoted in the template, so an
+          # apostrophe in either path is doubled to escape it.
+          $wrapper = $wrapperTemplate.Replace('__REPO__', "$PWD".Replace("'", "''"))
+          $wrapper = $wrapper.Replace('__HOME__', $env:UNSLOTH_STUDIO_HOME.Replace("'", "''"))
+          $wrapperPath = Join-Path $probeRoot 'invoke-installer.ps1'
+          $wrapper | Set-Content -LiteralPath $wrapperPath -Encoding UTF8
+          $probeStdout = Join-Path $probeRoot 'stdout.log'
+          $probeStderr = Join-Path $probeRoot 'stderr.log'
+          New-Item -ItemType File -Force -Path $probeStdout, $probeStderr | Out-Null
+
+          $securePassword = ConvertTo-SecureString $env:UNSLOTH_PROBE_PASSWORD -AsPlainText -Force
+          $credential = [System.Management.Automation.PSCredential]::new(
+            "$env:COMPUTERNAME\$($env:UNSLOTH_PROBE_USER)",
+            $securePassword
+          )
+          $process = Start-Process -FilePath powershell.exe `
+            -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $wrapperPath) `
+            -Credential $credential -LoadUserProfile -WorkingDirectory $probeRoot `
+            -RedirectStandardOutput $probeStdout -RedirectStandardError $probeStderr `
+            -Wait -PassThru
+          $installerExit = $process.ExitCode
+          Get-Content -LiteralPath $probeStdout, $probeStderr |
+            Set-Content -LiteralPath logs\install.log -Encoding UTF8
+          $installerExit | Set-Content -LiteralPath logs\installer-exit-code.txt
+          Get-Content -LiteralPath logs\install.log | Select-Object -Last 80 | Write-Host
+
+          if ($installerExit -ne 0) {
+            Write-Host "::error::install.ps1 failed (exit $installerExit) with only unsloth.exe denied. Issue 8490 has regressed."
+            exit 1
+          }
+
+          # The installer must have written to the home the deny rule covers. If
+          # it resolved somewhere else, everything above passed against a file no
+          # policy ever touched.
+          $blockedExe = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          if (-not (Test-Path -LiteralPath $blockedExe -PathType Leaf)) {
+            Write-Host "::error::The installer did not install to the denied home; $blockedExe is missing, so this run proved nothing."
+            exit 1
+          }
+
+          $installLog = Get-Content -LiteralPath logs\install.log -Raw
+          # A run that never reached the handoff would exit 0 having proved nothing.
+          if ($installLog -notmatch 'Running studio setup|running unsloth studio setup') {
+            Write-Host '::error::The installer exited 0 without reaching the studio setup handoff.'
+            exit 1
+          }
+          # Both wordings: the first is PowerShell's own launch failure, the
+          # second is install.ps1's diagnostic for a blocked managed interpreter.
+          if ($installLog -match 'Application Control policy has blocked|Windows Application Control blocked') {
+            Write-Host '::error::The installer still tried to execute a program the policy denies.'
+            exit 1
+          }
+
+          Write-Host "PASS: install.ps1 completed (exit $installerExit) with unsloth.exe denied."
+          $global:LASTEXITCODE = 0
+          exit 0
+
+      - name: Require the policy-safe shim to run the CLI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $shim = Join-Path $env:UNSLOTH_STUDIO_HOME 'bin\unsloth.cmd'
+          if (-not (Test-Path -LiteralPath $shim -PathType Leaf)) {
+            Write-Host "::error::The installer left no policy-safe shim at $shim."
+            exit 1
+          }
+          # As the denied user, so the .exe next to it stays unrunnable.
+          $probeRoot = $env:UNSLOTH_PROBE_ROOT
+          $wrapperPath = Join-Path $probeRoot 'invoke-shim.ps1'
+          @"
+          `$ErrorActionPreference = 'Continue'
+          & '$($shim.Replace("'", "''"))' --version
+          exit `$(if (`$LASTEXITCODE) { `$LASTEXITCODE } else { 0 })
+          "@ | Set-Content -LiteralPath $wrapperPath -Encoding UTF8
+          $shimOut = Join-Path $probeRoot 'shim-stdout.log'
+          $shimErr = Join-Path $probeRoot 'shim-stderr.log'
+          New-Item -ItemType File -Force -Path $shimOut, $shimErr | Out-Null
+
+          $securePassword = ConvertTo-SecureString $env:UNSLOTH_PROBE_PASSWORD -AsPlainText -Force
+          $credential = [System.Management.Automation.PSCredential]::new(
+            "$env:COMPUTERNAME\$($env:UNSLOTH_PROBE_USER)",
+            $securePassword
+          )
+          $process = Start-Process -FilePath powershell.exe `
+            -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $wrapperPath) `
+            -Credential $credential -LoadUserProfile -WorkingDirectory $probeRoot `
+            -RedirectStandardOutput $shimOut -RedirectStandardError $shimErr `
+            -Wait -PassThru
+          Get-Content -LiteralPath $shimOut, $shimErr |
+            Set-Content -LiteralPath logs\shim.log -Encoding UTF8
+          Get-Content -LiteralPath logs\shim.log | Write-Host
+          if ($process.ExitCode -ne 0) {
+            Write-Host "::error::unsloth.cmd --version failed (exit $($process.ExitCode)) for the denied user."
+            exit 1
+          }
+          Write-Host 'PASS: the .cmd shim runs the CLI with the .exe denied.'
+
+      - name: Require an AppLocker block event for the negative control
+        if: always()
+        shell: powershell
+        run: |
+          if (-not (Test-Path -LiteralPath logs\negative-control-started-at.txt)) {
+            Write-Host '::warning::The negative control did not start; no AppLocker event is expected.'
+            exit 0
+          }
+          # Scoped to the negative control, the only thing in this job that
+          # deliberately starts the stub. The installer window is the wrong one
+          # to look in: a correct installer never touches it.
+          $startedAt = [datetime](Get-Content -LiteralPath logs\negative-control-started-at.txt -Raw)
+          $events = @(
+            Get-WinEvent -FilterHashtable @{
+              LogName = 'Microsoft-Windows-AppLocker/EXE and DLL'
+              # 8004 is "was prevented from running". 8002 ("was allowed") is
+              # also logged under EnforcementMode=Enabled, so without this an
+              # allowed launch would pass as proof of a block.
+              Id = 8004
+              StartTime = $startedAt.AddSeconds(-5)
+            } -ErrorAction SilentlyContinue |
+              Where-Object { $_.Message -match 'unsloth\.exe' }
+          )
+          $events | Format-List TimeCreated, Id, LevelDisplayName, Message |
+            Out-File -LiteralPath logs\applocker-events.txt -Encoding utf8 -Width 300
+
+          # Without this the job is vacuous: an unenforced policy would let a
+          # green installer run masquerade as a fix.
+          if ($events.Count -eq 0) {
+            Write-Host '::error::No AppLocker 8004 event naming unsloth.exe was recorded; the deny rule never applied.'
+            exit 1
+          }
+          $events | ForEach-Object {
+            Write-Host "AppLocker event $($_.Id): $($_.Message)"
+          }
+          Write-Host 'PASS: Windows recorded the unsloth.exe policy block.'
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-application-control
+          path: logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Remove the local AppLocker policy
+        if: always()
+        shell: powershell
+        run: |
+          $emptyPolicy = Join-Path $env:RUNNER_TEMP 'empty-applocker-policy.xml'
+          '<AppLockerPolicy Version="1" />' |
+            Set-Content -LiteralPath $emptyPolicy -Encoding UTF8
+          Set-AppLockerPolicy -XmlPolicy $emptyPolicy
+          Stop-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue
+          if (Get-LocalUser -Name $env:UNSLOTH_PROBE_USER -ErrorAction SilentlyContinue) {
+            & net.exe user $env:UNSLOTH_PROBE_USER /delete 2>$null | Out-Null
+          }
+          $global:LASTEXITCODE = 0

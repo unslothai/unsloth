@@ -115,6 +115,12 @@ def test_status_response_exposes_update_component():
     assert model.model_dump()["update_component"] == "whisper"
 
 
+def test_backend_status_response_exposes_selection_applied():
+    model = rl.LlamaBackendStatusResponse(selection_applied = False)
+
+    assert model.model_dump()["selection_applied"] is False
+
+
 def test_status_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 

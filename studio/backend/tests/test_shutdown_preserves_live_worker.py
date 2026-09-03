@@ -9,6 +9,8 @@ holds sidecar transformers modules (breaking the rename on Windows). The methods
 the handle and return False so callers can refuse the swap.
 """
 
+import threading
+
 import pytest
 
 from core.export.orchestrator import ExportOrchestrator
@@ -52,6 +54,14 @@ def _bare_inference():
     o._resp_queue = _Q()
     o._cancel_event = None
     o._drain_event = None
+    # Worker-scoped bookkeeping the teardown clears (see _reset_worker_scoped_state).
+    o._active_cancel_lock = threading.Lock()
+    o._active_cancel_events = []
+    o._executing_cancel_events = []
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
     return o
 
 

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { FloatingMonitor } from "@/components/floating-monitor";
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Dialog,
   DialogContent,
@@ -9,12 +10,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
+import { cn } from "@/lib/utils";
 import {
   BotIcon,
   Cancel01Icon,
   CloudIcon,
+  ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
   Globe02Icon,
@@ -35,7 +38,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { SETTINGS_SEARCH_INDEX } from "./settings-search";
+import {
+  SETTINGS_SEARCH_KEYWORDS,
+  createSettingsSearchIndex,
+} from "./settings-search";
 import {
   type SettingsTab,
   useSettingsDialogStore,
@@ -47,6 +53,7 @@ import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
 import { DataTab } from "./tabs/data-tab";
+import { DebuggingTab } from "./tabs/debugging-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
@@ -63,7 +70,12 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
-  { id: "profile", labelKey: "settings.tabs.profile", icon: UserIcon },
+  {
+    id: "profile",
+    labelKey: "settings.tabs.profile",
+    icon: UserIcon,
+    badgeKey: "common.new",
+  },
   {
     id: "appearance",
     labelKey: "settings.tabs.appearance",
@@ -107,8 +119,23 @@ const TABS: TabDef[] = [
     icon: DatabaseSettingIcon,
     badgeKey: "common.new",
   },
+  {
+    id: "debugging",
+    labelKey: "settings.tabs.debugging",
+    icon: ComputerTerminal01Icon,
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
+
+const clientPlatform = getClientPlatform();
+const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
+  desktop: isTauri,
+  closeToTray:
+    isTauri &&
+    (clientPlatform.startsWith("win") ||
+      clientPlatform.includes("windows") ||
+      clientPlatform.includes("linux")),
+});
 
 function renderTab(tab: SettingsTab) {
   switch (tab) {
@@ -132,6 +159,8 @@ function renderTab(tab: SettingsTab) {
       return <ApiKeysTab />;
     case "agents":
       return <AgentsTab />;
+    case "debugging":
+      return <DebuggingTab />;
     case "about":
       return <AboutTab />;
   }
@@ -157,8 +186,12 @@ export function SettingsDialog() {
     return TABS.map((tab) => {
       const tabLabel = t(tab.labelKey);
       const entries = SETTINGS_SEARCH_INDEX[tab.id]
-        .map((key) => t(key))
-        .filter((label) => label.toLowerCase().includes(q));
+        .filter((key) => {
+          if (t(key).toLowerCase().includes(q)) return true;
+          const keywordsKey = SETTINGS_SEARCH_KEYWORDS[key];
+          return keywordsKey ? t(keywordsKey).toLowerCase().includes(q) : false;
+        })
+        .map((key) => t(key));
       const deduped = [...new Set(entries)];
       return {
         tab,
@@ -183,22 +216,19 @@ export function SettingsDialog() {
 
   // Scroll to the row/section a search result points at once the tab has
   // rendered, and flash it so the eye lands on the right place. The tab panel
-  // renders deferred, so retry across frames until the row exists instead of
-  // racing a single fixed delay (which silently missed under render lag).
+  // renders deferred and some sections load their data lazily, so observe the
+  // panel until the requested row exists instead of imposing a render deadline.
   useEffect(() => {
     if (!pendingScroll) return;
     // Wait until the destination tab is mounted before matching, so a same-named
     // row in the previous tab (for example "Storage") is not scrolled to instead.
     if (panelTab !== pendingScroll.tab) return;
-    let frame = 0;
-    let tries = 0;
-    const attempt = () => {
-      const root = mainScrollRef.current;
-      const target = root
-        ? [
-            ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
-          ].find((el) => el.dataset.settingsLabel === pendingScroll.entry)
-        : undefined;
+    const root = mainScrollRef.current;
+    if (!root) return;
+    const attempt = (): boolean => {
+      const target = [
+        ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
+      ].find((el) => el.dataset.settingsLabel === pendingScroll.entry);
       if (target) {
         target.scrollIntoView({ behavior: "smooth", block: "center" });
         target.classList.add("settings-search-hit");
@@ -207,18 +237,30 @@ export function SettingsDialog() {
           1600,
         );
         setPendingScroll(null);
-      } else if (tries++ < 30) {
-        frame = window.requestAnimationFrame(attempt);
-      } else {
-        setPendingScroll(null);
+        return true;
       }
+      return false;
     };
-    frame = window.requestAnimationFrame(attempt);
-    return () => window.cancelAnimationFrame(frame);
+    const observer = new MutationObserver(() => {
+      if (attempt()) observer.disconnect();
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    const frame = window.requestAnimationFrame(() => {
+      if (attempt()) observer.disconnect();
+    });
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
   }, [pendingScroll, panelTab]);
 
   useEffect(() => {
-    if (!open) setQuery("");
+    if (open) return;
+    const frame = window.requestAnimationFrame(() => {
+      setQuery("");
+      setPendingScroll(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [open]);
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
@@ -231,6 +273,7 @@ export function SettingsDialog() {
     data: null,
     "api-keys": null,
     agents: null,
+    debugging: null,
     about: null,
   });
 
@@ -261,11 +304,14 @@ export function SettingsDialog() {
             // Cap at 960px but shrink to the viewport so it doesn't clip on
             // iPad-portrait widths where a fixed width overflows. Height caps
             // the same way so short viewports don't get a clipped dialog.
-            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(680px,calc(100dvh-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
-            "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Same chrome-subtracted height the shared DialogContent uses at this
+            // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
+            // (and its overflow-hidden bottom edge) below the window. 0px on web.
+            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
           )}
         >
           <DialogTitle className="sr-only">
@@ -368,6 +414,8 @@ export function SettingsDialog() {
                   return (
                     <button
                       key={tab.id}
+                      // Stable handle for UI tests: the label is translated.
+                      data-testid={`settings-tab-${tab.id}`}
                       ref={(node) => {
                         tabButtonRefs.current[tab.id] = node;
                       }}

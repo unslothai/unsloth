@@ -37,19 +37,6 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
     """
     flags = [False] * count
     names = [""] * count
-
-    # The name lookup is bound OUTSIDE the type-detection try: a ggml-base
-    # without ggml_backend_dev_description (older/custom build) must degrade to
-    # unnamed devices, not abort before the iGPU flags are read (which would
-    # count an iGPU's shared RAM as VRAM).
-    describe = None
-    try:
-        base.ggml_backend_dev_description.restype = ctypes.c_char_p
-        base.ggml_backend_dev_description.argtypes = [ctypes.c_void_p]
-        describe = base.ggml_backend_dev_description
-    except Exception:
-        pass
-
     try:
         lib.ggml_backend_vk_reg.restype = ctypes.c_void_p
         lib.ggml_backend_vk_reg.argtypes = []
@@ -59,33 +46,50 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
         base.ggml_backend_reg_dev_get.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         base.ggml_backend_dev_type.restype = ctypes.c_int
         base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
-
         reg = lib.ggml_backend_vk_reg()
         if not reg:
             return flags, names
         dev_count = base.ggml_backend_reg_dev_count(reg)
-        for i in range(min(count, dev_count)):
-            dev = base.ggml_backend_reg_dev_get(reg, i)
-            if dev:
-                flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
-                if describe is not None:
-                    try:
-                        desc = describe(dev)
-                        if desc:
-                            # Tabs/newlines would corrupt the line protocol;
-                            # spaces are safe.
-                            names[i] = (
-                                desc.decode("utf-8", errors = "replace")
-                                .replace("\t", " ")
-                                .replace("\n", " ")
-                                .strip()
-                            )
-                    except Exception:
-                        pass
     except Exception:
         # Best-effort: any failure degrades to "discrete"/"unnamed" so the
         # memory readings still get through instead of crashing the probe.
-        pass
+        return flags, names
+
+    # Bound outside the type-detection try above: a ggml-base without the
+    # description symbol (older/custom build) must degrade to unnamed devices,
+    # not abort before the iGPU flags are read (which would count an iGPU's
+    # shared RAM as VRAM).
+    name_functions = []
+    for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
+        try:
+            function = getattr(base, symbol)
+            function.restype = ctypes.c_char_p
+            function.argtypes = [ctypes.c_void_p]
+            name_functions.append(function)
+        except Exception:
+            pass
+
+    for i in range(min(count, dev_count)):
+        try:
+            dev = base.ggml_backend_reg_dev_get(reg, i)
+        except Exception:
+            continue
+        if not dev:
+            continue
+        try:
+            flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
+        except Exception:
+            pass
+        for function in name_functions:
+            try:
+                raw_name = function(dev)
+            except Exception:
+                continue
+            if raw_name:
+                # Tabs/newlines would corrupt the line protocol; spaces are safe.
+                name = raw_name.decode("utf-8", errors = "replace")
+                names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+                break
     return flags, names
 
 
@@ -115,12 +119,27 @@ def main() -> int:
     else:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
+    def _find_lib(directory, stem):
+        """Find an unversioned library or a versioned runtime soname."""
+        path = os.path.join(directory, stem)
+        if os.path.isfile(path):
+            return path
+        for entry in sorted(os.listdir(directory)):
+            if entry.startswith(stem + "."):
+                return os.path.join(directory, entry)
+        return None
+
     # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr
     # falls back to 0 where the flag doesn't exist (Windows CDLL ignores mode).
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
+    base_path = _find_lib(bindir, base_name)
+    vk_path = _find_lib(bindir, vk_name)
+    if not base_path or not vk_path:
+        print(f"ggml-vulkan load failed: library not found in {bindir}", file = sys.stderr)
+        return 1
     try:
-        base = ctypes.CDLL(os.path.join(bindir, base_name), mode = _rtld_global)
-        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = _rtld_global)
+        base = ctypes.CDLL(base_path, mode = _rtld_global)
+        lib = ctypes.CDLL(vk_path, mode = _rtld_global)
     except OSError as e:
         print(f"ggml-vulkan load failed: {e}", file = sys.stderr)
         return 1

@@ -88,47 +88,69 @@ def test_no_context_shift_is_in_load_model():
     )
 
 
-def test_flag_sits_inside_the_base_cmd_list():
-    """Pin the flag's location so a refactor can't move it into a branch that
-    only fires on some code paths.
+def test_the_flag_is_emitted_unless_the_build_lacks_it():
+    """The gate replaces the old "must be a literal in the base list" pin.
 
-    We slice from ``cmd = [`` to the first ``]`` at the same indent. Since
-    ``inspect.getsource`` gives the function its own string with no siblings, a
-    plain bracket search would also work -- anchoring on the trailing indent just
-    keeps the slice from wandering into a later expression if the opening literal
-    ever grows a trailing in-line comment.
+    It used to sit unconditionally inside ``cmd = [...]``, which meant a stale
+    or user-supplied LLAMA_SERVER_PATH without the flag got it anyway and
+    exited on an unknown argument. It is now gated, but the gate FAILS OPEN:
+    the capability defaults to True everywhere, so an unreadable --help keeps
+    today's command and only a build whose help positively lacks the flag
+    drops it.
+    """
+    source = _load_model_source()
+    assert 'cmd.append("--no-context-shift")' in source
+    assert (
+        'if _caps.get("supports_no_context_shift", True):' in source
+    ), "the gate must default to True, so a failed probe still emits the flag"
+    # And the default really is True in both places the probe can return.
+    probe_src = inspect.getsource(llama_cpp_module.LlamaCppBackend.probe_server_capabilities)
+    assert '"supports_no_context_shift": True' in probe_src
+    assert "supports_no_context_shift = True" in probe_src
+
+
+def test_the_base_cmd_list_still_leads_straight_into_the_context_flag():
+    """-c must stay grouped with the base list.
+
+    auto-fit must omit -c entirely, because "-c 0" pins the full native context
+    and disables --fit's VRAM-based sizing, so the emission needs to stay where
+    that reasoning is visible.
     """
     source = _load_model_source()
     start = source.find("cmd = [")
     assert start >= 0, "could not find the base cmd = [...] block"
-    # Find the first line containing only ``]`` (possibly indented).
     rest = source[start:]
     end_rel = -1
     for line_start, line in _iter_lines_with_offset(rest):
         if line_start == 0:
-            # Skip the opening ``cmd = [`` line itself.
             continue
         if line.strip() == "]":
             end_rel = line_start
             break
     assert end_rel > 0, "could not find end of cmd = [...] block"
-    block = rest[:end_rel]
-    assert '"--no-context-shift"' in block, (
-        "--no-context-shift must be in the base cmd list, not in a "
-        "conditional branch -- otherwise some code paths would still "
-        "run with silent context shift enabled."
-    )
-    assert '"--flash-attn"' in block
-    # -c is emitted in the conditional right after the base list, not inside
-    # it: auto-fit (--fit on with no pinned context) must omit -c entirely,
-    # because "-c 0" pins the full native context and disables --fit's
-    # VRAM-based sizing. Pin that it still sits next to the base block so the
-    # context grouping stays intact.
-    after = rest[end_rel : end_rel + 1000]
+    # Wide enough to span the gated flags and their comments that now sit between
+    # the base list and -c; the point is that -c is still emitted here rather than
+    # somewhere else entirely.
+    after = rest[end_rel : end_rel + 2400]
     assert '"-c"' in after, (
-        "-c must still be emitted in the conditional immediately after the "
-        "base cmd list (omitted only in auto-fit, where --fit sizes context)."
+        "-c must still be emitted near the base cmd list (omitted only in "
+        "auto-fit, where --fit sizes context)."
     )
+
+
+def test_flash_attention_drops_its_value_only_for_a_boolean_build():
+    """Older builds take -fa as a bare boolean and read "on" as a positional.
+
+    That is an immediate "invalid argument" exit, not a degraded launch.
+    """
+    value_form = "-fa, --flash-attn [on|off|auto]   set flash attention"
+    boolean_form = "-fa, --flash-attn                 enable flash attention"
+    assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value(value_form) is True
+    assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value(boolean_form) is False
+    # Fail open when the help says nothing about it, since the pinned prebuilt
+    # is the value form and guessing wrong there breaks the supported path.
+    assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value("-m, --model FNAME") is True
+    assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value("") is True
 
 
 def _iter_lines_with_offset(text: str):

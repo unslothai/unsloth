@@ -175,3 +175,46 @@ def test_call_tool_sync_passes_raise_on_error_false_and_keeps_error_images(monke
     assert out.startswith("Error: boom")
     assert MCP_IMAGES_SENTINEL in out
     assert is_tool_error(out)
+
+
+def test_stdio_session_call_also_passes_raise_on_error_false(monkeypatch):
+    seen = {}
+
+    class _FakeStdioClient:
+        def __init__(self):
+            self.connected = False
+            self.transport = SimpleNamespace(_is_session_dead = lambda: False)
+
+        async def __aenter__(self):
+            self.connected = True
+            return self
+
+        async def __aexit__(self, *exc):
+            self.connected = False
+
+        def is_connected(self):
+            return self.connected
+
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
+            seen["raise_on_error"] = raise_on_error
+            return _result(_text("boom"), _image(), is_error = True)
+
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: _FakeStdioClient()
+    )
+    try:
+        out = call_tool_sync(
+            "npx fake-stdio-server", None, "take_screenshot", {}, scope = "s=p:t=thread1"
+        )
+    finally:
+        mcp_client.close_stdio_sessions()
+
+    assert seen["raise_on_error"] is False
+    assert out.startswith("Error: boom")
+    assert MCP_IMAGES_SENTINEL in out
+    assert is_tool_error(out)

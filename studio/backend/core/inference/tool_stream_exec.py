@@ -52,6 +52,9 @@ def accepts_output_callback(func: Callable[..., str]) -> bool:
 # common proxy idle caps (Cloudflare ~100 s, nginx default 60 s).
 TOOL_HEARTBEAT_INTERVAL_S = 10.0
 
+# delay before the first approval keepalive so it cannot coalesce with the gated card.
+TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
+
 # How often the wrapper wakes to poll for output / completion / cancellation.
 _POLL_INTERVAL_S = 0.25
 

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH
+import hashlib
 import importlib
 import os
 import torch
@@ -35,6 +36,7 @@ from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version, get_quant_type
 import gc
+import traceback as _traceback
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -314,11 +316,16 @@ def _offline_quantize_to_fp8(
     fp8_mode: str,
     *,
     text_only: bool = False,
+    revision: str = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path.
 
     For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via
     hf_overrides={"quantization_config_file": "torchao_config.json"}).
+
+    The caller's revision has to reach the source loads, and the cache name has to name it
+    too: the returned path replaces model_name, so the revision gate downstream drops the
+    pin, and two refs of one repo would otherwise share (and reuse) a single artifact.
     """
     from transformers import (
         AutoModelForCausalLM,
@@ -329,7 +336,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name, revision = revision)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -356,6 +363,12 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other. #5816
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    if revision is not None:
+        # Sanitizing is lossy (`release/v1` and `release.v1` collapse), so a digest of the
+        # raw ref rides along and two refs never share an artifact.
+        digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
+        readable = re.sub(r"[^0-9A-Za-z_-]", "_", revision)[:40]
+        cache_name += "-rev-" + readable + "-" + digest
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
@@ -375,9 +388,10 @@ def _offline_quantize_to_fp8(
         model = auto_model.from_pretrained(
             model_name,
             config = config,
+            revision = revision,
             **load_kwargs,
         )
-        tokenizer = auto_processor.from_pretrained(model_name)
+        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
@@ -884,6 +898,35 @@ _LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
 # The load's cache_dir travels with it too: saving derives one from HF_HUB_CACHE /
 # HF_HOME, which does not see a caller-supplied cache.
 _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
+# So does the ref it was read at: saving restores sentencepiece assets from
+# tokenizer.name_or_path, which names the repo but not the branch.
+_LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
+
+
+def _mark_loaded_revision(result, revision):
+    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
+    if revision is None:
+        return result
+    for obj in result if isinstance(result, (tuple, list)) else (result,):
+        try:
+            targets = (obj, getattr(obj, "tokenizer", None))
+        except Exception:
+            targets = (obj,)
+        for target in targets:
+            if target is None:
+                continue
+            # Skip objects that reject new attributes (__slots__).
+            try:
+                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+            except Exception:
+                pass
+    return result
+
+
+def _tokenizer_revision(tokenizer):
+    """The ref this tokenizer was loaded at, or None for the default branch."""
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    return getattr(tokenizer, _LOADED_REVISION_ATTR, None)
 
 
 def _mark_loaded_local_files_only(result, cache_dir = None):
@@ -1138,6 +1181,85 @@ def _restore_progress_bars(were_disabled):
             pass
 
 
+# Every way a cache miss reaches the caller once offline mode has skipped Transformers'
+# own "does not appear to have a file named" raise: the resolved path stays None and the
+# next line dereferences it, so the message names the None and never the cache. Same set
+# the Studio training worker matches (studio/backend/core/training/worker.py, #7845):
+# weights come out as `endswith`, tokenizers/processors as any of the other four.
+_EMPTY_CACHE_ARTIFACTS = (
+    "'nonetype' object has no attribute 'endswith'",
+    "'nonetype' object has no attribute 'readlines'",
+    "argument should be a str or an os.pathlike object",
+    "expected str, bytes or os.pathlike object",
+    "stat: path should be string, bytes, os.pathlike or integer",
+    "can't find a vocabulary file at path 'none'",
+)
+
+
+def _empty_cache_artifact(exc):
+    """True if exc, or something it wraps, is offline mode's empty-cache artifact.
+
+    The one family of retry failure that says nothing useful.
+
+    Named positively, rather than asking "is this an OOM": every other retry
+    failure is real news and must reach the user, and enumerating the ways an
+    accelerator spells OOM cannot be complete (accelerate re-raises it as a bare
+    RuntimeError, XPU has its own class). Asking for the artifact instead is
+    complete by construction.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        text = str(exc).lower()
+        # Gate on the None: the same TypeError wording about a real path (`not 'int'`)
+        # is a caller bug, not an empty cache.
+        if ("nonetype" in text or "path 'none'" in text) and any(
+            artifact in text for artifact in _EMPTY_CACHE_ARTIFACTS
+        ):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _release_traceback_locals(error):
+    """Drop the frame locals along an exception chain, keeping file and line.
+
+    An exception we keep past its handler keeps its frames alive, and a failed load's
+    frames still own whatever the attempt had already built, so a retained error can pin
+    a model's GPU tensors for as long as the caller holds it. Clearing the locals beats
+    dropping the traceback: the memory goes either way, but the origin stays printable,
+    which for a network failure inside `trust_remote_code` is the only clue there is.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        # The frame we are running in cannot be cleared; clear_frames skips it for us.
+        _traceback.clear_frames(error.__traceback__)
+        error = error.__cause__ or error.__context__
+
+
+def _note_offline_retry(error, retry_error):
+    """Record the failed cache retry on the online error we are about to surface.
+
+    A note is the only place it can go that survives: the online error usually
+    already has a cause, and Python prints a cause INSTEAD of a context, so
+    chaining the retry on would hide it (and would cost the chain that makes the
+    online error classifiable). Notes are 3.11+; below that this is a no-op and
+    the attribute is all there is."""
+    text = f"Unsloth: retrying from the local cache also failed: {type(retry_error).__name__}: {retry_error}"
+    try:
+        error._unsloth_offline_retry_error = retry_error
+    except Exception:
+        pass
+    add_note = getattr(error, "add_note", None)
+    if add_note is None:
+        return
+    try:
+        add_note(text)
+    except Exception:
+        pass
+
+
 def _offline_aware_load(fn):
     """Decide offline ONCE (local_files_only kwarg or env) and force it around the
     whole load. If we started online and hit a network error, retry once forced-offline.
@@ -1159,6 +1281,12 @@ def _offline_aware_load(fn):
             # (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
                 raise
+            # Holding `e` holds its frames, and those frames hold the half-built model,
+            # so the collect below could not free it and a large VLM OOMed on the reload
+            # the retry exists to make. A wrapper's cause/context carries tracebacks over
+            # the SAME frames, so the whole chain has to be released, not just the top.
+            online_error = e
+            _release_traceback_locals(online_error)
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
         # is freed before reallocating, else a large VLM can OOM on the second load.
         try:
@@ -1176,12 +1304,36 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 return fn(*args, **kwargs)
         except Exception as e:
-            # Tag so an enclosing _offline_aware_load skips its own redundant retry.
-            try:
-                e._unsloth_offline_retried = True
-            except Exception:
-                pass
-            raise
+            # A real retry failure (corrupt checkpoint, OOM) is news and goes out as
+            # itself; only the empty-cache artifact is worth replacing.
+            if not _empty_cache_artifact(e):
+                # Tag so an enclosing _offline_aware_load skips its own redundant retry.
+                try:
+                    e._unsloth_offline_retried = True
+                except Exception:
+                    pass
+                raise
+            # The retry can load a whole cached model and only then trip over a missing
+            # tokenizer file, and this error outlives the call on the online one, so its
+            # frames would keep that model resident for as long as the caller holds it.
+            _release_traceback_locals(e)
+            retry_error = e
+        # Report the ONLINE error: this retry only runs because of it, and its own
+        # failure names an empty cache badly (offline mode skips Transformers'
+        # "does not appear to have a file named" raise, so the user saw
+        # `AttributeError: 'NoneType' ... 'endswith'`).
+        try:
+            online_error._unsloth_offline_retried = True
+        except Exception:
+            pass
+        # Raise OUTSIDE the handler above: inside it, Python would overwrite
+        # `__context__` with the cache miss, and that chain is often the only thing
+        # that still makes the online error classifiable as network-related.
+        if online_error.__cause__ is None and online_error.__context__ is None:
+            # No chain to lose, so chain the retry on where it also prints.
+            raise online_error from retry_error
+        _note_offline_retry(online_error, retry_error)
+        raise online_error
 
     return _wrapper
 
@@ -1214,6 +1366,7 @@ def _resolve_hub_repo_local_dir(
     *,
     token = None,
     cache_dir = None,
+    revision = None,
     # Default closed: a "resolve local dir" helper must not download. False here
     # means five filenames each retried with backoff before it gives up.
     local_files_only = True,
@@ -1249,6 +1402,7 @@ def _resolve_hub_repo_local_dir(
                 token = token,
                 cache_dir = cache_dir,
                 local_files_only = local_files_only,
+                revision = revision,
             )
             if path and os.path.isfile(path):
                 return os.path.dirname(path)
@@ -1264,6 +1418,7 @@ def _resolve_hub_repo_cached_file(
     token = None,
     cache_dir = None,
     local_files_only = True,
+    revision = None,
 ):
     """Return a cached file path under a Hub snapshot, or None if absent."""
     local_dir = _resolve_hub_repo_local_dir(
@@ -1271,6 +1426,7 @@ def _resolve_hub_repo_cached_file(
         token = token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        revision = revision,
         filenames = (filename,),
     )
     if local_dir is None:
@@ -1286,6 +1442,7 @@ def _hub_repo_or_local_path(
     cache_dir = None,
     local_files_only = False,
     filenames = None,
+    revision = None,
 ):
     """Prefer a cached snapshot path over a Hub repo id when offline or ``local_files_only``."""
     if isinstance(repo_id, str) and os.path.isdir(repo_id):
@@ -1298,6 +1455,7 @@ def _hub_repo_or_local_path(
         token = token,
         cache_dir = cache_dir,
         local_files_only = True,
+        revision = revision,
         filenames = filenames
         or (
             "tokenizer_config.json",
@@ -1318,6 +1476,7 @@ def _load_pretrained_tokenizer_fast(
     trust_remote_code = False,
     cache_dir = None,
     local_files_only = False,
+    revision = None,
 ):
     """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline.
 
@@ -1331,6 +1490,7 @@ def _load_pretrained_tokenizer_fast(
         token = token,
         cache_dir = cache_dir,
         local_files_only = lfo,
+        revision = revision,
         filenames = (
             "tokenizer_config.json",
             "tokenizer.json",
@@ -1344,6 +1504,7 @@ def _load_pretrained_tokenizer_fast(
         trust_remote_code = trust_remote_code,
         cache_dir = cache_dir,
         local_files_only = lfo,
+        revision = revision,
     )
 
 

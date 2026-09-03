@@ -1,8 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import {
+  DEFAULT_STT_MODEL,
+  type DefaultSttModel,
+  STT_MODELS,
+  STT_MODEL_REPOS,
+  type SttModel,
+  migrateVoiceSettings,
+} from "./stt-model-catalog";
+
+export * from "./stt-model-catalog";
 
 // Voice preferences in localStorage. Adapters read them at call time so
 // changes apply without reloading the chat runtime.
@@ -24,26 +35,6 @@ const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
-/** Five curated Whisper choices, mirrored by the backend (stt_sidecar.py). */
-export const STT_MODELS = [
-  "tiny",
-  "base",
-  "small",
-  "large-v3-turbo",
-  "large-v3",
-] as const;
-export type DefaultSttModel = (typeof STT_MODELS)[number];
-/** A curated id or a user-selected Hugging Face `owner/model` repository. */
-export type SttModel = string;
-/** Whisper repos downloaded through Studio's existing Model Hub manager. */
-export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
-  tiny: "unsloth/whisper-tiny",
-  base: "unsloth/whisper-base",
-  small: "unsloth/whisper-small",
-  "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
-  "large-v3": "unsloth/whisper-large-v3",
-};
-export const DEFAULT_STT_MODEL: DefaultSttModel = "small";
 const HF_REPO_ID =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
 
@@ -90,8 +81,8 @@ export function isSttModelLanguageCompatible(
 export type DictationEngine = "browser" | "model";
 
 /**
- * Whether a model id is one of the five curated Whisper choices. Curated models
- * run GGML through whisper.cpp; custom repos are safetensors and run through
+ * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
+ * mtmd ids run through llama.cpp, and custom repos are safetensors on
  * Transformers.
  */
 export function isCuratedSttModel(model: SttModel): boolean {
@@ -199,7 +190,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       micDeviceId: "default",
       setMicDeviceId: (micDeviceId) => set({ micDeviceId }),
 
-      dictationEngine: "browser",
+      dictationEngine: isTauri ? "model" : "browser",
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
       sttModel: DEFAULT_STT_MODEL,
@@ -315,14 +306,17 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     {
       name: "unsloth_voice_settings",
       storage: createJSONStorage(() => quotaSafeLocalStorage),
+      version: 1,
+      migrate: migrateVoiceSettings,
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
         const dictationLanguage = asString(saved?.dictationLanguage, "auto");
         // "gguf" was a short-lived separate engine choice; both local
         // backends now live under "model".
         const savedEngine = saved?.dictationEngine as string | undefined;
+        // Desktop has no browser speech engine, so always resolve to "model".
         const dictationEngine: DictationEngine =
-          savedEngine === "model" || savedEngine === "gguf"
+          isTauri || savedEngine === "model" || savedEngine === "gguf"
             ? "model"
             : "browser";
         const savedSttModel = normalizeSttModel(saved?.sttModel);

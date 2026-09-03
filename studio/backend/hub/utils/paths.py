@@ -173,7 +173,7 @@ def is_local_path(path: str) -> bool:
     return has_local_syntax
 
 
-_VALID_REPO_ID_SEGMENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_VALID_REPO_ID_SEGMENT = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$")
 _MAX_REPO_ID_LENGTH = 96
 
 
@@ -188,9 +188,8 @@ def is_valid_repo_id(repo_id: str) -> bool:
     segments = repo_id.split("/")
     if len(segments) not in (1, 2):
         return False
-    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per
-    # segment (repo name / namespace), not to the whole "namespace/repo_name"
-    # string, so long-but-valid repo names are not falsely rejected.
+    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per segment (repo name /
+    # namespace), not to the whole "namespace/repo_name" string.
     return all(
         segment not in ("", ".", "..")
         and len(segment) <= _MAX_REPO_ID_LENGTH
@@ -247,9 +246,8 @@ def ollama_model_dirs() -> list[Path]:
     return dirs
 
 
-# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a long-lived
-# process touching many repo ids can't grow it without limit; evicted cold
-# entries simply recompute on next use.
+# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a long-lived process can't
+# grow it without limit; evicted cold entries simply recompute.
 _CACHE_CASE_RESOLUTION_MEMO_MAX = 512
 _CACHE_CASE_RESOLUTION_MEMO: "OrderedDict[tuple[str, str], str]" = OrderedDict()
 _CACHE_CASE_RESOLUTION_LOCK = threading.Lock()
@@ -393,9 +391,8 @@ def resolve_dataset_path(path_value: str) -> Path:
     raw = str(path_value or "").strip()
     if "\x00" in raw:
         raise ValueError("dataset path may not contain null bytes")
-    # Normalize first so Windows/UNC and backslash paths resolve like the rest
-    # of the Hub path layer (e.g. C:\data -> /mnt/c/data on WSL) and a
-    # backslashed '..' is caught by the traversal guard below.
+    # Normalize first so Windows/UNC and backslash paths resolve like the rest of the Hub path
+    # layer, and a backslashed '..' is caught by the traversal guard below.
     normalized = normalize_path(raw)
     path = Path(normalized).expanduser()
     if ".." in path.parts:
@@ -481,9 +478,8 @@ def resolve_cached_repo_id_case(
                     continue
                 if entry.name.lower() != expected_lower:
                     continue
-                # The lowercased full-name match already proves the prefix
-                # matches; a case-sensitive startswith would reject a mixed-case
-                # imported dir such as Models--Org--Repo.
+                # The lowercased full-name match already proves the prefix matches; a case-sensitive
+                # startswith would reject a mixed-case imported dir such as Models--Org--Repo.
                 repo_part = entry.name[len(prefix) :]
                 if not repo_part:
                     continue

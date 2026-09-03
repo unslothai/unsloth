@@ -177,6 +177,28 @@ class TestClearGpuCache:
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             clear_gpu_cache()
 
+    @needs_torch
+    def test_clears_mps_on_apple_silicon_without_mlx(self):
+        """An Apple Silicon host with a broken MLX stack reports CPU, but diffusion and video
+        still run on Metal, so the MPS allocator has to be released on that path too."""
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
+            patch("torch.mps.empty_cache") as mock_empty,
+        ):
+            clear_gpu_cache()
+            mock_empty.assert_called_once()
+
+    @needs_torch
+    def test_does_not_clear_mps_on_a_non_apple_cpu_host(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value = False),
+            patch("torch.mps.empty_cache") as mock_empty,
+        ):
+            clear_gpu_cache()
+            mock_empty.assert_not_called()
+
 
 # ========== get_gpu_memory_info() ==========
 

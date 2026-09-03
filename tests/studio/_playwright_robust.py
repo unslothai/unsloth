@@ -8,23 +8,39 @@ directly by the standalone scripts; does NOT depend on pytest.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
+import signal
+import socket
+import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
+
+FRONTEND = Path(__file__).resolve().parents[2] / "studio" / "frontend"
+_LIVE_SERVERS: list[subprocess.Popen[str]] = []
+_PREV_HANDLERS: dict[int, Any] = {}
 
 # Chromium launch args.
 # Throttling flags stop Chromium deprioritising CPU/timers when it thinks the
 # headless window is backgrounded (run 25586583024 stalled inference + render).
 # TranslateUI strips a pointer-intercepting popup; ipc-flooding-protection off
 # lets rapid clicks through during the slider sweep.
-# `--single-process` is darwin-only (fixes the pipeTransport.js JSON-RPC crash);
-# on Win/Linux it destabilises the renderer.
+# No `--single-process`. It was darwin-only, for a pipeTransport.js JSON-RPC crash,
+# and it caps Chromium at exactly ONE BrowserContext: opening a second one kills the
+# browser with SIGTRAP, and the next new_page() raises "Target page, context or
+# browser has been closed". Closing a context does it too, even with another still
+# open. That is what made "Update banner layout regression" red on every macos-14 run
+# (it needs a context per viewport), and it is why playwright_chat_ui.py had to keep
+# every step inside one context. Measured with chromium-headless-shell 151: with the
+# flag, a second context dies immediately; without it, 12 open/close cycles pass.
 _BASE_CHROMIUM_ARGS = (
     "--disable-dev-shm-usage",
     "--no-sandbox",
@@ -38,13 +54,10 @@ _BASE_CHROMIUM_ARGS = (
 
 
 def chromium_launch_args(platform: str | None = None) -> list[str]:
-    """Chromium launch args for `platform` (defaults to `sys.platform`; pass a
-    string to test the darwin branch on Linux)."""
-    p = sys.platform if platform is None else platform
-    args = list(_BASE_CHROMIUM_ARGS)
-    if p == "darwin":
-        args.append("--single-process")
-    return args
+    """Chromium launch args. Same on every platform; `platform` is accepted so
+    callers that pass one keep working."""
+    del platform
+    return list(_BASE_CHROMIUM_ARGS)
 
 
 # Init script injected into every Playwright context.
@@ -97,6 +110,169 @@ def install_view_transition_killer(ctx: Any) -> None:
 # On the macos-14 free runner /api/health can return 200 while /api/auth still
 # 503s (auth DB mid-migration); this in-script probe catches that gap before a
 # 60s change-password timeout.
+
+
+# The smoke pages are dev-server-only, so each harness owns its server. A backgrounded
+# `npm run dev &` puts the npm WRAPPER in $!, and killing that orphans the node child
+# holding the port and stdout. Hence the process group, stdout drain and SIGKILL escalation.
+
+
+def drain_process_output(proc: subprocess.Popen[str], sink: deque[str] | None = None) -> None:
+    """Consume vite's output so its pipe cannot fill and wedge; keep the tail for errors."""
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            if sink is not None:
+                sink.append(line.rstrip())
+
+
+def _port_is_taken(port: int, host: str) -> bool:
+    with socket.socket() as probe:
+        probe.settimeout(1.0)
+        return probe.connect_ex((host, port)) == 0
+
+
+def _stop_live_servers() -> None:
+    while _LIVE_SERVERS:
+        stop_process(_LIVE_SERVERS.pop())
+
+
+def _handle_fatal_signal(signum, frame) -> None:
+    _stop_live_servers()
+    previous = _PREV_HANDLERS.get(signum, signal.SIG_DFL)
+    if callable(previous):
+        previous(signum, frame)
+        return
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _arm_teardown_signals() -> None:
+    """`finally` covers exceptions and SIGINT but not SIGTERM, and a CI cancel sends SIGTERM.
+    Without this the server outlives the harness, which is the whole thing being fixed."""
+    if _PREV_HANDLERS or os.name == "nt":
+        return
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            _PREV_HANDLERS[signum] = signal.signal(signum, _handle_fatal_signal)
+        except (ValueError, OSError):
+            _PREV_HANDLERS.clear()  # not the main thread; leave signals alone
+            return
+
+
+def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
+    """Start `vite dev` on `port` in its own process group, with stdout drained.
+
+    Refuses an occupied port. --strictPort would make vite exit anyway, and then the
+    readiness poll would be talking to whatever else is listening, not to us.
+    """
+    if _port_is_taken(port, host):
+        raise RuntimeError(
+            f"{host}:{port} is already serving. Stop it, or move this harness with SMOKE_PORT."
+        )
+    process_group = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
+    # shutil.which honours PATHEXT, so this resolves npm.cmd on Windows. CreateProcess cannot
+    # run a .cmd directly, so a bare "npm" is a FileNotFoundError there.
+    npm = shutil.which("npm") or "npm"
+    proc = subprocess.Popen(
+        [npm, "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
+        cwd = FRONTEND,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+        **process_group,
+    )
+    tail: deque[str] = deque(maxlen = 20)
+    proc.vite_tail = tail  # type: ignore[attr-defined]
+    threading.Thread(target = drain_process_output, args = (proc, tail), daemon = True).start()
+    _LIVE_SERVERS.append(proc)
+    _arm_teardown_signals()
+    atexit.register(_stop_live_servers)
+    return proc
+
+
+def stop_process(proc: subprocess.Popen[str]) -> None:
+    """SIGTERM the process group, escalating to SIGKILL if it does not go."""
+    if proc in _LIVE_SERVERS:
+        _LIVE_SERVERS.remove(proc)
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T"],
+            check = False,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+        )
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+    try:
+        proc.wait(timeout = 10)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check = False,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            )
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        # Called from a `finally`: never raise over the failure that sent us here.
+        try:
+            proc.wait(timeout = 10)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def wait_for_smoke_page(
+    url: str,
+    entry: str,
+    *,
+    proc: subprocess.Popen[str] | None = None,
+    timeout_s: float = 120.0,
+    info: Callable[[str], None] | None = None,
+) -> None:
+    """Block until `url` serves a page that really references `entry`.
+
+    Vite's SPA fallback answers 200 with index.html for any path it cannot resolve, so a
+    deleted smoke page still looks healthy. Match the module specifier, not the status.
+    """
+    deadline = time.monotonic() + timeout_s
+    last = "no response"
+    while time.monotonic() < deadline:
+        # Ours died (busy port, missing node_modules): stop instead of polling out the timeout.
+        if proc is not None and proc.poll() is not None:
+            tail = "\n".join(getattr(proc, "vite_tail", []))
+            raise RuntimeError(
+                f"vite exited with code {proc.returncode} before serving {url}\n{tail}"
+            )
+        try:
+            with urllib.request.urlopen(url, timeout = 3.0) as r:
+                body = r.read().decode("utf-8", errors = "replace")
+                if r.status == 200 and entry in body:
+                    if info is not None:
+                        info(f"{url} ready (serves {entry})")
+                    return
+                last = (
+                    f"status={r.status}, {entry} "
+                    f"{'present' if entry in body else 'MISSING (SPA fallback?)'}"
+                )
+        except Exception as exc:
+            last = f"{type(exc).__name__}: {exc}"
+        time.sleep(0.5)
+    raise RuntimeError(f"vite did not serve {url} referencing {entry} within {timeout_s}s ({last})")
 
 
 def _http_get_status_and_body(url: str, timeout: float) -> tuple[int, dict | None]:
@@ -234,8 +410,8 @@ BENIGN_PAGE_ERROR_PATTERNS: tuple[str, ...] = (
 )
 
 BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
-    # macos-14 buffer-exhaustion under --single-process; the test catches the
-    # underlying request failure via expect_response and retries.
+    # macos-14 buffer exhaustion; the test catches the underlying request
+    # failure via expect_response and retries.
     "net::ERR_NO_BUFFER_SPACE",
     # Intentional fetch aborts (unmount, route change) log a console.error.
     "AbortError",

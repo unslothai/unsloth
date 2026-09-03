@@ -204,16 +204,20 @@ def spoof_hardware(monkeypatch):
             fake_mlx.core = fake_mlx_core
             monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
             monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
-            # detect_hardware now gates MLX on the full stack via
-            # utils.mlx_repair.mlx_stack_available() (it imports mlx_lm/mlx_vlm and
-            # checks dist versions), which faking only mlx.core cannot satisfy. An
-            # mlx profile means a complete, healthy stack, so model that here;
-            # mlx_stack_available's own internals are covered by test_mlx_repair.py.
+            # detect_hardware gates MLX on the full stack via utils.mlx_repair (it
+            # imports mlx_lm/mlx_vlm and checks dist versions), which faking only
+            # mlx.core cannot satisfy. An mlx profile means a complete, healthy stack,
+            # so model that here; the internals are covered by test_mlx_repair.py.
+            # Both entry points, because the gate asks for the blocker LIST: one
+            # measurement decides the verdict and explains it. Stubbing only
+            # mlx_stack_available() runs the real check against a Linux runner with no
+            # MLX distributions, so the Apple Silicon profile detects CPU.
             if str(STUDIO_BACKEND) not in sys.path:
                 sys.path.insert(0, str(STUDIO_BACKEND))
             import utils.mlx_repair as _mlx_repair  # type: ignore
 
             monkeypatch.setattr(_mlx_repair, "mlx_stack_available", lambda: True)
+            monkeypatch.setattr(_mlx_repair, "mlx_stack_blockers", lambda: [])
         else:
             # Drop cached mlx and patch find_spec so the unsloth gate sees mlx as absent.
             monkeypatch.delitem(sys.modules, "mlx", raising = False)

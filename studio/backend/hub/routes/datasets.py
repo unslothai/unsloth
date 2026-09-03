@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 
-from auth.authentication import get_current_subject
+from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token
 from hub.schemas.datasets import (
     AiAssistMappingRequest,
@@ -18,6 +18,8 @@ from hub.schemas.datasets import (
     CheckFormatRequest,
     CheckFormatResponse,
     DeleteCachedDatasetResponse,
+    LocalDatasetOptionsRequest,
+    LocalDatasetOptionsResponse,
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
@@ -31,16 +33,18 @@ from hub.schemas.downloads import (
     DownloadDatasetRequest,
     TransportStatusResponse,
 )
-from hub.services.datasets import cache_inventory, downloads, formatting, local
+from hub.services.datasets import cache_inventory, downloads, formatting, local, local_options
 
 router = APIRouter()
 
 
 @router.post("/upload", response_model = UploadDatasetResponse)
 async def upload_dataset(
-    file: UploadFile, current_subject: str = Depends(get_current_subject)
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    return await local.upload_dataset_response(file)
+    return await local.upload_dataset_response(file, native_path_lease)
 
 
 @router.get("/local", response_model = LocalDatasetsResponse)
@@ -57,6 +61,13 @@ def list_local_datasets(
 )
 async def list_cached_datasets(current_subject: str = Depends(get_current_subject)):
     return await cache_inventory.list_cached_datasets_response()
+
+
+@router.post("/local-options", response_model = LocalDatasetOptionsResponse)
+def get_local_dataset_options(
+    request: LocalDatasetOptionsRequest, current_subject: str = Depends(get_current_subject)
+) -> LocalDatasetOptionsResponse:
+    return local_options.local_dataset_options(request)
 
 
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)
@@ -86,9 +97,14 @@ async def get_dataset_download_progress(
 async def download_dataset(
     body: DownloadDatasetRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_dataset_response(body, hf_token)
+    return await downloads.download_dataset_response(
+        body,
+        hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDatasetDownloadResponse, status_code = 202)

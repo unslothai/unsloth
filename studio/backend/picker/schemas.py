@@ -11,13 +11,29 @@ from pydantic import BaseModel, Field, field_validator
 MAX_CHAT_TEMPLATE_BYTES = 65_536
 
 
+def chat_template_byte_length(value: str) -> Optional[int]:
+    """UTF-8 length, or None if the string cannot be encoded at all.
+
+    JSON can carry an unpaired surrogate, as a truncated emoji paste produces.
+    json decodes it fine and .encode("utf-8") then raises. Callers treat None as
+    "reject": such a template can never render.
+    """
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+
+
 class ValidateChatTemplateRequest(BaseModel):
     template: str = Field(default = "")
 
     @field_validator("template")
     @classmethod
     def _enforce_template_size(cls, value: str) -> str:
-        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+        size = chat_template_byte_length(value)
+        if size is None:
+            raise ValueError("Chat template contains unpaired surrogate characters.")
+        if size > MAX_CHAT_TEMPLATE_BYTES:
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 

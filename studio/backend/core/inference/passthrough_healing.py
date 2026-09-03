@@ -321,6 +321,12 @@ class StreamToolCallHealer:
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
+        # Markup span each promoted call was cut from, keyed by its call id.
+        # Promotion is destructive -- the span never reaches the client -- so a
+        # caller that ends up DISCARDING a promoted call (a turn truncated at
+        # finish_reason "length" cannot be executed) has no other way to give
+        # the model's own words back. Bounded by _MAX_HOLD_CHARS per span.
+        self._promoted_spans: dict[str, str] = {}
         # Structured delta.tool_calls seen upstream: grammar mode already
         # worked, so healing goes dormant and text relays verbatim.
         self.dormant = False
@@ -328,6 +334,14 @@ class StreamToolCallHealer:
     @property
     def healed(self) -> bool:
         return self._id_offset > 0
+
+    def promoted_source(self, call_id: str) -> str:
+        """The exact markup span a promoted call was cut from, or "".
+
+        Only for a caller that has to un-promote: relaying this alongside the
+        call would double the output, since the call already carries it.
+        """
+        return self._promoted_spans.get(call_id, "")
 
     def structured_tool_call_seen(self) -> list:
         """Go dormant; flush anything held so no text is swallowed."""
@@ -400,6 +414,7 @@ class StreamToolCallHealer:
                     if self._buffer[pos:start]:
                         events.append(("text", self._buffer[pos:start]))
                     events.append(("tool_call", promoted[0]))
+                    self._promoted_spans[promoted[0]["id"]] = self._buffer[start:end]
                     self._id_offset += 1
                 else:
                     # Undeclared/unusable name: markup is DATA, flush it (and prior text) verbatim.
@@ -442,6 +457,7 @@ class StreamToolCallHealer:
                 if residue[pos:start]:
                     events.append(("text", residue[pos:start]))
                 events.append(("tool_call", promoted[0]))
+                self._promoted_spans[promoted[0]["id"]] = residue[start:end]
                 self._id_offset += 1
                 any_promoted = True
             else:

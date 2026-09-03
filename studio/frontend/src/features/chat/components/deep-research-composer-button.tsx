@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, XIcon } from "lucide-react";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { XIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ResearchWebsitePolicy } from "../types/research";
@@ -24,7 +25,12 @@ function normalizeDomain(raw: string): string | null {
   if (!value || /[\\\s]/.test(value)) return null;
   try {
     const url = new URL(value.includes("://") ? value : `https://${value}`);
-    if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.port) {
+    if (
+      !/^https?:$/.test(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.port
+    ) {
       return null;
     }
     return url.hostname
@@ -99,7 +105,9 @@ function DomainList({
               type="button"
               className="text-muted-foreground transition-colors hover:text-foreground"
               aria-label={`Remove ${domain}`}
-              onClick={() => onChange(values.filter((value) => value !== domain))}
+              onClick={() =>
+                onChange(values.filter((value) => value !== domain))
+              }
             >
               <XIcon className="size-3" />
             </button>
@@ -129,7 +137,9 @@ export function DeepResearchComposerButton({
   onConfigure: () => void;
 }) {
   const enabled = useChatRuntimeStore((state) => state.deepResearchEnabled);
-  const setEnabled = useChatRuntimeStore((state) => state.setDeepResearchEnabled);
+  const setEnabled = useChatRuntimeStore(
+    (state) => state.setDeepResearchEnabled,
+  );
 
   if (!enabled) return null;
 
@@ -158,9 +168,12 @@ export function DeepResearchComposerButton({
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
-      <span className="composer-pill-caret flex items-center gap-0.5 text-primary/70">
-        <ChevronDownIcon className="size-3" />
-      </span>
+      {/* Same caret as the other composer pills, so the arrows match. */}
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
+        strokeWidth={1.5}
+        className="composer-pill-caret size-[15px] text-primary/70"
+      />
     </button>
   );
 }
@@ -173,7 +186,9 @@ export function DeepResearchWebsiteAccessDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const policy = useChatRuntimeStore((state) => state.researchWebsitePolicy);
-  const setPolicy = useChatRuntimeStore((state) => state.setResearchWebsitePolicy);
+  const setPolicy = useChatRuntimeStore(
+    (state) => state.setResearchWebsitePolicy,
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -201,41 +216,40 @@ function DeepResearchWebsiteAccessContent({
 
   return (
     <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Website access</DialogTitle>
-          <DialogDescription>
-            Control which websites the next Deep Research run can search and
-            read. Limits are enforced by the server and shared with the research
-            model.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-6">
-          <DomainList
-            label="Allow only"
-            description="When set, research can access only these domains and their subdomains."
-            values={draft.allowedDomains}
-            onChange={(allowedDomains) => setDraft({ ...draft, allowedDomains })}
-          />
-          <DomainList
-            label="Always block"
-            description="These domains and their subdomains stay blocked. Blocking takes precedence."
-            values={draft.blockedDomains}
-            onChange={(blockedDomains) => setDraft({ ...draft, blockedDomains })}
-          />
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              setPolicy(draft);
-              onClose();
-            }}
-          >
-            Save limits
-          </Button>
-        </DialogFooter>
+      <DialogHeader>
+        <DialogTitle>Website access</DialogTitle>
+        <DialogDescription>
+          Control which websites the next Deep Research run can search and read.
+          Limits are enforced by the server and shared with the research model.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="space-y-6">
+        <DomainList
+          label="Allow only"
+          description="When set, research can access only these domains and their subdomains."
+          values={draft.allowedDomains}
+          onChange={(allowedDomains) => setDraft({ ...draft, allowedDomains })}
+        />
+        <DomainList
+          label="Always block"
+          description="These domains and their subdomains stay blocked. Blocking takes precedence."
+          values={draft.blockedDomains}
+          onChange={(blockedDomains) => setDraft({ ...draft, blockedDomains })}
+        />
+      </div>
+      <DialogFooter>
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          onClick={() => {
+            setPolicy(draft);
+            onClose();
+          }}
+        >
+          Save limits
+        </Button>
+      </DialogFooter>
     </DialogContent>
   );
 }

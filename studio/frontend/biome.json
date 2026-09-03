@@ -127,14 +127,6 @@
       }
     },
     {
-      "include": ["src/features/onboarding/components/steps/summary-step.tsx"],
-      "linter": {
-        "rules": {
-          "style": { "useExplicitLengthCheck": "off" }
-        }
-      }
-    },
-    {
       "include": ["src/components/ui/**"],
       "linter": {
         "enabled": false

@@ -7,6 +7,16 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  chatHistoryClearBoundary,
+  ChatThreadDeletedError,
+  ensureStoredChatThread,
+  isThreadIncognito,
+} from "@/features/chat";
+import {
+  useNativeAttachmentTargetKey,
+  useNativeIntentStore,
+} from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
@@ -46,6 +56,30 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   );
 }
 
+/**
+* Confirm a thread is stored before documents are indexed against it. An id reaches this
+* component before its row write lands, from a cached initialize() or from activeThreadId, and
+* upload_thread_document does not check the thread itself. A transport failure is not proof the
+* row is missing, so only a definitive miss blocks the upload.
+*/
+async function requireStoredThread(threadId: string): Promise<void> {
+  if (isThreadIncognito(threadId)) return;
+  let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
+  try {
+    stored = await ensureStoredChatThread(threadId);
+  } catch (error) {
+    // A backend tombstone is an answer, not an indeterminate transport failure: indexing
+    // against it would leave documents under a thread that can never come back.
+    if (error instanceof ChatThreadDeletedError) {
+      throw error;
+    }
+    return;
+  }
+  if (!stored) {
+    throw new Error(`Thread ${threadId} was not persisted`);
+  }
+}
+
 export function ThreadDocumentsBar({
   threadId,
   onIndexingChange,
@@ -55,6 +89,8 @@ export function ThreadDocumentsBar({
 }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
+  const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -64,8 +100,14 @@ export function ThreadDocumentsBar({
   // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
+  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  const initGenerationRef = useRef(0);
   useEffect(() => {
-    if (threadId) setMaterializedId(null);
+    if (threadId) {
+      setMaterializedId(null);
+      initGenerationRef.current += 1;
+      initPromiseRef.current = null;
+    }
   }, [threadId]);
 
   const lister = useCallback(
@@ -94,28 +136,105 @@ export function ThreadDocumentsBar({
   useEffect(() => () => onIndexingChange?.(false), [onIndexingChange]);
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
-  // start two threads.
-  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  // start two threads. A thread switch gets separate work even if the prior request is pending.
   const ensureThreadId = useCallback((): Promise<string | null> => {
-    if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
-    if (initPromiseRef.current) return initPromiseRef.current;
+    if (effectiveThreadId) {
+      return requireStoredThread(effectiveThreadId).then(
+        () => effectiveThreadId,
+        () => {
+          toast.error("Couldn't start a chat for these documents");
+          return null;
+        },
+      );
+    }
+    const current = initPromiseRef.current;
+    if (current) {
+      return current;
+    }
+    const clearGeneration = chatHistoryClearBoundary.capture();
+    const generation = ++initGenerationRef.current;
     const pending = aui
       .threadListItem()
       .initialize()
-      .then(({ remoteId }) => {
-        setMaterializedId(remoteId);
+      .then(async ({ remoteId }) => {
+        await requireStoredThread(remoteId);
+        // a clear that landed while the row write was in flight is deleting this thread
+        if (chatHistoryClearBoundary.capture() !== clearGeneration) {
+          throw new Error("Chat history was cleared");
+        }
+        // an older request can still finish after the component moved to another thread
+        if (initGenerationRef.current === generation) {
+          setMaterializedId(remoteId);
+        }
         return remoteId;
       })
       .catch(() => {
         toast.error("Couldn't start a chat for these documents");
         return null;
-      })
-      .finally(() => {
-        initPromiseRef.current = null;
       });
     initPromiseRef.current = pending;
+    const clear = () => {
+      if (initPromiseRef.current === pending) {
+        initPromiseRef.current = null;
+      }
+    };
+    pending.then(clear, clear);
     return pending;
   }, [aui, effectiveThreadId]);
+
+  // Desktop drops land in the native-intent store because the drop listener lives on
+  // the chat page; only the chat that received the OS drop may drain its batch.
+  const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const hasPendingAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  useEffect(() => {
+    if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
+      return;
+    }
+    // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
+    // index into something this bar never shows.
+    if (ragEnabled && ragSource.type === "kb") {
+      useNativeIntentStore.getState().takeAttachments(nativeAttachmentTargetKey);
+      toast.error("This chat retrieves from a knowledge base", {
+        description: "Add these files to the knowledge base instead.",
+      });
+      return;
+    }
+    const intents = useNativeIntentStore
+      .getState()
+      .takeAttachments(nativeAttachmentTargetKey);
+    if (intents.length === 0) return;
+    // A stale KB preference is inactive while RAG is off; use thread retrieval.
+    if (!ragEnabled) {
+      setRagSource({ type: "thread" });
+      setRagEnabled(true);
+    }
+    void upload(
+      intents.map((intent) => ({
+        kind: "native" as const,
+        token: intent.path.token,
+        name: intent.displayLabel,
+        sizeBytes: intent.path.sizeBytes,
+        modifiedMs: intent.path.modifiedMs,
+      })),
+      ensureThreadId().then((id) =>
+        id ? ({ type: "thread", threadId: id } as const) : null,
+      ),
+    );
+  }, [
+    hasPendingAttachments,
+    nativeAttachmentTargetKey,
+    upload,
+    ensureThreadId,
+    ragEnabled,
+    ragSource,
+    setRagSource,
+    setRagEnabled,
+  ]);
 
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);

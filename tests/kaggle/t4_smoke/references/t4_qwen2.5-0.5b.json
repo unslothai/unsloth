@@ -1,0 +1,93 @@
+{
+  "metrics": [
+    {
+      "step": 1,
+      "loss": 10.322242736816406,
+      "grad_norm": NaN,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 2,
+      "loss": 10.495625495910645,
+      "grad_norm": NaN,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 3,
+      "loss": 9.956324577331543,
+      "grad_norm": NaN,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 4,
+      "loss": 10.38922119140625,
+      "grad_norm": 48.64849853515625,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 5,
+      "loss": 5.052287578582764,
+      "grad_norm": 47.51141357421875,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 6,
+      "loss": 1.7537767887115479,
+      "grad_norm": 30.541547775268555,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 7,
+      "loss": 1.7619656324386597,
+      "grad_norm": 54.54685592651367,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 8,
+      "loss": 0.17636960744857788,
+      "grad_norm": 17.216157913208008,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 9,
+      "loss": 1.795599341392517,
+      "grad_norm": 48.85170364379883,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 10,
+      "loss": 0.08708081394433975,
+      "grad_norm": 11.202317237854004,
+      "learning_rate": 0.001
+    }
+  ],
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.10.0+cu128",
+    "cuda": "12.8",
+    "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+    "transformers": "5.5.0",
+    "trl": "0.24.0",
+    "unsloth": "2026.8.12",
+    "gpu_name": "Tesla T4",
+    "gpu_capability": "sm_75",
+    "gpu_total_gb": 14.6,
+    "gpu_count_visible": 1,
+    "driver_cuda": "12.8"
+  },
+  "config": {
+    "max_steps": 10,
+    "dataset_digest": "847095f51df8d86429cd2cd095824369d6d95c36bd461c363599651d356946df",
+    "batch_size": 2,
+    "grad_accum": 1,
+    "max_seq_length": 512,
+    "learning_rate": 0.001,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "optim": "adamw_8bit",
+    "gradient_checkpointing": "unsloth",
+    "repeat": 2
+  },
+  "model": "unsloth/Qwen2.5-0.5B-Instruct",
+  "source_kernel": "danielhanchen/unsloth-t4-ci-e3c6661f"
+}

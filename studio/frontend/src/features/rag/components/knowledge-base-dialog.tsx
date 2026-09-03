@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Delete02Icon,
   Edit03Icon,
@@ -9,7 +8,18 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronLeftIcon, UploadIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,8 +41,14 @@ import {
   listKnowledgeBases,
   updateKnowledgeBase,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT, type KnowledgeBase } from "../types/rag";
+import { useRagAvailabilityStore } from "../api/rag-availability";
+import {
+  type KnowledgeBase,
+  RAG_UPLOAD_ACCEPT,
+  isLinkedFolderManaged,
+} from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
+import { LinkedFoldersManager } from "./linked-folders-manager";
 import { useRagDocuments } from "./use-rag-documents";
 
 type View =
@@ -56,6 +72,18 @@ export function KnowledgeBaseDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState<KnowledgeBase | null>(
+    null,
+  );
+  // Measured only: while the answer is unknown this stays false and the dialog renders
+  // exactly as it always has. See api/rag-availability.
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const ragUnavailableReason = useRagAvailabilityStore((s) =>
+    s.unavailableReason(),
+  );
+  const ragUnavailableHint = ragUnavailable
+    ? (ragUnavailableReason ?? undefined)
+    : undefined;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -93,6 +121,14 @@ export function KnowledgeBaseDialog({
   }
 
   async function submitForm() {
+    // The button is disabled for this, but the form is also reachable by keyboard and
+    // the verdict can land while it is open. A 503 toast is not an explanation.
+    if (ragUnavailable) {
+      toast.error("Knowledge bases are unavailable", {
+        description: ragUnavailableReason ?? undefined,
+      });
+      return;
+    }
     const trimmed = name.trim();
     if (!trimmed) {
       toast.error("Name is required");
@@ -125,13 +161,6 @@ export function KnowledgeBaseDialog({
   }
 
   async function removeKb(kb: KnowledgeBase) {
-    if (
-      !window.confirm(
-        `Delete knowledge base "${kb.name}" and all its documents?`,
-      )
-    ) {
-      return;
-    }
     try {
       await deleteKnowledgeBase(kb.id);
       await refresh();
@@ -149,9 +178,7 @@ export function KnowledgeBaseDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {view.kind === "documents"
-              ? view.kb.name
-              : "Knowledge bases"}
+            {view.kind === "documents" ? view.kb.name : "Knowledge bases"}
           </DialogTitle>
           <DialogDescription>
             {view.kind === "documents"
@@ -187,7 +214,7 @@ export function KnowledgeBaseDialog({
               <Button variant="ghost" onClick={backToList} disabled={saving}>
                 Cancel
               </Button>
-              <Button onClick={submitForm} disabled={saving}>
+              <Button onClick={submitForm} disabled={saving || ragUnavailable}>
                 {saving ? <Spinner /> : null}
                 {view.kind === "edit" ? "Save changes" : "Create"}
               </Button>
@@ -196,7 +223,12 @@ export function KnowledgeBaseDialog({
         ) : (
           <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end">
-              <Button size="sm" onClick={startCreate}>
+              <Button
+                size="sm"
+                onClick={startCreate}
+                disabled={ragUnavailable}
+                title={ragUnavailableHint}
+              >
                 <HugeiconsIcon icon={PlusSignIcon} size={14} />
                 New knowledge base
               </Button>
@@ -205,12 +237,17 @@ export function KnowledgeBaseDialog({
               <div className="flex justify-center py-6">
                 <Spinner />
               </div>
+            ) : ragUnavailable ? (
+              // An empty list on this host is not an empty store, so say which one it is.
+              <div className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                {ragUnavailableReason ?? "Knowledge bases are unavailable."}
+              </div>
             ) : kbs.length === 0 ? (
               <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex max-h-[60vh] flex-col divide-y overflow-y-auto rounded-md border">
+              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto rounded-md border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -242,7 +279,7 @@ export function KnowledgeBaseDialog({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        onClick={() => removeKb(kb)}
+                        onClick={() => setConfirmingDelete(kb)}
                         aria-label="Delete knowledge base"
                       >
                         <HugeiconsIcon icon={Delete02Icon} size={14} />
@@ -255,6 +292,38 @@ export function KnowledgeBaseDialog({
           </div>
         )}
       </DialogContent>
+      <AlertDialog
+        open={confirmingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setConfirmingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete knowledge base</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete{" "}
+              <span className="font-medium text-foreground">
+                &quot;{confirmingDelete?.name}&quot;
+              </span>{" "}
+              and all its documents? This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const kb = confirmingDelete;
+                setConfirmingDelete(null);
+                if (kb) void removeKb(kb);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
@@ -266,15 +335,13 @@ function KnowledgeBaseDocuments({
   kb: KnowledgeBase;
   onBack: () => void;
 }) {
-  const lister = useCallback(
-    () => listKnowledgeBaseDocuments(kb.id),
-    [kb.id],
-  );
-  const { documents, loading, uploading, upload, remove } = useRagDocuments(
-    { type: "kb", kbId: kb.id },
-    lister,
-  );
+  const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
+  const { documents, loading, uploading, refresh, upload, remove } =
+    useRagDocuments({ type: "kb", kbId: kb.id }, lister);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleLinkedSourcesChanged = useCallback(() => {
+    void refresh({ quiet: true });
+  }, [refresh]);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -294,7 +361,7 @@ function KnowledgeBaseDocuments({
         <input
           ref={fileInputRef}
           type="file"
-          multiple
+          multiple={true}
           accept={RAG_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
@@ -312,7 +379,7 @@ function KnowledgeBaseDocuments({
           No documents yet. Upload a PDF, Markdown, DOCX, HTML, or text file.
         </div>
       ) : (
-        <div className="flex max-h-[55vh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
+        <div className="flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
           {documents.map((doc) => (
             <DocumentStatusChip
               key={doc.id}
@@ -321,7 +388,7 @@ function KnowledgeBaseDocuments({
               progress={doc.progress}
               error={doc.error}
               onRemove={
-                doc.id.startsWith("pending_")
+                doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
                   ? undefined
                   : () => void remove(doc.id)
               }
@@ -329,6 +396,13 @@ function KnowledgeBaseDocuments({
           ))}
         </div>
       )}
+      <div className="border-t pt-3">
+        <LinkedFoldersManager
+          scope={{ type: "knowledge_base", id: kb.id }}
+          compact={true}
+          onSourcesChanged={handleLinkedSourcesChanged}
+        />
+      </div>
     </div>
   );
 }

@@ -275,3 +275,35 @@ def test_v1_models_exposes_real_context_window(monkeypatch):
     # The REAL (post /props readback) window, not the requested one.
     assert entry["context_length"] == 67584
     assert entry["max_context_length"] == 262144
+
+
+def _conversation_with_big_reasoning(trace_chars: int = 40000) -> list[dict]:
+    messages = [{"role": "system", "content": "sys"}]
+    for index in range(8):
+        messages.append({"role": "user", "content": f"question {index} " + "u" * 200})
+        messages.append({"role": "assistant", "content": f"answer {index} " + "a" * 200})
+    messages[-1]["reasoning_content"] = "t" * trace_chars
+    messages.append({"role": "user", "content": "final question"})
+    return messages
+
+
+def test_reasoning_clip_shrinks_a_protected_turn():
+    messages = _conversation_with_big_reasoning()
+    before = routes_mod._estimate_messages_tokens(messages)
+
+    assert routes_mod._clip_reasoning_contents(messages) == 1
+    assert _CLIP_MARKER in messages[-2]["reasoning_content"]
+    assert routes_mod._estimate_messages_tokens(messages) < before / 5
+
+
+def test_reasoning_clip_alone_prevents_middle_eviction():
+    body = {"messages": _conversation_with_big_reasoning()}
+    before = len(body["messages"])
+    error = '{"n_prompt_tokens":12000,"n_ctx":8192}'
+
+    assert _apply_overflow_truncation(body, error) is True
+    assert len(body["messages"]) == before
+    assert _CLIP_MARKER in body["messages"][-2]["reasoning_content"]
+    assert body["max_tokens"] == max(
+        1024, int(8192 * (1.0 - routes_mod._OVERFLOW_PROMPT_TARGET_FRACTION))
+    )

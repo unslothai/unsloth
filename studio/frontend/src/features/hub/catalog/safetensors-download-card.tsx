@@ -37,6 +37,7 @@ import {
 } from "./download-card";
 import { QuantOptionsMenu } from "./gguf-download-card";
 import { useCardDelete } from "./use-card-delete";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useDownloadCardState } from "./use-download-card-state";
 
 function formatModelLabel(modelFormat?: ModelInventoryFormat | null): string {
@@ -172,6 +173,14 @@ export function SafetensorsDownloadCard({
     !isActive &&
     !isLoadingThisModel;
 
+  // Same preview the On Device and picker rows run: without it this card kept an enabled Delete
+  // for a companion base an installed image GGUF still needs, and the refusal arrived as a 400
+  // after the user confirmed.
+  const deleteImpact = useDeleteImpact(
+    deleteRepoOpen && Boolean(repoId),
+    repoId ?? "",
+  );
+
   return (
     <div className="flex w-full flex-col gap-2">
       <DownloadCard
@@ -185,6 +194,7 @@ export function SafetensorsDownloadCard({
             }}
             title="Delete cached model?"
             deleting={deleting}
+            blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
             onConfirm={() => void runDelete()}
             description={
               <>
@@ -195,6 +205,7 @@ export function SafetensorsDownloadCard({
                   ? ` (${formatBytes(modelTotalBytes)})`
                   : ""}{" "}
                 from disk. You can re-download it later.
+                <DeleteImpactSummary impact={deleteImpact} />
               </>
             }
           />
@@ -326,6 +337,7 @@ export function SafetensorsDownloadCard({
             loading={isLoadingThisModel || downloadAction.starting}
             isPartial={downloadAction.isPartial}
             partialTransport={downloadAction.partialTransport}
+            stopMode={downloadAction.stopMode}
             progressPercent={downloadAction.progressPercent}
             disabled={downloadAction.disabled}
             onClick={downloadAction.onClick}

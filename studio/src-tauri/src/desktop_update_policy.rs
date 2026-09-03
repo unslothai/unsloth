@@ -2,9 +2,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 const DESKTOP_RELEASE_PAGE_BASE_URL: &str = "https://github.com/unslothai/unsloth/releases/tag/";
-const DESKTOP_RELEASE_TAG_PREFIX: &str = "desktop-v";
-const DESKTOP_UPDATER_CHANNEL_URL: &str =
-    "https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json";
+const DESKTOP_RELEASE_TAG_PREFIX: &str = "v";
+const DESKTOP_UPDATER_MANIFEST_URL: &str =
+    "https://github.com/unslothai/unsloth/releases/latest/download/latest.json";
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize)]
@@ -27,6 +27,8 @@ pub(crate) struct DesktopUpdatePolicy {
 pub(crate) struct ManualUpdateInfo {
     version: String,
     current_version: String,
+    // Backend release this desktop build pins, which preflight checks against.
+    pypi_version: Option<String>,
     body: Option<String>,
     date: Option<String>,
 }
@@ -34,8 +36,12 @@ pub(crate) struct ManualUpdateInfo {
 #[derive(Debug, serde::Deserialize)]
 struct ChannelMetadata {
     version: String,
-    body: Option<String>,
-    date: Option<String>,
+    // latest.json publishes Tauri's `notes`/`pub_date`; aliases keep older metadata working.
+    pypi_version: Option<String>,
+    #[serde(alias = "body")]
+    notes: Option<String>,
+    #[serde(alias = "date")]
+    pub_date: Option<String>,
     platforms: HashMap<String, ChannelPlatform>,
 }
 
@@ -64,19 +70,20 @@ pub(crate) async fn check_desktop_manual_update() -> Result<Option<ManualUpdateI
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    let response = match client.get(DESKTOP_UPDATER_CHANNEL_URL).send().await {
-        Ok(response) => response,
-        Err(error) => {
+    let response = client
+        .get(DESKTOP_UPDATER_MANIFEST_URL)
+        .send()
+        .await
+        .map_err(|error| {
             log::warn!("Manual update metadata check failed: {}", error);
-            return Ok(None);
-        }
-    };
+            format!("Could not check for desktop updates: {error}")
+        })?;
     if !response.status().is_success() {
-        log::warn!(
-            "Manual update metadata check returned HTTP {}",
-            response.status()
-        );
-        return Ok(None);
+        let status = response.status();
+        log::warn!("Manual update metadata check returned HTTP {}", status);
+        return Err(format!(
+            "Could not check for desktop updates: server returned HTTP {status}"
+        ));
     }
 
     let metadata = response
@@ -99,8 +106,9 @@ pub(crate) async fn check_desktop_manual_update() -> Result<Option<ManualUpdateI
     Ok(Some(ManualUpdateInfo {
         version: latest_version,
         current_version: current_version.to_string(),
-        body: metadata.body,
-        date: metadata.date,
+        pypi_version: metadata.pypi_version,
+        body: metadata.notes,
+        date: metadata.pub_date,
     }))
 }
 
@@ -113,7 +121,7 @@ fn validate_channel_metadata(
     }
 
     let expected_prefix = format!(
-        "https://github.com/unslothai/unsloth/releases/download/desktop-v{normalized_version}/"
+        "https://github.com/unslothai/unsloth/releases/download/v{normalized_version}/"
     );
     for (platform, entry) in &metadata.platforms {
         if entry.url.trim().is_empty() {
@@ -417,4 +425,53 @@ mod tests {
             assert!(super::normalize_version(version).is_none(), "{version}");
         }
     }
+
+    fn metadata_with_url(url: &str) -> super::ChannelMetadata {
+        let mut platforms = std::collections::HashMap::new();
+        platforms.insert(
+            "linux-x86_64".to_string(),
+            super::ChannelPlatform {
+                url: url.to_string(),
+                signature: "signed".to_string(),
+            },
+        );
+        super::ChannelMetadata {
+            version: "0.1.528-beta".to_string(),
+            pypi_version: None,
+            notes: None,
+            pub_date: None,
+            platforms,
+        }
+    }
+
+    #[test]
+    fn updater_policy_uses_normal_release_discovery_and_links() {
+        assert_eq!(
+            super::DESKTOP_UPDATER_MANIFEST_URL,
+            "https://github.com/unslothai/unsloth/releases/latest/download/latest.json"
+        );
+        assert_eq!(super::DESKTOP_RELEASE_TAG_PREFIX, "v");
+        let metadata = metadata_with_url(
+            "https://github.com/unslothai/unsloth/releases/download/v0.1.528-beta/app.AppImage",
+        );
+        assert!(super::validate_channel_metadata(&metadata, "0.1.528-beta").is_ok());
+    }
+
+    #[test]
+    fn updater_policy_rejects_moving_legacy_mismatched_and_foreign_asset_urls() {
+        for url in [
+            "https://github.com/unslothai/unsloth/releases/latest/download/app.AppImage",
+            "https://github.com/unslothai/unsloth/releases/download/desktop-latest/app.AppImage",
+            "https://github.com/unslothai/unsloth/releases/download/desktop-v0.1.528-beta/app.AppImage",
+            "https://github.com/unslothai/unsloth/releases/download/v0.1.529-beta/app.AppImage",
+            "https://github.com/example/unsloth/releases/download/v0.1.528-beta/app.AppImage",
+        ] {
+            let metadata = metadata_with_url(url);
+            assert!(
+                super::validate_channel_metadata(&metadata, "0.1.528-beta").is_err(),
+                "accepted untrusted URL: {url}"
+            );
+        }
+    }
+
 }

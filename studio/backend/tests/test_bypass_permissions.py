@@ -162,7 +162,10 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
 def test_bash_blocklist_skipped_when_bypassed(captured_popen):
     out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox = True)
     assert out == "FAKEOUT"  # blocklist skipped -> reached (faked) execution
-    assert captured_popen["cmd"][0] in ("bash", "cmd")
+    # Windows resolves bash to an absolute path (Git for Windows), so compare the
+    # program name rather than the spelling of argv[0].
+    shell = os.path.basename(captured_popen["cmd"][0]).lower()
+    assert shell in ("bash", "bash.exe", "cmd", "cmd.exe")
 
 
 @_POSIX_ONLY

@@ -17,13 +17,10 @@ from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
 import routes.inference as inference_route
+from .llama_backend_double import FakeLlamaCppBackend
 
 
-class _ToolGgufBackend:
-    is_loaded = True
-    model_identifier = "test/model.gguf"
-    _is_audio = False
-    is_vision = False
+class _ToolGgufBackend(FakeLlamaCppBackend):
     supports_tools = True
 
     def generate_chat_completion_with_tools(self, **kwargs):

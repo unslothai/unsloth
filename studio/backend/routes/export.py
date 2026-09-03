@@ -46,7 +46,7 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-def _ensure_export_supported() -> None:
+async def _ensure_export_supported() -> None:
     """Reject a mutating export request up front (HTTP 400) when the host can't export.
 
     Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
@@ -64,7 +64,8 @@ def _ensure_export_supported() -> None:
 
     from utils.hardware import export_capability
 
-    cap = export_capability()
+    # Off-loop: detection is deferred past bind, so the first call can wait on a cold import.
+    cap = await asyncio.to_thread(export_capability)
     if not cap.get("export_supported", True):
         raise HTTPException(
             status_code = 400,
@@ -85,7 +86,7 @@ async def load_checkpoint(
     a clear error instead of tearing down the user's other running workloads.
     """
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
@@ -178,7 +179,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         # does, so the success banner shows an identical path on either route.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
-            details = _export_details(last_op["output_path"])
+            details = await asyncio.to_thread(_export_details, last_op["output_path"])
             last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
             current_checkpoint = backend.current_checkpoint,
@@ -253,18 +254,27 @@ async def get_export_logs(
         )
 
 
-def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
+def _try_register_external_export(
+    path: Path, *, refresh_index: bool = False
+) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:
-        from storage.studio_db import add_scan_folder
-        folder = add_scan_folder(str(path))
+        from storage.studio_db import add_scan_folder_with_status
+
+        folder, inserted = add_scan_folder_with_status(str(path))
+        if inserted or refresh_index:
+            from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+            invalidate_index()
+            warm_index_soon()
         return True, str(folder.get("path") or path)
     except Exception as exc:
         logger.warning("Could not register export scan folder %s: %s", path, exc)
         return False, None
 
 
-def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
+def _export_details(
+    output_path: Optional[str], *, refresh_index: bool = False
+) -> Optional[Dict[str, Any]]:
     """Return relative export paths, keeping external absolute paths visible."""
     if not output_path:
         return None
@@ -278,7 +288,9 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
             try:
                 path.resolve().relative_to(exports_root().resolve())
             except ValueError:
-                registered, registered_path = _try_register_external_export(path)
+                registered, registered_path = _try_register_external_export(
+                    path, refresh_index = refresh_index
+                )
                 return {
                     "output_path": str(path),
                     "scan_folder_registered": registered,
@@ -299,7 +311,7 @@ async def export_merged_model(
     Wraps ExportBackend.export_merged_model.
     """
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
@@ -318,7 +330,7 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -344,7 +356,7 @@ async def export_base_model(
     Wraps ExportBackend.export_base_model.
     """
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
@@ -362,7 +374,7 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -388,7 +400,7 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
         imatrix_file = request.imatrix_path or (True if request.imatrix else None)
@@ -408,7 +420,7 @@ async def export_gguf(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -434,7 +446,7 @@ async def export_lora_adapter(
     Wraps ExportBackend.export_lora_adapter.
     """
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
@@ -453,7 +465,7 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise

@@ -11,6 +11,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  resolveReasoningGroupDuration,
+  resolveReasoningOpen,
+  resolveReasoningToggle,
+  startsNewReasoningRound,
+  useChatPreferencesStore,
+} from "@/features/chat";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -339,10 +346,16 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
 
   const persistedDuration = useAuiState(({ message }) => {
-    const d = (message.metadata?.custom as Record<string, unknown>)
-      ?.reasoningDuration;
-    return typeof d === "number" ? d : 0;
+    return resolveReasoningGroupDuration(
+      message.parts,
+      startIndex,
+      message.metadata?.custom as Record<string, unknown> | undefined,
+    );
   });
+
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseThinkingByDefault,
+  );
 
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
@@ -364,12 +377,16 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
 
   // Reset per-round open state. manualOpen is sticky and regenerate reuses this
   // instance, so a hand-opened block would stay pinned open and never collapse.
-  useEffect(() => {
-    if (isReasoningStreaming) {
+  // Adjusted during render, not in an effect: React re-runs this component
+  // before committing, so a stale open never reaches the DOM.
+  const [wasStreaming, setWasStreaming] = useState(isReasoningStreaming);
+  if (wasStreaming !== isReasoningStreaming) {
+    setWasStreaming(isReasoningStreaming);
+    if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
       setDismissedWhileStreaming(false);
       setManualOpen(false);
     }
-  }, [isReasoningStreaming]);
+  }
 
   // Keep the streaming height cap until the automatic close finishes. Removing
   // it on the completion frame expands long reasoning to its full height before
@@ -382,23 +399,32 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     return () => window.clearTimeout(timeout);
   }, [isReasoningStreaming]);
 
-  // Open while streaming (unless dismissed), or once manually opened.
-  const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
+  // Open while streaming (unless dismissed), or once manually opened. With
+  // collapse by default on, only a manual open shows the block.
+  const isOpen = resolveReasoningOpen({
+    isStreaming: isReasoningStreaming,
+    collapseByDefault,
+    dismissedWhileStreaming,
+    manualOpen,
+  });
   const variant = isOpen ? "outline" : "ghost";
 
   // Allow closing during streaming (matches ChatGPT).
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (isReasoningStreaming) {
-        setDismissedWhileStreaming(!open);
-      } else {
-        if (open) {
-          setRetainStreamingHeight(false);
-        }
-        setManualOpen(open);
+      const next = resolveReasoningToggle(open, {
+        isStreaming: isReasoningStreaming,
+        collapseByDefault,
+      });
+      if (next.releaseStreamingHeight) {
+        setRetainStreamingHeight(false);
+      }
+      setManualOpen(next.manualOpen);
+      if (next.dismissedWhileStreaming !== undefined) {
+        setDismissedWhileStreaming(next.dismissedWhileStreaming);
       }
     },
-    [isReasoningStreaming],
+    [isReasoningStreaming, collapseByDefault],
   );
 
   return (
@@ -412,7 +438,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
           className="min-w-0 flex-1"
           active={isReasoningStreaming}
           // Prefer server timing when available.
-          duration={persistedDuration || duration}
+          duration={persistedDuration ?? duration}
         />
         <div className="flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (

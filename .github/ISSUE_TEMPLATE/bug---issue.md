@@ -2,21 +2,123 @@
 name: Bug / Issue
 about: Bug / Issue
 title: "[Bug] Please fill in your issue title here."
-labels: bug
+labels: bug, feature request
 assignees: ''
 
 ---
-Note: Please do not remove the questions. Answer beside them.
-1. Did you update? `pip install --upgrade unsloth unsloth_zoo`
-2. `Colab` or `Kaggle` or local / cloud
-3. Number GPUs used, use `nvidia-smi`
-4. Which notebook? Please link!
-5. Which Unsloth version, TRL version, transformers version, PyTorch version?
-6. Which trainer? `SFTTrainer`, `GRPOTrainer` etc
 
-```python
-Put Minimal code to reproduce error here ###Remove Hugging Face token###
-###Please make sure to check formatting properly, edit if needed.###
+---
+name: Unsloth Studio Bug
+about: Report a problem with the Unsloth Studio desktop app or web UI
+title: "[Studio Bug] "
+labels: bug
+assignees: ""
+---
+
+<!--
+Search existing issues before submitting. Please do not remove the questions.
+Never post API keys, Hugging Face tokens, passwords, cookies, private prompts,
+datasets, or other sensitive information.
+-->
+
+## Environment
+
+**Where are you using Unsloth?**
+
+- [ ] Studio desktop application
+- [ ] Studio web UI (`unsloth studio`)
+- [ ] Unsloth CLI
+- [ ] Python package or notebook
+- [ ] Colab or Kaggle
+
+**Operating system and version:**
+
+**GPU model(s) and accelerator backend:**
+<!-- Examples: NVIDIA CUDA, AMD ROCm, Intel XPU, Apple MLX, CPU. -->
+
+**Versions:**
+<!--
+For Studio, copy the Unsloth, package, desktop, and llama.cpp versions from
+Settings → About when available.
+-->
+
+## What happened?
+
+**Steps to reproduce:**
+
+1.
+2.
+3.
+
+**Expected behavior:**
+
+**Actual behavior:**
+
+**Model and operation involved:**
+<!--
+Include the model ID or filename and whether this involved installation,
+startup, download, training, inference, GGUF, diffusion, or export.
+-->
+
+## Diagnostics and logs
+
+<!--
+Remove API keys, Hugging Face tokens, passwords, cookies, private prompts,
+local paths you do not want to disclose, and other sensitive information.
+Do not upload your entire ~/.unsloth/studio directory: it can contain auth
+state, databases, chats, datasets, and models.
+-->
+
+### Desktop application
+
+Click **Copy Diagnostics** on the error, startup, or update screen and paste the
+result below:
+
+```text
+PASTE COPY DIAGNOSTICS HERE
 ```
 
-🦥 You can also ask via our Reddit page: https://reddit.com/r/unsloth/
+If **Copy Diagnostics** is unavailable, attach the newest relevant files from:
+
+- Windows: `%USERPROFILE%\.unsloth\studio\`
+- Linux/macOS: `~/.unsloth/studio/`
+
+Useful files include:
+
+- `tauri.log` and, if relevant, `tauri.log.1`
+- `logs/install-*.log`, `logs/update-*.log`, `logs/repair-*.log`, or `logs/backend-*.log`
+- The newest `logs/server/server-*.log`
+
+### Studio web UI
+
+Attach the newest relevant items:
+
+- Linux/macOS/Windows: `~/.unsloth/studio/logs/server/server-*.log`
+  (use `%USERPROFILE%\.unsloth\studio\logs\server\` on Windows)
+- Linux/macOS shortcut launches only: `~/.local/share/unsloth/studio.log`
+- Terminal output if Studio was launched from a terminal
+- Browser Console errors for browser-only problems
+
+If you configured `UNSLOTH_STUDIO_HOME` or `STUDIO_HOME`, look under
+`<CUSTOM_STUDIO_HOME>/logs/` instead.
+
+### Model-specific logs, if applicable
+
+- GGUF/llama.cpp: newest `~/.unsloth/studio/logs/llama-server/*.log`
+- Diffusion GGUF: newest `~/.unsloth/studio/logs/diffusion-server/*.log`
+- Training resume/checkpoint bug: relevant `trainer_state.json`
+
+### Python package or notebook, if applicable
+
+Paste the complete traceback and minimal reproduction:
+
+```python
+# Remove all tokens and private data.
+```
+
+Also include Python, Unsloth, unsloth_zoo, PyTorch, Transformers, and TRL
+versions, plus `nvidia-smi` output when applicable.
+
+## Additional context
+
+<!-- Add screenshots or anything else that may help. -->

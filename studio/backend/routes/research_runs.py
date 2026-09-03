@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -16,9 +18,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject
-from core.inference.message_content import content_to_text
+from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
+from core.inference.providers import provider_runs_local_tools
+from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 
 router = APIRouter()
@@ -43,7 +47,15 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
-_DELTA_ONLY_EVENTS = {"reasoning.updated", "report.updated"}
+_DELTA_ONLY_EVENTS = {
+    "reasoning.updated",
+    "report.updated",
+    "phase.progress",
+    "phase.started",
+    "phase.ended",
+}
+# Dedicated to the blocking event wait so open streams cannot exhaust the default executor.
+_EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
 
 
 class CreateResearchRun(BaseModel):
@@ -167,10 +179,13 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     if any(key in request for key in ("baseUrl", "endpoint", "provider", "tools", "enabledTools")):
         raise HTTPException(
             status_code = 400,
-            detail = "Durable research currently supports only the selected local Studio model",
+            detail = "Research inference routing cannot override endpoints or tool catalogs",
         )
     allowed = {
         "model",
+        "providerId",
+        "providerType",
+        "externalModel",
         "temperature",
         "topP",
         "maxTokens",
@@ -183,6 +198,46 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             status_code = 400,
             detail = f"Unsupported inferenceRequest fields: {', '.join(sorted(unknown))}",
         )
+    provider_type = request.get("providerType")
+    provider_id = request.get("providerId")
+    external_model = request.get("externalModel")
+    external_requested = any(
+        value is not None for value in (provider_type, provider_id, external_model)
+    )
+    if external_requested:
+        # A saved connection is still mandatory: the run is durable, so an
+        # inline key would have to be persisted, and _is_sensitive_key exists to
+        # stop exactly that. Only the provider-type allowlist is widened.
+        if (
+            not provider_runs_local_tools(provider_type)
+            or not isinstance(provider_id, str)
+            or not provider_id.strip()
+            or not isinstance(external_model, str)
+            or not external_model.strip()
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Durable research requires a saved connection whose provider supports Studio tools",
+            )
+        provider = providers_db.get_provider(provider_id)
+        if provider is None:
+            raise HTTPException(status_code = 404, detail = "Provider config not found")
+        # The saved row is the source of truth for routing, so validate against
+        # it rather than against the type the client sent. A self-hosted
+        # connection is stored under the backend "openai" type but surfaced to
+        # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
+        # offers research for those aliases because their registry entries
+        # declare Studio tools. Comparing the two for equality therefore 400s
+        # exactly the connections this path exists to serve, while the ordinary
+        # inference route already overrides the type from the row.
+        saved_provider_type = provider["provider_type"]
+        if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Durable research requires an enabled connection whose provider supports Studio tools",
+            )
+        request["providerType"] = saved_provider_type
+
     # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is
     # stringified, so {"auth": "sk-..."} would slip past the sensitive-key scan (inner key
     # unlisted) into the durable config as the model id.
@@ -245,6 +300,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSources": 40,
         "modelTimeoutSeconds": 900,
         "toolTimeoutSeconds": 120,
+        "firstOutputTimeoutSeconds": 120,
     }
     for key, value in (payload.budgets or {}).items():
         if key not in budgets:
@@ -255,6 +311,8 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSources": (1, 100),
         "modelTimeoutSeconds": (10, 3600),
         "toolTimeoutSeconds": (5, 600),
+        # Same range as its parent: slow CPU and offloaded models need minutes to first token.
+        "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
         if not minimum <= budgets[key] <= maximum:
@@ -283,7 +341,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
 
 
 @router.post("", status_code = 202)
-async def create_research_run(
+def create_research_run(
     payload: CreateResearchRun,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -296,7 +354,7 @@ async def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    if not content_to_text(user_message.get("content")).strip():
+    if not message_text_with_pastes(user_message).strip():
         raise HTTPException(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",
@@ -320,6 +378,12 @@ async def create_research_run(
         )
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        # The thread can be deleted between the check above and this insert, and the foreign key
+        # then fails. Report it gone rather than as a server fault.
+        raise HTTPException(status_code = 404, detail = "Thread not found") from exc
+    if run is None:
+        raise HTTPException(status_code = 404, detail = "Thread not found")
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None:
         supervisor.note_request_port(request)
@@ -328,7 +392,7 @@ async def create_research_run(
 
 
 @router.get("/active")
-async def active_research_runs(
+def active_research_runs(
     thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
     return {
@@ -338,12 +402,12 @@ async def active_research_runs(
 
 
 @router.get("/{run_id}")
-async def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
     return _require_run(run_id)
 
 
 @router.put("/{run_id}/plan")
-async def update_research_plan(
+def update_research_plan(
     run_id: str,
     payload: UpdatePlan,
     current_subject: str = Depends(get_current_subject),
@@ -359,7 +423,7 @@ async def update_research_plan(
 
 
 @router.post("/{run_id}/approve")
-async def approve_research_plan(
+def approve_research_plan(
     run_id: str,
     payload: ApprovePlan,
     request: Request,
@@ -380,7 +444,7 @@ async def approve_research_plan(
 
 
 @router.post("/{run_id}/cancel")
-async def cancel_research_run(
+def cancel_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -396,7 +460,7 @@ async def cancel_research_run(
 
 
 @router.post("/{run_id}/retry")
-async def retry_research_run(
+def retry_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -415,7 +479,10 @@ async def retry_research_run(
     return run
 
 
-@router.get("/{run_id}/events")
+# POST too: proxies that stream /v1/chat/completions still buffer a streamed GET until it closes.
+@router.post("/{run_id}/events")
+# Separate registration, out of the schema: one api_route would give both verbs one operationId.
+@router.get("/{run_id}/events", include_in_schema = False)
 async def research_events(
     run_id: str,
     request: Request,
@@ -429,13 +496,18 @@ async def research_events(
 
     async def stream():
         nonlocal cursor
+        loop = asyncio.get_running_loop()
         while True:
-            events = await asyncio.to_thread(
+            # off the default executor: parked followers there starved the run's own db writes.
+            events = await loop.run_in_executor(
+                _EVENT_WAIT_EXECUTOR,
                 db.wait_for_events,
                 run_id,
                 cursor,
                 15,
             )
+            # Not the wait executor: this read is short, and queueing it behind parked waits
+            # would delay every follower once the pool is full.
             snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return

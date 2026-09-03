@@ -797,8 +797,73 @@ class TestCompatPlan:
         assert extras == () and blockers == []
 
 
+def test_get_snapshot_waits_for_inflight_fetch(monkeypatch):
+    """A caller arriving mid-fetch gets the running fetch's answer, not "no answer".
+
+    The Configure preview starts a check as soon as the tab renders, so a user who
+    presses Start while it is still running sends a second, concurrent check. Answering
+    that one None reads as "no upgrade needed" all the way up, and the run launches on a
+    model no installed transformers can load -- the exact failure this gate exists to
+    stop. The loser must wait for the snapshot instead.
+    """
+    import threading as _threading
+
+    tl.clear_caches()
+    monkeypatch.setattr(tl, "_load_snapshot_file", lambda: None)
+    monkeypatch.setattr(tl, "_save_snapshot_file", lambda snapshot: None)
+    fetch_started = _threading.Event()
+    release = _threading.Event()
+    calls = {"n": 0}
+
+    def slow_refresh():
+        calls["n"] += 1
+        fetch_started.set()
+        release.wait(10)
+        return {
+            "schema": tl._SNAPSHOT_SCHEMA,
+            "fetched_at": time.time(),
+            "pypi_version": "5.99.0",
+            "pypi_model_types": ["brandnew"],
+            "main_model_types": ["brandnew"],
+            "main_checked": True,
+        }
+
+    monkeypatch.setattr(tl, "_refresh_snapshot", slow_refresh)
+    answers: dict[str, dict | None] = {}
+    winner = _threading.Thread(target = lambda: answers.__setitem__("winner", tl._get_snapshot()))
+    winner.start()
+    assert fetch_started.wait(10)
+    loser = _threading.Thread(target = lambda: answers.__setitem__("loser", tl._get_snapshot()))
+    loser.start()
+    # The loser is parked on the in-flight fetch; nothing can land until it is released.
+    loser.join(0.5)
+    assert loser.is_alive()
+    release.set()
+    winner.join(10)
+    loser.join(10)
+    assert calls["n"] == 1
+    assert answers["winner"] is not None and answers["winner"]["pypi_version"] == "5.99.0"
+    assert answers["loser"] is not None and answers["loser"]["pypi_version"] == "5.99.0"
+    tl.clear_caches()
+
+
+def test_inflight_wait_covers_a_whole_refresh():
+    """The wait a loser makes must outlast the fetch it is waiting for.
+
+    A refresh is five sequential URLs (PyPI, then both auto files at the release tag and
+    at main), each allowed one retry at the fetch timeout, so it can legitimately run for
+    the full product of those three numbers. A wait shorter than that expires while the
+    winner is still working, and the None it then answers is read as "no upgrade needed"
+    by the Start button -- the run launches on the architecture this gate exists to stop.
+    """
+    urls = 1 + 2 * len(tl._AUTO_FILES)
+    assert tl._REFRESH_URL_COUNT == urls
+    worst_case = urls * (1 + tl._FETCH_RETRIES) * tl._FETCH_TIMEOUT_SECONDS
+    assert tl._INFLIGHT_WAIT_SECONDS >= worst_case
+
+
 def test_get_snapshot_dedupes_concurrent_fetch(monkeypatch):
-    """While one thread is fetching, other callers return None instead of stacking fetches."""
+    """A caller that finds a fetch in flight never starts a second one."""
     with tl._lock:
         tl._is_fetching = True
     calls = {"n": 0}
@@ -1097,3 +1162,224 @@ def test_failed_staging_install_removes_staging_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
     assert ensure_latest_transformers_venv("5.13.0") is False
     assert not Path(str(venv_dir) + ".staging").exists()
+
+
+def _slow_drip_server(chunks: int, gap: float):
+    """A localhost HTTP server that dribbles a body *gap* seconds at a time.
+
+    Every individual socket read completes well inside the fetch timeout, so a
+    socket-level timeout never fires; only a wall-clock budget on the transfer can stop
+    it. Returns the URL; the thread is a daemon and dies with the test session.
+    """
+    import socket as _socket
+    import threading as _threading
+
+    sock = _socket.socket()
+    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+
+    def serve():
+        try:
+            conn, _ = sock.accept()
+            conn.recv(65536)
+            piece = b"x" * 8
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
+                % (len(piece) * chunks)
+            )
+            for _ in range(chunks):
+                time.sleep(gap)
+                conn.sendall(piece)
+            conn.close()
+        except Exception:
+            pass
+
+    _threading.Thread(target = serve, daemon = True).start()
+    return f"http://127.0.0.1:{sock.getsockname()[1]}/"
+
+
+def test_fetch_text_bounds_the_whole_transfer_not_just_socket_operations(monkeypatch):
+    """A response that dribbles bytes must hit the fetch budget, not run indefinitely.
+
+    ``urlopen(timeout=...)`` is a SOCKET timeout: the CPython docs specify it as "a
+    timeout in seconds for blocking operations like the connection attempt", so it bounds
+    each individual read rather than the whole transfer. A mirror that sends a few bytes
+    just inside that timeout therefore keeps ``resp.read()`` alive for as long as it
+    likes, and every wait derived from the timeout stops being a worst case -- the loser
+    it strands answers None, which reads as "no upgrade needed" at the Start button.
+    """
+    monkeypatch.setattr(tl, "_FETCH_RETRIES", 0)
+    monkeypatch.setattr(tl, "_FETCH_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(tl, "_FETCH_DEADLINE_SECONDS", 0.4)
+    # 30 chunks 0.05s apart: ~1.5s of transfer, every gap far inside the socket timeout.
+    url = _slow_drip_server(chunks = 30, gap = 0.05)
+    started = time.monotonic()
+    body = tl._fetch_text(url)
+    elapsed = time.monotonic() - started
+    assert body is None, "a transfer past its budget must not be accepted as an answer"
+    assert elapsed < 1.2, f"fetch ran {elapsed:.2f}s, past its own budget"
+
+
+def test_fetch_attempt_bound_covers_the_budget_and_one_blocking_read():
+    """The advertised per-attempt worst case must be the budget plus a straddling read.
+
+    The deadline is only checked between reads, so the one socket read already blocking
+    when it expires still runs to the socket timeout. Deriving the attempt bound from
+    both is what keeps the in-flight wait a real ceiling rather than an optimistic one.
+    """
+    assert tl._FETCH_ATTEMPT_SECONDS == tl._FETCH_DEADLINE_SECONDS + tl._FETCH_TIMEOUT_SECONDS
+    urls = 1 + 2 * len(tl._AUTO_FILES)
+    worst_case = urls * (1 + tl._FETCH_RETRIES) * tl._FETCH_ATTEMPT_SECONDS
+    assert tl._INFLIGHT_WAIT_SECONDS >= worst_case
+
+
+def test_waiter_never_answers_no_upgrade_while_the_refresh_is_still_running(monkeypatch):
+    """An expired wait must not be turned into "no upgrade needed".
+
+    The wait is a computed deadline, and the fetch it bounds is only as bounded as its
+    own budget makes it. If the winner is still legitimately working when the clock runs
+    out, the loser used to return None -- and None is read as "no upgrade needed" all the
+    way up to Start, which launches the run on the architecture this gate exists to stop.
+    A loser waits for the refresh's actual completion instead.
+    """
+    import threading as _threading
+
+    tl.clear_caches()
+    monkeypatch.setattr(tl, "_load_snapshot_file", lambda: None)
+    monkeypatch.setattr(tl, "_save_snapshot_file", lambda snapshot: None)
+    # The wait expires long before the refresh finishes: a slow mirror doing exactly
+    # what the socket timeout permits.
+    monkeypatch.setattr(tl, "_INFLIGHT_WAIT_SECONDS", 0.05)
+    fetch_started = _threading.Event()
+
+    def slow_refresh():
+        fetch_started.set()
+        time.sleep(0.6)
+        return {
+            "schema": tl._SNAPSHOT_SCHEMA,
+            "fetched_at": time.time(),
+            "pypi_version": "5.99.0",
+            "pypi_model_types": ["brandnew"],
+            "main_model_types": ["brandnew"],
+            "main_checked": True,
+        }
+
+    monkeypatch.setattr(tl, "_refresh_snapshot", slow_refresh)
+    answers: dict[str, dict | None] = {}
+    winner = _threading.Thread(target = lambda: answers.__setitem__("winner", tl._get_snapshot()))
+    winner.start()
+    assert fetch_started.wait(10)
+    loser = _threading.Thread(target = lambda: answers.__setitem__("loser", tl._get_snapshot()))
+    loser.start()
+    winner.join(10)
+    loser.join(10)
+    assert answers["winner"] is not None
+    assert answers["loser"] is not None, "the loser answered 'no upgrade' mid-refresh"
+    assert answers["loser"]["pypi_version"] == "5.99.0"
+    tl.clear_caches()
+
+
+# The tests near this bound the transfer budget from above. The opposite risk lands on
+# chat as well as training: a budget that also rejects ORDINARY responses would silently
+# stop /validate ever finding an upgrade.
+
+
+class _BodyServer:
+    """Serves one body, either in full or split across chunks."""
+
+    def __init__(
+        self,
+        body: bytes,
+        chunked = False,
+        status = 200,
+    ):
+        import http.server
+        import threading
+
+        outer = self
+        self.body, self.chunked, self.status = body, chunked, status
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):  # noqa: N802
+                self.send_response(outer.status)
+                if outer.chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    step = max(1, len(outer.body) // 7)
+                    for i in range(0, len(outer.body), step):
+                        piece = outer.body[i : i + step]
+                        self.wfile.write(f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                else:
+                    self.send_header("Content-Length", str(len(outer.body)))
+                    self.end_headers()
+                    self.wfile.write(outer.body)
+                self.wfile.flush()
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}/x"
+        self.thread = threading.Thread(target = self.httpd.serve_forever, daemon = True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+_AUTO_SOURCE = textwrap.dedent(
+    """
+    CONFIG_MAPPING_NAMES = OrderedDict[str, str](
+        [
+            ("albert", "AlbertConfig"),
+            ("llama", "LlamaConfig"),
+        ]
+    )
+    """
+)
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_an_ordinary_response_comes_back_whole(chunked):
+    with _BodyServer(_AUTO_SOURCE.encode(), chunked = chunked) as server:
+        body = tl._fetch_text(server.url)
+    assert body is not None and body.strip() == _AUTO_SOURCE.strip()
+
+
+def test_a_multi_chunk_body_is_not_truncated_by_the_budget():
+    # configuration_auto.py is ~200 KB against a 64 KB read, so several chunks is the
+    # normal path rather than an edge case.
+    payload = (_AUTO_SOURCE + "# padding\n" * 40_000).encode()
+    with _BodyServer(payload) as server:
+        body = tl._fetch_text(server.url)
+    assert body is not None and len(body) == len(payload.decode())
+
+
+def test_an_empty_body_is_not_a_failure():
+    with _BodyServer(b"") as server:
+        assert tl._fetch_text(server.url) == ""
+
+
+def test_a_missing_file_stays_distinguishable_from_a_failure():
+    # auto_mappings.py does not exist on pre-5.10 tags, so a 404 stays its own answer:
+    # as a failure it breaks every lookup against an older tag, as an empty body it
+    # caches a mapping that supports nothing.
+    with _BodyServer(b"nope", status = 404) as server:
+        assert tl._fetch_text(server.url) == tl._FETCH_MISSING
+
+
+def test_a_truncated_source_fails_the_lookup_instead_of_shrinking_the_map(monkeypatch):
+    # The worst outcome here: a short mapping cached for the TTL as "the architectures
+    # this release ships", offering an upgrade to every model missing from it.
+    truncated = _AUTO_SOURCE[: len(_AUTO_SOURCE) // 2].encode()
+    with _BodyServer(truncated) as server:
+        monkeypatch.setattr(tl, "_RAW_URL", server.url + "?{ref}{name}")
+        assert tl._fetch_remote_model_types("v5.15.0") is None
