@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import List, Literal, Optional
 from urllib.parse import quote
@@ -20,18 +21,21 @@ from hub.schemas.inventory import (
 from hub.utils.gguf import (
     gguf_variant_key,
     is_gguf_filename as _is_gguf_filename,
+    is_imatrix_filename as _is_imatrix_filename,
     is_mmproj_filename as _is_mmproj_filename,
     is_mtp_drafter_path as _is_mtp_drafter_path,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
+from utils.audio_tokens import detect_local_tts_audio_type
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
 LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"]
 
 
 def _safe_is_dir(path) -> bool:
-    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(); folder scans
-    # probe root-owned system dirs, so treat un-stat-able paths as not-a-dir.
+    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(), and folder scans probe root-owned
+    # system dirs, so treat un-stat-able paths as not-a-dir.
     try:
         return Path(path).is_dir()
     except OSError:
@@ -65,14 +69,20 @@ _HF_CACHE_MODEL_FILE_PROBE_LIMIT = 2000
 
 
 def _is_model_directory(d: Path) -> bool:
-    """True when *d* has a config plus real weights; excludes mmproj GGUFs and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
+    """True when *d* has a config plus real weights; excludes mmproj GGUFs, calibration imatrices and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
 
     def _is_weight_file(f: Path) -> bool:
+        if is_appledouble_metadata(f):
+            return False
         suffix = f.suffix.lower()
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower() and not _is_mtp_drafter_path(f.name)
+            return (
+                "mmproj" not in f.name.lower()
+                and not _is_mtp_drafter_path(f.name)
+                and not _is_imatrix_filename(f.name)
+            )
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -88,6 +98,15 @@ def _is_model_directory(d: Path) -> bool:
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
+    except OSError:
+        return False
+
+
+def _is_diffusers_pipeline_dir(path: Path) -> bool:
+    try:
+        return (path / "model_index.json").is_file() or (
+            path / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 
@@ -146,8 +165,7 @@ _NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
     "ForVideoClassification",
     "ForZeroShotImageClassification",
 )
-# Generative, but not of a chat reply: they match a generative suffix below yet
-# cannot answer a text turn, and they are small enough to be tried first.
+# Generative, but not of a chat reply: they match a generative suffix below yet cannot answer a text turn.
 _NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
     {
         "blip",
@@ -231,8 +249,8 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "squeezebert",
         "vision-text-dual-encoder",
         "xlm-roberta",
-        # Vision and audio backbones: their bare ``*Model`` names carry no task
-        # suffix, so only the model type identifies them.
+        # Vision and audio backbones: their bare *Model names carry no task suffix, so only the model type
+        # identifies them.
         "beit",
         "convnext",
         "convnextv2",
@@ -273,8 +291,8 @@ def _read_local_json_object(path: Path) -> dict:
             return {}
         data = json.loads(path.read_text(encoding = "utf-8"))
         return data if isinstance(data, dict) else {}
-    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested
-    # JSON raises RecursionError, which is neither.
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested JSON raises
+    # RecursionError, which is neither.
     except (ValueError, OSError, RecursionError):
         return {}
 
@@ -290,8 +308,12 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if not _safe_is_dir(path):
         return None
 
-    # SentenceTransformers exports carry this even when the config names a
-    # broadly reusable encoder class.
+    # Before every architecture test below: a TTS model is an ordinary causal LM wearing a codec
+    # vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules answer True and auto-load picks it.
+    if detect_local_tts_audio_type(path) is not None:
+        return False
+
+    # SentenceTransformers exports carry this even when the config names a broadly reusable encoder class.
     try:
         if (path / "modules.json").is_file():
             return False
@@ -316,8 +338,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     )
     model_type_raw = config.get("model_type")
     normalized_type = model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
-    # Before the generative suffix: Whisper and friends end in
-    # ForConditionalGeneration but cannot answer a text turn.
+    # Before the generative suffix: Whisper and friends end in ForConditionalGeneration but cannot answer a text turn.
     if normalized_type in _NON_CHAT_GENERATIVE_MODEL_TYPES or any(
         name in _NON_CHAT_GENERATIVE_ARCHITECTURES for name in names
     ):
@@ -326,19 +347,109 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
         return True
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
-    # AutoModel.save_pretrained on a chat family writes the backbone name, and a
-    # backbone has no LM head. Listed explicitly, not shape-matched, so an
-    # unfamiliar FooModel still fails open.
+    # AutoModel.save_pretrained on a chat family writes the backbone name, which has no LM head. Listed
+    # explicitly, not shape-matched, so an unfamiliar FooModel still fails open.
     if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
-    # The type alone decides: requiring the name shape too kept rows chat-capable
-    # when it did not fit, e.g. google/siglip2-* omits architectures entirely and
-    # CLIPTextModelWithProjection ends in neither Model nor a known suffix.
-    # Anything generative returned True above, so no chat row reaches here.
+    # The type alone decides: requiring the name shape too kept rows chat-capable when it did not fit,
+    # e.g.
     if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
         return False
     return None
+
+
+def _hub_cache_root_of(path: Optional[Path]) -> Optional[Path]:
+    """The hub cache root *path* sits in, i.e. the parent of its ``models--*`` repo dir."""
+    if path is None:
+        return None
+    try:
+        candidate = Path(path)
+        for part in (candidate, *candidate.parents):
+            if part.name.startswith("models--"):
+                return part.parent
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+def _base_transformers_can_chat(
+    base_model: str,
+    revision: Optional[str],
+    adapter_path: Optional[Path] = None,
+) -> Optional[bool]:
+    """Classify an exact local or cached base without a network lookup."""
+    try:
+        local_path = Path(base_model).expanduser()
+        if local_path.is_dir():
+            return _local_transformers_can_chat(local_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    # The scan covers legacy and previously configured roots, so an adapter can be listed from an
+    # inactive root with its base cached beside it; the active root alone answered None, which is
+    # inconclusive and left encoder LoRAs in the chat picker.
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:
+        return None
+
+    # Each source collected independently: under one try, a failure enumerating the OPTIONAL extra roots
+    # discarded the adapter's own root too and answered None.
+    roots: list[Path] = []
+
+    def _add(root: Optional[Path]) -> None:
+        if root is not None and root not in roots:
+            roots.append(root)
+
+    _add(_hub_cache_root_of(adapter_path))
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        _add(get_hf_cache_paths().hub_cache)
+    except Exception:
+        pass
+    try:
+        from utils.hf_cache_settings import known_hf_hub_caches
+        for configured in known_hf_hub_caches():
+            _add(configured)
+    except Exception:
+        pass
+    if not roots:
+        return None
+
+    config_path = None
+    for root in roots:
+        try:
+            found = try_to_load_from_cache(
+                base_model,
+                "config.json",
+                cache_dir = root,
+                revision = revision,
+            )
+        except Exception:
+            continue
+        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"), and neither rules the base
+        # out of a different root.
+        if isinstance(found, str):
+            config_path = found
+            break
+    if not isinstance(config_path, str):
+        return None
+    return _local_transformers_can_chat(Path(config_path).parent)
+
+
+def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> Optional[bool]:
+    """Classify a local checkpoint or its exact adapter base without network access."""
+    model_path = Path(path)
+    verdict = _local_transformers_can_chat(model_path)
+    if verdict is not None:
+        return verdict
+    adapter_config = _read_adapter_config(model_path)
+    adapter_base = _clean_optional_string(adapter_config.get("base_model_name_or_path"))
+    revision = _clean_optional_string(adapter_config.get("revision"))
+    base = adapter_base or _clean_optional_string(base_model)
+    # model_path is the adapter's snapshot, which names the cache root its base shares.
+    return _base_transformers_can_chat(base, revision, model_path) if base else None
 
 
 def _capabilities_for_format(
@@ -424,6 +535,7 @@ def _apply_format_aware_partial(
     snapshot_partial: bool,
     gguf_partial: bool,
     snapshot_partial_transport: Optional[str] = None,
+    snapshot_partial_resumable: bool = False,
 ) -> List[LocalModelInfo]:
     """Rewrite each row's partial flag with format-aware predicates so a hybrid (gguf + safetensors) repo's broken format doesn't taint the clean one; capabilities are recomputed from the new flag."""
     rewritten: List[LocalModelInfo] = []
@@ -432,14 +544,17 @@ def _apply_format_aware_partial(
         if not target:
             rewritten.append(row)
             continue
-        # GGUF row-level transport is ambiguous (variants may differ); per-variant
-        # detail lives on GgufVariantDetail.partial_transport via the variants endpoint.
+        # GGUF row-level transport is ambiguous, since variants may differ; per-variant detail lives on
+        # GgufVariantDetail.partial_transport.
         partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
         rewritten.append(
             row.model_copy(
                 update = {
                     "partial": True,
                     "partial_transport": partial_transport,
+                    "partial_resumable": (
+                        partial_transport is not None and snapshot_partial_resumable
+                    ),
                     "capabilities": _capabilities_for_format(
                         row.model_format,
                         row.source,
@@ -543,23 +658,32 @@ def _classify_non_gguf_model_format(
 
 def _is_main_gguf_filename(name: str) -> bool:
     return (
-        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
+        _is_gguf_filename(name)
+        and not _is_mmproj_filename(name)
+        and not _is_mtp_drafter_path(name)
+        and not _is_imatrix_filename(name)
     )
 
 
-def _iter_gguf_paths(root: Path):
+def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
     stack = [root]
     while stack:
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         current = stack.pop()
         try:
             entries = list(current.iterdir())
         except OSError:
             continue
         for path in entries:
+            if deadline is not None and time.monotonic() >= deadline:
+                return
             try:
                 if path.is_dir() and not path.is_symlink():
                     stack.append(path)
                 elif path.is_file() and _is_gguf_filename(path.name):
+                    if is_appledouble_metadata(path):
+                        continue
                     yield path
             except OSError:
                 continue
@@ -588,7 +712,7 @@ def _iter_hf_cache_model_files(path: Path) -> list[Path]:
         _is_main_gguf_filename(entry.name)
         or _is_transformers_safetensors_weight_file(entry)
         or _is_checkpoint_weight_file(entry)
-        for entry in files
+        for entry in drop_appledouble_metadata(files)
     ):
         return files
     try:
@@ -620,7 +744,7 @@ def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path
     return [
         entry
         for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
-        if _is_main_gguf_filename(entry.name)
+        if _is_main_gguf_filename(entry.name) and not is_appledouble_metadata(entry)
     ]
 
 
@@ -757,6 +881,7 @@ def _classify_local_path(
         if source == "hf_cache"
         else _iter_immediate_files(scan_path)
     )
+    files = [f for f in files if not is_appledouble_metadata(f)]
     if not files:
         return []
 

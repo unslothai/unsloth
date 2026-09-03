@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio-owned tool execution loop for the ChatGPT Codex subscription transport.
+"""Unsloth-owned tool execution loop for the ChatGPT Codex subscription transport.
 
 The loop itself now lives in ``core.inference.studio_tool_loop`` and is shared
 with every other external provider. What stays here is the Codex transport: the
@@ -47,6 +47,7 @@ class CodexToolPolicy:
     confirm_calls: bool
     bypass_permissions: bool
     rag_scope: dict[str, Any] | None
+    nudge_tool_calls: bool | None = None
 
 
 class CodexTransport:
@@ -92,18 +93,17 @@ def stream_codex_with_studio_tools(
     policy: CodexToolPolicy,
     cancel_event: threading.Event,
 ) -> AsyncIterator[str]:
-    """Stream Codex, execute requested Studio tools, and continue until a final answer."""
+    """Stream Codex, execute requested Unsloth tools, and continue until a final answer."""
     return stream_with_studio_tools(
         CodexTransport(client, run),
         run = ToolLoopRun(
             messages = run.messages,
             session_id = run.session_id,
             thread_id = run.thread_id,
-            # Before this loop was shared, Codex relayed the provider's own usage
-            # chunks and they carried the Codex model id. The shared loop sums
-            # them into one synthetic chunk instead, so dropping the model here
-            # would relabel that accounting "external" and move behaviour the
-            # Codex path is meant to keep.
+            # keep the Codex model id: the shared loop sums usage into one chunk
+            # Before this loop was shared, Codex relayed the provider's own usage chunks and they carried the Codex
+            # model id. The shared loop sums them into one synthetic chunk instead, so dropping the model here would
+            # relabel that accounting "external" and move behaviour the Codex path is meant to keep.
             model = run.model,
             tool_choice = run.tool_choice,
             continue_final_message = run.continue_final_message,
@@ -117,6 +117,7 @@ def stream_codex_with_studio_tools(
             bypass_permissions = policy.bypass_permissions,
             rag_scope = policy.rag_scope,
             auto_heal = False,
+            nudge_tool_calls = policy.nudge_tool_calls,
         ),
         cancel_event = cancel_event,
     )

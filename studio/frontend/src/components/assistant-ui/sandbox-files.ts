@@ -77,7 +77,7 @@ export function isSandboxToolResult(
     images?: unknown;
     files?: unknown;
   };
-  // images too: it is always in Studio's own wrapper, and a tool result that
+  // images too: it is always in Unsloth's own wrapper, and a tool result that
   // merely has text and sessionId is someone else's, whose other fields would
   // be dropped on export.
   return (

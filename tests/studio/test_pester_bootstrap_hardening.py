@@ -32,13 +32,27 @@ _WORKFLOW = REPO_ROOT / ".github" / "workflows" / "studio-windows-inference-smok
 _GUARD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pester-guard-ci.yml"
 
 
-def _bootstrap_step() -> dict:
+def _pester_steps() -> list[dict]:
+    """Every step of whichever job carries the Pester phase.
+
+    Found by content rather than by job id: the phase used to be a job called `pester` and
+    is now one phase of a job that groups the small Windows checks by runner image, and
+    keying on the id meant this whole file went red on a rename that changed nothing it
+    asserts.
+    """
     workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
-    steps = workflow["jobs"]["pester"]["steps"]
-    for step in steps:
+    for job in workflow["jobs"].values():
+        steps = job.get("steps") or []
+        if any("Install Pester" in (s.get("name") or "") for s in steps):
+            return steps
+    raise AssertionError("no job in the workflow installs Pester")
+
+
+def _bootstrap_step() -> dict:
+    for step in _pester_steps():
         if "Install Pester" in (step.get("name") or ""):
             return step
-    raise AssertionError("no Pester install step in the pester job")
+    raise AssertionError("no Pester install step")
 
 
 def test_bootstrap_step_exists_and_runs_under_pwsh():
@@ -114,10 +128,9 @@ def test_the_guard_runs_from_the_workflow_it_guards():
     # as_posix(), not str(): this runs on windows-latest, where str() would give
     # backslashes and never match the forward-slash paths in the YAML.
     assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
-    steps = workflow["jobs"]["pester"]["steps"]
     assert any(
-        Path(__file__).name in (s.get("run") or "") for s in steps
-    ), "the pester job must run this guard, or a workflow-only edit skips it entirely"
+        Path(__file__).name in (s.get("run") or "") for s in _pester_steps()
+    ), "the Pester phase must run this guard, or a workflow-only edit skips it entirely"
 
 
 def test_editing_the_guard_runs_it_on_windows():

@@ -20,6 +20,15 @@ const NEEDS_MERMAID = /(?:`{3,}|~{3,})[ \t]*mermaid\b/;
 /** Past this a document stays plain monospace: shiki is not worth the main-thread time. */
 export const MAX_HIGHLIGHT_CHARS = 20_000;
 
+/** A fence longer than any backtick run in the source, so code containing ``` cannot end it early. */
+export function codeFence(source: string): string {
+  const longest = (source.match(/`+/g) ?? []).reduce(
+    (max, run) => Math.max(max, run.length),
+    0,
+  );
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 export interface MarkdownPluginNeeds {
   math: boolean;
   mermaid: boolean;

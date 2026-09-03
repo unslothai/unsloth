@@ -24,6 +24,7 @@ interface BackendTrainingDefaults {
   batch_size?: number;
   gradient_accumulation_steps?: number;
   warmup_steps?: number;
+  warmup_ratio?: number;
   max_steps?: number;
   save_steps?: number;
   eval_steps?: number;
@@ -92,7 +93,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }

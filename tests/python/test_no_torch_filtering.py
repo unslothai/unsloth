@@ -224,10 +224,20 @@ class TestRealRequirementsFiltering:
             pytest.skip("extras.txt not found in repo")
         if not EXTRAS_NO_DEPS_TXT.is_file():
             pytest.skip("extras-no-deps.txt not found in repo")
-        existing_filtered = set(REQ_ROOT.glob(".*-filtered-*.txt"))
+        self._created = []
         yield
-        for path in set(REQ_ROOT.glob(".*-filtered-*.txt")) - existing_filtered:
-            path.unlink(missing_ok = True)
+        # Only what this test made. These land in the REAL requirements directory, and
+        # the previous version deleted everything that appeared since its own snapshot,
+        # so under pytest-xdist one test's teardown removed a file another worker was
+        # still reading and that test failed with FileNotFoundError.
+        for path in self._created:
+            Path(path).unlink(missing_ok = True)
+
+    def _filter(self, source, packages):
+        """ips._filter_requirements, remembering the file so teardown can remove it."""
+        result = ips._filter_requirements(source, packages)
+        self._created.append(result)
+        return result
 
     def _non_blank_non_comment(self, path: Path) -> list[str]:
         """Return non-blank, non-comment lines from a requirements file."""
@@ -236,7 +246,7 @@ class TestRealRequirementsFiltering:
 
     def test_extras_txt_torch_packages_removed(self):
         """extras.txt: all NO_TORCH_SKIP_PACKAGES must be removed, everything else preserved."""
-        result = ips._filter_requirements(EXTRAS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
+        result = self._filter(EXTRAS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
@@ -260,7 +270,7 @@ class TestRealRequirementsFiltering:
 
     def test_extras_no_deps_txt_torchcodec_and_dlpack_removed(self):
         """extras-no-deps.txt: torchcodec and torch-c-dlpack-ext must be removed."""
-        result = ips._filter_requirements(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
+        result = self._filter(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_NO_DEPS_TXT)
 
@@ -278,7 +288,7 @@ class TestRealRequirementsFiltering:
 
     def test_extras_txt_most_packages_preserved(self):
         """Ensure a representative set of non-torch packages survive filtering."""
-        result = ips._filter_requirements(EXTRAS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
+        result = self._filter(EXTRAS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered_text = Path(result).read_text(encoding = "utf-8").lower()
 
         must_survive = ["scikit-learn", "loguru", "tiktoken", "einops", "tabulate"]
@@ -288,7 +298,7 @@ class TestRealRequirementsFiltering:
 
     def test_extras_no_deps_txt_trl_preserved(self):
         """trl should survive NO_TORCH filtering in extras-no-deps.txt."""
-        result = ips._filter_requirements(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
+        result = self._filter(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered_text = Path(result).read_text(encoding = "utf-8").lower()
         assert "trl" in filtered_text, "trl should survive NO_TORCH filtering"
 
@@ -598,6 +608,42 @@ class TestInstallPythonStackSubprocessMock:
         assert not self._cmds_contain_file(
             cmds, "triton-kernels.txt"
         ), "triton-kernels.txt should be skipped on macOS even via studio update"
+
+    # -- The harness above must not write the venv it is running in --
+
+    def test_the_harness_never_writes_the_running_venv_root(self):
+        """install_python_stack() drops, marks and rewrites the manifest for real here.
+
+        Only subprocess.run is mocked, so remove_manifest(), set_no_torch_marker() and
+        write_manifest() all execute against Path(sys.prefix), one directory shared by every
+        xdist worker and every subprocess they spawn. A leaked no-torch marker makes every
+        install_python_stack.py subprocess in the run resolve NO_TORCH True at import, which
+        is how the AMD fast-path CLI probe failed on 17 CI runs across 7 branches in one day
+        while passing in isolation. Driven through the real _capture_install, not a rebuilt
+        copy: the property has to hold for the harness that ships in this file.
+        """
+        real_root = Path(sys.prefix)
+        watched = (
+            real_root / ips.install_manifest.MANIFEST_NAME,
+            real_root / ips.install_manifest.NO_TORCH_MARKER,
+        )
+        before = [(p.exists(), p.read_bytes() if p.is_file() else None) for p in watched]
+
+        self._capture_install(no_torch = True, is_macos = False, is_windows = False)
+
+        after = [(p.exists(), p.read_bytes() if p.is_file() else None) for p in watched]
+        assert after == before, (
+            f"the installer harness wrote {real_root}, which every worker in this run "
+            "shares; give install_manifest.venv_root a contained root instead"
+        )
+        # Non-vacuous: the writes must have landed somewhere, or an install that returned
+        # early and wrote nothing at all would pass this too.
+        contained = ips.install_manifest.venv_root()
+        assert contained != real_root, "venv_root was never contained"
+        assert (contained / ips.install_manifest.MANIFEST_NAME).is_file(), (
+            "no manifest reached the contained root, so this run proves nothing about "
+            "where the installer writes"
+        )
 
 
 # ── Overrides skip structural checks ─────────────────────────────────

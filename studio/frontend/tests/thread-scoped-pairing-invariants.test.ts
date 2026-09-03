@@ -36,11 +36,61 @@ test("the read waits for this chat's own write before it can be believed", () =>
   // returns the pre-edit snapshot, which is then applied over what the user set.
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
   assert.match(sync, /awaitThreadScopedSettingsWrite\(activeThreadId\)/);
+  // And the row's own creation: initialize() resolves as soon as the id is minted and leaves
+  // the POST tracked, so a first send's read can overtake it, see no row, and release this
+  // chat's held edits into the installation defaults.
+  assert.match(sync, /awaitStoredChatThreadWrites\(activeThreadId\)/);
   // and the read only happens after it, not alongside
   assert.ok(
     sync.indexOf("awaitThreadScopedSettingsWrite") <
       sync.indexOf("getStoredChatThreadReadResult"),
     "the read is not sequenced after the write",
+  );
+});
+
+/** sync()'s body with comments removed, for the two order assertions below. These call
+ * sites are heavily commented, and a prose mention of a call ahead of the call itself
+ * would otherwise read as the call being in the wrong place. */
+function syncCode(): string {
+  return slice(provider, "const sync = () => {", "// The read did not answer")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+test("both waits sit inside the attempt's deadline, not in front of it", () => {
+  // Neither wait is bounded on its own, so in front of the deadline their time goes
+  // uncounted and a stalled write ends in a refused send. The reasoning is at the call site.
+  const sync = syncCode();
+  const race = sync.indexOf("Promise.race");
+  assert.ok(race !== -1, "the per-attempt deadline is gone");
+
+  for (const wait of ["awaitThreadScopedSettingsWrite", "awaitStoredChatThreadWrites"]) {
+    assert.ok(
+      sync.indexOf(wait) > race,
+      `${wait}() is awaited before the deadline opens, so its time is unbounded`,
+    );
+  }
+});
+
+test("the pairing wait still outlasts the worst case read chain", () => {
+  // The arithmetic THREAD_PAIRING_WAIT_MS's own comment claims. Read from source so the
+  // two cannot drift apart: whichever constant moves, this is what catches it.
+  const constant = (source: string, name: string): number => {
+    const match = source.match(new RegExp(`${name}\\s*=\\s*([0-9_]+)`));
+    assert.ok(match, `${name} not found`);
+    return Number(match[1].replace(/_/g, ""));
+  };
+  const store = read("../src/features/chat/stores/chat-runtime-store.ts");
+
+  const attempts = constant(provider, "THREAD_READ_RETRIES") + 1;
+  const worstCase =
+    attempts * constant(provider, "THREAD_READ_TIMEOUT_MS") +
+    (attempts - 1) * constant(provider, "THREAD_READ_RETRY_MS");
+
+  assert.ok(
+    worstCase < constant(store, "THREAD_PAIRING_WAIT_MS"),
+    `the read chain can take ${worstCase}ms, at or past the gate's give-up, so a slow ` +
+      "read refuses the user's send instead of falling back to the installation defaults",
   );
 });
 
@@ -462,17 +512,28 @@ test("a fork stops when the chat's settings could not be saved", () => {
 });
 
 test("an unsaved chat's edit reaches the installation defaults without a round trip", () => {
-  // assistant-ui gives an unsaved thread a `__LOCALID_` id (RemoteThreadListThreadList
-  // RuntimeCore), which no row can exist for, so its read can only 404. Holding edits
-  // behind that certain-to-fail read is what stopped a pill clicked on a fresh /chat
-  // from reaching localStorage straight away, which playwright_chat_ui asserts.
+  // Holding edits behind a read certain to 404 is what stopped a pill clicked on a fresh
+  // /chat from reaching localStorage at once, which playwright_chat_ui asserts. A chat is
+  // unsaved only until its first send, so the test is the runtime's pending-new-thread id:
+  // the `__LOCALID_` prefix stays for good and gated every app-created chat out of its own
+  // settings (#8686).
   const effect = slice(
     provider,
     "const { applyThreadScopedSettings } = useChatRuntimeStore.getState();",
     "if (!enabled) {",
   );
-  assert.match(effect, /isAssistantLocalThreadId\(activeThreadId\)/);
+  assert.match(effect, /activeThreadId === pendingNewThreadId/);
+  assert.doesNotMatch(effect, /isAssistantLocalThreadId/);
   assert.match(effect, /applyThreadScopedSettings\(null, null\)/);
+});
+
+test("the pairing effect tracks the runtime's pending new thread", () => {
+  assert.match(
+    provider,
+    /const pendingNewThreadId = useAuiState\(\(\{ threads \}\) => threads\.newThreadId\)/,
+  );
+  const deps = slice(provider, "}, [activeThreadId, enabled,", ");");
+  assert.match(deps, /pendingNewThreadId/);
 });
 
 test("a run whose pairing never settled is refused, not run on another chat's settings", () => {
@@ -542,4 +603,209 @@ test("a provider constraint does not rewrite what the chat stored", () => {
   const capture = slice(store, "function captureThreadScopedEdit", "\n}");
   assert.match(capture, /constraintSuppressedThreadFields\.delete\(field\)/);
   assert.match(store, /constraintSuppressedThreadFields\.clear\(\);/);
+});
+
+// The sampling params live under `params`, so the generic key loops have to be told where
+// to look: reading the field directly gets undefined and stores nothing, which looks
+// exactly like the feature working until you reopen.
+test("the sampling params are read and applied through params", () => {
+  assert.match(
+    store,
+    /return isThreadScopedParamKey\(key\)\s*\?\s*state\.params\[key\]\s*:\s*\(state as Record<string, unknown>\)\[key\];/,
+  );
+  // Read through the same helper on both paths, including the held-edit branch.
+  assert.equal(
+    store.match(/readThreadScopedValue\(state, key\)/g)?.length,
+    3,
+    "the snapshot, the held edit and the sameness check",
+  );
+  // One object, so they are gathered and set together rather than as fields.
+  assert.match(store, /paramsPatch\[key\] = value;/);
+  assert.match(
+    store,
+    /if \(hasKeys\(paramsPatch\)\) \{\s*nextState\.params = \{ \.\.\.state\.params, \.\.\.paramsPatch \};/,
+  );
+});
+
+// A model's own recommendation is not a choice the user made in this chat. Storing it
+// would pin every chat to whatever model happened to load while it was open.
+test("only a user edit to a sampling param lands on the chat", () => {
+  const drop = slice(store, "function withoutCapturedThreadEdits", "\n}");
+  assert.match(
+    drop,
+    // The capture may carry the edited value as a further argument; what this pins is
+    // that it happens for a sampling key, and only when the value is not the model's.
+    /isThreadScopedParamKey\(key\) &&\s*!fromModelDefaults &&[\s\S]{0,300}?captureThreadScopedEdit\(\s*key\b/,
+  );
+  // What the chat takes reaches neither the installation defaults nor this model's memory.
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  assert.match(setParams, /persistParamEdit\(\s*sharedParams,/);
+  assert.match(setParams, /getParamsByModelAfterEdit\([\s\S]{0,200}?sharedParams,/);
+  assert.doesNotMatch(
+    setParams,
+    /getParamsByModelAfterEdit\([\s\S]{0,200}?changedParams,/,
+    "the chat's edit is remembered against the model and leaks to new chats on it",
+  );
+
+  // Both paths that apply a model's own params say so.
+  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const status = read("../src/features/chat/lib/apply-inference-status-to-store.ts");
+  for (const source of [runtime, status]) {
+    assert.match(
+      source,
+      /mergeBackendRecommendedInference\([\s\S]{0,1200}?fromModelDefaults: true/,
+    );
+  }
+});
+
+// The store holds the edit under `params`, so the flush that runs when the user leaves
+// mid-read must look there: a direct field read is undefined, the sanitizer drops it, and
+// the edit the user watched happen is gone with no error.
+test("an edit held through the pairing window keeps its sampling value", () => {
+  const changes = slice(store, "function heldThreadScopedChanges", "\n}");
+  assert.match(changes, /readThreadScopedValue\(\s*live,\s*edit\.field as ThreadScopedSettingKey,\s*\)/);
+  assert.doesNotMatch(
+    changes,
+    /edited\[edit\.field\] = live\[edit\.field\]/,
+    "reads the field directly, which is undefined for every sampling key",
+  );
+});
+
+// fromModelDefaults only ever changed where the value was persisted; the recommendation
+// still landed in the live params, so the chat ran the model's sampling and the next
+// unrelated edit snapshotted that over what the chat had stored.
+test("a model's recommendation does not overwrite the chat's sampling", () => {
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  // Over the replay, not the raw params: a chat outranks the model's memory and defaults.
+  assert.match(
+    setParams,
+    /const effective = replayed\s*\?\s*restoreThreadScopedParams\(nextParams\)\s*:\s*nextParams;/,
+  );
+  assert.match(setParams, /const replayed = checkpointChanged \|\| fromModelDefaults;/);
+  // and the restored object is the one that reaches the store
+  assert.match(setParams, /params: effective,/);
+  assert.doesNotMatch(setParams, /params: nextParams,/);
+
+  const restore = slice(store, "function restoreThreadScopedParams", "\n}");
+  // An edit still waiting on the chat's read answers first, but the stored snapshot is
+  // what a paired chat restores from, so the override has to be consulted either way.
+  assert.match(restore, /const held = [\s\S]{0,120}?threadScopedOverride\(key\)/);
+  assert.match(restore, /if \(held === undefined/);
+  // ?? and never ||: 0, "" and -1 are values the user sets on purpose.
+  assert.doesNotMatch(restore, /\|\| threadScopedOverride\(key\)/);
+});
+
+// A pinned chat stores every sampling key, so restoring them all would mean the mode the
+// user just asked for arrives with the previous mode's temperature and top-p. The
+// load-time path applies the same table unasked, so it stays marked.
+test("toggling Think applies its params even in a chat that pins sampling", () => {
+  const qwen = read("../src/features/chat/utils/qwen-params.ts");
+  assert.match(qwen, /store\.setParams\(\{ \.\.\.store\.params, \.\.\.params \}\);/);
+  assert.doesNotMatch(
+    qwen,
+    /fromModelDefaults/,
+    "the toggle is treated as a model default, so a pinned chat never changes mode params",
+  );
+  // The post-load application of the same table stays marked.
+  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const post = slice(runtime, "store.setParams({ ...store.params, ...p }", "\n              }");
+  assert.match(post, /fromModelDefaults: true/);
+});
+
+// Restoring the chat's value makes it equal on both sides of the diff, so diffing the
+// restored object drops the key and the model's recommendation never reaches the
+// installation defaults, leaving every new chat on whatever model loaded before it.
+test("a chat pinning a param does not withhold the model's default from the rest", () => {
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  assert.match(
+    setParams,
+    /getChangedInferenceParams\(\s*nextParams,\s*state\.params,\s*!fromModelDefaults,\s*\)/,
+  );
+  assert.doesNotMatch(
+    setParams,
+    /getChangedInferenceParams\(\s*effective,/,
+    "the restored object decides what is persisted, so pinned keys are withheld",
+  );
+  // Called once: it bumps the mutation versions, so a second diff double-counts.
+  assert.equal(setParams.match(/getChangedInferenceParams\(/g)?.length, 1);
+  // The live store still gets the restored object; only persistence uses the model's.
+  assert.match(setParams, /params: effective,/);
+});
+
+// The write above changes the installation default, but applyThreadScopedSettings falls
+// back to an in-memory copy taken on the way into a chat. Left stale, a chat opened after
+// a model load runs the sampling of whichever model was loaded before it.
+test("the in-memory defaults follow the model defaults that were just written", () => {
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  assert.match(setParams, /noteThreadScopedDefaults\(sharedParams\);/);
+  const note = slice(store, "function noteThreadScopedDefaults", "\n}");
+  assert.match(note, /if \(!isThreadScopedParamKey\(key\)\) continue;/);
+  // Only ever updated, never created: with no chat open there is nothing to hold.
+  assert.match(note, /if \(globalThreadScopedDefaults === null\) continue;/);
+  // A held field is restored from the pre-window sample when the pairing closes, so a
+  // default published inside the window has to be recorded or this session stays behind.
+  assert.match(
+    note,
+    /if \(isHeldThreadScopedField\(key\)\) \{\s*hydratedDefaultsByHeldField\.set\(key, value\);/,
+  );
+  // and it is the fallback apply() actually reads. Not ??: a cleared seed is stored as
+  // null, and ?? would read that as a missing key and hand back the installation pin.
+  assert.match(
+    store,
+    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
+  );
+});
+
+// setCheckpoint replays the destination model's remembered params without going through
+// setParams. An external switch has no load after it to correct the result, so the chat
+// silently adopts that model's prompt and sampling and keeps them.
+test("switching model in a chat keeps the chat's sampling, not the model's", () => {
+  const set = slice(store, "setCheckpoint: (modelId, ggufVariant, options)", "\n  setActiveThreadId:");
+  assert.match(
+    set,
+    /const restoredParams = checkpointChanged\s*\?\s*restoreThreadScopedParams\(nextParams\)\s*:\s*nextParams;/,
+  );
+  assert.match(set, /params: restoredParams,/);
+  // Persistence still reads the unrestored object, as in setParams: the model's own
+  // values reach the defaults even though the chat keeps running on its own.
+  assert.match(set, /getReplayStatePatch\(state, nextParams, outgoing, baseParams\)/);
+});
+
+// rememberOutgoingModel snapshots the live params, which inside a chat are that chat's.
+// Filtering the incoming edit cannot undo it: the outgoing snapshot is written first,
+// and on a model with no entry it is persisted whole.
+test("the model being left does not remember the open chat's values", () => {
+  const remember = slice(store, "function rememberOutgoingModel", "\n}");
+  assert.match(
+    remember,
+    /pickRememberedParams\(\s*withoutActiveThreadParams\(state, outgoing\),\s*\)/,
+  );
+  assert.doesNotMatch(
+    remember,
+    /pickRememberedParams\(outgoing\)/,
+    "the chat's sampling and prompt are stored as the model's own",
+  );
+  const strip = slice(store, "function withoutActiveThreadParams", "\n}");
+  // Only keys this chat owns, and what the model already knew beats the installation copy,
+  // so leaving a chat does not flatten a preference set outside one. A chat whose read is
+  // still out owns its keys too: the edit is in the held list rather than in a snapshot.
+  assert.match(
+    strip,
+    /if \(held === undefined && threadScopedOverride\(key\) === undefined\) continue;/,
+  );
+  assert.match(
+    strip,
+    /firstSetThreadScopedValue\(\s*remembered\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
+  );
+  // and for a held key neither of those may exist yet, so the sample taken when the
+  // window opened is the pre-edit value.
+  assert.match(
+    strip,
+    /held !== undefined \? pairingWindowDefaults\?\.\[key\] : undefined/,
+  );
+  // With no chat open and none awaiting its read there is nothing of a chat's here.
+  assert.match(
+    strip,
+    /if \(threadScopedSettingsThreadId === null && pendingPairingThreadId === null\)/,
+  );
 });

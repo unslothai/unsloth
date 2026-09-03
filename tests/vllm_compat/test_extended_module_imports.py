@@ -165,11 +165,17 @@ def test_unsloth_core_module_imports_under_spoof(modname: str):
     sys.modules.pop(modname, None)
     try:
         importlib.import_module(modname)
-    except OSError as e:
-        # "could not get source code": editable-install + frozen sub-import
-        # quirk, not symbol drift. Skip rather than false-fail.
-        pytest.skip(f"{modname} env issue: {e!s}")
     except Exception as e:
+        # OSError("could not get source code") used to be skipped here as an
+        # "editable-install + frozen sub-import quirk". It was not an
+        # environment quirk: popping the module and importing it again is
+        # exactly the second import that unsloth/models/_utils.py could not
+        # survive, because it read the source of BitsAndBytesConfig.__init__
+        # and then replaced that __init__ with an exec'd function having no
+        # source. The skip meant _utils, loader, loader_utils and
+        # rl_replacements were silently uncovered here, and the bug it hid
+        # broke any test file that imported unsloth after this one ran in the
+        # same worker. Failing is the point of the case, so it fails now.
         pytest.fail(
             f"{modname} failed to import under CUDA spoof: " f"{type(e).__name__}: {str(e)[:300]}"
         )
@@ -214,10 +220,11 @@ def test_unsloth_rl_replacements_dispatch_populated():
     except Exception as e:
         pytest.skip(f"`import unsloth` failed under spoof: {e}")
     sys.modules.pop("unsloth.models.rl_replacements", None)
-    try:
-        rl = importlib.import_module("unsloth.models.rl_replacements")
-    except OSError as e:
-        pytest.skip(f"env issue importing rl_replacements: {e!s}")
+    # Not wrapped in a skip-on-OSError any more: see the note in
+    # test_unsloth_core_module_imports_under_spoof. The OSError that used to be
+    # skipped here was unsloth's re-import bug, not the environment, and
+    # skipping it left this case asserting nothing.
+    rl = importlib.import_module("unsloth.models.rl_replacements")
     funcs = getattr(rl, "RL_FUNCTIONS", None)
     if funcs is None:
         pytest.skip("RL_FUNCTIONS attribute not present (architecture changed; check)")

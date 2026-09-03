@@ -9,8 +9,11 @@ export type SidebarOrganizeBy = "project" | "list";
 /** How chat rows are ordered inside whichever list they land in. */
 export type SidebarChatSort = "priority" | "updated" | "manual";
 
-// Exported so the preference reset clears the same key this store writes.
-export const SIDEBAR_ORGANIZATION_STORAGE_KEY = "unsloth_sidebar_organization";
+// Defined in a leaf module and re-exported here so existing importers are
+// unchanged: this store is in an import cycle, so a binding defined here would
+// be readable too late. See sidebar-organization-keys.ts.
+export { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 
 // Manual order is per list: dragging a chat in one project must not move it in
 // another list showing the same chat. Each list gets its own key.

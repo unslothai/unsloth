@@ -3,7 +3,7 @@
 #
 # Unsloth Studio on a real CUDA GPU, on free Kaggle T4 hardware.
 #
-# Why this exists: Studio has ZERO CUDA coverage. Every Studio workflow in
+# Why this exists: Unsloth has ZERO CUDA coverage. Every Unsloth workflow in
 # this repo runs on ubuntu-latest, macos-15 or windows-latest, and nothing
 # matches `runs-on:.*(gpu|a100|t4|nvidia|self-hosted)`. macOS gives Metal and
 # MLX some hardware; the CUDA path is exercised by nothing at all.
@@ -12,7 +12,7 @@
 # tell a working GPU path from a CPU fallback.
 #
 # What runs: tests/kaggle/studio_gpu/run_studio_gpu.py, one payload per
-# kernel. It installs Studio the supported way (`install.sh --local`, which
+# kernel. It installs Unsloth the supported way (`install.sh --local`, which
 # builds the frontend, makes the venv and fetches a CUDA llama.cpp), starts
 # the server headless, and asserts three things.
 #
@@ -21,7 +21,7 @@
 #      offload line, device-wide VRAM growth -- and a rule that no evidence
 #      is a FAILURE rather than a pass. "The model returned text" is
 #      explicitly not evidence: a CPU fallback returns text too, which is why
-#      no existing Studio job can catch one. Then tool calling through
+#      no existing Unsloth job can catch one. Then tool calling through
 #      /v1/chat/completions with tool_choice=required, asserting
 #      finish_reason == "tool_calls".
 #   B. A LoRA training run finishes and leaves an adapter. Tested on no
@@ -32,7 +32,7 @@
 #   C. GGUF export runs against a CUDA llama.cpp build and the output loads.
 #      The install kind on disk is asserted to be a CUDA bundle, the output
 #      is checked for the GGUF magic rather than for existence, and "it
-#      loads" is asserted by loading it back into Studio and generating.
+#      loads" is asserted by loading it back into Unsloth and generating.
 #
 # Then the repo's existing tests/studio/playwright_chat_ui.py is driven
 # against the same server, last, because its final phase clicks "Stop server"
@@ -41,13 +41,18 @@
 # ---------------------------------------------------------------------
 # BUDGET. Read this before changing any trigger.
 # ---------------------------------------------------------------------
-# The Kaggle account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator
-# budget (60h at time of writing) shared with every other use of that
-# account, and with the notebook leg in kaggle-t4-notebook-ci.yml. CI is
-# allowed up to 50 of those 60; the last 10 are held for human use and are
-# what `--reserve-hours 10` protects.
+# CI holds TWO Kaggle accounts, with a WEEKLY accelerator budget each (60h
+# and 30h at time of writing), shared with every other use of those accounts
+# and with the notebook leg in kaggle-t4-notebook-ci.yml. A run is drawn onto
+# one of them in proportion to those totals, read from Kaggle's quota API each
+# run rather than written down here.
 #
-# Studio is sampled HARDER than the notebook leg because Studio changes land
+# `--reserve-hours 10` is what the last sixth is held back by, and it SCALES:
+# ten hours out of a 60h plan is the same fraction as five out of a 30h one, so
+# the smaller account is not quietly made the stricter one. See scaled_reserve
+# in .github/scripts/kaggle_t4_ci/gate.py.
+#
+# Unsloth is sampled HARDER than the notebook leg because Unsloth changes land
 # far more often. That comes out as MORE launches, far more GPU-hours, a
 # bigger share of the allowance -- and as a LOWER percentage. The percentage
 # moves the other way because the eligible event stream here is about three
@@ -57,7 +62,7 @@
 #
 #   MEASURED, 7 days to 2026-08-11 on unslothai/unsloth:
 #     479 commits landed on main (the wider week the numbers below use is
-#     514), of which 199 -- 41.5% -- touched the GPU-relevant Studio surface
+#     514), of which 199 -- 41.5% -- touched the GPU-relevant Unsloth surface
 #     this workflow filters on. 67% touched studio/ at all; the filter is
 #     narrower than that on purpose, see PATHS below.
 #     Of a 40-PR sample of pull requests opened in the same window, 13
@@ -76,7 +81,7 @@
 #     git clone + install.sh --local (venv, frontend build,
 #       CUDA torch, llama.cpp prebuilt)                        ~20 min
 #     playwright chromium + system deps                         ~3 min
-#     Studio boot to healthy                                    ~1 min
+#     Unsloth boot to healthy                                    ~1 min
 #     chat GGUF download (~1.5 GB) + assertions A               ~5 min
 #     assertion B (0.5B base download, 8 LoRA steps, save)      ~6 min
 #     assertion C (merge, GGUF convert, quantize, reload)       ~6 min
@@ -109,7 +114,7 @@
 #     sampling rate        5%       vs 15%
 #
 #   THE PERCENTAGE IS THE ONE AXIS THAT INVERTS, AND IT CANNOT BE MADE TO
-#   AGREE. Studio's eligible stream is ~3.3x the notebook leg's busy-week
+#   AGREE. Unsloth's eligible stream is ~3.3x the notebook leg's busy-week
 #   count and each launch costs 3x as much, so a percentage point here buys
 #   ~10x the GPU-hours it does there. At a common rate r the two cost 570r
 #   and 58r; equalising the rate at anything this leg can afford would leave
@@ -124,9 +129,9 @@
 #
 #   ONE PAYLOAD, NOT TWO. The notebook leg runs a payload on each T4 of a
 #   session because the second card is free. Here the second card is left
-#   idle on purpose: Studio is a server, a browser and a llama.cpp process
+#   idle on purpose: Unsloth is a server, a browser and a llama.cpp process
 #   contending for four CPU cores, and a second copy of all that on the same
-#   box measures contention rather than Studio.
+#   box measures contention rather than Unsloth.
 #
 # ---------------------------------------------------------------------
 # PATHS
@@ -158,17 +163,21 @@
 # ---------------------------------------------------------------------
 # CREDENTIALS
 # ---------------------------------------------------------------------
-# KAGGLE_ACCESS_TOKEN_GH is passed as KAGGLE_API_TOKEN to the gate and the
-# launcher only. It is never echoed, never written to an output or an
-# artifact, and never travels to the Kaggle kernel: the kernel receives the
-# notebook and nothing else. Fork pull requests do not receive the secret and
-# the gate skips cleanly when it is absent.
+# KAGGLE_API_TOKEN and KAGGLE_API_TOKEN_2 hold one account each. The GATE is
+# the only step that sees both: it weighs them, picks one, and publishes that
+# account's NUMBER, USERNAME and SECRET NAME. No token is ever a job output.
+# Every later step gets exactly the chosen one, as KAGGLE_API_TOKEN, by
+# indexing the secrets context with that name.
 #
-# The payload mints its own Studio bootstrap password inside the kernel and
-# scrubs it out of every log that leaves the machine, because Studio's
+# Neither is echoed, written to an output or an artifact, or travels to the
+# Kaggle kernel: the kernel receives the notebook and nothing else. Fork pull
+# requests receive no secret and the gate skips cleanly when none is present.
+#
+# The payload mints its own Unsloth bootstrap password inside the kernel and
+# scrubs it out of every log that leaves the machine, because Unsloth's
 # startup banner prints it and those logs become an artifact.
 
-name: Kaggle T4 Studio GPU CI
+name: Kaggle T4 Unsloth GPU CI
 
 on:
   pull_request:
@@ -248,8 +257,8 @@ concurrency:
 jobs:
   gate:
     name: gate
-    # Fork pull requests never receive KAGGLE_ACCESS_TOKEN_GH, so this job
-    # could only reach "the token is not available to this context" -- a
+    # Fork pull requests never receive the Kaggle secrets, so this job
+    # could only reach "no credential is available to this context" -- a
     # runner spent to learn nothing.
     #
     # The `labeled` clause is what keeps the opt-in label from turning into a
@@ -271,9 +280,15 @@ jobs:
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
       reason: ${{ steps.decide.outputs.reason }}
+      # The account the weighted draw landed on. Only this job sees both
+      # tokens; `matrix` carries the SECRET NAME so the GPU job can index the
+      # secrets context, never a credential.
+      account: ${{ steps.decide.outputs.account }}
+      account_user: ${{ steps.decide.outputs.account_user }}
+      matrix: ${{ steps.decide.outputs.matrix }}
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -286,7 +301,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+        run: python -m pip install --quiet 'kaggle==2.2.4'
 
       # The gate itself is shared with the notebook leg, unchanged. Only the
       # numbers differ.
@@ -307,7 +322,10 @@ jobs:
       - name: Decide
         id: decide
         env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+          # BOTH accounts, and the only step here that sees both: the gate
+          # weighs their weekly totals, picks one, and hands its NAME down.
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_API_TOKEN_2: ${{ secrets.KAGGLE_API_TOKEN_2 }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 5 \
@@ -319,24 +337,45 @@ jobs:
             --reserve-hours 10
 
   studio-gpu:
-    name: Studio GPU smoke
+    name: Unsloth GPU smoke
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    # One element, carrying the chosen account into a context `secrets[...]`
+    # can be indexed with. It holds the SECRET NAME, never the token: `secrets`
+    # is not available while the strategy expands, and a `cond && A || B`
+    # ternary silently yields the OTHER account's token when the first secret is
+    # empty, while the metadata beside it still names the first.
+    strategy:
+      matrix: ${{ fromJSON(needs.gate.outputs.matrix) }}
     # 120 min: the kernel ceiling is 70 and collection adds a few, so this
     # only fires if the launcher itself wedged.
     timeout-minutes: 120
-    # The SAME group string the notebook leg uses, on purpose. Kaggle's
-    # 2-kernel cap is per ACCOUNT and is not workflow-aware, so the two GPU
-    # legs have to queue behind each other rather than race the gate's
-    # concurrency survey and lose a push to the capacity cap. Not keyed on
-    # the ref for the same reason.
+    # A group of this workflow's OWN, where this used to be the same string the
+    # notebook leg uses. Sharing it was right while the notebook leg pushed two
+    # kernels and so held both of the account's concurrent sessions: this job
+    # would have raced the cap and lost its push. The notebook leg now packs
+    # every leg into a single kernel and holds one session, so the second is
+    # free and this job can take it instead of waiting out the whole notebook
+    # run (measured: run 32607617804 queued about 40 minutes behind notebook run
+    # 32607621452).
+    #
+    # Still not keyed on the ref: this job pushes to one global account, so two
+    # branches must not overlap even though the two WORKFLOWS now may. And the
+    # arithmetic has no slack -- one kernel here plus one there is exactly
+    # Kaggle's 2-session cap -- so anything that makes either side push a second
+    # kernel has to put these two back in one group.
+    # KEYED ON THE ACCOUNT. One string for the whole workflow meant every
+    # Studio run queued behind every other one whichever account it would
+    # spend, so a second account added no capacity at all. Per account it is
+    # one Studio kernel each, beside one notebook kernel each: four sessions
+    # over two accounts, still Kaggle's two per account.
     concurrency:
-      group: kaggle-t4-notebook-ci-account
+      group: kaggle-t4-account-${{ needs.gate.outputs.account }}-studio
       cancel-in-progress: false
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 
@@ -349,7 +388,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+        run: python -m pip install --quiet 'kaggle==2.2.4'
 
       # The ref the kernel clones and tests. For a pull request that is the
       # head SHA, so the kernel exercises the proposed code and not the merge
@@ -368,8 +407,13 @@ jobs:
       - name: Build the kernel notebook
         env:
           MAX_STEPS: ${{ inputs.max_steps || '8' }}
-          CHAT_MODEL: ${{ inputs.chat_model || 'unsloth/Qwen3.5-2B-GGUF' }}
-          TRAIN_MODEL: ${{ inputs.train_model || 'unsloth/Qwen2.5-0.5B-Instruct' }}
+          # MTP-GGUF, not the plain GGUF: multi-token prediction is a distinct
+          # serving path in llama.cpp and the plain repo does not exercise it.
+          CHAT_MODEL: ${{ inputs.chat_model || 'unsloth/Qwen3.5-2B-MTP-GGUF' }}
+          # Qwen3.5-2B rather than Qwen2.5-0.5B-Instruct, so Studio trains the
+          # model this CI actually cares about. Confirmed loadable on a T4 in
+          # 4bit by unsloth-probe-vision-recon-c76ea3.
+          TRAIN_MODEL: ${{ inputs.train_model || 'unsloth/Qwen3.5-2B' }}
           SKIP_UI: ${{ inputs.skip_ui }}
         run: |
           ARGS="--max-steps $MAX_STEPS --chat-model $CHAT_MODEL --train-model $TRAIN_MODEL"
@@ -384,6 +428,40 @@ jobs:
             --payload-args "$ARGS" \
             --per-run-timeout 3900
 
+      # WITH THE ACCOUNT SLOT IN HAND, and immediately before the push. The
+      # notebook leg has always done this and this one never has; two accounts
+      # is what makes the gap matter. A gate answer can be a whole run stale by
+      # the time the concurrency group lets this job start -- the repo queue has
+      # been measured 293 deep -- and in that window the chosen account can have
+      # spent its hours or taken its second session on another branch.
+      #
+      # --account-env narrows the recheck to the ONE account the gate chose, so
+      # it can never clear a different account from the one this job holds a
+      # slot for. --soft-fail because the run is already past the gate and only
+      # re-asking: exhaustion discovered here is a stand-down, not a red, and
+      # the step below says so.
+      - name: Recheck the Kaggle account
+        id: recheck
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/gate.py \
+            --force true \
+            --soft-fail \
+            --account-env KAGGLE_API_TOKEN \
+            --kernels 1 \
+            --budget-hours 2 \
+            --reserve-hours 10
+
+      # Through the environment rather than an inline expression, so nothing the
+      # Kaggle API put in that string reaches a shell.
+      - name: Report the stale approval
+        if: steps.recheck.outputs.should_run != 'true'
+        env:
+          REASON: ${{ steps.recheck.outputs.reason }}
+        run: |
+          echo "::warning title=Stood down at the second check::${REASON}"
+
       # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
       # kills the session at that point. A runner that is cancelled cannot
       # clean up after itself, so the ceiling has to be enforced on Kaggle's
@@ -394,12 +472,16 @@ jobs:
       # needed no modification.
       - name: Launch on Kaggle and collect
         id: launch
+        # GATED ON THE RECHECK, or the recheck is decorative: a step that
+        # measures the account and cannot stop the push is a log line, not a
+        # control. This is the same shape the notebook leg uses.
+        if: steps.recheck.outputs.should_run == 'true'
         env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
         run: |
           python .github/scripts/kaggle_t4_ci/launch.py \
             --notebook kernel.ipynb \
-            --user danielhanchen \
+            --user '${{ matrix.kaggle_user }}' \
             --outdir kaggle_evidence \
             --expect 1 \
             --kernel-timeout-sec 4200 \

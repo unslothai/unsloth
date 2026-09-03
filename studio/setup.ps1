@@ -135,7 +135,7 @@ function Write-StudioLine {
 #
 # UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 # "hip", or "rocm". Concrete values select and persist a backend across updates;
-# "auto" restores detection. Overrides Studio's Settings > System selection.
+# "auto" restores detection. Overrides Unsloth's Settings > System selection.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -239,6 +239,7 @@ function Add-ToUserPath {
         [ValidateSet('Append','Prepend')]
         [string]$Position = 'Append'
     )
+    if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
     try {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
@@ -517,8 +518,13 @@ function Test-UnslothCmdShimFile {
     return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
 }
 
-# Shared default cache, or the custom Studio home's llama.cpp tree.
+# Explicit staging root, shared default cache, or the custom Unsloth home's tree.
 function Get-ManagedLlamaCppDir {
+    param([AllowNull()][string]$StagingRoot = $null)
+
+    if ($StagingRoot) {
+        return (Join-Path $StagingRoot "llama.cpp")
+    }
     if (-not (Test-StudioHomeIsCustom)) {
         return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
     }
@@ -527,9 +533,11 @@ function Get-ManagedLlamaCppDir {
 
 # Failure reason when the managed tree is denied; never touches its ACLs.
 function Invoke-ManagedLlamaCppPreflight {
+    param([AllowNull()][string]$StagingRoot = $null)
+
     # Let the existing profile validation handle a missing USERPROFILE later.
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
-    $dir = Get-ManagedLlamaCppDir
+    $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
     if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
     Write-StudioLine ""
     # A denied custom home cannot be claimed as an Unsloth-managed cache.
@@ -1008,7 +1016,9 @@ function Get-RocmPinStaleTags {
 # that answer. Mirrors install.ps1's copy.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+    # TimedOut separates "never answered" from "answered with a failure": both leave Ok
+    # false, only the second says anything about the installation.
+    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = ""; TimedOut = $false }
     if (-not $PythonExe -or -not $Code) { return $result }
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1026,6 +1036,7 @@ function Invoke-BoundedPythonProbe {
             # Synthesised, not read back: waiting on the reader tasks of a wedged child would
             # reintroduce the hang this helper exists to bound.
             $result.Error = "python did not answer within $TimeoutSec seconds"
+            $result.TimedOut = $true
             return $result
         }
         $result.Output = $outTask.GetAwaiter().GetResult()
@@ -1185,6 +1196,30 @@ function Test-VenvTorchIsRocm {
         if (-not (Test-Path -LiteralPath $verPy)) { return $false }
         return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+(rocm|gfx)")
     } catch { return $false }
+}
+
+# The NVIDIA counterpart of the XPU and ROCm on-disk rescues: a wedged display driver hangs or
+# faults `import torch`, and the chain then fell through to a rebuild with a null tag, deleting a
+# healthy CUDA venv with no rollback copy. Returns the FAMILY, since the stale check needs it.
+function Get-VenvTorchCudaTag {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $null }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $null }
+        $line = (Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop |
+                 Where-Object { $_ -match "__version__\s*=\s*'[^']*\+(cu[0-9]+)" } |
+                 Select-Object -First 1)
+        if (-not $line) { return $null }
+        $m = [regex]::Match($line, "__version__\s*=\s*'[^']*\+(cu[0-9]+)")
+        if ($m.Success) { return $m.Groups[1].Value.ToLowerInvariant() }
+        return $null
+    } catch { return $null }
+}
+
+function Test-VenvTorchIsCuda {
+    param([string]$VenvPath)
+    return [bool](Get-VenvTorchCudaTag -VenvPath $VenvPath)
 }
 
 # Same free disk read, plus the supported range: unsloth/models/_utils.py raises at import for an
@@ -1499,6 +1534,7 @@ function Test-VCRedistInstalled {
 # and Build Tools torch cannot import without it, and winget is absent on LTSC/Server images.
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
+    if ($StageRoot) { step "vcredist" "missing; unchanged during staging" "Yellow"; return }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
     if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
         try {
@@ -1879,44 +1915,48 @@ if ($_studioOverride) {
 } else {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 }
-$VenvDir = Join-Path $StudioHome "unsloth_studio"
+$StageRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_STAGE_ROOT)) { $env:UNSLOTH_STUDIO_STAGE_ROOT.Trim() } else { $null }
+$RuntimeRoot = if ($StageRoot) { $StageRoot } else { $StudioHome }
+$VenvDir = Join-Path $RuntimeRoot "unsloth_studio"
 $StudioOwnedMarker = ".unsloth-studio-owned"
 # Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
 $NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 $StudioHomeIsCustom = Test-StudioHomeIsCustom
-$LlamaCppDir = Get-ManagedLlamaCppDir
+$LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot
 $UnslothHome = Split-Path -Parent $LlamaCppDir
 
 $WithLlamaCppDir = $null
-$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight
+$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight -StagingRoot $StageRoot
 if ($llamaPreflightFailure) {
     Exit-SetupFailure $llamaPreflightFailure
 }
 
 # Back up User PATH under HKCU\Software\Unsloth before any modifications.
-try {
-    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
-    if ($envKey) {
-        try {
-            $rawPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        } finally {
-            $envKey.Close()
-        }
-        if ($rawPath) {
-            $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+if (-not $StageRoot) {
+    try {
+        $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+        if ($envKey) {
             try {
-                $existingBackup = $backupKey.GetValue('PathBackup', $null)
-                if (-not $existingBackup) {
-                    $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-                }
+                $rawPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             } finally {
-                $backupKey.Close()
+                $envKey.Close()
+            }
+            if ($rawPath) {
+                $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+                try {
+                    $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                    if (-not $existingBackup) {
+                        $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                    }
+                } finally {
+                    $backupKey.Close()
+                }
             }
         }
+    } catch {
+        Write-StudioLine "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
-} catch {
-    Write-StudioLine "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
 }
 
 # ==========================================================================
@@ -2700,6 +2740,8 @@ try {
 
 if ($LongPathsEnabled) {
     step "long paths" "enabled"
+} elseif ($StageRoot) {
+    step "long paths" "disabled; unchanged during staging" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
@@ -2763,14 +2805,19 @@ if (-not $HasGit) {
         if ($_prForce -match '^\d+$' -and [int]$_prForce -gt 0) { $gitNeeded = $true }
         if ($_llamaSrc -ne "https://github.com/ggml-org/llama.cpp") { $gitNeeded = $true }
     }
-    Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        try {
-            Invoke-SetupCommand { winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
-            Refresh-Environment
-            $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
-        } catch { }
+    if ($gitNeeded -and $StageRoot) {
+        Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
+    }
+    if ($gitNeeded -or -not $StageRoot) {
+        Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
+        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+        if ($HasWinget) {
+            try {
+                Invoke-SetupCommand { winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                Refresh-Environment
+                $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+            } catch { }
+        }
     }
     if (-not $HasGit) {
         if ($gitNeeded) {
@@ -3164,32 +3211,37 @@ $SysNpmVersion = ""
 $NodeSource = $null
 
 if (-not $IsPipInstall) {
-    # Put Node beside the Unsloth root (OXC can need npm even when the frontend build is skipped).
-    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
-    elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
-    if ($NodeOverride) {
-        if ($NodeOverride -eq "~") {
-            $NodeOverride = $env:USERPROFILE
-        } elseif ($NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
-            $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
-        }
-        if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
-            Write-StudioLine "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
-            Write-StudioLine "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-            Exit-SetupFailure "UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist"
-        }
-        $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
-        # An override at the legacy default maps to the legacy sibling ~/.unsloth/node, not <root>/node.
-        $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
-        if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
-            $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
-        }
-        if ($NodeParent -eq $_legacyStudio) {
-            $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
-            $NodeOverride = $null
-        }
+    # Put Node beside the Unsloth root. OXC can still need npm when the
+    # frontend build is skipped.
+    if ($StageRoot) {
+        $NodeParent = $StageRoot
     } else {
-        $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
+        elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
+        if ($NodeOverride) {
+            if ($NodeOverride -eq "~") {
+                $NodeOverride = $env:USERPROFILE
+            } elseif ($NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
+                $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
+            }
+            if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
+                Write-StudioLine "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
+                Write-StudioLine "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+                Exit-SetupFailure "UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist"
+            }
+            $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
+            # legacy default overrides map to ~/.unsloth/node, matching runtime resolution.
+            $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+            if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
+                $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
+            }
+            if ($NodeParent -eq $_legacyStudio) {
+                $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+                $NodeOverride = $null
+            }
+        } else {
+            $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+        }
     }
     $NodeDir = Join-Path $NodeParent "node"
 
@@ -3710,7 +3762,7 @@ substep "Python found: $PythonCmd"
 # cache clear stays here. Venv-gated: a writable-but-empty override still fails the
 # venv check below, and clearing first would cost the cache for a run that then does
 # nothing. Still before any install work.
-if (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf) {
+if (-not $StageRoot -and (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf)) {
     Clear-WebViewCaches
 }
 
@@ -3881,6 +3933,7 @@ $installedTorchTag = $null
 # installer-managed repair below raises it, yet only the block a fresh install never enters
 # assigns it.
 $script:PinChangedForceReinstall = $false
+$script:TorchImportDefinitivelyFailed = $false
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
@@ -3931,6 +3984,18 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = "rocm"
             substep "PyTorch did not respond but this venv holds a ROCm build -- keeping it." "Yellow"
             substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
+        } elseif (Test-VenvTorchIsCuda -VenvPath $VenvDir) {
+            # Without this the chain fell through with a NULL tag, so the no-wipe escape
+            # below saw no cu* wheel to preserve. Keep the FAMILY, not a generic "cuda".
+            $installedTorchTag = Get-VenvTorchCudaTag -VenvPath $VenvDir
+            substep "PyTorch did not respond but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
+            substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
+            # A half-written torch also leaves a +cu* version.py behind, and the matched
+            # install below would write a completion manifest over it. Force the reinstall.
+            if ($_verProbe -and -not $_verProbe.TimedOut) {
+                $script:TorchImportDefinitivelyFailed = $true
+                substep "PyTorch failed to import rather than timing out -- reinstalling the same family in place." "Yellow"
+            }
         } else {
             $shouldRebuild = $true
         }
@@ -4116,6 +4181,23 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         substep "install.ps1 keeps a rollback copy of the previous environment until this run succeeds." "DarkGray"
         $script:PinChangedForceReinstall = $true
         $shouldRebuild = $false
+    }
+
+    # A cu* venv is never wiped by a DIRECT update just because nvidia-smi did not answer:
+    # every way that bounded probe comes back empty on a working NVIDIA host collapses
+    # $expectedTorchTag to "cpu", no escape above catches it, and the wipe has no rollback
+    # copy. Narrow on purpose: unpinned only, cu* installed only, and only when the collapse
+    # was for want of an NVIDIA answer. The -and order also keeps the reads legal under
+    # Set-StrictMode, since both are assigned inside `if (-not $shouldRebuild)`.
+    if ($shouldRebuild -and -not $InstallerManagedSetup -and
+        $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
+        -not $_pinnedIdx -and -not $HasNvidiaSmi -and $expectedTorchTag -eq "cpu") {
+        substep "nvidia-smi did not answer, but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
+        substep "If training runs on CPU, re-run install.ps1: irm https://unsloth.ai/install.ps1 | iex" "Yellow"
+        $shouldRebuild = $false
+        # Keeping the wheel is half the job: the index selection below rescans, sees no
+        # NVIDIA either, and would route the install to the /cpu arm.
+        $script:PreservedInstallerTorchTag = $installedTorchTag
     }
 
     if ($shouldRebuild) {
@@ -4462,14 +4544,23 @@ function Install-UvFromPinnedRelease {
 }
 
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
-. $ActivateScript
+function Enter-StudioVenv {
+    if ($StageRoot) {
+        $env:VIRTUAL_ENV = $VenvDir
+        $env:PATH = (Join-Path $VenvDir "Scripts") + ";" + $env:PATH
+        Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+        return
+    }
+    . $ActivateScript
+}
+Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
-} else {
+} elseif (-not $StageRoot) {
     substep "installing uv package manager..."
     try {
         $script:UvPinnedInstalled = $false
@@ -4485,8 +4576,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
             } | Out-Null
         }
         Refresh-Environment
-        # Re-activate: Refresh-Environment rebuilds PATH and drops the venv's Scripts dir.
-        . $ActivateScript
+        # Re-activate venv since Refresh-Environment rebuilds PATH from
+        # registry and drops the venv's Scripts directory
+        Enter-StudioVenv
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
 }
@@ -4573,14 +4665,28 @@ $SkipPythonDeps = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
-    $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
+    $_InstalledVersionProbeExit = 1
+    $InstalledVer = try {
+        $_installedVersionOutput = & python -c "
+import sys
+sys.path.insert(0, sys.argv[2])
+import install_manifest
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
+" $_PkgName $PSScriptRoot 2>$null
+        $_InstalledVersionProbeExit = $LASTEXITCODE
+        ($_installedVersionOutput | Out-String).Trim()
+    } catch { "" }
     $LatestVer = ""
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
-    if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
+    if ($_InstalledVersionProbeExit -eq 2) {
+        substep "duplicate metadata found for a core package -- forcing package repair..." "Cyan"
+    } elseif ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
         # A pre-#6483 install stuck on anyio>=4.14 with $_PkgName current would skip the
@@ -4610,19 +4716,51 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
         $_studioInstallIncomplete = $false
         try {
             & python -c "
-import sys
+import os, sys
 sys.path.insert(0, sys.argv[1])
 try:
     import install_manifest
 except Exception:
-    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
-sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+    # Present but unimportable is damage, not an old release, and this is the
+    # one file whose damage silences every check below. Absent keeps the old
+    # escape: separating it from an old tree needs a RECORD walk here, and the
+    # CLI already reports studio_install_manifest_missing.
+    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
+try:
+    ok = install_manifest.verify_install(deep = True)['ok']
+except TypeError:
+    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
+sys.exit(0 if ok else 1)
 " "$PSScriptRoot" 2>$null
             if ($LASTEXITCODE -ne 0) { $_studioInstallIncomplete = $true }
         } catch {}
         if ($_studioInstallIncomplete) {
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
+        }
+        # If the desktop app specifies a minimum required backend version and the installed
+        # package is older than that requirement, force the dependency pass to upgrade it.
+        if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
+            $_desktopVerBad = $false
+            try {
+                & python -c "
+import re, sys
+try:
+    from packaging.version import parse as parse_v
+except ImportError:
+    def parse_v(v):
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
+installed = parse_v(sys.argv[1])
+required = parse_v(sys.argv[2])
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
+" "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null
+                if ($LASTEXITCODE -ne 0) { $_desktopVerBad = $true }
+            } catch {}
+            if ($_desktopVerBad) {
+                substep "$_PkgName $InstalledVer < $env:UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..." "Cyan"
+                $SkipPythonDeps = $false
+            }
         }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
@@ -4701,8 +4839,33 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
     }
 }
 
-# A torch-index pin change repairs in place: force the pass so torch force-reinstalls from the new pin.
-if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
+# if (-not $IsPipInstall) {
+#     # Running from repo: copy requirements and do editable install
+#     $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+#     $ReqsSrc = Join-Path $RepoRoot "backend\requirements"
+#     $ReqsDst = Join-Path $PackageDir "requirements"
+#     if (-not (Test-Path $ReqsDst)) { New-Item -ItemType Directory -Path $ReqsDst | Out-Null }
+#     Copy-Item (Join-Path $ReqsSrc "*.txt") $ReqsDst -Force
+
+#     Write-Host "   Installing CLI entry point..." -ForegroundColor Cyan
+#     pip install -e $RepoRoot 2>&1 | Out-Null
+# } else {
+#     # Running from pip install: the package is in system Python but not in
+#     # the fresh .venv. Install it so run_install() can find its modules
+#     # and bundled requirements files.
+#     Write-Host "   Installing package into venv..." -ForegroundColor Cyan
+#     pip install unsloth 2>&1 | Out-Null
+# }
+
+# A torch-index pin change repairs in place: force the dependency pass so the torch install
+# below force-reinstalls from the new pin (else the fast path keeps the old wheel).
+# A torch that will not import needs the same pass for the same reason, and it is the only
+# thing that can act on it: every --force-reinstall that reads the flag lives INSIDE this
+# block, so on a current core package with a valid manifest the fast path announced a
+# reinstall it then skipped, and setup exited successfully over an unusable wheel.
+if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+    $SkipPythonDeps = $false
+}
 
 if (-not $SkipPythonDeps) {
 
@@ -4737,16 +4900,18 @@ if ($script:UnslothVerbose) {
 # Pre-install PyTorch with CUDA support: the default Windows PyPI wheel is CPU-only, so use
 # PyTorch's CUDA index (tag chosen from the driver's max CUDA; wheels bundle their own runtime).
 
-# Triton/inductor filenames can hit Windows MAX_PATH (260). With long paths on, cache under
-# Unsloth home; else a short drive-root dir for headroom.
-if ($LongPathsEnabled) {
-    $TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
+# Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
+# paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
+if ($StageRoot -or $LongPathsEnabled) {
+    $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"
 } else {
     $TorchCacheDir = "C:\tc"
 }
 if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
-[Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+if (-not $StageRoot) {
+    [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+}
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
 # Explicit pin (URL or family) wins over GPU probing and suppresses the AMD reroute below.
@@ -4950,6 +5115,10 @@ if ($XpuIndexUrl) {
     if ($installedTorchTag -ne "xpu") { $xpuForce = @("--force-reinstall") }
     # A changed pin repairs in place, so the existing +xpu wheel must be replaced too.
     if ($script:PinChangedForceReinstall) { $xpuForce = @("--force-reinstall") }
+    # And a +xpu wheel that no longer imports: its on-disk tag is still "xpu", so the check
+    # above sees no flavour change and the range is satisfied, which leaves the resolver
+    # holding the broken wheel and the run writing a completion manifest over it.
+    if ($script:TorchImportDefinitivelyFailed) { $xpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
         Fast-Install @_xpuTrio @xpuForce --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
@@ -4985,6 +5154,9 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # --force-reinstall on a pin change: a stale +cu / +rocm wheel still satisfies the CPU
     # torch>= range, so uv would keep it and only swap companions.
     if ($script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
+    # Same for a wheel that no longer imports. Nothing else here distinguishes it: the tag is
+    # rescued from disk and still reads "cpu", so the range is satisfied and it is kept.
+    if ($script:TorchImportDefinitivelyFailed) { $cpuForce = @("--force-reinstall") }
     # A PINNED cpu index installs the bounded trio (parity with _CPU_TORCH_PKG_SPEC): the /cpu
     # index serves newer torch and _ensure_cpu_torch keeps any CPU build. Unpinned keeps the bare trio.
     $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"
@@ -5041,9 +5213,12 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # --force-reinstall on a pin change: an installed cuXXX wheel satisfies bare torch (PEP 440
     # ignores +cuXXX), so a changed CUDA pin (cu126 -> cu128) never applies without it.
     $cudaForce = @()
-    if ($script:PinChangedForceReinstall) { $cudaForce = @("--force-reinstall") }
-    # An unknown-leaf custom pin (/simple, /current) routes here: bound the trio so a mirror can't
-    # pull an ABI-newer companion against the capped torch. Known cu* leaves keep bare specs.
+    if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+        $cudaForce = @("--force-reinstall")
+    }
+    # An unknown-leaf custom pin (/simple, /current) routes here with $CuTag as that leaf. Bound
+    # the trio like the fresh custom-pin paths so a mirror can't pull an ABI-newer companion
+    # against the capped torch. Known cu* leaves keep bare specs.
     $cudaTorchSpec = "torch"
     $cudaVisionSpec = "torchvision"
     $cudaAudioSpec = "torchaudio"
@@ -5117,6 +5292,35 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and 'studio update'
 # goes through uv (--upgrade-package), whose pip fallback no-ops on the
 # already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
+# Duplicate metadata repair is the one pass that DOES reinstall unsloth under
+# SKIP_STUDIO_BASE, so the CLI wraps this script in its launcher transaction.
+
+# ── Publish the torch flavor this run settled on ──
+# so install_python_stack.py can enforce it: its dependency steps resolve torch from PyPI, whose
+# Windows wheel is 2.11.0+cpu, and only install.ps1 -- never on the updater's path -- repaired
+# that. Vocabulary is Get-InstalledTorchTag's; an unknown leaf publishes nothing.
+if (-not $NoTorchMode) {
+    $_expectedLeaf = Get-TorchIndexLeaf $TorchInstallIndexUrl
+    # $ROCmIndexUrl first: on the AMD path $TorchInstallIndexUrl still points at /cpu.
+    $_expectedTag = if ($ROCmIndexUrl) { "rocm" }
+                    elseif (Test-CudaFamilyLeaf $_expectedLeaf) { $_expectedLeaf }
+                    elseif ($_expectedLeaf -eq "cpu" -or $_expectedLeaf -eq "xpu") { $_expectedLeaf }
+                    elseif (Test-PipRocmFamilyLeaf $_expectedLeaf) { "rocm" }
+                    else { $null }
+    # Remove-Item, NOT `= ""`: PowerShell 7.5 took .NET 9's change and KEEPS a name
+    # assigned an empty string. Deleting also stops a value inherited from the caller's
+    # shell surviving a run that decided it cannot name this host's flavor.
+    if ($_expectedTag) {
+        $env:UNSLOTH_EXPECTED_TORCH_TAG = $_expectedTag
+    } else {
+        Remove-Item Env:\UNSLOTH_EXPECTED_TORCH_TAG -ErrorAction SilentlyContinue
+    }
+    if ($TorchInstallIndexUrl) {
+        $env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $TorchInstallIndexUrl
+    } else {
+        Remove-Item Env:\UNSLOTH_TORCH_INSTALL_INDEX_URL -ErrorAction SilentlyContinue
+    }
+}
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
@@ -5185,12 +5389,14 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
         $_tritonTmp = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth_triton_xpu_$([guid]::NewGuid().ToString('N').Substring(0,8))"
         try {
             New-Item -ItemType Directory -Force -Path $_tritonTmp -ErrorAction SilentlyContinue | Out-Null
+            # Fast-Download is an advanced function, so PowerShell binds `-d` to `-Debug`
+            # instead of forwarding it to pip. Use the long `--dest` flag (#10018).
             if ($script:UnslothVerbose) {
-                Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                Fast-Download --no-deps --only-binary=:all: --dest $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
                 $tritonDlExit = $LASTEXITCODE
                 $tritonDlOutput = ""
             } else {
-                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
+                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: --dest $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
                 $tritonDlExit = $LASTEXITCODE
             }
             # The exit code alone is not enough: no wheel on disk means nothing to install from.
@@ -5233,7 +5439,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                     Fast-Uninstall "triton-windows" | Out-Null
                     $_uninstallExit = $LASTEXITCODE
                 }
-                # A triton-windows that would not uninstall (Studio running and holding
+                # A triton-windows that would not uninstall (Unsloth running and holding
                 # _C/libtriton.pyd open) still shadows the XPU triton, so installing over it
                 # achieves nothing and would restore the manifest onto an unchanged venv.
                 if (-not $_manifestBlocked -and $_uninstallExit -ne 0) {
@@ -5308,11 +5514,13 @@ if ($stackExit -ne 0) {
     $ErrorActionPreference = $prevEAP
 }
 
-# Pre-install transformers 5.x into tiered sidecar venvs under $StudioHome. Runs outside the
-# deps fast-path gate so upgrades from the legacy single .venv_t5 always migrate.
-$VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
-$VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
-$VenvT5_510Dir = Join-Path $StudioHome ".venv_t5_510"
+# ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
+# Runs outside the deps fast-path gate so that upgrades from the legacy
+# single .venv_t5 are always migrated to the tiered layout.
+# T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
+$VenvT5_530Dir = Join-Path $RuntimeRoot ".venv_t5_530"
+$VenvT5_550Dir = Join-Path $RuntimeRoot ".venv_t5_550"
+$VenvT5_510Dir = Join-Path $RuntimeRoot ".venv_t5_510"
 $VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
 
 function Test-TargetPackageVersion {
@@ -5337,8 +5545,13 @@ function Test-TargetPackageVersion {
 
 $_NeedT5Install = $false
 if (Test-Path -LiteralPath $VenvT5Legacy) {
-    Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
-    Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
+    # Legacy layout -- migrate. The tiered venvs a staged run builds land under the
+    # stage root and may never be activated, so removing the live legacy one here
+    # would strip the running install of its only sidecar. The live update does it.
+    if (-not $StageRoot) {
+        Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
+        Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
+    }
     $_NeedT5Install = $true
 }
 if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
@@ -5793,6 +6006,11 @@ if ($LocalLlamaCppLinked) {
         if ($prebuiltExit -eq 0) {
             if ($prebuiltOutput -match "already matches") {
                 step "llama.cpp" "prebuilt up to date and validated"
+            } elseif ($prebuiltOutput -match "keeping the existing complete install") {
+                # Exit 0 can also mean the installer kept the tree already on disk after a
+                # transient failure. "installed and validated" would name a release nothing
+                # fetched.
+                step "llama.cpp" "update unavailable, existing prebuilt kept" "Yellow"
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
             }
@@ -5941,6 +6159,10 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     } else {
         step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "Yellow"
     }
+}
+
+if ($StageRoot -and $NeedLlamaSourceBuild) {
+    Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
 
 # ==========================================================================

@@ -40,8 +40,26 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.n_ubatch) {
     parts.push(`ubatch ${override.n_ubatch}`);
   }
+  if (override.load_mode) {
+    parts.push(`load ${override.load_mode}`);
+  }
+  if (override.spec_draft_cache_type) {
+    parts.push(`draft KV ${override.spec_draft_cache_type}`);
+  }
+  // Both compared against undefined rather than tested for truth: 0 is a value the
+  // user can pick for either (no checkpoints, no host cache) and would otherwise
+  // be listed as unset.
+  if (override.ctx_checkpoints !== undefined) {
+    parts.push(`${override.ctx_checkpoints} checkpoints`);
+  }
+  if (override.cache_ram !== undefined) {
+    parts.push(`cache RAM ${override.cache_ram} MiB`);
+  }
   if (override.tensor_parallel) {
     parts.push("tensor parallel");
+  }
+  if (override.disable_vision) {
+    parts.push("vision off");
   }
   if (override.gpu_memory_mode === "manual") {
     parts.push("manual GPU memory");

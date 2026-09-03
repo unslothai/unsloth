@@ -13,8 +13,13 @@ import {
   resolveGpuSelectionContext,
 } from "./gpu-selection";
 import {
+  gpuMemoryTotalsGb,
+  gpuSharedHostMemoryGb,
+  sharesHostMemory,
+  systemRamAvailableOutsideSharedPoolGb,
+} from "./gpu-vram";
+import {
   type SystemInfoResponse,
-  aggregateGpuMemoryTotalGb,
   fetchSystemInfo,
   getCachedSystemInfo,
   subscribeSystemInfo,
@@ -32,33 +37,61 @@ export {
 export interface GpuInfo {
   available: boolean;
   budgetKnown: boolean;
+  /** true when the visible GPUs use only the host memory pool. */
+  sharedMemory: boolean;
+  /** True when any device's budget is a unified host pool (a ROCm APU), which is
+   *  not a VRAM ceiling a fit verdict can be measured against. */
+  unifiedMemory: boolean;
   /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
   backend: string;
   name: string;
   memoryTotalGb: number;
+  memorySharedGb: number;
+  /** The same aggregate with shared-memory devices left out: the VRAM that is a pool
+   *  BESIDE system RAM rather than a capped view of it. */
+  dedicatedMemoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
   maxDeviceMemoryGb: number;
   /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that OOMs the smaller one. */
   loadDeviceMemoryGb: number;
+  /** true when the image/video load device uses the host memory pool. */
+  loadDeviceSharedMemory: boolean;
+  /** The same question with the ROCm APU included: `shared_memory` is that flag AND Windows, so a
+   *  Linux APU reads as not-shared while its total is still a window into host RAM. Offload frees
+   *  nothing on either, which is the only thing a diffusion verdict needs to know. */
+  loadDeviceSharesHostMemory: boolean;
+  /** How many GPUs memoryTotalGb is the sum of, for the loader's per-card VRAM reserve. */
+  deviceCount: number;
   cpuCore: number;
   cpuThread: number;
+  /** host RAM free after removing the host-backed shared GPU pool. */
   systemRamAvailableGb: number;
+  /** raw host RAM free as the probe reported it. */
+  systemRamAvailableHostGb: number;
   systemRamTotalGb: number;
 }
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
+  sharedMemory: false,
+  unifiedMemory: false,
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
+  memorySharedGb: 0,
+  dedicatedMemoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
   loadDeviceMemoryGb: 0,
+  loadDeviceSharedMemory: false,
+  loadDeviceSharesHostMemory: false,
+  deviceCount: 0,
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
+  systemRamAvailableHostGb: 0,
   systemRamTotalGb: 0,
 };
 
@@ -73,6 +106,7 @@ function toGpuInfo(
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+    systemRamAvailableHostGb: data?.memory?.available_gb ?? 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
   const gpuData =
@@ -81,21 +115,49 @@ function toGpuInfo(
   if (!gpuData?.available || !devices.length) {
     return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
   }
+  const memoryTotals = gpuMemoryTotalsGb(devices);
+  const loadDevice = pickLoadDevice(devices);
   return {
     ...base,
-    // A Vulkan iGPU's reported budget is capped shared system RAM, not an
-    // independent VRAM pool. Do not offer the same RAM again for CPU offload.
-    systemRamAvailableGb: devices.some((device) => device.shared_memory)
-      ? 0
-      : base.systemRamAvailableGb,
+    // Folded, not raw `shared_memory`: hardware.py sets that flag only on Windows, so a Linux ROCm
+    // APU arrives unified true / shared false and its GTT window was never subtracted here. The
+    // RAM tier then offered the very bytes the window is a view INTO as a second budget.
+    systemRamAvailableGb: systemRamAvailableOutsideSharedPoolGb(
+      base.systemRamAvailableGb,
+      gpuSharedHostMemoryGb(
+        devices.map((device) => ({
+          ...device,
+          shared_memory: sharesHostMemory({
+            sharedMemory: device.shared_memory === true,
+            unifiedMemory: device.unified_memory === true,
+          }),
+        })),
+      ),
+    ),
+    sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
+    // Additive, and deliberately some() where sharedMemory above is "no dedicated
+    // pool at all": one unified part makes the aggregate total partly host RAM,
+    // which is already enough to stop it being a VRAM ceiling a fit verdict can
+    // be measured against.
+    unifiedMemory: devices.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
-    // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted once rather than summed.
-    memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
-    maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
+    memoryTotalGb: memoryTotals.total,
+    dedicatedMemoryTotalGb: memoryTotals.dedicated,
+    memorySharedGb: memoryTotals.shared,
+    maxDeviceMemoryGb: devices.reduce(
+      (max, d) => Math.max(max, d.memory_total_gb ?? 0),
+      0,
+    ),
     // Lowest visible ordinal = torch's current device = where the pipeline lands.
-    loadDeviceMemoryGb: pickLoadDevice(devices)?.memory_total_gb ?? 0,
+    loadDeviceMemoryGb: loadDevice?.memory_total_gb ?? 0,
+    loadDeviceSharedMemory: loadDevice?.shared_memory === true,
+    loadDeviceSharesHostMemory: sharesHostMemory({
+      sharedMemory: loadDevice?.shared_memory === true,
+      unifiedMemory: loadDevice?.unified_memory === true,
+    }),
+    deviceCount: devices.length,
   };
 }
 
@@ -129,6 +191,9 @@ function toGpuDevices(
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
         memoryFreeGb: d.vram_free_gb ?? 0,
+        sharedMemory: d.shared_memory === true,
+        sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+        unifiedMemory: d.unified_memory === true,
         pinnable: picksAccepted && d.index_kind === "vulkan",
         // The DiffusionGemma runner is torch-side and never speaks ggml
         // ordinals, so a Vulkan pick is not usable there.
@@ -154,6 +219,9 @@ function toGpuDevices(
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
+      sharedMemory: d.shared_memory === true,
+      sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+      unifiedMemory: d.unified_memory === true,
       // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
       // and /validate 400 them. A Vulkan ordinal is not one of those, so it
       // stays pickable even when this list arrives from an XPU host.

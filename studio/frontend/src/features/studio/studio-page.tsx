@@ -17,8 +17,12 @@ import {
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
-import { ArrowLeft01Icon, Image03Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Image03Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -157,6 +161,19 @@ export function StudioPage(): ReactElement {
   // verdict is unknown and writes it to this same store, so no second poll is needed here.
   const showTrainingHydrating =
     capabilitiesUnknown || (!hasHydratedRuntime && isHydratingRuntime);
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      capabilitiesUnknown ||
+      !hasHydratedRuntime ||
+      isHydratingRuntime ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime]);
   // Two waits share this panel. Hardware detection is a cold `import torch` that can run for
   // minutes and says so, the way the Video page does; a hydrating runtime is quick and keeps
   // the runtime wording, which on a machine still being measured just reads as a hang.
@@ -192,7 +209,7 @@ export function StudioPage(): ReactElement {
                     onClick={clearHistorySelection}
                     aria-label={t("studio.backToHistory")}
                   >
-                    <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+                    <ChevronLeftIcon className="size-4" />
                   </Button>
                 )}
                 <TrainSubNav
@@ -229,14 +246,15 @@ export function StudioPage(): ReactElement {
               <>
                 <TabsContent value="configure" className="mt-0">
                   <div className="@container/train-configure">
-                    <div className="grid grid-cols-1 gap-8 @5xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">
+                    {/* 64rem only fit windows 1376px and wider; 56rem still clears @md/train-section */}
+                    <div className="grid grid-cols-1 gap-8 @4xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">
                       <div className="min-w-0">
                         <TrainingWizard
                           paramMode={paramMode}
                           onParamModeChange={setParamMode}
                         />
                       </div>
-                      <div className="@5xl/train-configure:sticky @5xl/train-configure:top-6 @5xl/train-configure:self-start">
+                      <div className="@4xl/train-configure:sticky @4xl/train-configure:top-6 @4xl/train-configure:self-start">
                         <RunPreviewCard
                           paramMode={paramMode}
                           startCta={<StartTrainingCta />}

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // "Only unload models loaded by the API" vetoes the media TTL outright: every resident image
-// or video model is one the user loaded from Studio, so there is nothing the setting would
+// or video model is one the user loaded from Unsloth, so there is nothing the setting would
 // let go of. The switch that lifts the veto used to render only while the CHAT idle unload
 // was active, so a user who had turned that off after enabling the option saw the media row
 // go straight to "paused" with no control anywhere to explain it or undo it -- the feature

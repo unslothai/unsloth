@@ -474,6 +474,27 @@ def test_transcode_gif_and_webm_produce_real_containers():
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
 
 
+def test_thumbnail_produces_a_webp_from_the_video():
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    record = gallery.save(_real_mp4_bytes(frames = 3, size = 64), _meta())
+    thumbnail = gallery.thumbnail(record["id"])
+
+    assert thumbnail is not None
+    assert thumbnail[:4] == b"RIFF" and thumbnail[8:12] == b"WEBP"
+    with Image.open(io.BytesIO(thumbnail)) as image:
+        assert image.format == "WEBP"
+        assert image.size == (64, 64)
+
+
+def test_thumbnail_rejects_unowned_and_invalid_videos():
+    assert gallery.thumbnail("does-not-exist") is None
+    record = gallery.save(_mp4(), _meta())
+    with pytest.raises(RuntimeError, match = "Thumbnail generation failed"):
+        gallery.thumbnail(record["id"])
+
+
 def test_transcode_unknown_id_and_bad_format():
     assert gallery.transcode("does-not-exist", "gif") is None
     record = gallery.save(_real_mp4_bytes(), _meta())

@@ -182,9 +182,10 @@ class TestPreflightMacosInstalledBinaries:
         # Must not raise on a macOS 15 host.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
-    def test_skips_when_host_version_unknown(self, tmp_path):
+    def test_skips_the_minos_comparison_when_host_version_unknown(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
-        # Unknown host version -> defer to runtime validation, do not raise.
+        # No host version to compare against, so the static check cannot run.
+        # These fixtures are not executable, so the load probe finds nothing either.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_noop_on_non_macos_host(self, tmp_path):
@@ -205,6 +206,170 @@ class TestPreflightMacosInstalledBinaries:
             has_usable_nvidia = False,
         )
         ILP.preflight_macos_installed_binaries(binaries, install_dir, linux_host)
+
+
+class TestMacosDyldLoadProbe:
+    """The minos scan reads a header; it cannot see an install name pointing at a
+    library that exists on the builder and nowhere else. That shipped: a bundle
+    whose libggml-rpc.0.dylib wanted /usr/lib/librdma.dylib passed preflight, was
+    logged "prebuilt installed and validated", and then died on first launch."""
+
+    def _bundle(
+        self,
+        tmp_path,
+        *,
+        exit_code,
+        message = "",
+    ):
+        bin_dir = tmp_path / "build" / "bin"
+        bin_dir.mkdir(parents = True)
+        # A real spawnable file, not a Mach-O sample: the point is to reach dyld.
+        # macho_minimum_macos returns None for a non-Mach-O, so the minos gate
+        # ahead of the probe stays quiet and the probe is what decides.
+        server = bin_dir / "llama-server"
+        server.write_text(f'#!/bin/sh\necho "{message}" >&2\nexit {exit_code}\n')
+        server.chmod(0o755)
+        return tmp_path, (server,)
+
+    def test_rejects_a_binary_dyld_will_not_load(self, tmp_path):
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = "dyld: Library not loaded: /usr/lib/librdma.dylib",
+        )
+        with pytest.raises(PrebuiltFallback, match = "does not load on this host"):
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+    def test_the_message_names_the_library(self, tmp_path):
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = "dyld: Library not loaded: /usr/lib/librdma.dylib",
+        )
+        with pytest.raises(PrebuiltFallback) as caught:
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+        # Without the name the operator gets an exit code and no lead to follow.
+        assert "librdma" in str(caught.value)
+
+    def test_accepts_a_binary_that_loads(self, tmp_path):
+        install_dir, binaries = self._bundle(tmp_path, exit_code = 0, message = "")
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+    def test_a_binary_that_cannot_be_spawned_is_not_a_link_failure(self, tmp_path):
+        """A refusal to exec says nothing about the link graph, and treating it as
+        a verdict would reject healthy bundles on a loaded or locked-down host."""
+        install_dir, binaries = self._bundle(tmp_path, exit_code = 0)
+        binaries[0].chmod(0o644)
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+    def test_the_probe_still_runs_when_the_host_version_is_unknown(self, tmp_path):
+        """Only the static comparison needs the version; dyld does not.
+
+        Skipping both left the checksummed path with no check at all, since the
+        runtime validation it deferred to is disabled by default (#5854).
+        """
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = "dyld[1]: Library not loaded: /usr/lib/librdma.dylib",
+        )
+        with pytest.raises(PrebuiltFallback, match = "does not load on this host"):
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
+
+    def test_a_nonzero_exit_with_program_output_is_not_a_link_failure(self, tmp_path):
+        """llama-quantize answers --version by printing its quantization table and
+        exiting non-zero. Reading the exit code as the verdict rejected every
+        published prebuilt, walked the release history to its end, and fell back to
+        a source build on every macOS runner.
+        """
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = (
+                "llama-quantize: 7 or Q8_0 : 7.96G, +0.0026 ppl @ Llama-3-8B | "
+                "1 or F16 : 14.00G, +0.0020 ppl @ Mistral-7B"
+            ),
+        )
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+    def test_the_referencing_dylib_survives_into_the_message(self, tmp_path):
+        """dyld names the library AND the dylib that asked for it. The second half
+        is what says libggml-rpc rather than llama-server is at fault, so keep
+        enough of the tail to carry it."""
+        real = (
+            "dyld[41694]: Library not loaded: /usr/lib/librdma.dylib\\n"
+            "  Referenced from: /Users/r/.unsloth/llama.cpp/build/bin/libggml-rpc.0.dylib\\n"
+            "  Reason: tried: '/usr/lib/librdma.dylib' (no such file)"
+        )
+        install_dir, binaries = self._bundle(tmp_path, exit_code = 1, message = real)
+        with pytest.raises(PrebuiltFallback) as caught:
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+        message = str(caught.value)
+        assert "librdma" in message
+        assert "libggml-rpc" in message
+
+
+class TestLooksLikeMacosLoaderFailure:
+    """Narrow by design: a false positive rejects a working prebuilt."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "dyld[41694]: Library not loaded: /usr/lib/librdma.dylib",
+            "dyld: Library not loaded: /usr/lib/libfoo.dylib",
+            "Symbol not found: _OBJC_CLASS_$_MTLResidencySetDescriptor",
+            "dyld[1]: no suitable image found.",
+        ],
+    )
+    def test_loader_failures_are_recognised(self, text):
+        assert ILP.looks_like_macos_loader_failure(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "llama-quantize: 7 or Q8_0 : 7.96G, +0.0026 ppl @ Llama-3-8B",
+            "usage: llama-quantize [--help] model-f32.gguf",
+            "error: failed to load model 'foo.gguf'",
+            "main: build = 10639 (f6f92fe)",
+            # DYLD_PRINT_LIBRARIES narrates a perfectly healthy load under the
+            # same prefix a failure uses, so the prefix alone cannot be the test.
+            "dyld[4711]: /usr/lib/libSystem.B.dylib\ndyld[4711]: /usr/lib/libc++.1.dylib",
+        ],
+    )
+    def test_ordinary_program_output_is_not_a_loader_failure(self, text):
+        assert not ILP.looks_like_macos_loader_failure(text)
+
+
+class TestTheProbeEnvironment:
+    def test_dyld_diagnostics_are_kept_out_of_the_probe(self, tmp_path, monkeypatch):
+        """A user's DYLD_PRINT_* would otherwise be echoed into the output the
+        probe reads, and llama-quantize's nonzero --version would turn that
+        narration into a rejection."""
+        monkeypatch.setenv("DYLD_PRINT_LIBRARIES", "1")
+        monkeypatch.setenv("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib")
+        seen = {}
+
+        bin_dir = tmp_path / "build" / "bin"
+        bin_dir.mkdir(parents = True)
+        server = bin_dir / "llama-server"
+        server.write_text("#!/bin/sh\nexit 0\n")
+        server.chmod(0o755)
+
+        def capture(command, **kwargs):
+            seen.update(kwargs.get("env") or {})
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        monkeypatch.setattr(ILP, "run_capture", capture)
+        ILP.macos_dyld_load_issues([server], tmp_path, make_macos_host((15, 5)))
+        assert "DYLD_PRINT_LIBRARIES" not in seen
+        assert "DYLD_INSERT_LIBRARIES" not in seen
 
 
 def _fake_macos_releases(tags):

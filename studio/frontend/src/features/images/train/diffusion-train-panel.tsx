@@ -106,13 +106,24 @@ import {
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
+import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
   name: string;
   label: string;
   base_repos: string[];
-  defaults: { rank: number; lr: number; resolution: number };
+  defaults: {
+    rank: number;
+    lr: number;
+    resolution: number;
+    // The family's LR ramp, when it recommends one. Both or neither: a warmup count is inert
+    // under "constant", so seeding one without the other reinstates the bug this carries.
+    // Only the backend reports them, so the static presets below leave the pair unset rather
+    // than keeping a second copy of a pairing that can drift.
+    lrScheduler?: LrScheduler;
+    lrWarmupSteps?: number;
+  };
   vram_note: string;
   gated?: boolean;
   // The note's facts, one per chip. Absent on an older backend, which falls back to vram_note prose.
@@ -312,6 +323,9 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? p.defaults.rank,
         lr: r.defaults?.learning_rate ?? p.defaults.lr,
         resolution: r.defaults?.resolution ?? p.defaults.resolution,
+        // No preset fallback for the ramp: a reported family owns it outright, so a backend that
+        // drops its warmup preset drops the ramp here too instead of a stale copy resurrecting it.
+        ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note || p.vram_note,
       gated: r.gated ?? p.gated,
@@ -337,6 +351,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? 16,
         lr: r.defaults?.learning_rate ?? 0.0001,
         resolution: r.defaults?.resolution ?? 768,
+        ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note ?? "",
       gated: r.gated ?? false,
@@ -472,9 +487,8 @@ export function DiffusionTrainPanel({
   // so nothing is spent on disk unless the user asks to survive a crash.
   const [saveSteps, setSaveSteps] = useState(0);
   // LR schedule. Warmup only applies to the non-constant schedules; plain "constant" ignores it.
-  const [lrScheduler, setLrScheduler] = useState<
-    "constant" | "constant_with_warmup" | "cosine" | "linear"
-  >("constant");
+  // Seeded from the family below, which is where the flow-matching DiTs' short ramp comes from.
+  const [lrScheduler, setLrScheduler] = useState<LrScheduler>("constant");
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
@@ -490,6 +504,12 @@ export function DiffusionTrainPanel({
   );
   // Track whether the user hand-edited the numeric settings; if not, a family change re-seeds them from that family defaults.
   const settingsDirty = useRef(false);
+  // The LR schedule pair tracks its own edits rather than riding on settingsDirty. It is the one
+  // setting whose control DISAPPEARS -- "Warmup steps" is hidden under plain "constant" -- so a
+  // value carried past a family change is invisible rather than merely stale, and an edit to
+  // something unrelated like Steps or Seed would otherwise leave a flow-matching DiT on
+  // "constant" with the family's ramp silently never applied.
+  const lrScheduleDirty = useRef(false);
   // Track whether the user hand-picked a base precision; if not, a family change re-seeds it from recommended_precision.
   const precisionDirty = useRef(false);
   // Same for the base repo: once the user picks one, only a real family change may re-seed it. `family` is a fresh object after every
@@ -622,6 +642,13 @@ export function DiffusionTrainPanel({
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
+    }
+    // The ramp is seeded from the family or reset with it: a family with no warmup preset goes
+    // back to the plain default, or the 20 steps recommended for a flow-matching DiT ride along
+    // into SDXL, which never asked for one.
+    if (!lrScheduleDirty.current) {
+      setLrScheduler(family.defaults.lrScheduler ?? "constant");
+      setLrWarmupSteps(family.defaults.lrWarmupSteps ?? 0);
     }
     // Re-seed the DiT base precision from the family recommendation (unless the user picked one); "auto" is always safe.
     if (!precisionDirty.current) {
@@ -1025,7 +1052,7 @@ export function DiffusionTrainPanel({
       return;
     }
     if (!outputDir.trim()) {
-      toast.error("Name the adapter (this becomes its folder under Studio outputs).");
+      toast.error("Name the adapter (this becomes its folder under Unsloth outputs).");
       return;
     }
     // Require a trigger prompt whenever ANY image lacks a caption: without an instance_prompt the backend silently skips every uncaptioned image.
@@ -1224,7 +1251,11 @@ export function DiffusionTrainPanel({
     value: number,
     set: (n: number) => void,
     fallback: number,
-    extra?: { min?: number; step?: number; hint?: ReactNode },
+    // markDirty overrides which dirty flag an edit claims. Only "Warmup steps" passes one: it is
+    // seeded from the family like rank/LR/resolution but tracked by lrScheduleDirty, so charging
+    // it to the shared flag would mean tuning the ramp froze the OTHER three at the previous
+    // family's values. That field is newly visible by default, so this is reachable now.
+    extra?: { min?: number; step?: number; hint?: ReactNode; markDirty?: () => void },
   ) => (
     <div className={fieldClass}>
       <FieldLabel hint={extra?.hint}>{label}</FieldLabel>
@@ -1234,7 +1265,8 @@ export function DiffusionTrainPanel({
         step={extra?.step}
         value={value}
         onChange={(e) => {
-          settingsDirty.current = true;
+          if (extra?.markDirty) extra.markDirty();
+          else settingsDirty.current = true;
           // Only fall back when the input parses to NaN; a real 0 is legal for zero-legal fields (Seed, LR warmup steps).
           const parsed = Number(e.target.value);
           set(Number.isNaN(parsed) ? fallback : parsed);
@@ -1354,7 +1386,12 @@ export function DiffusionTrainPanel({
           </FieldLabel>
           <Select
             value={lrScheduler}
-            onValueChange={(v) => setLrScheduler(v as typeof lrScheduler)}
+            onValueChange={(v) => {
+              // The family re-seed now writes this field, so without a dirty mark a hand-picked
+              // schedule is replaced on the next family switch.
+              lrScheduleDirty.current = true;
+              setLrScheduler(v as LrScheduler);
+            }}
           >
             <SelectTrigger className={selectClass} aria-label="LR schedule">
               <SelectValue />
@@ -1371,6 +1408,12 @@ export function DiffusionTrainPanel({
           numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, {
             min: 0,
             hint: "Ramps the learning rate up over the first steps instead of starting at full size.",
+            // The other half of the pair, so an edit claims the pair's flag and only that: a
+            // hand-typed ramp length survives the next family change the way the schedule does,
+            // without freezing rank/LR/resolution on their way to the new family.
+            markDirty: () => {
+              lrScheduleDirty.current = true;
+            },
           })}
       </div>
 
