@@ -130,6 +130,40 @@ from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
 
+def _nvidia_smi_gpu_name():
+    """The first GPU nvidia-smi reports, or None when it cannot answer.
+
+    Returns instead of raising so the caller re-raises the original error OUTSIDE this
+    handler. Raising in here chains the probe's FileNotFoundError onto the device error,
+    and every CPU-only host would then read a spurious nvidia-smi traceback plus "During
+    handling of the above exception" ahead of the real message.
+    """
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if smi.returncode != 0 or not smi.stdout.strip():
+        return None
+    return smi.stdout.strip().splitlines()[0].strip()
+
+
+def _cuda_visible_devices_hides_nvidia():
+    """CUDA_VISIBLE_DEVICES set to "" or "-1" hides every NVIDIA device deliberately
+    (install.sh `_cvd_hides_nvidia`). nvidia-smi ignores the variable, so a mask looks
+    exactly like a mismatched torch build -- and telling that user to force-reinstall
+    torch is wrong advice about a working install."""
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if mask is None:
+        return False
+    mask = "".join(mask.split())
+    return mask in ("", "-1")
+
+
 def _reraise_device_type_error_with_gpu_hint(exception):
     """Re-raise a device-detection failure with the actual remedy when nvidia-smi
     can see a GPU that this torch build cannot.
@@ -144,42 +178,41 @@ def _reraise_device_type_error_with_gpu_hint(exception):
     NotImplementedError keep working, and zoo's own vendor-specific advice (the AMD
     ROCm repair hint) is left untouched.
     """
-    # `raise exception`, never a bare `raise`: inside the nvidia-smi except handler a
-    # bare raise would re-raise the OSError from the probe instead of the original.
+    # `raise exception`, never a bare `raise`: a bare raise re-raises whatever is being
+    # handled at the raise site, not the error we were handed.
     # Match "ROCm", NOT "AMD": zoo's ROCm repair hint always opens with "an AMD ROCm GPU",
     # while its generic no-accelerator message lists AMD as a supported vendor ("Unsloth
     # currently only works on NVIDIA, AMD and Intel GPUs.") -- and that generic message is
     # what a torch older than 2.6 gets, since get_device_type only reaches the shorter
     # "cannot find any torch accelerator" text behind `hasattr(torch, "accelerator")`.
-    message = str(exception)
-    if "ROCm" in message:
+    if "ROCm" in str(exception):
         raise exception
-    try:
-        smi = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
-    except (OSError, subprocess.SubprocessError):
+    if _cuda_visible_devices_hides_nvidia():
         raise exception
-    if smi.returncode != 0 or not smi.stdout.strip():
+    gpu_name = _nvidia_smi_gpu_name()
+    if gpu_name is None:
         raise exception
-    gpu_name = smi.stdout.strip().splitlines()[0].strip()
     try:
         import torch as _torch
         torch_cuda_build = getattr(getattr(_torch, "version", None), "cuda", None) or "unknown"
     except Exception:
         torch_cuda_build = "unknown"
+    # Recommend all three wheels and the installer, not a lone `pip install torch`: pip
+    # leaves an already-installed torchvision/torchaudio behind, and the very next import
+    # dies in torchvision_compatibility_check(). "Newest cuXXX" is wrong advice too --
+    # recent cu128/cu130 wheels drop pre-Turing GPUs, which is why install.sh caps them.
     raise NotImplementedError(
         f"Unsloth: an NVIDIA GPU ({gpu_name}) is present -- nvidia-smi sees it -- but this "
         f"PyTorch build cannot use it (torch.cuda.is_available() is False).\n"
         f"This usually means the installed PyTorch does not match the system's CUDA driver "
         f"or platform, which is common on DGX Spark GB10 and other aarch64 hosts.\n"
         f"PyTorch was compiled with CUDA: {torch_cuda_build}.\n"
-        f"Fix: reinstall a matching torch, for example\n"
-        f"    pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130\n"
-        f"picking the cuXXX index that matches the CUDA version nvidia-smi reports."
+        f"Fix: rerun install.sh, which picks a CUDA wheel family this GPU can run and "
+        f"reinstalls torchvision and torchaudio to match. By hand, replace all three "
+        f"together:\n"
+        f"    pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cuXXX\n"
+        f"choosing cuXXX at https://pytorch.org/get-started/locally/ -- the newest family is "
+        f"not always the right one, since recent cu128/cu130 wheels drop pre-Turing GPUs."
     ) from exception
 
 
@@ -223,7 +256,11 @@ try:
     )
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
-del _reraise_device_type_error_with_gpu_hint
+del (
+    _reraise_device_type_error_with_gpu_hint,
+    _nvidia_smi_gpu_name,
+    _cuda_visible_devices_hides_nvidia,
+)
 from .device_type import arch_lacks_bf16, hip_visible_archs
 
 from .import_fixes import (
