@@ -30,6 +30,65 @@ _PIN_RE = re.compile(r"transformers\s*==\s*([0-9][0-9A-Za-z.\-]*)")
 _MODEL_RE = re.compile(r"""from_pretrained\(\s*['"]([^'"]+)['"]""")
 _MODEL_NAME_RE = re.compile(r"""model_name\s*=\s*['"]([^'"]+)['"]""")
 
+# Only an actual install invocation may supply the pin. A notebook's prose -- a
+# commented-out legacy workaround, a docstring, a printed message -- names
+# versions it does not install, and `want = pin or tier` below lets the first
+# textual match outrank the model-name tier. A stale `# !pip install
+# transformers==4.57.6` above a gemma-4-12b cell therefore clamps up to the
+# lowest eligible sidecar (5.5.0) instead of the 5.10.2 the model needs, and the
+# kernel is launched on it: nothing installs, so the pip shim never gets to
+# correct the marker or PYTHONPATH. Commenting out an install line is a routine
+# notebook edit, so match the invocation instead of the whole cell source.
+#
+# Covers `pip`/`pip3`, `!`/`%` magics, bare lines (%%bash cells), `uv pip`,
+# `<interpreter> -m pip` (`python3`, `{sys.executable}`, ...), options before
+# `install`, and any indent -- notebooks guard installs inside if/else, and
+# Unsloth's own install cells do exactly that.
+_INSTALL_RE = re.compile(
+    r"""^[ \t]*(?![ \t]*\#)[!%]?[ \t]*
+        (?: uv (?:[ \t]+-{1,2}\S+)* [ \t]+ )?
+        (?: \S+ [ \t]+ -m [ \t]+ )?
+        pip[0-9.]* [ \t]+
+        (?: -{1,2}\S+ [ \t]+ )*
+        install (?: [ \t] | $ )""",
+    re.VERBOSE,
+)
+
+
+def _strip_comment(line):
+    """Drop a trailing `# ...` comment from a shell/magic line.
+
+    Only a `#` at the start of a token counts, so the `#egg=`/`#subdirectory=`
+    fragment of a `git+https://...` requirement survives; quoted `#` is left
+    alone too."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
+
+
+def _install_lines(src):
+    """The install-invocation text of a cell source, backslash continuations kept.
+
+    Real install cells split one command over several lines (`!uv pip install \\`
+    + a continuation carrying `"transformers==4.56.2"`), so a continued line stays
+    part of the invocation."""
+    kept, cont = [], False
+    for line in src.splitlines():
+        if cont or _INSTALL_RE.match(line):
+            code = _strip_comment(line)
+            kept.append(code)
+            cont = code.rstrip().endswith("\\")
+        else:
+            cont = False
+    return "\n".join(kept)
+
 
 def _load(path_or_url):
     if path_or_url.startswith(("http://", "https://")):
@@ -48,7 +107,7 @@ def _scan(nb):
             continue
         src = "".join(cell.get("source", []))
         if pin is None:
-            m = _PIN_RE.search(src)
+            m = _PIN_RE.search(_install_lines(src))
             if m:
                 pin = m.group(1)
         if model is None:
