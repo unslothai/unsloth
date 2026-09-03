@@ -336,22 +336,21 @@ export function buildTextIndex(
             // neither side reaches the other, which the kept context is chosen to be enough to say.
             if (
               pendingClip !== null &&
-              (pendingClip.partial ||
-                continuesGrapheme(
-                  pendingClip.tail +
-                    String.fromCodePoint(data.codePointAt(0) as number),
-                  pendingClip.tail.length,
-                ))
+              reaches(
+                pendingClip,
+                String.fromCodePoint(data.codePointAt(0) as number),
+              )
             ) {
               unsafe.add(length);
             }
             // Parity is what makes a regional indicator pair, and it is counted from the
             // separator, so an odd run left behind takes the next indicator with it and displaces
             // every boundary in the run that resumes, not only its first.
+            const regionals =
+              pendingClip === null ? 0 : trailingRegionals(pendingClip.tail);
             if (
-              pendingClip !== null &&
-              (pendingClip.partial ||
-                trailingRegionals(pendingClip.tail) % 2 === 1)
+              regionals > 0 &&
+              (pendingClip?.partial === true || regionals % 2 === 1)
             ) {
               regionalCuts.push(length);
             }
@@ -373,10 +372,17 @@ export function buildTextIndex(
         // What was dropped must leave a boundary, or a match across the seam paints over the gap.
         if (raw.length < data.length) {
           truncated = true;
-          unsafe.add(length);
+          // The whole node is still here, so the edge a cut leaves can be settled rather than
+          // assumed: a space or a letter dropped next proves the retained text ended where it did.
+          if (
+            reaches(
+              clipContext(raw),
+              String.fromCodePoint(data.codePointAt(take) as number),
+            )
+          ) {
+            unsafe.add(length);
+          }
           pendingSeparator = true;
-          // Only these can join to what follows them, so only these let the dropped tail reach
-          // into the next node. Anything else and the next node begins where it looks like it does.
           pendingClip = clipContext(data.slice(take));
         }
       } else if (child.nodeType === ELEMENT_NODE) {
@@ -396,7 +402,10 @@ export function buildTextIndex(
   full = false;
   for (const extra of extraRoots) {
     if (full) break;
+    // Its own surface, so a boundary whatever the last root ended on, and whatever tags either of
+    // them happen to use: nothing dropped back there can reach into what a portal paints.
     pendingSeparator = true;
+    pendingClip = null;
     visit(extra, false);
   }
   const joined = parts.join("");
@@ -477,11 +486,13 @@ const EXTEND_PATTERN = /[\p{Grapheme_Extend}\p{Emoji_Modifier}]/u;
 const EXTENDS_LEFT_PATTERN =
   /[\p{Grapheme_Extend}\p{Emoji_Modifier}\p{Mc}\u200d]/u;
 
-/** The viramas that join the consonant after them to the one before (GB9c). Not derivable from a
+/** The marks that join the letter after them to the one before (GB9c). Not derivable from a
  *  property escape, which has no `InCB`, so this is the set the segmenter itself joins on: every
- *  `ccc=9` code point for which a consonant, that virama and a consonant make one cluster. */
+ *  mark for which a letter, that mark and the same letter make one cluster, where the two letters
+ *  make two without it. That control matters: without it Thai and Lao vowels come back as linkers
+ *  on the strength of pairs that were already one cluster. */
 const LINKER_PATTERN =
-  /[\u{94d}\u{9cd}\u{acd}\u{b4d}\u{c4d}\u{d4d}\u{e3a}\u{eba}\u{1039}\u{17d2}\u{1a60}\u{1b44}\u{1bab}\u{a9c0}\u{aaf6}\u{10a3f}\u{11133}\u{1193e}\u{11a47}\u{11a99}\u{11f42}]/u;
+  /[\u{94d}\u{9cd}\u{acd}\u{b4d}\u{c4d}\u{d4d}\u{1039}\u{17d2}\u{1a60}\u{1b44}\u{1bab}\u{a9c0}\u{aaf6}\u{10a3f}\u{11133}\u{113d0}\u{1193e}\u{11a47}\u{11a99}\u{11f42}]/u;
 
 /** How far back a dropped tail is read for context. Every rule that chains allows any number of
  *  links in the middle, so there has to be a stop somewhere; past it the junction is called
@@ -581,15 +592,25 @@ function hangulJoins(before: string, after: string | null): boolean {
   return after === "T";
 }
 
+/** What a rule reaching past the window could still take on its right: GB9c wants a letter there,
+ *  GB11 a pictograph. Anything else and what the chain hangs from cannot change the answer. */
+const REACHABLE_PATTERN = /[\p{L}\p{Extended_Pictographic}]/u;
+
+/** Whether the grapheme `context` ends on carries on into `point`. Unknown, and so yes, only where
+ *  the context ran out of window and `point` is something a rule out there could still reach. */
+function reaches(context: ClipContext, point: string): boolean {
+  if (context.partial && REACHABLE_PATTERN.test(point)) return true;
+  return continuesGrapheme(context.tail + point, context.tail.length);
+}
+
 /**
  * Whether a grapheme carries on across `at`, for engines with no `Intl.Segmenter`: Firefox shipped
  * one only in 125, Vite's default target reaches back to 114, and ESR 115 is still in the field. On
  * those the alternative is taking every candidate unchecked, which is the defect this file exists
  * to fix.
  *
- * The rules this feature can actually run into, by Unicode property rather than by hand-listed
- * range: the joiners, Prepend, Hangul and regional indicator parity. The aksara and pictographic
- * rules are left to the engines that have a segmenter, so an Indic cluster can still be split here.
+ * The rules this feature can actually run into, by Unicode property where one exists rather than by
+ * hand-listed range: the joiners, Prepend, Hangul, regional indicator parity, GB9c and GB11.
  */
 function continuesGrapheme(text: string, at: number): boolean {
   // Whole code points, not code units: a property escape asked about half a surrogate pair sees a
@@ -599,6 +620,9 @@ function continuesGrapheme(text: string, at: number): boolean {
   const before = isTrailingHalf(text.charCodeAt(at - 1))
     ? text.slice(at - 2, at)
     : text[at - 1];
+  // GB3 first: a carriage return and the line feed after it are one grapheme, and the generic rule
+  // below would break between them.
+  if (before === "\r" && after === "\n") return true;
   if (CONTROL_PATTERN.test(before) || CONTROL_PATTERN.test(after)) return false;
   if (EXTENDS_LEFT_PATTERN.test(after)) return true;
   // GB11 proper, both sides: a ZWJ joins a pictograph to a pictograph, so an emoji sequence holds

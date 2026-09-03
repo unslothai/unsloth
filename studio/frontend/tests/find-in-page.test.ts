@@ -1793,13 +1793,15 @@ test("what was dropped decides the far side of a cut, not what was kept", () => 
       el("P", [text(`${"x".repeat(MAX_NODE_CHARS)}\u0600`), text("a")]),
     ]),
   );
-  assert.deepEqual([...reaching.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  // The near side is settled by the same reading: a Prepend joins forwards, not back into the `x`
+  // before it, so only the far side is in doubt.
+  assert.deepEqual([...reaching.unsafe], [MAX_NODE_CHARS + 1]);
   assert.deepEqual(findMatches(reaching, "a", 10), []);
   // A dropped tail that cannot reach forward leaves the next node whole, even in Hangul.
   const settled = buildTextIndex(
     el("DIV", [el("P", [text(`${"x".repeat(MAX_NODE_CHARS)}zz`), text("가")])]),
   );
-  assert.deepEqual([...settled.unsafe], [MAX_NODE_CHARS]);
+  assert.deepEqual([...settled.unsafe], []);
   assert.equal(findMatches(settled, "가", 10).length, 1);
 });
 
@@ -1816,7 +1818,7 @@ test("the dropped tail is read back far enough to answer for itself", () => {
       ]),
     ]),
   );
-  assert.deepEqual([...conjunct.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  assert.deepEqual([...conjunct.unsafe], [MAX_NODE_CHARS + 1]);
   assert.deepEqual(findMatches(conjunct, "\u0924", 10), []);
   // A tail of marks longer than the window keeps nothing to hang them on, so it stays unsafe.
   const beyond = buildTextIndex(
@@ -1827,7 +1829,7 @@ test("the dropped tail is read back far enough to answer for itself", () => {
       ]),
     ]),
   );
-  assert.deepEqual([...beyond.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  assert.deepEqual([...beyond.unsafe], [MAX_NODE_CHARS + 1]);
 });
 
 test("no match a cut leaves behind disagrees with the page it was cut from", () => {
@@ -1976,12 +1978,7 @@ test("an odd run of regional indicators displaces the whole run after a cut", ()
   // Every indicator in the resumed run, not just the first.
   assert.deepEqual(
     [...index.unsafe],
-    [
-      MAX_NODE_CHARS,
-      MAX_NODE_CHARS + 1,
-      MAX_NODE_CHARS + 3,
-      MAX_NODE_CHARS + 5,
-    ],
+    [MAX_NODE_CHARS + 1, MAX_NODE_CHARS + 3, MAX_NODE_CHARS + 5],
   );
   assert.deepEqual(findMatches(index, at(0x1f1e7), 10), []);
 });
@@ -2009,7 +2006,99 @@ test("a cut whose context outran its window does not outlive the cut", () => {
       ]),
     ]),
   );
-  assert.deepEqual([...inline.unsafe], [MAX_NODE_CHARS, MAX_NODE_CHARS + 1]);
+  assert.deepEqual([...inline.unsafe], [MAX_NODE_CHARS + 1]);
+});
+
+test("a portal is its own surface, whatever the workspace ended on", () => {
+  // Nothing a portal paints can carry on from text cut out of the workspace behind it. The block
+  // branch clears the cut on the way out of any block tag, which covers this for a `DIV` scope and
+  // a `DIV` portal and hid it for everything else; the boundary belongs to the portal, not to the
+  // tags either side of it.
+  const index = buildTextIndex(
+    el("SPAN", [text(`${"x".repeat(MAX_NODE_CHARS)}\u1100`)]),
+    [el("SPAN", [text("\uac00 hello")])],
+  );
+  assert.deepEqual([...index.unsafe], []);
+  assert.equal(findMatches(index, "\uac00", 10).length, 1);
+});
+
+test("the retained edge of a cut is settled by what was dropped next", () => {
+  // The whole node is still in hand at the cut, so refusing its last offset outright threw away a
+  // word whose end the very next character proves. A space cannot continue anything.
+  const proved = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"y".repeat(MAX_NODE_CHARS - 10)}uniqueword trailing`),
+        text("z"),
+      ]),
+    ]),
+  );
+  assert.equal(proved.truncated, true);
+  assert.deepEqual([...proved.unsafe], []);
+  assert.equal(findMatches(proved, "uniqueword", 5).length, 1);
+  // And still refused where the dropped character does carry on.
+  const joined = buildTextIndex(
+    el("DIV", [
+      el("P", [text(`${"y".repeat(MAX_NODE_CHARS)}\u0301tail`), text("z")]),
+    ]),
+  );
+  assert.deepEqual([...joined.unsafe], [MAX_NODE_CHARS]);
+});
+
+test("an unknown chain reaches only what a rule out there could take", () => {
+  // Running out of window makes the anchor unknown, and the rules that turn on it, GB9c and GB11,
+  // want a letter or a pictograph on their right. A flag is neither, so it is answerable, and
+  // treating the whole junction as unknown put every indicator in the run behind it out of reach.
+  const at = (code: number) => String.fromCodePoint(code);
+  const flag = at(0x1f1e6) + at(0x1f1e7);
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"x".repeat(MAX_NODE_CHARS)}${"\u0301".repeat(40)}`),
+        text(flag),
+      ]),
+    ]),
+  );
+  // The near side alone: a combining mark carries on from the `x`, a flag does not carry back.
+  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
+  assert.equal(findMatches(index, flag, 5).length, 1);
+});
+
+test("the linker set is the one the platform joins on", () => {
+  // Derived against the segmenter rather than a Unicode table read at some other version: the
+  // Tulu-Tigalari conjoiner is newer than the table the first pass was filtered through, so it was
+  // missing while the segmenter had known about it all along.
+  const at = (code: number) => String.fromCodePoint(code);
+  const conjoined = at(0x11380) + at(0x113d0) + at(0x11381);
+  assert.equal(
+    [
+      ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+        conjoined,
+      ),
+    ].length,
+    1,
+  );
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text(`${"x".repeat(MAX_NODE_CHARS)}${at(0x11380)}${at(0x113d0)}`),
+        text(`${at(0x11381)}QQ`),
+      ]),
+    ]),
+  );
+  assert.deepEqual(findMatches(index, at(0x11381), 5), []);
+});
+
+test("a carriage return keeps the line feed after it", () => {
+  // GB3. Split across a cut the two are in different nodes, so the generic control break was the
+  // only rule that ran and it put a boundary inside the pair.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [text(`${"x".repeat(MAX_NODE_CHARS)}\r`), text("\nerror")]),
+    ]),
+  );
+  assert.deepEqual(findMatches(index, "\nerror", 5), []);
+  assert.equal(findMatches(index, "error", 5).length, 1);
 });
 
 test("a real block boundary after a cut is still a boundary", () => {
@@ -2023,7 +2112,7 @@ test("a real block boundary after a cut is still a boundary", () => {
       el("P", [text("가")]),
     ]),
   );
-  assert.deepEqual([...index.unsafe], [MAX_NODE_CHARS]);
+  assert.deepEqual([...index.unsafe], []);
   assert.equal(findMatches(index, "가", 10).length, 1);
 });
 
@@ -2075,6 +2164,7 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["\u{1f44d}\u{1f3fb}", "\u{1f3fb}"],
       // GB9c: a virama joins the consonant after it to the one before.
       ["क्त", "त"],
+      ["\u{11380}\u{113d0}\u{11381}", "\u{11381}"],
     ];
     for (const [body, query] of fenced) {
       if (findMatches(index(body), query, 10).length !== 0) {
