@@ -574,6 +574,7 @@ def test_live_filesystem_proc_devices_and_interpreter_boundary(
     home_secret_handle = tempfile.NamedTemporaryFile(
         mode = "w", prefix = ".unsloth-sandbox-test-", dir = Path.home(), delete = False
     )
+    escape_target = Path(f"{home_secret_handle.name}-escape")
     try:
         home_secret_handle.write("home secret")
         home_secret_handle.close()
@@ -582,7 +583,7 @@ def test_live_filesystem_proc_devices_and_interpreter_boundary(
         escape_read = workdir / "escape-read"
         escape_write = workdir / "escape-write"
         escape_read.symlink_to(outside)
-        escape_write.symlink_to(tmp_path / "must-not-be-created")
+        escape_write.symlink_to(escape_target)
         high_fd = 240
         source_fd = os.open(outside, os.O_RDONLY)
         os.dup2(source_fd, high_fd, inheritable = True)
@@ -644,7 +645,7 @@ print('FILESYSTEM_BOUNDARY_OK')
         assert "FILESYSTEM_BOUNDARY_OK" in completed.stdout
         assert (workdir / "output.txt").read_text(encoding = "utf-8") == "written"
         assert outside.read_text(encoding = "utf-8") == "outside"
-        assert not (tmp_path / "must-not-be-created").exists()
+        assert not escape_target.exists()
     finally:
         try:
             home_secret_handle.close()
@@ -652,6 +653,10 @@ print('FILESYSTEM_BOUNDARY_OK')
             pass
         try:
             os.unlink(home_secret_handle.name)
+        except OSError:
+            pass
+        try:
+            escape_target.unlink()
         except OSError:
             pass
 
