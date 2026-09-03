@@ -555,15 +555,29 @@ def _data_designer_in_use(home: Path) -> bool:
 
     _setup_cache_env creates this directory and its managed-assets child on the
     first launch, so existence alone would pin a home nobody has written to.
+
+    Only a genuinely absent directory counts as unused. A home we merely cannot
+    read is still a home, and calling it empty would drop the pin and run the
+    next launch against ~/.data-designer instead, hiding the recipes and
+    datasets under this one behind a re-seeded default. Keeping the managed path
+    lets the access error surface where the user can see it.
     """
     try:
-        for entry in home.iterdir():
+        entries = list(home.iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    for entry in entries:
+        try:
             if entry.name != "managed-assets" or not entry.is_dir():
                 return True
             if any(entry.iterdir()):
                 return True
-    except OSError:
-        return False
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
     return False
 
 
@@ -598,6 +612,46 @@ def _data_designer_defaults(root: Path) -> dict[str, str]:
     return pinned
 
 
+def _path_safe(value: str) -> str:
+    """A directory-name-safe rendering of a build field."""
+    return re.sub(r"[^A-Za-z0-9.]+", "-", value)
+
+
+def _torch_version_fields() -> dict[str, str]:
+    """The build identity torch.version exposes, read without importing torch.
+
+    This runs on a startup path that executes before torch exists in a fresh
+    venv, so it must stay a file read. torch/version.py is generated and assigns
+    only literals; whether it annotates them (``cuda: Optional[str] = ...``)
+    varies by release, hence a regex rather than ast or exec.
+    """
+    origin = getattr(importlib.util.find_spec("torch"), "origin", None)
+    if not origin:
+        return {}
+    text = (Path(origin).parent / "version.py").read_text(encoding = "utf-8")
+    found = re.findall(
+        r"""^(__version__|debug|cuda|hip|xpu)\s*(?::[^=\n]+)?=\s*([^\s#]+)""",
+        text,
+        re.MULTILINE,
+    )
+    return {name: value.strip("'\"") for name, value in found}
+
+
+def _torch_accelerator_tag(fields: dict[str, str]) -> str:
+    """torch's own cu_str, widened to the runtimes it declines to name.
+
+    cpp_extension picks 'cpu' whenever version.cuda is unset, which files a ROCm
+    build beside a real CPU one; main prioritises ROCm, so hip is read first.
+    """
+    for field, prefix in (("hip", "rocm"), ("cuda", "cu"), ("xpu", "xpu")):
+        value = fields.get(field)
+        if not value or value == "None":
+            continue
+        # torch spells the CUDA version without dots: 12.8 -> cu128.
+        return prefix + _path_safe(value.replace(".", "") if field == "cuda" else value)
+    return "cpu"
+
+
 def _torch_runtime_tag() -> str:
     """Name the extension cache after the runtime that builds into it.
 
@@ -605,22 +659,31 @@ def _torch_runtime_tag() -> str:
     ``py<ver>_<accelerator>`` folder to the DEFAULT root only, never to a
     TORCH_EXTENSIONS_DIR we supply, so pinning a flat path drops the isolation
     that keeps a py313/cu128 build from being loaded by a py312/cu126 one.
-    torch/version.py is generated, imports nothing, and carries the same build
-    identity torch.version.cuda is read from, so parse it rather than importing
-    torch on the startup path.
+
+    The accelerator has to come from the generated cuda/hip fields rather than
+    from a local segment of __version__: conda-forge builds PyTorch with
+    PYTORCH_BUILD_VERSION set to the bare release, so its CPU and CUDA packages
+    of one version carry the same __version__ and differ only in a conda build
+    string that never reaches this file. __version__ stays in the tag as well,
+    because local segments such as +cpu.cxx11.abi mark ABI splits no other
+    field records.
     """
     tag = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
     try:
-        origin = getattr(importlib.util.find_spec("torch"), "origin", None)
-        if origin:
-            text = (Path(origin).parent / "version.py").read_text(encoding = "utf-8")
-            found = re.search(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", text, re.MULTILINE)
-            if found:
-                tag += "_" + re.sub(r"[^A-Za-z0-9.]+", "-", found.group(1))
+        fields = _torch_version_fields()
     except (ImportError, OSError, ValueError, AttributeError):
         # No torch installed yet, or a half-built source tree. The interpreter
         # tag alone still isolates more than the flat path it replaces.
-        pass
+        return tag
+    if not fields:
+        return tag
+    tag += "_" + _torch_accelerator_tag(fields)
+    version = fields.get("__version__")
+    if version:
+        tag += "_" + _path_safe(version)
+    if fields.get("debug") == "True":
+        # A debug build keeps the soname of a release one but not its ABI.
+        tag += "_debug"
     return tag
 
 
