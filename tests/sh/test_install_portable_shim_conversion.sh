@@ -178,7 +178,7 @@ check "3 still executable" yes "$([ -x "$M2/bin/unsloth" ] && printf yes || prin
 check "3 and still launches the contained install" 1 "$("$M2/bin/unsloth" studio)"
 check "3 leaving no rollback copy behind" 0 "$(strays "$M2")"
 check "3 the run really moved it before putting it back" yes "$(said "removed the portable launcher at")"
-check "3 and reported the restore" yes "$(said "restored the portable launcher at")"
+check "3 and reported the restore" yes "$(said "restored the previous launcher at")"
 
 echo
 echo "[4] an interrupted conversion restores it too"
@@ -189,7 +189,7 @@ check "4 the launcher is back" present "$(shim_state "$M3")"
 check "4 and the marker with it" present "$(marker_state "$M3")"
 check "4 no rollback copy is left behind" 0 "$(strays "$M3")"
 check "4 the run really moved it before putting it back" yes "$(said "removed the portable launcher at")"
-check "4 and reported the restore" yes "$(said "restored the portable launcher at")"
+check "4 and reported the restore" yes "$(said "restored the previous launcher at")"
 
 echo
 echo "[5] only OUR launcher for THIS install is touched"
@@ -226,9 +226,12 @@ check "5 a sibling install keeps the root's launcher" present "$(shim_state "$M7
 check "5 and the root's marker" present "$(marker_state "$M7")"
 
 echo
-echo "[6] the flat layout needs no removal: the new shim lands on the same path"
+echo "[6] the flat layout needs no RETIREMENT: the new shim lands on the same path"
 # <master>/bin IS the normal install's bin there, and `ln -sfn` replaces the
 # wrapper in place. This pins the assumption the scoping above rests on.
+# It still needs the wrapper PRESERVED for the rollback, on its own slot, since
+# `ln -sfn` destroys it and the marker beside it does roll back;
+# tests/sh/test_install_portable_flat_shim_rollback.sh is what covers that.
 M8="$(new_root)"
 mkdir -p "$M8/unsloth_studio/bin" "$M8/bin"
 printf '%s\n' "$M8" > "$M8/.unsloth-portable-root"
