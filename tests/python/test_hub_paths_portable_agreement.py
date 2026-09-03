@@ -67,7 +67,11 @@ def check(label: str, expected, actual) -> None:
         FAILS.append(label)
 
 
-def _run(prefix: Path, home: Path, env_extra: dict | None = None) -> dict:
+def _run(
+    prefix: Path,
+    home: Path,
+    env_extra: dict | None = None,
+) -> dict:
     env = {
         "PATH": os.environ["PATH"],
         "HOME": str(home),
@@ -164,10 +168,12 @@ def main() -> int:
         (custom / "share").mkdir(parents = True)
         (custom / "share" / "studio.conf").write_text("")
         prefix = nested / "studio" / "unsloth_studio"
-        _agree("custom UNSLOTH_STUDIO_HOME", custom, _run(prefix, home,
-                                                          {"UNSLOTH_STUDIO_HOME": str(custom)}))
-        _agree("custom STUDIO_HOME alias", custom, _run(prefix, home,
-                                                        {"STUDIO_HOME": str(custom)}))
+        _agree(
+            "custom UNSLOTH_STUDIO_HOME",
+            custom,
+            _run(prefix, home, {"UNSLOTH_STUDIO_HOME": str(custom)}),
+        )
+        _agree("custom STUDIO_HOME alias", custom, _run(prefix, home, {"STUDIO_HOME": str(custom)}))
 
         # 7. A dev venv that merely shares the name carries no installer sentinel
         # and must not be adopted, or an unrelated checkout captures Hub state.
