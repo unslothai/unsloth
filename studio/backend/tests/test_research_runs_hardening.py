@@ -339,6 +339,44 @@ def test_resolve_max_tokens_still_caps_a_thread_setting_at_8192(monkeypatch):
     assert _resolve_max_tokens(None, {}, messages) == 4_096
 
 
+def test_a_saved_connection_budget_ignores_the_resident_local_model(monkeypatch):
+    """A connection generates on the provider's hardware; the local window bounds nothing.
+
+    The synthesis prompt is already fitted to the local window, so clamping against it spends
+    the report's budget down to the leftover reserve and undoes the ceiling just resolved.
+    """
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
+    messages = [{"role": "user", "content": "x" * 30_000}]
+    assert _resolve_max_tokens(32_768, inference, messages) == 32_768
+
+
+def test_a_local_run_still_clamps_to_the_loaded_context(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    messages = [{"role": "user", "content": "x" * 30_000}]
+    assert _resolve_max_tokens(16_384, {}, messages) < 16_384
+
+
+def test_a_lowered_connection_cap_bounds_a_stale_client_ceiling(monkeypatch):
+    """The run is durable, so the cap can have been lowered after the client resolved it."""
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_192}
+    )
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 65_536,
+    }
+    assert _synthesis_max_tokens(inference) == 8_192
+
+
+def test_a_client_ceiling_stands_when_the_connection_has_no_cap(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == 65_536
+
+
 def test_a_local_run_keeps_the_default_report_budget():
     assert _synthesis_max_tokens({"model": "local-model"}) == research_runs._SYNTHESIS_MAX_TOKENS
 
