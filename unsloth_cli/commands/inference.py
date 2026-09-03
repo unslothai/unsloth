@@ -34,7 +34,12 @@ def inference(
         "--system-prompt",
         help = "Optional system prompt to prepend.",
     ),
-    max_seq_length: int = typer.Option(2048, "--max-seq-length"),
+    max_seq_length: int = typer.Option(
+        0,
+        "--max-seq-length",
+        help = "Context length in tokens (0 = model default for GGUF; 2048 for hub models). "
+        "A value that differs from a running Unsloth server's reloads the model.",
+    ),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
     tensor_parallel: bool = typer.Option(
         False,
