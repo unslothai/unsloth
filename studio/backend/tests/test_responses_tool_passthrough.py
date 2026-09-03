@@ -1094,6 +1094,17 @@ class TestResponsesNonStreamingAdapter:
         assert body["status"] == "completed"
         assert body["incomplete_details"] is None
 
+    def test_a_content_filtered_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "filtered partial output"},
+            finish_reason = "content_filter",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "content_filter"}
+        assert [item["status"] for item in body["output"]] == ["incomplete"]
+
     def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
         body = self._run_with_message(
@@ -3069,10 +3080,16 @@ def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
     assert row["stop_reason"] == "stop"
 
 
-def test_a_truncated_responses_stream_ends_on_response_incomplete(monkeypatch):
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_truncated_responses_stream_ends_on_response_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch,
-        [{"choices": [{"delta": {"content": "half an ans"}, "finish_reason": "length"}]}],
+        [{"choices": [{"delta": {"content": "half an ans"}, "finish_reason": finish_reason}]}],
     )
     payload = ResponsesRequest(input = "hi", stream = True)
     messages = [ChatMessage(role = "user", content = "hi")]
@@ -3086,20 +3103,26 @@ def test_a_truncated_responses_stream_ends_on_response_incomplete(monkeypatch):
     assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
     incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
     assert incomplete["response"]["status"] == "incomplete"
-    assert incomplete["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
     assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
     item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
     assert item_done["item"]["status"] == "incomplete"
 
 
-def test_a_healed_truncated_tool_call_remains_incomplete(monkeypatch):
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_healed_truncated_tool_call_remains_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
     from core.inference.api_monitor import api_monitor
 
     xml = TestResponsesStreamHealing._XML
     tool = TestResponsesStreamHealing._TOOL
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch,
-        [{"choices": [{"delta": {"content": xml}, "finish_reason": "length"}]}],
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": finish_reason}]}],
     )
     payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
     messages = [ChatMessage(role = "user", content = "hi")]
@@ -3118,10 +3141,10 @@ def test_a_healed_truncated_tool_call_remains_incomplete(monkeypatch):
     assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
     incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
     assert incomplete["response"]["status"] == "incomplete"
-    assert incomplete["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
     assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
     row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
-    assert row["stop_reason"] == "length"
+    assert row["stop_reason"] == finish_reason
     item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
     assert item_done["item"]["status"] == "incomplete"
 

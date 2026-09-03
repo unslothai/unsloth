@@ -26575,6 +26575,16 @@ def _chat_tool_calls_to_responses_output(
     return items
 
 
+def _responses_incomplete_reason(
+    finish_reason: Any,
+) -> Optional[Literal["max_output_tokens", "content_filter"]]:
+    if finish_reason == "length":
+        return "max_output_tokens"
+    if finish_reason == "content_filter":
+        return "content_filter"
+    return None
+
+
 async def _responses_non_streaming(
     payload: ResponsesRequest,
     messages: list[ChatMessage],
@@ -26631,7 +26641,10 @@ async def _responses_non_streaming(
         text = ""
         reasoning_text = ""
         tool_calls: list[dict] = []
-        truncated = bool(choices) and choices[0].get("finish_reason") == "length"
+        incomplete_reason = (
+            _responses_incomplete_reason(choices[0].get("finish_reason")) if choices else None
+        )
+        truncated = incomplete_reason is not None
         if choices:
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
@@ -26682,7 +26695,7 @@ async def _responses_non_streaming(
             id = resp_id,
             created_at = int(time.time()),
             status = "incomplete" if truncated else "completed",
-            incomplete_details = ({"reason": "max_output_tokens"} if truncated else None),
+            incomplete_details = ({"reason": incomplete_reason} if truncated else None),
             model = body.get("model", payload.model),
             output = output_items,
             usage = ResponsesUsage(
@@ -27560,7 +27573,8 @@ async def _responses_stream(
         if healer is not None and healer.healed and stream_finish_reason in (None, "stop"):
             stream_finish_reason = "tool_calls"
 
-        truncated = stream_finish_reason == "length"
+        incomplete_reason = _responses_incomplete_reason(stream_finish_reason)
+        truncated = incomplete_reason is not None
         active_item_status = "incomplete" if truncated else "completed"
 
         close_items: list[tuple[int, str, dict[str, Any]]] = []
@@ -27733,7 +27747,7 @@ async def _responses_stream(
                 "object": "response",
                 "created_at": created_at,
                 "status": "incomplete" if truncated else "completed",
-                "incomplete_details": ({"reason": "max_output_tokens"} if truncated else None),
+                "incomplete_details": ({"reason": incomplete_reason} if truncated else None),
                 "model": _clean_model,
                 "output": _snapshot_output(active_item_status),
                 "usage": {
