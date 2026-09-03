@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
 import {
   useMonitorFrameStore,

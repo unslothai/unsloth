@@ -4,7 +4,6 @@
 export { FindInPage } from "./components/find-in-page.tsx";
 export { useFindInPageStore } from "./stores/find-in-page-store.ts";
 export {
-  FIND_PORTAL_ATTRIBUTE,
   FIND_SCOPE_ATTRIBUTE,
   FIND_SKIP_ATTRIBUTE,
 } from "./lib/find-attributes.ts";

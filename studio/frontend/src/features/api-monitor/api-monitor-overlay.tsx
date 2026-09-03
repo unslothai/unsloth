@@ -6,7 +6,7 @@
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
-import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 import { useShortcut } from "@/features/settings";
 import {
   useFloatingPanelOrderStore,
