@@ -3696,19 +3696,22 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
     owns = SimpleNamespace(layers = [object(), object()], make_cache = lambda: [KVCache(), KVCache()])
 
     unset = object()
+    last = {}
 
     def policy(
         model,
         kv_bits,
         requested,
         served = unset,
+        fitted = False,
     ):
         backend = MLXInferenceBackend()
         backend._model = model
         backend._is_vlm = False
         quant, window, enforced = backend._resolve_kv_policy(
-            False, kv_bits, requested, requested if served is unset else served
+            False, kv_bits, requested, requested if served is unset else served, fitted = fitted
         )
+        last.update(quant)
         return quant["kv_bits"], window, enforced
 
     assert policy(honours, 4, 8192) == (None, 8192, True)  # enforceable pin outranks quant
@@ -3716,6 +3719,15 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
     assert policy(honours, 4, 0, 262144) == (4, None, False)
     assert policy(honours, None, 8192) == (None, 8192, True)
     assert policy(honours, None, 0, 262144) == (None, 262144, True)  # nothing to yield to
+
+    # A window fitted to the machine is an instruction about memory too, so it bounds where the
+    # model's own native window would have yielded to the quantization instead -- and the refusal
+    # it reports must not blame a Context Length the user never set.
+    assert policy(honours, 4, 0, 24576, fitted = True) == (None, 24576, True)
+    assert last["reason"] == mlx_inference.MLX_KV_QUANT_FITTED_CONTEXT
+    assert policy(honours, 4, 8192) == (None, 8192, True)
+    assert last["reason"] == mlx_inference.MLX_KV_QUANT_PINNED_CONTEXT
+    assert policy(honours, 4, 0, 24576) == (4, None, False)
 
     # An unenforceable pin spends nothing, and the verdict still travels to the API.
     assert policy(owns, 4, 8192) == (4, None, False)
@@ -3734,7 +3746,7 @@ def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_st
     """Left to mlx-lm this surfaces as NotImplementedError on the first generated token."""
     from core.inference.mlx_inference import _kv_quant_status
 
-    status = _kv_quant_status(4, None, False, context_pinned = True)
+    status = _kv_quant_status(4, None, False, context_bounded = True)
 
     assert status["kv_bits"] is None
     assert status["eligibility"] == "refused"
@@ -4094,3 +4106,169 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path):
+    # Full width whatever quantization was requested, because installing the bound is what
+    # displaces that quantization. Nothing is priced where the machine cannot be measured, and
+    # nothing where the name has no files on disk: _fitted_context catches everything, so a
+    # raise here would be swallowed into the same None a real miss returns.
+    from core.inference import mlx_inference
+
+    priced = []
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.mlx_memory",
+        types.SimpleNamespace(
+            mlx_fit_context = lambda model_dir, **kw: (
+                priced.append(kw | {"dir": model_dir}) or 24_576
+            )
+        ),
+    )
+    monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 * 1024**3)
+
+    def fit(name, **kw):
+        return mlx_inference._fitted_context(None, name, 262_144, **kw)
+
+    assert fit(str(tmp_path), load_in_4bit = True, retains_history = True) == 24_576
+    assert "kv_bits" not in priced[0]
+    assert priced[0] == {
+        "budget_bytes": 8 * 1024**3,
+        "max_ctx": 262_144,
+        "load_in_4bit": True,
+        "dir": str(tmp_path),
+    }
+
+    # Pricing builds real cache classes that draw from the global PRNG, so every path out of
+    # the guard rewinds it -- including the one that returns before pricing at all.
+    rewound = []
+    monkeypatch.setattr(mlx_inference, "_mlx_rng_key_words", lambda: ("key",))
+    monkeypatch.setattr(mlx_inference, "_restore_mlx_rng_key", rewound.append)
+
+    priced.clear()
+    monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: None)
+    assert fit(str(tmp_path), load_in_4bit = True, retains_history = True) is None
+    monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 * 1024**3)
+    monkeypatch.setattr(mlx_inference, "_snapshot_dir", lambda model, name: None)
+    assert fit("org/uncached", load_in_4bit = True, retains_history = True) is None
+    assert not priced
+    assert rewound == [("key",)]
+
+
+def test_the_fit_budget_leaves_the_prompt_history_its_own_room(monkeypatch):
+    # Retained entries are evicted against their own cap rather than under pressure, so they are
+    # already spent when the fit reads the limit.
+    from core.inference import mlx_inference
+
+    fake = types.SimpleNamespace(
+        metal = types.SimpleNamespace(is_available = lambda: True),
+        device_info = lambda: {"max_recommended_working_set_size": 100_000_000_000},
+    )
+    # `import mlx.core as mx` binds through the package attribute once the real module is
+    # loaded, so replacing only the sys.modules entry leaves the real one in play.
+    monkeypatch.setitem(sys.modules, "mlx.core", fake)
+    if "mlx" in sys.modules:
+        monkeypatch.setattr(sys.modules["mlx"], "core", fake, raising = False)
+    monkeypatch.delenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", raising = False)
+
+    assert mlx_inference.mlx_memory_budget() == 85_000_000_000 - 15_000_000_000
+    # Only the text path keeps a history; reserving it for a vision load is a shorter context
+    # than the machine warrants.
+    assert mlx_inference.mlx_memory_budget(retains_history = False) == 85_000_000_000
+    fake.metal.is_available = lambda: False
+    assert mlx_inference.mlx_memory_budget() is None
+
+
+def test_the_fit_asks_about_the_repo_the_loader_actually_opens(monkeypatch, tmp_path):
+    # A bnb-4bit id is served from its full-precision base and a LoRA load from its base
+    # checkpoint, so asking the cache about the name given finds nothing and the load is
+    # silently never fitted.
+    import utils.utils as backend_utils
+    from core.inference import mlx_inference
+
+    asked = []
+    monkeypatch.setattr(
+        backend_utils, "hf_cache_snapshot_dir", lambda name: asked.append(name) or tmp_path
+    )
+    # The loader records the checkpoint it resolved, and that outranks the name it was given.
+    assert mlx_inference._snapshot_dir(SimpleNamespace(_src_path = tmp_path), "org/alias") == str(
+        tmp_path
+    )
+    assert asked == []
+    assert mlx_inference._snapshot_dir(SimpleNamespace(), "org/alias") == str(tmp_path)
+    assert asked == ["org/alias"]
+
+
+def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch):
+    # A pin is the user's own answer about memory and is served verbatim; the fit exists for the
+    # load that gave none. The served window and what /load reports both follow.
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+
+    from core.inference import mlx_inference
+
+    # Every argument, not just the flag: a load naming the wrong checkpoint or ceiling would
+    # fit some other model to this machine and report the answer as this one's.
+    asked = []
+    monkeypatch.setattr(
+        mlx_inference,
+        "_fitted_context",
+        lambda model, name, ceiling, **kw: asked.append((name, ceiling, kw)) or 24_576,
+    )
+    # The fake runtime cannot build a cache to judge, and an unenforceable bound never reaches
+    # the decision under test.
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend,
+        "_kv_cache_window_enforceable",
+        lambda self, served: bool(served),
+    )
+    for max_seq_length, fits in ((4096, False), (0, True)):
+        asked.clear()
+        backend = mlx_inference.MLXInferenceBackend()
+        assert backend.load_model(
+            SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False),
+            max_seq_length = max_seq_length,
+            kv_bits = 4,
+        )
+        info = backend.models["fake/text"]
+        assert asked == (
+            [("fake/text", None, {"load_in_4bit": True, "retains_history": True})] if fits else []
+        )
+        assert info["context_length_fitted"] == (24_576 if fits else None)
+        assert info["context_length"] == (24_576 if fits else 4096)
+        # Requested quantization is what makes the fit matter here: only a load told its window
+        # was fitted refuses on those grounds rather than spending the bound on the quantization.
+        assert info["mlx_kv_quant_reason"] == (
+            mlx_inference.MLX_KV_QUANT_FITTED_CONTEXT
+            if fits
+            else mlx_inference.MLX_KV_QUANT_PINNED_CONTEXT
+        )
+
+    # A vision load keeps no prompt history, so it is fitted against a budget reserving none.
+    asked.clear()
+    assert mlx_inference.MLXInferenceBackend().load_model(
+        SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False),
+        max_seq_length = 0,
+    )
+    assert asked == [("fake/vlm", None, {"load_in_4bit": True, "retains_history": False})]
+
+    # A shard of a distributed load, a width the sizing does not take, and an adapter whose base
+    # is reloaded at its own width are all loads the sizing cannot describe.
+    for lora, kwargs in (
+        (
+            False,
+            {
+                "parallel_mode": "tensor",
+                "distributed_group": SimpleNamespace(rank = lambda: 0, size = lambda: 2),
+            },
+        ),
+        (False, {"dtype": "float32"}),
+        (True, {}),
+    ):
+        asked.clear()
+        assert mlx_inference.MLXInferenceBackend().load_model(
+            SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = lora),
+            max_seq_length = 0,
+            **kwargs,
+        )
+        assert not asked

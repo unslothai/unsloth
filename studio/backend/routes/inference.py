@@ -6443,6 +6443,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         chat_template_override_reason = None,
         # llama.cpp allocates the window it reports: bounded by construction.
         context_length_enforced = True,
+        # llama.cpp sizes its own context; nothing here is fitted on its behalf.
+        context_length_fitted = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -13714,6 +13716,9 @@ async def _load_model_impl(
                     ),
                     max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
                     context_length_enforced = _model_info.get("context_length_enforced"),
+                    context_length_fitted = _positive_int_or_none(
+                        _model_info.get("context_length_fitted")
+                    ),
                     chat_template = _chat_template,
                 )
 
@@ -14474,6 +14479,7 @@ async def _load_model_impl(
             native_context_length = _positive_int_or_none(_model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
             context_length_enforced = _model_info.get("context_length_enforced"),
+            context_length_fitted = _positive_int_or_none(_model_info.get("context_length_fitted")),
             chat_template = _chat_template,
         )
 
@@ -16619,6 +16625,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
             context_length_enforced = model_info.get("context_length_enforced"),
+            context_length_fitted = _positive_int_or_none(model_info.get("context_length_fitted")),
             # 0 is an answer (size it yourself); None means no request is recorded. Either
             # spelling: the route stamps max_seq_length_requested on every non-GGUF load,
             # and the MLX mirror carries requested_context_length.
@@ -24909,7 +24916,7 @@ def _openai_model_objects() -> list[dict]:
         ):
             entry["task"] = _TTS_MODEL_TASK
 
-        for _field in ("native_context_length", "max_context_length"):
+        for _field in ("native_context_length", "max_context_length", "context_length_fitted"):
             _value = _positive_int_or_none(model_info.get(_field))
             if _value is not None:
                 entry[_field] = _value

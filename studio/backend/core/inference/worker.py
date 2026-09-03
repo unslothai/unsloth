@@ -492,13 +492,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            # The whole group: the parent reports all four and can recompute none of
-            # them once the worker holds the model.
+            # The whole group: the parent reports all of them and can recompute none of
+            # them once the worker holds the model. A fit that did not happen is absent
+            # rather than zero, which is what the loop's None skip already gives.
             for _ctx_field in (
                 "context_length",
                 "native_context_length",
                 "max_context_length",
                 "requested_context_length",
+                "context_length_fitted",
             ):
                 try:
                     _ctx_value = _entry.get(_ctx_field)

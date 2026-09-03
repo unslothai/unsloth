@@ -1163,6 +1163,14 @@ class _InferenceRuntimeFields(BaseModel):
             "to check, since a model with its own make_cache ignores the requested size."
         ),
     )
+    context_length_fitted: Optional[int] = Field(
+        None,
+        description = (
+            "The window MLX fitted to this machine's memory, where that is shorter than the "
+            "model's own and no Context Length was requested. Null means context_length was not "
+            "chosen for this machine: a pin, or the model's own window."
+        ),
+    )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",

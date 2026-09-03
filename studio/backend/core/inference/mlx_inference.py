@@ -555,8 +555,18 @@ MLX_KV_QUANT_NO_REUSE = (
 MLX_KV_QUANT_VLM_CACHE_NOTE = (
     "On vision models, quantization starts once the cache reaches {start} tokens."
 )
+# Of the recommended working set, and what _configure_memory_limits caps a load at, so a
+# context fitted to it names a load MLX would actually allocate.
+MLX_MEMORY_LIMIT_FRACTION = 0.85
+
 # RotatingKVCache.to_quantized raises and mlx-lm converts from the first token, so the
-# two are resolved here rather than failing generation on its first step.
+# two are resolved here rather than failing generation on its first step. Either bound
+# reaches the caller, because the way out of each of them differs.
+MLX_KV_QUANT_FITTED_CONTEXT = (
+    "Context Length was fitted to this machine's memory, which limits the KV cache, and the "
+    "installed mlx-lm cannot quantize a limited cache. There is more of one or the other on a "
+    "machine with more memory."
+)
 MLX_KV_QUANT_PINNED_CONTEXT = (
     "Context Length is set for this model, which limits the KV cache, and the installed "
     "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
@@ -1094,6 +1104,94 @@ def _kv_entry_is_bounded(entry, window):
     return cap > getattr(entry, "keep", 0)
 
 
+def mlx_memory_budget(*, retains_history: bool = True) -> Optional[int]:
+    """Bytes a load's own footprint may occupy here, or None where Metal cannot say.
+
+    The cap ``_configure_memory_limits`` installs, less the prompt history a load that keeps one
+    holds: those entries are evicted against their own cap rather than under pressure, so they sit
+    alongside the load for its whole life and a context fitted to the undivided cap could not be
+    reached once the history fills. Only the text path keeps one, and reserving it for a load that
+    never will is a shorter context than the machine warrants.
+    """
+    import mlx.core as mx
+
+    if not mx.metal.is_available():
+        return None
+    recommended = mx.device_info().get("max_recommended_working_set_size")
+    if not recommended or recommended <= 0:
+        return None
+    budget = int(recommended * MLX_MEMORY_LIMIT_FRACTION)
+    if retains_history:
+        budget -= _prompt_cache_max_bytes(recommended / 1e9)
+    return budget if budget > 0 else None
+
+
+def _snapshot_dir(model, model_name: str) -> Optional[str]:
+    """Where the files this load actually opened are, or None if none are local.
+
+    Asked of the loaded model, which records the checkpoint it resolved, because that is often not
+    the one that was asked for: a bnb-4bit id is served from its full-precision base repo, and a
+    LoRA load from its base checkpoint. The name is the fallback for a load that records nothing.
+
+    A bitsandbytes repo with no base to redirect to is dequantized into a scratch checkpoint the
+    loader deletes, so what it records is the packed original, which the sizing declines. That is
+    the intended outcome: nothing that describes the resident model is still on disk to size.
+
+    Not ``snapshot_download(local_files_only = True)``: that refuses a snapshot missing any file the
+    repository lists, and Studio fetches what a load needs rather than the whole repository, so a
+    working model is routinely incomplete by that measure -- down to a missing README.
+    """
+    resolved = getattr(model, "_src_path", None)
+    if resolved and os.path.isdir(str(resolved)):
+        return str(resolved)
+    if os.path.isdir(model_name):
+        return model_name
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    return str(snapshot) if snapshot is not None else None
+
+
+def _fitted_context(model, model_name: str, ceiling, *, load_in_4bit: bool, retains_history: bool):
+    """Largest context this machine sustains, or None to serve the window it was given.
+
+    Priced at full width whatever quantization was asked for, because installing the bound this
+    returns is what displaces that quantization: sizing the window against a quantized cache would
+    spend memory the load then does not save.
+    """
+    budget = mlx_memory_budget(retains_history = retains_history)
+    if budget is None or not ceiling:
+        return None
+    # Pricing builds real cache classes, whose layers draw from the same global PRNG an unseeded
+    # generation samples from, so rewind it the way the KV quantization probe does.
+    rng_key = _mlx_rng_key_words()
+    try:
+        from core.inference.mlx_memory import mlx_fit_context
+
+        model_dir = _snapshot_dir(model, model_name)
+        if model_dir is None:
+            return None
+        fitted = mlx_fit_context(
+            model_dir,
+            budget_bytes = budget,
+            max_ctx = int(ceiling),
+            load_in_4bit = load_in_4bit,
+        )
+        if fitted:
+            logger.info(
+                "MLX context fitted to %d tokens from %d: %.1f GB is what this machine holds",
+                fitted,
+                int(ceiling),
+                budget / 1e9,
+            )
+        return fitted
+    except Exception as exc:
+        logger.debug("MLX context fit unavailable for %s: %s", model_name, exc)
+        return None
+    finally:
+        _restore_mlx_rng_key(rng_key)
+
+
 def _kv_window_enforced(model, is_vlm, window):
     """Whether a cache built for this model at *window* is bounded in every layer.
 
@@ -1121,7 +1219,8 @@ def _kv_quant_status(
     requested_bits,
     model,
     is_vlm,
-    context_pinned = False,
+    context_bounded = False,
+    bound_reason = MLX_KV_QUANT_PINNED_CONTEXT,
 ):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
@@ -1133,10 +1232,10 @@ def _kv_quant_status(
     }
     if requested_bits is None:
         return status
-    if context_pinned:
+    if context_bounded:
         status["eligibility"] = "refused"
-        status["reason"] = MLX_KV_QUANT_PINNED_CONTEXT
-        logger.info("MLX KV quantization not applied: %s", MLX_KV_QUANT_PINNED_CONTEXT)
+        status["reason"] = bound_reason
+        logger.info("MLX KV quantization not applied: %s", bound_reason)
         return status
     verdict, reason, retainable = _kv_quant_eligibility(model, is_vlm, requested_bits)
     status["eligibility"] = verdict
@@ -1641,7 +1740,7 @@ class MLXInferenceBackend:
         if not rec_bytes or rec_bytes <= 0:
             return
         rec_gb = rec_bytes / 1e9
-        memory_limit_gb = rec_gb * 0.85
+        memory_limit_gb = rec_gb * MLX_MEMORY_LIMIT_FRACTION
         wired_limit_gb = min(rec_gb, memory_limit_gb)
         mx.set_memory_limit(int(memory_limit_gb * 1e9))
         mx.set_wired_limit(int(wired_limit_gb * 1e9))
@@ -1699,19 +1798,27 @@ class MLXInferenceBackend:
             )
         return enforced
 
-    def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
+    def _resolve_kv_policy(
+        self,
+        is_vlm,
+        kv_bits,
+        max_seq_length,
+        served,
+        fitted = False,
+    ):
         """The quantization status and cache window this load will run with.
 
         Rotation is what keeps a long conversation inside the window, so nothing here can
         refuse a request; the model simply stops attending to the oldest tokens.
 
         Quantization cannot coexist with a bound -- a rotating cache has no conversion,
-        and mlx-lm converts from the first token -- so an enforceable pin, an explicit
-        instruction about memory, outranks it. A window the backend chose for itself
-        yields to an explicitly requested quantization, and so does a pin that cannot be
-        enforced, which would otherwise spend the quantization and bound nothing.
+        and mlx-lm converts from the first token -- so a bound that carries an instruction
+        about memory outranks it. That is either an enforceable pin or a window fitted to
+        what this machine holds; the model's own native window is neither, and yields to an
+        explicitly requested quantization, as does a pin that cannot be enforced, which
+        would otherwise spend the quantization and bound nothing.
         """
-        pinned = _positive_int(max_seq_length) is not None
+        instructed = _positive_int(max_seq_length) is not None or fitted
         # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True
         # installs a bound; the other two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
@@ -1720,9 +1827,10 @@ class MLXInferenceBackend:
             _normalize_mlx_kv_bits(kv_bits),
             self._model,
             is_vlm,
-            pinned and enforceable,
+            instructed and enforceable,
+            MLX_KV_QUANT_FITTED_CONTEXT if fitted else MLX_KV_QUANT_PINNED_CONTEXT,
         )
-        if not enforceable or (quant["kv_bits"] is not None and not pinned):
+        if not enforceable or (quant["kv_bits"] is not None and not instructed):
             # No bound installed, so False wherever the probe answered at all; None only
             # where nothing could be built to judge.
             return quant, None, None if confirmed is None else False
@@ -1848,11 +1956,34 @@ class MLXInferenceBackend:
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
+        # Asked for nothing, so the machine answers instead of the checkpoint. MLX grows its cache
+        # as tokens arrive rather than reserving the context up front, so this frees nothing at
+        # load: it is the ceiling a conversation may grow to, installed below as a rotating cache.
+        # Only a load the sizing can describe is priced; the rest keep the window they were
+        # given rather than one fitted to a figure that does not describe them. A distributed
+        # rank holds a shard, so the whole checkpoint against one rank's budget is wrong in both
+        # directions; an explicit dtype is a width the sizing does not take; and an adapter's
+        # base is reloaded at full width whatever was asked for, then has its own tensors
+        # installed, so neither the base snapshot nor this flag describes what ends up resident.
+        _priceable = not (is_distributed or is_lora or dtype is not None)
+        _fitted_ctx = (
+            None
+            if not _priceable or _positive_int(max_seq_length) is not None
+            else _fitted_context(
+                self._model,
+                model_name,
+                _served_ctx,
+                load_in_4bit = load_in_4bit,
+                retains_history = not is_vision,
+            )
+        )
+        if _fitted_ctx:
+            _served_ctx = _fitted_ctx
         # Classify before the first generation: an ineligible cache would otherwise
         # raise inside maybe_quantize_kv_cache mid-stream, after converting the
         # leading entries.
         self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
-            is_vision, kv_bits, max_seq_length, _served_ctx
+            is_vision, kv_bits, max_seq_length, _served_ctx, fitted = _fitted_ctx is not None
         )
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
@@ -1921,13 +2052,16 @@ class MLXInferenceBackend:
             # Parity with llama.cpp's requested_n_ctx: the served window cannot say
             # whether anything was asked for, and that decides reuse and "pinned".
             "requested_context_length": _positive_int(max_seq_length) or 0,
-            # Nothing measures the machine, so window and ceiling coincide.
             "native_context_length": _native_ctx,
             "max_context_length": _max_ctx,
             # Whether the served window actually bounds the cache: True confirmed on a
             # real cache, False confirmed unbounded, None nothing could be built to judge.
             # Without it the API reports a limit a client cannot tell from an enforced one.
             "context_length_enforced": _ctx_enforced,
+            # The tokens this machine can hold, where that is less than the model offers and
+            # nothing was asked for. None means the window was not chosen for this machine:
+            # a pin, the model's own window, or a load the sizing cannot describe.
+            "context_length_fitted": _fitted_ctx,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
