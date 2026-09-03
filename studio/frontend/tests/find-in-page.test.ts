@@ -2259,6 +2259,34 @@ test("the chain a cut leaves is followed past the seam, not only to it", () => {
   assert.equal(findMatches(index, "a", MAX_MATCHES).length > 0, true);
 });
 
+test("the chain a cut leaves is followed however long it runs", () => {
+  // Following it only as far as the backward window reaches was the wrong shape for the forward
+  // direction: the text ahead is in hand, so the run can be as long as it likes. A sibling of 32
+  // marks then the consonant put that consonant one past the window and left it findable, inside
+  // the grapheme the cut split.
+  for (const marks of [8, 31, 32, 64]) {
+    const index = buildTextIndex(
+      el("DIV", [
+        el("P", [
+          text("a".repeat(MAX_NODE_CHARS - 1) + "क्"),
+          text("́".repeat(marks) + "ष"),
+        ]),
+      ]),
+    );
+    assert.deepEqual(findMatches(index, "ष", 10), [], `${marks} marks`);
+  }
+  // Past the end of the chain the text is ordinary again, or the fence has run away with itself.
+  const beyond = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 1) + "क्"),
+        text("́".repeat(64) + "ष tail"),
+      ]),
+    ]),
+  );
+  assert.equal(findMatches(beyond, "tail", 10).length, 1);
+});
+
 test("an unknown anchor reaches only what a rule could actually take", () => {
   // A context that outran its window leaves the anchor unknown, and that matters only where a rule
   // could still reach: GB9c wants a consonant on its right and GB11 a pictograph. Every letter was

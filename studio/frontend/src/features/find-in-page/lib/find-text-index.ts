@@ -698,14 +698,32 @@ function markReached(
   unsafe: Set<number>,
 ): void {
   let crossed = "";
-  for (let at = 0, seen = 0; at < data.length && seen < CHAIN_AHEAD_LIMIT; ) {
+  let at = 0;
+  for (let seen = 0; at < data.length && seen < CHAIN_AHEAD_LIMIT; seen += 1) {
     const point = String.fromCodePoint(data.codePointAt(at) as number);
     if (!reaches(clip, point, crossed)) return;
     unsafe.add(from + at);
     crossed += point;
     at += point.length;
-    seen += 1;
   }
+  // Past the window the chain is still followed, but taken rather than read: answering exactly
+  // means carrying the whole run to ask about the next link, which is quadratic on a node that is
+  // nothing but links. Every link is in doubt and so is the one thing beyond it a rule can join,
+  // so both are marked and the walk ends there. Stopping instead left that one findable, and it
+  // is inside the grapheme the cut split.
+  while (at < data.length) {
+    const point = String.fromCodePoint(data.codePointAt(at) as number);
+    unsafe.add(from + at);
+    at += point.length;
+    if (!links(point)) return;
+  }
+}
+
+/** Joins to whatever is on its left, so a chain runs through it. */
+function links(point: string): boolean {
+  return (
+    EXTENDS_LEFT_PATTERN.test(point) && !MC_NOT_SPACING_PATTERN.test(point)
+  );
 }
 
 /**
