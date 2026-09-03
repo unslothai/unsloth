@@ -876,3 +876,45 @@ def test_without_a_terminator_the_pair_is_still_appended_last(shim, tool):
     execd = _execd_full(shim, tool, ["snac"])
     assert execd[0] == "snac", execd
     assert execd[-2] == "--constraint", execd
+
+
+# PEP 503 says a distribution name compares equal under any run of `-`, `_` or
+# `.`, so `unsloth.zoo` IS `unsloth-zoo`. _canon has several early returns (direct
+# reference, #egg=, wheel filename, sdist filename, VCS basename) and each used to
+# collapse only "_", so a protected package spelled with a dot missed _KEEP
+# entirely and the shim let it replace the baked wheel.
+@pytest.mark.parametrize(
+    "token",
+    [
+        "unsloth.zoo @ git+https://github.com/unslothai/unsloth_zoo",
+        "git+https://github.com/unslothai/unsloth_zoo#egg=unsloth.zoo",
+        "https://example.invalid/unsloth.zoo-1.0-py3-none-any.whl",
+        "unsloth.zoo-1.0.tar.gz",
+        "git+https://github.com/unslothai/unsloth.zoo",
+        "unsloth.zoo==2026.9.1",
+        "unsloth__zoo==2026.9.1",
+        "UNSLOTH.ZOO==2026.9.1",
+    ],
+)
+def test_dotted_spellings_of_a_protected_package_are_still_protected(shim, token):
+    assert shim._canon(token) == "unsloth-zoo", token
+    assert shim._canon(token) in shim._KEEP, token
+
+
+@pytest.mark.parametrize(
+    "token, expected",
+    [
+        ("nvidia.cublas-cu12==1.0", "nvidia-cublas-cu12"),
+        ("huggingface.hub==1.0", "huggingface-hub"),
+    ],
+)
+def test_prefix_and_plain_matches_normalize_too(shim, token, expected):
+    name = shim._canon(token)
+    assert name == expected, token
+    assert name in shim._KEEP or name.startswith(shim._KEEP_PREFIX), token
+
+
+def test_normalization_does_not_merge_distinct_distributions(shim):
+    # torch-directml / torch_tensorrt / torchsde are NOT torch and must pass through.
+    for token in ("torch-directml==0.2", "torch_tensorrt==2.0", "torchsde==0.2"):
+        assert shim._canon(token) not in shim._KEEP, token

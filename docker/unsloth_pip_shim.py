@@ -206,6 +206,18 @@ _DROP_VALUE_FLAGS = {"--upgrade-strategy"}
 _ARCHIVE_EXTS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar", ".zip")
 
 
+def _norm_name(name):
+    """PEP 503 normalised distribution name, or None when empty.
+
+    Any run of `-`, `_` or `.` collapses to a single hyphen. Every name this
+    module compares against _KEEP / _KEEP_PREFIX goes through here: collapsing
+    only "_" left `unsloth.zoo`, `unsloth__zoo` and `nvidia.cublas-cu12`
+    unmatched, so a protected distribution spelled any of those ways slipped the
+    shim and could replace the baked wheel.
+    """
+    return re.sub(r"[-_.]+", "-", name.strip()).lower() or None
+
+
 def _sdist_name(basename):
     """Distribution name from a source-archive basename ({name}-{version}.ext),
     or None if it is not a recognised archive. Splits at the first hyphen that
@@ -220,8 +232,7 @@ def _sdist_name(basename):
     if stem is None:
         return None
     m = re.match(r"^(.+?)-\d", stem)
-    name = (m.group(1) if m else stem).strip().lower().replace("_", "-")
-    return name or None
+    return _norm_name(m.group(1) if m else stem)
 
 
 def _canon(token):
@@ -236,18 +247,18 @@ def _canon(token):
         token,
     )
     if _dref:
-        return _dref.group(1).lower().replace("_", "-") or None
+        return _norm_name(_dref.group(1))
     if re.match(r"^[a-z]+\+", token) or "://" in token or token.startswith((".", "/")):
         # A VCS/URL install can name a protected package via the #egg=NAME
         # fragment; pull it out so _KEEP can drop it.
         _egg = re.search(r"[#&]egg=([A-Za-z0-9][A-Za-z0-9._-]*)", token)
         if _egg:
-            return _egg.group(1).lower().replace("_", "-") or None
+            return _norm_name(_egg.group(1))
         # A wheel URL/path names its distribution in the PEP 427 filename (leading
         # dash-split of the basename), so a bare torch-*.whl would slip _KEEP.
         _whl = re.search(r"([^/\\#?]+)\.whl(?:[#?]|$)", token)
         if _whl:
-            dist = _whl.group(1).split("-", 1)[0].strip().lower().replace("_", "-")
+            dist = _norm_name(_whl.group(1).split("-", 1)[0])
             if dist:
                 return dist
         # A source archive ({name}-{version}.tar.gz) names its distribution too;
@@ -272,7 +283,7 @@ def _canon(token):
             _seg = _seg.split("@", 1)[0]  # schemeless fallback: drop a plain @ref
             if _seg.endswith(".git"):
                 _seg = _seg[:-4]
-            _seg = _seg.strip().lower().replace("_", "-")
+            _seg = _norm_name(_seg)
             if _seg:
                 return _seg
         # A local project DIRECTORY installs the project it contains; resolve its
@@ -290,7 +301,7 @@ def _canon(token):
     # A bare wheel filename from the CWD is a valid pip target; parse its PEP 427
     # distribution like the URL/path wheel case above, else it misses _KEEP.
     if token.lower().endswith(".whl"):
-        dist = token.rsplit("/", 1)[-1][:-4].split("-", 1)[0].strip().lower().replace("_", "-")
+        dist = _norm_name(token.rsplit("/", 1)[-1][:-4].split("-", 1)[0])
         if dist:
             return dist
     # A bare source-archive filename from the CWD is a valid target too; parse it.
@@ -299,11 +310,7 @@ def _canon(token):
         return _barch
     # strip extras and any version/marker tail
     name = re.split(r"[<>=!~\[\s;@]", token, 1)[0].strip()
-    # PEP 503 normalisation: any run of -, _ or . is one hyphen. Collapsing only
-    # "_" left `unsloth.zoo` and `nvidia.cublas-cu12` unmatched against _KEEP and
-    # _KEEP_PREFIX, so a protected distribution spelled that way slipped through
-    # and could replace the baked wheel.
-    return re.sub(r"[-_.]+", "-", name).lower() or None
+    return _norm_name(name)
 
 
 def _local_project_name(token):
@@ -327,7 +334,7 @@ def _local_project_name(token):
             with open(_pyproject, "rb") as f:
                 _name = (tomllib.load(f).get("project") or {}).get("name")
             if _name:
-                return _name.strip().lower().replace("_", "-") or None
+                return _norm_name(_name)
         except Exception:
             pass  # unparseable metadata -> fall through to the other signals
     _setup_cfg = os.path.join(path, "setup.cfg")
@@ -339,12 +346,12 @@ def _local_project_name(token):
             _cp.read(_setup_cfg)
             _name = _cp.get("metadata", "name", fallback = None)
             if _name:
-                return _name.strip().lower().replace("_", "-") or None
+                return _norm_name(_name)
         except Exception:
             pass
     if os.path.isfile(os.path.join(path, "setup.py")) or os.path.isfile(_pyproject):
         _base = os.path.basename(os.path.normpath(path))
-        return _base.strip().lower().replace("_", "-") or None
+        return _norm_name(_base)
     return None
 
 
@@ -559,7 +566,9 @@ def _protected_constraints_file():
         pins = {}
         for dist in distributions():
             raw = (dist.metadata["Name"] or "").strip()
-            name = raw.lower().replace("_", "-")
+            # Match on the PEP 503 name; the pin keeps `raw` so the constraint
+            # still names the distribution exactly as it is installed.
+            name = _norm_name(raw)
             if not name or name in pins:
                 continue
             if name == "transformers" or name in _KEEP or name.startswith(_KEEP_PREFIX):
