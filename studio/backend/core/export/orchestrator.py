@@ -197,8 +197,17 @@ class ExportOrchestrator:
             except Exception:
                 pass
         # _run_export swallows the RuntimeError this kill produces and returns without
-        # shutting down, so neither _shutdown_subprocess cleanup runs on a cancel.
-        self._discard_token_store()
+        # shutting down, so neither _shutdown_subprocess cleanup runs on a cancel. Only once
+        # the worker is confirmed dead, though: a survivor of terminate+kill (the wedged CUDA
+        # syscall this class handles elsewhere) still has HF_TOKEN_PATH pointing here, and
+        # pulling the directory out from under it would both break its Hub calls and let it
+        # recreate an untracked one. It is discarded by the next shutdown instead.
+        if not proc.is_alive():
+            self._discard_token_store()
+        else:
+            logger.warning(
+                "Export subprocess survived cancellation; keeping its token store until it exits"
+            )
         return True
 
     # ------------------------------------------------------------------

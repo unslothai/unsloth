@@ -988,3 +988,106 @@ def test_anonymous_access_check_refuses_when_it_cannot_ask(monkeypatch):
     ok, why = export_backend_module._anonymous_access_allowed("owner/repo", offline = True)
     assert ok is False
     assert "Hub is unreachable" in why
+
+
+def test_a_remote_adapters_base_is_authorized_too(monkeypatch):
+    """A public adapter must not stand in front of a cached private base."""
+    from core.export import export as export_backend_module
+    from utils.models import model_config
+
+    monkeypatch.setattr(
+        model_config,
+        "get_base_model_from_lora_identifier",
+        lambda path, token: "owner/private-base",
+    )
+    assert export_backend_module._remote_load_targets("owner/public-adapter") == [
+        "owner/public-adapter",
+        "owner/private-base",
+    ]
+
+    checked = []
+
+    def _check(repo, offline):
+        checked.append(repo)
+        return (repo != "owner/private-base", "refused")
+
+    monkeypatch.setattr(export_backend_module, "_anonymous_access_allowed", _check)
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
+    monkeypatch.setattr(
+        export_backend_module,
+        "detect_audio_type",
+        lambda *a, **kw: pytest.fail("must refuse before touching the cache"),
+    )
+
+    backend = export_backend_module.ExportBackend()
+    ok, message = backend.load_checkpoint(
+        checkpoint_path = "owner/public-adapter", hf_token = False
+    )
+
+    assert ok is False
+    assert message == "refused"
+    assert checked == ["owner/public-adapter", "owner/private-base"]
+
+
+def test_a_local_checkpoints_base_is_not_authorized(monkeypatch, tmp_path):
+    """The exemption that keeps offline local LoRA exports working stays."""
+    from core.export import export as export_backend_module
+
+    monkeypatch.setattr(
+        export_backend_module,
+        "_anonymous_access_allowed",
+        lambda repo, offline: pytest.fail("a local checkpoint is not a remote target"),
+    )
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
+
+    reached = {}
+
+    def _probe(model_id, hf_token, local_files_only):
+        reached["probe"] = model_id
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(export_backend_module, "detect_audio_type", _probe)
+    (tmp_path / "adapter_config.json").write_text(
+        '{"base_model_name_or_path": "unsloth/llama-3.2-1B-Instruct", "peft_type": "LORA"}'
+    )
+    (tmp_path / "adapter_model.safetensors").touch()
+
+    backend = export_backend_module.ExportBackend()
+    backend.load_checkpoint(checkpoint_path = str(tmp_path), hf_token = False)
+    assert reached["probe"] == "unsloth/llama-3.2-1B-Instruct"
+
+
+def test_a_worker_surviving_cancellation_keeps_its_token_store():
+    """Pulling HF_TOKEN_PATH out from under a live worker breaks it and orphans a new one."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+
+    class _Immortal:
+        pid = 99
+
+        def is_alive(self):
+            return True
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def join(self, timeout = None):
+            pass
+
+    o._proc = _Immortal()
+    try:
+        assert o.cancel_export() is True
+        assert os.path.isdir(store), "a survivor still points at this store"
+    finally:
+        # Do not leave a live-looking handle for the orchestrator's atexit to shut down.
+        o._proc = None
+        o._discard_token_store()

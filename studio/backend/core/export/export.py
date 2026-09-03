@@ -55,6 +55,26 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 
+def _remote_load_targets(checkpoint_path: str) -> List[str]:
+    """Every remote repository a load of *checkpoint_path* will reach.
+
+    A remote LoRA is two repositories: the adapter the caller named, and the base its
+    adapter_config points at, which the loader follows on its own. Authorizing only the
+    adapter would let a public one stand in front of a cached private base.
+    """
+    targets = [checkpoint_path]
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        base = get_base_model_from_lora_identifier(checkpoint_path, False)
+    except Exception as exc:
+        logger.debug("Could not resolve a base for '%s': %s", checkpoint_path, exc)
+        base = None
+    if base and base != checkpoint_path and not is_local_path(base):
+        targets.append(base)
+    return targets
+
+
 def _anonymous_access_allowed(repo_id: str, offline: bool) -> Tuple[bool, str]:
     """Whether an anonymous caller may be served a cache-backed load of *repo_id*.
 
@@ -553,9 +573,10 @@ class ExportBackend:
             # caller never named. That leaves reading a private base through a crafted local
             # adapter_config, which needs a separate write onto this host.
             if is_anonymous(token) and not is_local_path(checkpoint_path):
-                allowed, why = _anonymous_access_allowed(checkpoint_path, local_files_only)
-                if not allowed:
-                    return False, why
+                for target in _remote_load_targets(checkpoint_path):
+                    allowed, why = _anonymous_access_allowed(target, local_files_only)
+                    if not allowed:
+                        return False, why
 
             # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
             _device_map_kw = (
