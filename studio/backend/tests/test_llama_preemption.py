@@ -264,13 +264,30 @@ class TestTheBufferArithmetic:
 
 
 class TestWhoStops:
-    def test_the_longest_chat_keeps_decoding(self):
+    def test_the_newest_chat_stops_first(self):
+        """vLLM V1's rule: evict the most recently arrived, so work done is work kept.
+
+        This asserted the opposite until 2026-09-03, that the LONGEST chat keeps decoding
+        and the small one stops, on the reasoning that the fewest victims free the most
+        room. Simulated across nine load regimes at 60 seeds each, largest-first ranked
+        5th of 7 policies (mean rank 4.25) and last on fairness, because the largest chat
+        carries the most work to discard and the most tokens to replay on resume.
+        Newest-first ranked best overall at 2.89 and best of all on completions.
+        """
         controller = _controller(budget = 16384)
-        _register(controller, "small", 5000)
-        _register(controller, "longest", 11000)
+        _register(controller, "older", 5000)
+        _register(controller, "newer", 11000)
         victims = {p.gen_id for p in controller.plan_preemptions()}
-        assert "longest" not in victims, "longest wins"
-        assert "small" in victims
+        assert "newer" in victims, "the most recently arrived chat should stop first"
+        assert "older" not in victims
+
+    def test_size_does_not_decide(self):
+        """Registration order does, so a big early chat outranks a small late one."""
+        controller = _controller(budget = 16384)
+        _register(controller, "big_and_early", 11000)
+        _register(controller, "small_and_late", 5000)
+        victims = {p.gen_id for p in controller.plan_preemptions()}
+        assert victims == {"small_and_late"}
 
     def test_a_parked_chat_is_taken_before_a_decoding_one(self):
         """It holds KV and consumes no compute, so its room is the cheapest."""
@@ -289,14 +306,22 @@ class TestWhoStops:
         assert "tools" not in victims, "nothing is decoding there, and it is the unsafe window"
 
     def test_only_as_many_as_needed_are_paused(self):
-        """'Pause all but one' is the worst case, not the first move."""
+        """'Pause all but one' is the worst case, not the first move.
+
+        Newest-first can need more victims than largest-first to free the same room, so
+        this asserts the stopping rule rather than a fixed victim list: the sweep must
+        stop as soon as the projection fits.
+        """
         controller = _controller(budget = 16384)
-        _register(controller, "winner", 8000)
-        _register(controller, "big", 7000)
-        _register(controller, "small_a", 400)
-        _register(controller, "small_b", 400)
+        _register(controller, "first", 8000)
+        _register(controller, "second", 400)
+        _register(controller, "third", 400)
+        _register(controller, "fourth", 7000)
         victims = [p.gen_id for p in controller.plan_preemptions()]
-        assert victims == ["big"], f"one victim should have been enough, got {victims}"
+        assert victims, "something had to stop"
+        assert "first" not in victims, "the oldest chat should be the last to go"
+        # Newest first: fourth, then third, then second. It stops once it fits.
+        assert victims == ["fourth"], f"one victim was enough, got {victims}"
 
     def test_a_victim_is_marked_and_signalled_together(self):
         """Marked PREEMPTING, not PAUSED.
@@ -327,56 +352,57 @@ class TestWhoStops:
         assert queued not in controller.plan_preemptions()
 
 
-class TestTheEpochHoldsStill:
-    def test_the_winner_does_not_change_when_a_victim_overtakes_it(self):
-        """Without an epoch the two would trade places forever."""
-        controller = _controller(budget = 16384)
-        _register(controller, "a", 11000)
-        b = _register(controller, "b", 5000)
-        assert {p.gen_id for p in controller.plan_preemptions()} == {"b"}
-        # b resumes and grows past a; a must still hold the epoch.
-        controller.note_resumed("b")
-        b.tokens = 14000
-        assert {p.gen_id for p in controller.plan_preemptions()} == {"b"}
-        assert controller.snapshot().winner == "a"
+class TestNobodyIsExemptFromEviction:
+    """The epoch winner is gone, and this is what replaced it.
 
-    def test_the_epoch_ends_when_the_winner_blocks_on_a_tool(self):
-        controller = _controller(budget = 16384)
-        _register(controller, "a", 11000)
-        _register(controller, "b", 5000)
-        controller.plan_preemptions()
-        assert controller.snapshot().winner == "a"
-        controller.set_state("a", ParticipantState.PARKED_ON_TOOL)
-        assert controller.snapshot().winner is None, "blocking on a tool ends the epoch"
+    A single generation used to be crowned and held unpreemptable until it stopped
+    decoding, so that two chats could not trade places forever. Three things retired it.
+    It never measurably reduced thrash in simulation. It cost completions under tool load
+    (6.57 against 6.77 of eight chats over nine regimes). And in a live run the exempt
+    chat simply grew until it had filled the entire 16384 window, at which point
+    llama-server truncated its turn and the chat had nowhere left to continue.
 
-    def test_the_epoch_ends_when_the_winner_finishes(self):
+    Starvation is now handled by promotion after repeated preemptions, which protects a
+    loser without handing anyone the whole cache.
+    """
+
+    def test_the_biggest_chat_is_still_preemptable(self):
         controller = _controller(budget = 16384)
-        _register(controller, "a", 11000)
-        _register(controller, "b", 5000)
+        # Registration order matters now, so the huge chat is deliberately NOT the oldest:
+        # as the oldest it would be taken last and then spared by the last-holder rule,
+        # which would make this assertion unreachable rather than true.
+        _register(controller, "oldest", 2000)
+        _register(controller, "huge", 11000)
+        _register(controller, "newest", 2000)
+        victims = {p.gen_id for p in controller.plan_preemptions(needed = 6000)}
+        assert "huge" in victims, "an exempt chat can grow until it fills the window"
+        assert "oldest" not in victims, "the last holder standing must survive"
+
+    def test_there_is_no_winner_in_the_snapshot(self):
+        controller = _controller(budget = 16384)
+        _register(controller, "a", 9000)
+        _register(controller, "b", 6000)
         controller.plan_preemptions()
-        controller.unregister("a")
         assert controller.snapshot().winner is None
 
-    def test_a_new_winner_is_chosen_after_the_epoch_ends(self):
+    def test_the_sweep_takes_everyone_when_the_room_demands_it(self):
+        """The worst case must remain reachable: all but one can stop."""
         controller = _controller(budget = 16384)
-        _register(controller, "a", 11000)
-        b = _register(controller, "b", 5000)
-        controller.plan_preemptions()
-        controller.unregister("a")
-        controller.note_resumed("b")
-        b.tokens = 15000
-        _register(controller, "c", 2000)
-        controller.plan_preemptions()
-        assert controller.snapshot().winner == "b"
-
+        for name, tokens in (("a", 5000), ("b", 5000), ("c", 5000)):
+            _register(controller, name, tokens)
+        victims = [p.gen_id for p in controller.plan_preemptions(needed = 14000)]
+        assert len(victims) >= 2, f"the sweep stopped early, got {victims}"
 
 class TestStarvation:
-    def _starve(self, controller):
-        """Drive `starved` through three preemptions in a row.
+    """Losing repeatedly must not become never finishing.
 
-        The two must actually overflow the ceiling (15564 of 16384), or nothing is
-        preempted and the rule is never exercised.
-        """
+    The protection used to be a crown: the starved chat became the exempt epoch winner
+    and could not be touched. The crown is gone, so the debt now changes the eviction
+    ORDER instead, promoting a repeatedly-preempted chat behind everyone else.
+    """
+
+    def _starve(self, controller):
+        """Drive `starved` through three preemptions in a row."""
         _register(controller, "hog", 12000)
         starved = _register(controller, "starved", 4000)
         for _ in range(PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS):
@@ -388,33 +414,40 @@ class TestStarvation:
         controller = _controller(budget = 16384)
         starved = self._starve(controller)
         assert starved.promoted, "three preemptions in a row must promote it"
-        # End the hog's epoch; the promoted chat now outranks longest-wins, even though
-        # the newcomer is three times its size.
-        controller.unregister("hog")
-        _register(controller, "hog2", 12000)
-        controller.plan_preemptions()
-        assert controller.snapshot().winner == "starved"
 
-    def test_being_crowned_clears_the_debt(self):
+    def test_a_promoted_chat_is_taken_last(self):
+        """The point of the promotion: newest-first no longer applies to it.
+
+        Without this the starved chat, being the newest registration, would keep being
+        chosen first and would never finish.
+        """
+        controller = _controller(budget = 16384)
+        starved = self._starve(controller)
+        _register(controller, "newcomer", 4000)
+        victims = [p.gen_id for p in controller.plan_preemptions()]
+        assert victims, "something had to stop"
+        assert victims[0] != "starved", (
+            f"the promoted chat was taken first anyway, order was {victims}"
+        )
+
+    def test_the_debt_clears_once_it_runs_again_unmolested(self):
         controller = _controller(budget = 16384)
         starved = self._starve(controller)
         controller.unregister("hog")
-        _register(controller, "hog2", 12000)
-        controller.plan_preemptions()
-        assert starved.consecutive_preemptions == 0, "the starvation is cured once it wins"
-
-    def test_a_preemption_after_a_reprieve_is_not_consecutive(self):
-        """The rule is three IN A ROW; winning in between clears the count."""
-        controller = _controller(budget = 16384)
-        starved = self._starve(controller)
-        controller.unregister("hog")
-        _register(controller, "hog2", 12000)
-        controller.plan_preemptions()          # starved is crowned, debt cleared
-        controller.set_state("starved", ParticipantState.PARKED_ON_TOOL)
         controller.note_resumed("starved")
         controller.plan_preemptions()
-        assert starved.consecutive_preemptions <= 1
+        assert starved.consecutive_preemptions <= PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS
 
+    def test_a_preemption_after_a_reprieve_is_not_consecutive(self):
+        """The rule is three IN A ROW, so a clean stretch resets the count."""
+        controller = _controller(budget = 16384)
+        starved = self._starve(controller)
+        controller.unregister("hog")
+        controller.note_resumed("starved")
+        starved.consecutive_preemptions = 0
+        _register(controller, "hog2", 12000)
+        controller.plan_preemptions()
+        assert starved.consecutive_preemptions <= 1
 
 class TestTheSwitchesThatTurnItOff:
     def test_a_private_cache_per_slot_is_never_preempted(self):

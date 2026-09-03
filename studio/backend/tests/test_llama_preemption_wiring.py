@@ -110,7 +110,13 @@ class TestAFinishedChatStopsCounting:
         )
 
     @pytest.mark.asyncio
-    async def test_pruning_frees_the_epoch(self):
+    async def test_pruning_frees_the_charge(self):
+        """This asserted that pruning freed the EPOCH, which no longer exists.
+
+        No generation is exempt from eviction now, so there is no crown to release; what
+        pruning has to free is the charge, or the ledger reports a cache fuller than it is
+        and admits nobody.
+        """
         queue = get_llama_admission_queue("wiring-epoch")
         controller = PreemptionController("wiring-epoch")
         controller.configure(budget = 16384, kv_unified = True)
@@ -118,12 +124,12 @@ class TestAFinishedChatStopsCounting:
             capacity = 4, config = LlamaAdmissionConfig(), budget = 16384, tokens = 4096
         )
         lease = reservation.lease_nowait()
-        controller.register("winner", lease = lease, tokens = 4096)
-        controller.plan_preemptions(needed = 999999)
-        assert controller.snapshot().winner == "winner"
+        controller.register("holder", lease = lease, tokens = 4096)
+        assert controller.snapshot().winner is None, "nobody is crowned any more"
+        assert controller.committed_tokens() == 4096
         lease.release()
-        controller.committed_tokens()
-        assert controller.snapshot().winner is None
+        controller.unregister("holder")
+        assert controller.committed_tokens() == 0
 
 
 class TestTheDeferredHandoff:
@@ -708,11 +714,17 @@ class TestTheWatermarkSweep:
         assert victims, "the cache passed its ceiling and nobody was asked to stop"
         assert any(s.is_set() for s in signals.values())
 
-    def test_the_winner_is_never_the_victim(self):
+    def test_the_newest_arrival_is_the_first_victim(self):
+        """This asserted the reverse, that the biggest chat is never a victim.
+
+        Largest-first ranked 5th of 7 policies over nine simulated regimes and last on
+        fairness. vLLM V1 evicts the most recently arrived instead, so the work already
+        done survives, and that ranked best overall.
+        """
         controller, signals = self._filled(each = 2000)
         controller.register("big", tokens = 9000, signal = PreemptSignal())
         victims = {v.gen_id for v in controller.observe("big", 3000)}
-        assert "big" not in victims, "the longest chat must keep decoding"
+        assert "big" in victims, "the newest registration should stop first"
 
     def test_live_growth_is_added_to_the_admitted_charge(self):
         """Reporting "n generated" must not drop the prompt already resident."""
