@@ -7,8 +7,11 @@
 #   --ulimit stack=64MB  larger libtorch thread stack (some kernels OOM the 8MB default)
 # Plus mounts the host HF + Triton caches so downloads and kernels persist.
 #
-# Usage:
-#   bash docker/run.sh                                  # interactive python REPL
+# Usage (no command means the image's own CMD, which on the default
+# unsloth/unsloth:latest is the Studio + JupyterLab launcher, not a REPL):
+#   bash docker/run.sh                                  # start Studio + JupyterLab
+#                                                         (see the ports note below)
+#   bash docker/run.sh python                           # interactive python REPL
 #   bash docker/run.sh bash                             # shell in the container
 #   bash docker/run.sh python /workspace/smoke_test.py  # run the smoke test
 #   bash docker/run.sh python /workspace/host/train.py  # run your training script

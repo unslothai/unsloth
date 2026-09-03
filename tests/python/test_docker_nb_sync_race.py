@@ -124,7 +124,7 @@ def test_the_child_re_arms_the_finalize_only_after_it_copies(sync: str):
 def test_the_lock_file_is_not_recorded_as_a_notebook(sync: str):
     block = sync[sync.index("record_state() {") :]
     block = block[: block.index("\n}")]
-    assert ".unsloth_sync.lock) continue" in block, (
+    assert re.search(r"\.unsloth_sync\.lock[|)][^\n]*continue", block), (
         "the lock file lives in $DEST next to the state file and must be excluded "
         "from the managed-file state like the other metadata"
     )
@@ -179,7 +179,7 @@ def test_the_recorded_hash_is_rechecked_immediately_before_publishing(sync: str)
 
 
 def test_a_pristine_pre_existing_file_is_not_rewritten_on_first_boot(sync: str):
-    block = sync[sync.index('if [ ! -f "$STATE" ]; then') :]
+    block = sync[sync.index('if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then') :]
     block = block[: block.index('mv "$STATE.tmp" "$STATE"')]
     assert "kept existing user file" in block
     # A bind-mounted file whose bytes already match the template used to fall

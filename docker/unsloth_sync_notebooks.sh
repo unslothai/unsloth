@@ -32,6 +32,7 @@ REMOTE="${UNSLOTH_NOTEBOOKS_REPO:-https://github.com/unslothai/notebooks}"
 STATE="$DEST/.unsloth_sync_state"     # "sha256  relpath" of what we last wrote
 SYNCED="$DEST/.unsloth_sync_commit"   # upstream commit we last synced to
 LOCK="$DEST/.unsloth_sync.lock"       # serialises this script against itself
+PARTIAL="$DEST/.unsloth_sync_partial" # set when first-boot populate left files behind
 TIMEOUT="${UNSLOTH_NOTEBOOK_FETCH_TIMEOUT:-60}"
 LOCK_WAIT="${UNSLOTH_NOTEBOOK_LOCK_TIMEOUT:-600}"
 
@@ -189,7 +190,7 @@ record_state() {
         rel="${rel#./}"
         case "$rel" in
             .unsloth_sync_state|.unsloth_sync_state.tmp|.unsloth_sync_commit) continue ;;
-            .unsloth_sync.lock) continue ;;
+            .unsloth_sync.lock|.unsloth_sync_partial) continue ;;
         esac
         printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
     done
@@ -197,9 +198,21 @@ record_state() {
 }
 
 # 1) First-boot populate from the baked template (instant, works offline).
-if [ ! -f "$STATE" ]; then
+#
+# Re-runs when the previous populate left files behind. A file whose `cp -a`
+# failed (a destination subdirectory that is momentarily unwritable, a full
+# disk) gets no state entry, so 1b below never restores it, and stamping the
+# sync marker unconditionally told the refresh in 2) that this commit was
+# already synced, so it exited early too and the notebook stayed missing for
+# good. The marker is now left off and this block re-attempted on the next
+# start, which is the offline half of the retry: 2) needs a clone.
+#
+# Process substitution, not a pipeline, so the failure counter survives the
+# loop -- the same reason the refresh loop below reads from one.
+if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     : > "$STATE.tmp" 2>/dev/null || true
-    ( cd "$TEMPLATE" && find . -type f -print0 ) | while IFS= read -r -d '' rel; do
+    populate_failed=0
+    while IFS= read -r -d '' rel; do
         rel="${rel#./}"
         case "$rel" in .unsloth_template_commit) continue ;; esac
         mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
@@ -221,11 +234,20 @@ if [ ! -f "$STATE" ]; then
         fi
         if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
             printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
+        else
+            populate_failed=$((populate_failed + 1))
         fi
-    done
+    done < <(cd "$TEMPLATE" && find . -type f -print0)
     mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"
-    cp -a "$TEMPLATE/.unsloth_template_commit" "$SYNCED" 2>/dev/null || true
-    echo "[unsloth-nb] notebooks ready at $DEST"
+    if [ "$populate_failed" -eq 0 ]; then
+        rm -f "$PARTIAL" 2>/dev/null || true
+        cp -a "$TEMPLATE/.unsloth_template_commit" "$SYNCED" 2>/dev/null || true
+        echo "[unsloth-nb] notebooks ready at $DEST"
+    else
+        : > "$PARTIAL" 2>/dev/null || true
+        rm -f "$SYNCED" 2>/dev/null || true
+        echo "[unsloth-nb] $populate_failed notebook(s) could not be written; leaving the sync marker off so the next start retries"
+    fi
 fi
 
 # 1b) Every-boot OFFLINE restore of deleted notebooks: a file we wrote that the

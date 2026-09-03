@@ -23,6 +23,7 @@ output exactly the way nbconvert does. No kernel, no GPU, no network.
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 import os
@@ -120,3 +121,65 @@ def test_no_staging_files_are_left_behind(runner, monkeypatch, tmp_path, noteboo
     _run(runner, monkeypatch, notebook, out)
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".unsloth-run-")]
     assert not leftovers, leftovers
+
+
+# --- publishing onto a single-file bind mount ---------------------------------
+# `-v $PWD/out.ipynb:/workspace/out.ipynb` makes the destination a mount point.
+# rename(2) onto one returns EBUSY (fs/namei.c refuses to rename over a mounted
+# dentry) even though the file itself is writable, and the cleanup below then
+# deletes the staged result, so a finished run was lost outright. The mount is
+# simulated by raising the errno the kernel raises, because creating a real bind
+# mount needs root and a mount namespace.
+
+
+def _replace_raising(errno_value):
+    def _replace(src, dst):
+        raise OSError(errno_value, os.strerror(errno_value))
+
+    return _replace
+
+
+def test_a_busy_destination_still_gets_the_executed_notebook(
+    runner, monkeypatch, tmp_path, notebook
+):
+    out = tmp_path / "out.ipynb"
+    out.write_text("{}", encoding = "utf-8")
+    os.chmod(out, 0o664)
+    monkeypatch.setattr(runner.os, "replace", _replace_raising(errno.EBUSY))
+
+    _run(runner, monkeypatch, notebook, out)
+
+    assert json.loads(out.read_text(encoding = "utf-8"))["cells"], (
+        "the rename cannot work on a single-file bind mount, but the file itself "
+        "is writable, so the finished notebook must still reach the user"
+    )
+    # Writing through the existing inode is what a bind mount needs, and it also
+    # leaves the destination's own metadata alone.
+    assert _mode(out) == 0o664
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".unsloth-run-")]
+    assert not leftovers, leftovers
+
+
+def test_an_unpublishable_result_is_kept_and_its_location_printed(
+    runner, monkeypatch, tmp_path, notebook, capsys
+):
+    out = tmp_path / "out.ipynb"
+    monkeypatch.setattr(runner.os, "replace", _replace_raising(errno.EBUSY))
+
+    def _no_open(path, mode = "r", *args, **kwargs):
+        if str(path) == str(out) and "w" in mode:
+            raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+        return _real_open(path, mode, *args, **kwargs)
+
+    _real_open = open
+    monkeypatch.setattr(runner.subprocess, "call", _nbconvert_stub)
+    monkeypatch.setattr(runner.sys, "argv", ["unsloth-run", str(notebook), "--out", str(out)])
+    monkeypatch.setitem(runner.__dict__, "open", _no_open)
+
+    with pytest.raises(OSError):
+        runner.main()
+
+    staged = [p for p in tmp_path.iterdir() if p.name.startswith(".unsloth-run-out-")]
+    assert len(staged) == 1, "an executed notebook that cannot be published must be kept"
+    assert json.loads(staged[0].read_text(encoding = "utf-8"))["cells"]
+    assert str(staged[0]) in capsys.readouterr().err

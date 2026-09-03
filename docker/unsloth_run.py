@@ -267,7 +267,33 @@ def main():
         rc = subprocess.call(cmd, env = env)
         if rc == 0 and publish_from is not None:
             _stage_metadata(publish_from, out_path)
-            os.replace(publish_from, out_path)
+            try:
+                os.replace(publish_from, out_path)
+            except OSError:
+                # `-v $PWD/out.ipynb:/workspace/out.ipynb` bind-mounts the OUTPUT
+                # FILE, which makes the destination a mount point, and rename(2)
+                # onto one returns EBUSY even though the file itself is perfectly
+                # writable. The executed notebook is already complete on disk at
+                # this point, so failing here threw away the entire run (the
+                # cleanup below deletes the staging file) for a publish step that
+                # can just as well write through the existing inode -- which is
+                # exactly what such a mount needs, since the host sees the inode,
+                # not the directory entry. Not atomic, unlike the rename, so it is
+                # only the fallback.
+                try:
+                    with open(publish_from, "rb") as staged, open(out_path, "wb") as live:
+                        shutil.copyfileobj(staged, live)
+                except OSError:
+                    # Neither publish worked. Keep the result rather than delete
+                    # it, and say where it is; a notebook run can be hours long.
+                    if publish_from in tmp_files:
+                        tmp_files.remove(publish_from)
+                    print(
+                        f"[unsloth-run] could not publish to {out_path}; "
+                        f"the executed notebook is at {publish_from}",
+                        file = sys.stderr,
+                    )
+                    raise
     finally:
         # Clean up the temp dir and any staging files (already gone when published).
         if tmp_dir is not None:
