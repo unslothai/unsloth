@@ -121,9 +121,7 @@ def normal_install(studio: Path) -> None:
     (venv / "bin").mkdir(parents = True)
     (venv / OWNED).write_text("")
     (studio / "share").mkdir(parents = True, exist_ok = True)
-    (studio / "share" / "studio.conf").write_text(
-        f"UNSLOTH_EXE='{sq(str(venv))}/bin/unsloth'\n"
-    )
+    (studio / "share" / "studio.conf").write_text(f"UNSLOTH_EXE='{sq(str(venv))}/bin/unsloth'\n")
 
 
 def main() -> int:
@@ -171,8 +169,7 @@ def main() -> int:
                 (venv / "bin" / "unsloth").write_text("")
                 (root / "bin" / "unsloth").symlink_to(venv / "bin" / "unsloth")
             normal_install(root / "studio")
-            master_root(f"flat root proved by the {sentinel} sentinel", root / "studio",
-                        None, home)
+            master_root(f"flat root proved by the {sentinel} sentinel", root / "studio", None, home)
 
         print("\n[2] the flat install itself is untouched")
         master_root("the flat root resolves itself", flat, flat, home)
@@ -205,8 +202,9 @@ def main() -> int:
             f"UNSLOTH_EXE='{sq(str(elsewhere))}/bin/unsloth'\n"
         )
         (foreign / MARKER).write_text("")
-        master_root("nested install under sentinels naming another venv",
-                    foreign / "studio", foreign, home)
+        master_root(
+            "nested install under sentinels naming another venv", foreign / "studio", foreign, home
+        )
 
         print("\n[4] an unrelated sibling of a marked root still inherits nothing")
         sibling = tmp / "sibling"
