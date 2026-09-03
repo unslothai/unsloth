@@ -3934,7 +3934,9 @@ def test_a_context_saved_only_as_a_pass_through_flag_is_honoured(monkeypatch):
         lambda *_a: pytest.fail("header window used despite a saved -c flag"),
     )
     assert (
-        inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0", None, "snac")
+        inference_route._target_effective_context_length(
+            "/local/B.gguf", True, "Q8_0", None, "snac"
+        )
         == 2048
     )
     # last-wins, as llama.cpp parses it
@@ -3944,7 +3946,9 @@ def test_a_context_saved_only_as_a_pass_through_flag_is_honoured(monkeypatch):
         lambda *_a: ("k", {"llama_extra_args": ["-c", "4096", "--ctx-size", "1024"]}),
     )
     assert (
-        inference_route._target_effective_context_length("/local/B.gguf", True, "Q8_0", None, "snac")
+        inference_route._target_effective_context_length(
+            "/local/B.gguf", True, "Q8_0", None, "snac"
+        )
         == 1024
     )
 

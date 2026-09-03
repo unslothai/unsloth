@@ -7133,10 +7133,7 @@ def _target_effective_context_length(
             # forwards llama_extra_args untouched and resolve_requested_ctx makes that
             # flag the loader's window. Same parser, so the two read one value.
             from core.inference.llama_server_args import parse_ctx_override
-
-            configured = _positive_int_or_none(
-                parse_ctx_override(override.get("llama_extra_args"))
-            )
+            configured = _positive_int_or_none(parse_ctx_override(override.get("llama_extra_args")))
         if configured is not None:
             return configured
     except Exception as exc:
