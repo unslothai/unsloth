@@ -427,10 +427,8 @@ export function buildTextIndex(
             length += 1;
             separated = true;
             // The far side of a separator standing for dropped text is a boundary only when
-            // neither side reaches the other, which the kept context is chosen to be enough to say.
-            // Only as far as this node will actually be kept: past that there is no offset to
-            // mark, and a node is not bounded by anything a page cannot choose. A model returning
-            // megabytes of one combining mark otherwise bought a `Set` entry per code point of it.
+            // neither side reaches the other. Bounded by what this node actually keeps, since
+            // past that there is no offset to mark and nothing on our side chose its length.
             if (pendingClip !== null) {
               pendingChain = { clip: pendingClip, crossed: "", seen: 0 };
             }
@@ -801,11 +799,9 @@ function markReached(
     chain.seen += 1;
     at += point.length;
   }
-  // Past the window the chain is still followed, but taken rather than read: answering exactly
-  // means carrying the whole run to ask about the next link, which is quadratic on a node that is
-  // nothing but links. Every link is in doubt and so is the one thing beyond it a rule can join,
-  // so both are marked and the walk ends there. Stopping instead left that one findable, and it
-  // is inside the grapheme the cut split.
+  // Past the window the chain is followed but not read: answering exactly means carrying the
+  // whole run to ask about each next link, which is quadratic on a node made of nothing but them.
+  // Every link is in doubt, and so is the one thing beyond it a rule can reach.
   while (at < end) {
     const point = String.fromCodePoint(data.codePointAt(at) as number);
     if (!links(point)) {
@@ -944,14 +940,10 @@ function canonicalSource(needle: string, dotted: boolean): string {
  *  index costs 4ms once and a fraction of a microsecond a question. */
 const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
-/** Every boundary in the index, once the search has asked about enough of them to be worth it.
- *  A seek is right for the handful of offsets an ordinary query reaches, and wrong for one that
- *  matches everywhere.
- *
- *  The threshold is a share of the index rather than a number, because the scan costs a pass over
- *  the whole of it: a flat count is reached by a bounded pass on a big index, which then pays for
- *  the whole document to answer ten thousand questions. Proportional, only a search whose own work
- *  is proportional to the index gets there, which is exactly the one the scan is cheaper than. */
+/** Every boundary in the index, once the search has asked about enough of them to be worth it: a
+ *  seek is right for the offsets an ordinary query reaches and wrong for one that matches
+ *  everywhere. The threshold is a share of the index, not a count, because the scan costs a pass
+ *  over the whole of it and a flat count is reached by a bounded pass on a big enough index. */
 const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
 const seekCounts = new WeakMap<FindTextIndex, number>();
 const SEEKS_BEFORE_SCAN = 4096;
