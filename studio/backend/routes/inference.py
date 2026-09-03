@@ -49,6 +49,7 @@ from urllib.parse import quote as _urlquote
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
+from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import HfTokenArg
@@ -16651,7 +16652,6 @@ _TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
         "minimax_music3",
     )
 )
-_GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
 # NativeAudioBackend._context_length ignores the requested window for these.
 _CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano"))
 # inference.py: load_model raises max_seq_length <= 0 to this before loading.

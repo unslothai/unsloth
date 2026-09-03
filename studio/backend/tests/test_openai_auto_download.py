@@ -1741,6 +1741,19 @@ def test_a_speech_request_does_not_download_a_text_only_model(hub, monkeypatch):
     assert hub["started"] == []
 
 
+def test_a_speech_request_does_not_download_an_unsupported_gguf_codec(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: ("csm", True),
+    )
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/csm-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.status == 400 and refusal.code == "invalid_value"
+    assert "supported text-to-speech GGUF" in refusal.message
+    assert hub["started"] == []
+
+
 def test_a_speech_download_probe_uses_the_caller_identity_and_pinned_revision(hub, monkeypatch):
     seen = []
 

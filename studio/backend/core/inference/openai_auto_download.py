@@ -742,7 +742,7 @@ async def _admit_and_start(
 
     if require_speech:
         from functools import partial
-        from utils.audio_tokens import is_tts_audio_type
+        from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES
         from utils.models.model_config import detect_audio_type_checked
 
         audio_type, definitive = await _bounded_probe(
@@ -766,14 +766,14 @@ async def _admit_and_start(
                 ),
                 retry_after = _RETRY_AFTER_S,
             )
-        if not is_tts_audio_type(audio_type):
+        if audio_type not in GGUF_TTS_AUDIO_TYPES:
             _release(active)
             return AutoDownloadRefusal(
                 status = 400,
                 code = "invalid_value",
                 message = (
-                    f"'{_public_label(repo_id, variant)}' is not a text-to-speech model. "
-                    "It was not downloaded."
+                    f"'{_public_label(repo_id, variant)}' is not a supported "
+                    "text-to-speech GGUF model. It was not downloaded."
                 ),
             )
 

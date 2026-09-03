@@ -35,6 +35,7 @@ VALID_AUDIO_TYPES = (
 
 # Emit speech; a chat turn sent to one comes back as audio, never as text.
 TTS_AUDIO_TYPES = frozenset({"snac", "csm", "bicodec", "dac"})
+GGUF_TTS_AUDIO_TYPES = frozenset({"snac", "bicodec", "dac"})
 OUTPUT_AUDIO_TYPES = TTS_AUDIO_TYPES | NATIVE_OUTPUT_AUDIO_TYPES
 
 

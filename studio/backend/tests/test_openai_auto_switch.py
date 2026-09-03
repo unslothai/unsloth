@@ -9290,12 +9290,18 @@ def _complete_minimax_pipeline(root):
         directory = pipeline / component
         directory.mkdir()
         if component == "scheduler":
-            (directory / "scheduler_config.json").write_text("{}")
+            (directory / "scheduler_config.json").write_text(
+                json.dumps({"_class_name": "Scheduler"})
+            )
         elif component == "tokenizer":
-            (directory / "tokenizer_config.json").write_text("{}")
-            (directory / "tokenizer.json").write_text("{}")
+            (directory / "tokenizer_config.json").write_text(
+                json.dumps({"tokenizer_class": "PreTrainedTokenizerFast"})
+            )
+            (directory / "tokenizer.json").write_text(
+                json.dumps({"model": {"type": "BPE", "vocab": {}, "merges": []}})
+            )
         else:
-            (directory / "config.json").write_text("{}")
+            (directory / "config.json").write_text(json.dumps({"_class_name": "Component"}))
             (directory / "model.safetensors").write_bytes(_safetensors_bytes())
     return pipeline
 
@@ -9329,6 +9335,47 @@ def test_an_incomplete_minimax_pipeline_is_not_switchable(tmp_path, monkeypatch)
     monkeypatch.setattr(resolver, "_host_can_serve_minimax_music3", lambda: True)
     info = SimpleNamespace(id = "MiniMaxAI/MiniMax-Music3", path = str(pipeline))
     assert resolver.local_servable_model(info) is None
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "payload"),
+    (
+        ("language_model/config.json", ""),
+        ("condition_encoder/config.json", "{"),
+        ("rvq_depth_decoder/config.json", "[]"),
+        ("transformer/config.json", "{}"),
+        ("scheduler/scheduler_config.json", "{}"),
+        ("tokenizer/tokenizer_config.json", "[]"),
+        ("tokenizer/tokenizer.json", "not-json"),
+    ),
+)
+def test_invalid_minimax_component_metadata_is_not_switchable(
+    tmp_path, relative_path, payload
+):
+    from core.inference import native_audio
+
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    (pipeline / relative_path).write_text(payload)
+    assert native_audio.minimax_music3_local_components_complete(pipeline) is False
+
+
+def test_a_realistically_large_minimax_tokenizer_is_switchable(tmp_path):
+    from core.inference import native_audio
+
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    tokenizer = pipeline / "tokenizer" / "tokenizer.json"
+    tokenizer.write_text(json.dumps({"model": {}, "padding": "x" * (2 * 1024 * 1024)}))
+    assert native_audio.minimax_music3_local_components_complete(pipeline) is True
+
+
+def test_an_oversized_minimax_tokenizer_is_not_switchable(tmp_path, monkeypatch):
+    from core.inference import native_audio
+
+    pipeline = _complete_minimax_pipeline(tmp_path)
+    tokenizer = pipeline / "tokenizer" / "tokenizer.json"
+    tokenizer.write_text(json.dumps({"model": {}, "padding": "x" * 128}))
+    monkeypatch.setattr(native_audio, "_MAX_MINIMAX_TOKENIZER_BYTES", 64)
+    assert native_audio.minimax_music3_local_components_complete(pipeline) is False
 
 
 def test_a_minimax_pipeline_with_a_missing_weight_shard_is_not_switchable(tmp_path, monkeypatch):

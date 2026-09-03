@@ -106,6 +106,7 @@ _MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
 _MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
 _MOSS_NANO_SAVE_LOCK = threading.Lock()
 _MAX_AUDIO_METADATA_BYTES = 1_000_000
+_MAX_MINIMAX_TOKENIZER_BYTES = 32 * 1024 * 1024
 
 
 def _minimax_component_has_weights(directory: Path) -> bool:
@@ -184,16 +185,24 @@ def minimax_music3_local_components_complete(model_path) -> bool:
                 return False
             directory = root / component
             if component in weighted:
-                if not (directory / "config.json").is_file():
+                if not _read_local_audio_metadata(
+                    directory, "config.json", reject_oversized = True
+                ):
                     return False
                 if not _minimax_component_has_weights(directory):
                     return False
             elif component == "scheduler":
-                if not (directory / "scheduler_config.json").is_file():
+                if not _read_local_audio_metadata(
+                    directory, "scheduler_config.json", reject_oversized = True
+                ):
                     return False
-            elif not (
-                (directory / "tokenizer_config.json").is_file()
-                and (directory / "tokenizer.json").is_file()
+            elif not _read_local_audio_metadata(
+                directory, "tokenizer_config.json", reject_oversized = True
+            ) or not _read_local_audio_metadata(
+                directory,
+                "tokenizer.json",
+                reject_oversized = True,
+                max_bytes = _MAX_MINIMAX_TOKENIZER_BYTES,
             ):
                 return False
         return True
@@ -210,16 +219,17 @@ def _read_local_audio_metadata(
     filename: str,
     *,
     reject_oversized: bool = False,
+    max_bytes: int = _MAX_AUDIO_METADATA_BYTES,
 ) -> dict[str, Any]:
     metadata_path = path / filename
     if not metadata_path.is_file():
         return {}
     with metadata_path.open("rb") as handle:
-        raw = handle.read(_MAX_AUDIO_METADATA_BYTES + 1)
-    if len(raw) > _MAX_AUDIO_METADATA_BYTES:
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         if reject_oversized:
             raise _AudioMetadataTooLarge(
-                f"{filename} exceeds the {_MAX_AUDIO_METADATA_BYTES}-byte security inspection limit."
+                f"{filename} exceeds the {max_bytes}-byte security inspection limit."
             )
         return {}
     value = json.loads(raw.decode("utf-8-sig"))
