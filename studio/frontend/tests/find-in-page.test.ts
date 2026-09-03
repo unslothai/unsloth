@@ -2259,6 +2259,28 @@ test("the chain a cut leaves is followed past the seam, not only to it", () => {
   assert.equal(findMatches(index, "a", MAX_MATCHES).length > 0, true);
 });
 
+test("the work a cut costs is bounded by the index, not by the node", () => {
+  // A node is as long as whatever produced it chose to make it, and only MAX_NODE_CHARS of one
+  // enters the index. Following the chain over the whole of it bought a set entry per code point
+  // of text that is not indexed at all, so megabytes of one combining mark from a model became
+  // seconds of frozen tab and hundreds of megabytes held.
+  const build = (run: number) =>
+    buildTextIndex(
+      el("DIV", [
+        el("P", [
+          text("a".repeat(MAX_NODE_CHARS - 1) + "क्"),
+          text("́".repeat(run)),
+        ]),
+      ]),
+    );
+  const small = build(MAX_NODE_CHARS * 2);
+  const large = build(MAX_NODE_CHARS * 20);
+  // Same index either way, so the same amount recorded about it.
+  assert.equal(small.text.length, large.text.length);
+  assert.equal(small.unsafe.size, large.unsafe.size);
+  assert.equal(large.unsafe.size <= MAX_NODE_CHARS + 2, true);
+});
+
 test("the chain a cut leaves is followed however long it runs", () => {
   // Following it only as far as the backward window reaches was the wrong shape for the forward
   // direction: the text ahead is in hand, so the run can be as long as it likes. A sibling of 32

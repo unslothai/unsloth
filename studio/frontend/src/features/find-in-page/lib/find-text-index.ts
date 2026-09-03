@@ -348,8 +348,12 @@ export function buildTextIndex(
             separated = true;
             // The far side of a separator standing for dropped text is a boundary only when
             // neither side reaches the other, which the kept context is chosen to be enough to say.
+            // Only as far as this node will actually be kept: past that there is no offset to
+            // mark, and a node is not bounded by anything a page cannot choose. A model returning
+            // megabytes of one combining mark otherwise bought a `Set` entry per code point of it.
             if (pendingClip !== null) {
-              markReached(pendingClip, data, length, unsafe);
+              const kept = Math.min(ceiling - length, MAX_NODE_CHARS);
+              markReached(pendingClip, data, length, unsafe, kept);
             }
             // Parity is what makes a regional indicator pair, and it is counted from the
             // separator, so an odd run left behind takes the next indicator with it and displaces
@@ -696,10 +700,12 @@ function markReached(
   data: string,
   from: number,
   unsafe: Set<number>,
+  kept: number,
 ): void {
+  const end = Math.min(data.length, Math.max(kept, 0));
   let crossed = "";
   let at = 0;
-  for (let seen = 0; at < data.length && seen < CHAIN_AHEAD_LIMIT; seen += 1) {
+  for (let seen = 0; at < end && seen < CHAIN_AHEAD_LIMIT; seen += 1) {
     const point = String.fromCodePoint(data.codePointAt(at) as number);
     if (!reaches(clip, point, crossed)) return;
     unsafe.add(from + at);
@@ -711,7 +717,7 @@ function markReached(
   // nothing but links. Every link is in doubt and so is the one thing beyond it a rule can join,
   // so both are marked and the walk ends there. Stopping instead left that one findable, and it
   // is inside the grapheme the cut split.
-  while (at < data.length) {
+  while (at < end) {
     const point = String.fromCodePoint(data.codePointAt(at) as number);
     unsafe.add(from + at);
     at += point.length;
