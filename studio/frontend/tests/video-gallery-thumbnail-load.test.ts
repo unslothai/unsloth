@@ -6,7 +6,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ThumbnailRequestQueue } from "../src/features/video/thumbnail-request-queue.ts";
+import {
+  ThumbnailRequestQueue,
+  withThumbnailRetries,
+} from "../src/features/video/thumbnail-request-queue.ts";
 
 const BROKEN_POSTER = /broken poster/;
 
@@ -111,6 +114,51 @@ test("a failed poster request releases its queue slot", async () => {
   assert.deepEqual(seen, ["failed", "recovered"]);
 });
 
+test("a poster request that blinked is retried before the clip is called undecodable", async () => {
+  let calls = 0;
+  const poster = await withThumbnailRetries(
+    () =>
+      calls++ < 2
+        ? Promise.reject(new Error("broken poster"))
+        : Promise.resolve("poster"),
+    2,
+    0,
+  );
+
+  assert.equal(poster, "poster");
+  assert.equal(calls, 3);
+});
+
+test("a poster request that keeps failing gives up so the tile stops asking", async () => {
+  let calls = 0;
+  const attempt = withThumbnailRetries(
+    () => {
+      calls += 1;
+      return Promise.reject(new Error("broken poster"));
+    },
+    2,
+    0,
+  );
+
+  await assert.rejects(attempt, BROKEN_POSTER);
+  assert.equal(calls, 3);
+});
+
+test("only an exhausted poster request marks a clip undecodable", () => {
+  const page = source("../src/features/video/video-page.tsx");
+  const ensure = between(
+    page,
+    "const ensureThumbnail = useCallback(",
+    "// A media error on a playing clip",
+  );
+
+  assert.ok(ensure.includes("withThumbnailRetries(() =>"));
+  assert.match(
+    ensure,
+    /withThumbnailRetries\(\(\) =>[\s\S]*?\} catch \{\s*\n\s*galleryCache\.thumbnailFailed\.add\(video\.id\);/,
+  );
+});
+
 test("video posters are fetched through the authenticated thumbnail route", () => {
   const api = source("../src/features/video/api.ts");
   const page = source("../src/features/video/video-page.tsx");
@@ -123,7 +171,7 @@ test("video posters are fetched through the authenticated thumbnail route", () =
   assert.ok(helper.includes("authFetch("));
   assert.ok(helper.includes("/content?variant=thumbnail`"));
   assert.ok(helper.includes("URL.createObjectURL(blob)"));
-  assert.ok(page.includes("await videoThumbnailQueue.run(() =>"));
+  assert.ok(page.includes("videoThumbnailQueue.run(() =>"));
   assert.ok(page.includes("galleryCache.epoch !== epochAtStart"));
 });
 

@@ -57,3 +57,30 @@ export class ThumbnailRequestQueue {
 }
 
 export const videoThumbnailQueue = new ThumbnailRequestQueue();
+
+// Same policy the archived view applies to its rows: a backend that blinked must not leave a
+// perfectly decodable clip on the undecodable marker for the rest of the session, and a clip that
+// really cannot be decoded must stop asking.
+export const VIDEO_THUMBNAIL_RETRY_LIMIT = 2;
+export const VIDEO_THUMBNAIL_RETRY_DELAY_MS = 750;
+
+/** Run ``attempt`` until it resolves, retrying a rejection with a linear backoff. Rethrows the last
+ * error once the retries are spent, which is the only outcome the caller may treat as permanent. */
+export async function withThumbnailRetries<T>(
+  attempt: () => Promise<T>,
+  limit = VIDEO_THUMBNAIL_RETRY_LIMIT,
+  delayMs = VIDEO_THUMBNAIL_RETRY_DELAY_MS,
+): Promise<T> {
+  for (let tries = 0; ; tries += 1) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (tries >= limit) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, delayMs * (tries + 1)),
+      );
+    }
+  }
+}

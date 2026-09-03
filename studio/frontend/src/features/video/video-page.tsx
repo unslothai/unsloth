@@ -177,7 +177,7 @@ import {
   loadVideoModel,
   unloadVideoModel,
 } from "./api";
-import { videoThumbnailQueue } from "./thumbnail-request-queue";
+import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts as data (HunyuanVideo carries both repacks), and the load kind per artifact via loadSpecFor.
 // The picker renders groups with a format second level, which also surfaces LTX-2.3 in Recommended (its HF pipeline_tag is image-to-video).
@@ -1551,18 +1551,20 @@ function VideoGenerator({
     const existing = galleryCache.thumbnailInflight.get(video.id);
     if (existing) return existing;
     const epochAtStart = galleryCache.epoch;
+    // Deletion and clear can happen while this request is queued or backing off. Skip the decoder
+    // entirely once its result no longer has a gallery record to attach to.
+    const stale = () => galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart;
     const request = (async () => {
       try {
-        const fetched = await videoThumbnailQueue.run(() => {
-          // Deletion and clear can happen while this request is waiting for a slot. Skip the
-          // decoder entirely once its result no longer has a gallery record to attach to.
-          if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) {
-            return Promise.resolve(null);
-          }
-          return fetchGalleryVideoThumbnail(video.id);
-        });
+        // Retried, because the marker below is permanent for the session: without this a single
+        // connection blip would leave a decodable clip on the undecodable icon until a reload.
+        const fetched = await withThumbnailRetries(() =>
+          videoThumbnailQueue.run(() =>
+            stale() ? Promise.resolve(null) : fetchGalleryVideoThumbnail(video.id),
+          ),
+        );
         if (!fetched) return false;
-        if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) {
+        if (stale()) {
           URL.revokeObjectURL(fetched.url);
           return false;
         }
