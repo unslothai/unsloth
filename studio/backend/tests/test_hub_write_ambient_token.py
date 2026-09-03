@@ -964,10 +964,10 @@ def test_cancelling_an_export_discards_the_token_store():
 @pytest.mark.parametrize(
     "denies,token,allowed",
     [
-        (False, False, True),          # public, anonymous
-        (True, False, False),          # gated or private, anonymous
-        (False, "hf_caller", True),    # the caller's token can read it
-        (True, "hf_caller", False),    # a token is not access: it lacks the grant
+        (False, False, True),  # public, anonymous
+        (True, False, False),  # gated or private, anonymous
+        (False, "hf_caller", True),  # the caller's token can read it
+        (True, "hf_caller", False),  # a token is not access: it lacks the grant
     ],
 )
 def test_access_check_asks_whether_this_credential_can_read_the_repo(
@@ -979,7 +979,11 @@ def test_access_check_asks_whether_this_credential_can_read_the_repo(
 
     asked = {}
 
-    def _auth_check(repo_id, token = None, **kw):
+    def _auth_check(
+        repo_id,
+        token = None,
+        **kw,
+    ):
         asked["repo"] = repo_id
         asked["token"] = token
         if denies:
@@ -1021,7 +1025,12 @@ def test_a_remote_adapters_base_is_authorized_too(monkeypatch):
 
     checked = []
 
-    def _check(repo, offline, tok = False, revision = None):
+    def _check(
+        repo,
+        offline,
+        tok = False,
+        revision = None,
+    ):
         checked.append(repo)
         return (repo != "owner/private-base", "refused")
 
@@ -1176,7 +1185,9 @@ def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_
     monkeypatch.setattr(
         export_backend_module,
         "_access_allowed",
-        lambda repo, offline, tok = False, revision = None: (checked.append(repo), (False, "refused"))[1],
+        lambda repo, offline, tok = False, revision = None: (checked.append(repo), (False, "refused"))[
+            1
+        ],
     )
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
@@ -1236,7 +1247,9 @@ def test_a_local_adapters_remote_base_is_authorized(monkeypatch, tmp_path):
     monkeypatch.setattr(
         export_backend_module,
         "_access_allowed",
-        lambda repo, offline, tok = False, revision = None: (checked.append(repo), (False, "refused"))[1],
+        lambda repo, offline, tok = False, revision = None: (checked.append(repo), (False, "refused"))[
+            1
+        ],
     )
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)

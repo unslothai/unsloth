@@ -84,10 +84,7 @@ def _looks_like_remote_adapter(checkpoint_path: str, token: HfTokenArg) -> bool:
         return False
     try:
         from utils.hf_probe import hf_file_definitely_absent
-
-        return not hf_file_definitely_absent(
-            checkpoint_path, "adapter_config.json", token = token
-        )
+        return not hf_file_definitely_absent(checkpoint_path, "adapter_config.json", token = token)
     except Exception:
         return True
 
@@ -165,7 +162,6 @@ def _access_allowed(
         )
     try:
         from huggingface_hub import auth_check
-
         auth_check(repo_id, token = token)
     except Exception as exc:
         logger.info("Access check refused '%s': %s", repo_id, exc)
@@ -661,9 +657,7 @@ class ExportBackend:
                 # generator, so it resolves the base during iteration, not up front.
                 try:
                     for target, revision in _remote_load_targets(checkpoint_path, token):
-                        allowed, why = _access_allowed(
-                            target, local_files_only, token, revision
-                        )
+                        allowed, why = _access_allowed(target, local_files_only, token, revision)
                         if not allowed:
                             return False, why
                 except _BaseUnresolved:
