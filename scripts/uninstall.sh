@@ -46,12 +46,17 @@ removal.
 Environment:
   UNSLOTH_HOME              Also remove this portable install root, the one
                             passed to install.sh --root. Covers the caches and
-                            native runtimes beside the Studio install.
+                            native runtimes beside the Studio install. Wins over
+                            the two below, as it does in install.sh.
   UNSLOTH_STUDIO_HOME       Also remove this custom install root. Pass the value
                             used at install time.
   STUDIO_HOME               Alias for the above, ignored when both are set.
   UNSLOTH_UNINSTALL_ROCM=1  Also remove system ROCm (WSL only). Off by default
                             because ROCm is a shared prerequisite.
+
+Only the first of the three root variables that is set is removed. Each names a
+whole install, so a stale one left over in the environment would otherwise take
+another install's chat history with it.
 EOF
 }
 
@@ -483,14 +488,23 @@ _custom_studio_roots() {
             _emit "$_master"
         fi
     }
-    # Mirror install.sh's precedence: master root, then UNSLOTH_STUDIO_HOME,
-    # then STUDIO_HOME (ignored when both are set). Otherwise uninstalling
-    # install A could delete install B if STUDIO_HOME is left over from B.
+    # Mirror install.sh's precedence: the master root, else UNSLOTH_STUDIO_HOME,
+    # else STUDIO_HOME. One branch, not three, because each name is a whole install:
+    # uninstalling A could otherwise delete B when B's variable is left over in the
+    # environment. install.sh really does take UNSLOTH_HOME alone -- it seeds
+    # _UNSLOTH_ROOT from it, that turns portable mode on, and _resolve_studio_destinations
+    # then derives STUDIO_HOME from the root without reading UNSLOTH_STUDIO_HOME -- so
+    # with both exported nothing was installed at UNSLOTH_STUDIO_HOME by this environment
+    # and a real install found there belongs to someone else. The backend disagrees on
+    # purpose (storage_roots.studio_root prefers UNSLOTH_STUDIO_HOME, and warns that such
+    # an install "is not self-contained"), and an irreversible rm -rf is where the
+    # narrower reading wins: a spare directory is recoverable, a deleted studio.db is not.
+    # Nothing is stranded either way, since the studio root of the install being removed
+    # comes from the master root's own studio.conf just above.
     if [ -n "${UNSLOTH_HOME:-}" ]; then
         _emit "$UNSLOTH_HOME"
         _from_conf "$UNSLOTH_HOME/share/studio.conf"
-    fi
-    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
+    elif [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
         _emit "$UNSLOTH_STUDIO_HOME"
         _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
     elif [ -n "${STUDIO_HOME:-}" ]; then
