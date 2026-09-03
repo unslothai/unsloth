@@ -133,8 +133,11 @@ def test_deliberately_hidden_gpu_is_not_a_broken_build(helper, monkeypatch, mask
     assert calls == []
 
 
-@pytest.mark.parametrize("mask", ["0", "0,1", "GPU-fake-uuid"])
-def test_a_mask_that_still_shows_a_device_keeps_the_hint(helper, monkeypatch, mask):
+@pytest.mark.parametrize("mask", ["0", "0,1", "1", "GPU-fake-uuid"])
+def test_a_partial_mask_keeps_the_hint_but_names_itself(helper, monkeypatch, mask):
+    """`1` on a single-GPU host and a stale UUID also expose zero devices, and no reinstall
+    fixes that. Ruling it out needs CUDA's left-to-right parse, so the message says which
+    mask is set rather than guessing whether it resolves."""
     _smi(monkeypatch)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
 
@@ -142,6 +145,16 @@ def test_a_mask_that_still_shows_a_device_keeps_the_hint(helper, monkeypatch, ma
         helper(NotImplementedError(_NO_ACCELERATOR))
 
     assert "NVIDIA GB10" in str(excinfo.value)
+    assert f"CUDA_VISIBLE_DEVICES is set to {mask!r}" in str(excinfo.value)
+
+
+def test_no_mask_note_when_the_variable_is_unset(helper, monkeypatch):
+    _smi(monkeypatch)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        helper(NotImplementedError(_NO_ACCELERATOR))
+
+    assert "CUDA_VISIBLE_DEVICES" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize(

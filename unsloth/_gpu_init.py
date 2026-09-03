@@ -197,6 +197,18 @@ def _reraise_device_type_error_with_gpu_hint(exception):
         torch_cuda_build = getattr(getattr(_torch, "version", None), "cuda", None) or "unknown"
     except Exception:
         torch_cuda_build = "unknown"
+    # A mask can select nothing without being "" or -1: CUDA reads CUDA_VISIBLE_DEVICES
+    # left to right and drops everything from the first invalid entry on, so `1` on a
+    # single-GPU host, or a stale UUID, exposes zero devices while nvidia-smi still lists
+    # the card. Proving that from here means enumerating devices and reimplementing that
+    # parse, so name the mask instead and let the user rule it out.
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    mask_note = ""
+    if mask is not None:
+        mask_note = (
+            f"Note: CUDA_VISIBLE_DEVICES is set to {mask!r}. If that mask selects no "
+            f"installed GPU, it alone explains this and no torch reinstall will help.\n"
+        )
     # Recommend all three wheels and the installer, not a lone `pip install torch`: pip
     # leaves an already-installed torchvision/torchaudio behind, and the very next import
     # dies in torchvision_compatibility_check(). "Newest cuXXX" is wrong advice too --
@@ -207,6 +219,7 @@ def _reraise_device_type_error_with_gpu_hint(exception):
         f"This usually means the installed PyTorch does not match the system's CUDA driver "
         f"or platform, which is common on DGX Spark GB10 and other aarch64 hosts.\n"
         f"PyTorch was compiled with CUDA: {torch_cuda_build}.\n"
+        f"{mask_note}"
         f"Fix: rerun install.sh, which picks a CUDA wheel family this GPU can run and "
         f"reinstalls torchvision and torchaudio to match. By hand, replace all three "
         f"together:\n"
