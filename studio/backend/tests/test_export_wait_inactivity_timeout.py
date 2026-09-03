@@ -29,27 +29,38 @@ _utils_pkg = types.ModuleType("utils")
 _utils_pkg.__path__ = []
 _utils_paths_stub = types.ModuleType("utils.paths")
 _utils_paths_stub.outputs_root = lambda: Path("/tmp")
+_utils_tv_stub = types.ModuleType("utils.transformers_version")
+_utils_tv_stub.sidecar_swap_in_progress = lambda: False
+_utils_tv_stub.SidecarSwapInProgress = type("SidecarSwapInProgress", (RuntimeError,), {})
 sys.modules.setdefault("utils", _utils_pkg)
 sys.modules.setdefault("utils.paths", _utils_paths_stub)
+sys.modules.setdefault("utils.transformers_version", _utils_tv_stub)
 
 
 TIMEOUT = 10.0
+ONE_HOUR = 3600.0
 READ_SECONDS = 4.0
 
 
 @pytest.fixture
 def waiting_orchestrator(monkeypatch):
     """(orchestrator, clock, script) on a fake clock; a read past the end of *script* is a quiet one."""
+    import time as real_time
+
     from core.export import orchestrator as orchestrator_module
 
     clock = types.SimpleNamespace(now = 0.0)
-    monkeypatch.setattr(orchestrator_module.time, "monotonic", lambda: clock.now)
+    # Swap the module reference, not `time.monotonic` itself: patching the attribute would hand the
+    # frozen clock to every other thread in the process for the length of the test.
+    fake_time = types.SimpleNamespace(monotonic = lambda: clock.now, time = real_time.time)
+    monkeypatch.setattr(orchestrator_module, "time", fake_time)
 
     orch = orchestrator_module.ExportOrchestrator()
     script: list = []
 
     def fake_read(timeout = None):
-        clock.now += READ_SECONDS
+        # A real read blocks for at most the timeout it was given, so charge the clock the same.
+        clock.now += min(READ_SECONDS, timeout) if timeout is not None else READ_SECONDS
         return script.pop(0) if script else None
 
     monkeypatch.setattr(orch, "_read_resp", fake_read)
@@ -91,3 +102,24 @@ def test_a_quiet_worker_still_times_out(waiting_orchestrator) -> None:
         orch._wait_response("export_merged_done", timeout = TIMEOUT)
 
     assert clock.now < TIMEOUT * 2, "a quiet wait must end near the timeout, not run on"
+
+
+def test_the_export_wait_is_not_given_a_longer_leash_for_more_quants(monkeypatch) -> None:
+    """Silence is silence: a 12-quant list may not go quiet 12x longer than a single one."""
+    from core.export import orchestrator as orchestrator_module
+
+    seen: list = []
+
+    def record(expected_type, timeout = None):
+        seen.append(timeout)
+        return {"success": True, "message": "", "output_path": None}
+
+    orch = orchestrator_module.ExportOrchestrator()
+    monkeypatch.setattr(orch, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orch, "_send_cmd", lambda cmd: None)
+    monkeypatch.setattr(orch, "_wait_response", record)
+
+    orch._run_export("gguf", {"quantization_method": "Q4_K_M"})
+    orch._run_export("gguf", {"quantization_method": ["Q4_K_M"] * 12})
+
+    assert seen == [ONE_HOUR, ONE_HOUR], seen

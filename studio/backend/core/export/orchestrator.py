@@ -31,6 +31,10 @@ _CTX = mp.get_context("spawn")
 # Max log lines kept per orchestrator (live log panel scrollback); ~1 MB worst-case.
 _LOG_BUFFER_MAXLEN = 4000
 
+# How long an export op may go without a single log or status line before the worker is treated as
+# dead. Not how long an export may run: a reporting worker resets it on every line.
+_EXPORT_INACTIVITY_TIMEOUT = 3600.0
+
 
 class ExportOrchestrator:
     """
@@ -636,13 +640,13 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
-                    # GGUF for a 30B+ model can take 30+ min per quant, and a multi-quant list runs every quant in one
-                    # op off a single merge, so scale the timeout by quant count.
-                    _qm = params.get("quantization_method")
-                    _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
+                    # Flat, and not scaled by quant count: the wait is an inactivity limit, so it
+                    # bounds how long the worker may say NOTHING, not how long the export may take.
+                    # A 12-quant list reports throughout and is not on a longer leash than a single
+                    # one; an hour of total silence is a dead worker either way.
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600 * max(1, _n),
+                        timeout = _EXPORT_INACTIVITY_TIMEOUT,
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")
