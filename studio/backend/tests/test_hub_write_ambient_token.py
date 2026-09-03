@@ -1285,7 +1285,9 @@ def test_a_failed_load_retires_the_worker_and_its_token_store(monkeypatch):
     shut = {}
 
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
-    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: shut.setdefault("store", cfg["hf_token_store"]))
+    monkeypatch.setattr(
+        o, "_spawn_subprocess", lambda cfg: shut.setdefault("store", cfg["hf_token_store"])
+    )
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: None)
     monkeypatch.setattr(
         o, "_wait_response", lambda *a, **kw: {"success": False, "message": "OOM during load"}
