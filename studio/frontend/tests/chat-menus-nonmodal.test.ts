@@ -65,16 +65,27 @@ function enclosingMenuRoot(
 for (const [file, marker] of NON_MODAL) {
   test(`${file}: the menu at ${marker} is non-modal`, () => {
     const source = parse(file);
-    const at = source.text.indexOf(marker);
-    assert.ok(at > 0, "marker not found; the menu moved or was renamed");
-    const root = enclosingMenuRoot(source, at);
-    assert.ok(root, `no menu root encloses ${marker}`);
-    assert.equal(
-      root,
-      "NonModalDropdownMenu",
-      `this trigger sits inside <${root}>; a modal menu locks body scroll and ` +
-        "aria-hides the document on every open",
+    // Every occurrence, not just the first: a second copy of the same trigger is exactly how
+    // one of these menus drifts back onto the modal layer unnoticed.
+    const positions: number[] = [];
+    for (let at = source.text.indexOf(marker); at !== -1; ) {
+      positions.push(at);
+      at = source.text.indexOf(marker, at + marker.length);
+    }
+    assert.ok(
+      positions.length > 0,
+      "marker not found; the menu moved or was renamed",
     );
+    for (const at of positions) {
+      const root = enclosingMenuRoot(source, at);
+      assert.ok(root, `no menu root encloses ${marker}`);
+      assert.equal(
+        root,
+        "NonModalDropdownMenu",
+        `this trigger sits inside <${root}>; a modal menu locks body scroll and ` +
+          "aria-hides the document on every open",
+      );
+    }
   });
 }
 
