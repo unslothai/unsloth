@@ -311,6 +311,49 @@ R="$(new_root)"; mkdir -p "$R/unsloth_studio/lib"; : > "$R/unsloth_studio/marker
 check "an unowned populated venv nests"       "false $R/studio" "$(layout "$R")"
 check "an unowned populated venv is accepted" ok                "$(guard_verdict "$R")"
 
+# ── 4. The third user of the same four tests, pinned to the other two textually ───────────
+# _clear_stale_portable_marker asks the same question of the PARENT before retiring a marker
+# one level up: a parent that owns a venv directly is a FLAT install of its own, so the marker
+# beside it is its own and deleting it de-portables a tree this run was never installing.
+# install.sh keeps these tests inline on purpose (each block is lifted out and run standalone
+# by tests here, where a helper defined elsewhere would go silently inert), so the copies are
+# held together textually instead: same tests, same order, same shapes, differing only in
+# which root and which venv variable they are asked about. A rewrite that weakens one copy
+# alone fails here.
+own_tests() { # block
+    printf '%s\n' "$1" \
+        | awk '/_flat_exe=\$\(printf/ {g = 1} g {print} g && /^[[:space:]]*fi$/ {exit}' \
+        | sed -e 's/_resolved_root/_R_/g' -e 's/_spm_parent/_R_/g' \
+              -e 's/_rsd_flat_/_F_/g' -e 's/_spmp_flat_/_F_/g' \
+        | tr -s ' \t\n' ' '
+}
+CLEAR="$(blk '/^_clear_stale_portable_marker\(\) \{$/ {grab=1} grab {print} grab && /^\}$/ {exit}')"
+[ -n "$CLEAR" ] || { echo "FAIL: extracted an empty _clear_stale_portable_marker"; exit 1; }
+# One anchor per block, or the range above lifts whichever copy comes first and the parity
+# below compares a block against itself.
+for _blk_name in RESOLVE CLEAR; do
+    eval "_bb=\$$_blk_name"
+    _anchors=$(printf '%s\n' "$_bb" | grep -c '_flat_exe=\$(printf' || true)
+    [ "$_anchors" -eq 1 ] \
+        || { echo "FAIL: $_blk_name holds $_anchors ownership-test anchors, expected exactly 1"; exit 1; }
+done
+_own_resolve="$(own_tests "$RESOLVE")"
+_own_clear="$(own_tests "$CLEAR")"
+case "$_own_resolve" in *'.unsloth-studio-owned'*) : ;;
+    *) echo "FAIL: the resolver's ownership tests did not extract"; exit 1 ;; esac
+case "$_own_clear" in *'.unsloth-studio-owned'*) : ;;
+    *) echo "FAIL: the parent-scope ownership tests did not extract"; exit 1 ;; esac
+check "the parent-scope copy runs the same four ownership tests" "$_own_resolve" "$_own_clear"
+# ...and does NOT carry the selector's already-nested exclusion. A flat parent with a separate
+# install under studio/ is exactly the shape this case has, so excluding on it would answer
+# "not flat" for the wrong reason and delete the neighbour's marker again.
+case "$CLEAR" in
+    *'if [ -d "$_spmp_flat_venv" ]; then'*)
+        check "the parent-scope copy asks only whether the parent owns a venv" yes yes ;;
+    *)
+        check "the parent-scope copy asks only whether the parent owns a venv" yes no ;;
+esac
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
