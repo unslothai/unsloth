@@ -45,7 +45,7 @@ SnapshotExpectedFilesResolver = Callable[
 # Supplied per repo kind, so this module keeps knowing nothing about quant labels.
 VariantFileMatcher = Callable[[str], bool]
 
-# One progress log per 10% step per job, so an active download reports progress
+# One progress log per 10% step per job, so an active download reports progress without emitting a line on every poll.
 _progress_step_lock = threading.Lock()
 _last_progress_step: dict[str, int] = {}
 
