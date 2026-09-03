@@ -554,6 +554,141 @@ def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeyp
     assert "add_generation_prompt" not in replayed
 
 
+def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypatch):
+    """The recovery's OWN admission evicts too, and the request is the latest user group.
+
+    So the eviction that admits the recovery could drop the question and the progress note
+    and send the "answer now" request by itself, a prompt with neither the task nor the
+    answer in it. The refit then rebuilt around what survived and put the request straight
+    after the question, two adjacent user turns, which is the pairing
+    `truncate_oldest_messages` splices an assistant turn into elsewhere because strict
+    templates reject it. Nothing droppable now means the recovery is declined and the
+    partial stays on screen.
+    """
+
+    question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in messages
+        )
+        // 2,
+    )
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Squeezed once the continuation is away, so the recovery that follows has to
+            # evict to be admitted at all.
+            backend._effective_context_length = 320
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": "PREFILL_MARKER here is the start: "},
+            ],
+            tools = [],
+            max_tool_iterations = 0,
+            continue_final_message = True,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert calls["n"] == 2, "a recovery that cannot carry its question was sent anyway"
+    for payload in payloads:
+        roles = [message["role"] for message in payload["messages"]]
+        assert not any(
+            roles[index] == roles[index + 1] == "user" for index in range(len(roles) - 1)
+        ), f"adjacent user turns in {roles}"
+        assert json.dumps(payload["messages"]).count("QUESTION_MARKER") == 1
+    # The answer the first attempt produced is what the user keeps.
+    assert "ctx.arc(6, -5, 5, 0" in "".join(_texts(events, "content"))
+
+
+def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
+    """Protecting the recovered turn must not protect the whole history with it.
+
+    The counterpart to the test above: only the question and what answers it are held
+    back, so a recovery that just needs an older exchange dropped still goes out.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [_sse({"reasoning_content": "Let me reconsider. " * 40}), _finish("length"), _done()],
+            [_sse({"content": "and the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in messages
+        )
+        // 2,
+    )
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Room for the question, the progress note and the request, but not for the
+            # older exchange as well.
+            backend._effective_context_length = 1800
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "OLD_MARKER what is the weather " + "w" * 3000},
+                {"role": "assistant", "content": "it is sunny " + "s" * 3000},
+                {"role": "user", "content": "QUESTION_MARKER draw the bird"},
+            ],
+            tools = [],
+            max_tool_iterations = 0,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert calls["n"] == 3, "the recovery was refused instead of dropping the old exchange"
+    recovery = json.dumps(payloads[-1]["messages"])
+    assert "OLD_MARKER" not in recovery, "the older exchange was held back too"
+    assert "QUESTION_MARKER" in recovery
+
+
 def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch):
     """The synthetic request is the latest user group, so the real one is evictable.
 

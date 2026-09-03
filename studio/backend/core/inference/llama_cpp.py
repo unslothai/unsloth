@@ -31648,15 +31648,26 @@ class LlamaCppBackend:
         _refit_tail: list = []
         _refit_tail_merged = False
 
-        def _record_refit_tail(committed: list, added: int, merged: bool) -> None:
-            """Take the *added* newest messages of *committed* onto the refit tail.
+        def _record_refit_tail(committed: list, appended: list, merged: bool) -> None:
+            """Take the messages this site *appended* onto the refit tail.
 
             Only the committing site knows whether `append_assistant_turn` merged its
             message into the turn the list already ended on, and a merged one REPLACES
             what it absorbed. `_refit_tail_merged` says that of the FIRST message only.
+
+            By identity, not position: an admission eviction can drop what was appended,
+            and a positional slice then records surviving CONVERSATION turns as tail, so
+            the refit replayed them a second time beside the copies it rebuilt.
             """
             nonlocal _refit_tail, _refit_tail_merged
-            _new = committed[-added:]
+            _live = {id(_message) for _message in committed}
+            _new = [_message for _message in appended if id(_message) in _live]
+            if len(_new) != len(appended):
+                # Nothing coherent to carry: the refit falls back to `conversation` alone,
+                # which is at least well formed.
+                _refit_tail = []
+                _refit_tail_merged = False
+                return
             if not merged:
                 _refit_tail = _refit_tail + _new
             elif _refit_tail:
@@ -32072,6 +32083,7 @@ class LlamaCppBackend:
                         _candidate_messages = neutralize_control_markup_in_messages(
                             _candidate_messages, None, self.markup_profile
                         )
+                        _continuation_tail = _candidate_messages[-1:]
                         _next_cap = _remaining_output_budget()
                         _served = _next_cap != 0 and _continuation_would_be_served(
                             _candidate_messages, True
@@ -32093,9 +32105,7 @@ class LlamaCppBackend:
                                 _served = True
                         if _served:
                             stream_payload["messages"] = _candidate_messages
-                            # The COMMITTED list, so an eviction above cannot leave the
-                            # refit replaying a turn that is gone.
-                            _record_refit_tail(_candidate_messages, 1, _merged_f)
+                            _record_refit_tail(_candidate_messages, _continuation_tail, _merged_f)
                             _final_replayed_chars = len(_last_emitted)
                             stream_payload["continue_final_message"] = True
                             stream_payload["add_generation_prompt"] = False
@@ -32196,11 +32206,25 @@ class LlamaCppBackend:
                             # that would have fit or admits one llama-server then rejects.
                             _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
                             _next_cap_r = _remaining_output_budget()
+                            # The two turns just appended, and the run back through the
+                            # question they are about. The evictor keeps the LATEST user
+                            # group, which is now the request itself, so without this it
+                            # drops the question and the progress note and admits the
+                            # request alone -- a prompt with neither the task nor the
+                            # answer in it. See `_evict_until_it_fits`.
+                            _recovery_tail = _candidate_r[-2:]
+                            _recovery_protect = {id(_message) for _message in _recovery_tail}
+                            for _message in reversed(_candidate_r[:-2]):
+                                _recovery_protect.add(id(_message))
+                                if _message.get("role") == "user":
+                                    break
                             _served_r = _next_cap_r != 0 and _continuation_would_be_served(
                                 _candidate_r, False, _off_kw
                             )
                             if _next_cap_r != 0 and not _served_r:
-                                _evicted_r = _evict_until_it_fits(_candidate_r, None, _off_kw)
+                                _evicted_r = _evict_until_it_fits(
+                                    _candidate_r, None, _off_kw, False, _recovery_protect
+                                )
                                 if _evicted_r is not None and _continuation_would_be_served(
                                     _evicted_r, False, _off_kw
                                 ):
@@ -32211,7 +32235,7 @@ class LlamaCppBackend:
                                 # The progress note and the request, both of which have to
                                 # survive a respawn refit or the retry asks the original
                                 # question again with the partial still on screen.
-                                _record_refit_tail(_candidate_r, 2, _merged_r)
+                                _record_refit_tail(_candidate_r, _recovery_tail, _merged_r)
                                 # The retry ends on a USER turn, so the flags from any
                                 # earlier answer continuation no longer describe it.
                                 stream_payload.pop("continue_final_message", None)
