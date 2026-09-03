@@ -14,9 +14,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""UNSLOTH_HOME has to mean the same install to the CLI and to the backend: if
-the two disagree the backend writes studio.db, auth and the pid file under
-<UNSLOTH_HOME>/studio while the CLI reads ~/.unsloth/studio.
+"""UNSLOTH_HOME has to mean the same install to the CLI and to the backend: if the two disagree
+the backend writes studio.db, auth and the pid file under <UNSLOTH_HOME>/studio while the CLI
+reads ~/.unsloth/studio.
 """
 
 from __future__ import annotations
@@ -96,8 +96,8 @@ def test_no_unsloth_home_keeps_the_legacy_default(tmp_path):
 
 def test_the_cli_exports_the_llama_cpp_path_the_backend_will_use(tmp_path):
     # run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so a CLI that exports
-    # <root>/studio/llama.cpp pins that wrong path for the server and every
-    # worker, and llama_cpp.py then cannot find the managed llama-server.
+    # <root>/studio/llama.cpp pins that wrong path for every worker and the
+    # managed llama-server is never found.
     master = tmp_path / "portable"
     result = _probe({"UNSLOTH_HOME": str(master)})
 
@@ -171,9 +171,8 @@ def _main_probe(env_overrides: dict) -> dict:
 
 
 def test_main_marks_the_same_llama_cpp_path_run_py_exports(tmp_path):
-    # A direct `uvicorn main:app` exports this outright; under run.py main.py
-    # keeps the correct value but would mark the wrong one managed, which makes
-    # the bundled path look like an immutable user override.
+    # A direct `uvicorn main:app` exports this outright; under run.py main.py keeps the correct
+    # value but would mark the wrong one managed, making the bundled path look like an override.
     master = tmp_path / "portable"
     result = _main_probe({"UNSLOTH_HOME": str(master)})
 
@@ -190,10 +189,9 @@ def test_main_leaves_a_plain_custom_root_alone(tmp_path):
 
 
 def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
-    # A portable install pointed at the legacy Studio path owns llama.cpp beside
-    # it, at <root>/llama.cpp. Guarding on the legacy equality alone skipped the
-    # export, so a bare `uvicorn main:app` in a fresh shell left unsloth_zoo on
-    # ~/.unsloth/llama.cpp and never saw the installed runtime.
+    # A portable install pointed at the legacy Studio path still owns <root>/llama.cpp, so
+    # guarding on the legacy equality alone skipped the export and left unsloth_zoo on
+    # ~/.unsloth/llama.cpp, never seeing the installed runtime.
     home = tmp_path / "home"
     legacy = home / ".unsloth" / "studio"
     legacy.mkdir(parents = True)
@@ -211,8 +209,7 @@ def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
 
 
 def test_main_still_exports_nothing_without_a_master_root(tmp_path):
-    # The other half: a plain legacy install has no master root, so the guard
-    # must stay closed rather than pinning the default it already resolves to.
+    # The other half: no master root, so the guard stays closed rather than pinning the default.
     home = tmp_path / "home"
     (home / ".unsloth" / "studio").mkdir(parents = True)
     result = _main_probe({"HOME": str(home), "USERPROFILE": str(home)})

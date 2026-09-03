@@ -323,13 +323,10 @@ def test_diffusion_loader_calls_pin_the_cache_dir():
                 ), f"{rel}:{index} calls {call} without a pinned cache_dir"
 
 
-# _stored_cache_home skips the database read when nothing here uses one, so that
-# `unsloth train` does not build a studio.db on a machine that never opened
-# Studio. Only a positively observed absence may license that skip: every other
-# outcome of the probe leaves the stored cache home to the read below. Driven in
-# a subprocess because the skip is conditional on storage.studio_db being absent
-# from sys.modules, which no in-process test can arrange once pytest has imported
-# it.
+# _stored_cache_home skips the database read when nothing uses one, so `unsloth train` does not
+# build a studio.db on a machine that never opened Studio. Only a positively observed absence may
+# license that skip; every other outcome falls through to the read. Driven in a subprocess: the
+# skip needs storage.studio_db absent from sys.modules, which pytest has already imported.
 _GUARD_PROBE = """
 import json, os, sys
 
@@ -387,9 +384,8 @@ def _run_guard_probe(tmp_path, studio_home: Path, stored: Path) -> tuple[str | N
 
 
 def test_absent_studio_db_skips_the_database_read(tmp_path):
-    # The skip 912024e84 added must survive the tightening below: a Studio root
-    # with no studio.db still answers None WITHOUT opening a connection, which is
-    # what stops the CLI creating and migrating a 250 KB database.
+    # The skip 912024e84 added must survive the tightening below: a Studio root with no studio.db
+    # answers None WITHOUT a connection, which is what stops the CLI creating a 250 KB database.
     studio_home = tmp_path / "root" / "studio"
     studio_home.mkdir(parents = True)
 
@@ -401,10 +397,9 @@ def test_absent_studio_db_skips_the_database_read(tmp_path):
 
 @pytest.mark.parametrize("fixture", ["not_a_directory", "symlink_loop", "unreadable_parent"])
 def test_uninspectable_studio_db_keeps_the_stored_cache_home(tmp_path, fixture):
-    # Path.exists reports ENOTDIR and ELOOP as absence on every release we
-    # support, and from 3.14 it answers through os.path and swallows EACCES too.
-    # Treating any of them as "no database" discards the cache home the user
-    # chose in Settings and silently re-routes downloads to the default root.
+    # Path.exists reports ENOTDIR and ELOOP as absence on every release we support, and from 3.14
+    # swallows EACCES too. Treating any of them as "no database" discards the cache home the user
+    # chose in Settings and re-routes downloads to the default root.
     chosen = tmp_path / "chosen"
     studio_home = tmp_path / "root" / "studio"
     if fixture == "not_a_directory":
@@ -424,8 +419,7 @@ def test_uninspectable_studio_db_keeps_the_stored_cache_home(tmp_path, fixture):
         if fixture == "unreadable_parent":
             os.chmod(studio_home, 0o755)
 
-    # unreadable_parent is the case 3.14 newly breaks: below it Path.exists still
-    # RAISED, which the outer handler already turned into this fall-through. The
-    # other two fixtures pin the rule on every release we support.
+    # unreadable_parent is the case 3.14 newly breaks: below it Path.exists still RAISED, which
+    # the outer handler already turned into this fall-through. The other two hold on every release.
     assert was_read, "a database we could not inspect must still be read"
     assert answer == str(chosen)

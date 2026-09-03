@@ -53,8 +53,7 @@ def _clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising = False)
     # _default_cache_home reads this before ~/.cache, and CI runners set it.
     monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
-    # Same for matplotlib's config dir, whose contents decide whether MPLCONFIGDIR
-    # is ours to pin.
+    # Same for matplotlib's config dir, whose contents decide whether MPLCONFIGDIR is ours.
     monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
     # Empty home: a real ~/.data-designer would change what the resolver pins.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -64,8 +63,8 @@ def _clean_env(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse = True)
 def _restore_hf_cache_settings_module():
-    # Left popped, the next import builds a second module object, so a later
-    # test writes one and reads the other.
+    # Left popped, the next import builds a second module object, so a later test writes one
+    # and reads the other.
     import utils
 
     name = "utils.hf_cache_settings"
@@ -169,16 +168,15 @@ def test_unsloth_portable_off_values_do_not_enable_portable_mode(monkeypatch, va
     assert sr.portable_mode() is False
 
 
-# Every spelling the installers refuse. "enabled" and "flase" are the shapes that
-# matter: an intent the shell never acted on, and a typo.
+# Every spelling the installers refuse. "enabled" and "flase" are the shapes that matter: an
+# intent the shell never acted on, and a typo.
 _UNRECOGNIZED_PORTABLE = ("enabled", "flase", "2", "bogus", "y", "n", "disabled", "-1")
 
 
 @pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE)
 def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(monkeypatch, tmp_path, value):
-    # The installers accept 1/true/yes/on and refuse the rest, so a value they
-    # would have rejected must not put the runtime in portable mode on its own:
-    # the caches would move for this launch and move back on the next one.
+    # A value the installers would have rejected must not put the runtime in portable mode on
+    # its own: the caches would move for this launch and move back on the next one.
     monkeypatch.setenv("UNSLOTH_PORTABLE", value)
     sr = _load_storage_roots()
 
@@ -193,8 +191,8 @@ def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(monkeypatch
 def test_a_portable_root_stays_portable_whatever_unsloth_portable_says(
     monkeypatch, tmp_path, value
 ):
-    # The root is what makes an install portable. Neither an unrecognized value
-    # nor an off one may strand its caches back in the home directory.
+    # The root is what makes an install portable: neither an unrecognized value nor an off one
+    # may strand its caches back in the home directory.
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
@@ -211,8 +209,8 @@ def test_a_portable_root_stays_portable_whatever_unsloth_portable_says(
 
 @pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE)
 def test_an_on_disk_portable_root_outranks_an_unrecognized_value(monkeypatch, value):
-    # unsloth_home() also resolves from the marker install.sh leaves at the root,
-    # which is the signal a venv-activated launch carries no environment for.
+    # unsloth_home() also resolves from the marker install.sh leaves at the root, the signal a
+    # venv-activated launch carries no environment for.
     monkeypatch.setenv("UNSLOTH_PORTABLE", value)
     sr = _load_storage_roots()
     monkeypatch.setattr(sr, "unsloth_home", lambda: Path("/opt/unsloth-portable"))
@@ -229,8 +227,7 @@ class _RecordingLogger:
 
 
 def test_an_unrecognized_value_is_reported_once_not_once_per_call(monkeypatch):
-    # portable_mode() runs on every cache-var lookup, so a per-call warning is a
-    # flooded log rather than a diagnostic.
+    # portable_mode() runs on every cache-var lookup, so a per-call warning floods the log.
     monkeypatch.setenv("UNSLOTH_PORTABLE", "enabled")
     sr = _load_storage_roots()
     recorder = _RecordingLogger()
@@ -260,9 +257,8 @@ def test_accepted_spellings_are_silent(monkeypatch, value):
 
 
 def test_conflicting_roots_are_reported_once_per_conflict(monkeypatch, tmp_path):
-    # studio_root() backs the cache, output and database helpers and runs many
-    # times per request, so a per-call warning turns one configuration mistake
-    # into a flooded log plus synchronous log I/O for the life of the backend.
+    # studio_root() runs many times per request, so a per-call warning turns one configuration
+    # mistake into a flooded log plus synchronous log I/O for the life of the backend.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere" / "studio"))
     monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
     sr = _load_storage_roots()
@@ -287,8 +283,8 @@ def test_conflicting_roots_are_reported_once_per_conflict(monkeypatch, tmp_path)
 
 @pytest.mark.parametrize("layout", ("nested", "flat"))
 def test_a_self_contained_layout_never_warns(monkeypatch, tmp_path, layout):
-    # Both supported shapes: studio/ under the master root, and one root naming
-    # itself. Silencing the repeat must not silence the whole diagnostic.
+    # Both supported shapes: studio/ under the master root, and one root naming itself.
+    # Silencing the repeat must not silence the whole diagnostic.
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
     monkeypatch.setenv(
@@ -364,9 +360,8 @@ def _use_data_designer(home: Path) -> None:
 
 
 def test_a_used_managed_home_survives_a_legacy_dir_appearing_later(tmp_path):
-    # The legacy probe re-runs every launch, so without this a standalone Data
-    # Designer run creating ~/.data-designer hands the recipes and generated
-    # data written under the Studio root to a freshly seeded default instead.
+    # The legacy probe re-runs every launch, so without this a standalone Data Designer run
+    # creating ~/.data-designer hands the work under the Studio root to a re-seeded default.
     managed = tmp_path / "studio" / "data-designer"
     _use_data_designer(managed)
     (tmp_path / "home" / ".data-designer").mkdir(parents = True)
@@ -379,8 +374,8 @@ def test_a_used_managed_home_survives_a_legacy_dir_appearing_later(tmp_path):
 
 
 def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_path):
-    # Deleting and recreating ~/.data-designer used to toggle the active home,
-    # so which dataset a run reads depended on whether that directory existed.
+    # Deleting and recreating ~/.data-designer used to toggle the active home, so which dataset
+    # a run reads depended on whether that directory existed.
     managed = tmp_path / "studio" / "data-designer"
     _use_data_designer(managed)
     legacy = tmp_path / "home" / ".data-designer"
@@ -401,9 +396,8 @@ def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_pa
 
 
 def test_an_unused_managed_home_still_defers_to_a_legacy_dir(tmp_path):
-    # _setup_cache_env creates the managed home on the first launch, so its mere
-    # existence must not claim a user's Data Designer data. Nothing is stranded
-    # while it is empty, which is the same rule the legacy probe applies.
+    # _setup_cache_env creates the managed home on the first launch, so its mere existence must
+    # not claim a user's data. Nothing is stranded while it is empty.
     (tmp_path / "studio" / "data-designer" / "managed-assets").mkdir(parents = True)
     (tmp_path / "home" / ".data-designer").mkdir(parents = True)
 
@@ -415,9 +409,8 @@ def test_an_unused_managed_home_still_defers_to_a_legacy_dir(tmp_path):
 
 
 def test_an_unreadable_managed_home_keeps_its_pin(monkeypatch, tmp_path):
-    # An inspection failure is not evidence of an empty home. Reading it as one
-    # drops the pin, and the launch then runs against ~/.data-designer with the
-    # recipes and generated datasets under the managed tree hidden.
+    # An inspection failure is not evidence of an empty home: reading it as one drops the pin
+    # and runs against ~/.data-designer, hiding the recipes and datasets under the managed tree.
     managed = tmp_path / "studio" / "data-designer"
     _use_data_designer(managed)
     (tmp_path / "home" / ".data-designer").mkdir(parents = True)
@@ -442,8 +435,8 @@ def test_an_unreadable_managed_home_keeps_its_pin(monkeypatch, tmp_path):
     reason = "chmod 000 denies neither root nor Windows",
 )
 def test_an_unreadable_managed_assets_child_keeps_its_pin(tmp_path):
-    # The same flip through the child: the home lists fine, and the walk trips
-    # on managed-assets before it reaches the model_configs.yaml beside it.
+    # The same flip through the child: the home lists fine, and the walk trips on managed-assets
+    # before it reaches the model_configs.yaml beside it.
     managed = tmp_path / "studio" / "data-designer"
     _use_data_designer(managed)
     (tmp_path / "home" / ".data-designer").mkdir(parents = True)
@@ -463,9 +456,9 @@ def test_an_unreadable_managed_assets_child_keeps_its_pin(tmp_path):
 def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
     """Make every stat of *target* raise *error*, and leave every other path alone.
 
-    chmod covers EACCES; a failing mount answering EIO has no on-disk equivalent
-    an unprivileged user can set up. Both os.stat and os.lstat are patched so the
-    predicates this replaced see the same failure the fix does.
+    chmod covers EACCES; a failing mount answering EIO has no on-disk equivalent an unprivileged
+    user can set up. Both os.stat and os.lstat are patched so the predicates this replaced see
+    the same failure the fix does.
     """
 
     def denying(real):
@@ -485,9 +478,8 @@ def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
     reason = "chmod 000 denies neither root nor Windows",
 )
 def test_an_unreadable_legacy_data_designer_dir_keeps_the_home_unpinned(tmp_path):
-    # Path.exists() cannot answer this: it raises for EACCES up to 3.13 and
-    # swallows it from 3.14 on, and both readings used to end at the pin, hiding
-    # the user's recipes and parquet behind a freshly seeded managed home.
+    # Path.exists() cannot answer this: it raises for EACCES up to 3.13 and swallows it from
+    # 3.14 on, and both readings ended at the pin, hiding the user's recipes and parquet.
     home = tmp_path / "home"
     _use_data_designer(home / ".data-designer")
     sr = _load_storage_roots()
@@ -517,8 +509,8 @@ def test_a_legacy_data_designer_dir_on_a_failing_volume_keeps_the_home_unpinned(
 
 
 def test_a_legacy_data_designer_symlink_we_cannot_follow_keeps_the_home_unpinned(tmp_path):
-    # A loop answers ELOOP, which Path.exists() reports as absence on every
-    # release, so the exception handler never ran and the pin was taken anyway.
+    # A loop answers ELOOP, which Path.exists() reports as absence on every release, so the
+    # exception handler never ran and the pin was taken anyway.
     legacy = tmp_path / "home" / ".data-designer"
     legacy.parent.mkdir(parents = True, exist_ok = True)
     legacy.symlink_to(legacy)
@@ -531,9 +523,8 @@ def test_a_legacy_data_designer_symlink_we_cannot_follow_keeps_the_home_unpinned
 
 
 def test_an_absent_legacy_data_designer_dir_still_pins_the_home(tmp_path):
-    # The inverse direction: only an inspection that positively found nothing
-    # declines, so hardening the probe must not turn into never containing
-    # anything. Nothing is at ~/.data-designer here, so the pin is ours to take.
+    # The inverse direction: hardening the probe must not turn into never containing anything.
+    # Nothing is at ~/.data-designer here, so the pin is ours to take.
     (tmp_path / "home").mkdir(parents = True, exist_ok = True)
     sr = _load_storage_roots()
 
@@ -567,9 +558,8 @@ def test_an_explicit_triton_home_keeps_its_own_cache_dir(monkeypatch, tmp_path):
 
 
 def test_triton_keeps_reading_the_default_override_dir(tmp_path):
-    # Kernel overrides are user files. TRITON_HOME would move their directory
-    # along with the cache, so a TRITON_KERNEL_OVERRIDE=1 run would quietly stop
-    # finding them and compile something else instead.
+    # Kernel overrides are user files, and TRITON_HOME would move their directory along with the
+    # cache, so a TRITON_KERNEL_OVERRIDE=1 run would compile something else instead.
     pytest.importorskip("triton")
     override = tmp_path / "home" / ".triton" / "override" / "0123456789abcdef"
     override.mkdir(parents = True)
@@ -578,8 +568,7 @@ def test_triton_keeps_reading_the_default_override_dir(tmp_path):
 
     sr._setup_cache_env()
 
-    # A fresh interpreter: knobs read the environment, but torch may have
-    # imported Triton and pinned a cache dir already.
+    # A fresh interpreter: torch may have imported Triton and pinned a cache dir already.
     probe = subprocess.run(
         [
             sys.executable,
@@ -603,17 +592,16 @@ def test_triton_keeps_reading_the_default_override_dir(tmp_path):
 
 
 def test_the_macos_matplotlib_config_dir_matches_matplotlibs_own(monkeypatch, tmp_path):
-    # macOS is matplotlib's "other platforms" branch, which is ~/.matplotlib and
-    # not ~/Library/Application Support. Getting that wrong either strands a real
-    # matplotlibrc or gives up containment for a directory nobody uses.
+    # macOS is matplotlib's "other platforms" branch, ~/.matplotlib and not ~/Library/Application
+    # Support. Getting it wrong strands a real matplotlibrc or gives up containment for nothing.
     pytest.importorskip("matplotlib")
     monkeypatch.setattr(sys, "platform", "darwin")
     sr = _load_storage_roots()
 
     ours = sr._matplotlib_config_dir()
 
-    # sys.platform is read inside _get_config_or_cache_dir, so a fresh
-    # interpreter can be asked what it would do on a Mac.
+    # sys.platform is read inside _get_config_or_cache_dir, so a fresh interpreter can be asked
+    # what it would do on a Mac.
     probe = subprocess.run(
         [
             sys.executable,
@@ -633,14 +621,13 @@ def test_the_macos_matplotlib_config_dir_matches_matplotlibs_own(monkeypatch, tm
 
 
 def _matplotlib_config_dir(home: Path) -> Path:
-    # matplotlib.__init__._get_config_or_cache_dir, Linux branch. The Windows and
-    # macOS branches are exercised by _matplotlib_config_dir itself.
+    # _get_config_or_cache_dir, Linux branch. The other branches are covered above.
     return home / ".config" / "matplotlib"
 
 
 def test_a_user_matplotlibrc_keeps_matplotlibs_own_config_dir(tmp_path):
-    # MPLCONFIGDIR moves the config dir as well as the cache, so pinning it here
-    # would drop the file silently and redraw every loss plot differently.
+    # MPLCONFIGDIR moves the config dir as well as the cache, so pinning it here would drop the
+    # file silently and redraw every loss plot differently.
     config = _matplotlib_config_dir(tmp_path / "home")
     config.mkdir(parents = True)
     (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
@@ -663,8 +650,8 @@ def test_a_user_style_library_keeps_matplotlibs_own_config_dir(tmp_path):
 
 
 def test_an_empty_matplotlib_config_dir_is_still_pinned(tmp_path):
-    # matplotlib mkdir -p's this on every import, so treating its existence as
-    # user configuration would give up containment for nearly every install.
+    # matplotlib mkdir -p's this on every import, so treating its existence as user configuration
+    # would give up containment for nearly every install.
     _matplotlib_config_dir(tmp_path / "home").mkdir(parents = True)
     sr = _load_storage_roots()
 
@@ -726,8 +713,8 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     reason = "chmod 000 denies neither root nor Windows",
 )
 def test_an_uninspectable_matplotlib_config_dir_leaves_mplconfigdir_unset(tmp_path):
-    # MPLCONFIGDIR lives for the whole process, so reading an unreadable config
-    # dir as an empty one hides the matplotlibrc even once the mount recovers.
+    # MPLCONFIGDIR lives for the whole process, so reading an unreadable config dir as an empty
+    # one hides the matplotlibrc even once the mount recovers.
     config = _matplotlib_config_dir(tmp_path / "home")
     config.mkdir(parents = True)
     (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
@@ -747,10 +734,9 @@ def test_an_uninspectable_matplotlib_config_dir_leaves_mplconfigdir_unset(tmp_pa
     reason = "chmod 000 denies neither root nor Windows",
 )
 def test_an_uninspectable_style_library_leaves_mplconfigdir_unset(tmp_path):
-    # Path.glob suppresses the scandir error and yields nothing on every release
-    # we support, so this probe never reached its exception handler at all: an
-    # unreadable stylelib read as an empty one and every custom style went
-    # missing from the loss plots.
+    # Path.glob suppresses the scandir error and yields nothing on every release we support, so
+    # this probe never reached its handler: an unreadable stylelib read as an empty one and every
+    # custom style went missing from the loss plots.
     styles = _matplotlib_config_dir(tmp_path / "home") / "stylelib"
     styles.mkdir(parents = True)
     (styles / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
@@ -785,8 +771,8 @@ def test_a_matplotlib_config_dir_on_a_failing_volume_leaves_mplconfigdir_unset(
     reason = "XDG config base is the Linux/FreeBSD branch",
 )
 def test_an_xdg_config_dir_is_read_without_a_resolvable_home(monkeypatch, tmp_path):
-    # matplotlib's _get_xdg_config_dir reads XDG_CONFIG_HOME before it needs a
-    # home, so bailing out on Path.home() first pinned over a real matplotlibrc.
+    # _get_xdg_config_dir reads XDG_CONFIG_HOME before it needs a home, so bailing out on
+    # Path.home() first pinned over a real matplotlibrc.
     config = tmp_path / "xdg" / "matplotlib"
     config.mkdir(parents = True)
     (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
@@ -847,11 +833,8 @@ def _fake_torch_on_path(
     hip = None,
     debug = False,
 ):
-    """A torch that has a version.py and explodes if anything imports it.
-
-    version.py is written the way recent torch generates it, annotations and
-    all, so the parser is exercised against the real shape.
-    """
+    """A torch that has a version.py and explodes if anything imports it. version.py is written
+    the way recent torch generates it, annotations and all, so the parser meets the real shape."""
     pkg = tmp_path / label / "torch"
     pkg.mkdir(parents = True)
     (pkg / "__init__.py").write_text("raise AssertionError('torch was imported')\n")
@@ -883,7 +866,7 @@ def _only_torch(entry):
 
 
 def test_torch_extension_cache_keeps_an_abi_folder(tmp_path):
-    # torch appends py<ver>_<accelerator> to its DEFAULT root only, so pinning
+    # torch appends py<ver>_<accelerator> to its DEFAULT root only, so a pinned
     # TORCH_EXTENSIONS_DIR has to carry that isolation itself.
     sr = _load_storage_roots()
 
@@ -929,9 +912,8 @@ def test_torch_extension_tag_survives_a_missing_torch(tmp_path):
 
 
 def test_torch_extension_cache_separates_builds_sharing_one_version_string(tmp_path):
-    # conda-forge sets PYTORCH_BUILD_VERSION to the bare release, so its CPU and
-    # CUDA packages of one version carry the same __version__ and differ only in
-    # a conda build string. Reading only __version__ files them together.
+    # conda-forge sets PYTORCH_BUILD_VERSION to the bare release, so its CPU and CUDA packages
+    # of one version share a __version__ and differ only in a conda build string.
     sr = _load_storage_roots()
 
     tags = []
@@ -947,8 +929,8 @@ def test_torch_extension_cache_separates_builds_sharing_one_version_string(tmp_p
 
 
 def test_torch_extension_cache_separates_a_rocm_build_from_a_cpu_build(tmp_path):
-    # torch's own folder names a ROCm build 'cpu', because version.cuda is unset
-    # there. main prioritises ROCm, so hip has to be read first.
+    # torch's own folder names a ROCm build 'cpu', since version.cuda is unset there. main
+    # prioritises ROCm, so hip has to be read first.
     sr = _load_storage_roots()
 
     tags = []
@@ -975,9 +957,8 @@ def test_torch_extension_cache_separates_a_debug_build(tmp_path):
 
 
 def test_torch_runtime_tag_never_imports_torch(tmp_path):
-    # This runs before torch exists in a fresh venv, and importing it on the
-    # startup path would cost seconds and pull CUDA in. The fake package raises
-    # on import, so an import here is a failure, not a skip.
+    # This runs before torch exists in a fresh venv, and importing it on the startup path would
+    # cost seconds and pull CUDA in. The fake package raises on import, so a skip is a failure.
     sr = _load_storage_roots()
     entry = _fake_torch_on_path(tmp_path, "guard", "2.9.1+cu128", cuda = "12.8")
 

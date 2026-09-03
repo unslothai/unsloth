@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth export` / `list-checkpoints` must pin the cache env before importing
-the export backend.
+"""`unsloth export` / `list-checkpoints` must pin the cache env before importing the export
+backend.
 
-Neither command calls ensure_studio_backend_path(), so before the seeding moved
-into studio_backend_imports() they reached studio.backend.core.export with
-UNSLOTH_COMPILE_LOCATION unset, and the export subprocess (mp spawn, which
-inherits os.environ) then let unsloth_zoo resolve its relative default against
-the shell's working directory (#8865).
+Neither calls ensure_studio_backend_path(), so before the seeding moved into
+studio_backend_imports() they reached studio.backend.core.export with UNSLOTH_COMPILE_LOCATION
+unset, and the export subprocess (mp spawn, which inherits os.environ) then let unsloth_zoo
+resolve its relative default against the shell's working directory (#8865).
 """
 
 import json
@@ -22,8 +21,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Runs in its own interpreter: the seeding is process-global (os.environ plus a
-# one-shot flag), so an in-process assertion would depend on test ordering.
+# Runs in its own interpreter: the seeding is process-global (os.environ plus a one-shot flag),
+# so an in-process assertion would depend on test ordering.
 PROBE = textwrap.dedent(
     """
     import json, os, sys, types
@@ -102,7 +101,7 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
     assert recorded["exit_code"] == 0, recorded
     location = recorded["compile_location"]
     assert location, "UNSLOTH_COMPILE_LOCATION was unset when the export backend was imported"
-    # Absolute and inside the install root, not resolved against the shell's CWD.
+    # Absolute and inside the install root, not resolved against the CWD.
     assert Path(location).is_absolute()
     assert Path(location) == unsloth_home / "studio" / "compiled_cache"
     assert not (workdir / "unsloth_compiled_cache").exists()

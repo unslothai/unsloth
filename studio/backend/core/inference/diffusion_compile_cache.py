@@ -90,8 +90,8 @@ def _portable_mode() -> bool:
 
 
 def _default_root() -> Path:
-    """Resolved per call, not a module constant: this module is imported before
-    startup sets UNSLOTH_STUDIO_HOME, which storage_roots reads."""
+    """Resolved per call, not a module constant: this module is imported before startup sets
+    UNSLOTH_STUDIO_HOME, which storage_roots reads."""
     try:
         from utils.paths.storage_roots import cache_root as studio_cache_root
     except ImportError:
@@ -110,13 +110,10 @@ def cache_root() -> Path:
 def legacy_cache_root() -> Optional[Path]:
     """The pre-relocation root, when it is still worth READING old bundles from.
 
-    Read-only on purpose. Returning it as the write root instead would pin an
-    upgraded install to the home directory forever: nothing else creates the new
-    default, so the fallback condition stays true, and begin() points
-    TORCHINDUCTOR_CACHE_DIR here too, so every new bundle plus GBs of inductor
-    output keep landing outside the studio root. Skipped under an explicit dir
-    override (which names one exact directory) and in portable mode (the host's
-    home is not part of the install).
+    Read-only on purpose: returning it as the write root would pin an upgraded install to the home
+    directory forever, since nothing else creates the new default and begin() points
+    TORCHINDUCTOR_CACHE_DIR here too. Skipped under an explicit dir override (which names one
+    exact directory) and in portable mode (the host's home is not part of the install).
     """
     if os.environ.get(_ENV_DIR) or _portable_mode():
         return None
@@ -299,8 +296,7 @@ def begin(
     if ctx.bundle.exists() and ctx.manifest_path.exists():
         ctx.hit = _try_load(ctx, logger)
     if not ctx.hit:
-        # Nothing usable in the write root: an install that predates the relocation
-        # may still hold a bundle for this exact key under the old one.
+        # An install that predates the relocation may still hold this key under the old root.
         ctx.hit = _load_from_legacy(ctx, logger)
     if not ctx.hit:
         _info(logger, f"compile-cache: no bundle for key {key} (will compile locally)")
@@ -314,12 +310,11 @@ def begin(
 def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
     """Load the same key's bundle from the pre-relocation root, then migrate it.
 
-    The key already covers every portability dimension, so a legacy bundle under
-    it is the same artifact this run would have written. The copy is what keeps
-    the read fallback from becoming permanent: it is a byte copy of the pair that
-    just validated and loaded, so the next run finds it in the write root and
-    never reaches into the home directory again. Best-effort, and skipped when
-    saving is off, since that mode promises a read-only cache."""
+    The key already covers every portability dimension, so a legacy bundle under it is the same
+    artifact this run would have written. The copy keeps the read fallback from becoming
+    permanent: the next run finds the pair in the write root and never reaches into the home
+    directory again. Best-effort, and skipped when saving is off, since that mode promises a
+    read-only cache."""
     root = legacy_cache_root()
     if root is None:
         return False
@@ -333,8 +328,8 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
         try:
             ctx.dir.mkdir(parents = True, exist_ok = True)
             shutil.copyfile(bundle, ctx.bundle)
-            # Bundle first: a manifest without its bundle reads as a miss, not as a
-            # hit the cache cannot serve.
+            # Bundle first: a manifest without its bundle reads as a miss, not a hit the cache
+            # cannot serve.
             shutil.copyfile(manifest_path, ctx.manifest_path)
             _info(logger, f"compile-cache: migrated legacy bundle for key {ctx.key}")
         except OSError as exc:

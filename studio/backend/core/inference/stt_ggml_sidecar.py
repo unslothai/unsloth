@@ -126,8 +126,7 @@ def _managed_whisper_cpp_dir() -> Path:
     try:
         from utils.paths.storage_roots import studio_root, unsloth_home
 
-        # setup.sh installs whisper.cpp at <master root>, beside studio/, and
-        # there is no UNSLOTH_WHISPER_CPP_PATH to bridge the gap.
+        # setup.sh installs whisper.cpp at <master root>, beside studio/. No env var bridges it.
         master = unsloth_home()
         if master is not None:
             return master / "whisper.cpp"

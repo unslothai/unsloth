@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_HOME names the tree, not the Studio directory inside it, and the
-native runtimes are siblings of studio/, which is the spelling studio/setup.sh
-and scripts/build_whisper_cpp.sh already use. A resolver that derived them from
-studio_root() would look in <root>/studio/<tool> for something the installer put
-at <root>/<tool>, so managed Node and whisper.cpp would silently go missing and
-run.py would pin the wrong llama.cpp path into every worker's environment.
+"""UNSLOTH_HOME names the tree, not the Studio directory inside it, and the native runtimes are
+siblings of studio/, the spelling studio/setup.sh and scripts/build_whisper_cpp.sh already use. A
+resolver deriving them from studio_root() would look in <root>/studio/<tool> for what the
+installer put at <root>/<tool>, so managed Node and whisper.cpp go missing and run.py pins the
+wrong llama.cpp path into every worker.
 
 Run in a subprocess per case: these modules read the environment at import time.
 """
@@ -80,8 +79,7 @@ def test_a_default_install_is_untouched(tmp_path):
 
 
 def test_a_plain_custom_studio_home_is_untouched(tmp_path):
-    # No UNSLOTH_HOME, so this stays on the pre-existing derivation where the
-    # tools are children of the Studio root.
+    # No UNSLOTH_HOME: the tools stay children of the Studio root, as before.
     home = tmp_path / "home"
     home.mkdir()
     custom = tmp_path / "custom"
@@ -93,8 +91,7 @@ def test_a_plain_custom_studio_home_is_untouched(tmp_path):
 
 
 def test_a_flat_root_keeps_the_tools_at_that_root(tmp_path):
-    # UNSLOTH_HOME == UNSLOTH_STUDIO_HOME: the master root IS the Studio root,
-    # so "beside studio/" and "inside it" are the same directory.
+    # UNSLOTH_HOME == UNSLOTH_STUDIO_HOME, so "beside studio/" and "inside it" are one directory.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "flat"
@@ -102,8 +99,7 @@ def test_a_flat_root_keeps_the_tools_at_that_root(tmp_path):
     assert r["studio"] == str(root)
     assert r["node"] == str(root / "node")
     assert r["whisper"] == str(root / "whisper.cpp")
-    # Path.parents excludes the path itself, so an equality check is what keeps
-    # this supported layout from warning that it is not self-contained.
+    # Path.parents excludes the path itself, so the equality check is what keeps this warning off.
     assert r["warnings"] == []
 
 
@@ -121,9 +117,8 @@ def test_a_studio_home_outside_the_master_root_still_warns(tmp_path):
 
 
 def test_the_builder_and_the_resolver_agree_on_the_same_directory(tmp_path):
-    # scripts/build_whisper_cpp.sh reads UNSLOTH_HOME as the root it installs
-    # under. The resolver has to land on the same path or dictation reports the
-    # engine unavailable while whisper-server sits on disk one level up.
+    # scripts/build_whisper_cpp.sh installs under UNSLOTH_HOME. The resolver has to land on the
+    # same path or dictation reports the engine unavailable with whisper-server one level up.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"
@@ -185,10 +180,8 @@ def _discover(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
 
 
 def test_discovery_finds_the_llama_server_the_master_root_holds(tmp_path):
-    # run.py exports the managed path and marks it managed, and that marker makes
-    # discovery SKIP the env var and fall through to its own root derivation, so
-    # the two derivations have to name one directory or every GGUF model reports
-    # no llama.cpp runtime installed.
+    # The managed marker makes discovery SKIP the env var and fall through to its own root
+    # derivation, so the two have to name one directory or every GGUF model reports no runtime.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"
