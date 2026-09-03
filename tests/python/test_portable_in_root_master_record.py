@@ -93,8 +93,12 @@ def _probe(probe: str, prefix: Path, home: Path, env_extra: dict, cwd: Path | No
     }
     env.update({k: v for k, v in env_extra.items() if v is not None})
     proc = subprocess.run(
-        [sys.executable, "-c", probe], env = env, cwd = None if cwd is None else str(cwd),
-        capture_output = True, text = True, timeout = 300,
+        [sys.executable, "-c", probe],
+        env = env,
+        cwd = None if cwd is None else str(cwd),
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
     for line in proc.stdout.splitlines():
         if line.startswith("__JSON__"):
@@ -104,7 +108,12 @@ def _probe(probe: str, prefix: Path, home: Path, env_extra: dict, cwd: Path | No
     )
 
 
-def _run(prefix: Path, home: Path, env_extra: dict | None = None, cwd: Path | None = None) -> dict:
+def _run(
+    prefix: Path,
+    home: Path,
+    env_extra: dict | None = None,
+    cwd: Path | None = None,
+) -> dict:
     extra = env_extra or {}
     merged = _probe(BACKEND_PROBE, prefix, home, extra, cwd)
     merged.update(_probe(CLI_PROBE, prefix, home, extra, cwd))
@@ -172,15 +181,17 @@ def main() -> int:
         check("group-writable: master root found", str(fixed.parent), r["unsloth_home"])
         check("group-writable: portable mode on", True, r["portable"])
         check("group-writable: caches stay in the root", str(fixed / "cache"), r["cache_root"])
-        check("group-writable: llama.cpp beside studio/",
-              str(fixed.parent / "llama.cpp"), r["llama"])
+        check(
+            "group-writable: llama.cpp beside studio/", str(fixed.parent / "llama.cpp"), r["llama"]
+        )
         # The CLI exports UNSLOTH_HOME into the backend, where it outranks the
         # backend's own lookup, so a split here would point them at two installs.
         check("group-writable: CLI agrees on the Studio root", str(fixed), r["cli_studio_home"])
         check("group-writable: CLI agrees on the master root", str(fixed.parent), r["cli_master"])
         check("group-writable: CLI exports it", str(fixed.parent), r["cli_exported_home"])
-        check("group-writable: CLI exports llama.cpp",
-              str(fixed.parent / "llama.cpp"), r["cli_llama"])
+        check(
+            "group-writable: CLI exports llama.cpp", str(fixed.parent / "llama.cpp"), r["cli_llama"]
+        )
 
         print("\n[3] the escalation stays closed: a PLANTED marker, no record")
         # The victim is a normal install at <parent>/studio that never had a
@@ -201,18 +212,27 @@ def main() -> int:
             r = _run(victim / "studio" / "unsloth_studio", home)
             check(f"{label}: names no master root", None, r["unsloth_home"])
             check(f"{label}: stays out of portable mode", False, r["portable"])
-            check(f"{label}: llama.cpp stays inside the root",
-                  str(victim / "studio" / "llama.cpp"), r["llama"])
+            check(
+                f"{label}: llama.cpp stays inside the root",
+                str(victim / "studio" / "llama.cpp"),
+                r["llama"],
+            )
             check(f"{label}: CLI inherits nothing", None, r["cli_master"])
-            check(f"{label}: CLI exports the in-root path",
-                  str(victim / "studio" / "llama.cpp"), r["cli_llama"])
+            check(
+                f"{label}: CLI exports the in-root path",
+                str(victim / "studio" / "llama.cpp"),
+                r["cli_llama"],
+            )
 
         print("\n[4] installs made by earlier builds keep working when the root is sane")
         for label, mode in (("installer default", 0o755), ("private root", 0o700)):
             legit = _nested(tmp / f"old-{mode:o}", mode = mode, record = False)
             r = _run(legit / "unsloth_studio", home)
-            check(f"{label}: master root still found from the marker alone",
-                  str(legit.parent), r["unsloth_home"])
+            check(
+                f"{label}: master root still found from the marker alone",
+                str(legit.parent),
+                r["unsloth_home"],
+            )
             check(f"{label}: portable mode on", True, r["portable"])
             check(f"{label}: CLI agrees", str(legit.parent), r["cli_master"])
 
@@ -227,8 +247,11 @@ def main() -> int:
             root = _nested(tmp / f"bad-{label.replace(' ', '-')}", mode = 0o700, record = False)
             (root / RECORD).write_text(body)
             r = _run(root / "unsloth_studio", home)
-            check(f"bad record ({label}): falls through to the marker",
-                  str(root.parent), r["unsloth_home"])
+            check(
+                f"bad record ({label}): falls through to the marker",
+                str(root.parent),
+                r["unsloth_home"],
+            )
         # Relative, probed from a working directory where that name really exists:
         # without the absolute-path rule this resolves against the CWD and hands
         # UNSLOTH_HOME to whatever the process happened to be started in.
@@ -237,14 +260,20 @@ def main() -> int:
         root = _nested(tmp / "bad-relative", mode = 0o700, record = False)
         (root / RECORD).write_text("escape\n")
         r = _run(root / "unsloth_studio", home, cwd = elsewhere)
-        check("bad record (relative): falls through to the marker",
-              str(root.parent), r["unsloth_home"])
+        check(
+            "bad record (relative): falls through to the marker",
+            str(root.parent),
+            r["unsloth_home"],
+        )
         # A directory at the name reads as absent, the way the marker does.
         root = _nested(tmp / "bad-directory", mode = 0o700, record = False)
         (root / RECORD).mkdir()
         r = _run(root / "unsloth_studio", home)
-        check("bad record (directory): falls through to the marker",
-              str(root.parent), r["unsloth_home"])
+        check(
+            "bad record (directory): falls through to the marker",
+            str(root.parent),
+            r["unsloth_home"],
+        )
 
         print("\n[6] the record outranks a stale flat marker left in the Studio root")
         # A `--root R` install over a directory whose R/studio used to be a FLAT
@@ -254,10 +283,16 @@ def main() -> int:
         stale = _nested(tmp / "stale-flat", mode = 0o755, record = True)
         (stale / MARKER).write_text(f"{stale}\n")
         r = _run(stale / "unsloth_studio", home)
-        check("stale flat marker: the record still names the real master root",
-              str(stale.parent), r["unsloth_home"])
-        check("stale flat marker: llama.cpp beside studio/",
-              str(stale.parent / "llama.cpp"), r["llama"])
+        check(
+            "stale flat marker: the record still names the real master root",
+            str(stale.parent),
+            r["unsloth_home"],
+        )
+        check(
+            "stale flat marker: llama.cpp beside studio/",
+            str(stale.parent / "llama.cpp"),
+            r["llama"],
+        )
 
         print("\n[7] UNSLOTH_HOME from the environment still outranks everything")
         override = tmp / "explicit"
