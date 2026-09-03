@@ -1164,3 +1164,67 @@ def test_cancellation_does_not_delete_a_replacement_workers_store():
 
         shutil.rmtree(replacement, ignore_errors = True)
         o._token_store = None
+
+
+def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_path):
+    """An absolute snapshot path is local only in spelling, and /hub/cached-models hands API
+    callers exactly these ids."""
+    from core.export import export as export_backend_module
+
+    snap = tmp_path / "models--meta-llama--Llama-3.1-8B-Instruct" / "snapshots" / "abc123"
+    snap.mkdir(parents = True)
+
+    assert export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
+    assert export_backend_module._needs_anonymous_authorization(str(snap)) is True
+    # A checkpoint the user trained is still exempt.
+    plain = tmp_path / "outputs" / "my-run"
+    plain.mkdir(parents = True)
+    assert export_backend_module._needs_anonymous_authorization(str(plain)) is False
+    assert export_backend_module._remote_load_targets(str(snap))[0] == (
+        "meta-llama/Llama-3.1-8B-Instruct"
+    )
+
+    checked = []
+    monkeypatch.setattr(
+        export_backend_module,
+        "_anonymous_access_allowed",
+        lambda repo, offline: (checked.append(repo), (False, "refused"))[1],
+    )
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
+    monkeypatch.setattr(
+        export_backend_module,
+        "detect_audio_type",
+        lambda *a, **kw: pytest.fail("must refuse before touching the snapshot"),
+    )
+
+    backend = export_backend_module.ExportBackend()
+    ok, _msg = backend.load_checkpoint(checkpoint_path = str(snap), hf_token = False)
+    assert ok is False
+    assert checked == ["meta-llama/Llama-3.1-8B-Instruct"]
+
+
+def test_a_worker_that_dies_mid_export_has_its_token_store_reaped():
+    """_run_export catches the crash and returns, so no shutdown ever runs."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+    with open(os.path.join(store, "token"), "w") as fh:
+        fh.write("hf_caller_own_token")
+
+    class _Dead:
+        def is_alive(self):
+            return False
+
+    o._proc = _Dead()
+    o._read_resp = lambda timeout = None: None
+
+    # Through the real path: _wait_response is where the crash is noticed.
+    with pytest.raises(RuntimeError, match = "crashed during wait"):
+        o._wait_response("export_gguf_done", timeout = 1.0)
+
+    assert o._proc is None
+    assert not os.path.exists(store)

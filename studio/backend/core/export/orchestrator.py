@@ -324,6 +324,17 @@ class ExportOrchestrator:
         """atexit handler."""
         self._shutdown_subprocess(timeout = 5.0)
 
+    def _reap_dead_worker(self) -> None:
+        """Drop a worker that died on its own, store included.
+
+        An export that kills the worker surfaces as a RuntimeError that _run_export catches
+        and returns from, so no shutdown runs and the credential its store may hold would sit
+        in /tmp until the next load.
+        """
+        if self._proc is not None and not self._proc.is_alive():
+            self._proc = None
+            self._discard_token_store()
+
     def _new_token_store(self) -> str:
         """A private Hugging Face token directory for the next non-ambient worker.
 
@@ -398,6 +409,9 @@ class ExportOrchestrator:
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
+                    # The caller catches this and returns without shutting down, so the
+                    # dead worker's private token store has to be reaped here.
+                    self._reap_dead_worker()
                     raise RuntimeError("Export subprocess crashed during wait")
                 continue
 

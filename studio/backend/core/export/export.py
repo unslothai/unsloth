@@ -55,6 +55,29 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 
+def _cache_snapshot_repo(local_path: str) -> Optional[str]:
+    """The repository a Hugging Face cache snapshot path belongs to, else None.
+
+    A path under ``models--org--repo/snapshots/<rev>`` is local only in spelling: it is the
+    operator's copy of a Hub repo, and /hub/cached-models hands API callers exactly these
+    absolute ids. Reuses the security gate's provenance recovery.
+    """
+    try:
+        from utils.security.file_security import _hf_cache_snapshot_ref
+
+        ref = _hf_cache_snapshot_ref(local_path)
+    except Exception:
+        return None
+    return ref[0] if ref else None
+
+
+def _needs_anonymous_authorization(checkpoint_path: str) -> bool:
+    """Whether an anonymous caller has to be authorized before loading this checkpoint."""
+    if not is_local_path(checkpoint_path):
+        return True
+    return _cache_snapshot_repo(checkpoint_path) is not None
+
+
 def _remote_load_targets(checkpoint_path: str) -> List[str]:
     """Every remote repository a load of *checkpoint_path* will reach.
 
@@ -62,7 +85,7 @@ def _remote_load_targets(checkpoint_path: str) -> List[str]:
     adapter_config points at, which the loader follows on its own. Authorizing only the
     adapter would let a public one stand in front of a cached private base.
     """
-    targets = [checkpoint_path]
+    targets = [_cache_snapshot_repo(checkpoint_path) or checkpoint_path]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
         base = get_base_model_from_lora_identifier(checkpoint_path, False)
@@ -571,7 +594,7 @@ class ExportBackend:
             # local LoRA (Studio's main flow, and MCP is always non-ambient) over a base the
             # caller never named. That leaves reading a private base through a crafted local
             # adapter_config, which needs a separate write onto this host.
-            if is_anonymous(token) and not is_local_path(checkpoint_path):
+            if is_anonymous(token) and _needs_anonymous_authorization(checkpoint_path):
                 for target in _remote_load_targets(checkpoint_path):
                     allowed, why = _anonymous_access_allowed(target, local_files_only)
                     if not allowed:
