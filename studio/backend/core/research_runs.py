@@ -83,9 +83,10 @@ _MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 _SYNTHESIS_MAX_TOKENS = 16_384
-# What the client sends for a model it has no published cap for
-# (EXTERNAL_MAX_OUTPUT_TOKENS in features/chat/provider-capabilities.ts).
-_EXTERNAL_MAX_OUTPUT_TOKENS = 32_768
+# Streaming progress is persisted as a full row snapshot; these bound how often that happens.
+_PROGRESS_FLUSH_CHARS = 512
+_PROGRESS_FLUSH_SECONDS = 0.25
+_PROGRESS_FLUSH_CHARS_PER_SECOND = 1_048_576
 # Providers whose thinking answers truncate below a floor; mirrors
 # EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER in the same client module.
 _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER = {"kimi": 16_000}
@@ -448,11 +449,12 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
     else:
         # A run created before the client sent its resolved ceiling falls back to here. The
         # saved cap belongs to the connection, not to this run's model -- one connection
-        # fronts many models, and the client bounds it by that model's documented ceiling
-        # before sending it, using a table this side does not have. Bound it instead by what
-        # the client itself sends for a model nothing documents, so a cap set for a
-        # 256k-output model cannot become this run's budget.
-        budget = min(saved, _EXTERNAL_MAX_OUTPUT_TOKENS) if saved else _SYNTHESIS_MAX_TOKENS
+        # fronts many models, and only the client has the table that bounds it by the
+        # selected model's documented ceiling (claude-opus-4-1 stops at 32_000 while a
+        # connection may be saved at 32_768). Without that table this side cannot raise the
+        # budget safely at all, so a legacy run keeps the default it already had; the saved
+        # cap may still lower it.
+        budget = min(saved, _SYNTHESIS_MAX_TOKENS) if saved else _SYNTHESIS_MAX_TOKENS
     # The chat path never hands a connection less than its provider's floor, because below it
     # a thinking answer is cut off before the report starts. A saved cap is allowed to lower
     # the budget, but not past that.
@@ -1730,10 +1732,21 @@ class ResearchSupervisor:
                                     run["id"], phase, call_id, report, emitted_labels
                                 )
                         pending_chars = len(pending_reasoning) + len(pending_report)
+                        # Every flush rewrites the whole report row, so a fixed threshold
+                        # makes persistence quadratic in the report length. That was cheap
+                        # while the report stopped at 16k tokens; at the ceilings a saved
+                        # connection unlocks it is gigabytes through the shared writer. Both
+                        # triggers therefore slow down as the report grows.
+                        written = len(report) + len(reasoning)
+                        flush_chars = max(_PROGRESS_FLUSH_CHARS, written // 64)
+                        flush_seconds = max(
+                            _PROGRESS_FLUSH_SECONDS, written / _PROGRESS_FLUSH_CHARS_PER_SECOND
+                        )
                         if (
-                            pending_chars >= 512
+                            pending_chars >= flush_chars
                             or pending_chars > 0
-                            and asyncio.get_running_loop().time() - last_progress_flush >= 0.25
+                            and asyncio.get_running_loop().time() - last_progress_flush
+                            >= flush_seconds
                         ):
                             await flush_progress()
                     if semantic_output_at is None:

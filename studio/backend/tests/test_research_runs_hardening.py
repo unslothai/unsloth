@@ -430,23 +430,35 @@ def test_a_saved_connection_cap_below_the_default_is_honoured(monkeypatch):
     assert _synthesis_max_tokens(inference) == 8_192
 
 
-def test_a_saved_connection_reports_its_own_budget(monkeypatch):
+def test_a_saved_cap_above_the_default_does_not_raise_a_legacy_run(monkeypatch):
     monkeypatch.setattr(
         research_runs.providers_db,
         "get_provider",
         lambda _id: {"max_output_tokens": 32_768},
     )
     inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_client_ceiling_is_what_actually_raises_the_report_budget(monkeypatch):
+    """The mainstream path: the client resolved this against the run's own model."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "ollama",
+        "providerId": "p1",
+        "externalModel": "glm-5.3-flash",
+        "maxOutputTokens": 32_768,
+    }
     assert _synthesis_max_tokens(inference) == 32_768
 
 
-def test_a_saved_connection_cap_cannot_exceed_an_undocumented_model_ceiling(monkeypatch):
+def test_a_legacy_run_keeps_the_default_rather_than_guessing_upwards(monkeypatch):
     """The saved cap is connection-wide, so for this run's model it is a guess.
 
-    One connection fronts many models: a cap set for a 256k-output model must not become the
-    budget for a smaller one. The client bounds it by that model's documented ceiling, using a
-    table the worker does not have, so the worker bounds it by what the client sends for a
-    model nothing documents.
+    Only the client holds the table that bounds a connection by the selected model's
+    documented ceiling, so without a ceiling from the client this side cannot raise the
+    budget at all: claude-opus-4-1 stops at 32_000 while its connection may be saved at
+    32_768, and a provider that rejects an over-limit request fails the finished run.
     """
     monkeypatch.setattr(
         research_runs.providers_db,
@@ -454,7 +466,7 @@ def test_a_saved_connection_cap_cannot_exceed_an_undocumented_model_ceiling(monk
         lambda _id: {"max_output_tokens": 256_000},
     )
     inference = {"providerType": "gemini", "providerId": "p1", "externalModel": "gemini-3.6-flash"}
-    assert _synthesis_max_tokens(inference) == research_runs._EXTERNAL_MAX_OUTPUT_TOKENS
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
 
 
 @pytest.mark.parametrize(
