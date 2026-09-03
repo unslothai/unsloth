@@ -3127,7 +3127,9 @@ _maybe_reroute_strixhalo_to_2404() {
 
     echo ""
     substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-    substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
+    # Announcing the target, not the decision. Two arms below decline to reroute after this
+    # line, so the promise to continue there is made once both have passed, not before them.
+    substep "Found an existing $_rr_target distro." "$C_OK"
     # A --local checkout can't be replayed by a piped web install (the repo isn't in the target
     # distro), so tell the user to re-run there rather than silently run a different install.
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
@@ -3138,9 +3140,41 @@ _maybe_reroute_strixhalo_to_2404() {
         UNSLOTH_SKIP_ROCM_WSL_SETUP=1
         return 0
     fi
+    _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+    # Portable mode names a DIRECTORY, and the reroute runs the install in a different WSL
+    # distribution, which has its own root filesystem -- one ext4 VHDX per distro, each
+    # chrooted into its own mount namespace. So `--root /opt/unsloth` forwarded into
+    # $_rr_target would create /opt/unsloth over THERE, which is not the /opt/unsloth the
+    # user is looking at here, and they would never see it. The one path family that really
+    # is shared is the Windows drives under /mnt/<letter>, and this side cannot recognize
+    # those: `[automount] root` and `[automount] enabled` live in each distro's OWN
+    # /etc/wsl.conf, so a /mnt/c path can be a plain local directory in this distro, or be
+    # absent in the target, and a genuinely shared drive can be spelled /c/... instead. The
+    # prefix test is therefore wrong in both directions, and guessing wrong installs into a
+    # directory nobody named -- the failure this guard exists to end.
+    #
+    # Dropping the flags instead, which is what happened before this guard, was not the safe
+    # option: $STUDIO_HOME IS forwarded (the export below fires for every portable run, since
+    # portable mode always takes the env branch of _resolve_studio_destinations), so the child
+    # built a plain NORMAL install at the portable path -- no master root, no
+    # .unsloth-portable-root marker, caches back under $HOME -- and said nothing about it.
+    # Refuse and hand the choice to the user instead, exactly as the --local arm above does:
+    # only they know whether that path means anything in $_rr_target. The suggested command
+    # carries their own root so it is runnable as printed when the root is on a Windows drive.
+    if [ "$_PORTABLE_MODE" = true ]; then
+        _rr_root="${UNSLOTH_ROOT:-$_UNSLOTH_ROOT}"
+        substep "This is a portable install (root $_rr_root), and $_rr_target has its own" "$C_WARN"
+        substep "filesystem, so that path is not the same directory there. Re-run it in" "$C_WARN"
+        substep "$_rr_target yourself, against a root that exists in that distro:" "$C_WARN"
+        substep "  wsl -d $_rr_target -- bash -lc \"curl -fsSL https://unsloth.ai/install.sh | sh -s -- --root $(_rr_q "$_rr_root")\"" "$C_WARN"
+        substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+        # Unsupported distro and no reroute: skip the origin ROCm bootstrap, same as --local.
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+        return 0
+    fi
+    substep "Continuing the GPU install there." "$C_OK"
     # Forward the caller's options/env (custom package/python/home) so the rerouted
     # install matches what was asked for, not a default install.
-    _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
@@ -3169,13 +3203,16 @@ _maybe_reroute_strixhalo_to_2404() {
     wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
     if [ "$_rr_rc" -eq 0 ]; then
         # The install happened in $_rr_target. Nothing was built in THIS distro, and this exit
-        # is a success, so the EXIT handler keeps everything the publish put here rather than
-        # unwinding it: a --root run that rerouted would leave a portable marker and a master
-        # root record describing a tree with no venv in it, and over an existing normal install
-        # at <root>/studio it would convert that install's path resolution outright. The
-        # reroute does not forward --root either, so the child is not the portable install
-        # those records would be claiming. Same call the failure handler makes, for the same
-        # reason -- this distro is going back to how it was found.
+        # is a success, so the EXIT handler keeps whatever this run wrote here rather than
+        # unwinding it, and this distro would keep records describing a tree with no venv in
+        # it. Portable runs no longer get here at all (the guard above refuses to reroute
+        # them), but a NORMAL run reaching this point has still been through
+        # _clear_stale_portable_marker, which RETIRES an earlier portable install's marker,
+        # master-root record and launcher at this path and snapshots them into the same slots.
+        # Leaving that cleared is the mirror of the same bug: the working portable install
+        # this run displaced, and then did not replace, would stay demoted. Same call the
+        # failure handler makes, for the same reason -- this distro is going back to how it
+        # was found.
         _restore_portable_marker
         exit 0
     fi

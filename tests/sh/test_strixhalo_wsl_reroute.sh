@@ -46,6 +46,14 @@ build_func() {
     {
         echo 'substep() { printf "  %s\n" "$1"; }'
         echo 'C_WARN=""; C_OK=""'
+        # Every helper the function calls that is defined OUTSIDE the extracted range is
+        # stubbed here. Without these the lifted copy runs them as command-not-found: same
+        # observable result today (both probes are negative, the restore is a no-op), but it
+        # is inertness rather than a decision, and a guard that grew a call to one of them
+        # would go silently dead while these assertions stayed green.
+        echo '_has_usable_nvidia_gpu() { return 1; }'   # no NVIDIA -> AMD reroute is allowed
+        echo '_wsl_amd_gpu_name() { return 1; }'        # WMI probe unavailable; /proc/cpuinfo decides
+        echo '_restore_portable_marker() { printf "  __RESTORE_MARKER__\n"; }'
         sed -n '/^_maybe_reroute_strixhalo_to_2404()/,/^}/p' "$INSTALL_SH"
     } | sed \
         -e "s#/dev/dxg#$_fix/dxg#g" \
@@ -100,6 +108,7 @@ run_func() {
     env PATH="$_fix/bin:$PATH" \
         OS=wsl SKIP_TORCH=false \
         UNSLOTH_SKIP_ROCM_WSL_SETUP=0 UNSLOTH_WSL_REROUTED=0 \
+        _PORTABLE_MODE=false \
         UNSLOTH_WSL_REROUTE_CMD='echo __ROUTED__' \
         "$@" \
         bash -c ". '$_func'; _maybe_reroute_strixhalo_to_2404; echo SKIP_ROCM=\$UNSLOTH_SKIP_ROCM_WSL_SETUP; echo __NOROUTE__" 2>&1
@@ -324,6 +333,88 @@ _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='exit 2') || _rc=$?
 if [ "$_rc" = "0" ]; then echo "  PASS: non-tauri exit 2 -> not propagated"; PASS=$((PASS+1)); else echo "  FAIL: non-tauri exit 2 wrongly propagated (rc=$_rc)"; FAIL=$((FAIL+1)); fi
 assert_contains "non-tauri child fail -> CPU fallback"            "$_out" "__NOROUTE__"
 assert_contains "non-tauri child fail -> skip ROCm bootstrap"     "$_out" "SKIP_ROCM=1"
+rm -rf "$_d"
+
+# 29) A PORTABLE install (--root / --portable / UNSLOTH_HOME / UNSLOTH_PORTABLE) must NOT be
+#     rerouted. --root names a directory, and the target distro has its own root filesystem,
+#     so the same path there is a different directory. Rerouting anyway forwarded
+#     UNSLOTH_STUDIO_HOME but neither --root nor --portable, so the child built a plain NORMAL
+#     install at the portable path -- no master root, no marker -- and said nothing about it.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _PORTABLE_MODE=true UNSLOTH_ROOT=/opt/unsloth STUDIO_HOME=/opt/unsloth/studio \
+        _STUDIO_HOME_REDIRECT=env)
+assert_contains "portable -> no auto-reroute"            "$_out" "__NOROUTE__"
+assert_absent   "portable -> reroute command not run"    "$_out" "__ROUTED__"
+assert_contains "portable -> says the target filesystem differs" "$_out" "has its own"
+# No bare "/opt/unsloth" assertion here: the pre-fix output forwards the root inside
+# UNSLOTH_STUDIO_HOME, so a substring test on the path alone passes with the guard removed.
+# The full command below is the one that only the refusal can satisfy.
+assert_contains "portable -> prints a runnable re-run command" \
+    "$_out" "wsl -d Ubuntu-24.04 -- bash -lc \"curl -fsSL https://unsloth.ai/install.sh | sh -s -- --root '/opt/unsloth'\""
+assert_contains "portable -> skip ROCm bootstrap"        "$_out" "SKIP_ROCM=1"
+# The promise to continue in the target is printed only once both decline-arms have passed,
+# so a refused reroute must never claim it is continuing there.
+assert_absent   "portable -> does not claim it continues there" "$_out" "Continuing the GPU install there."
+rm -rf "$_d"
+
+# 30) The silent downgrade itself: a refused portable reroute must not hand the child the
+#     portable path as a NORMAL install. Nothing may be exported into a child at all here.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _PORTABLE_MODE=true UNSLOTH_ROOT=/opt/unsloth STUDIO_HOME=/opt/unsloth/studio \
+        _STUDIO_HOME_REDIRECT=env \
+        UNSLOTH_WSL_REROUTE_CMD='echo home=[$UNSLOTH_STUDIO_HOME] portable=[$UNSLOTH_PORTABLE]')
+assert_absent   "portable -> STUDIO_HOME not forwarded as a normal install" "$_out" "home=["
+assert_contains "portable -> stays in this distro"       "$_out" "__NOROUTE__"
+rm -rf "$_d"
+
+# 31) Env-seeded portable (`UNSLOTH_PORTABLE=1 curl ... | sh`, the piped form) reaches the
+#     same guard: the parse block folds every spelling into _PORTABLE_MODE before this runs.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _PORTABLE_MODE=true _UNSLOTH_ROOT=/home/u/.unsloth UNSLOTH_ROOT= \
+        _STUDIO_HOME_REDIRECT=env STUDIO_HOME=/home/u/.unsloth/studio)
+assert_contains "env-seeded portable -> no reroute"      "$_out" "__NOROUTE__"
+assert_contains "env-seeded portable -> falls back to _UNSLOTH_ROOT in the message" \
+    "$_out" "--root '/home/u/.unsloth'"
+rm -rf "$_d"
+
+# 32) A /mnt/c root is refused too, deliberately. It LOOKS shared, but [automount] root and
+#     [automount] enabled are per-distro /etc/wsl.conf settings that this distro cannot read
+#     for the target, so the prefix is not evidence. The printed command is runnable as-is
+#     for the user who knows their target does automount it.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _PORTABLE_MODE=true UNSLOTH_ROOT=/mnt/c/unsloth STUDIO_HOME=/mnt/c/unsloth/studio \
+        _STUDIO_HOME_REDIRECT=env)
+assert_contains "/mnt/c root -> still refused"           "$_out" "__NOROUTE__"
+assert_absent   "/mnt/c root -> reroute command not run" "$_out" "__ROUTED__"
+assert_contains "/mnt/c root -> command carries that root" "$_out" "--root '/mnt/c/unsloth'"
+rm -rf "$_d"
+
+# 33) PIN: a NON-portable install with a custom STUDIO_HOME must still reroute exactly as
+#     before, with the home forwarded. Without this the portable guard could collapse into
+#     refusing every reroute and every other assertion here would still pass.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _PORTABLE_MODE=false _STUDIO_HOME_REDIRECT=env STUDIO_HOME=/custom/studio \
+        UNSLOTH_WSL_REROUTE_CMD='echo home=[$UNSLOTH_STUDIO_HOME]')
+assert_contains "non-portable custom home -> still routes"   "$_out" "home=[/custom/studio]"
+assert_absent   "non-portable custom home -> does not refuse" "$_out" "has its own"
+rm -rf "$_d"
+
+# 34) PIN: a plain default install still reroutes, and the success path still unwinds the
+#     records this distro cleared (a normal run retires an earlier portable install's marker
+#     before it knows it is going to reroute).
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d")
+assert_contains "default install -> still routes"        "$_out" "__ROUTED__"
+assert_contains "default install -> announces it continues there" "$_out" "Continuing the GPU install there."
+assert_contains "successful reroute -> unwinds this distro's records" "$_out" "__RESTORE_MARKER__"
+rm -rf "$_d"
+
+# 35) A quote in the root is escaped in the printed command, so a copy-paste of the
+#     suggestion cannot break out of the shell quoting it is pasted into.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _PORTABLE_MODE=true "UNSLOTH_ROOT=/opt/o'brien" \
+        "STUDIO_HOME=/opt/o'brien/studio" _STUDIO_HOME_REDIRECT=env)
+assert_contains "quoted root -> escaped in the re-run command" "$_out" "--root '/opt/o'\\''brien'"
 rm -rf "$_d"
 
 echo ""
