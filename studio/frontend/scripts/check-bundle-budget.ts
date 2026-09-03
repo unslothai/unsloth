@@ -306,10 +306,9 @@ function main(): number {
 
   // Vite's own output only: a parser-blocking classic script is no evidence the module graph was
   // read correctly. A code-split build here is dozens of chunks, so one or none means the shape
-  // read here has changed and the number below is fiction. Scripts and links count together rather
-  // than both being required, since an entry module of nothing but imports is inlined per chunk
-  // with no preload links; but at least one entry is required on top, because preloads announce the
-  // entry's import closure, so links surviving without it means the entry was read wrong.
+  // has changed and the number below is fiction. Counted together rather than both required, since
+  // an entry of nothing but imports is inlined per chunk with no preloads; one entry is required
+  // on top, because preloads announce its import closure, so links without it read it wrong.
   const fromVite = entry.length + preloads.length;
   if (entry.length === 0 || fromVite < 2) {
     console.error(

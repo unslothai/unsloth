@@ -1761,10 +1761,10 @@ test("a full ceiling behind a block boundary still ends on a boundary", () => {
 });
 
 test("a cut in the middle of the document is unsafe on both sides", () => {
-  // The separator written where a node was cut is not the boundary it looks like. What was dropped
-  // is still on the page between the two, so it can carry on from the text before the separator and
-  // into the text after it. A single flag for the end of the walk forgot the cut as soon as
-  // anything else was indexed.
+  // The separator written where a node was cut is not the boundary it looks like: what was dropped
+  // is still on the page between the two, so it can carry on from the text before the separator
+  // into the text after. A single flag for the end of the walk forgot the cut as soon as anything
+  // else was indexed.
   // Spelt out, not as a precomposed syllable: the cut has to fall between the vowel form and the
   // Jamo that closes it, which is the whole point of the case.
   const index = buildTextIndex(
@@ -2268,11 +2268,10 @@ test("nothing below U+0300 can join a grapheme, which is what the fast path rest
 });
 
 test("the segmenter fallback never misaligns, checked against the platform", () => {
-  // The case list above is the cases that were once wrong. This is the property behind them, held
-  // against `Intl.Segmenter` over a corpus built from every shape that has caused trouble: no match
-  // the fallback returns may begin or end anywhere the platform would not break. It is allowed to
-  // find less than the platform does, never to cut a grapheme, and it found this file's whole
-  // Prepend set missing before anyone else did.
+  // The list above is the cases that were once wrong; this is the property behind them, held
+  // against `Intl.Segmenter` over a corpus of every shape that has caused trouble. No match the
+  // fallback returns may begin or end where the platform would not break: it may find less than
+  // the platform does, never cut a grapheme. This is what caught the missing Prepend set.
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const at = (code: number) => String.fromCodePoint(code);
   const pieces = [

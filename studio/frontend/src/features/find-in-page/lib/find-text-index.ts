@@ -274,9 +274,8 @@ export function buildTextIndex(
   /** See `FindTextIndex.unsafe`. */
   const unsafe = new Set<number>();
   /** What was dropped, while the separator now due stands for that rather than for a block
-   *  boundary. It is the only thing that can say whether the next node begins where it looks like
-   *  it does, and it is readable here and nowhere later. Null at a real boundary, which takes the
-   *  window state with it. */
+   *  boundary. The only thing that can say whether the next node begins where it looks like it
+   *  does, and readable here and nowhere later. Null at a real boundary. */
   let pendingClip: ClipContext | null = null;
   /** Where a run of regional indicators resumes after a cut that fell inside one. */
   const regionalCuts: number[] = [];
@@ -479,20 +478,17 @@ const PREPEND_PATTERN =
  *  what makes searching across blocks safe. */
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 /** Never begins a grapheme: Extend and ZWJ (GB9), SpacingMark (GB9a), and the trailing half of a
- *  surrogate pair, which is not a character at all. UAX 29 derives Extend as Grapheme_Extend OR
- *  Emoji_Modifier, and a skin tone is only the second of those: it is `Sk`, so the marks alone
- *  left one showing as its own grapheme. The last two below are SpacingMark without being `Mc`:
- *  asking the segmenter which code points attach to a plain letter, over every one of them, turns
- *  up these two and nothing else. */
+ *  surrogate pair. UAX 29 derives Extend as Grapheme_Extend OR Emoji_Modifier, and a skin tone is
+ *  only the second: it is `Sk`, so the marks alone left one showing as its own grapheme. The last
+ *  two are the whole of SpacingMark outside `Mc`, per a sweep of every code point. */
 const EXTEND_PATTERN = /[\p{Grapheme_Extend}\p{Emoji_Modifier}]/u;
 const EXTENDS_LEFT_PATTERN =
   /[\p{Grapheme_Extend}\p{Emoji_Modifier}\p{Mc}\u200d\u{e33}\u{eb3}]/u;
 
-/** The marks that join the letter after them to the one before (GB9c). Not derivable from a
- *  property escape, which has no `InCB`, so this is the set the segmenter itself joins on: every
- *  mark for which a letter, that mark and the same letter make one cluster, where the two letters
- *  make two without it. That control matters: without it Thai and Lao vowels come back as linkers
- *  on the strength of pairs that were already one cluster. */
+/** The marks that join the letter after them to the one before (GB9c). No property escape has
+ *  `InCB`, so this is the set the segmenter itself joins on: every mark for which a letter, that
+ *  mark and the same letter make one cluster, where the two letters make two without it. The
+ *  control half matters, or Thai and Lao vowels come back as linkers on pairs already joined. */
 const LINKER_PATTERN =
   /[\u{94d}\u{9cd}\u{acd}\u{b4d}\u{c4d}\u{d4d}\u{1039}\u{17d2}\u{1a60}\u{1b44}\u{1bab}\u{a9c0}\u{aaf6}\u{10a3f}\u{11133}\u{113d0}\u{1193e}\u{11a47}\u{11a99}\u{11f42}]/u;
 
@@ -532,11 +528,9 @@ interface ClipContext {
 }
 
 /** As much of the end of `dropped` as the junction can turn on: the run of things a rule chains
- *  through, and the one code point they hang from.
- *
- *  Enough context and `continuesGrapheme` answers the junction on its own, which is the point: a
- *  short-circuit on what the dropped tail was could only ever say no, and a closed syllable or an
- *  even run of regional indicators lets the next node begin exactly where it looks like it does. */
+ *  through, and the one code point they hang from. That is enough for `continuesGrapheme` to
+ *  answer the junction on its own, which is the point: a closed syllable or an even run of
+ *  regional indicators lets the next node begin exactly where it looks like it does. */
 function clipContext(dropped: string): ClipContext {
   let at = dropped.length;
   for (let seen = 0; seen < CLIP_CONTEXT_LIMIT; seen += 1) {
@@ -624,12 +618,11 @@ function reaches(context: ClipContext, point: string): boolean {
 
 /**
  * Whether a grapheme carries on across `at`, for engines with no `Intl.Segmenter`: Firefox shipped
- * one only in 125, Vite's default target reaches back to 114, and ESR 115 is still in the field. On
- * those the alternative is taking every candidate unchecked, which is the defect this file exists
- * to fix.
+ * one only in 125, Vite's default target reaches back to 114, and ESR 115 is still in the field.
+ * The alternative there is taking every candidate unchecked, the defect this file exists to fix.
  *
- * The rules this feature can actually run into, by Unicode property where one exists rather than by
- * hand-listed range: the joiners, Prepend, Hangul, regional indicator parity, GB9c and GB11.
+ * Covers the rules this feature can run into, by Unicode property wherever one exists rather than
+ * by hand-listed range: the joiners, Prepend, Hangul, regional indicator parity, GB9c and GB11.
  */
 function continuesGrapheme(text: string, at: number, runStart = -1): boolean {
   // Whole code points, not code units: a property escape asked about half a surrogate pair sees a
@@ -677,7 +670,7 @@ function continuesGrapheme(text: string, at: number, runStart = -1): boolean {
 
 /**
  * Per cluster, because alternating whole spellings of the WHOLE query reaches only all-composed or
- * all-decomposed text, and one occurrence can be neither: two text nodes joined join two sources,
+ * all-decomposed text, and one occurrence can be neither: joining two text nodes joins two sources,
  * so
  * `café` in one and `café` in the next make one visible word with a spelling the query
  * cannot be written in. Every engine's own find matches it. */
@@ -705,8 +698,8 @@ function canonicalSource(needle: string, dotted: boolean): string {
     }
     // Longest first, as `canonicalVariants` is: alternation takes the first that fits, so a short
     // spelling that is a prefix of a long one wins and the rest of the cluster is left outside the
-    // match. `i` before `i` plus its combining dot ended the match inside the grapheme, and the
-    // boundary check then threw the occurrence away rather than reaching for the longer spelling.
+    // match: `i` before `i` plus its combining dot ended the match inside the grapheme, and the
+    // boundary check threw the occurrence away rather than reaching for the longer spelling.
     if (spellings.length > 1) spellings.sort((a, b) => b.length - a.length);
     out +=
       spellings.length === 1
@@ -718,8 +711,7 @@ function canonicalSource(needle: string, dotted: boolean): string {
 
 /** The index's segmentation, made at the first match that needs one and kept for as long as the
  *  index lives. Making it walks nothing: `containing` seeks to the offset asked about, so a 4M
- *  index costs 4ms once and a fraction of a microsecond a question, where segmenting a block to
- *  fill a table of its boundaries cost 250ms for every block a match landed in. */
+ *  index costs 4ms once and a fraction of a microsecond a question. */
 const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
@@ -747,14 +739,14 @@ function graphemeSegmenter() {
 /**
  * True when `[start, end)` begins and ends where a grapheme does.
  *
- * Asked of the platform rather than answered here. Seven rounds of review found seven ways to land
- * inside a cluster, each a Unicode range that had not been enumerated, and there is no end to that
- * list. The segmenter already knows the whole of UAX 29 and is kept current with it.
+ * Asked of the platform rather than answered here. Enumerating the ranges by hand kept missing
+ * ways to land inside a cluster, one more each round, and there is no end to that list; the
+ * segmenter already knows the whole of UAX 29 and is kept current with it.
  *
- * Asked one offset at a time, not by segmenting anything: the segmentation seeks, so neither the
- * size of the index nor where in it the match landed costs anything. Segmenting whole blocks to
- * fill a table of their boundaries, which is what this did before, paid 250ms per block for the
- * one or two offsets a match actually asks about, and paid it again on every reindex.
+ * Asked one offset at a time, not by segmenting anything, so neither the size of the index nor
+ * where in it the match landed costs anything. Filling a table of a block's boundaries instead
+ * paid 250ms per block for the one or two offsets a match asks about, and paid it again on every
+ * reindex.
  */
 function alignsToGraphemes(
   index: FindTextIndex,
@@ -765,10 +757,10 @@ function alignsToGraphemes(
   const cut =
     index.unsafe.size > 0 && (index.unsafe.has(start) || index.unsafe.has(end));
   // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
-  // far more than looking. Nothing below U+0300 extends a grapheme: the lowest combining mark is
+  // far more than looking. Nothing below U+0300 joins a grapheme: the lowest combining mark is
   // U+0300, the lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and
-  // everything astral arrives here as a surrogate. Both sides of each edge, since the query can
-  // itself begin or end with one. Latin prose therefore pays four comparisons.
+  // everything astral arrives as a surrogate. Both sides of each edge, since the query can itself
+  // begin or end with one, so Latin prose pays four comparisons.
   if (
     !cut &&
     !(start > 0 && JOINS_GRAPHEME.test(text[start - 1])) &&
