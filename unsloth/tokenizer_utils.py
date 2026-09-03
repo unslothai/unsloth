@@ -1665,7 +1665,7 @@ def patch_sft_trainer_tokenizer():
             "fix_zero_training_loss(self.model, tokenizer, self.train_dataset)\n\n"
         )
 
-        # Also DPO weirdly tokenizes non numeric columns? Delete them!
+        # Warn on gradient accumulation steps if it's used
         check_text += (
             "\n"
             "try:\n"

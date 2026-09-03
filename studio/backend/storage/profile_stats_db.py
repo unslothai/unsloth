@@ -226,7 +226,7 @@ def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
         total_tokens = _as_int(row["total_tokens"])
         fold.prompt_tokens += prompt_tokens
         fold.completion_tokens += completion_tokens
-        # Preserve the provider's authoritative total even when it differs
+        # Preserve the provider's authoritative total even when it differs from the input/output sum.
         fold.total_tokens += total_tokens
         fold.requests += 1
 
@@ -364,7 +364,8 @@ def _fold_messages(conn, zone) -> _MessageFold:
         # single conversation, so counting them twice inflates the chat total.
         conversation_id = row["pair_id"] or thread_id
 
-        # A fork is its own visible conversation, so it counts towards the chat
+        # A fork is its own visible conversation, so it counts towards the chat total from the moment it exists, before
+        # any new turn is added.
         fold.threads.add(conversation_id)
 
         # Forking clones the whole ancestry keeping each copy's timestamp, so skip a clone while the row
@@ -588,7 +589,8 @@ def _training_stats(conn) -> dict[str, Any]:
         "recent": [
             {
                 "id": item["id"],
-                # A renamed run keeps the name the user gave it; otherwise fall
+                # A renamed run keeps the name the user gave it; otherwise fall back to the short model label rather
+                # than the full repo id.
                 "name": _clean_str(item["display_name"]) or _model_label(item["model_name"] or ""),
                 "modelLabel": _model_label(item["model_name"] or ""),
                 "datasetLabel": _model_label(item["dataset_name"] or ""),
