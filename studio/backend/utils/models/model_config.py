@@ -718,6 +718,47 @@ def _is_vlm(config) -> bool:
     )
 
 
+def _current_cached_snapshot(
+    model_name: str,
+    hf_token: HfTokenArg = None,
+    local_files_only: bool = False,
+):
+    """This repo's cached snapshot for its current commit, with the files the repo lists.
+
+    Returns ``(snapshot, filenames)``, or None when there is no such snapshot. The commit
+    and the file list both come from the repo document the request already reads, so a
+    snapshot accepted here is as current as a revalidating fetch would be, and callers can
+    tell a file the repo does not have from one that simply was not downloaded.
+
+    Learning the current commit is itself a network read, so a caller that asked for none
+    gets nothing here and falls back on paths that read the cache without one. Reading the
+    cache authorizes nothing, so an anonymous caller is refused it as elsewhere.
+    """
+    if local_files_only or is_anonymous(hf_token) or is_local_path(model_name):
+        return None
+    try:
+        repo_dir = get_cache_path(model_name)
+        # Cheap local check first: with nothing cached there is no snapshot to accept, and
+        # the repo document below would be a round trip spent to learn only that.
+        if repo_dir is None or not (Path(repo_dir) / "snapshots").is_dir():
+            return None
+        info = _hub_model_info(model_name, hf_token)
+        sha = getattr(info, "sha", None)
+        if not sha:
+            return None
+        snapshot = Path(repo_dir) / "snapshots" / str(sha)
+        if not snapshot.is_dir():
+            return None
+        listed = {
+            getattr(sibling, "rfilename", None)
+            for sibling in (getattr(info, "siblings", None) or ())
+        }
+        return snapshot, listed
+    except Exception as exc:
+        logger.debug("No current cached snapshot for '%s': %s", model_name, exc)
+        return None
+
+
 def _raw_config_has_vision_config(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1466,7 +1507,12 @@ def _detect_audio_from_tokenizer(
                     if snapshot is not None and snapshot.is_dir():
                         roots.append(snapshot)
 
+        current: list = []  # resolved lazily: only a negative answer needs it
+        # Whether a read here could stand in for the Hub copy, which is the only case that
+        # has to prove the file is whole rather than merely marker-free.
+        may_answer_for_hub = not local_files_only and not is_local_path(model_name)
         for root in roots:
+            root_read: set = set()
             for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
                 tok_file = root / tok_path
                 try:
@@ -1474,21 +1520,50 @@ def _detect_audio_from_tokenizer(
                         continue
                     raw = tok_file.read_text(encoding = "utf-8-sig")
                     if not _may_hold_audio_tokens(raw):
-                        # No marker anywhere, so no pattern can match. Counted as read
-                        # only when the file looks whole: a training run part-way through
-                        # writing its tokenizer would otherwise be a definitive "not
-                        # audio" and cached for the life of the process. A truncated file
-                        # stays unknown, exactly as it did when json.loads raised on it.
-                        if raw.rstrip().endswith("}"):
-                            read_any = True
+                        # No marker anywhere, so no pattern can match. Reading a local
+                        # checkpoint stops there: parsing these was the bulk of a cold
+                        # /loras scan, and the trailing "}" is enough to tell a whole file
+                        # from one a run is still writing. A read that will answer for the
+                        # Hub copy has to parse, since a half-written file ending in "}"
+                        # would otherwise be a definitive "not audio" cached for the life
+                        # of the process, with the markers in the part that never arrived.
+                        if may_answer_for_hub:
+                            try:
+                                json.loads(raw)
+                            except Exception:
+                                continue
+                        elif not raw.rstrip().endswith("}"):
+                            continue
+                        read_any = True
+                        root_read.add(tok_path)
                         continue
                     tok_config = json.loads(raw)
                     read_any = True
+                    root_read.add(tok_path)
                     result = _check_token_patterns(tok_config)
                     if result:
                         return result, True
                 except Exception as e:
                     logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
+            # Every tokenizer path the repo actually has was read here, so re-fetching them
+            # only re-reads what was just read -- and a repo with no ``LLM/`` layout pays a
+            # round trip to be told so. Anything less may answer positively but never
+            # negatively: a path that was not read still has somewhere for the markers to
+            # hide, and the answer below is cached for the life of the process.
+            if root_read and not is_local_path(model_name):
+                if not current:
+                    current.append(_current_cached_snapshot(model_name, hf_token, local_files_only))
+                snapshot = current[0]
+                if (
+                    snapshot is not None
+                    and root == snapshot[0]
+                    and all(
+                        path in root_read
+                        for path in _AUDIO_TOKENIZER_CONFIG_PATHS
+                        if path in snapshot[1]
+                    )
+                ):
+                    return None, True
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
