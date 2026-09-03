@@ -281,9 +281,22 @@ class TestGetGpuMemoryInfo:
         assert abs(result["free_gb"] - 6.0) < 0.01
 
     def test_mlx_free_is_bounded_by_the_metal_working_set(self):
-        result = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
+        result = self._mlx_memory_info(available_gb = 15, recommended_gb = 11, used_gb = 1.2)
 
-        assert abs(result["free_gb"] - 11.0) < 0.01
+        assert abs(result["free_gb"] - 9.8) < 0.01
+
+    def test_mlx_free_is_the_working_set_headroom_not_the_whole_cap(self):
+        """The cap covers every resident Metal resource, so a model already on
+        the GPU spends it. A 24 GB Mac with a 17.76 GB working set and 8 GB
+        resident has 9.76 GB left, not the 14 GB the host still has free."""
+        result = self._mlx_memory_info(available_gb = 14, recommended_gb = 17.76, used_gb = 8)
+
+        assert abs(result["free_gb"] - 9.76) < 0.01
+
+    def test_mlx_free_is_zero_once_the_working_set_is_spent(self):
+        result = self._mlx_memory_info(available_gb = 6, recommended_gb = 11, used_gb = 12)
+
+        assert result["free_gb"] == 0.0
 
     def test_mlx_free_survives_a_missing_working_set_size(self):
         result = self._mlx_memory_info(available_gb = 6, recommended_gb = 0)

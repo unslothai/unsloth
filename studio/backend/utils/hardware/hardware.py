@@ -2396,11 +2396,16 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
 
 
-def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
-    """What is available right now, bounded by the Metal working set.
+def _apple_unified_free_bytes(available_bytes: int, allocated_bytes: int, device_info: Any) -> int:
+    """What is available right now, bounded by the Metal working set headroom.
 
     Total RAM minus GPU-only usage counts host RAM as free, which the
     training-method policy then reads as room it does not have.
+
+    max_recommended_working_set_size bounds the total size of every resident
+    Metal resource, not one more allocation, so what is left is the cap minus
+    what the GPU already holds. Host-available already excludes those pages
+    (psutil reads free + inactive), so the two bounds are independent.
 
     A floor rather than a capacity: macOS reclaims compressed and file-backed
     pages, so MLX can still allocate past what psutil calls available. Reading
@@ -2412,7 +2417,9 @@ def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
         recommended = int(device_info.get("max_recommended_working_set_size") or 0)
     except Exception:
         recommended = 0
-    return min(free, recommended) if recommended > 0 else free
+    if recommended <= 0:
+        return free
+    return min(free, max(0, recommended - max(0, int(allocated_bytes or 0))))
 
 
 def _context_free_cuda_memory_info(
@@ -2677,7 +2684,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             except Exception:
                 info = {}
                 gpu_name = platform.machine() or "arm64"
-            free = _apple_unified_free_bytes(getattr(memory, "available", 0), info)
+            free = _apple_unified_free_bytes(getattr(memory, "available", 0), allocated, info)
 
             return {
                 "available": True,
