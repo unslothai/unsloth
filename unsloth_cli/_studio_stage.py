@@ -62,6 +62,25 @@ def _cli_master_root() -> Optional[Path]:
         return None
 
 
+def _containing_roots(studio_home: Path, resolved: Path) -> tuple[Path, ...]:
+    """Roots a master root is allowed to be, for a Studio root at *studio_home*.
+
+    Both spellings, because <master>/studio may ALREADY have been a symlink to
+    another volume: install.sh follows that layout rather than refusing it, so
+    the venv lands on the far volume while the marker stays at <master>, and
+    resolve() then names a directory the master root sits nowhere near. The
+    resolved-then-lexical pair storage_roots._venv_studio_home_candidates offers
+    for sys.prefix, resolved first so every tree that resolves today resolves
+    identically. abspath, not Path: it normalizes without touching the
+    filesystem, so the symlinked spelling survives where resolve() collapses it.
+    """
+    try:
+        lexical = Path(os.path.abspath(studio_home))
+    except (OSError, ValueError):
+        lexical = studio_home
+    return (resolved, resolved.parent, lexical, lexical.parent)
+
+
 def managed_helper_root(studio_home: Path) -> Path:
     """Directory holding node / llama.cpp / whisper.cpp for *studio_home*.
 
@@ -80,7 +99,7 @@ def managed_helper_root(studio_home: Path) -> Path:
     except (OSError, ValueError):
         resolved = studio_home
         is_legacy = studio_home == legacy
-    if master is not None and master in (resolved, resolved.parent):
+    if master is not None and master in _containing_roots(studio_home, resolved):
         return master
     return studio_home.parent if is_legacy else studio_home
 
