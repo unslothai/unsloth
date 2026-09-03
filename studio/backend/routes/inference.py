@@ -28,7 +28,17 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, Collection, List, NamedTuple, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 import functools
 import json
 import httpx
@@ -11953,6 +11963,55 @@ async def _prepare_load_placement(
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
+def _native_audio_cpu_load(config, request) -> bool:
+    """True when this load is a native audio model the user placed in CPU RAM.
+
+    Gated on the audio type on purpose: audio_device is documented as ignored
+    for everything else, so a chat model cannot send it to skip the VRAM guards
+    that read this.
+    """
+    from core.inference.audio_device import audio_device_forces_cpu
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    return getattr(config, "audio_type", None) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(
+        getattr(request, "audio_device", None)
+    )
+
+
+def _resident_audio_placement_matches(backend, request) -> bool:
+    """False when the resident audio model is not where this request wants it.
+
+    Reads the resident entry, not the requested config: this runs ahead of config
+    resolution, and the question is about the model already loaded. Only native
+    audio records a placement, so everything else keeps the shortcut. An entry
+    from before this existed has no key and is read as GPU, which is what those
+    loads did.
+    """
+    from core.inference.audio_device import audio_device_forces_cpu
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    resident = backend.models.get(backend.active_model_name, {})
+    if resident.get("audio_type") not in NATIVE_AUDIO_TYPES:
+        return True
+    return bool(resident.get("audio_cpu", False)) == audio_device_forces_cpu(
+        getattr(request, "audio_device", None)
+    )
+
+
+def _resident_audio_holds_no_gpu(backend) -> bool:
+    """True when the resident model is a native audio model placed in CPU RAM.
+
+    Same audio-type gate as the writer, so only an entry that really recorded a
+    CPU placement can skip the arbiter.
+    """
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    resident = backend.models.get(backend.active_model_name, {})
+    return resident.get("audio_type") in NATIVE_AUDIO_TYPES and bool(
+        resident.get("audio_cpu", False)
+    )
+
+
 async def _preflight_native_audio_placement(
     config: ModelConfig, request: LoadRequest | ValidateModelRequest, placement: _LoadPlacement
 ) -> _LoadPlacement:
@@ -11975,6 +12034,20 @@ async def _preflight_native_audio_placement(
             status_code = 400,
             detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
         )
+
+    # Before every VRAM question: sizing a CPU load refuses it on a full GPU.
+    if _native_audio_cpu_load(config, request):
+        if audio_type == "minimax_music3":
+            # The switch already evicted the resident model, so a doomed load costs it.
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "MiniMax Music 3 cannot be loaded into CPU RAM: its official local "
+                    "runtime requires an NVIDIA CUDA GPU. Set the audio device back to "
+                    "Auto to load this model."
+                ),
+            )
+        return placement
 
     automatic = not placement.requested_gpu_ids
     availability = (
@@ -12235,6 +12308,10 @@ def _guard_chat_load_against_training(
     """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
+
+    # Ahead of the diffusion branch, which would 409 a load that takes no VRAM.
+    if _native_audio_cpu_load(config, request):
+        return
 
     requested_gpu_ids = placement.requested_gpu_ids
     gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals
@@ -13419,6 +13496,8 @@ async def _load_model_impl(
                     backend.models.get(backend.active_model_name) or {},
                     request.max_seq_length,
                 )
+                # Without this the route reports already_loaded and nothing moves.
+                and _resident_audio_placement_matches(backend, request)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
@@ -13439,7 +13518,9 @@ async def _load_model_impl(
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
                 # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
-                await asyncio.to_thread(acquire_for, CHAT)
+                # Owns no GPU, so the arbiter would cancel a generation for nothing.
+                if not _resident_audio_holds_no_gpu(backend):
+                    await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
@@ -13701,7 +13782,9 @@ async def _load_model_impl(
         # ...but only when this load will actually use the GPU, exactly as the image and video loaders gate on their device:
         # a manual gpu_layers=0 load runs on CPU, so taking the arbiter would cancel an image/video generation for nothing.
         chat_load_needs_gpu = not (
-            config.is_gguf
+            # The non-GGUF case of the same thing: no VRAM, so no arbiter.
+            _native_audio_cpu_load(config, request)
+            or config.is_gguf
             and await asyncio.to_thread(
                 zero_vram_chat_load,
                 request.gpu_memory_mode,
@@ -14048,11 +14131,12 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             raise
 
-        # Shut down any export subprocess to free VRAM
+        # Free the export's VRAM, but only when this load wants VRAM: a CPU load masks
+        # the accelerators, so killing the user's export frees nothing it needs.
         try:
             from core.export import get_export_backend
             exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
+            if chat_load_needs_gpu and exp_backend.current_checkpoint:
                 logger.info("Shutting down export subprocess to free GPU memory for inference")
                 exp_backend._shutdown_subprocess()
                 exp_backend.current_checkpoint = None
@@ -14072,6 +14156,11 @@ async def _load_model_impl(
         _prior_alias = getattr(backend, "_openai_advertised_id", None)
         _prior_active = getattr(backend, "active_model_name", None)
         backend._openai_advertised_id = None
+        # Not after the load (held across a long download, the chat evictor cancels
+        # this very load) and not before it (until the previous worker exits, this
+        # claim is all that stops a second pipeline allocating over a resident model).
+        # load_model fires it in between; the post-load release covers a re-taken claim.
+        _release_chat_after_teardown = (lambda: release(CHAT)) if not chat_load_needs_gpu else None
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
@@ -14090,7 +14179,9 @@ async def _load_model_impl(
                 mlx_kv_bits = request.mlx_kv_bits,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
+                on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
+                audio_device = request.audio_device,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
@@ -14118,7 +14209,8 @@ async def _load_model_impl(
             )
 
         # Same guard the GGUF branch runs above: an Images/Video acquire can land between this load's cancellation and its publish, so this load undoes itself.
-        if current_owner() != CHAT:
+        # On a clean server the owner is None, so ungated this unloads what it loaded.
+        if chat_load_needs_gpu and current_owner() != CHAT:
             await asyncio.to_thread(backend.unload_model, config.identifier)
             # The worker's base CUDA context outlives the model unload, so kill it too.
             await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
@@ -14129,6 +14221,10 @@ async def _load_model_impl(
                     "so the load was cancelled. Unload that model, then try again."
                 ),
             )
+        if not chat_load_needs_gpu:
+            # This load replaced whatever held CHAT; leaving the claim makes the next
+            # Images/Video acquire evict a model that never used the GPU.
+            await asyncio.to_thread(release, CHAT)
 
         # Stamped here, not in backend.load_model: that entry is built in the load
         # subprocess and only a fixed model_info mirror crosses back, so it would
@@ -17436,7 +17532,9 @@ async def stt_load(
         _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
     )
     try:
-        await asyncio.to_thread(load_stt, payload.model, engine, cancel_event)
+        await asyncio.to_thread(
+            functools.partial(load_stt, payload.model, engine, cancel_event, device = payload.device)
+        )
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:
@@ -17481,6 +17579,7 @@ async def stt_validate(
 async def stt_unload(
     engine: Optional[str] = None,
     model: Optional[str] = None,
+    wait: bool = True,
     current_subject: str = Depends(get_current_subject),
 ):
     """Release the local STT model when dictation is idle.
@@ -17490,7 +17589,9 @@ async def stt_unload(
     release to the model the caller claims: a surface owns one model, and another
     can switch the same engine between that ownership check and this request
     arriving, so the sidecar re-checks under its own lock rather than releasing
-    whatever happens to be resident by then.
+    whatever happens to be resident by then. ``wait=false`` skips a sidecar that
+    is mid-transcription instead of draining it: a caller freeing memory as a
+    convenience must not cost the user a recording that is still being decoded.
     """
     if engine is None:
         engines = None
@@ -17507,7 +17608,9 @@ async def stt_unload(
     # is not, and only the former takes it positionally. Registry-side it sits
     # behind a `*`, so passing it positionally raised TypeError, which is the
     # state a fresh process is in before anything has loaded.
-    failed: list[str] = await asyncio.to_thread(unload_stt, engines, expected_model = model)
+    failed: list[str] = await asyncio.to_thread(
+        unload_stt, engines, expected_model = model, wait = wait
+    )
     if failed:
         raise HTTPException(
             status_code = 500,
@@ -17523,10 +17626,11 @@ async def _transcribe_audio_bytes(
     fast: bool,
     engine: Optional[str] = None,
     request: Optional[Request] = None,
+    device: Optional[str] = None,
 ) -> JSONResponse:
     """Run STT for already-decoded request bytes."""
     return JSONResponse(
-        content = await _transcribe_audio_result(raw, model, language, fast, engine, request)
+        content = await _transcribe_audio_result(raw, model, language, fast, engine, request, device)
     )
 
 
@@ -17537,6 +17641,7 @@ async def _transcribe_audio_result(
     fast: bool,
     engine: Optional[str] = None,
     request: Optional[Request] = None,
+    device: Optional[str] = None,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape."""
@@ -17580,7 +17685,9 @@ async def _transcribe_audio_result(
         # timers fired, which is what OOMs a device that fits either alone. A no-op once
         # the model is resident, so the steady state costs a residency check.
         load_stt, _ = _stt_lifecycle()
-        await asyncio.to_thread(load_stt, model, serving_engine, cancel_event)
+        await asyncio.to_thread(
+            functools.partial(load_stt, model, serving_engine, cancel_event, device = device)
+        )
         if cancel_event is None:
             result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
         else:
@@ -17655,7 +17762,13 @@ async def transcribe_audio(
     # Same disconnect cancellation as the raw and OpenAI routes: without the request
     # a client that goes away leaves the sidecar transcribing under its lock.
     return await _transcribe_audio_bytes(
-        raw, payload.model, payload.language, payload.fast, payload.engine, request
+        raw,
+        payload.model,
+        payload.language,
+        payload.fast,
+        payload.engine,
+        request,
+        payload.device,
     )
 
 
@@ -17666,6 +17779,9 @@ async def transcribe_audio_raw(
     language: Optional[str] = None,
     fast: bool = False,
     engine: Optional[str] = None,
+    # Same literal as the JSON models: a misspelled "cpu" falling through to auto
+    # would silently put the model back on the GPU. 422 instead.
+    device: Optional[Literal["auto", "cpu", "gpu"]] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     """Transcribe a raw audio body without base64 or JSON conversion overhead."""
@@ -17678,7 +17794,7 @@ async def transcribe_audio_raw(
         chunks.append(chunk)
     return JSONResponse(
         content = await _transcribe_audio_result(
-            b"".join(chunks), model, language, fast, engine, request
+            b"".join(chunks), model, language, fast, engine, request, device
         )
     )
 
