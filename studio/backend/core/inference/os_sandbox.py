@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 _SCAN_ENTRY_LIMIT = 100_000
 _PROBE_TIMEOUT_SECONDS = 8
 _PROBE_TOKEN = "UNSLOTH_OS_SANDBOX_PROBE_OK"
+_PROBE_UDP_TOKEN = b"UNSLOTH_OS_SANDBOX_UDP_PROBE"
 _LINUX_SYSTEM_ROOTS = (
     "/usr/bin",
     "/usr/sbin",
@@ -621,8 +622,7 @@ for family, address in ((socket.AF_INET, {ipv4_address!r}), (socket.AF_INET6, {i
         s.close()
 udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 try:
-    udp.sendto(b'probe', {udp_address!r})
-    raise AssertionError('UDP network was reachable')
+    udp.sendto({_PROBE_UDP_TOKEN!r}, {udp_address!r})
 except OSError:
     pass
 finally:
@@ -742,6 +742,18 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
                     False,
                     f"the restrictive live probe failed ({completed.returncode}): {detail}",
                 )
+            host_udp_socket.settimeout(0.05)
+            try:
+                udp_payload, _ = host_udp_socket.recvfrom(256)
+            except (TimeoutError, socket.timeout):
+                pass
+            else:
+                if udp_payload == _PROBE_UDP_TOKEN:
+                    return SandboxCapability(
+                        backend.identity,
+                        False,
+                        "the restrictive live probe reached the host UDP listener",
+                    )
     except subprocess.TimeoutExpired:
         return SandboxCapability(
             backend.identity, False, "the restrictive live probe timed out", transient = True

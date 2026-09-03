@@ -638,6 +638,9 @@ print('FILESYSTEM_BOUNDARY_OK')
 """
         try:
             completed = _run_native(workdir, code)
+            udp.settimeout(0.05)
+            with pytest.raises((TimeoutError, socket.timeout)):
+                udp.recvfrom(256)
         finally:
             os.close(high_fd)
         _assert_native_ok(completed)
@@ -722,11 +725,9 @@ denied(socket.AF_INET, {ipv4_address!r})
 denied(socket.AF_INET6, {ipv6_address!r})
 datagram = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 try:
-    datagram.sendto(b'probe', {udp_address!r})
+    datagram.sendto(b'UNSLOTH_TEST_UDP_PROBE', {udp_address!r})
 except OSError:
     pass
-else:
-    raise AssertionError('host UDP endpoint was reachable')
 finally:
     datagram.close()
 for host_socket in {host_unix_paths!r}:
