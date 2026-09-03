@@ -651,10 +651,11 @@ def test_export_backend_forwards_the_sentinel_into_the_gguf_lora_conversion(
         ("someone/private-model", "hf_caller_own_token", True, False),
         ("someone/private-model", None, True, False),
         ("/tmp/local-checkpoint", False, True, False),
-        # The regression the model_id form caused: a locally trained adapter names a Hub base,
-        # so testing the resolved id refused every offline export of a local LoRA, which is
-        # Studio's main flow and always non-ambient over MCP.
-        ("<local-lora-adapter>", False, True, False),
+        # A local adapter still pulls in its remote base, and offline that base cannot be
+        # authorized, so this is refused now. Online it is not: the base authorizes and the
+        # export proceeds, which is the ordinary case.
+        ("<local-lora-adapter>", False, True, True),
+        ("<local-lora-adapter>", False, False, False),
     ],
 )
 def test_offline_anonymous_load_will_not_read_the_operators_cache(
@@ -1028,35 +1029,6 @@ def test_a_remote_adapters_base_is_authorized_too(monkeypatch):
     assert checked == ["owner/public-adapter", "owner/private-base"]
 
 
-def test_a_local_checkpoints_base_is_not_authorized(monkeypatch, tmp_path):
-    """The exemption that keeps offline local LoRA exports working stays."""
-    from core.export import export as export_backend_module
-
-    monkeypatch.setattr(
-        export_backend_module,
-        "_anonymous_access_allowed",
-        lambda repo, offline: pytest.fail("a local checkpoint is not a remote target"),
-    )
-    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
-    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
-
-    reached = {}
-
-    def _probe(model_id, hf_token, local_files_only):
-        reached["probe"] = model_id
-        raise RuntimeError("stop")
-
-    monkeypatch.setattr(export_backend_module, "detect_audio_type", _probe)
-    (tmp_path / "adapter_config.json").write_text(
-        '{"base_model_name_or_path": "unsloth/llama-3.2-1B-Instruct", "peft_type": "LORA"}'
-    )
-    (tmp_path / "adapter_model.safetensors").touch()
-
-    backend = export_backend_module.ExportBackend()
-    backend.load_checkpoint(checkpoint_path = str(tmp_path), hf_token = False)
-    assert reached["probe"] == "unsloth/llama-3.2-1B-Instruct"
-
-
 def test_a_worker_surviving_cancellation_keeps_its_token_store():
     """Pulling HF_TOKEN_PATH out from under a live worker breaks it and orphans a new one."""
     import os
@@ -1174,17 +1146,22 @@ def test_a_cache_snapshot_path_is_authorized_as_its_repository(monkeypatch, tmp_
     snap = tmp_path / "models--meta-llama--Llama-3.1-8B-Instruct" / "snapshots" / "abc123"
     snap.mkdir(parents = True)
 
+<<<<<<< Updated upstream
     assert (
         export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
     )
     assert export_backend_module._needs_anonymous_authorization(str(snap)) is True
     # A checkpoint the user trained is still exempt.
+=======
+    assert export_backend_module._cache_snapshot_repo(str(snap)) == "meta-llama/Llama-3.1-8B-Instruct"
+    assert export_backend_module._remote_load_targets(str(snap)) == [
+        "meta-llama/Llama-3.1-8B-Instruct"
+    ]
+    # A plain training checkpoint with no adapter base has nothing to authorize.
+>>>>>>> Stashed changes
     plain = tmp_path / "outputs" / "my-run"
     plain.mkdir(parents = True)
-    assert export_backend_module._needs_anonymous_authorization(str(plain)) is False
-    assert export_backend_module._remote_load_targets(str(snap))[0] == (
-        "meta-llama/Llama-3.1-8B-Instruct"
-    )
+    assert export_backend_module._remote_load_targets(str(plain)) == []
 
     checked = []
     monkeypatch.setattr(
@@ -1230,3 +1207,75 @@ def test_a_worker_that_dies_mid_export_has_its_token_store_reaped():
 
     assert o._proc is None
     assert not os.path.exists(store)
+
+
+def test_a_local_adapters_remote_base_is_authorized(monkeypatch, tmp_path):
+    """/api/models/checkpoints lists the operator's checkpoint paths and base ids to any
+    authenticated caller, so naming a local adapter needs no write onto the host."""
+    from core.export import export as export_backend_module
+
+    (tmp_path / "adapter_config.json").write_text(
+        '{"base_model_name_or_path": "operator/private-base", "peft_type": "LORA"}'
+    )
+    (tmp_path / "adapter_model.safetensors").touch()
+
+    assert export_backend_module._remote_load_targets(str(tmp_path)) == ["operator/private-base"]
+
+    checked = []
+    monkeypatch.setattr(
+        export_backend_module,
+        "_anonymous_access_allowed",
+        lambda repo, offline: (checked.append(repo), (False, "refused"))[1],
+    )
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: False)
+    monkeypatch.setattr(
+        export_backend_module,
+        "detect_audio_type",
+        lambda *a, **kw: pytest.fail("must refuse before touching the cache"),
+    )
+
+    backend = export_backend_module.ExportBackend()
+    ok, _msg = backend.load_checkpoint(checkpoint_path = str(tmp_path), hf_token = False)
+    assert ok is False
+    assert checked == ["operator/private-base"]
+
+
+def test_cancelling_an_ambient_worker_leaves_a_replacement_store_alone():
+    """The cancelled worker having no store is a pin, not an absence of one."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    o._token_store = None  # the cancelled worker was ambient
+
+    replacement = None
+
+    class _Proc:
+        pid = 11
+
+        def __init__(self):
+            self._alive = True
+
+        def is_alive(self):
+            return self._alive
+
+        def terminate(self):
+            self._alive = False
+
+        def join(self, timeout = None):
+            nonlocal replacement
+            replacement = o._new_token_store()
+
+        def kill(self):
+            pass
+
+    o._proc = _Proc()
+    try:
+        assert o.cancel_export() is True
+        assert replacement and os.path.isdir(replacement), "the replacement store must survive"
+        assert o._token_store == replacement
+    finally:
+        o._proc = None
+        o._discard_token_store()

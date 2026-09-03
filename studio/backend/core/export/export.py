@@ -70,28 +70,35 @@ def _cache_snapshot_repo(local_path: str) -> Optional[str]:
     return ref[0] if ref else None
 
 
-def _needs_anonymous_authorization(checkpoint_path: str) -> bool:
-    """Whether an anonymous caller has to be authorized before loading this checkpoint."""
-    if not is_local_path(checkpoint_path):
-        return True
-    return _cache_snapshot_repo(checkpoint_path) is not None
-
-
 def _remote_load_targets(checkpoint_path: str) -> List[str]:
-    """Every remote repository a load of *checkpoint_path* will reach.
+    """Every Hugging Face repository a load of *checkpoint_path* will reach.
 
-    A remote LoRA is two repositories: the adapter the caller named, and the base its
-    adapter_config points at, which the loader follows on its own. Authorizing only the
-    adapter would let a public one stand in front of a cached private base.
+    Three shapes count. A repo id names one directly. An absolute cache snapshot path is
+    local only in spelling: it is the operator's copy of a Hub repo, and /hub/cached-models
+    hands API callers exactly those ids. And an adapter, local or remote, pulls in the base
+    its adapter_config names, which the loader follows on its own; /api/models/checkpoints
+    lists the operator's training checkpoints and their base ids to any authenticated
+    caller, so a local adapter is not the caller's own property either.
+
+    Only a genuinely local checkpoint directory is exempt as itself: it holds no Hub
+    repository's content.
     """
-    targets = [_cache_snapshot_repo(checkpoint_path) or checkpoint_path]
+    targets: List[str] = []
+    named = _cache_snapshot_repo(checkpoint_path)
+    if named is None and not is_local_path(checkpoint_path):
+        named = checkpoint_path
+    if named:
+        targets.append(named)
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
+
         base = get_base_model_from_lora_identifier(checkpoint_path, False)
     except Exception as exc:
         logger.debug("Could not resolve a base for '%s': %s", checkpoint_path, exc)
         base = None
-    if base and base != checkpoint_path and not is_local_path(base):
+    if base:
+        base = _cache_snapshot_repo(base) or (None if is_local_path(base) else base)
+    if base and base not in targets:
         targets.append(base)
     return targets
 
@@ -593,7 +600,7 @@ class ExportBackend:
             # local LoRA (Studio's main flow, and MCP is always non-ambient) over a base the
             # caller never named. That leaves reading a private base through a crafted local
             # adapter_config, which needs a separate write onto this host.
-            if is_anonymous(token) and _needs_anonymous_authorization(checkpoint_path):
+            if is_anonymous(token):
                 for target in _remote_load_targets(checkpoint_path):
                     allowed, why = _anonymous_access_allowed(target, local_files_only)
                     if not allowed:

@@ -33,6 +33,9 @@ _CTX = mp.get_context("spawn")
 _LOG_BUFFER_MAXLEN = 4000
 
 
+_UNPINNED = object()
+
+
 class ExportOrchestrator:
     """
     Export backend orchestrator — subprocess-based.
@@ -348,16 +351,18 @@ class ExportOrchestrator:
         self._token_store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
         return self._token_store
 
-    def _discard_token_store(self, only: Optional[str] = None) -> None:
+    def _discard_token_store(self, only: Any = _UNPINNED) -> None:
         """Remove the worker's private token directory, credential and all.
 
         *only* pins the removal to one store, for a caller holding no lock: if a reload has
         already installed a replacement, that one belongs to the live worker, not to us.
+        Pinning to ``None`` is meaningful, and means the cancelled worker had no store, so
+        there is nothing of ours to remove; that is why the default is a separate sentinel.
         """
         import shutil
 
         store = getattr(self, "_token_store", None)
-        if only is not None and store != only:
+        if only is not _UNPINNED and store != only:
             if only:
                 shutil.rmtree(only, ignore_errors = True)
             return
