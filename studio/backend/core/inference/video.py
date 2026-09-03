@@ -1422,7 +1422,7 @@ class VideoBackend:
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
-        # This load's own event: a later load replaces self._cancel_event rather than clearing it
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         # An API-initiated load promises to download NOTHING: it may only open what is already cached. Read once here
         # and threaded into every helper below -- the metadata probes as much as the fetches, since a model_info call
@@ -2039,7 +2039,7 @@ class VideoBackend:
             base or str(getattr(fam, "base_repo", "") or ""),
             te_quant_mode = text_encoder_quant,
             # The selected card: an fp8 encoder the default card cannot take is still hosted pre-cast for the one this
-            # load lands on
+            # load lands on, and vice versa.
             target = (
                 resolve_diffusion_device_target()
                 if gpu_ordinal is None
@@ -3463,8 +3463,7 @@ class VideoBackend:
             # Same fence unload() takes, raised BEFORE the barrier: a queued generation holds no cancel event, so the
             # signal above cannot reach it and it would slip through the moment the barrier released _generate_lock.
             self._teardown_waiters += 1
-        # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free
-        # while the clip still holds it. Teardown runs INSIDE the barrier: releasing first would hand out one last clip.
+        # Barrier: wait for the signalled generation to exit before teardown, or two models coexist in VRAM.
         with self._generate_lock:
             with self._lock:
                 try:

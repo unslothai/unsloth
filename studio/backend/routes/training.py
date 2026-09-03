@@ -1499,7 +1499,8 @@ async def start_training(
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
-        # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled
+        # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled for brand-new
+        # architectures, so VRAM checks must not underestimate a load the worker refuses.
         from core.training.provenance import (
             ExactResumeResourcesUnavailable,
             effective_training_load_in_4bit,
@@ -2847,7 +2848,9 @@ async def start_diffusion_training(
             config["resume_from_checkpoint"] = str(
                 resolve_resume_dir(normalized_cfg.resume_from_checkpoint)
             )
-            # In epochs mode the real target is only known once the dataset size is; skip
+            # In epochs mode the real target is only known once the dataset size is; skip the "already finished" check
+            # here and make it below, with the resolved step count. Offloaded like the other preflights: validating a
+            # bundle parses a safetensors header and walks two torch-zip pickles, which must not block the event loop.
             await asyncio.to_thread(
                 _preflight_diffusion_resume,
                 config,
@@ -3001,7 +3004,8 @@ async def list_diffusion_training_runs(
     per-run records. Summaries only; fetch one run for its config + metric logs."""
     from core.training.diffusion_training_service import list_diffusion_runs
 
-    # Offloaded: each record's can_resume is re-derived by validating the checkpoint bundles
+    # Offloaded: each record's can_resume is re-derived by validating the checkpoint bundles on disk (safetensors header
+    # + torch-zip pickle walk per file), which must not block the loop.
     records = await asyncio.to_thread(list_diffusion_runs, limit = limit)
     summaries: list[DiffusionTrainingRunSummary] = []
     for r in records:
