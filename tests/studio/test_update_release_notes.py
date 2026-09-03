@@ -38,6 +38,61 @@ INLINE_COMMENTS = FRONTEND / "lib/markdown-inline-comments.ts"
 WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
+
+def _split_variants(token: str) -> tuple[tuple[str, ...], str]:
+    """A Tailwind class token as (variants, utility), split on top-level colons.
+
+    Depth-aware, because an arbitrary value may carry its own brackets and its
+    own colon: `has-[[data-slot=update-release-notes]]:min-h-[calc(...)]`.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in token:
+        if char in "[(":
+            depth += 1
+        elif char in "])":
+            depth -= 1
+        if char == ":" and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return tuple(parts[:-1]), parts[-1]
+
+
+def _applies(source: str, utility: str, *variants: str) -> bool:
+    """Is `utility` written anywhere in `source` under all of `variants`?
+
+    Token-wise, not as a substring. These assertions used to name a run of
+    classes verbatim, so gating a rule (`max-[383px]:has-[...]:min-h-[calc]`)
+    or inserting an unrelated one beside it read as the rule being gone, and
+    #10229 went red on four of them while every rule it named was still there.
+    A utility is the last top-level segment, so a longer utility that merely
+    ends with this one does not count, and variant order is Tailwind's business
+    rather than this test's.
+    """
+    for token in re.findall(r"""[^\s"'`]+""", source):
+        token_variants, token_utility = _split_variants(token)
+        if token_utility == utility and set(variants) <= set(token_variants):
+            return True
+    return False
+
+
+def _class_string(source: str, anchor: str) -> str:
+    """The class string opened by `anchor`, up to its closing quote."""
+    at = source.index(anchor)
+    return source[at : source.index('"', at + len(anchor))]
+
+
+def _assert_classes(class_string: str, *rules: str) -> None:
+    """Every one of `rules` is its own class in `class_string`."""
+    present = set(class_string.split())
+    missing = [rule for rule in rules if rule not in present]
+    assert not missing, f"{missing} missing from {class_string!r}"
+
+
 # The scanners are the frontend half of the contract the parser implements, so they are
 # run rather than read. Node strips the types and nothing imports a package: no install.
 _TS_ALIAS = re.compile(r'"@/lib/([a-z-]+)"')
@@ -1085,15 +1140,43 @@ def test_notes_repair_the_shared_previews_width_reset():
 def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so the card must not scroll."""
     src = banner.read_text(encoding = "utf-8")
-    assert "flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden" in src
+    # The painted surface: capped, clipping, and able to give up height itself
+    # so that the region inside it is the one that scrolls.
+    _assert_classes(
+        _class_string(src, "relative flex max-h-[calc(100dvh_-_2rem)] "),
+        "flex",
+        "max-h-[calc(100dvh_-_2rem)]",
+        "min-h-0",
+        "flex-col",
+        "overflow-hidden",
+    )
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
-    assert "mt-3 flex min-h-0 flex-1 flex-col overflow-hidden" in layout
+    _assert_classes(
+        _class_string(layout, "mt-3 flex min-h-0 "),
+        "flex",
+        "min-h-0",
+        "flex-1",
+        "flex-col",
+        "overflow-hidden",
+    )
     panel = PANEL.read_text(encoding = "utf-8")
     assert "UPDATE_NOTES_EXPANDED_SCROLL_CLASS" in panel
-    assert "max-h-64 min-h-0 flex-1 overflow-y-auto" in layout
+    _assert_classes(
+        _class_string(layout, "hover-scrollbar max-h-64 "),
+        "max-h-64",
+        "min-h-0",
+        "flex-1",
+        "overflow-y-auto",
+    )
     # The collapsed summary scrolls too: without it the bullets were painted
     # over the row of buttons once the card's slot for them got small.
-    assert "min-h-0 flex-1 space-y-1 overflow-y-auto" in panel
+    _assert_classes(
+        _class_string(panel, "hover-scrollbar min-h-0 flex-1 space-y-1"),
+        "min-h-0",
+        "flex-1",
+        "space-y-1",
+        "overflow-y-auto",
+    )
 
 
 def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
@@ -1285,9 +1368,54 @@ def test_code_span_closers_ignore_backslashes():
 _SCALED_FLOOR_WEB = "min-h-[calc(109px+80px*var(--ui-font-scale,1))]"
 # Below 384px the action pair wraps onto its own row and the card needs a
 # whole extra one: 259px at the 20px setting where the wide card needs 209.
-_NARROW_FLOOR_WEB = "max-[383px]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
+# Named as the utility alone and asserted under `max-[383px]` through
+# `_applies`, because the floor also carries a `has-[...]` gate since #10229
+# and a run of variants has no fixed order.
+_NARROW_FLOOR_WEB = "min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
 _SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
-_NARROW_FLOOR_TAURI = "max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+_NARROW_FLOOR_TAURI = "min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+_NARROW = "max-[383px]"
+# A floor only has to exist while there are notes to give up, and gating it is
+# what stopped the card reserving height it painted nothing into (#10229). So
+# the guarantee under test is a pair: floored while the notes panel is there,
+# and not squeezable at all while it is not.
+_NOTES_GATE = "has-[[data-slot=update-release-notes]]"
+
+
+_COMMENT = re.compile(r"//[^\n]*")
+
+
+def _card_slot(source: str) -> str:
+    """The rail-facing root of an update card, comments stripped.
+
+    Not one string literal: the root is a `cn()` of several, so an assertion
+    anchored on the first of them cannot see the floor at all. Comments go
+    because they name the very classes under test in prose, and a rule that a
+    comment can satisfy is not being tested.
+    """
+    at = source.index("pointer-events-auto flex ")
+    return _COMMENT.sub("", source[at : source.index("data-testid", at)])
+
+
+def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
+    """The card keeps room for its header and buttons, in both of its states."""
+    # Read off the rail-facing root, so a floor written on some inner box, or
+    # on the standalone `positioned` banner, does not answer for this one.
+    root = _card_slot(source)
+    assert _applies(
+        root, scaled, _NOTES_GATE
+    ), f"the {card} card's floor is fixed or ungated, so it is wrong at other type sizes"
+    assert _applies(
+        root, narrow, _NOTES_GATE, _NARROW
+    ), f"the {card} card's floor misses the narrow card's extra button row"
+    # With no notes rendered there is no floor, so this is what holds the row.
+    assert _applies(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
+    assert _applies(
+        root, "shrink", _NOTES_GATE
+    ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
+    assert not _applies(
+        root, "min-h-0"
+    ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
 
 
 def _corner_rails(provider: str) -> list[str]:
@@ -1329,8 +1457,7 @@ def test_the_overlay_stack_fits_the_viewport():
     # The update card cannot: its header and buttons are fixed and only its
     # notes yield, so it floors instead.
     web = WEB_BANNER.read_text(encoding = "utf-8")
-    assert _SCALED_FLOOR_WEB in web, "the floor is fixed, so it is wrong at other type sizes"
-    assert _NARROW_FLOOR_WEB in web, "the floor misses the narrow card's extra button row"
+    _assert_floored(web, _SCALED_FLOOR_WEB, _NARROW_FLOOR_WEB, "browser")
     # Those floors can add up to more than the cap at a large type size, so the
     # rail scrolls. Without this the overflow lands below the bottom of the
     # screen with no way to reach it.
@@ -1343,8 +1470,7 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert len(_corner_rails(provider)) == 2, "both rails sit in the bottom-right corner"
     assert _capped_rails(provider) == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
-    assert _SCALED_FLOOR_TAURI in tauri, "the floor is fixed, so it is wrong at other type sizes"
-    assert _NARROW_FLOOR_TAURI in tauri, "the floor misses the narrow card's extra button row"
+    _assert_floored(tauri, _SCALED_FLOOR_TAURI, _NARROW_FLOOR_TAURI, "desktop")
 
 
 def test_the_rail_offset_is_not_computed():
