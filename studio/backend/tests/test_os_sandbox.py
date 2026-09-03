@@ -255,6 +255,39 @@ def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration
         prepared.cleanup()
 
 
+def test_linux_runtime_beneath_tmp_is_mounted_after_private_tmpfs(monkeypatch, tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    runtime = "/tmp/studio-venv/bin/python"
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (runtime,))
+    monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda paths, workdir: None)
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    identity = tmp_path / "identity"
+    identity.mkdir()
+    passwd = identity / "passwd"
+    group = identity / "group"
+    passwd.touch()
+    group.touch()
+    monkeypatch.setattr(
+        os_sandbox,
+        "_identity_files",
+        lambda: (str(identity), str(passwd), str(group)),
+    )
+    backend = os_sandbox.LinuxBubblewrapBackend()
+    backend._bwrap = "/usr/bin/bwrap"
+
+    prepared = backend.prepare(_spec(workdir, runtime, "-c", "pass"))
+    try:
+        runtime_mount = prepared.argv.index(runtime) - 1
+        private_tmpfs = prepared.argv.index("/tmp", prepared.argv.index("--tmpfs"))
+        assert prepared.argv[runtime_mount] == "--ro-bind"
+        assert private_tmpfs < runtime_mount
+    finally:
+        prepared.cleanup()
+
+
 @pytest.mark.parametrize(
     ("detector_returncode", "expected"),
     [(0, "containers are not qualified"), (1, None), (2, "cannot verify")],

@@ -530,14 +530,20 @@ class LinuxBubblewrapBackend:
             argv.extend(("--ro-bind-try", path, path))
         argv.extend(("--ro-bind", passwd, "/etc/passwd"))
         argv.extend(("--ro-bind", group, "/etc/group"))
+        private_tmp_runtime_paths: list[str] = []
         for path in runtime_paths:
             if any(_lexically_contained(path, root) for root in _LINUX_SYSTEM_ROOTS):
                 continue
             if _lexically_contained(path, "/nix/store"):
                 continue
+            if _lexically_contained(path, "/tmp"):
+                private_tmp_runtime_paths.append(path)
+                continue
             argv.extend(("--ro-bind", path, path))
         argv.extend(("--dir", workdir, "--remount-ro", "/"))
         argv.extend(("--tmpfs", "/dev/shm", "--tmpfs", "/tmp"))
+        for path in private_tmp_runtime_paths:
+            argv.extend(("--ro-bind", path, path))
         argv.extend(("--bind", workdir, workdir, "--chdir", workdir))
         argv.extend(("--setenv", "HOME", workdir, "--setenv", "TMPDIR", "/tmp"))
         wrapper = _NPROC_WRAPPER.format(limit = _nproc_limit())
