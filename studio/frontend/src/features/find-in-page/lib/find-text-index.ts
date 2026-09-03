@@ -808,9 +808,17 @@ function markReached(
   // is inside the grapheme the cut split.
   while (at < end) {
     const point = String.fromCodePoint(data.codePointAt(at) as number);
+    if (!links(point)) {
+      // What ends the chain is only in doubt if a rule out there could still take it, which is
+      // the same question the unknown anchor asks: past the window the anchor is unknown too.
+      // Marking it regardless put ordinary Latin text after a long run of marks out of reach.
+      if (REACHABLE_PATTERN.test(point)) {
+        unsafe.add(from + at, from + at + point.length);
+      }
+      return false;
+    }
     unsafe.add(from + at, from + at + point.length);
     at += point.length;
-    if (!links(point)) return false;
   }
   // Ran out of node with the chain still going, so it carries on into the next one. A sibling of
   // nothing but extenders otherwise ended the doubt at its own edge, and the letter it joins,

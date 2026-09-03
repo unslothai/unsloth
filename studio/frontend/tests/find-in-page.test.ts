@@ -2392,6 +2392,18 @@ test("the chain a cut leaves is followed however long it runs", () => {
     ]),
   );
   assert.equal(findMatches(beyond, "tail", 10).length, 1);
+  // And what ends the chain is only in doubt where a rule could still take it. Past the window the
+  // anchor is unknown, so this is the same question, and answering it yes for everything put plain
+  // Latin text after a long run of marks out of reach.
+  const latin = buildTextIndex(
+    el("DIV", [
+      el("P", [
+        text("a".repeat(MAX_NODE_CHARS - 1) + "क्"),
+        text("́".repeat(64) + "bcd"),
+      ]),
+    ]),
+  );
+  assert.equal(findMatches(latin, "b", 10).length, 1);
 });
 
 test("an unknown anchor reaches only what a rule could actually take", () => {
