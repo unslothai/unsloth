@@ -1552,7 +1552,9 @@ _restore_portable_launcher() {
     return 0
 }
 
-# Called from the exit and signal handlers only, so a successful install keeps what it wrote.
+# Called from the exit and signal handlers, so a successful install keeps what it wrote -- and
+# from the one place that exits 0 having built nothing HERE, the WSL reroute, which is the same
+# situation as a failure as far as this distro's records are concerned.
 _restore_portable_marker() {
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_1" "$_PORTABLE_MARKER_PRIOR_1"
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_2" "$_PORTABLE_MARKER_PRIOR_2"
@@ -1689,6 +1691,46 @@ trap '_on_install_signal 143' TERM
 # published or retired until the thing that unwinds it is listening. The definitions stay
 # where they are -- the tests lift them out by name -- and the by-hand cleanup inside the
 # publish stays too, because it is the same block run standalone there.
+#
+# The trap answers a run that FAILS. It is right not to answer one that succeeds -- an install
+# that finished has to keep what it published -- so a path that exits 0 having installed
+# nothing needs the guard here instead. --shortcuts-only is that path: it rewrites the
+# launchers of an install that is already on disk and exits 0 several hundred lines below,
+# past the publish and before anything is built. Combined with --root or UNSLOTH_PORTABLE=1
+# over an ordinary custom install at <root>/studio, the publish below is a permanent
+# conversion performed by a command documented as installing nothing -- the record lands at
+# $STUDIO_HOME, storage_roots.unsloth_home() answers <root> where it answered None, and the
+# managed llama.cpp, node and whisper.cpp that install keeps under its own Studio root are
+# resolved as portable siblings one level up, where nothing was ever built.
+# Refused rather than skipped: skipping the publish would still leave the run writing a
+# portable studio.conf and launch-studio.sh into <root>/share, a second launcher describing a
+# containment this tree does not have, and it would silently do half of what was asked.
+# Not a blanket refusal -- regenerating the launchers of a tree that IS portable is the whole
+# point of `unsloth studio update` there, and that run reaches this line in portable mode
+# because the shim exports UNSLOTH_HOME. So the gate is on the TREE, not on the flags.
+# Existence, which is the test every reader of these two applies, and EITHER signal passes:
+# a root that was moved carries a marker naming its old path and may have lost the record
+# altogether, and letting the publish below rewrite both is how a --shortcuts-only run repairs
+# it. What it must not do is mint the pair for a tree that never had one.
+# Here rather than at the flag parse because it needs the RESOLVED roots, and inline with
+# literal names rather than a helper, like every other block around the publish: tests lift
+# these out and run them on their own. No `[ -f x ] && flag=true`, either -- at top level under
+# set -e the false one ends the script.
+if [ "$_SHORTCUTS_ONLY" = true ] && [ "$_PORTABLE_MODE" = true ]; then
+    _so_portable_tree=false
+    if [ -f "$UNSLOTH_ROOT/.unsloth-portable-root" ]; then _so_portable_tree=true; fi
+    if [ -f "$STUDIO_HOME/.unsloth-master-root" ]; then _so_portable_tree=true; fi
+    if [ "$_so_portable_tree" = false ]; then
+        echo "ERROR: --shortcuts-only cannot convert $STUDIO_HOME to a portable install." >&2
+        echo "       It only rewrites the launchers of an install that is already here, and" >&2
+        echo "       no portable root is recorded at $UNSLOTH_ROOT or in $STUDIO_HOME." >&2
+        echo "       To convert, re-run without --shortcuts-only:" >&2
+        echo "         install.sh --root '$UNSLOTH_ROOT'" >&2
+        echo "       To refresh the launchers of this install as it is, drop --root and" >&2
+        echo "       UNSLOTH_PORTABLE and re-run with --shortcuts-only alone." >&2
+        exit 1
+    fi
+fi
 _export_portable_roots
 _clear_stale_portable_marker
 
@@ -3126,6 +3168,15 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_rc=0
     wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
     if [ "$_rr_rc" -eq 0 ]; then
+        # The install happened in $_rr_target. Nothing was built in THIS distro, and this exit
+        # is a success, so the EXIT handler keeps everything the publish put here rather than
+        # unwinding it: a --root run that rerouted would leave a portable marker and a master
+        # root record describing a tree with no venv in it, and over an existing normal install
+        # at <root>/studio it would convert that install's path resolution outright. The
+        # reroute does not forward --root either, so the child is not the portable install
+        # those records would be claiming. Same call the failure handler makes, for the same
+        # reason -- this distro is going back to how it was found.
+        _restore_portable_marker
         exit 0
     fi
     # In Tauri mode the child uses exit 2 ([TAURI:NEED_SUDO]) to ask the desktop app to
