@@ -860,7 +860,6 @@ def _historical_image_thread():
 
 
 def _plain_route_messages(chat_template_info):
-    """The messages the backend receives for a tool-less request over the thread."""
     import asyncio
     import os
     import sys
