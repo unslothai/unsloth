@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """`unsloth chat` / `unsloth inference` must default --max-seq-length to 0 like `unsloth studio run`.
 
 A non-zero default never matches a resident llama-server's n_ctx, so attaching reloads the warm model.
