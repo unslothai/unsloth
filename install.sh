@@ -687,6 +687,50 @@ _resolve_studio_destinations() {
         mkdir -p -- "$_override" 2>/dev/null || { echo "ERROR: $_override_var=$_override cannot be created." >&2; exit 1; }
         [ -w "$_override" ] || { echo "ERROR: $_override_var=$_override is not writable." >&2; exit 1; }
         _resolved_root="$(CDPATH= cd -P -- "$_override" && pwd -P)" || exit 1
+        # A newline anywhere in the resolved path is refused here, before a single file is
+        # written. The portable records hold one path per file -- `printf '%s\n' "$UNSLOTH_ROOT"`
+        # at the publish below -- and every reader takes the first line of it
+        # (storage_roots._in_root_master_root and the CLI's copy of it). A root with a newline
+        # in it therefore records a TRUNCATED prefix while the install reports success: the
+        # `source <root>/studio/unsloth_studio/bin/activate` path either resolves an unrelated
+        # directory that happens to exist at that prefix, or loses portable mode outright and
+        # writes the HF caches, the projects root and studio.db back under $HOME.
+        # Refused rather than escaped: an escape needs a matching decoder in every reader, in
+        # two languages, which is the installer and the runtime disagreeing about one value
+        # again -- the exact failure this record was added to end. Not portable-only either:
+        # share/studio.conf is line-based in both the shell that sources it and unsloth_cli's
+        # parser, so a newline in a plain custom root breaks the launcher's environment the
+        # same way. A newline is legal in a POSIX path and is nearly always a quoting accident.
+        # Checked on the RESOLVED path, so a relative root under a newline-bearing ancestor is
+        # caught too. The pattern carries a literal newline rather than a variable or $'\n':
+        # several tests lift this function out with awk and run it alone, where a variable
+        # defined elsewhere would expand to empty and make the pattern match every path.
+        case "$_resolved_root" in
+            *'
+'*)
+                echo "ERROR: $_override_var names a path containing a newline." >&2
+                echo "       The portable records store one path per line, so this install" >&2
+                echo "       would resolve a truncated prefix of it on the next launch." >&2
+                echo "       Re-run with the path quoted, or pick one without a newline." >&2
+                exit 1
+                ;;
+        esac
+        # And the same truncation one character short of a newline. Both readers .strip() the
+        # line they read, matching the _trim_ws every root goes through above, so a resolved
+        # root that begins or ends in whitespace is recorded and then read back as a DIFFERENT
+        # directory. Reachable despite that trim, because the trim runs on the argument and
+        # this runs on what `pwd -P` made of it: `--root "/vol/x /"` has no trailing space to
+        # trim, and resolves to `/vol/x ` -- recorded as `/vol/x \n`, read back as `/vol/x`,
+        # which is not the root anything was installed into. Refused here rather than made
+        # significant in the readers, so surrounding whitespace means the same thing on both
+        # sides of the record: never part of a root. Interior spaces are untouched.
+        if [ "$_resolved_root" != "$(_trim_ws "$_resolved_root")" ]; then
+            echo "ERROR: $_override_var names a path that starts or ends with whitespace." >&2
+            echo "       The portable records are read back stripped, so this install would" >&2
+            echo "       resolve a different directory on the next launch." >&2
+            echo "       Re-run against a path without leading or trailing whitespace." >&2
+            exit 1
+        fi
         if [ "$_PORTABLE_MODE" = true ]; then
             UNSLOTH_ROOT="$_resolved_root"
             # A root holding the venv directly IS the Studio root (flat layout);

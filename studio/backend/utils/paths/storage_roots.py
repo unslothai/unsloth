@@ -177,10 +177,21 @@ def _in_root_master_root(root: Path) -> Path | None:
     directory that is gone declines rather than exporting a dead UNSLOTH_HOME, so
     the older signals below still get their turn. Read one capped line, since a
     stray file at the name should be rejected rather than pulled into memory.
+
+    Exactly one line, and the whole of it. install.sh refuses a root with a
+    newline in it (_resolve_studio_destinations), so a record with anything after
+    the first line was not written by our installer, and honouring the first line
+    alone would hand back a TRUNCATED PREFIX of a path -- an unrelated directory
+    if one exists there, and otherwise a silent fall back to ~/.unsloth. The same
+    check catches a first line longer than the cap, which PATH_MAX makes
+    unreachable for a real path and which would truncate in the same way.
     """
     try:
         with (root / MASTER_ROOT_RECORD).open(encoding = "utf-8", errors = "replace") as handle:
-            recorded = handle.readline(4096).strip()
+            first = handle.readline(4096)
+            if handle.readline(1):
+                return None
+        recorded = first.strip()
     except (OSError, ValueError):
         return None
     if not recorded or not os.path.isabs(recorded):

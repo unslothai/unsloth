@@ -265,6 +265,60 @@ else
     printf '  SKIP  storage_roots probe (no python3)\n'
 fi
 
+echo "[11] a root whose path contains a newline is refused, not recorded truncated"
+# The record holds one path per file and every reader takes the first line of it, so a root
+# with a newline in its name is recorded as a TRUNCATED PREFIX: the install reports success
+# and the activated venv then resolves whatever unrelated directory sits at that prefix, or
+# loses portable mode entirely and writes the caches, the projects root and studio.db back
+# under $HOME. Refused at the installer instead, which is what keeps the one-line record and
+# every reader of it in agreement without an escape format either side could get wrong.
+H11="$(new_home)"
+R11="$H11/vol
+evil"
+mkdir -p "$R11"
+_rc="$(run_install "$H11" -- --root "$R11")"
+check "11 the install fails instead of recording a prefix" 1 "$_rc"
+check "11 the error says why" yes \
+    "$(grep -qF -- "containing a newline" "$T/out" "$T/err" && printf yes || printf no)"
+check "11 nothing is recorded under the newline root" gone "$(record_state "$R11/studio")"
+check "11 and no parent marker is published either" gone \
+    "$([ -f "$R11/.unsloth-portable-root" ] && printf present || printf gone)"
+# The same gate on the env-var route, which reaches the identical resolver.
+H11b="$(new_home)"
+R11b="$H11b/vol
+evil"
+mkdir -p "$R11b"
+# Not through run_install: it word-splits its env assignments, so a value with a newline in
+# it would be split into a stray command before the installer ever saw it.
+_rc=0
+env -i HOME="$H11b" PATH="$PATH" USER="${USER:-tester}" FAIL_MODE=ok \
+    UNSLOTH_STUDIO_HOME="$R11b" bash -c "$SNIP" _ --portable > "$T/out" 2>"$T/err" || _rc=$?
+check "11 UNSLOTH_STUDIO_HOME is refused the same way" 1 "$_rc"
+check "11 that error says why too" yes \
+    "$(grep -qF -- "containing a newline" "$T/out" "$T/err" && printf yes || printf no)"
+# One character short of a newline, and reachable without one: the argument trim runs before
+# `pwd -P`, so a trailing slash hides a trailing space from it and the resolved root ends in
+# one. Both readers strip the line they read, so that root is recorded and read back as a
+# DIFFERENT directory -- `/vol/x ` written, `/vol/x` resolved.
+H11e="$(new_home)"; R11e="$H11e/x "
+mkdir -p "$R11e"
+_rc="$(run_install "$H11e" -- --root "$R11e/")"
+check "11 a root ending in whitespace is refused" 1 "$_rc"
+check "11 that error says why as well" yes \
+    "$(grep -qF -- "starts or ends with whitespace" "$T/out" "$T/err" && printf yes || printf no)"
+check "11 and records nothing in it" gone "$(record_state "$R11e/studio")"
+# Pinned so the gate cannot collapse into refusing every root. A space is the near miss --
+# legal, common on macOS, and untouched by anything here.
+H11c="$(new_home)"; R11c="$H11c/my vol"
+expect_ok "$H11c" -- --root "$R11c"
+check "11 an ordinary path with a space still installs" "$R11c" "$(record_body "$R11c/studio")"
+H11d="$(new_home)"; R11d="$H11d/plain"
+expect_ok "$H11d" -- --root "$R11d"
+check "11 and a plain path still installs" "$R11d" "$(record_body "$R11d/studio")"
+expect_ok "$H11d" "UNSLOTH_STUDIO_HOME=$H11d/normal" --
+check "11 a normal custom-root install is untouched" "reached|$H11d/normal" \
+    "$(grep '^reached|' "$T/out")"
+
 if [ "$fails" -eq 0 ]; then
     printf 'ALL PASS\n'
 else

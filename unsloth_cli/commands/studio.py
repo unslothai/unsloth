@@ -180,10 +180,18 @@ def _in_root_master_root(root: Path) -> Optional[Path]:
     equally rewrite the venv it points at, and a permissions check would protect
     nothing already unprotected. That is why it exists -- the parent marker needs
     one, and a root created under `umask 002` cannot pass it.
+
+    Exactly one line, and the whole of it, for the reason storage_roots spells
+    out: install.sh refuses a root containing a newline, so anything after the
+    first line was not written by our installer, and taking that line on its own
+    would resolve a TRUNCATED PREFIX of the recorded path.
     """
     try:
         with (root / _MASTER_ROOT_RECORD).open(encoding = "utf-8", errors = "replace") as handle:
-            recorded = handle.readline(4096).strip()
+            first = handle.readline(4096)
+            if handle.readline(1):
+                return None
+        recorded = first.strip()
     except (OSError, ValueError):
         return None
     if not recorded or not os.path.isabs(recorded):
