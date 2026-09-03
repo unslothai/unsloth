@@ -308,9 +308,7 @@ class TestGetGpuMemoryInfo:
         """The stack gate accepts mlx >= 0.22.0, and mlx below 0.30 spells this
         mx.metal.device_info(). Reading only mx.device_info() left the cap
         unapplied on an M1 running mlx 0.29.3, which the gate calls usable."""
-        legacy = self._mlx_memory_info(
-            available_gb = 15, recommended_gb = 11, legacy_mlx = True
-        )
+        legacy = self._mlx_memory_info(available_gb = 15, recommended_gb = 11, legacy_mlx = True)
         current = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
 
         assert abs(legacy["free_gb"] - 11.0) < 0.01
