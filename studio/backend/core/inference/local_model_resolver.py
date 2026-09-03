@@ -158,16 +158,18 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         if is_cache_repo:
             selected = _resolve_gguf_load_snapshot(p)
             if selected is None:
-                return None
-            variants, _has_vision, complete, load_dir = selected
-            if complete:
-                complete_keys = {str(quant).casefold() for quant in complete}
-                variants = [
-                    variant
-                    for variant in variants
-                    if getattr(variant, "quant", None)
-                    and str(variant.quant).casefold() in complete_keys
-                ]
+                load_dir = p
+                variants, _ = list_local_gguf_variants(str(load_dir))
+            else:
+                variants, _has_vision, complete, load_dir = selected
+                if complete:
+                    complete_keys = {str(quant).casefold() for quant in complete}
+                    variants = [
+                        variant
+                        for variant in variants
+                        if getattr(variant, "quant", None)
+                        and str(variant.quant).casefold() in complete_keys
+                    ]
         else:
             load_dir = p
             variants, _ = list_local_gguf_variants(str(load_dir))

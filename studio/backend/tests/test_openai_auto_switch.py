@@ -1956,6 +1956,23 @@ def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
     assert entry.variants == ("Q4_K_M",)
 
 
+def test_model_dir_with_empty_snapshots_keeps_root_gguf(tmp_path):
+    """A regular model dir is not an HF cache just because snapshots/ exists."""
+    from types import SimpleNamespace
+
+    (tmp_path / "snapshots").mkdir()
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    entry = resolver._local_gguf_entry(
+        "custom/model",
+        SimpleNamespace(id = "custom/model", path = str(tmp_path)),
+    )
+
+    assert entry is not None
+    assert entry.load_path == str(tmp_path)
+    assert entry.variants == ("Q4_K_M",)
+
+
 def test_hf_cache_entries_do_not_rescan_the_cache_root(monkeypatch, tmp_path):
     """Each scanned row already owns an exact repo directory under the cache root."""
     from pathlib import Path
