@@ -350,9 +350,17 @@ class ExportOrchestrator:
         and returns from, so no shutdown runs and the credential its store may hold would sit
         in /tmp until the next load.
         """
-        if self._proc is None or not self._proc.is_alive():
-            self._proc = None
-            self._discard_token_store()
+        proc = self._proc
+        if proc is not None and proc.is_alive():
+            return
+        store = getattr(self, "_token_store", None)
+        # Compare before clearing: a reload can install a live worker and its store between
+        # the liveness check above and these assignments, and clearing then would orphan a
+        # running GPU worker and delete the credential directory it is using.
+        if self._proc is not proc:
+            return
+        self._proc = None
+        self._discard_token_store(only = store)
 
     def _new_token_store(self) -> str:
         """A private Hugging Face token directory for the next non-ambient worker.

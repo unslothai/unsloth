@@ -1391,13 +1391,9 @@ def test_the_cached_revision_is_what_gets_authorized(monkeypatch):
     asked = {}
 
     class _Api:
-        def model_info(
-            self,
-            repo_id,
-            revision = None,
-            token = None,
-        ):
+        def model_info(self, repo_id, revision = None, token = None, timeout = None):
             asked["revision"] = revision
+            asked["timeout"] = timeout
 
             class _Info:
                 gated = False
@@ -1412,6 +1408,8 @@ def test_the_cached_revision_is_what_gets_authorized(monkeypatch):
     )
     assert ok is True
     assert asked["revision"] == "deadbeef"
+    assert asked["timeout"], "the revision probe must be bounded too"
+    assert asked["timeout"], "the revision probe must be bounded too"
 
 
 def test_discarding_a_store_does_not_orphan_a_replacement_installed_mid_removal():
@@ -1570,3 +1568,59 @@ def test_an_air_gapped_load_of_a_plain_cached_model_still_works(monkeypatch):
     backend = export_backend_module.ExportBackend()
     backend.load_checkpoint(checkpoint_path = "owner/plain", hf_token = "hf_caller")
     assert reached.get("loaded"), "an air-gapped token-bearing load must reach the loader"
+
+
+def test_a_hub_that_stops_answering_does_not_pin_the_export_lock(monkeypatch):
+    """auth_check takes no timeout and runs under the orchestrator's export lock, so an
+    unresponsive Hub would block every load and export for an hour."""
+    import time
+
+    from core.export import export as export_backend_module
+
+    monkeypatch.setattr(export_backend_module, "_ACCESS_CHECK_TIMEOUT_S", 0.3)
+
+    def _hangs(repo_id, token = None, **kw):
+        time.sleep(30)
+
+    monkeypatch.setattr("huggingface_hub.auth_check", _hangs)
+
+    started = time.monotonic()
+    ok, why = export_backend_module._access_allowed("owner/repo", offline = False, token = False)
+    elapsed = time.monotonic() - started
+
+    assert ok is False, "a check that cannot complete must fail closed"
+    assert "stopped responding" in why
+    assert elapsed < 5, f"the probe was not bounded: took {elapsed:.1f}s"
+
+
+def test_reaping_does_not_clear_a_replacement_worker():
+    """The liveness check and the clear are separate statements; a reload between them would
+    otherwise orphan a live GPU worker and delete the store it is using."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    replacement = o._new_token_store()
+
+    class _Live:
+        def is_alive(self):
+            return True
+
+    live = _Live()
+
+    class _DeadThenReplaced:
+        def is_alive(self_inner):
+            # The reload lands in exactly the window between the check and the clear.
+            o._proc = live
+            return False
+
+    o._proc = _DeadThenReplaced()
+    try:
+        o._reap_dead_worker()
+        assert o._proc is live, "a live replacement's handle must not be cleared"
+        assert o._token_store == replacement, "the replacement's store must survive"
+        assert os.path.isdir(replacement)
+    finally:
+        o._proc = None
+        o._discard_token_store()

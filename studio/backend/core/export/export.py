@@ -167,8 +167,25 @@ def _access_allowed(
             "callers unauthenticated. Supply hf_token, or retry when the Hub is reachable."
         )
     try:
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as _FutureTimeout
         from huggingface_hub import auth_check
-        auth_check(repo_id, token = token)
+
+        pool = ThreadPoolExecutor(max_workers = 1)
+        try:
+            pool.submit(auth_check, repo_id, token = token).result(
+                timeout = _ACCESS_CHECK_TIMEOUT_S
+            )
+        except _FutureTimeout:
+            logger.warning("Access check for '%s' timed out; refusing", repo_id)
+            return False, (
+                f"Could not verify access to '{repo_id}' before the Hub stopped responding, "
+                "so it cannot be loaded from the shared cache. Retry."
+            )
+        finally:
+            # Not a context manager: its __exit__ joins the worker, which is the very wait
+            # the timeout exists to escape.
+            pool.shutdown(wait = False)
     except Exception as exc:
         logger.info("Access check refused '%s': %s", repo_id, exc)
         return False, (
@@ -179,7 +196,12 @@ def _access_allowed(
         # A cached snapshot can outlive the visibility it was fetched under, and an id can be
         # deleted and recreated by someone else, so pin the commit as well as the repo.
         try:
-            HfApi().model_info(repo_id, revision = revision, token = token)
+            HfApi().model_info(
+                repo_id,
+                revision = revision,
+                token = token,
+                timeout = _ACCESS_CHECK_TIMEOUT_S,
+            )
         except Exception as exc:
             logger.info("Revision check refused '%s'@%s: %s", repo_id, revision, exc)
             return False, (
@@ -215,6 +237,12 @@ _PYTORCH_MISSING_MESSAGE = (
 )
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
+
+# auth_check takes no timeout of its own and runs while the orchestrator's export lock is
+# held, so a Hub that accepts the connection and then stops answering would pin every load
+# and export until _wait_response gives up an hour later. Mirrors the bound
+# core/inference/openai_auto_download.py puts on the same call.
+_ACCESS_CHECK_TIMEOUT_S = 8.0
 
 
 def _multi_gpu_device_map_kwargs() -> dict:
