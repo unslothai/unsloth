@@ -274,6 +274,33 @@ def main() -> int:
             str(root.parent),
             r["unsloth_home"],
         )
+        # A record with more than one line is not one install.sh can have written: it refuses
+        # a root whose path contains a newline (_resolve_studio_destinations). Reading only
+        # the first line of one accepts a TRUNCATED PREFIX of the recorded path, and the
+        # prefix of a real path is usually a real directory too, so this is not a decline --
+        # it hands UNSLOTH_HOME to a neighbouring tree and runs the managed llama.cpp, node
+        # and whisper.cpp out of it. Built as the genuine shape rather than a synthetic one:
+        # master root <tmp>/vol\nevil, whose prefix <tmp>/vol exists beside it.
+        decoy = tmp / "vol"
+        decoy.mkdir()
+        newline_master = _nested(tmp / "vol\nevil", mode = 0o700, record = False)
+        (newline_master / RECORD).write_text(f"{newline_master.parent}\n")
+        r = _run(newline_master / "unsloth_studio", home)
+        check(
+            "bad record (multi-line): the truncated prefix is refused",
+            str(newline_master.parent),
+            r["unsloth_home"],
+        )
+        check(
+            "bad record (multi-line): and is not the decoy",
+            False,
+            r["unsloth_home"] == str(decoy),
+        )
+        check(
+            "bad record (multi-line): the CLI refuses it too",
+            str(newline_master.parent),
+            r["cli_master"],
+        )
 
         print("\n[6] the record outranks a stale flat marker left in the Studio root")
         # A `--root R` install over a directory whose R/studio used to be a FLAT
