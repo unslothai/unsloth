@@ -640,13 +640,18 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
-                    # Flat, and not scaled by quant count: the wait is an inactivity limit, so it
-                    # bounds how long the worker may say NOTHING, not how long the export may take.
-                    # A 12-quant list reports throughout and is not on a longer leash than a single
-                    # one; an hour of total silence is a dead worker either way.
+                    # Still scaled by quant count, and the reason is silence rather than duration.
+                    # A multi-quant list runs every quant in one op off a single merge, and that
+                    # batch says NOTHING while it works: Studio never sets UNSLOTH_ENABLE_LOGGING,
+                    # which is exactly the condition save.py requires to take the parallel quant
+                    # branch, and that branch prints one line and then waits on every pass while
+                    # unsloth_zoo pipes llama-quantize instead of streaming it. One hour covers one
+                    # silent pass, so n passes need n of them.
+                    _qm = params.get("quantization_method")
+                    _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = _EXPORT_INACTIVITY_TIMEOUT,
+                        timeout = _EXPORT_INACTIVITY_TIMEOUT * max(1, _n),
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")

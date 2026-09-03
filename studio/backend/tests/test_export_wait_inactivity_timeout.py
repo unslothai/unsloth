@@ -100,8 +100,13 @@ def test_a_quiet_worker_still_times_out(waiting_orchestrator) -> None:
     assert clock.now < TIMEOUT * 2, "a quiet wait must end near the timeout, not run on"
 
 
-def test_the_export_wait_is_not_given_a_longer_leash_for_more_quants(monkeypatch) -> None:
-    """Silence is silence: a 12-quant list may not go quiet 12x longer than a single one."""
+def test_a_multi_quant_export_is_allowed_to_stay_silent_for_the_whole_batch(monkeypatch) -> None:
+    """The silence budget scales with quant count, because the batch reports nothing while it runs.
+
+    Studio never sets UNSLOTH_ENABLE_LOGGING, which is the condition save.py needs to run the quant
+    passes in parallel, and that branch prints once and then waits on all of them. Flattening this
+    to one hour kills a 12-quant export mid-write, which is the failure this file exists to prevent.
+    """
     from core.export import orchestrator as orchestrator_module
 
     # _run_export imports this at call time. Injected per test and undone after: a module-level
@@ -126,4 +131,4 @@ def test_the_export_wait_is_not_given_a_longer_leash_for_more_quants(monkeypatch
     orch._run_export("gguf", {"quantization_method": "Q4_K_M"})
     orch._run_export("gguf", {"quantization_method": ["Q4_K_M"] * 12})
 
-    assert seen == [ONE_HOUR, ONE_HOUR], seen
+    assert seen == [ONE_HOUR, ONE_HOUR * 12], seen
