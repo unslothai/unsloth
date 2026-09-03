@@ -1325,6 +1325,18 @@ elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
     verbose_substep "frontend dist is newer than source inputs"
 else
 
+# Keep bun's package cache inside the portable root. bun reads none of npm's
+# configuration: with only NPM_CONFIG_CACHE pinned, `bun pm cache` still answers
+# ~/.bun/install/cache and every package the install below downloads lands there,
+# outside the root a portable install promises holds everything. install.sh exports
+# this before it hands over; derived here as well so an update that arrives carrying
+# only UNSLOTH_HOME (the CLI's recovery environment, or a plain `bash setup.sh`) is
+# contained the same way. A value the caller set explicitly always wins.
+if [ -n "${UNSLOTH_HOME:-}" ] && [ -z "${BUN_INSTALL_CACHE_DIR:-}" ]; then
+    export BUN_INSTALL_CACHE_DIR="$UNSLOTH_HOME/cache/bun"
+    verbose_substep "bun package cache pinned to $BUN_INSTALL_CACHE_DIR"
+fi
+
 # ── Install bun (optional, faster package installs) ──
 # Install bun via npm only when we manage the isolated Node (npm -g lands in the
 # isolated prefix); on a system Node we install nothing global. Build falls back to npm.

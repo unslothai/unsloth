@@ -756,10 +756,18 @@ UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
 # "y" plus the file's bytes, or "n" for absent. Content is informational -- every reader
 # (storage_roots.unsloth_home, setup.sh's _setup_portable_mode, scripts/uninstall.sh) only
 # tests existence -- so losing a trailing newline in the round trip changes nothing.
+#
+# The portable launcher rolls back the same way, on the pair below it. One slot: only a
+# normal reinstall over a nested portable install has one to move, and it has exactly one.
+# Moved aside rather than snapshotted into a variable, the way the venv is: the copy keeps
+# the executable bit and the exact bytes, and a run killed outright leaves the copy on disk
+# instead of nothing at all.
 _PORTABLE_MARKER_PATH_1=""
 _PORTABLE_MARKER_PRIOR_1=""
 _PORTABLE_MARKER_PATH_2=""
 _PORTABLE_MARKER_PRIOR_2=""
+_PORTABLE_SHIM_PATH=""
+_PORTABLE_SHIM_BACKUP=""
 
 # Must run before the uv bootstrap: a cache cannot be moved afterwards.
 _export_portable_roots() {
@@ -781,6 +789,11 @@ _export_portable_roots() {
     export UV_NO_MODIFY_PATH=1
 
     export NPM_CONFIG_CACHE="$UNSLOTH_ROOT/cache/npm"
+    # bun, not npm, is what setup.sh reaches for first when it rebuilds a source
+    # frontend, and it reads none of npm's configuration: with only NPM_CONFIG_CACHE
+    # set, `bun pm cache` still answers ~/.bun/install/cache and every package it
+    # downloads lands there, outside the root this run promises holds everything.
+    export BUN_INSTALL_CACHE_DIR="$UNSLOTH_ROOT/cache/bun"
     export CUDA_CACHE_PATH="$UNSLOTH_ROOT/cache/cuda"
     # install_python_stack falls back to plain pip when uv fails, and not every
     # call site passes --no-cache-dir, so ~/.cache/pip fills without this.
@@ -843,13 +856,27 @@ _clear_stale_portable_marker() {
     fi
     # Nested layout: <root>/studio is the one spelling under which a parent marker
     # names THIS install. Any other child of a portable root is a different tree,
-    # and its marker is not ours to delete.
-    case "$STUDIO_HOME" in
+    # and its marker is not ours to delete. Folded on macOS, where the default
+    # filesystem is case-insensitive and getcwd hands back the spelling that was
+    # typed rather than the one on disk, so UNSLOTH_STUDIO_HOME=<root>/Studio
+    # reaches the `studio` the installer wrote and arrives here spelled `Studio`.
+    # Both readers of the parent marker fold there already
+    # (storage_roots._inherits_parent_portable_marker, setup.sh's
+    # _setup_portable_mode), so an exact match would leave behind a marker they
+    # both still honour and the reinstall would come back up portable. Not folded
+    # on Linux, where `studio` and `Studio` are two different directories.
+    _spm_leaf="$STUDIO_HOME"
+    if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+        _spm_leaf=$(printf '%s' "$STUDIO_HOME" | tr '[:upper:]' '[:lower:]')
+    fi
+    case "$_spm_leaf" in
         */studio) ;;
         *) return 0 ;;
     esac
-    # No dirname: the suffix is already matched, and BSD dirname has no `--`.
-    _spm_parent="${STUDIO_HOME%/studio}"
+    # No dirname: the leaf is already matched, and BSD dirname has no `--`. Strip
+    # whatever that leaf is spelled rather than the literal `/studio`, which would
+    # leave a folded `Studio` on the path and derive the wrong parent.
+    _spm_parent="${STUDIO_HOME%/*}"
     [ -n "$_spm_parent" ] || _spm_parent="/"
     if [ -f "$_spm_parent/$_spm_name" ]; then
         # Snapshot before the removal, as above.
@@ -861,6 +888,34 @@ _clear_stale_portable_marker() {
             _PORTABLE_MARKER_PATH_2=""
             _PORTABLE_MARKER_PRIOR_2=""
             substep "could not remove $_spm_parent/$_spm_name; this install still reads as portable" "$C_WARN"
+        fi
+    fi
+    # The marker is not the only portable artifact this conversion leaves. A nested
+    # `--portable` run put its wrapper at <root>/bin/unsloth and its summary printed
+    # that exact path as the launch command, while this run writes its own shim under
+    # $_LOCAL_BIN instead. So the wrapper survives, and it still exports UNSLOTH_HOME,
+    # UNSLOTH_PORTABLE=1 and the cache roots before exec'ing the venv this run rebuilds
+    # at the same path: the tree reads as converted, yet the command the user was told
+    # to run puts the HF caches and the projects root straight back. Moved aside rather
+    # than deleted so the rollback restores it byte for byte, mode included, with the
+    # marker it belongs to. Only OUR wrapper for THIS install is touched -- it has to
+    # export UNSLOTH_PORTABLE=1 and exec the venv under $STUDIO_HOME -- so a launcher
+    # belonging to another install, a symlink, or a directory is left alone. Inline, not
+    # a helper, so this block still runs when lifted out on its own.
+    _spm_shim="$_spm_parent/bin/unsloth"
+    _spm_venv=$(printf '%s' "$STUDIO_HOME/unsloth_studio/bin/unsloth" | sed "s/'/'\\\\''/g")
+    if [ -f "$_spm_shim" ] && [ ! -L "$_spm_shim" ] \
+        && grep -qxF "export UNSLOTH_PORTABLE=1" "$_spm_shim" 2>/dev/null \
+        && grep -qxF "exec '$_spm_venv' \"\$@\"" "$_spm_shim" 2>/dev/null; then
+        _PORTABLE_SHIM_PATH="$_spm_shim"
+        _PORTABLE_SHIM_BACKUP="$_spm_parent/bin/.unsloth-portable-shim.$$"
+        if mv -f "$_spm_shim" "$_PORTABLE_SHIM_BACKUP" 2>/dev/null; then
+            substep "removed the portable launcher at $_spm_shim"
+            substep "this install launches with $_LOCAL_BIN/unsloth"
+        else
+            _PORTABLE_SHIM_PATH=""
+            _PORTABLE_SHIM_BACKUP=""
+            substep "could not remove $_spm_shim; running it still re-enters portable mode" "$C_WARN"
         fi
     fi
 }
@@ -1073,10 +1128,26 @@ _restore_portable_marker_slot() {  # path prior
     return 0
 }
 
+# The portable launcher _clear_stale_portable_marker moved aside, put back with the marker
+# it belongs to: a conversion that fails restores the portable install, and the command that
+# install's summary printed has to work again, still carrying the environment that keeps it
+# contained. Never over a file that is back already, for the same reason the marker is not.
+_restore_portable_shim() {
+    [ -n "$_PORTABLE_SHIM_PATH" ] || return 0
+    if [ -e "$_PORTABLE_SHIM_BACKUP" ] && [ ! -e "$_PORTABLE_SHIM_PATH" ] \
+        && mv -f "$_PORTABLE_SHIM_BACKUP" "$_PORTABLE_SHIM_PATH" 2>/dev/null; then
+        rollback_substep "restored the portable launcher at $_PORTABLE_SHIM_PATH"
+    fi
+    _PORTABLE_SHIM_PATH=""
+    _PORTABLE_SHIM_BACKUP=""
+    return 0
+}
+
 # Called from the exit and signal handlers only, so a successful install keeps what it wrote.
 _restore_portable_marker() {
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_1" "$_PORTABLE_MARKER_PRIOR_1"
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_2" "$_PORTABLE_MARKER_PRIOR_2"
+    _restore_portable_shim
     _PORTABLE_MARKER_PATH_1=""
     _PORTABLE_MARKER_PATH_2=""
     return 0
@@ -1090,6 +1161,14 @@ _commit_portable_marker() {
     _PORTABLE_MARKER_PRIOR_1=""
     _PORTABLE_MARKER_PATH_2=""
     _PORTABLE_MARKER_PRIOR_2=""
+    # The conversion stands, so the old portable launcher stays gone; drop the copy that
+    # was only there to put it back. An `if`, not `[ ... ] && rm`: set -e is on and the
+    # false branch of that AND-list would end the install right here.
+    if [ -n "$_PORTABLE_SHIM_BACKUP" ]; then
+        rm -f "$_PORTABLE_SHIM_BACKUP" 2>/dev/null || true
+    fi
+    _PORTABLE_SHIM_PATH=""
+    _PORTABLE_SHIM_BACKUP=""
     return 0
 }
 
@@ -1896,6 +1975,9 @@ LAUNCHER_EOF
                 printf '%s\n' "export UV_INSTALL_DIR='$_css_quoted_root/bin'"
                 printf '%s\n' "export UV_NO_MODIFY_PATH=1"
                 printf '%s\n' "export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
+                # bun ignores npm's cache configuration entirely, and an update that
+                # rebuilds a source frontend prefers bun over npm.
+                printf '%s\n' "export BUN_INSTALL_CACHE_DIR='$_css_quoted_root/cache/bun'"
                 printf '%s\n' "export CUDA_CACHE_PATH='$_css_quoted_root/cache/cuda'"
                 # uv is not the only installer setup.sh reaches for; pip's own cache needs pinning.
                 printf '%s\n' "export PIP_CACHE_DIR='$_css_quoted_root/cache/pip'"
@@ -6378,6 +6460,7 @@ if [ "$_PORTABLE_MODE" = true ]; then
             "export UV_INSTALL_DIR='$_shim_root/bin'" \
             "export UV_NO_MODIFY_PATH=1" \
             "export NPM_CONFIG_CACHE='$_shim_root/cache/npm'" \
+            "export BUN_INSTALL_CACHE_DIR='$_shim_root/cache/bun'" \
             "export CUDA_CACHE_PATH='$_shim_root/cache/cuda'" \
             "export PIP_CACHE_DIR='$_shim_root/cache/pip'" \
             "exec '$_shim_venv/bin/unsloth' \"\$@\"" > "$_shim_tmp" 2>/dev/null \
