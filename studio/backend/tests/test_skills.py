@@ -64,7 +64,10 @@ def test_discovers_both_roots_with_agents_precedence(isolated_skills):
     [
         ("wrong-dir", "---\nname: other\ndescription: valid\n---\n"),
         ("BadName", "---\nname: BadName\ndescription: valid\n---\n"),
-        ("bad-metadata", "---\nname: bad-metadata\ndescription: valid\nmetadata:\n  version: 1\n---\n"),
+        (
+            "bad-metadata",
+            "---\nname: bad-metadata\ndescription: valid\nmetadata:\n  version: 1\n---\n",
+        ),
         ("no-description", "---\nname: no-description\n---\n"),
     ],
 )
@@ -108,9 +111,7 @@ def test_read_resource_is_contained_utf8_and_paginated(isolated_skills):
     resource.parent.mkdir()
     resource.write_text("abcdef", encoding = "utf-8")
 
-    page = skills.read_skill_resource(
-        "reader", "references/guide.md", 1, page_chars = 3, home = home
-    )
+    page = skills.read_skill_resource("reader", "references/guide.md", 1, page_chars = 3, home = home)
 
     assert "Characters: 1-4 of 6" in page
     assert "\nbcd\n" in page
@@ -134,7 +135,6 @@ def test_read_resource_rejects_escaping_symlink(isolated_skills):
         skills.read_skill_resource("reader", "link.txt", home = home)
     with pytest.raises(skills.SkillError, match = "stay inside"):
         skills.read_skill_resource("reader", "../secret.txt", home = home)
-
 
 
 def test_read_resource_rejects_link_swapped_during_open(isolated_skills, monkeypatch):
@@ -163,9 +163,7 @@ def test_read_resource_rejects_link_swapped_during_open(isolated_skills, monkeyp
         skills.read_skill_resource("reader", "guide.md", home = home)
 
 
-def test_read_resource_rejects_skill_root_swapped_after_selection(
-    isolated_skills, monkeypatch
-):
+def test_read_resource_rejects_skill_root_swapped_after_selection(isolated_skills, monkeypatch):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "reader")
     (root / "guide.md").write_text("safe", encoding = "utf-8")
@@ -203,11 +201,9 @@ def test_skill_directory_name_must_match_exactly(isolated_skills):
     assert record["valid"] is False
     assert "match its parent directory" in record["error"]
 
+
 def test_catalog_is_bounded_at_complete_entries():
-    candidates = [
-        {"name": f"skill-{index}", "description": "x" * 300}
-        for index in range(20)
-    ]
+    candidates = [{"name": f"skill-{index}", "description": "x" * 300} for index in range(20)]
 
     catalog = skills.format_skill_catalog(candidates)
 
@@ -236,9 +232,7 @@ def test_authenticated_list_and_toggle_routes(isolated_skills, monkeypatch):
     response = client.put("/api/skills/api-skill/enabled", json = {"enabled": False})
     assert response.status_code == 200
     assert response.json()["enabled"] is False
-    assert client.put(
-        "/api/skills/api-skill/enabled", json = {"enabled": "false"}
-    ).status_code == 422
+    assert client.put("/api/skills/api-skill/enabled", json = {"enabled": "false"}).status_code == 422
 
 
 def test_read_skill_tool_registration_selection_and_prompt(isolated_skills, monkeypatch):
@@ -263,25 +257,19 @@ def test_read_skill_tool_registration_selection_and_prompt(isolated_skills, monk
     )
 
     selected = asyncio.run(
-        inference_routes._select_request_tools(
-            payload, tools_on = True, mcp_allowed = False
-        )
+        inference_routes._select_request_tools(payload, tools_on = True, mcp_allowed = False)
     )
     assert [tool["function"]["name"] for tool in selected] == ["read_skill"]
     assert tools_module.is_always_safe_tool("read_skill") is True
     result = tools_module.execute_tool("read_skill", {"name": "guided"})
     assert "Skill: guided" in result
-    nudge = inference_routes._build_tool_action_nudge(
-        tools = selected, model_name = "test"
-    )
+    nudge = inference_routes._build_tool_action_nudge(tools = selected, model_name = "test")
     assert "- guided: Guide this task" in nudge
     assert "@skill-name" in nudge
     assert ":skill[...]" in nudge
 
     skills.set_skill_enabled("guided", False, home = home)
     selected = asyncio.run(
-        inference_routes._select_request_tools(
-            payload, tools_on = True, mcp_allowed = False
-        )
+        inference_routes._select_request_tools(payload, tools_on = True, mcp_allowed = False)
     )
     assert selected == []

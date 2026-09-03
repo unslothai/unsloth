@@ -56,9 +56,7 @@ def _normalize_skill_name(name: str) -> str:
         or normalized.endswith("-")
         or "--" in normalized
         or not all(
-            "a" <= character <= "z"
-            or "0" <= character <= "9"
-            or character == "-"
+            "a" <= character <= "z" or "0" <= character <= "9" or character == "-"
             for character in normalized
         )
     ):
@@ -78,15 +76,18 @@ def _is_linked_path(path: Path) -> bool:
     return stat.S_ISLNK(status.st_mode) or bool(reparse_point and attributes & reparse_point)
 
 
-def _read_limited(path: Path, limit: int, *, contained_in: Optional[Path] = None) -> bytes:
+def _read_limited(
+    path: Path,
+    limit: int,
+    *,
+    contained_in: Optional[Path] = None,
+) -> bytes:
     try:
         with path.open("rb") as handle:
             status = os.fstat(handle.fileno())
             if contained_in is not None:
                 if _is_linked_path(contained_in):
-                    raise SkillError(
-                        "Skill resources cannot use symbolic links or reparse points."
-                    )
+                    raise SkillError("Skill resources cannot use symbolic links or reparse points.")
                 root = contained_in.resolve(strict = True)
                 relative = path.relative_to(contained_in)
                 current = contained_in
@@ -159,7 +160,10 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
     metadata = frontmatter.get("metadata")
     if metadata is not None and (
         not isinstance(metadata, dict)
-        or any(not isinstance(key, str) or not isinstance(value, str) for key, value in metadata.items())
+        or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in metadata.items()
+        )
     ):
         raise SkillError("Skill metadata keys and values must be strings.")
     allowed_tools = frontmatter.get("allowed-tools")
@@ -229,7 +233,9 @@ def _load_overrides() -> dict[str, bool]:
 def _save_overrides(overrides: dict[str, bool]) -> None:
     path = _override_path()
     path.parent.mkdir(parents = True, exist_ok = True)
-    fd, temporary_name = tempfile.mkstemp(prefix = ".skill-overrides-", suffix = ".json", dir = path.parent)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix = ".skill-overrides-", suffix = ".json", dir = path.parent
+    )
     try:
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             json.dump(overrides, handle, sort_keys = True, separators = (",", ":"))
@@ -319,7 +325,12 @@ def _selected_skill(name: str, *, home: Optional[Path] = None) -> tuple[dict, Pa
     raise SkillNotFoundError(f"Skill '{normalized}' was not found.")
 
 
-def set_skill_enabled(name: str, enabled: bool, *, home: Optional[Path] = None) -> dict:
+def set_skill_enabled(
+    name: str,
+    enabled: bool,
+    *,
+    home: Optional[Path] = None,
+) -> dict:
     if not isinstance(enabled, bool):
         raise SkillError("Skill enabled state must be a boolean.")
     with _LOCK:
@@ -398,18 +409,14 @@ def read_skill_resource(
         path = _normalize_resource_path(resource)
         try:
             if _is_linked_path(skill_dir):
-                raise SkillError(
-                    "Skill resources cannot use symbolic links or reparse points."
-                )
+                raise SkillError("Skill resources cannot use symbolic links or reparse points.")
             root = skill_dir.resolve(strict = True)
             candidate = skill_dir.joinpath(*path.parts)
             current = skill_dir
             for part in path.parts:
                 current = current / part
                 if _is_linked_path(current):
-                    raise SkillError(
-                        "Skill resources cannot use symbolic links or reparse points."
-                    )
+                    raise SkillError("Skill resources cannot use symbolic links or reparse points.")
             candidate.resolve(strict = True).relative_to(root)
         except SkillError:
             raise

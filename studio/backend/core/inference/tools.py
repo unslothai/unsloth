@@ -10175,7 +10175,6 @@ READ_SKILL_TOOL = {
 }
 
 
-
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
@@ -10485,7 +10484,6 @@ def execute_tool(
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "read_skill":
         from .skills import SkillError, read_skill_resource
-
         try:
             return _fit_result_to_room(
                 read_skill_resource(

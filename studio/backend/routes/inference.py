@@ -4474,7 +4474,6 @@ _TOOL_ARTIFACT_TIP = (
 
 def _enabled_agent_skills() -> list[dict]:
     from core.inference.skills import SkillError, enabled_skills
-
     try:
         return enabled_skills()
     except SkillError as exc:
@@ -4496,7 +4495,6 @@ def _skill_tool_tip() -> str:
         "answering. Skill allowed-tools metadata never overrides Studio tool permissions.\n"
         + catalog
     )
-
 
 
 def _build_tool_action_nudge(
@@ -4888,7 +4886,6 @@ async def _select_request_tools(
     tools = [tool for tool in tools if tool["function"]["name"] != "read_skill"]
     if tools_on and _enabled_agent_skills():
         from core.inference.tools import READ_SKILL_TOOL
-
         tools.append(READ_SKILL_TOOL)
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
@@ -28041,7 +28038,6 @@ def _select_anthropic_server_tools(
     available = list(all_tools)
     if _enabled_agent_skills():
         from core.inference.tools import READ_SKILL_TOOL
-
         available.append(READ_SKILL_TOOL)
     if not requested_studio_tools and enabled_tools is None:
         return available
@@ -28053,6 +28049,7 @@ def _select_anthropic_server_tools(
         selected_names.add("read_skill")
 
     return [tool for tool in available if tool["function"]["name"] in selected_names]
+
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
     """Decode raw image bytes and re-encode to a base64-ascii PNG string.
