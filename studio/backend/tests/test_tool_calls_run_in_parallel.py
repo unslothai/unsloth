@@ -74,12 +74,20 @@ class TestToolCallsOverlapAcrossChats:
 class TestWithinOneChatCallsAreSerial:
     """Documented, not asserted as desirable: a round's calls run one after another.
 
-    `for call in calls` at the execution loop. It is serial for reasons that are real --
-    each call may need its own approval, a later call can depend on an earlier result,
-    the no-progress guard is keyed on results, and the one-shot ledger is per call -- but
-    it does mean three independent searches in one turn take three times as long as one.
-    Parallelising them is a worthwhile change and a separate one, since it has to keep
-    approval gating and card ordering intact.
+    `for call in calls` at the execution loop, so three independent searches in one turn
+    take three times as long as one. Worth changing, and a bigger change than it looks.
+
+    The obstacle is not the approval gate, which only some calls need, nor result
+    ordering, which a sort would fix. It is that a tool is not a single blocking call:
+    `_advance_tool_stream` is pumped in a loop and the loop yields the tool's progress
+    events into the same SSE stream as it goes. Running several at once means
+    multiplexing several event streams through one generator while keeping each card's
+    events in their own order, and keeping the approval prompt sequential because a user
+    can only answer one at a time.
+
+    So the shape would be: gate and dispatch the auto-approved calls as tasks, pump them
+    concurrently, and interleave their events by card id, with confirmations still taken
+    one at a time. Noted here rather than attempted alongside a preemption change.
     """
 
     def test_the_execution_loop_is_a_plain_sequential_for(self):
