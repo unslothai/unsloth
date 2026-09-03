@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import tempfile
 import threading
 from collections import OrderedDict
@@ -18,11 +17,18 @@ from loggers import get_logger
 from utils.paths import path_utils as _path_utils
 from utils.paths.path_utils import wsl_automount_root
 
-# One policy, defined in utils.paths.storage_roots: the copy that used to live here drifted, and a
-# BOM'd settings.json was honoured by one side and dropped by the other (#9748).
+# One policy, defined in utils.paths.storage_roots. The copy that used to live here
+# drifted: a BOM'd settings.json was honoured by one side and dropped by the other (#9748).
+# studio_root is imported for the same reason. Its copy here predated portable installs
+# and only knew the env overrides and a share/studio.conf-or-bin/unsloth venv lookup, so a
+# nested portable backend launched from its own venv -- which keeps share/ and bin/ one
+# level up -- failed that lookup and sent Hub state to ~/.unsloth/studio while the rest of
+# the backend used the portable root. The helpers below stay wrappers rather than direct
+# re-exports so the module attribute remains the seam callers and tests already patch.
 from utils.paths.storage_roots import (
     lmstudio_model_dirs,
     ollama_model_dirs,
+    studio_root,
     well_known_model_dirs,
 )
 
@@ -30,40 +36,6 @@ logger = get_logger(__name__)
 
 # Re-export shim: marks them used so the import-hoist safety net does not flag them.
 _REEXPORTED = (lmstudio_model_dirs, ollama_model_dirs, well_known_model_dirs)
-
-
-def _infer_studio_home_from_venv() -> Optional[Path]:
-    try:
-        prefix = Path(sys.prefix).resolve()
-    except (OSError, ValueError):
-        return None
-    if prefix.name != "unsloth_studio":
-        return None
-    candidate = prefix.parent
-    shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
-    try:
-        if (candidate / "share" / "studio.conf").is_file() or (
-            candidate / "bin" / shim_name
-        ).is_file():
-            return candidate
-    except OSError:
-        return None
-    return None
-
-
-def studio_root() -> Path:
-    override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
-    if not override:
-        override = (os.environ.get("STUDIO_HOME") or "").strip()
-    if override:
-        try:
-            return Path(override).expanduser().resolve()
-        except (OSError, ValueError):
-            return Path(override).expanduser()
-    inferred = _infer_studio_home_from_venv()
-    if inferred is not None:
-        return inferred
-    return Path.home() / ".unsloth" / "studio"
 
 
 def cache_root() -> Path:
