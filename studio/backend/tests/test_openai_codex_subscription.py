@@ -73,7 +73,9 @@ def test_protocol_constants_and_curated_provider_contract():
     ]
     assert OPENAI_CODEX_DEVICE_REDIRECT_URI == ("https://auth.openai.com/deviceauth/callback")
     row = next(
-        item for item in list_available_providers() if item["provider_type"] == "openai_codex"
+        item
+        for item in list_available_providers(include_oauth = True)
+        if item["provider_type"] == "openai_codex"
     )
     assert row["auth_kind"] == "chatgpt_oauth"
 

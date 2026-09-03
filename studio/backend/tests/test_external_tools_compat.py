@@ -135,6 +135,25 @@ def test_visible_rows_are_identical_with_and_without_include_hidden():
         assert row == widened[row["provider_type"]]
 
 
+def test_registry_default_hides_oauth_providers_from_legacy_clients():
+    """An old bundle must not render an OAuth provider as an API-key form."""
+    types = {entry["provider_type"] for entry in list_available_providers()}
+    assert "openai_codex" not in types
+
+
+def test_include_hidden_does_not_imply_oauth_client_support():
+    """Hidden-preset support and OAuth UI support are separate capabilities."""
+    types = {entry["provider_type"] for entry in list_available_providers(include_hidden = True)}
+    assert "openai_codex" not in types
+
+
+def test_oauth_aware_clients_can_request_oauth_providers():
+    entries = {
+        entry["provider_type"]: entry for entry in list_available_providers(include_oauth = True)
+    }
+    assert entries["openai_codex"]["auth_kind"] == "chatgpt_oauth"
+
+
 def test_registry_rows_keep_every_pre_change_key():
     """Additive only. A cached bundle reads these keys off every row."""
     for entry in list_available_providers(include_hidden = True):
