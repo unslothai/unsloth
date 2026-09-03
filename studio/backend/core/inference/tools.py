@@ -12109,7 +12109,7 @@ def _fetch_url_raw(
             if declared:
                 declared_codec = codecs.lookup(declared).name
         except (LookupError, ValueError):
-            # A name Python does not ship, or one malformed enough to fail lookup.
+            # ValueError, not only LookupError: a NUL inside the label.
             declared = None
         bom_codec = next(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
@@ -12118,12 +12118,8 @@ def _fetch_url_raw(
         try:
             raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
         except (LookupError, ValueError):
-            # The label survived lookup but cannot decode this page the way we do:
-            # non-text codecs (base64/hex/zlib), the always-failing "undefined",
-            # and codecs that reject errors = "replace" (idna). A label we cannot
-            # decode with is no better than none, so take the fallback instead of
-            # losing a page the bytes of which we already have. Every codec here is
-            # a real text codec from _UNICODE_BOM_CODECS or utf-8, so it cannot raise.
+            # Survives lookup, fails the decode: base64/hex/zlib are not text codecs,
+            # "undefined" always raises, idna rejects replace. The fallback cannot raise.
             declared = None
             declared_codec = None
             raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
