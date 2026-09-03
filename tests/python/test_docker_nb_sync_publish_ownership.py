@@ -192,3 +192,35 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
     assert (
         '[ -e "$2" ] || return 0' in block
     ), "a brand-new notebook has no destination metadata to inherit"
+
+
+def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
+    """A publish that cannot be written must stay retryable.
+
+    Omitting the path from the state file while still stamping $SYNCED made the
+    next boot short-circuit on `remote == last`, so the notebook was never
+    retried; and the missing record makes a later refresh read the stale
+    destination as user-owned and keep it indefinitely.
+    """
+    template, dest, remote = _world(tmp_path)
+    nb_dir = dest / "nb"
+    os.chmod(nb_dir, 0o500)  # publish into nb/ now fails, DEST root stays writable
+    try:
+        res = _run(tmp_path, template, dest, remote)
+    finally:
+        os.chmod(nb_dir, 0o700)
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd = remote,
+        capture_output = True, text = True, check = True,
+    ).stdout.strip()
+    synced = dest / ".unsloth_sync_commit"
+    marker = synced.read_text(encoding = "utf-8").strip() if synced.exists() else ""
+    assert marker != head, (
+        "the sync marker was advanced to the upstream commit even though the "
+        "publish failed, so the next start short-circuits on remote == last and "
+        f"never retries; marker={marker!r} stdout={res.stdout!r} "
+        f"stderr={res.stderr!r}"
+    )
+    # and the file itself is untouched, so nothing was half-written
+    assert (dest / REL).read_text(encoding = "utf-8") == V1

@@ -296,7 +296,7 @@ if [ -f "$STATE" ]; then
 fi
 
 TMPSTATE="$(mktemp)"
-updated=0; kept=0; unchanged=0
+updated=0; kept=0; unchanged=0; failed=0
 while IFS= read -r -d '' f; do
     rel="${f#"$TMP"/}"
     case "$rel" in .git|.git/*) continue ;; esac
@@ -365,12 +365,35 @@ while IFS= read -r -d '' f; do
             # $staged, not hash_of "$dst": both branches write the bytes of "$f".
             printf '%s  %s\n' "$staged" "$rel" >> "$TMPSTATE"
             updated=$((updated + 1))
+        else
+            # Publish failed (a read-only single-file bind mount, a full disk).
+            # Carry the PREVIOUS record forward: dropping it would leave $dst with
+            # no recorded hash, and the next refresh reads that as a user-owned
+            # file and keeps the stale copy forever. Count it so $SYNCED is not
+            # advanced below, otherwise remote == last short-circuits the next
+            # boot and this file is never retried.
+            printf '%s  %s\n' "${LAST[$rel]:-}" "$rel" >> "$TMPSTATE"
+            failed=$((failed + 1))
         fi
+    else
+        # Even STAGING failed, so nothing was attempted for this path. Same
+        # treatment as a failed publish: keep the old record and do not let the
+        # sync marker advance, or a read-only directory is recorded as fully
+        # synced and never retried.
+        printf '%s  %s\n' "${LAST[$rel]:-}" "$rel" >> "$TMPSTATE"
+        failed=$((failed + 1))
     fi
 done < <(find "$TMP" -type f -print0)
 
 mv "$TMPSTATE" "$STATE" 2>/dev/null || rm -f "$TMPSTATE"
-echo "$remote" > "$SYNCED" 2>/dev/null || true
+# Only claim this commit is synced when every intended publish landed. Recording
+# it after a failure makes the next boot exit on remote == last, so the file that
+# could not be written is never retried.
+if [ "$failed" -eq 0 ]; then
+    echo "$remote" > "$SYNCED" 2>/dev/null || true
+else
+    echo "[unsloth-nb] $failed notebook(s) could not be written; leaving the sync marker so the next start retries"
+fi
 rm -rf "$TMP"
 echo "[unsloth-nb] notebooks refreshed from GitHub: $updated updated, $kept kept (your edits), $unchanged kept (only header/footer changed upstream)"
 # Freshly copied notebooks arrive with the upstream Colab intro, and new files

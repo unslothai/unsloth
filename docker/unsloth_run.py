@@ -152,11 +152,21 @@ def _stage_metadata(staged, dest):
     try:
         st = os.stat(dest)
     except OSError:
+        # New output: no destination to copy from, so take the umask-derived mode
+        # a plain write would have produced and the OWNER of the directory it
+        # lands in. Under `-v $PWD:/workspace` that directory belongs to the host
+        # user, so without the chown they get a root-owned file they can read but
+        # not edit, which is the same complaint as the existing-output case.
         try:
             umask = os.umask(0)
             os.umask(umask)
             os.chmod(staged, 0o666 & ~umask)
         except OSError:
+            pass
+        try:
+            _dir = os.stat(os.path.dirname(os.path.abspath(dest)) or ".")
+            os.chown(staged, _dir.st_uid, _dir.st_gid)
+        except (OSError, AttributeError):
             pass
         return
     try:
