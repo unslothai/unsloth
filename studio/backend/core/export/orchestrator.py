@@ -376,7 +376,12 @@ class ExportOrchestrator:
             return
         if store:
             shutil.rmtree(store, ignore_errors = True)
-        self._token_store = None
+        # Compare and clear: rmtree can block, and a reload may have installed a replacement
+        # while it ran. Nulling unconditionally would orphan that live worker's store.
+        # getattr: the attribute is created lazily, so a never-loaded orchestrator reaching
+        # here through atexit has none yet.
+        if getattr(self, "_token_store", None) is store:
+            self._token_store = None
 
     def _ensure_subprocess_alive(self) -> bool:
         """Check if subprocess is alive, reaping it if it is not.

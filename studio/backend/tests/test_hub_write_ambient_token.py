@@ -1403,3 +1403,35 @@ def test_the_cached_revision_is_what_gets_authorized(monkeypatch):
     )
     assert ok is True
     assert asked["revision"] == "deadbeef"
+
+
+def test_discarding_a_store_does_not_orphan_a_replacement_installed_mid_removal():
+    """rmtree can block; a reload landing inside it must keep its own pointer."""
+    import os
+    import shutil
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    doomed = o._new_token_store()
+    replacement = os.path.join(os.path.dirname(doomed), "replacement-store")
+    os.makedirs(replacement, exist_ok = True)
+
+    real_rmtree = shutil.rmtree
+
+    def _slow_rmtree(path, *a, **kw):
+        # The reload lands while the removal is in flight.
+        o._token_store = replacement
+        return real_rmtree(path, *a, **kw)
+
+    try:
+        import unittest.mock as mock
+
+        with mock.patch("shutil.rmtree", _slow_rmtree):
+            o._discard_token_store()
+        assert o._token_store == replacement, "the replacement's pointer must survive"
+        assert not os.path.exists(doomed)
+        assert os.path.isdir(replacement)
+    finally:
+        real_rmtree(replacement, ignore_errors = True)
+        o._token_store = None
