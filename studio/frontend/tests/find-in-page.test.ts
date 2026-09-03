@@ -2103,6 +2103,53 @@ test("an odd run longer than the window is not read as even", () => {
   }
 });
 
+test("a query that matches everywhere stops seeking the segmenter per candidate", () => {
+  // `containing` seeks, which is why it replaced segmenting whole blocks, and a seek per candidate
+  // is the shape that undoes: a capped search anchored near the end walks the candidates up to
+  // three times, so a page of one repeated syllable asked for millions of them and froze the tab
+  // for seconds. Counted rather than timed, so the property is asserted and not the hardware.
+  const probe = `
+    let seeks = 0;
+    const Real = Intl.Segmenter;
+    Intl.Segmenter = class {
+      constructor(...args) { this.inner = new Real(...args); }
+      segment(input) {
+        const segments = this.inner.segment(input);
+        return {
+          containing: (at) => { seeks += 1; return segments.containing(at); },
+          [Symbol.iterator]: () => segments[Symbol.iterator](),
+        };
+      }
+    };
+    const { buildTextIndex, findMatches, MAX_MATCHES, MAX_NODE_CHARS } = await import(${JSON.stringify(
+      new URL(
+        "../src/features/find-in-page/lib/find-text-index.ts",
+        import.meta.url,
+      ).href,
+    )});
+    const el = (tagName, childNodes) => ({
+      nodeType: 1, tagName, childNodes, getAttribute: () => null,
+    });
+    const total = 400000;
+    const nodes = [];
+    for (let at = 0; at < total; at += MAX_NODE_CHARS) {
+      nodes.push({ nodeType: 3, data: "\uac00".repeat(MAX_NODE_CHARS) });
+    }
+    const index = buildTextIndex(el("DIV", [el("P", nodes)]));
+    const found = findMatches(index, "\uac00", MAX_MATCHES, index.text.length);
+    if (found.length !== MAX_MATCHES) throw new Error("expected a capped search, got " + found.length);
+    // One pass over the boundaries replaces the seeks, so what is left is the handful before the
+    // scan is worth making. Millions without it, on an index this size.
+    if (seeks > 20000) throw new Error("seeks per candidate: " + seeks);
+  `;
+  const run = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+});
+
 test("a run of regional indicators is measured once, not once per offset", () => {
   // Every offset in a run used to walk the whole run behind it to count parity, which is quadratic
   // and, on a log of flags, seconds of frozen tab. In its own process because the parity walk only
@@ -2247,6 +2294,9 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["\\u00ad\\u0301", "\\u0301"],
       ["\\u2028\\u0903", "\\u2028"],
       ["\\u2028\\u0903", "\\u0903"],
+      // A ZWNJ is Grapheme_Extend and still ends the conjunct, which is what it is for, so the
+      // consonant after one starts a grapheme of its own.
+      ["\\u0915\\u094d\\u200c\\u0915", "\\u0915"],
     ];
     for (const [body, query] of found) {
       if (findMatches(index(body), query, 10).length !== 1) {

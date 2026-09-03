@@ -609,6 +609,10 @@ function conjunctBack(text: string, at: number): boolean {
   for (let cursor = at; cursor > 0; ) {
     const [point, start] = pointBefore(text, cursor);
     if (linker && CONSONANT_PATTERN.test(point)) return true;
+    // A ZWNJ is Grapheme_Extend and still ends the conjunct, which is the whole of what it is for.
+    // Asking the segmenter which extenders break the chain, over every one of them, turns up this
+    // and nothing else.
+    if (point === "\u200c") return false;
     if (LINKER_PATTERN.test(point)) linker = true;
     else if (!EXTEND_PATTERN.test(point) && point !== "‍") return false;
     cursor = start;
@@ -764,11 +768,19 @@ function canonicalSource(needle: string, dotted: boolean): string {
  *  index costs 4ms once and a fraction of a microsecond a question. */
 const segmentsCache = new WeakMap<FindTextIndex, GraphemeSegments>();
 
+/** Every boundary in the index, once the search has asked about enough of them to be worth it.
+ *  A seek is right for the handful of offsets an ordinary query reaches, and wrong for one that
+ *  matches everywhere; the crossover is well below the point where either is slow. */
+const boundaryCache = new WeakMap<FindTextIndex, Uint8Array>();
+const seekCounts = new WeakMap<FindTextIndex, number>();
+const SEEKS_BEFORE_SCAN = 4096;
+
 /** Anything that could extend or be extended into a grapheme. See `alignsToGraphemes`. */
 const JOINS_GRAPHEME = /[^\u0000-\u02ff]/;
 
 interface GraphemeSegments {
   containing(at: number): { index: number } | undefined;
+  [Symbol.iterator](): IterableIterator<{ index: number }>;
 }
 
 let segmenter: { segment(input: string): GraphemeSegments } | null | undefined;
@@ -857,12 +869,24 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
   if (platform === null) {
     return !continuesGrapheme(text, at, regionalRunStart(index, at));
   }
+  const marked = boundaryCache.get(index);
+  if (marked !== undefined) return marked[at] === 1;
   let segments = segmentsCache.get(index);
   if (segments === undefined) {
     segments = platform.segment(text);
     segmentsCache.set(index, segments);
   }
-  return segments.containing(at)?.index === at;
+  const asked = (seekCounts.get(index) ?? 0) + 1;
+  seekCounts.set(index, asked);
+  if (asked <= SEEKS_BEFORE_SCAN) return segments.containing(at)?.index === at;
+  // Past here the query is one that matches nearly everywhere, and `findMatches` walks the
+  // candidates up to three times: a seek each is millions of them, and the whole segmentation is
+  // one pass. A page of Hangul syllables searched for one of them took 2.1s at the 4M ceiling.
+  const marks = new Uint8Array(text.length + 1);
+  for (const { index: start } of segments) marks[start] = 1;
+  marks[text.length] = 1;
+  boundaryCache.set(index, marks);
+  return marks[at] === 1;
 }
 
 function escapeForRegex(text: string): string {
