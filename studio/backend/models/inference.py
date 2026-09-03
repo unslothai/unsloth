@@ -3106,7 +3106,7 @@ class ResponsesOutputMessage(BaseModel):
 
     type: Literal["message"] = "message"
     id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:12]}")
-    status: Literal["completed", "in_progress"] = "completed"
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
     role: Literal["assistant"] = "assistant"
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 

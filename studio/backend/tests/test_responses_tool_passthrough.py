@@ -1062,12 +1062,27 @@ class TestResponsesNonStreamingAdapter:
     def test_a_truncated_turn_is_reported_as_incomplete(self, monkeypatch):
         body = self._run_with_message(
             monkeypatch,
-            {"content": "half an ans"},
+            {
+                "content": "half an ans",
+                "reasoning_content": "partial plan",
+                "tool_calls": [
+                    {
+                        "id": "call_partial",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"q":"x"'},
+                    }
+                ],
+            },
             finish_reason = "length",
         )
 
         assert body["status"] == "incomplete"
         assert body["incomplete_details"] == {"reason": "max_output_tokens"}
+        assert [item["status"] for item in body["output"]] == [
+            "incomplete",
+            "incomplete",
+            "incomplete",
+        ]
 
     def test_a_natural_stop_is_still_completed(self, monkeypatch):
         body = self._run_with_message(
@@ -3072,6 +3087,43 @@ def test_a_truncated_responses_stream_ends_on_response_incomplete(monkeypatch):
     incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
     assert incomplete["response"]["status"] == "incomplete"
     assert incomplete["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
+
+
+def test_a_healed_truncated_tool_call_remains_incomplete(monkeypatch):
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": "length"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == "length"
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
 
 
 def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatch):
@@ -3092,3 +3144,4 @@ def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatc
     completed = TestResponsesStreamAdapter._payloads(lines, "response.completed")[0]
     assert completed["response"]["status"] == "completed"
     assert completed["response"]["incomplete_details"] is None
+    assert [item["status"] for item in completed["response"]["output"]] == ["completed"]
