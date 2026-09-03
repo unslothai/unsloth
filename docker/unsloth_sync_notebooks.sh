@@ -89,6 +89,38 @@ cp_keep_meta() {
     if [ -e "$2" ]; then cp "$1" "$2" 2>/dev/null; else cp -a "$1" "$2" 2>/dev/null; fi
 }
 
+# Create $1 and its parents owned by the nearest EXISTING ancestor: the shell
+# twin of unsloth_run.py's _makedirs_as_host, and the directory counterpart of
+# stage_metadata above. mkdir(2) gives the new directory the CALLER's uid and
+# only the setgid bit carries anything down, so a category folder upstream adds
+# lands root:root in the middle of a tree whose FILES the two helpers above go
+# out of their way to keep host-owned, and the user cannot write into it. The
+# ancestor is the right anchor rather than $DEST: a bind mount can be nested.
+# Best effort, for the same reason as the others.
+mkdir_keep_owner() {
+    local dir="$1" anchor parent rest cur part
+    local -a parts
+    [ -d "$dir" ] && return 0
+    anchor="$dir"
+    while [ ! -d "$anchor" ]; do
+        parent="$(dirname "$anchor")"
+        [ "$parent" = "$anchor" ] && break
+        anchor="$parent"
+    done
+    mkdir -p "$dir" 2>/dev/null || return 0
+    [ -d "$anchor" ] || return 0
+    rest="${dir#"$anchor"}"
+    cur="$anchor"
+    IFS='/' read -r -a parts <<< "$rest"
+    # Outermost first, so a partial failure still fixes what it can.
+    for part in ${parts[@]+"${parts[@]}"}; do
+        [ -z "$part" ] && continue
+        cur="$cur/$part"
+        chown --reference="$anchor" "$cur" 2>/dev/null || true
+    done
+    return 0
+}
+
 # --- mutual exclusion --------------------------------------------------------
 # Every phase below mutates $DEST and rewrites $STATE, and the GitHub refresh
 # runs in a DETACHED child of this same script, so two copies are live at once by
@@ -215,7 +247,7 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     while IFS= read -r -d '' rel; do
         rel="${rel#./}"
         case "$rel" in .unsloth_template_commit) continue ;; esac
-        mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
+        mkdir_keep_owner "$DEST/$(dirname "$rel")"
         # A pre-existing file (bind-mounted or hand-created) is user data: keep it
         # and do NOT record it, else the refresh below would treat it as pristine
         # and overwrite it. Only files we lay down are recorded as managed.
@@ -260,7 +292,7 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
         h="${line%%  *}"; rel="${line#*  }"
         if [ -n "$rel" ] && [ "$rel" != "$line" ] \
            && [ ! -e "$DEST/$rel" ] && [ -f "$TEMPLATE/$rel" ]; then
-            mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
+            mkdir_keep_owner "$DEST/$(dirname "$rel")"
             if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
                 printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$RS_TMP"
                 restored=$((restored + 1))
@@ -353,7 +385,7 @@ while IFS= read -r -d '' f; do
         kept=$((kept + 1))
         continue
     fi
-    mkdir -p "$(dirname "$dst")" 2>/dev/null || true
+    mkdir_keep_owner "$(dirname "$dst")"
     # Publish through a same-dir temp + rename. This child is forked before the
     # entrypoint execs the container command, so JupyterLab is already serving
     # $DEST while this loop runs: cp -a writes in place (the inode is reused), so

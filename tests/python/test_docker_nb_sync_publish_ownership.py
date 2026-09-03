@@ -243,3 +243,95 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
     )
     # and the file itself is untouched, so nothing was half-written
     assert (dest / REL).read_text(encoding = "utf-8") == V1
+
+
+# --- directories, not just the files inside them -------------------------------
+# stage_metadata / cp_keep_meta keep a published FILE's owner. mkdir(2) gives a
+# new DIRECTORY the caller's uid and only the setgid bit carries anything down,
+# so a category folder upstream adds landed root:root in the middle of a tree
+# whose files those two go out of their way to keep host-owned, and the user
+# could not write into it. Same defect as unsloth_run.py's output directory.
+
+SYNC_SH = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
+
+
+def _function_block(source: str, name: str) -> str:
+    start = source.index(f"{name}() {{")
+    end = source.index("\n}\n", start) + len("\n}\n")
+    return source[start:end]
+
+
+def _drive_mkdir_keep_owner(tmp_path: Path, target: Path) -> list:
+    """Run the real helper with `chown` replaced by a recorder on PATH."""
+    source = SYNC_SH.read_text(encoding = "utf-8")
+    block = _function_block(source, "mkdir_keep_owner")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok = True)
+    log = tmp_path / "chown.log"
+    shim = bin_dir / "chown"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> "{log}"\n'
+        "exit 0\n",
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+    driver = tmp_path / "driver.sh"
+    driver.write_text(
+        "#!/usr/bin/env bash\nset -u\n" + block + f'\nmkdir_keep_owner "{target}"\n',
+        encoding = "utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(driver)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = dict(os.environ, PATH = f"{bin_dir}{os.pathsep}" + os.environ["PATH"]),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    if not log.exists():
+        return []
+    return [line for line in log.read_text(encoding = "utf-8").splitlines() if line]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_every_created_notebook_directory_is_chowned_to_its_nearest_ancestor(tmp_path: Path):
+    anchor = tmp_path / "notebooks"
+    anchor.mkdir()
+    target = anchor / "AMD" / "vision"
+
+    calls = _drive_mkdir_keep_owner(tmp_path, target)
+
+    assert target.is_dir(), "the directory still has to be created"
+    assert calls == [
+        f"--reference={anchor} {anchor / 'AMD'}",
+        f"--reference={anchor} {target}",
+    ], f"both created levels must be fixed, outermost first: {calls}"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_an_existing_notebook_directory_is_left_alone(tmp_path: Path):
+    existing = tmp_path / "notebooks"
+    existing.mkdir()
+    assert _drive_mkdir_keep_owner(tmp_path, existing) == []
+
+
+def test_every_directory_creating_site_routes_through_the_helper():
+    """The sibling guard. Three sites create directories inside $DEST: first-boot
+    populate, the every-boot restore of deleted notebooks, and the refresh
+    publish. Fixing one and leaving the others is how this class of bug keeps
+    coming back, so none of them may call bare mkdir on a $DEST path."""
+    source = SYNC_SH.read_text(encoding = "utf-8")
+    body = source[source.index("mkdir_keep_owner() {"):]
+    body = body[body.index("\n}\n"):]          # everything after the helper itself
+    stray = [
+        line.strip()
+        for line in body.splitlines()
+        if "mkdir -p" in line and "$DEST/" in line
+    ]
+    assert not stray, f"these still create a directory as root inside $DEST: {stray}"
+    assert body.count("mkdir_keep_owner ") == 3, (
+        "expected populate, restore and publish to route through the helper"
+    )
