@@ -29,12 +29,8 @@ _utils_pkg = types.ModuleType("utils")
 _utils_pkg.__path__ = []
 _utils_paths_stub = types.ModuleType("utils.paths")
 _utils_paths_stub.outputs_root = lambda: Path("/tmp")
-_utils_tv_stub = types.ModuleType("utils.transformers_version")
-_utils_tv_stub.sidecar_swap_in_progress = lambda: False
-_utils_tv_stub.SidecarSwapInProgress = type("SidecarSwapInProgress", (RuntimeError,), {})
 sys.modules.setdefault("utils", _utils_pkg)
 sys.modules.setdefault("utils.paths", _utils_paths_stub)
-sys.modules.setdefault("utils.transformers_version", _utils_tv_stub)
 
 
 TIMEOUT = 10.0
@@ -107,6 +103,14 @@ def test_a_quiet_worker_still_times_out(waiting_orchestrator) -> None:
 def test_the_export_wait_is_not_given_a_longer_leash_for_more_quants(monkeypatch) -> None:
     """Silence is silence: a 12-quant list may not go quiet 12x longer than a single one."""
     from core.export import orchestrator as orchestrator_module
+
+    # _run_export imports this at call time. Injected per test and undone after: a module-level
+    # sys.modules entry would shadow the real utils.transformers_version for the whole session,
+    # and the rest of the backend suite imports a dozen names from it.
+    tv_stub = types.ModuleType("utils.transformers_version")
+    tv_stub.sidecar_swap_in_progress = lambda: False
+    tv_stub.SidecarSwapInProgress = type("SidecarSwapInProgress", (RuntimeError,), {})
+    monkeypatch.setitem(sys.modules, "utils.transformers_version", tv_stub)
 
     seen: list = []
 
