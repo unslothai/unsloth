@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CSM / SNAC / BiCodec / DAC runs must not discard the uploaded eval dataset.
-
-The codec-audio branches returned `(processed, None)` and the CSM and SNAC trainers were built with
-no eval_dataset and no eval strategy, so the file was loaded, parsed, dropped, and nothing warned.
-"""
+"""Regression tests for preserving codec-audio evaluation datasets."""
 
 from __future__ import annotations
 
@@ -28,13 +24,13 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Stub a dep the backend pytest job does not install; see test_trainer_stdout_quiet.py."""
+    """Stub dependencies missing from the backend test environment."""
     if name in sys.modules:
         return
     try:
         importlib.import_module(name)
         return
-    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+    except Exception:  # noqa: BLE001 - stub unusable imports
         pass
     _STUBBED.append(name)
     mod = types.ModuleType(name)
@@ -62,7 +58,7 @@ CODEC_TYPES = ("csm", "snac", "bicodec", "dac")
 
 @pytest.fixture
 def audio_trainer(monkeypatch):
-    # UnslothTrainer.__new__ swaps in the MLX adapter on Apple silicon; pin the real class.
+    # Avoid MLX substitution on Apple silicon.
     monkeypatch.setattr(tmod, "should_use_mlx_training_backend", lambda *a, **k: False)
     t = tmod.UnslothTrainer()
     t.model_name = "unsloth/csm-1b"

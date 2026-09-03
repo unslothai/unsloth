@@ -2364,11 +2364,7 @@ class UnslothTrainer:
         return result_dataset
 
     def _preprocess_audio_eval_split(self, eval_dataset, preprocess, custom_format_mapping):
-        """Run a codec-audio preprocessor over the uploaded eval split.
-
-        A split that cannot be prepared warns and is dropped, rather than failing a run whose
-        train split is fine.
-        """
+        """Preprocess eval data, warning and dropping it on failure."""
         if eval_dataset is None:
             return None
         try:
@@ -2381,7 +2377,7 @@ class UnslothTrainer:
             return None
 
     def _audio_eval_config(self, training_args):
-        """(TrainingArguments overrides, eval dataset), gated the way the text path gates its own."""
+        """Build audio evaluation arguments and return the eval dataset."""
         eval_dataset = training_args.get("eval_dataset", None)
         eval_steps = training_args.get("eval_steps", 0.00)
         if eval_dataset is None:
@@ -2394,7 +2390,7 @@ class UnslothTrainer:
         return {
             "eval_strategy": "steps",
             "eval_steps": eval_steps,
-            # HF defaults this to 8, which OOMs on audio where the train batch is 2.
+            # Avoid HF's default of 8, which can OOM audio runs.
             "per_device_eval_batch_size": training_args.get("batch_size", 2),
         }, eval_dataset
 
