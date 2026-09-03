@@ -280,10 +280,25 @@ def main() -> int:
     home.mkdir()
     flat = tmp / "r_flat"
     (flat / "unsloth_studio").mkdir(parents = True)
+    # The ownership sentinel install.sh writes into a flat venv. Without it the
+    # directory is only NAMED unsloth_studio, which the installer does not accept
+    # as a flat install either; see test_portable_flat_layout_ownership.py.
+    (flat / "unsloth_studio" / ".unsloth-studio-owned").write_text("")
     r = run({"UNSLOTH_HOME": str(flat)}, home)
     check(
-        "flat: root holding a venv IS the studio root",
+        "flat: root holding an OWNED venv IS the studio root",
         r["studio_root"] == str(flat),
+        r["studio_root"],
+    )
+
+    home = tmp / "h_flat_unowned"
+    home.mkdir()
+    unowned = tmp / "r_flat_unowned"
+    (unowned / "unsloth_studio").mkdir(parents = True)
+    r = run({"UNSLOTH_HOME": str(unowned)}, home)
+    check(
+        "flat: an unowned venv name stays nested",
+        r["studio_root"] == str(unowned / "studio"),
         r["studio_root"],
     )
 

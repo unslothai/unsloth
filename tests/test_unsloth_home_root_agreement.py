@@ -82,6 +82,9 @@ def test_flat_unsloth_home_resolves_to_one_studio_root(tmp_path):
     # so <root> IS the Studio root and <root>/studio holds nothing.
     master = tmp_path / "flat"
     (master / "unsloth_studio" / "bin").mkdir(parents = True)
+    # The installer only calls a root flat when it owns the venv, so the sentinel
+    # is what makes this a flat install rather than a stray directory of that name.
+    (master / "unsloth_studio" / ".unsloth-studio-owned").write_text("")
     result = _probe({"UNSLOTH_HOME": str(master)})
 
     assert result["backend"] == str(master)
