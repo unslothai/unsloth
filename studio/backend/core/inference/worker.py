@@ -540,6 +540,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "format_type": _tpl_info.get("format_type", "generic"),
                         "template_name": _tpl_info.get("template_name"),
                         "special_tokens": _tpl_info.get("special_tokens", {}) or {},
+                        # The IMAGE-turn body; the whitelist is the only way out.
+                        "processor_template": _tpl_info.get("processor_template"),
+                        "renders_image": _tpl_info.get("renders_image"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
@@ -1111,6 +1114,17 @@ def run_inference_process(
 
     _native_audio_worker = is_native_audio_model(model_name)
 
+    # Before detect_hardware(), whose probe would leave a CUDA context here; the route
+    # skips the arbiter on the basis that this load reserves none.
+    if _native_audio_worker:
+        from core.inference.audio_device import (
+            audio_device_forces_cpu,
+            mask_accelerators_for_cpu_audio,
+        )
+        if audio_device_forces_cpu(config.get("audio_device")):
+            mask_accelerators_for_cpu_audio(os.environ)
+            logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)
+
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
@@ -1421,7 +1435,12 @@ def run_inference_process(
 
     # ── 3. Create inference backend and load initial model ──
     try:
-        backend = InferenceBackend()
+        # Native audio picks its device in __init__, so the preference goes there.
+        backend = (
+            InferenceBackend(device_preference = config.get("audio_device"))
+            if _native_audio_worker
+            else InferenceBackend()
+        )
 
         _send_response(
             resp_queue,
