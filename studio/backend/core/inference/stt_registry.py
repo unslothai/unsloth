@@ -44,8 +44,13 @@ def load(
     model: Optional[str],
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
+    device: Optional[str] = None,
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
+
+    ``device`` is the user's audio device preference (``auto``/``cpu``/``gpu``);
+    every engine honours it, on CPU by holding the weights in system RAM instead
+    of the accelerator.
 
     Dictation is one user-visible choice, so engines are alternatives, not slots:
     holding two at once doubles VRAM for the whole keep-alive window. An engine serving
@@ -62,9 +67,13 @@ def load(
         # answer is not certain, keep the old order and accept the peak.
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
-            sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+            sidecar_for(engine).load(
+                model, request_cancel_event = request_cancel_event, device = device
+            )
         else:
-            sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+            sidecar_for(engine).load(
+                model, request_cancel_event = request_cancel_event, device = device
+            )
             unload(others, wait = False)
 
 
