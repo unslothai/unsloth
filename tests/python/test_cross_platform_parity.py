@@ -1074,3 +1074,101 @@ class TestAmdBnbFloorParity:
             assert (
                 "4-bit QLoRA needs a source build" in text
             ), f"{name} must tell aarch64 users 4-bit needs a source build"
+
+
+class TestInstallUvCacheRootParity:
+    """Both top-level installers must expose the same automatic cache policy."""
+
+    def test_option_and_environment_names_match(self):
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        for source in (sh, ps1):
+            assert "--isolated-uv-cache" in source
+            assert "UNSLOTH_ISOLATE_UV_CACHE" in source
+            assert "--isolated-uv-cache" in source[:1200]
+            assert "UNSLOTH_ISOLATE_UV_CACHE" in source[:1200]
+
+        assert "_ISOLATE_UV_CACHE=false" in sh
+        assert "--isolated-uv-cache) _ISOLATE_UV_CACHE=true" in sh
+        assert "$IsolateUvCache = $false" in ps1
+        assert '"--isolated-uv-cache" { $IsolateUvCache = $true }' in ps1
+        assert "$env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')" in ps1
+
+    def test_selectors_share_precedence_markers_modes_and_messages(self):
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        for source in (sh, ps1):
+            for marker in ("CACHEDIR.TAG", ".gitignore"):
+                assert marker in source
+            for mode in ("custom", "shared", "studio", "isolated"):
+                assert f'"{mode}"' in source or f"'{mode}'" in source or f"={mode}" in source
+            for message in (
+                "preserving custom UV_CACHE_DIR",
+                "reusing existing shared cache",
+                "avoid duplicate Torch/CUDA downloads",
+                "using new Studio-owned cache",
+                "already-cached packages may download again",
+            ):
+                assert message in source
+
+        assert "${XDG_CACHE_HOME}/uv" in sh
+        assert "${HOME}/.cache/uv" in sh
+        assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
+        selector = ps1.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+            "function Set-StudioUvCacheForLaunch", 1
+        )[0]
+        assert "Get-ChildItem -LiteralPath $sharedCache -Directory -Force" in selector
+        assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
+
+    def test_shell_order_wsl_handoff_and_autostart_boundary(self):
+        source = INSTALL_SH.read_text(encoding = "utf-8")
+        resolved = source.index("\n_resolve_studio_destinations\n")
+        uv_setup = source.index("\n# ── Install uv ──\n")
+        configured = source.index("\n_configure_uv_cache\n", uv_setup)
+        launch_boundary = source.index("_prepare_studio_uv_cache_for_launch\n", configured)
+        autostart = source.index(
+            '(trap - INT; exec "$VENV_DIR/bin/unsloth" studio', launch_boundary
+        )
+
+        assert "_configure_uv_cache() {" in source
+        assert "_prepare_studio_uv_cache_for_launch() {" in source
+        assert resolved < uv_setup < configured < launch_boundary < autostart
+        reroute = source.split("_maybe_reroute_strixhalo_to_2404() {", 1)[1].split(
+            "_maybe_reroute_strixhalo_to_2404 || true", 1
+        )[0]
+        assert "export UNSLOTH_ISOLATE_UV_CACHE=1" in reroute
+        assert "unset UV_CACHE_DIR" in reroute
+        assert 'case "${UV_CACHE_DIR-}" in' in reroute
+        assert "*[![:space:]]*)" in reroute
+
+    def test_powershell_order_handoff_and_restoration(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        resolved = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
+        captured = source.index("$hadPreviousUvCacheDir =")
+        uv_setup = source.index("if (-not (Test-UvVersionOk))", captured)
+        configured = source.index(
+            "Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache",
+            uv_setup,
+        )
+        tauri_return = source.index("if ($TauriMode)", configured)
+        handoff = source.index("Set-StudioUvCacheForLaunch -StudioRoot $StudioHome", tauri_return)
+        autostart = source.index("$studioAutoStartProcess = Start-Process", handoff)
+        restored = source.index("Restore-StudioUvCacheEnvironment -WasPresent", autostart)
+
+        assert (
+            resolved
+            < captured
+            < uv_setup
+            < configured
+            < tauri_return
+            < handoff
+            < autostart
+            < restored
+        )
+        selector = source.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+            "function Set-StudioUvCacheForLaunch", 1
+        )[0]
+        assert "Read-Host" not in selector
+        assert "Set-StudioUvCacheForLaunch" in source
+        assert "Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue" in source
+        assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source
