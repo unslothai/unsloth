@@ -596,7 +596,7 @@ function clipContext(dropped: string): ClipContext {
 
 /** The code point ending at `end`, and where it starts. */
 function pointBefore(text: string, end: number): [string, number] {
-  const start = end - (isTrailingHalf(text.charCodeAt(end - 1)) ? 2 : 1);
+  const start = end - (isPairedHalf(text, end - 1) ? 2 : 1);
   return [text.slice(start, end), start];
 }
 
@@ -630,9 +630,14 @@ function conjunctBack(text: string, at: number): boolean {
   return false;
 }
 
-/** The second half of a surrogate pair. */
-function isTrailingHalf(unit: number): boolean {
-  return unit >= 0xdc00 && unit <= 0xdfff;
+/** The second half of a surrogate pair, and only where there is a pair: a low surrogate on its own
+ *  is a character in its own right, and one can reach a page through JSON or a pasted log. Taking
+ *  it for half of something joined it to whatever preceded it, hiding both. */
+function isPairedHalf(text: string, at: number): boolean {
+  const low = text.charCodeAt(at);
+  if (!(low >= 0xdc00 && low <= 0xdfff) || at === 0) return false;
+  const high = text.charCodeAt(at - 1);
+  return high >= 0xd800 && high <= 0xdbff;
 }
 const REGIONAL_INDICATOR_PATTERN = /^[\u{1f1e6}-\u{1f1ff}]/u;
 const PICTOGRAPHIC_PATTERN = /\p{Extended_Pictographic}/u;
@@ -714,9 +719,9 @@ function markReached(
 function continuesGrapheme(text: string, at: number, runStart = -1): boolean {
   // Whole code points, not code units: a property escape asked about half a surrogate pair sees a
   // lone surrogate and answers no, which is how a skin tone read as its own grapheme.
-  if (isTrailingHalf(text.charCodeAt(at))) return true;
+  if (isPairedHalf(text, at)) return true;
   const after = String.fromCodePoint(text.codePointAt(at) as number);
-  const before = isTrailingHalf(text.charCodeAt(at - 1))
+  const before = isPairedHalf(text, at - 1)
     ? text.slice(at - 2, at)
     : text[at - 1];
   // GB3 first: a carriage return and the line feed after it are one grapheme, and the generic rule

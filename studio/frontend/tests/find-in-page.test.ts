@@ -2380,6 +2380,8 @@ test("an engine with no segmenter still fences a grapheme", () => {
       ["กำ", "ก"],
       ["ກຳ", "ກ"],
       ["\u{11380}\u{113d0}\u{11381}", "\u{11381}"],
+      // And a real pair still holds, or the fix has taken the rule it guards with it.
+      ["a\\u{1f469}", "\\udc69"],
     ];
     for (const [body, query] of fenced) {
       if (findMatches(index(body), query, 10).length !== 0) {
@@ -2415,6 +2417,12 @@ test("an engine with no segmenter still fences a grapheme", () => {
       // A ZWNJ is Grapheme_Extend and still ends the conjunct, which is what it is for, so the
       // consonant after one starts a grapheme of its own.
       ["\\u0915\\u094d\\u200c\\u0915", "\\u0915"],
+      // An unpaired low surrogate is a character, not half of one, and reaches a page through
+      // JSON and through pasted model output. Taken for half a pair it joined what came before,
+      // so neither it nor its neighbour could be found.
+      ["a\\udc00b", "a"],
+      ["a\\udc00b", "\\udc00"],
+      ["a\\udc00b", "b"],
     ];
     for (const [body, query] of found) {
       if (findMatches(index(body), query, 10).length !== 1) {
