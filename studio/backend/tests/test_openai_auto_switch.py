@@ -1938,6 +1938,24 @@ def test_hf_cache_entry_excludes_torn_quant_from_selected_snapshot(tmp_path):
     assert entry.variants == ("Q4_K_M",)
 
 
+def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
+    """A repo with no complete quant keeps the pre-existing fallback listing."""
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Repo"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF stub")
+
+    entry = resolver._local_gguf_entry(
+        "org/Repo",
+        SimpleNamespace(id = "org/Repo", path = str(repo)),
+    )
+
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+
+
 def test_hf_cache_entries_do_not_rescan_the_cache_root(monkeypatch, tmp_path):
     """Each scanned row already owns an exact repo directory under the cache root."""
     from pathlib import Path

@@ -105,7 +105,7 @@ def _resolve_load_dir(p):
 
 
 def _resolve_gguf_load_snapshot(p):
-    """Inventory result for the newest complete snapshot in this exact cache repo.
+    """Newest complete snapshot in this exact cache repo, or the selector fallback.
 
     A later Hub revision can contain only a newly fetched companion such as an
     MTP drafter or mmproj while the complete model weights remain in an older
@@ -126,8 +126,7 @@ def _resolve_gguf_load_snapshot(p):
     selected = select_gguf_cache_snapshot_for_repo_dir(p)
     if selected is None:
         return None
-    _variants, _has_vision, complete, _snapshot = selected
-    return selected if complete else None
+    return selected
 
 
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
@@ -161,13 +160,14 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             if selected is None:
                 return None
             variants, _has_vision, complete, load_dir = selected
-            complete_keys = {str(quant).casefold() for quant in complete}
-            variants = [
-                variant
-                for variant in variants
-                if getattr(variant, "quant", None)
-                and str(variant.quant).casefold() in complete_keys
-            ]
+            if complete:
+                complete_keys = {str(quant).casefold() for quant in complete}
+                variants = [
+                    variant
+                    for variant in variants
+                    if getattr(variant, "quant", None)
+                    and str(variant.quant).casefold() in complete_keys
+                ]
         else:
             load_dir = p
             variants, _ = list_local_gguf_variants(str(load_dir))
