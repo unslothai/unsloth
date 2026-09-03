@@ -258,6 +258,8 @@ class ExportOrchestrator:
         handle and refuse the destructive sidecar swap."""
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
+            # A worker that crashed after the loader persisted a token still left it behind.
+            self._discard_token_store()
             return True
 
         self._drain_queue()
@@ -453,10 +455,9 @@ class ExportOrchestrator:
             "subject": subject,
             "hf_token": hf_token,
             "allow_ambient": allow_ambient,
-            # Owned here, not in the worker: a cancel goes through terminate() and then
-            # kill(), neither of which runs the child's atexit, and the loader may have
-            # persisted the caller's token into it by then.
-            "hf_token_store": self._new_token_store() if not allow_ambient else None,
+            # Filled in below, once the old worker is gone: shutting it down discards its
+            # store, which would take a store allocated here with it.
+            "hf_token_store": None,
         }
 
         with self._lock:
@@ -491,6 +492,12 @@ class ExportOrchestrator:
                         return False, op_message
                 elif self._proc is not None:
                     self._shutdown_subprocess(timeout = 2)
+
+                # Owned by this process, not the worker: a cancel goes through terminate()
+                # and then kill(), neither of which runs the child's atexit, and the loader
+                # may have persisted the caller's token into it by then.
+                if not allow_ambient:
+                    sub_config["hf_token_store"] = self._new_token_store()
 
                 logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
                 try:

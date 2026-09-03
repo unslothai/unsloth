@@ -849,3 +849,52 @@ def test_orchestrator_owns_the_token_store_so_a_kill_cannot_orphan_it(monkeypatc
     assert first != second
     assert not os.path.exists(first)
     o._discard_token_store()
+
+
+def test_token_store_survives_the_shutdown_of_the_worker_it_replaces(monkeypatch, tmp_path):
+    """Allocating before the shutdown handed the new worker a directory the shutdown deleted."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    spawned: dict = {}
+
+    class _Alive:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **kw: o._discard_token_store() or True)
+    monkeypatch.setattr(
+        o, "_spawn_subprocess", lambda cfg: spawned.update(cfg) or (_ for _ in ()).throw(_Boom())
+    )
+
+    class _Boom(Exception):
+        pass
+
+    try:
+        o.load_checkpoint(checkpoint_path = "someone/model", allow_ambient = False)
+    except Exception:
+        pass
+
+    store = spawned.get("hf_token_store")
+    assert store, "a non-ambient load must get a private store"
+    assert os.path.isdir(store), "the store the worker was given must still exist"
+    o._discard_token_store()
+
+
+def test_token_store_is_removed_when_the_worker_is_already_dead(monkeypatch):
+    """The early return skipped the cleanup, so a crashed worker's store outlived it."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+    with open(os.path.join(store, "token"), "w") as fh:
+        fh.write("hf_caller_own_token")
+
+    o._proc = None
+    assert o._shutdown_subprocess() is True
+    assert not os.path.exists(store)
