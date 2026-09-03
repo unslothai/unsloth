@@ -133,7 +133,25 @@ test("stream updates are paint-coalesced without a time or length throttle", () 
   // A running message can be replaced rather than appended to, as the audio
   // path does when it swaps its placeholder for the player, so holding the last
   // painted text has to be gated on the new text extending it.
-  assert.ok(hook.includes("text.startsWith(displayed.text)"));
+  //
+  // The spelling is pinned, not left open. `startsWith` scans a growing reply,
+  // 74 ms against 1.6 ms over a 60,000 character stream, and the two spellings
+  // are behaviourally identical, so no output test can tell them apart and this
+  // source check is the only thing standing between the hot path and a quiet
+  // revert. Written as `slice || startsWith` it accepted both and passed on the
+  // previous code unchanged, which is to say it measured nothing.
+  assert.ok(
+    hook.includes("text.length >= displayed.text.length"),
+    "the coalescer must reject a shorter replacement on length first",
+  );
+  assert.ok(
+    hook.includes("text.slice(0, displayed.text.length) === displayed.text"),
+    "the coalescer must hold the painted text only when the new text extends it",
+  );
+  assert.ok(
+    !hook.includes("text.startsWith(displayed.text)"),
+    "the coalescer must not scan the reply to decide the new text extends it",
+  );
 });
 
 test("streaming reparses only the active Markdown tail", () => {
@@ -149,7 +167,10 @@ test("streaming reparses only the active Markdown tail", () => {
     jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
       source,
     ),
-    "{incrementalRender?.parseMarkdownIntoBlocks}",
+    "{\n" +
+      "              incrementalRender?.parseMarkdownIntoBlocks ??\n" +
+      "              parseMarkdownIntoRenderableBlocks\n" +
+      "            }",
   );
 });
 
@@ -160,6 +181,6 @@ test("dropping retained blocks moves Streamdown's render identity", () => {
   assert.ok(streamdown, "chat <Streamdown> is missing");
   assert.equal(
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
-    "{`${messageId}:${incrementalCache.renderGeneration}`}",
+    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}",
   );
 });

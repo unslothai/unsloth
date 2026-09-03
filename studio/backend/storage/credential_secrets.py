@@ -3,7 +3,7 @@
 
 """Encrypted installation-wide credential persistence in ``studio.db``.
 
-Studio is a single-user local application. Credentials belong to the installation,
+Unsloth is a single-user local application. Credentials belong to the installation,
 not to an authenticated subject. The AES key lives separately in auth.db and the
 credential kind/scope are authenticated so ciphertext rows cannot be swapped.
 """
@@ -85,6 +85,12 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def ensure_schema() -> None:
+    """Ensure the credential table exists before a shared transaction starts."""
+    conn = get_connection()
+    conn.close()
+
+
 def _encrypted_secret(
     credential_kind: str, scope_id: str, plaintext: str
 ) -> tuple[bytes, bytes, str]:
@@ -102,10 +108,17 @@ def _encrypted_secret(
     return nonce, ciphertext, datetime.now(timezone.utc).isoformat()
 
 
-def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
+def upsert_secret(
+    credential_kind: str,
+    scope_id: str,
+    plaintext: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
     """Encrypt and atomically insert or replace one installation credential."""
     nonce, ciphertext, now = _encrypted_secret(credential_kind, scope_id, plaintext)
-    conn = get_connection()
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         conn.execute(
             """
@@ -121,9 +134,11 @@ def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
             """,
             (credential_kind, scope_id, _FORMAT_VERSION, nonce, ciphertext, now, now),
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str) -> bool:
@@ -181,18 +196,26 @@ def has_secret(credential_kind: str, scope_id: str) -> bool:
     return get_secret(credential_kind, scope_id) is not None
 
 
-def delete_secret(credential_kind: str, scope_id: str) -> bool:
+def delete_secret(
+    credential_kind: str,
+    scope_id: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> bool:
     """Idempotently delete one credential; return whether a row existed."""
-    conn = get_connection()
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         cursor = conn.execute(
             "DELETE FROM credential_secrets WHERE credential_kind = ? AND scope_id = ?",
             (credential_kind, scope_id),
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return cursor.rowcount > 0
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def get_hf_token() -> Optional[str]:
@@ -215,16 +238,23 @@ def get_provider_api_key(provider_id: str) -> Optional[str]:
     return get_secret(PROVIDER_API_KEY_KIND, provider_id)
 
 
-def save_provider_api_key(provider_id: str, api_key: str) -> None:
-    upsert_secret(PROVIDER_API_KEY_KIND, provider_id, api_key)
+def save_provider_api_key(
+    provider_id: str,
+    api_key: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    upsert_secret(PROVIDER_API_KEY_KIND, provider_id, api_key, connection = connection)
 
 
 def save_provider_api_key_if_absent(provider_id: str, api_key: str) -> bool:
     return insert_secret_if_absent(PROVIDER_API_KEY_KIND, provider_id, api_key)
 
 
-def delete_provider_api_key(provider_id: str) -> bool:
-    return delete_secret(PROVIDER_API_KEY_KIND, provider_id)
+def delete_provider_api_key(
+    provider_id: str, *, connection: sqlite3.Connection | None = None
+) -> bool:
+    return delete_secret(PROVIDER_API_KEY_KIND, provider_id, connection = connection)
 
 
 def resolve_provider_api_key(provider_id: Optional[str], encrypted_api_key: Optional[str]) -> str:

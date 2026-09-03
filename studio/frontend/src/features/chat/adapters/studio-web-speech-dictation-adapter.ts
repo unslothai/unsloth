@@ -77,7 +77,10 @@ export const isMissingDeviceError = (error: unknown): boolean => {
 export const describeMediaError = (error: unknown): string => {
   const name = mediaErrorName(error);
   if (name === "NotAllowedError" || name === "SecurityError") {
-    return "Microphone access is blocked. Allow microphone access for this Unsloth page, then try again.";
+    // The desktop WebView has no site-permission UI, so Settings is the only way back.
+    return isTauri
+      ? "Microphone access is blocked. Open Settings > Voice and click Allow microphone."
+      : "Microphone access is blocked. Allow microphone access for this Unsloth page, then try again.";
   }
   if (name === "NotFoundError" || name === "OverconstrainedError") {
     return "No microphone was found for dictation.";

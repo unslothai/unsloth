@@ -34,7 +34,11 @@ async def get_profile_stats(
     tz: str = Query("", max_length = 64),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, Any]:
-    """Usage stats for the signed-in user's local history.
+    """Usage stats from this install, with API receipts scoped to the caller.
+
+    Unsloth chat and training history is legacy install-wide data because those
+    tables have no subject column. Authenticated external API usage is always
+    filtered to ``current_subject`` and cannot cross accounts.
 
     Days and hours are bucketed in the caller's timezone so a remote browser
     does not read the server's calendar. ``tz`` is an IANA name, which carries
@@ -50,6 +54,7 @@ async def get_profile_stats(
             days = days,
             tz_offset_minutes = tz_offset_minutes,
             tz_name = tz,
+            subject = current_subject,
         )
     except Exception as exc:
         raise log_and_http_error(

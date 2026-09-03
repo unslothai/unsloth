@@ -26,13 +26,13 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Annotated, Iterator
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.rag import config, folder_sync, ingestion, retrieval, store
 from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
@@ -253,7 +253,7 @@ class SearchRequest(BaseModel):
     project_id: str | None = None
     top_k: int = Field(default = config.TOP_K_HYBRID, ge = 1, le = 50)
     min_score: float = 0.0
-    mode: str = "hybrid"  # hybrid | lexical | dense
+    mode: str = "hybrid"
 
 
 class LinkFolderRequest(BaseModel):
@@ -387,14 +387,11 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     try:
         conn = rag_db.get_connection()
     except rag_db.RagExtensionUnavailable:
-        # RAG_AVAILABLE only covers the import; the native library can still fail to
-        # load per connection (a missing vec0 binary in the venv). The UI polls this
-        # list, so 500ing here costs a traceback every few seconds for a condition that
-        # never changes within a session. rag_db has warned once; an empty list is what
-        # a machine without RAG has anyway. The marker is what keeps that honest: it is
-        # the difference between "no knowledge bases yet" and "RAG cannot run here", and
-        # without it the empty page looks ready to use. Only the unavailable case
-        # degrades: a locked or corrupt database still raises.
+        # RAG_AVAILABLE only covers the import; the native library can still fail to load per connection (a missing vec0
+        # binary in the venv). The UI polls this list, so 500ing costs a traceback every few seconds for a condition
+        # that never changes in a session, and rag_db has warned once. The marker is the difference between "no
+        # knowledge bases yet" and "RAG cannot run here". Only the unavailable case degrades: a locked or corrupt
+        # database still raises.
         return {"knowledgeBases": [], **_availability(False)}
     try:
         kbs = store.list_kbs(conn)
@@ -812,7 +809,9 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
     }
 
 
-@router.get("/jobs/{job_id}/events")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/jobs/{job_id}/events")
+@router.get("/jobs/{job_id}/events", include_in_schema = False)
 def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> StreamingResponse:
     _require_rag()
 
@@ -865,7 +864,9 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     return _folder_job_view(row)
 
 
-@router.get("/linked-folder-jobs/{job_id}/events")
+# POST too, for the same reason as /jobs/{job_id}/events above.
+@router.post("/linked-folder-jobs/{job_id}/events")
+@router.get("/linked-folder-jobs/{job_id}/events", include_in_schema = False)
 def folder_job_events(
     job_id: str, subject: str = Depends(get_current_subject)
 ) -> StreamingResponse:
@@ -949,15 +950,15 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
 # Per-process secret so pdf.js range requests fetch the file without a bearer
 # header; tokens only work on this server instance.
 _PREVIEW_SECRET = secrets.token_bytes(32)
-_PREVIEW_TTL = 600  # seconds
+_PREVIEW_TTL = 600
 
 _CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".txt": "text/plain; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
     ".markdown": "text/markdown; charset=utf-8",
-    # Served as plain text, never text/html: an uploaded HTML document rendered
-    # same-origin would execute its scripts with access to the app's storage.
+    # Served as plain text, never text/html: an uploaded HTML document rendered same-origin would
+    # execute its scripts with access to the app's storage.
     ".html": "text/plain; charset=utf-8",
     ".htm": "text/plain; charset=utf-8",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1032,8 +1033,17 @@ def preview_target(
 
 
 @router.get("/documents/{document_id}/file-url")
-def document_file_url(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def document_file_url(
+    document_id: str,
+    subject: str = Depends(get_current_subject),
+    no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
+) -> dict:
     """Mint a short-lived signed URL for the source file."""
+    if no_credential:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Document links can only be created from the Unsloth UI or with an API key.",
+        )
     _require_rag()
     conn = _rag_connection()
     try:

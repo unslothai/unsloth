@@ -167,6 +167,13 @@ function persistProviderModelCapabilities(): void {
   }
 }
 
+export function getProviderModelCapabilities(
+  providerType: string,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined {
+  hydrateProviderModelCapabilities();
+  return REGISTRY_MODEL_CAPABILITIES.get(providerType);
+}
+
 export function setProviderModelCapabilities(
   providerType: string,
   capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
@@ -239,7 +246,7 @@ export function providerModelSupportsStudioTools(
   return typeof providerDefault === "boolean" ? providerDefault : null;
 }
 
-/** Whether the connection behind an ``external::`` model id runs Studio tools.
+/** Whether the connection behind an ``external::`` model id runs Unsloth tools.
  *
  * Resolves the provider type from the saved connection, so callers that only
  * have a checkpoint id (the runtime store) can ask the capability question

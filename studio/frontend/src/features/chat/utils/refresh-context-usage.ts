@@ -4,9 +4,10 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import {
   buildLocalTokenCountExtras,
+  buildLocalTokenCountHistory,
   buildLocalTokenCountReasoning,
-  buildOutboundMessagesForTokenCount,
   findLatestUserAudioBase64,
+  findLatestUserVideoBase64,
   messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
@@ -14,6 +15,7 @@ import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
+import { orderBySelectedBranch } from "./message-order";
 
 // Per thread, not per module: in compare mode a hidden pane's history load would otherwise
 // invalidate the visible thread's count, blanking the bar.
@@ -79,45 +81,6 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   };
 }
 
-// Same order the history adapter sorts stored records in before importing them.
-const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
-
-/**
- * The displayed branch, rebuilt as the history adapter does: sort by (createdAt, role, id), parent
- * legacy records to the previous one, then walk the last record's ancestor chain. Greedy
- * newest-child descent would pick another branch and drop pre-parentId history.
- */
-function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
-  const sorted = messages.slice().sort((a, b) => {
-    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-    const aOrder = ROLE_ORDER[a.role] ?? 99;
-    const bOrder = ROLE_ORDER[b.role] ?? 99;
-    if (aOrder !== bOrder) return aOrder - bOrder;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
-
-  const byId = new Map<string, T>();
-  const parentOf = new Map<string, string | null>();
-  let previousId: string | null = null;
-  for (const m of sorted) {
-    byId.set(m.id, m);
-    parentOf.set(m.id, m.parentId ?? previousId);
-    previousId = m.id;
-  }
-
-  const chain: T[] = [];
-  const seen = new Set<string>();
-  let cur: string | null = sorted.at(-1)?.id ?? null;
-  while (cur != null && !seen.has(cur)) {
-    seen.add(cur);
-    const record = byId.get(cur);
-    if (!record) break;
-    chain.push(record);
-    cur = parentOf.get(cur) ?? null;
-  }
-  return chain.reverse();
-}
-
 /** Rolling 32-bit hash. Only has to change when the input does, not resist an adversary. */
 function foldHash(text: string, seed: number): number {
   let hash = seed;
@@ -179,10 +142,11 @@ type RefreshOptions =
       threadId?: string;
       /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
+      invalidate?: boolean;
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
+/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {
@@ -194,7 +158,7 @@ export async function refreshContextUsage(
     !checkpoint ||
     isExternalModelId(checkpoint) ||
     (!options?.afterModelLoad && store.modelLoading) ||
-    store.ggufContextLength == null
+    store.loadedContextLength == null
   ) {
     return;
   }
@@ -206,9 +170,7 @@ export async function refreshContextUsage(
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  // Deep Research routes the turn to a server-side research run whose reply carries no usage, so
-  // a total counted here would describe a request that is never made and nothing would correct it.
-  if (store.deepResearchEnabled) return;
+  if (options?.invalidate) store.setContextUsage(null);
 
   // Never count while anything is generating: the endpoint refuses, and the recount effect depends
   // on this, so the last run finishing re-fires it. runningByThreadId, not the narrower
@@ -275,6 +237,15 @@ export async function refreshContextUsage(
     // no audio branch, so counting would price a text-only prompt. Decline as images do.
     if (findLatestUserAudioBase64(runMessages)) return;
 
+    // Same for video, and more so: the real request replays the clip as
+    // video_base64 and llama-server expands it into frames, while
+    // toOpenAIMessages has no video branch -- so counting would price a
+    // text-only prompt and the bar would show room the window does not have.
+    // /chat/count_tokens 503s on video for the same reason. Declining here also
+    // keeps up to 85 MB of base64 out of branchSignature's JSON.stringify,
+    // which is the synchronous main-thread cost the image bail above exists for.
+    if (findLatestUserVideoBase64(runMessages)) return;
+
     if (fromLiveBranch) {
       countedBranch = branchSignature(runMessages);
     } else {
@@ -287,7 +258,7 @@ export async function refreshContextUsage(
 
     // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
-    const outbound = await buildOutboundMessagesForTokenCount(
+    const countHistory = await buildLocalTokenCountHistory(
       runMessages,
       payloadThreadId,
     );
@@ -300,7 +271,7 @@ export async function refreshContextUsage(
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens({
         model: capturedCheckpoint,
-        messages: outbound,
+        ...countHistory,
         ...buildLocalTokenCountReasoning(),
         ...countExtras,
       });

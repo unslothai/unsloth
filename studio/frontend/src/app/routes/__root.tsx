@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import {
   AUTH_SESSION_CLEARED_EVENT,
@@ -15,16 +16,22 @@ import {
   ChatPage,
   type ChatSearch,
   clearNewChatDraft,
+  hydrateModelDisclaimerPreference,
   StopRunningChatsDialog,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
+import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
-import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import {
+  SettingsDialog,
+  useSettingsDialogStore,
+  useShortcut,
+} from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -70,6 +77,56 @@ function RouteFallback() {
   );
 }
 
+// Retires the retained reload shell (public/reload-snapshot.js). It rides
+// inside the route's own Suspense boundary, so a lazy page that is still
+// resolving keeps the shell up instead of uncovering RouteFallback.
+function signalReloadSnapshotReady() {
+  window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+}
+
+function ReloadSnapshotReady() {
+  useLayoutEffect(() => {
+    signalReloadSnapshotReady();
+  }, []);
+  return null;
+}
+
+// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory
+// privacy state onto the document so Temporary Chat is never serialized even
+// briefly into sessionStorage.
+function ReloadSnapshotPrivacy() {
+  const incognito = useChatRuntimeStore((state) => state.incognito);
+
+  useLayoutEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-reload-snapshot-private",
+      incognito,
+    );
+    return () => {
+      document.documentElement.removeAttribute(
+        "data-reload-snapshot-private",
+      );
+    };
+  }, [incognito]);
+
+  return null;
+}
+
+function RouteBoundary({
+  children,
+  readyWhenCommitted = true,
+}: {
+  children: ReactNode;
+  readyWhenCommitted?: boolean;
+}) {
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      {readyWhenCommitted && <ReloadSnapshotReady />}
+      {children}
+    </Suspense>
+  );
+}
+
 // ImagesPage is mounted persistently below (not via the /images route) so an in-flight batch survives leaving the tab,
 // mirroring ChatPage. Kept lazy so its bundle still loads only on the first /images visit.
 const ImagesPage = lazy(() =>
@@ -99,6 +156,7 @@ function ChatSettingsHydrationMount() {
   );
   useEffect(() => {
     void hydratePersistedSettings();
+    hydrateModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
   return null;
 }
@@ -212,9 +270,29 @@ function RootLayout() {
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
+  const routeOwnsReloadReadiness =
+    pathname === "/hub" ||
+    pathname === "/projects" ||
+    pathname === "/export" ||
+    pathname === "/studio" ||
+    pathname === "/api-monitor" ||
+    pathname === "/login" ||
+    pathname === "/change-password" ||
+    pathname === "/data-recipes" ||
+    pathname.startsWith("/data-recipes/");
   const isAuthFlowRoute = useMatches({
     select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
   });
+  // Measured, not guessed: the same pair the sidebar reads to gray Train out.
+  const chatOnlyMeasured = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  // Video is the other row the sidebar grays out, on the two verdicts its
+  // pipelines cannot run on at all. Same hint the row reads, so the two cannot
+  // disagree about which hosts they are.
+  const videoDisabled =
+    videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -244,8 +322,11 @@ function RootLayout() {
   );
   // Freeze the last /chat search and latch "mounted" via render-phase setState
   // (React's "adjust state during render" pattern), avoiding effects/refs.
-  const [frozenChatSearch, setFrozenChatSearch] =
-    useState<ChatSearch>(liveChatSearch);
+  // Empty until /chat is visited: location.search is the raw URL's, not the
+  // matched route's, so seeding it would let another route's ?project= stand
+  // in for a chat the user has never opened. The adjustment below fills it on
+  // the first /chat render, so landing straight on /chat loses nothing.
+  const [frozenChatSearch, setFrozenChatSearch] = useState<ChatSearch>({});
   const [chatMounted, setChatMounted] = useState(isChatRoute);
   if (isChatRoute && frozenChatSearch !== liveChatSearch) {
     setFrozenChatSearch(liveChatSearch);
@@ -324,31 +405,103 @@ function RootLayout() {
     if (isAuthFlowRoute) {
       useSettingsDialogStore.getState().closeDialog();
     }
-    const handler = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
-        if (isAuthFlowRoute) return;
-        e.preventDefault();
-        useSettingsDialogStore.getState().openDialog();
-        return;
-      }
-      // Cmd/Ctrl+Shift+O opens a new chat.
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
-        e.preventDefault();
-        clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
-        const chatRuntime = useChatRuntimeStore.getState();
-        chatRuntime.setActiveThreadId(null);
-        chatRuntime.setActiveProjectId(null);
-        chatRuntime.setIncognito(false);
-        void navigate({
-          to: "/chat",
-          search: { new: crypto.randomUUID() },
-        });
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [isAuthFlowRoute, navigate]);
+  }, [isAuthFlowRoute]);
+
+  // Chords come from the shortcuts store (Settings -> Shortcuts), so a rebind
+  // applies without a reload. The auth flow has no shell to act on.
+  useShortcut(
+    "openSettings",
+    () => useSettingsDialogStore.getState().openDialog(),
+    { enabled: !isAuthFlowRoute },
+  );
+  useShortcut(
+    "openKeyboardShortcuts",
+    () =>
+      useSettingsDialogStore.getState().openDialog("keyboard-shortcuts"),
+    { enabled: !isAuthFlowRoute },
+  );
+  /** Every "new chat" chord lands here. `incognito` skips history,
+   *  `standalone` leaves the open project. */
+  const startNewChat = (options?: {
+    incognito?: boolean;
+    standalone?: boolean;
+  }) => {
+    clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
+    const chatRuntime = useChatRuntimeStore.getState();
+    // The project on screen, which on Chat is the runtime's. The page keeps
+    // that in step with the route, the inferred ones included: a thread or a
+    // compare pair opened without ?project= still belongs to its project, and
+    // the page's own New chat button starts the next chat there. Reading the
+    // search param instead would leave that project without being asked to.
+    // Off Chat the page is hidden rather than unmounted, so its project is one
+    // the user cannot see and a new chat belongs to none.
+    const openProjectId = isChatRoute ? chatRuntime.activeProjectId : null;
+    const projectId = options?.standalone ? null : openProjectId;
+    chatRuntime.setActiveThreadId(null);
+    chatRuntime.setActiveProjectId(projectId);
+    chatRuntime.setIncognito(Boolean(options?.incognito));
+    void navigate({
+      to: "/chat",
+      search: projectId ? { project: projectId } : { new: crypto.randomUUID() },
+    });
+  };
+
+  // Gated like the workspace chords below: /login has no shell, and /chat
+  // bounces straight back off requireAuth.
+  const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;
+  useShortcut("newChat", () => startNewChat(), {
+    enabled: routeShortcutEnabled,
+  });
+  useShortcut(
+    "newTemporaryChat",
+    () => startNewChat({ incognito: true, standalone: true }),
+    { enabled: routeShortcutEnabled },
+  );
+  useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }), {
+    enabled: routeShortcutEnabled,
+  });
+
+  // Workspaces. The shell is mounted on every route, so the chords live here.
+  const goTo = (to: string) => () => void navigate({ to });
+  // Carry the frozen search back: a bare /chat is a fresh chat, so switching
+  // away and back would drop the thread, compare pair or project.
+  useShortcut(
+    "switchToChat",
+    () => void navigate({ to: "/chat", search: chatSearch }),
+    { enabled: routeShortcutEnabled },
+  );
+  useShortcut("switchToProjects", goTo("/projects"), {
+    enabled: routeShortcutEnabled,
+  });
+  useShortcut("switchToHub", goTo("/hub"), {
+    enabled: routeShortcutEnabled,
+  });
+  // Train is the one workspace the chat-only guard turns away, so its chord is
+  // the one that has to ask first: firing it on a host without the hardware
+  // would bounce off /studio and land the user on /chat, away from whatever
+  // they had open. The sidebar disables the row on the same measured check,
+  // and only once measured, since the guess is what the row waits out too.
+  useShortcut("switchToTrain", goTo("/studio"), {
+    enabled: routeShortcutEnabled && !chatOnlyMeasured,
+  });
+  useShortcut("switchToRecipes", goTo("/data-recipes"), {
+    enabled: routeShortcutEnabled,
+  });
+  useShortcut("switchToImages", goTo("/images"), {
+    enabled: routeShortcutEnabled,
+  });
+  // /video checks auth and nothing else, so an ungated chord would put the
+  // unsupported-hardware gate where the user's workspace was. Train's chord
+  // waits on the same measurement; this one has its own predicate to wait on.
+  useShortcut("switchToVideo", goTo("/video"), {
+    enabled: routeShortcutEnabled && !videoDisabled,
+  });
+  useShortcut("switchToAudio", goTo("/audio"), {
+    enabled: routeShortcutEnabled,
+  });
+  useShortcut("switchToExport", goTo("/export"), {
+    enabled: routeShortcutEnabled,
+  });
 
   useEffect(() => {
     if (isChatRoute) return;
@@ -367,6 +520,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
@@ -378,9 +532,9 @@ function RootLayout() {
       <StopRunningChatsDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
-          <Suspense fallback={<RouteFallback />}>
+          <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
-          </Suspense>
+          </RouteBoundary>
         </main>
       ) : (
         <SidebarProvider
@@ -395,8 +549,13 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
+              {/* The find bar floats over this region and searches it: the workspace on screen,
+                  without the sidebar, the navbar, or the off-route workspaces parked here under
+                  `inert`. Gated off behind a modal, which owns Escape while it is up. */}
+              <FindInPage enabled={routeShortcutEnabled} />
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
                   `active` lets ChatPage close its body-portaled surfaces (model
@@ -424,7 +583,10 @@ function RootLayout() {
                   inert={!isImagesRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <ImagesPage active={isImagesRoute} />
+                    <ImagesPage
+                      active={isImagesRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -439,7 +601,10 @@ function RootLayout() {
                   inert={!isVideoRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <VideoPage active={isVideoRoute} />
+                    <VideoPage
+                      active={isVideoRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -454,7 +619,10 @@ function RootLayout() {
                   inert={!isAudioRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <AudioPage active={isAudioRoute} />
+                    <AudioPage
+                      active={isAudioRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
                   </Suspense>
                 </div>
               )}
@@ -473,9 +641,9 @@ function RootLayout() {
                     transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
-                    <Suspense fallback={<RouteFallback />}>
+                    <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
                       <Outlet />
-                    </Suspense>
+                    </RouteBoundary>
                   </motion.div>
                 </AnimatePresence>
               )}

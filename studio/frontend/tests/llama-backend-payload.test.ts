@@ -172,6 +172,7 @@ test("every unsupported reason survives the parser verbatim", () => {
     "local_link",
     "source_build",
     "no_install_dir",
+    "custom_path",
     "unresolved",
   ]) {
     const status = parseLlamaBackendStatus({

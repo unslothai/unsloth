@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Unpack the Playwright evidence the Studio payload smuggled home.
+"""Unpack the Playwright evidence the Unsloth payload smuggled home.
 
 Kaggle's ``kernels output`` returns the whole of ``/kaggle/working``, and the
 shared launcher deliberately does not take it: a previous incident lost two

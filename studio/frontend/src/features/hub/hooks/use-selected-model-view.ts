@@ -138,6 +138,7 @@ export function useSelectedModelView({
           isDownloaded: !selectedLocalRow.partial,
           isPartial: selectedLocalRow.partial ?? false,
           partialTransport: selectedLocalRow.partialTransport ?? null,
+          partialResumable: selectedLocalRow.partialResumable === true,
           runtimeCapabilities: selectedLocalRow.capabilities,
           capabilities: selectedDiscoverRow.capabilities,
           license: detectLicense(selectedDiscoverRow.result.tags),
@@ -212,6 +213,8 @@ export function useSelectedModelView({
           selectedCachedRow?.partialTransport ??
           selectedLocalRow?.partialTransport ??
           null,
+        partialResumable:
+          (selectedCachedRow ?? selectedLocalRow)?.partialResumable === true,
         runtimeCapabilities:
           selectedCachedRow?.capabilities ?? selectedLocalRow?.capabilities,
         capabilities: selectedDiscoverRow.capabilities,
@@ -281,6 +284,7 @@ export function useSelectedModelView({
         isDownloaded: !selectedCachedRow.partial,
         isPartial: selectedCachedRow.partial ?? false,
         partialTransport: selectedCachedRow.partialTransport ?? null,
+        partialResumable: selectedCachedRow.partialResumable === true,
         runtimeCapabilities: selectedCachedRow.capabilities,
         capabilities: detectViewCapabilities(
           mergedTags,
@@ -347,7 +351,7 @@ export function useSelectedModelView({
           title: selectedLocalRow.title,
           summary: selectedHfResult
             ? buildSummary(selectedHfResult)
-            : "Partial download. Resume to finish or delete to free space.",
+            : "Partial download. Finish it from the card below, or delete it to free space.",
           sourceLabel: "Hub cache",
           path: selectedLocalRow.path,
           isLocal: false,
@@ -357,6 +361,7 @@ export function useSelectedModelView({
           isDownloaded: false,
           isPartial: true,
           partialTransport: selectedLocalRow.partialTransport ?? null,
+          partialResumable: selectedLocalRow.partialResumable === true,
           runtimeCapabilities: selectedLocalRow.capabilities,
           capabilities: detectViewCapabilities(
             mergedTags,

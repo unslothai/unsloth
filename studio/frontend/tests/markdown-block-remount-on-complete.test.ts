@@ -34,8 +34,16 @@ function findFunction(name: string): ts.FunctionDeclaration | null {
 const ANIMATION_FREE_BLOCK_PROPS_RE = /^<Block\s+\{\.\.\.blockProps\}/;
 const ANIMATION_FREE_HELPER_RE = /withoutStreamdownAnimationPlugin/;
 const NULL_ANIMATION_PLUGIN_RE = /animatePlugin:\s*null/;
+// The block component is now rendered inside MarkdownBlockBoundary, because a
+// lazy chunk that fails to load anywhere in a reply used to unmount all of
+// Unsloth through the router's error boundary. `memo` is still the OUTERMOST
+// wrapper, which is the property this pins: on a memo hit React skips the
+// boundary and the block together, exactly as it did before. Pinned to the new
+// spelling rather than loosened, because a version with memo INSIDE the boundary
+// would render one component per block per token and no output test could tell
+// the two apart.
 const MEMOISED_BLOCK_RE =
-  /const\s+StreamdownBlock\s*=\s*memo\(StreamdownBlockContent\)/;
+  /const\s+StreamdownBlock\s*=\s*memo\(\s*\(props: BlockProps\) => \(\s*<MarkdownBlockBoundary content=\{props\.content\}>\s*<StreamdownBlockContent \{\.\.\.props\} \/>/;
 
 test("the block props use the animation-free plugin list", () => {
   const helper = findFunction("useAnimationFreeBlockProps");

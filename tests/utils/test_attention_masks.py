@@ -18,6 +18,7 @@
 import math
 import weakref
 
+import pytest
 import torch
 
 from unsloth.utils import attention_dispatch
@@ -62,18 +63,24 @@ def test_xformers_block_mask_sliding_window(monkeypatch):
             self,
             lengths,
             window = None,
+            device = None,
         ):
             self.lengths = lengths
             self.window = window
+            self.device = torch.device(device)
 
         @classmethod
         def from_seqlens(cls, lengths):
-            return cls(tuple(lengths))
+            return cls(tuple(lengths), device = "cuda:0")
 
         def make_local_attention(self, window_size):
-            return _FakeMask(self.lengths, window = window_size)
+            return _FakeMask(self.lengths, window = window_size, device = self.device)
+
+        def to(self, device):
+            return _FakeMask(self.lengths, window = self.window, device = device)
 
     monkeypatch.setattr(packing_utils, "_XFormersBlockMask", _FakeMask, raising = False)
+    packing_utils.clear_packed_caches()
 
     seq_info = _make_seq_info([4, 4])
     mask = packing_utils.build_xformers_block_causal_mask(
@@ -83,6 +90,222 @@ def test_xformers_block_mask_sliding_window(monkeypatch):
 
     assert isinstance(mask, _FakeMask)
     assert mask.window == 2
+    assert mask.device == torch.device("cpu")
+    packing_utils.clear_packed_caches()
+
+
+def test_xformers_block_mask_cache_is_scoped_to_device(monkeypatch):
+    class _FakeMask:
+        def __init__(self, lengths, device):
+            self.lengths = tuple(lengths)
+            self.device = torch.device(device)
+
+        @classmethod
+        def from_seqlens(cls, lengths):
+            return cls(lengths, "cuda:0")
+
+        def to(self, device):
+            return _FakeMask(self.lengths, device)
+
+    monkeypatch.setattr(packing_utils, "_XFormersBlockMask", _FakeMask, raising = False)
+    packing_utils.clear_packed_caches()
+
+    lengths = (4, 4)
+    cuda_0 = torch.device("cuda:0")
+    cuda_1 = torch.device("cuda:1")
+    first = packing_utils._get_cached_block_mask(lengths, None, cuda_0)
+    second = packing_utils._get_cached_block_mask(lengths, None, cuda_1)
+
+    assert first.device == cuda_0
+    assert second.device == cuda_1
+    assert second is not first
+    assert packing_utils._get_cached_block_mask(lengths, None, cuda_0) is first
+
+    packing_utils.clear_packed_caches()
+    assert not packing_utils._XFORMERS_MASK_CACHE
+
+
+def test_xformers_bias_move_supports_legacy_in_place_metadata():
+    class _LegacySeqInfo:
+        def __init__(self, device):
+            self.device = torch.device(device)
+
+        def to(self, device):
+            self.device = torch.device(device)
+
+    class _LegacyBias:
+        def __init__(self):
+            self.q_seqinfo = _LegacySeqInfo("cuda:0")
+            self.k_seqinfo = self.q_seqinfo
+
+    bias = _LegacyBias()
+    moved = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
+
+    assert moved is not bias
+    assert moved.q_seqinfo is moved.k_seqinfo
+    assert moved.q_seqinfo.device == torch.device("cuda:1")
+    assert bias.q_seqinfo is bias.k_seqinfo
+    assert bias.q_seqinfo.device == torch.device("cuda:0")
+
+
+def test_xformers_bias_move_replaces_all_shared_metadata_aliases():
+    class _FakeTensor:
+        def __init__(self, device):
+            self.device = torch.device(device)
+
+    class _ReturningSeqInfo:
+        def __init__(self, device):
+            self.seqstart = _FakeTensor(device)
+
+        def to(self, device):
+            return _ReturningSeqInfo(device)
+
+    class _Bias:
+        def __init__(self):
+            self.q_seqinfo = _ReturningSeqInfo("cuda:0")
+            self.k_seqinfo = self.q_seqinfo
+
+    bias = _Bias()
+    original = bias.q_seqinfo
+    moved = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
+
+    assert moved is not bias
+    assert moved.q_seqinfo is moved.k_seqinfo
+    assert moved.q_seqinfo is not original
+    assert moved.q_seqinfo.seqstart.device == torch.device("cuda:1")
+    assert bias.q_seqinfo is bias.k_seqinfo
+    assert bias.q_seqinfo is original
+    assert bias.q_seqinfo.seqstart.device == torch.device("cuda:0")
+
+
+def test_xformers_bias_move_preserves_causal_type_when_to_demotes():
+    class _FakeTensor:
+        def __init__(self, device):
+            self.device = torch.device(device)
+
+    class _ReturningSeqInfo:
+        def __init__(self, device):
+            self.seqstart = _FakeTensor(device)
+
+        def to(self, device):
+            return _ReturningSeqInfo(device)
+
+    class _BaseBias:
+        def __init__(self, seqinfo):
+            self.q_seqinfo = seqinfo
+            self.k_seqinfo = seqinfo
+
+        def to(self, device):
+            return _BaseBias(self.q_seqinfo.to(device))
+
+    class _CausalBias(_BaseBias):
+        pass
+
+    bias = _CausalBias(_ReturningSeqInfo("cuda:0"))
+    first = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
+    second = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:2"))
+
+    assert first is not bias
+    assert type(first) is _CausalBias
+    assert first.q_seqinfo is first.k_seqinfo
+    assert first.q_seqinfo.seqstart.device == torch.device("cuda:1")
+    assert second is not bias
+    assert type(second) is _CausalBias
+    assert second.q_seqinfo is second.k_seqinfo
+    assert second.q_seqinfo.seqstart.device == torch.device("cuda:2")
+    assert first.q_seqinfo.seqstart.device == torch.device("cuda:1")
+    assert bias.q_seqinfo is bias.k_seqinfo
+    assert bias.q_seqinfo.seqstart.device == torch.device("cuda:0")
+
+
+def test_xformers_bias_move_skips_matching_metadata_device():
+    class _SeqInfo:
+        def __init__(self):
+            self.seqstart = torch.empty(0)
+
+    class _Bias:
+        def __init__(self):
+            self.q_seqinfo = _SeqInfo()
+            self.k_seqinfo = self.q_seqinfo
+
+        def to(self, device):
+            raise AssertionError("matching metadata should not be moved")
+
+    bias = _Bias()
+    assert packing_utils.move_xformers_attention_bias(bias, torch.device("cpu")) is bias
+
+
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2 or packing_utils._XFormersBlockMask is None,
+    reason = "needs xFormers and two CUDA devices",
+)
+def test_real_xformers_packed_mask_validates_on_each_device():
+    from xformers.ops.fmha.common import Inputs
+    packing_utils.clear_packed_caches()
+    try:
+        masks = []
+        for index in (0, 1):
+            device = torch.device(f"cuda:{index}")
+            lengths = torch.tensor([4, 4], dtype = torch.int32, device = device)
+            masks.append(
+                packing_utils.build_xformers_block_causal_mask(
+                    (lengths, torch.empty(0, dtype = torch.int32, device = device), 4)
+                )
+            )
+
+        assert masks[0].q_seqinfo.seqstart.device == torch.device("cuda:0")
+        assert masks[1].q_seqinfo.seqstart.device == torch.device("cuda:1")
+        assert masks[1] is not masks[0]
+
+        config = attention_dispatch.AttentionConfig(
+            backend = attention_dispatch.XFORMERS,
+            n_kv_heads = 1,
+            n_groups = 1,
+        )
+        context = attention_dispatch.AttentionContext(
+            bsz = 1,
+            q_len = 8,
+            kv_seq_len = 8,
+            n_heads = 1,
+            head_dim = 64,
+            requires_grad = True,
+            seq_info = None,
+            attention_mask = None,
+            causal_mask = masks[0],
+        )
+        queries = []
+        outputs = []
+        for index in (0, 1):
+            device = torch.device(f"cuda:{index}")
+            query = torch.zeros(
+                (1, 8, 1, 64), dtype = torch.float16, device = device, requires_grad = True
+            )
+            Inputs(query = query, key = query, value = query, attn_bias = masks[index]).validate_inputs()
+            model_query = query.transpose(1, 2)
+            outputs.append(
+                attention_dispatch.run_attention(
+                    config = config,
+                    context = context,
+                    Q = model_query,
+                    K = model_query,
+                    V = model_query,
+                )
+            )
+            queries.append(query)
+
+        assert masks[0].q_seqinfo.seqstart.device == torch.device("cuda:0")
+        for index, output in enumerate(outputs):
+            assert output.device == torch.device(f"cuda:{index}")
+            assert bool(torch.isfinite(output).all())
+
+        # Start backward only after the second shard has consumed the shared
+        # source mask, matching model-parallel layer execution.
+        for query, output in zip(queries, outputs):
+            output.sum().backward()
+            assert query.grad is not None
+            assert bool(torch.isfinite(query.grad).all())
+    finally:
+        packing_utils.clear_packed_caches()
 
 
 def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
@@ -161,7 +384,11 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
     sliding_window = 3
 
     class _FakeBias:
-        pass
+        def __init__(self, device = "cuda:0"):
+            self.device = torch.device(device)
+
+        def to(self, device):
+            return _FakeBias(device)
 
     captured = {}
 
@@ -222,6 +449,7 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
 
     assert captured["window"] == sliding_window
     assert isinstance(captured["bias"], _FakeBias)
+    assert captured["bias"].device == torch.device("cpu")
 
 
 def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):

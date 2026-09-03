@@ -4,6 +4,8 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
+import { SettingsRouteAbsentError } from "./settings-route-absent";
+
 const VRAM_BUDGET_EVENT = "unsloth-vram-budget-change";
 const VRAM_BUDGET_LOCK_EVENT = "unsloth-vram-budget-lock";
 
@@ -146,6 +148,9 @@ function publishVramBudget(settings: VramBudgetSettings) {
 
 async function fetchVramBudgetSettings(): Promise<VramBudgetSettings> {
   const res = await authFetch("/api/settings/vram-budget");
+  if (res.status === 404) {
+    throw new SettingsRouteAbsentError("/api/settings/vram-budget");
+  }
   if (!res.ok) {
     throw new Error(await readFastApiError(res, "Failed to load VRAM budget"));
   }
@@ -158,7 +163,7 @@ async function fetchVramBudgetSettings(): Promise<VramBudgetSettings> {
  * endpoint is absent, so a newer UI on an older backend hides the control.
  */
 export async function loadVramBudgetSettings(
-  options: { force?: boolean } = {},
+  options: { force?: boolean; rethrow?: boolean } = {},
 ): Promise<VramBudgetSettings | null> {
   // Read behind any open write: a row remounting right after a flushed drag can
   // otherwise GET the old fraction before the PUT commits and answer after it,
@@ -205,9 +210,14 @@ export async function loadVramBudgetSettings(
   }
   try {
     return await inFlightVramBudget;
-  } catch {
+  } catch (error) {
     // Null is already the "no usable answer" contract here: an older backend with
-    // no such route reads the same way, and every caller keeps what it has.
+    // no such route reads the same way, and every caller keeps what it has. `rethrow`
+    // is for the one caller that must tell those apart, since it decides whether a
+    // save may be skipped rather than what to paint.
+    if (options.rethrow) {
+      throw error;
+    }
     return null;
   }
 }

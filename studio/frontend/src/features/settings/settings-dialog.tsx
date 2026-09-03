@@ -3,6 +3,7 @@
 
 import { FloatingMonitor } from "@/components/floating-monitor";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +14,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
   Cancel01Icon,
@@ -20,8 +22,10 @@ import {
   ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
+  EnergyRectangleIcon,
   Globe02Icon,
   HelpCircleIcon,
+  HomeWifiIcon,
   Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
@@ -31,7 +35,12 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  Component,
+  type ComponentType,
   type FC,
+  type ReactNode,
+  Suspense,
+  lazy,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -46,18 +55,102 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-import { AboutTab } from "./tabs/about-tab";
-import { AgentsTab } from "./tabs/agents-tab";
-import { ApiKeysTab } from "./tabs/api-keys-tab";
-import { AppearanceTab } from "./tabs/appearance-tab";
-import { ChatTab } from "./tabs/chat-tab";
-import { ConnectionsTab } from "./tabs/connections-tab";
-import { DataTab } from "./tabs/data-tab";
-import { DebuggingTab } from "./tabs/debugging-tab";
-import { GeneralTab } from "./tabs/general-tab";
-import { ProfileTab } from "./tabs/profile-tab";
-import { ResourcesTab } from "./tabs/resources-tab";
-import { VoiceTab } from "./tabs/voice-tab";
+// Statically imported, every panel ran before first paint even though the dialog
+// starts closed. Load each on first view instead; this map also drives the prefetch.
+const TAB_LOADERS = {
+  general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
+  profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  appearance: () =>
+    import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
+  resources: () =>
+    import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
+  chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  voice: () => import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
+  connections: () =>
+    import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
+  data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "keyboard-shortcuts": () =>
+    import("./tabs/keyboard-shortcuts-tab").then((m) => ({
+      default: m.KeyboardShortcutsTab,
+    })),
+  "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  "remote-lan": () =>
+    import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
+  agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
+  debugging: () =>
+    import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
+  about: () => import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
+} satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
+
+function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
+  loaders: T,
+): Record<keyof T, ComponentType> {
+  const out = {} as Record<keyof T, ComponentType>;
+  for (const id of Object.keys(loaders) as (keyof T)[]) {
+    out[id] = lazy(loaders[id]);
+  }
+  return out;
+}
+
+const LAZY_TABS = lazyTabs(TAB_LOADERS);
+
+interface PanelBoundaryProps {
+  tab: SettingsTab;
+  message: string;
+  reloadLabel: string;
+  children: ReactNode;
+}
+
+interface PanelBoundaryState {
+  tab: SettingsTab;
+  failed: boolean;
+}
+
+/**
+ * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
+ * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
+ * all of Unsloth rather than one panel.
+ *
+ * Reload rather than retry: React and the browser's module map both cache the failed
+ * import, so re-importing rethrows with no new request (whatwg/html#6768), while
+ * index.html is no-store and a reload does pick up the current chunk names.
+ */
+class SettingsPanelBoundary extends Component<
+  PanelBoundaryProps,
+  PanelBoundaryState
+> {
+  state: PanelBoundaryState = { tab: this.props.tab, failed: false };
+
+  static getDerivedStateFromError(): Partial<PanelBoundaryState> {
+    return { failed: true };
+  }
+
+  // A different tab is a different chunk, so one panel's failure must not hold the rest.
+  static getDerivedStateFromProps(
+    props: PanelBoundaryProps,
+    state: PanelBoundaryState,
+  ): Partial<PanelBoundaryState> | null {
+    return props.tab === state.tab ? null : { tab: props.tab, failed: false };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+        <p className="text-muted-foreground text-sm">{this.props.message}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            window.location.reload();
+          }}
+        >
+          {this.props.reloadLabel}
+        </Button>
+      </div>
+    );
+  }
+}
 
 interface TabDef {
   id: SettingsTab;
@@ -74,7 +167,6 @@ const TABS: TabDef[] = [
     id: "profile",
     labelKey: "settings.tabs.profile",
     icon: UserIcon,
-    badgeKey: "common.new",
   },
   {
     id: "appearance",
@@ -97,6 +189,12 @@ const TABS: TabDef[] = [
     icon: Globe02Icon,
   },
   {
+    id: "remote-lan",
+    labelKey: "settings.tabs.remoteLan",
+    icon: HomeWifiIcon,
+    badgeKey: "common.new",
+  },
+  {
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
@@ -105,18 +203,21 @@ const TABS: TabDef[] = [
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
-    badgeKey: "common.new",
   },
   {
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
-    badgeKey: "common.new",
   },
   {
     id: "data",
     labelKey: "settings.tabs.data",
     icon: DatabaseSettingIcon,
+  },
+  {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: EnergyRectangleIcon,
     badgeKey: "common.new",
   },
   {
@@ -138,32 +239,8 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
 });
 
 function renderTab(tab: SettingsTab) {
-  switch (tab) {
-    case "general":
-      return <GeneralTab />;
-    case "profile":
-      return <ProfileTab />;
-    case "appearance":
-      return <AppearanceTab />;
-    case "resources":
-      return <ResourcesTab />;
-    case "chat":
-      return <ChatTab />;
-    case "voice":
-      return <VoiceTab />;
-    case "connections":
-      return <ConnectionsTab />;
-    case "data":
-      return <DataTab />;
-    case "api-keys":
-      return <ApiKeysTab />;
-    case "agents":
-      return <AgentsTab />;
-    case "debugging":
-      return <DebuggingTab />;
-    case "about":
-      return <AboutTab />;
-  }
+  const Tab = LAZY_TABS[tab];
+  return <Tab />;
 }
 
 export function SettingsDialog() {
@@ -173,12 +250,26 @@ export function SettingsDialog() {
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const opener = useSettingsDialogStore((s) => s.opener);
+  const openerFallback = useSettingsDialogStore((s) => s.openerFallback);
   const reduced = useReducedMotion();
   // Mounting a heavy tab panel (System, Connections) in the same commit as
   // the nav highlight makes the highlight lag the click. Render the panel
   // from a deferred value so the nav updates first.
   const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
+
+  // Once opened, pull the other panels in on idle so a tab click never waits on the
+  // network. Nothing runs while closed, which is its state for the whole launch.
+  useEffect(() => {
+    if (!open) return;
+    return scheduleIdleTask(() => {
+      for (const load of Object.values(TAB_LOADERS)) {
+        // Warming a panel nobody asked for must not surface as an unhandled rejection;
+        // the boundary above speaks for the panel the user does open.
+        void load().catch(() => undefined);
+      }
+    });
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -270,8 +361,10 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    "keyboard-shortcuts": null,
     data: null,
     "api-keys": null,
+    "remote-lan": null,
     agents: null,
     debugging: null,
     about: null,
@@ -280,7 +373,12 @@ export function SettingsDialog() {
   useEffect(() => {
     if (!open) return;
     const frame = window.requestAnimationFrame(() => {
-      tabButtonRefs.current[activeTab]?.focus({ preventScroll: true });
+      const button = tabButtonRefs.current[activeTab];
+      button?.focus({ preventScroll: true });
+      // The tab list scrolls once it outgrows the sidebar, so a deep-opened tab
+      // can start outside it. preventScroll above keeps focus from revealing it,
+      // and "nearest" moves only the list, never the panel beside it.
+      button?.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open, activeTab]);
@@ -292,12 +390,14 @@ export function SettingsDialog() {
           showCloseButton={false}
           overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
           onCloseAutoFocus={(e) => {
-            // Restore focus to the element that triggered openDialog(). Radix's
-            // FocusScope races our rAF-scheduled tab focus and loses the
-            // previous-focus reference, so restore it by hand.
-            if (opener && opener.isConnected) {
+            // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
+            const focusTarget = [opener, openerFallback].find(
+              (element) =>
+                element?.isConnected && !element.closest("[inert], [hidden]"),
+            );
+            if (focusTarget) {
               e.preventDefault();
-              opener.focus({ preventScroll: true });
+              focusTarget.focus({ preventScroll: true });
             }
           }}
           className={cn(
@@ -325,7 +425,7 @@ export function SettingsDialog() {
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
             <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
-              <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
+              <div className="relative mx-1 mt-3 mb-2 shrink-0 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
@@ -356,7 +456,7 @@ export function SettingsDialog() {
                 )}
               </div>
               {results ? (
-                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 pb-1 max-sm:hidden">
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-1 max-sm:hidden">
                   {results.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-muted-foreground">
                       {t("settings.dialog.searchNoResults")}
@@ -397,7 +497,7 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
+                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
                   results !== null && "hidden",
                 )}
               >
@@ -405,7 +505,11 @@ export function SettingsDialog() {
               </p>
               <nav
                 className={cn(
-                  "flex flex-col gap-0.5 px-1 max-sm:flex-row max-sm:overflow-x-auto",
+                  // The tab list is the sidebar's flexible row: a short window
+                  // leaves it taller than the sidebar, and the dialog clips its
+                  // overflow, so scroll it rather than losing the last tabs.
+                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  "max-sm:flex-none max-sm:flex-row max-sm:overflow-x-auto max-sm:py-0",
                   results !== null && "max-sm:flex hidden",
                 )}
               >
@@ -423,7 +527,9 @@ export function SettingsDialog() {
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
                         "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
-                        "max-sm:shrink-0",
+                        // Keep the row height when the list scrolls: a flex item
+                        // shrinks past h-[32px] down to its text otherwise.
+                        "shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
                         // only unselected items get a keyboard focus ring.
@@ -475,7 +581,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 right-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
@@ -484,7 +590,23 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {renderTab(panelTab)}
+                {/* Only a panel's first view waits, so the fallback is delayed and a
+                    promptly arriving panel never flashes it. */}
+                <SettingsPanelBoundary
+                  tab={panelTab}
+                  message={t("settings.dialog.panelFailed")}
+                  reloadLabel={t("settings.dialog.panelReload")}
+                >
+                  <Suspense
+                    fallback={
+                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                        {t("common.loading")}
+                      </div>
+                    }
+                  >
+                    {renderTab(panelTab)}
+                  </Suspense>
+                </SettingsPanelBoundary>
               </div>
             </main>
           </div>

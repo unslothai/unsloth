@@ -527,7 +527,7 @@ export interface DiffusionTrainingStatus {
   ema_path?: string | null;
   started_at: number | null;
   updated_at: number | null;
-  // Where the trained adapter was mirrored into the Studio LoRA catalog, and the family / base it trained from.
+  // Where the trained adapter was mirrored into the Unsloth LoRA catalog, and the family / base it trained from.
   catalog_path?: string | null;
   family?: string | null;
   base_model?: string | null;
@@ -624,7 +624,7 @@ export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingSta
   return parseJson(await authFetch("/api/train/diffusion/status"));
 }
 
-// One dataset folder under the Studio datasets root (GET /api/train/diffusion/info): images,
+// One dataset folder under the Unsloth datasets root (GET /api/train/diffusion/info): images,
 // clips, or both. `clip_count` is absent on older backends, hence optional.
 export interface DiffusionDatasetSummary {
   name: string;
@@ -655,6 +655,10 @@ export interface DiffusionTrainableFamily {
     train_steps?: number;
     train_batch_size?: number;
     mixed_precision?: "bf16" | "fp16" | "no";
+    // The LR ramp, as one pair: a warmup count only ramps under a scheduler that reads it, so
+    // the backend advertises both or neither. Absent on a backend older than that pairing.
+    lr_scheduler?: string;
+    lr_warmup_steps?: number;
   } | null;
   vram_note?: string | null;
   gated?: boolean | null;
@@ -689,7 +693,7 @@ export interface DiffusionTrainableFamily {
   >;
 }
 
-// Where diffusion training reads/writes on this Studio, plus usable dataset folders.
+// Where diffusion training reads/writes on this Unsloth, plus usable dataset folders.
 export interface DiffusionTrainingInfo {
   datasets_root: string;
   outputs_root: string;
@@ -822,7 +826,7 @@ export interface DiffusionDatasetImportResult {
   source_repo: string;
 }
 
-/** Materialize a curated example dataset (by id) into a Studio dataset folder. */
+/** Materialize a curated example dataset (by id) into an Unsloth dataset folder. */
 export async function importDiffusionDatasetExample(
   id: string,
   name?: string,

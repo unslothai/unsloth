@@ -57,9 +57,11 @@ Exit codes:
 import argparse
 import atexit
 import bisect
+import contextlib
 import hashlib
 import io
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -296,7 +298,14 @@ RE_FS_ENUM = re.compile(
     re.DOTALL,
 )
 
-# Reverse shell / bind shell patterns
+# Reverse shell / bind shell patterns. LEFT EXACTLY AS IT WAS, dup2 included,
+# because this pattern is what the evidence is extracted with. It is re.DOTALL,
+# so a match spans from the first signal to the last and the rendered evidence
+# for a long span is a digest of the whole thing; editing the alternation moves
+# the span, moves the digest, and silently reopens every reviewed baseline entry
+# taken against it. Removing the dup2 branch here un-suppressed 11 entries on
+# the studio and hf-stack shards, multiprocess/tests/__init__.py among them.
+# Whether dup2 alone is enough is decided below instead, where it costs nothing.
 RE_REVERSE_SHELL = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
@@ -306,6 +315,33 @@ RE_REVERSE_SHELL = re.compile(
     r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
     re.DOTALL,
 )
+
+# The same thing without the dup2 branch, used only to answer "would this file
+# still be a reverse shell if dup2 did not count?".
+#
+# dup2 is the ordinary way to point a file descriptor at a file, and it was the
+# only single-token alternative above, in a pattern whose every other branch
+# names two co-occurring signals. So it fired on capture helpers and redirect
+# plumbing: ten of the nineteen reverse-shell entries in the committed baseline
+# are dup2 with no socket anywhere in the file (click/testing.py,
+# numba/tests/support.py, rich/console.py, torch elastic redirects.py,
+# sentencepiece) and not one is a true positive. triton 3.8.0 shipped an
+# eleventh in _internal_testing.py, which reddened main.
+#
+# A reverse shell dup2s onto a SOCKET, so the socket is the half carrying the
+# meaning. A file with one is judged exactly as before, evidence included; a
+# file without one has to earn the finding on a branch other than dup2. Nothing
+# is lost: a payload has to name socket to obtain the descriptor at all, and the
+# socket + connect + subprocess branch catches it independently.
+RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
+    r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
+    r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
+    r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
+    r"|\bpty\s*\.\s*spawn\b"
+    r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
+    re.DOTALL,
+)
+RE_SOCKET_USE = re.compile(r"\bsocket\b")
 
 # Process injection / code loading from remote
 RE_REMOTE_CODE = re.compile(
@@ -728,7 +764,11 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_anti = bool(RE_ANTI_ANALYSIS.search(content))
     has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
     has_fs_enum = bool(RE_FS_ENUM.search(content))
-    has_rev_shell = bool(RE_REVERSE_SHELL.search(content))
+    # dup2 counts only alongside a socket; see RE_FD_DUP.
+    # dup2 counts only alongside a socket; see RE_REVERSE_SHELL_WITHOUT_DUP.
+    has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) and (
+        bool(RE_SOCKET_USE.search(content)) or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
+    )
     has_remote_code = bool(RE_REMOTE_CODE.search(content))
     has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
     has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
@@ -826,6 +866,8 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "Reverse shell / bind shell pattern",
+                # Still RE_REVERSE_SHELL, so every finding that survives the gate
+                # renders byte-identical evidence to before this change.
                 _extract_evidence(content, RE_REVERSE_SHELL),
             )
         )
@@ -1905,6 +1947,25 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
             )
         )
     return findings
+
+
+def _scan_one(task: tuple[str, str]) -> tuple[str, list[Finding]]:
+    """Pool worker: ``scan_archive`` over one (archive_path, package) pair.
+
+    Module-level and pickle-clean on purpose, so the pool can use the "spawn"
+    start method. ``Finding`` is a plain dataclass, so results travel as-is.
+
+    The archive-limit ``[WARN]`` lines go to stderr from deep inside
+    ``iter_archive_files``. Left alone they land in the parent's stream whenever
+    the worker happens to reach them, so two runs of the same input produce logs
+    that differ only in where those lines sit. They are returned instead and the
+    caller prints them in task order, which keeps the whole report reproducible.
+    """
+    archive_path, package = task
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        findings = scan_archive(archive_path, package)
+    return buf.getvalue(), findings
 
 
 # Download packages
@@ -3155,6 +3216,12 @@ def main() -> int:
         help = "Also download and scan transitive dependencies (full dependency tree)",
     )
     parser.add_argument(
+        "--jobs",
+        type = int,
+        default = 0,
+        help = "Archive-scanning worker processes (default: min(4, cpu count); 1 = serial)",
+    )
+    parser.add_argument(
         "--fix",
         action = "store_true",
         help = "Auto-search for safe versions and update requirements files",
@@ -3250,6 +3317,11 @@ def main() -> int:
     tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
     atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
     download_errors: list[str] = []
+    # Scan-side failures, kept beside the download ones so both reach the SCAN
+    # INCOMPLETE block below. A stall has to exit 2 like any other partial scan:
+    # exit 1 is reserved for "non-baselined CRITICAL or HIGH findings detected",
+    # so exiting 1 on a dead worker reports an infrastructure failure as a threat.
+    scan_errors: list[str] = []
     try:
         downloaded, download_errors = download_packages(
             specs,
@@ -3258,15 +3330,57 @@ def main() -> int:
         )
         print(f"  Downloaded {len(downloaded)} archive(s).")
 
-        for spec, archive_path in downloaded:
-            pkg_name = _extract_pkg_name(spec)
-            findings = scan_archive(archive_path, pkg_name)
-            all_findings.extend(findings)
-            # Delete archive immediately after scanning
-            try:
-                os.remove(archive_path)
-            except OSError:
-                pass
+        # Scanning, not downloading, is the cost here: on the hf-stack shard the
+        # `pip download` above takes 9.7s and the pass below took 306s of a 316s
+        # total. It is pure CPU (regex over decompressed archive members) and
+        # every archive is independent, so it fans out across cores.
+        #
+        # `imap` with chunksize=1 yields in submission order, so the findings
+        # list is assembled in exactly the order the serial loop produced it and
+        # the report is unchanged. chunksize=1 is also what makes `next(timeout=)`
+        # available at all: above 1, CPython's Pool.imap returns a bare generator
+        # with no timeout support (Lib/multiprocessing/pool.py).
+        tasks = [(archive_path, _extract_pkg_name(spec)) for spec, archive_path in downloaded]
+        jobs = args.jobs if args.jobs else max(1, min(4, os.cpu_count() or 1))
+        if jobs > 1 and len(tasks) > 1:
+            print(f"  Scanning {len(tasks)} archive(s) across {jobs} workers...")
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes = jobs) as pool:
+                results = pool.imap(_scan_one, tasks, chunksize = 1)
+                for i, (archive_path, _pkg) in enumerate(tasks):
+                    try:
+                        captured, findings = results.next(timeout = 900)
+                    except multiprocessing.TimeoutError:
+                        # A worker died (OOM or segfault on a hostile archive).
+                        # Without this the iterator blocks forever and the job
+                        # only ends at the workflow timeout, with no reason given.
+                        #
+                        # Recorded rather than raised: `raise SystemExit(<str>)`
+                        # prints the string and exits 1, and 1 already means
+                        # "CRITICAL or HIGH findings detected". Routing it here
+                        # gets the SCAN INCOMPLETE report and exit 2, which is
+                        # what a partial scan is supposed to return.
+                        scan_errors.append(
+                            f"scan stalled after {i}/{len(tasks)} archive(s) with no "
+                            f"result for 900s; a pool worker most likely died"
+                        )
+                        break
+                    if captured:
+                        sys.stderr.write(captured)
+                    all_findings.extend(findings)
+                    # Delete archive immediately after scanning
+                    try:
+                        os.remove(archive_path)
+                    except OSError:
+                        pass
+        else:
+            for archive_path, pkg_name in tasks:
+                all_findings.extend(scan_archive(archive_path, pkg_name))
+                # Delete archive immediately after scanning
+                try:
+                    os.remove(archive_path)
+                except OSError:
+                    pass
     finally:
         shutil.rmtree(tmpdir, ignore_errors = True)
 
@@ -3307,15 +3421,15 @@ def main() -> int:
     # Surface pip-download failures BEFORE the exit code so a partial download
     # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
     # Also keeps us from writing a baseline from an incomplete scan.
-    if download_errors:
+    incomplete_errors = download_errors + scan_errors
+    if incomplete_errors:
         print(
             f"\n  {'=' * 72}\n"
-            f"  SCAN INCOMPLETE: {len(download_errors)} pip download "
-            f"failure(s):\n"
+            f"  SCAN INCOMPLETE: {len(incomplete_errors)} failure(s):\n"
             f"  {'=' * 72}",
             file = sys.stderr,
         )
-        for err in download_errors:
+        for err in incomplete_errors:
             print(f"  [ERROR] {err}", file = sys.stderr)
         print(
             "  Refusing to report 'all clean' on a partial scan; exiting 2.",

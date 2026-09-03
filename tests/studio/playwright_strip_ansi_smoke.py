@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import os
 
+import subprocess
 import sys
 from pathlib import Path
 
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Page, expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    dump_diagnostics,
+    echo_browser_errors,
     start_vite,
     stop_process,
     wait_for_smoke_page,
@@ -41,6 +44,24 @@ def info(msg: str) -> None:
     print(f"[ansi-smoke] {msg}", flush = True)
 
 
+def dump(page: Page, vite: subprocess.Popen[str] | None) -> None:
+    """Write down what the page actually was, since CI keeps no live browser.
+
+    `dump_diagnostics` records the browser side (screenshot, URL, body excerpt). The
+    dev server's own output is the other half: a transform error or a forced reload
+    is reported there and nowhere else.
+    """
+    dump_diagnostics(page, ART, "smoke-ansi-failure", info = info)
+    if vite is not None:
+        info("vite tail:")
+        # Snapshot first: the drain thread is still appending, and printing releases the
+        # GIL, so lazy iteration raises "deque mutated during iteration" and loses the
+        # tail in the noisy failure it exists for. `list()` runs in C, so it is atomic.
+        for line in list(getattr(vite, "vite_tail", [])) or ["(no output)"]:
+            info(f"  {line.rstrip()}")
+    info(f"artifacts in {ART}")
+
+
 def main() -> None:
     ART.mkdir(parents = True, exist_ok = True)
     if OWNS_SERVER:
@@ -57,17 +78,24 @@ def main() -> None:
             launch_args = chromium_launch_args() if browser_name == "chromium" else []
             browser = browser_type.launch(headless = True, args = launch_args)
             page = browser.new_page()
-            page.goto(f"{BASE}/smoke-ansi.html", wait_until = "networkidle")
-            page.screenshot(path = str(ART / "smoke-ansi.png"), full_page = True)
+            echo_browser_errors(page, info)
+            try:
+                page.goto(f"{BASE}/smoke-ansi.html", wait_until = "networkidle")
+                page.screenshot(path = str(ART / "smoke-ansi.png"), full_page = True)
 
-            for section in SECTIONS:
-                pane = page.locator(f'section[data-smoke="{section}"] pre').first
-                expect(pane).to_be_visible(timeout = 15_000)
-                text = pane.inner_text()
-                info(f"{section} text: {text!r}")
-                assert text == "file.txt\nerror", f"{section} rendered unexpected text: {text!r}"
-                assert ESC not in text, f"{section} still contains ESC"
-                assert "[32m" not in text, f"{section} still shows SGR garbage"
+                for section in SECTIONS:
+                    pane = page.locator(f'section[data-smoke="{section}"] pre').first
+                    expect(pane).to_be_visible(timeout = 15_000)
+                    text = pane.inner_text()
+                    info(f"{section} text: {text!r}")
+                    assert (
+                        text == "file.txt\nerror"
+                    ), f"{section} rendered unexpected text: {text!r}"
+                    assert ESC not in text, f"{section} still contains ESC"
+                    assert "[32m" not in text, f"{section} still shows SGR garbage"
+            except Exception:
+                dump(page, vite)
+                raise
 
             info("all production panes rendered clean text (no ANSI escapes)")
             browser.close()

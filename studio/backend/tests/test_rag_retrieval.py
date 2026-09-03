@@ -326,6 +326,12 @@ def test_search_for_autoinject_bm25_gates_on_dense_probe(rag_conn, bow_embedding
     )
 
 
+def _rag_is_available(monkeypatch, rag_db) -> None:
+    # The import flag, and the connection check the pre-retrieval gate asks.
+    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    monkeypatch.setattr(rag_db, "rag_available", lambda: True, raising = False)
+
+
 def test_search_for_autoinject_empty_query_or_scope(rag_home):
     assert tool.search_for_autoinject(query = "  ", scope_kb_id = "a") is None
     assert tool.search_for_autoinject(query = "hello") is None  # no scope
@@ -336,7 +342,7 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     monkeypatch.setattr(
         tool,
         "search_for_autoinject",
@@ -361,7 +367,7 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: None)
     assert (
         tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"}) is None
@@ -374,7 +380,7 @@ def test_build_rag_autoinject_enabled_by_default(monkeypatch):
 
     monkeypatch.delenv("RAG_AUTOINJECT", raising = False)
     monkeypatch.delenv("RAG_AUTOINJECT_MIN_SCORE", raising = False)
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake(**k):
@@ -393,7 +399,7 @@ def test_build_rag_autoinject_caps_top_k(monkeypatch):
 
     monkeypatch.setenv("RAG_AUTOINJECT", "1")
     monkeypatch.setenv("RAG_AUTOINJECT_TOP_K", "4")
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake(**k):
@@ -426,7 +432,9 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "retrieve_lexical",
-        lambda c, s, q, k = None: calls.append(("lex", k)) or [],
+        # The archive's shaped FTS query, accepted and ignored: this test is about which
+        # backends run.
+        lambda c, s, q, k = None, *, match_query = None: calls.append(("lex", k)) or [],
     )
     monkeypatch.setattr(
         retrieval,
@@ -460,7 +468,7 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake_search(**kw):
@@ -484,7 +492,7 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake_autoinject(**k):
@@ -509,6 +517,13 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
     assert seen["min_dense_score"] == 0.8
     assert seen["mode"] == "dense"
 
-    # Explicit False disables even with the env default on.
+    # The UI's explicit Off sends both flags. autoinject=False on its own is also
+    # used by large-model Auto and must still allow thread-document grounding.
     monkeypatch.setenv("RAG_AUTOINJECT", "1")
-    assert tools.build_rag_autoinject(conv, {"thread_id": "t1", "autoinject": False}) is None
+    assert (
+        tools.build_rag_autoinject(
+            conv,
+            {"thread_id": "t1", "autoinject": False, "whole_doc": False},
+        )
+        is None
+    )

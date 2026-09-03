@@ -115,7 +115,9 @@ test("storage missing entirely reads as a fresh session", () => {
 });
 
 test("the marker key belongs to nothing else in the app", async () => {
-  const files: string[] = [];
+  // Kept as URLs. A file: URL's pathname is "/D:/..." on Windows, and readFile treats that
+  // as drive-relative, so it opened "D:\D:\..." and the walk found no owner at all.
+  const files: URL[] = [];
   async function walk(dir: URL) {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const child = new URL(
@@ -125,7 +127,7 @@ test("the marker key belongs to nothing else in the app", async () => {
       if (entry.isDirectory()) {
         await walk(child);
       } else if (/\.tsx?$/.test(entry.name)) {
-        files.push(child.pathname);
+        files.push(child);
       }
     }
   }
@@ -134,7 +136,9 @@ test("the marker key belongs to nothing else in the app", async () => {
   const owners: string[] = [];
   for (const file of files) {
     if ((await readFile(file, "utf8")).includes(`"${USER_STOPPED_KEY}"`)) {
-      owners.push(file);
+      // pathname, not fileURLToPath: it is "/" separated on every platform, which is what
+      // the assertion below slices on.
+      owners.push(file.pathname);
     }
   }
 
@@ -227,8 +231,9 @@ test("stopping records the intent before the shutdown it can outlive", async () 
 test("a second stop cannot run while the first is in flight", async () => {
   const hook = await hookSource();
 
-  // The tray item is never disabled and the toggle branches on statusRef, which stays
-  // "running" for the whole invoke, so two Stop clicks reach stopServer concurrently.
+  // The tray item stays enabled while the server runs and the toggle branches on
+  // statusRef, which stays "running" for the whole invoke, so two Stop clicks reach
+  // stopServer concurrently.
   const tray = hook.slice(hook.indexOf('register<void>("tray-toggle-server"'));
   assert.match(
     tray.slice(0, tray.indexOf("});")),
