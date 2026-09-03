@@ -32551,7 +32551,10 @@ class LlamaCppBackend:
         if LlamaCppBackend._codec_mgr is None:
             LlamaCppBackend._codec_mgr = AudioCodecManager()
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # A second allocation: on CUDA for a zero-offload server it would hold VRAM the
+        # load is classified as not holding, which is what lets the route skip
+        # arbitration and survive training.
+        device = "cuda" if torch.cuda.is_available() and not self.holds_no_vram else "cpu"
         model_repo_path = None
 
         # BiCodec needs a repo with BiCodec/ weights -- download canonical SparkTTS

@@ -908,7 +908,7 @@ def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
-        # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it
+        # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
         x[16:] = 0
         with torch.no_grad():
