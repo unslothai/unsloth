@@ -11263,8 +11263,52 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
     return None
 
 
-# What an MLX estimate prices when the panel names no context: the MLX loader's own default.
+# What an MLX estimate falls back to when the panel names no context and the checkpoint declares
+# no window it can be held to: the MLX loader's own default.
 _DEFAULT_MLX_ESTIMATE_CTX = 2048
+
+
+def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
+    """The window this checkpoint declares, held to what a load may be asked for.
+
+    Read from the files rather than from a resident model, by the rule the load resolves it
+    with, so the estimate and the load name the same ceiling.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import mlx_native_context_length
+    from core.inference.mlx_memory import _snapshot_config
+    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+    try:
+        config = _snapshot_config(model_dir)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    native = mlx_native_context_length(SimpleNamespace(config = config))
+    return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
+
+
+def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool) -> Optional[int]:
+    """The window a load naming no Context Length would be fitted to, or None for the ceiling.
+
+    The load's own fit, asked of the files instead of a resident model, so the panel and the load
+    reach the same length rather than two figures that happen to be close.
+    """
+    from core.inference.mlx_inference import mlx_fit_to_memory
+
+    ceiling = _mlx_estimate_ceiling(model_dir)
+    if not ceiling:
+        return None
+    return mlx_fit_to_memory(
+        model_dir,
+        ceiling,
+        load_in_4bit = load_in_4bit,
+        # Only the text path keeps a prompt history between turns, and the fit reserves room
+        # for one that will be kept.
+        retains_history = not getattr(config, "is_vision", False),
+    )
 
 
 def _mlx_estimate_available() -> bool:
@@ -15692,19 +15736,49 @@ async def estimate_memory(
                 return EstimateMemoryResponse(available = False, reason = "not_downloaded")
             from core.inference.mlx_memory import mlx_memory_breakdown
 
+            mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
+            # /load takes an MLX context from max_seq_length ALONE, so n_ctx -- llama.cpp's field
+            # -- is not a pin here. A caller sending only n_ctx would otherwise be told its load
+            # opens at that length and is fitted to nothing, while the load it describes is
+            # unpinned and fits to whatever this machine holds.
+            mlx_named_ctx = request.max_seq_length or 0
+            mlx_fitted_ctx = (
+                None
+                if mlx_named_ctx
+                else _mlx_estimate_fitted_context(config, model_dir, mlx_load_in_4bit)
+            )
             mlx_breakdown = mlx_memory_breakdown(
                 model_dir,
-                # /load takes an MLX context from max_seq_length, so reading anything else prices a length the load never opens at.
-                n_ctx = request.max_seq_length or request.n_ctx or _DEFAULT_MLX_ESTIMATE_CTX,
-                kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_bits),
+                # Naming nothing is what a load does when the user pins nothing, and such a load
+                # opens at the window this machine holds. Pricing the loader's own default there
+                # would quote a fraction of the cache the conversation is free to grow into.
+                n_ctx = (
+                    mlx_named_ctx
+                    or mlx_fitted_ctx
+                    or _mlx_estimate_ceiling(model_dir)
+                    or _DEFAULT_MLX_ESTIMATE_CTX
+                ),
+                # A fitted window is installed as a cache bound, and the load refuses to quantize
+                # a bounded cache, so the fit is priced at full width and the window it returns
+                # must be too. Whether the bound is actually installed cannot be read from the
+                # files -- it depends on whether the model builds its own cache -- so this is the
+                # enforceable load's figure. Where the bound turns out unenforceable the load
+                # reports the same length and installs nothing, and a conversation is then free to
+                # grow past it; that gap is the known cost of partial architecture coverage, and
+                # the load reports it separately rather than being priced for here.
+                kv_bits = None if mlx_fitted_ctx else _mlx_estimate_kv_bits(request.mlx_kv_bits),
                 # /load quantizes an unquantized checkpoint by default and does not always honour the request.
-                load_in_4bit = _mlx_estimate_load_in_4bit(config, request),
+                load_in_4bit = mlx_load_in_4bit,
             )
             if mlx_breakdown is None:
                 return EstimateMemoryResponse(available = False, reason = "unsizable")
             return EstimateMemoryResponse(
                 **project_estimate_memory_response(
-                    build_memory_estimate(mlx_breakdown, quant_file_bytes = 0)
+                    build_memory_estimate(
+                        mlx_breakdown,
+                        quant_file_bytes = 0,
+                        context_fitted = mlx_fitted_ctx,
+                    )
                 )
             )
         gguf_path = _local_gguf_main_path(config)

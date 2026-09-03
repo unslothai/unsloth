@@ -927,6 +927,13 @@ class EstimateMemoryResponse(BaseModel):
         True, description = "False under --no-kv-offload, which moves the cache to host RAM"
     )
     n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    context_fitted: Optional[int] = Field(
+        None,
+        description = "The window MLX would fit to this machine's memory for a load that "
+        "names no Context Length, which is then what n_ctx prices. Null when the load names "
+        "one, when the machine holds the model's own window, or when the footprint of the "
+        "load cannot be described.",
+    )
     cache_type_kv: Optional[str] = Field(
         None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
     )
@@ -1039,6 +1046,12 @@ class MemoryEstimate(BaseModel):
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    context_fitted: Optional[int] = Field(
+        None,
+        description = "The window MLX would fit to this machine's memory for a load that "
+        "names no Context Length, and which n_ctx then prices. Null wherever the served "
+        "window was not chosen for this machine.",
     )
     context_is_pinned: bool = Field(
         True,

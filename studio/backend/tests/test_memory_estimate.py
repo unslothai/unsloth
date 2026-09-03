@@ -899,12 +899,12 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "not_gguf"
 
     @staticmethod
-    def _mlx_target(monkeypatch, model_dir):
+    def _mlx_target(monkeypatch, model_dir, **config):
         """A resolved non-GGUF config on an MLX host, with its weights at *model_dir*."""
         monkeypatch.setattr(
             ri,
             "_cached_estimate_config",
-            lambda *a, **kw: SimpleNamespace(is_gguf = False, identifier = "org/model"),
+            lambda *a, **kw: SimpleNamespace(is_gguf = False, identifier = "org/model", **config),
         )
         monkeypatch.setattr(ri, "_mlx_estimate_available", lambda: True)
         monkeypatch.setattr(ri, "_local_mlx_model_dir", lambda config: model_dir)
@@ -1148,6 +1148,56 @@ class TestEstimateMemoryRoute:
         )
         _estimate(model_path = "org/model", max_seq_length = 8192, n_ctx = 32768)
         assert seen["n_ctx"] == 8192
+
+    def test_an_unpinned_mlx_estimate_prices_the_fit_and_reports_it(self, monkeypatch, tmp_path):
+        # A panel showing a figure before an unpinned load must price the load's own fit.
+        from core.inference import mlx_inference
+        from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+        write = (tmp_path / "config.json").write_text
+        write(json.dumps({"max_position_embeddings": 262_144}))
+        self._mlx_target(monkeypatch, str(tmp_path))
+        asked, fit = {}, {"answer": 24_576}
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_fit_to_memory",
+            lambda model_dir, ceiling, **kw: asked.update(kw, ceiling = ceiling, dir = model_dir)
+            or fit["answer"],
+        )
+        seen = self._record_breakdown(
+            monkeypatch, weights_bytes = 1, kv_bytes = 1, compute_bytes = 1, total_bytes = 3, gpu_bytes = 3
+        )
+        # n_ctx is llama.cpp's field, so a caller sending one is not naming an MLX length.
+        resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
+        # The bound displaces the quantization, and the fit was priced without it.
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, None, 24_576)
+        # On the dir the route resolved, not the name it was asked about.
+        assert asked == {
+            "ceiling": 262_144,
+            "retains_history": True,
+            "dir": str(tmp_path),
+            "load_in_4bit": seen["load_in_4bit"],
+        }
+
+        # A named length is the user's: nothing is fitted, and the quantization stands.
+        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (8192, 4, None)
+
+        # With no fit the declared window stands, held to what /load accepts; then the default.
+        fit["answer"] = None
+        write(json.dumps({"max_position_embeddings": MAX_REQUESTABLE_CONTEXT * 4}))
+        resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
+        assert resp.context_fitted is None
+        assert (seen["n_ctx"], seen["kv_bits"]) == (MAX_REQUESTABLE_CONTEXT, 4)
+        write(json.dumps({"model_type": "llama"}))
+        _estimate(model_path = "org/model")
+        assert seen["n_ctx"] == ri._DEFAULT_MLX_ESTIMATE_CTX
+
+        # Only the text path keeps a prompt cache between turns.
+        write(json.dumps({"max_position_embeddings": 262_144}))
+        self._mlx_target(monkeypatch, str(tmp_path), is_vision = True)
+        _estimate(model_path = "org/model")
+        assert asked["retains_history"] is False
 
     def test_gguf_not_on_disk_is_not_downloaded(self, monkeypatch):
         # No header to read and no reaching for the network on a slider drag.

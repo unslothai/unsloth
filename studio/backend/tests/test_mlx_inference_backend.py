@@ -4139,20 +4139,32 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
         "dir": str(tmp_path),
     }
 
-    # Pricing builds real cache classes that draw from the global PRNG, so every path out of
-    # the guard rewinds it -- including the one that returns before pricing at all.
+    # Pricing builds real cache classes that draw from the global PRNG, so both ways out of
+    # the pricing itself rewind it -- the answer, and a raise that never produced one.
     rewound = []
     monkeypatch.setattr(mlx_inference, "_mlx_rng_key_words", lambda: ("key",))
     monkeypatch.setattr(mlx_inference, "_restore_mlx_rng_key", rewound.append)
+    assert fit(str(tmp_path), load_in_4bit = True, retains_history = True) == 24_576
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.mlx_memory",
+        types.SimpleNamespace(
+            mlx_fit_context = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no"))
+        ),
+    )
+    assert fit(str(tmp_path), load_in_4bit = True, retains_history = True) is None
+    assert rewound == [("key",), ("key",)]
 
+    # Nothing is priced where the machine cannot be measured, or where the name has no files
+    # on disk -- and nothing is rewound either, since no cache class was ever built.
     priced.clear()
+    rewound.clear()
     monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: None)
     assert fit(str(tmp_path), load_in_4bit = True, retains_history = True) is None
     monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 * 1024**3)
     monkeypatch.setattr(mlx_inference, "_snapshot_dir", lambda model, name: None)
     assert fit("org/uncached", load_in_4bit = True, retains_history = True) is None
-    assert not priced
-    assert rewound == [("key",)]
+    assert (priced, rewound) == ([], [])
 
 
 def test_the_fit_budget_leaves_the_prompt_history_its_own_room(monkeypatch):

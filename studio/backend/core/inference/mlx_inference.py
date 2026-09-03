@@ -1152,15 +1152,21 @@ def _snapshot_dir(model, model_name: str) -> Optional[str]:
     return str(snapshot) if snapshot is not None else None
 
 
-def _fitted_context(model, model_name: str, ceiling, *, load_in_4bit: bool, retains_history: bool):
-    """Largest context this machine sustains, or None to serve the window it was given.
+def mlx_fit_to_memory(model_dir, ceiling, *, load_in_4bit: bool, retains_history: bool):
+    """Largest context a load of the checkpoint at *model_dir* sustains here, else None.
 
     Priced at full width whatever quantization was asked for, because installing the bound this
     returns is what displaces that quantization: sizing the window against a quantized cache would
     spend memory the load then does not save.
+
+    Shared with the estimate route so the figure the panel shows before a load and the one the
+    load fits to are the same arithmetic over the same checkpoint. Whether the load then installs
+    that window as a bound is decided separately, by whether the cache can carry one. It answers
+    None for anything it cannot price, which the caller reads as "serve the ceiling" -- a fit is
+    never a precondition for loading.
     """
     budget = mlx_memory_budget(retains_history = retains_history)
-    if budget is None or not ceiling:
+    if budget is None or not ceiling or not model_dir:
         return None
     # Pricing builds real cache classes, whose layers draw from the same global PRNG an unseeded
     # generation samples from, so rewind it the way the KV quantization probe does.
@@ -1168,28 +1174,31 @@ def _fitted_context(model, model_name: str, ceiling, *, load_in_4bit: bool, reta
     try:
         from core.inference.mlx_memory import mlx_fit_context
 
-        model_dir = _snapshot_dir(model, model_name)
-        if model_dir is None:
-            return None
         fitted = mlx_fit_context(
             model_dir,
             budget_bytes = budget,
             max_ctx = int(ceiling),
             load_in_4bit = load_in_4bit,
         )
-        if fitted:
-            logger.info(
-                "MLX context fitted to %d tokens from %d: %.1f GB is what this machine holds",
-                fitted,
-                int(ceiling),
-                budget / 1e9,
-            )
+        logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
         return fitted
     except Exception as exc:
-        logger.debug("MLX context fit unavailable for %s: %s", model_name, exc)
+        logger.debug("MLX context fit unavailable for %s: %s", model_dir, exc)
         return None
     finally:
         _restore_mlx_rng_key(rng_key)
+
+
+def _fitted_context(model, model_name: str, ceiling, *, load_in_4bit: bool, retains_history: bool):
+    """The fit for a model already loaded, whose own record of its checkpoint outranks its name."""
+    try:
+        model_dir = _snapshot_dir(model, model_name)
+    except Exception as exc:
+        logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
+        return None
+    return mlx_fit_to_memory(
+        model_dir, ceiling, load_in_4bit = load_in_4bit, retains_history = retains_history
+    )
 
 
 def _kv_window_enforced(model, is_vlm, window):
@@ -1978,6 +1987,7 @@ class MLXInferenceBackend:
             )
         )
         if _fitted_ctx:
+            logger.info("MLX context fitted to %d tokens from %d", _fitted_ctx, _served_ctx or 0)
             _served_ctx = _fitted_ctx
         # Classify before the first generation: an ineligible cache would otherwise
         # raise inside maybe_quantize_kv_cache mid-stream, after converting the

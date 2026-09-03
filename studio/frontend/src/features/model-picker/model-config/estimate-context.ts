@@ -40,6 +40,40 @@ export function resolveEstimateContext(
 }
 
 /**
+ * The context an MLX estimate should PRICE: the pin, else nothing.
+ *
+ * `resolveLoadMaxSeqLength` sends 0 for an unpinned MLX load, and the backend answers that
+ * by fitting the window to the machine. Sending the length the control happens to be
+ * DISPLAYING instead prices the model's native window for a load that opens narrower, and
+ * leaves the backend unable to tell a pin from a display fallback -- so it could never
+ * report the fitted length this control exists to show.
+ */
+export function resolveMlxEstimateContext(contextPin: number | null): number {
+  return contextPin && contextPin > 0 ? contextPin : 0;
+}
+
+/**
+ * The window the Context Length control states for a backend that sizes itself.
+ *
+ * This control describes the NEXT load, so the fit comes first: the estimate computed it for
+ * the configuration now staged, and it is what that load will install. The resident length is
+ * second, describing the load running now, which stands in wherever the estimate has no answer
+ * -- but it must not outrank the fit, or clearing a pin leaves the control stating the window
+ * of the pinned load it replaced. The model's own window is last: true of the checkpoint, and
+ * an overstatement of the load wherever a fit lands below it.
+ *
+ * The pin is not here. It outranks all three and is applied by the caller, so a stale fitted
+ * length can never re-enter a control the user has since set.
+ */
+export function resolveMlxServedWindow(
+  loadedContext: number | null,
+  fittedContext: number | null,
+  nativeWindow: number | null,
+): number | null {
+  return fittedContext ?? loadedContext ?? nativeWindow;
+}
+
+/**
  * Which MODEL an estimate belongs to, for deciding whether shown numbers still do.
  *
  * Not the same question as "did anything change" -- that is the full request key,

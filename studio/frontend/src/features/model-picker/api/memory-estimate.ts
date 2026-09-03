@@ -53,6 +53,10 @@ export interface MemoryEstimate {
   kvOnGpu: boolean;
   /** What was actually priced, after overrides and clamps resolve. */
   nCtx: number;
+  /** The window MLX would fit to this machine for a load naming no Context Length, which is
+   *  then what `nCtx` prices. Null wherever the served window was not chosen for the machine:
+   *  a pin, a machine that holds the model's own window, or a load nothing could size. */
+  contextFitted: number | null;
   cacheTypeKv: string | null;
   nParallel: number;
   layerCount: number | null;
@@ -70,8 +74,9 @@ export interface MemoryEstimateRequest {
   nativePathToken?: string | null;
   nCtx?: number | null;
   cacheTypeKv?: string | null;
-  /** The context an MLX load opens at. /load reads this rather than nCtx off the non-GGUF
-   *  path, so the estimate prices a length the load never uses without it. */
+  /** The MLX context pin, and only a pin: /load reads this rather than nCtx off the non-GGUF
+   *  path, and 0 is its "name nothing", which the backend answers by fitting the window to
+   *  the machine. Sending a displayed fallback here prices a load that will not happen. */
   maxSeqLength?: number | null;
   /** MLX's own KV quantization width, deliberately not cacheTypeKv: llama.cpp's field persists
    *  in the config of a model that never ran there. */
@@ -108,6 +113,7 @@ const UNAVAILABLE: MemoryEstimate = {
   kvEstimable: false,
   kvOnGpu: true,
   nCtx: 0,
+  contextFitted: null,
   cacheTypeKv: null,
   nParallel: 1,
   layerCount: null,
@@ -131,6 +137,7 @@ interface ApiEstimateResponse {
   kv_estimable: boolean;
   kv_on_gpu: boolean;
   n_ctx: number;
+  context_fitted?: number | null;
   cache_type_kv: string | null;
   n_parallel: number;
   layer_count: number | null;
@@ -242,6 +249,9 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     kvEstimable: flag(body.kv_estimable, false),
     kvOnGpu: flag(body.kv_on_gpu, true),
     nCtx: finiteCount(body.n_ctx, 0),
+    // Absent on a backend predating the fit, and null is the right reading there: that
+    // backend chose no window for this machine, so there is none to show.
+    contextFitted: nullableCount(body.context_fitted),
     cacheTypeKv:
       typeof body.cache_type_kv === "string" ? body.cache_type_kv : null,
     nParallel: finiteCount(body.n_parallel, 1),

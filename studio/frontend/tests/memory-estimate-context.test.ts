@@ -6,6 +6,8 @@ import { test } from "node:test";
 import {
   resolveEstimateContext,
   resolveEstimateSourceIdentity,
+  resolveMlxEstimateContext,
+  resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../src/features/model-picker/model-config/estimate-context.ts";
 
@@ -239,4 +241,30 @@ test("every field sent is also a field the hook re-fetches for", () => {
     [],
     `sent to the backend but absent from estimateKey: ${unwatched.join(", ")}`,
   );
+});
+
+test("what an MLX estimate names, and what the control shows", () => {
+  // Sending the window the control displays leaves the backend unable to tell a pin from a
+  // display fallback, so it could never fit one.
+  assert.equal(resolveMlxEstimateContext(null), 0);
+  assert.equal(resolveMlxEstimateContext(0), 0);
+  assert.equal(resolveMlxEstimateContext(8192), 8192);
+  // The control describes the next load, so a fit outranks the load running now: clearing a
+  // pin on a resident 8192 must not leave it stating 8192 for a reload that fits. With no fit
+  // the resident load is the best answer, and the declared window the last.
+  assert.equal(resolveMlxServedWindow(8192, 24576, 262144), 24576);
+  assert.equal(resolveMlxServedWindow(null, 24576, 262144), 24576);
+  assert.equal(resolveMlxServedWindow(20480, null, 262144), 20480);
+  assert.equal(resolveMlxServedWindow(null, null, 262144), 262144);
+  assert.equal(resolveMlxServedWindow(null, null, null), null);
+});
+
+test("the fitted window survives the wire, and its absence reads as null", async () => {
+  const fitted = async (body: unknown) => {
+    auth.setAuthFetchHandler(() => Response.json(body));
+    return (await fetchMemoryEstimate({ modelPath: "a" })).contextFitted;
+  };
+  assert.equal(await fitted({ available: true, n_ctx: 24576, context_fitted: 24576 }), 24576);
+  // A backend predating the fit chose no window for this machine; there is none to show.
+  assert.equal(await fitted({ available: true, n_ctx: 262144 }), null);
 });
