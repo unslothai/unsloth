@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Every case where replacing zoo's "you need a GPU" with a reinstall hint would be WRONG.
-
-- Zoo's ROCm advice, told apart by "ROCm": its generic message names AMD as a supported
-  vendor, and that is the one raised on any torch without `torch.accelerator` (2.6+).
-- CUDA_VISIBLE_DEVICES=""/-1, a deliberate mask nvidia-smi ignores (install.sh
-  `_cvd_hides_nvidia`). Other masks can resolve to nothing too, so the message names them.
-- No answer from nvidia-smi: the probe returns None, so the re-raise happens outside the
-  handler and no probe traceback lands ahead of the real error.
-- The remedy, which is a link and not a command: no copy-pasteable line survived review
-  (companion wheels, version ceiling, pre-Turing routing, which venv uv targets, shell
-  quoting, and `unsloth` having no torch dependency to reinstall).
-"""
+"""Tests for the NVIDIA GPU/PyTorch mismatch hint."""
 
 from __future__ import annotations
 
@@ -28,7 +17,7 @@ import pytest
 _GPU_INIT = Path(__file__).resolve().parents[1] / "unsloth" / "_gpu_init.py"
 _HELPER = "_reraise_device_type_error_with_gpu_hint"
 
-# Zoo messages, verbatim from unsloth_zoo/device_type.py.
+# Messages copied from unsloth_zoo/device_type.py.
 _ROCM_HINT = "Unsloth detected signs of an AMD ROCm GPU, but your current PyTorch build has no usable HIP accelerator."
 _NO_ACCELERATOR = "Unsloth cannot find any torch accelerator? You need a GPU."
 _VENDOR_LIST = "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
@@ -76,10 +65,7 @@ def _raise_through_handler(helper, original):
 
 
 def test_every_raise_site_is_wrapped():
-    """Three modules can raise this: zoo's `__init__` (via `import unsloth_zoo`), zoo's
-    device_type when `__init__` skipped it, and unsloth's own device_type, which repeats
-    zoo's detection WITHOUT the UNSLOTH_ZOO_DISABLE_GPU_INIT branch and so still raises
-    after zoo answered "cpu". The helper must outlive all three, hence `del` comes last."""
+    """All three device checks must reach the helper before it is deleted."""
     tree = ast.parse(_GPU_INIT.read_text(encoding = "utf-8"))
     handlers = [
         n
@@ -93,7 +79,6 @@ def test_every_raise_site_is_wrapped():
     ]
     assert len(handlers) == 3, [h.lineno for h in handlers]
 
-    # `del (a, b, c)` is one Delete whose single target is a Tuple, so walk into it.
     deletes = [n for n in ast.walk(tree) if isinstance(n, ast.Delete)]
     freed = [
         n.lineno
@@ -118,7 +103,6 @@ def test_generic_failure_gets_the_reinstall_hint(helper, monkeypatch, message):
 
 
 def test_hint_diagnoses_and_links_rather_than_printing_a_command(helper, monkeypatch):
-    """The message owns the diagnosis; the remedy is a link, for the reasons above."""
     _smi(monkeypatch)
 
     with pytest.raises(NotImplementedError) as excinfo:
@@ -156,8 +140,7 @@ def test_deliberately_hidden_gpu_is_not_a_broken_build(helper, monkeypatch, mask
 
 @pytest.mark.parametrize("mask", ["0", "0,1", "1", "GPU-fake-uuid"])
 def test_a_partial_mask_keeps_the_hint_but_names_itself(helper, monkeypatch, mask):
-    """`1` on a single-GPU host and a stale UUID also expose zero devices; the message names
-    the mask rather than reimplementing CUDA's left-to-right parse to prove it."""
+    """Non-empty masks can also select no devices, so the hint names the mask."""
     _smi(monkeypatch)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
 
@@ -196,5 +179,5 @@ def test_probe_failures_return_the_original_error(helper, monkeypatch, kwargs):
 
     assert excinfo.value is original
     assert excinfo.value.__cause__ is None
-    # Otherwise a CPU-only host reads "FileNotFoundError: nvidia-smi" first.
+    # Do not show the probe failure before the original error.
     assert excinfo.value.__context__ is None
