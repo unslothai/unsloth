@@ -121,13 +121,13 @@ def assert_reproducible_backend() -> None:
     speculative, slots = status.get("speculative_type"), status.get("parallel_slots")
     assert speculative in ("off", "none"), (
         f"this probe needs speculative decoding off and the server reports "
-        f"{speculative!r}. Load with \"speculative_type\": \"off\": a drafted batch "
+        f'{speculative!r}. Load with "speculative_type": "off": a drafted batch '
         f"replacing sequential decode is not bit-identical, so the greedy output "
         f"below would not be reproducible however many times it is retried."
     )
     assert slots == 1, (
         f"this probe needs one decode slot and the server reports "
-        f"parallel_slots={slots!r}. Load with \"n_parallel\": 1: more slots bring "
+        f'parallel_slots={slots!r}. Load with "n_parallel": 1: more slots bring '
         f"--kv-unified, whose shared-pool occupancy is another input to the batch."
     )
 
