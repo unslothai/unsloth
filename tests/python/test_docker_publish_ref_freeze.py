@@ -353,7 +353,7 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
     stub.write_text(
         "#!/usr/bin/env bash\n"
         'case "$4" in\n'
-        f'  *core-sha-*) printf \'"{THIS_RUN_DIGEST}"\' ;;\n'
+        f"  *core-sha-*) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         f"  *) printf '\"{OTHER_RUN_DIGEST}\"' ;;\n"
         "esac\n",
         encoding = "utf-8",
@@ -390,7 +390,7 @@ def test_the_digest_export_still_works_without_a_sha_tag(manifest_digest_step: s
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents = True, exist_ok = True)
     stub = bin_dir / "docker"
-    stub.write_text("#!/usr/bin/env bash\n" f"printf '\"{THIS_RUN_DIGEST}\"'\n", encoding = "utf-8")
+    stub.write_text(f"#!/usr/bin/env bash\nprintf '\"{THIS_RUN_DIGEST}\"'\n", encoding = "utf-8")
     stub.chmod(0o755)
     out = tmp_path / "github_output"
     out.write_text("", encoding = "utf-8")

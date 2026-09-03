@@ -100,9 +100,9 @@ def test_an_existing_outputs_mode_is_preserved(runner, monkeypatch, tmp_path, no
     out.write_text("{}", encoding = "utf-8")
     os.chmod(out, 0o664)
     _run(runner, monkeypatch, notebook, out)
-    assert _mode(out) == 0o664, (
-        f"re-running replaced the existing output's mode with {oct(_mode(out))}"
-    )
+    assert (
+        _mode(out) == 0o664
+    ), f"re-running replaced the existing output's mode with {oct(_mode(out))}"
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason = "chown to another uid needs root")
