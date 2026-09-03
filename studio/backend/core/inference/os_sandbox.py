@@ -244,7 +244,7 @@ def _validate_workdir(workdir: str) -> str:
             f"the session workdir contains a file hard-linked outside it: {external_links[0]}"
         )
 
-    if sys.platform == "linux" and not include_system_roots:
+    if sys.platform == "linux":
         for mount in _linux_mount_points():
             if _contained(mount, wd, strict = True):
                 raise SandboxUnavailableError(
@@ -336,7 +336,7 @@ def _validate_runtime_paths(
         scan_roots = [existing for existing in scan_roots if not _contained(existing, root)]
         scan_roots.append(root)
 
-    if sys.platform == "linux":
+    if sys.platform == "linux" and not include_system_roots:
         for mount in _linux_mount_points():
             if any(_contained(mount, root, strict = True) for root in scan_roots):
                 raise SandboxUnavailableError(
