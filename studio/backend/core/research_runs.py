@@ -55,6 +55,7 @@ from core.research.prompts import (
     _system_prompt_with_instructions,
 )
 from loggers import get_logger
+from storage import providers_db
 from storage import research_runs_db as db
 from storage.studio_db import (
     get_chat_message,
@@ -81,6 +82,7 @@ _MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
 _MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
+_SYNTHESIS_MAX_TOKENS = 16_384
 # Below this loaded context the prompt scaffolding alone fills the window, so grounding is skipped.
 _AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
 # OFF by default (UNSLOTH_RESEARCH_AUTO_SCRAPE=1): benchmarking showed no reliable accuracy gain
@@ -406,10 +408,40 @@ def _clamp_max_tokens_for_context(
 def _resolve_max_tokens(
     max_tokens: int | None, inference: dict[str, Any], messages: list[dict]
 ) -> int:
-    requested = int(max_tokens or inference.get("maxTokens") or 4096)
-    ceiling = 16384 if max_tokens is not None else 8192
-    capped = min(requested, ceiling)
-    return _clamp_max_tokens_for_context(capped, messages, inference = inference)
+    if max_tokens is None:
+        requested = min(int(inference.get("maxTokens") or 4096), 8192)
+    else:
+        # No second ceiling on an explicit budget: the caller already resolved one the
+        # connection accepts, and re-capping it here is what truncated the report.
+        requested = int(max_tokens)
+    # main's clamp skips the local context window for a run carrying a providerType, which
+    # is the same exemption this needed -- the report generates on the provider's hardware.
+    return _clamp_max_tokens_for_context(requested, messages, inference = inference)
+
+
+def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
+    """The report's output budget: what the connection actually accepts, else the default.
+
+    The client resolves the same per-model ceiling the chat path already sends to this
+    connection, so the value is one the provider is known to take; a run created before that
+    field existed falls back to the connection's saved cap. Nothing is raised on a guess,
+    because a provider that rejects an over-limit max_output_tokens rather than clamping it
+    would fail the run outright.
+    """
+    if not inference.get("providerType"):
+        return _SYNTHESIS_MAX_TOKENS
+    resolved = _positive_int_or_none(inference.get("maxOutputTokens"))
+    if resolved:
+        return resolved
+    provider_id = inference.get("providerId")
+    if not isinstance(provider_id, str):
+        return _SYNTHESIS_MAX_TOKENS
+    try:
+        provider = providers_db.get_provider(provider_id) or {}
+    except Exception:
+        logger.debug("research.provider_cap_probe_failed", exc_info = True)
+        provider = {}
+    return _positive_int_or_none(provider.get("max_output_tokens")) or _SYNTHESIS_MAX_TOKENS
 
 
 def _normalize_completion_usage(raw: Any) -> dict[str, int] | None:
@@ -2557,6 +2589,9 @@ class ResearchSupervisor:
                 ),
             },
         ]
+        synthesis_max_tokens = await asyncio.to_thread(
+            _synthesis_max_tokens, run["config"].get("inferenceRequest") or {}
+        )
         (
             report,
             synthesis_reasoning,
@@ -2566,7 +2601,7 @@ class ResearchSupervisor:
             run,
             synthesis_messages,
             phase = "synthesis",
-            max_tokens = 16384,
+            max_tokens = synthesis_max_tokens,
         )
         await self._check_active(run["id"])
         report = _select_synthesis_report(report, synthesis_reasoning)
@@ -2602,7 +2637,7 @@ class ResearchSupervisor:
                 synthesis_messages[1],
             ]
             recovery_max_tokens = _resolve_max_tokens(
-                16384,
+                synthesis_max_tokens,
                 _run_inference_request(run),
                 recovery_messages,
             )
@@ -2615,7 +2650,7 @@ class ResearchSupervisor:
                 run,
                 recovery_messages,
                 phase = "synthesis_recovery",
-                max_tokens = 16384,
+                max_tokens = synthesis_max_tokens,
                 enable_thinking = False,
             )
             synthesis_reasoning += recovery_reasoning
@@ -2640,8 +2675,8 @@ class ResearchSupervisor:
                 synthesis_usage = recovery_usage
             else:
                 requested_max_tokens = _resolve_max_tokens(
-                    16384,
-                    _run_inference_request(run),
+                synthesis_max_tokens,
+                _run_inference_request(run),
                     synthesis_messages,
                 )
             await self._check_active(run["id"])

@@ -19,13 +19,20 @@ export interface ResearchInferenceRequest {
   temperature?: number;
   topP?: number;
   maxTokens?: number;
+  maxOutputTokens?: number;
   enableThinking?: boolean;
   reasoningEffort?: string;
 }
 
 export function buildResearchInferenceRequest(input: {
   checkpoint: string;
-  external?: { providerId: string; providerType: string; modelId: string };
+  external?: {
+    providerId: string;
+    providerType: string;
+    modelId: string;
+    /** The connection's resolved per-model output ceiling. */
+    maxOutputTokens: number;
+  };
   temperature: number;
   topP: number;
   maxTokens: number;
@@ -46,6 +53,10 @@ export function buildResearchInferenceRequest(input: {
           providerId: input.external.providerId,
           providerType: input.external.providerType,
           externalModel: input.external.modelId,
+          ...(Number.isFinite(input.external.maxOutputTokens) &&
+          input.external.maxOutputTokens > 0
+            ? { maxOutputTokens: Math.floor(input.external.maxOutputTokens) }
+            : {}),
         }
       : {}),
   };
