@@ -90,7 +90,7 @@ def _looks_like_remote_adapter(checkpoint_path: str, token: HfTokenArg) -> bool:
 
 
 def _remote_load_targets(
-    checkpoint_path: str, token: HfTokenArg = False
+    checkpoint_path: str, token: HfTokenArg = False, offline: bool = False
 ) -> Iterator[Tuple[str, Optional[str]]]:
     """Every Hugging Face repository a load of *checkpoint_path* will reach, named first.
 
@@ -121,10 +121,14 @@ def _remote_load_targets(
     except Exception as exc:
         logger.debug("Could not resolve a base for '%s': %s", checkpoint_path, exc)
         base = None
-    if base is None and _looks_like_remote_adapter(checkpoint_path, token):
+    if base is None and not offline and _looks_like_remote_adapter(checkpoint_path, token):
         # The resolver returns None both for "not an adapter" and for a transient failure,
         # and its base is exactly what a public adapter would hide a private repo behind.
         # It does look like an adapter, so the missing base is inconclusive, not absent.
+        #
+        # Online only: hf_file_definitely_absent answers False for any failure, so offline it
+        # calls every repo a possible adapter and this would refuse every air-gapped load of
+        # an ordinary cached model. Offline policy is _access_allowed's alone.
         raise _BaseUnresolved(checkpoint_path)
     resolved = None
     if base:
@@ -656,8 +660,12 @@ class ExportBackend:
                 # The try spans the loop, not just the call: _remote_load_targets is a
                 # generator, so it resolves the base during iteration, not up front.
                 try:
-                    for target, revision in _remote_load_targets(checkpoint_path, token):
-                        allowed, why = _access_allowed(target, local_files_only, token, revision)
+                    for target, revision in _remote_load_targets(
+                        checkpoint_path, token, local_files_only
+                    ):
+                        allowed, why = _access_allowed(
+                            target, local_files_only, token, revision
+                        )
                         if not allowed:
                             return False, why
                 except _BaseUnresolved:

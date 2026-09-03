@@ -1526,3 +1526,47 @@ def test_an_unresolvable_remote_adapter_base_refuses_the_load(monkeypatch):
     ok, message = backend.load_checkpoint(checkpoint_path = "owner/adapter", hf_token = False)
     assert ok is False
     assert "Could not determine the base model" in message
+
+
+def test_an_air_gapped_load_of_a_plain_cached_model_still_works(monkeypatch):
+    """hf_file_definitely_absent answers False for any failure, so offline it calls every repo
+    a possible adapter. Fail-closed there would refuse every air-gapped load."""
+    from core.export import export as export_backend_module
+    from utils.models import model_config
+
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda path, token: None
+    )
+    monkeypatch.setattr(
+        export_backend_module,
+        "_looks_like_remote_adapter",
+        lambda p, t: pytest.fail("offline must not probe the Hub for adapter shape"),
+    )
+
+    # Offline: no adapter probe, no refusal, just the named target.
+    assert list(
+        export_backend_module._remote_load_targets("owner/plain", "hf_caller", True)
+    ) == [("owner/plain", None)]
+
+    reached = {}
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: True)
+    monkeypatch.setattr(
+        export_backend_module,
+        "detect_audio_type",
+        lambda *a, **kw: reached.setdefault("probe", True) and None,
+    )
+    monkeypatch.setattr(
+        export_backend_module, "is_vision_model", lambda *a, **kw: reached.setdefault("v", False)
+    )
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(**kw):
+            reached["loaded"] = True
+            raise RuntimeError("stop after the gate")
+
+    monkeypatch.setattr(export_backend_module, "FastLanguageModel", _Loader)
+    backend = export_backend_module.ExportBackend()
+    backend.load_checkpoint(checkpoint_path = "owner/plain", hf_token = "hf_caller")
+    assert reached.get("loaded"), "an air-gapped token-bearing load must reach the loader"
