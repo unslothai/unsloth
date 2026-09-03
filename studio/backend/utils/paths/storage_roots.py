@@ -28,6 +28,10 @@ PORTABLE_MARKER = ".unsloth-portable-root"
 # has no child at all. See _inherits_parent_portable_marker.
 STUDIO_CHILD_DIRNAME = "studio"
 
+# Written inside the venv by install.sh, and one of the three sentinels that
+# prove a flat layout. See _is_flat_portable_root.
+STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
+
 
 def _inherits_parent_portable_marker(root: Path) -> bool:
     """Whether a marker in ``root.parent`` names the install rooted at *root*.
@@ -47,6 +51,74 @@ def _inherits_parent_portable_marker(root: Path) -> bool:
     if os.name == "nt" or sys.platform == "darwin":
         return name.lower() == STUDIO_CHILD_DIRNAME
     return False
+
+
+# Reported once per directory rather than once per call: the parent lookup runs
+# from portable_mode(), which every cache-var lookup reaches.
+_warned_untrusted_markers: set[str] = set()
+
+
+def _warn_untrusted_parent_marker(parent: Path) -> None:
+    if str(parent) in _warned_untrusted_markers:
+        return
+    _warned_untrusted_markers.add(str(parent))
+    logger.warning(
+        "Ignoring the portable marker in %s: the directory is writable by users "
+        "other than this one, so the marker is not proof that Unsloth installed "
+        "there. Treating this as a non-portable install.",
+        parent,
+    )
+
+
+def _parent_marker_is_trustworthy(parent: Path) -> bool:
+    """Whether a marker in *parent* is proof that OUR installer wrote it.
+
+    The marker is honoured on existence alone, and honouring one in the parent
+    exports *parent* as UNSLOTH_HOME, from which the managed llama.cpp, node and
+    whisper.cpp runtimes are resolved and then executed. Anyone able to create a
+    file in *parent* could therefore point a locked-down Studio root at runtimes
+    of their choosing, so a Studio root the operator protects must not inherit
+    trust from a parent the operator does not. Contents cannot answer this:
+    whoever writes the file writes the contents. Ownership and the parent's write
+    bits can, and they are what install.sh already leaves behind on a normal
+    install under the user's own home.
+
+    Windows has no comparable st_uid or mode bits (st_uid is always 0 and the
+    mode is synthesised), and install.ps1 refuses portable mode outright, so
+    there is nothing to check and nothing installed to break.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        parent_stat = parent.stat()
+        marker_uid = (parent / PORTABLE_MARKER).stat().st_uid
+    except OSError:
+        return False
+    # root is trusted so a system-wide install under /opt stays inheritable when
+    # Studio runs as an unprivileged service account.
+    trusted_uids = (os.geteuid(), 0)
+    if parent_stat.st_uid not in trusted_uids or marker_uid not in trusted_uids:
+        return False
+    # 0o022 is group-write | other-write. A sticky shared directory such as /tmp
+    # still fails here, which is the case this exists for.
+    return not parent_stat.st_mode & 0o022
+
+
+def _parent_portable_root(root: Path) -> Path | None:
+    """Master root the parent marker names for *root*, or None.
+
+    Fails closed: an unprovable marker declines to inherit rather than raising,
+    so the install degrades to a plain one instead of refusing to start.
+    """
+    if not _inherits_parent_portable_marker(root):
+        return None
+    parent = root.parent
+    if not (parent / PORTABLE_MARKER).is_file():
+        return None
+    if not _parent_marker_is_trustworthy(parent):
+        _warn_untrusted_parent_marker(parent)
+        return None
+    return parent
 
 
 def _venv_studio_home_candidates(prefix_value: str) -> list[Path]:
@@ -99,11 +171,41 @@ def _has_installer_sentinel(candidate: Path) -> bool:
         or (candidate / "bin" / shim_name).is_file()
         # A nested portable install keeps share/ and bin/ one level up.
         or (candidate / PORTABLE_MARKER).is_file()
-        or (
-            _inherits_parent_portable_marker(candidate)
-            and (candidate.parent / PORTABLE_MARKER).is_file()
-        )
+        or _parent_portable_root(candidate) is not None
     )
+
+
+def _is_flat_portable_root(master: Path) -> bool:
+    """Whether *master* holds the Studio venv directly, rather than in studio/.
+
+    Bare existence of <master>/unsloth_studio does not say so. `--root` takes any
+    writable directory, so an empty leftover or somebody's dev venv of that name
+    would turn the nested layout install.sh actually built into a flat Studio
+    root and send this install's state into it. install.sh requires one of three
+    ownership sentinels and excludes an already-nested root FIRST, because
+    share/studio.conf and bin/unsloth sit at <master> in BOTH layouts and a stray
+    <master>/unsloth_studio beside a real <master>/studio would otherwise
+    relocate it. Same three sentinels and same order here, or the resolvers and
+    the installer disagree by construction.
+
+    Nested on OSError, which is the layout install.sh builds by default: flat is
+    the special case, so an unreadable tree must never be promoted into it.
+    """
+    try:
+        venv = master / "unsloth_studio"
+        if not venv.is_dir():
+            return False
+        if (master / STUDIO_CHILD_DIRNAME / "unsloth_studio").is_dir():
+            return False
+        return (
+            (venv / STUDIO_OWNED_MARKER).is_file()
+            or (master / "share" / "studio.conf").is_file()
+            # Not platform-varied: only install.sh builds this layout, and
+            # install.ps1 refuses portable mode rather than writing unsloth.exe.
+            or (master / "bin" / "unsloth").is_file()
+        )
+    except OSError:
+        return False
 
 
 def _infer_studio_home_from_venv() -> Path | None:
@@ -180,11 +282,9 @@ def unsloth_home() -> Path | None:
     try:
         if (root / PORTABLE_MARKER).is_file():
             return root
-        if _inherits_parent_portable_marker(root) and (root.parent / PORTABLE_MARKER).is_file():
-            return root.parent
+        return _parent_portable_root(root)
     except OSError:
         return None
-    return None
 
 
 def portable_mode() -> bool:
@@ -244,13 +344,9 @@ def studio_root() -> Path:
         return resolved
     master = _env_unsloth_home()
     if master is not None:
-        # Flat layout: a root holding the venv directly IS the Studio root.
-        try:
-            if (master / "unsloth_studio").is_dir():
-                return master
-        except OSError:
-            pass
-        return master / "studio"
+        # Flat layout: a root holding the venv directly IS the Studio root, but
+        # only when it can prove it is ours; see _is_flat_portable_root.
+        return master if _is_flat_portable_root(master) else master / STUDIO_CHILD_DIRNAME
     inferred = _infer_studio_home_from_venv()
     if inferred is not None:
         return inferred
@@ -563,21 +659,27 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
     """
     if not portable_mode():
         return {}
-    if _user_set_hf_home():
-        # hf_cache_settings keeps the hub and xet caches under an explicit HF_HOME, and assets
-        # and datasets derive from it too, so pinning either here would split one deliberately
-        # chosen cache across two volumes. Their dedicated variables still win, via the
-        # blank-counts-as-unset guard below.
-        return {"TORCH_HOME": str(root / "torch")}
-    return {
-        "HF_DATASETS_CACHE": str(root / "huggingface" / "datasets"),
-        # Derived as <HF_HOME>/assets otherwise, the host copy we leave behind, so the one HF
-        # root that would still write outside the volume.
-        "HF_ASSETS_CACHE": str(root / "huggingface" / "assets"),
+    # Everything not derived from HF_HOME. Kept out of the branch below so that
+    # choosing a Hugging Face cache moves the Hugging Face caches and nothing
+    # else: an explicit HF_HOME is the one thing the user asked to leave the
+    # root, and it must not take the projects root or torch.hub with it.
+    defaults = {
         "TORCH_HOME": str(root / "torch"),
         # documents_root() stays unpinned: the user's own folder, not ours.
         "UNSLOTH_STUDIO_PROJECTS_HOME": str(root.parent / "projects"),
     }
+    if _user_set_hf_home():
+        # hf_cache_settings keeps the hub and xet caches under an explicit
+        # HF_HOME, and huggingface_hub derives assets from it while datasets
+        # derives its own cache from it. Pinning either here would split one
+        # deliberately chosen cache across two volumes. Their dedicated
+        # variables still win, via the blank-counts-as-unset guard below.
+        return defaults
+    defaults["HF_DATASETS_CACHE"] = str(root / "huggingface" / "datasets")
+    # Derived as <HF_HOME>/assets otherwise, which is the host copy we leave
+    # behind, so the one HF root that would still write outside the volume.
+    defaults["HF_ASSETS_CACHE"] = str(root / "huggingface" / "assets")
+    return defaults
 
 
 def _triton_cache_defaults(root: Path) -> dict[str, str]:
