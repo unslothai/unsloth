@@ -958,7 +958,24 @@ _setup_portable_mode() {
     # UNSLOTH_PORTABLE=True as off here clears webview caches a portable run promised to keep.
     case "$(_setup_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in 1|true|yes|on) return 0 ;; esac
     if [ -n "${UNSLOTH_HOME:-}" ] && [ -f "${UNSLOTH_HOME}/.unsloth-portable-root" ]; then return 0; fi
-    if [ -f "$STUDIO_HOME/.unsloth-portable-root" ] || [ -f "$STUDIO_HOME/../.unsloth-portable-root" ]; then return 0; fi
+    if [ -f "$STUDIO_HOME/.unsloth-portable-root" ]; then return 0; fi
+    # A marker one level up names THIS install under one spelling only: install.sh
+    # writes either <master>/studio (nested) or the master root itself (flat), so
+    # any other child of a marked root is an unrelated tree whose own update would
+    # then skip the WebView cache clear. Same rule as install.sh's
+    # _clear_stale_portable_marker and storage_roots._inherits_parent_portable_marker.
+    # Folded on macOS, where the default filesystem is case-insensitive: the
+    # installer writes `studio`, but a user typing `Studio` into UNSLOTH_STUDIO_HOME
+    # names the same directory and `cd -P` keeps their spelling.
+    _spm_leaf="$STUDIO_HOME"
+    if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+        _spm_leaf=$(printf '%s' "$STUDIO_HOME" | tr '[:upper:]' '[:lower:]')
+    fi
+    case "$_spm_leaf" in
+        */studio)
+            if [ -f "$STUDIO_HOME/../.unsloth-portable-root" ]; then return 0; fi
+            ;;
+    esac
     return 1
 }
 if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ] && ! _setup_portable_mode; then

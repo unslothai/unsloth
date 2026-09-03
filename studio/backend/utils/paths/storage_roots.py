@@ -24,6 +24,30 @@ logger = get_logger(__name__)
 # `unsloth` inherits no variables.
 PORTABLE_MARKER = ".unsloth-portable-root"
 
+# The only child name install.sh gives a portable master root; a flat install
+# has no child at all. See _inherits_parent_portable_marker.
+STUDIO_CHILD_DIRNAME = "studio"
+
+
+def _inherits_parent_portable_marker(root: Path) -> bool:
+    """Whether a marker in ``root.parent`` names the install rooted at *root*.
+
+    install.sh only ever writes <master>/studio (nested) or the master root
+    itself (flat), and its _clear_stale_portable_marker matches the same
+    `*/studio` spelling. Any OTHER direct child of a marked root is a separate
+    installation, so inheriting there would hand it the first install's
+    UNSLOTH_HOME, and with it that install's node, llama.cpp and whisper.cpp.
+    Case-folded where the filesystem is: the installer writes `studio`, but the
+    user typing `Studio` into UNSLOTH_STUDIO_HOME names the same directory and
+    resolve() does not correct the spelling.
+    """
+    name = root.name
+    if name == STUDIO_CHILD_DIRNAME:
+        return True
+    if os.name == "nt" or sys.platform == "darwin":
+        return name.lower() == STUDIO_CHILD_DIRNAME
+    return False
+
 
 def _infer_studio_home_from_venv() -> Path | None:
     """Return parent of sys.prefix as STUDIO_HOME when running from an
@@ -45,7 +69,10 @@ def _infer_studio_home_from_venv() -> Path | None:
             or (candidate / "bin" / shim_name).is_file()
             # A nested portable install keeps share/ and bin/ one level up.
             or (candidate / PORTABLE_MARKER).is_file()
-            or (candidate.parent / PORTABLE_MARKER).is_file()
+            or (
+                _inherits_parent_portable_marker(candidate)
+                and (candidate.parent / PORTABLE_MARKER).is_file()
+            )
         )
     except OSError:
         return None
@@ -111,7 +138,7 @@ def unsloth_home() -> Path | None:
     try:
         if (root / PORTABLE_MARKER).is_file():
             return root
-        if (root.parent / PORTABLE_MARKER).is_file():
+        if _inherits_parent_portable_marker(root) and (root.parent / PORTABLE_MARKER).is_file():
             return root.parent
     except OSError:
         return None
