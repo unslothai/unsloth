@@ -10,6 +10,7 @@ import { persist } from "zustand/middleware";
 export type PlusMenuItemId =
   | "chatWithFiles"
   | "mcp"
+  | "skills"
   | "savedPrompts"
   | "compareChat"
   | "exportChat"
@@ -22,6 +23,7 @@ export type PlusMenuItemId =
 export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "chatWithFiles",
   "mcp",
+  "skills",
   "savedPrompts",
   "compareChat",
   "exportChat",
@@ -35,6 +37,7 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
 const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   chatWithFiles: true,
   mcp: true,
+  skills: true,
   projects: true,
   savedPrompts: false,
   compareChat: false,

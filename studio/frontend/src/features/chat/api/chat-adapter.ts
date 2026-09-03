@@ -1962,23 +1962,6 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
-  if (
-    !toolsEnabled &&
-    !codeToolsEnabled &&
-    !artifactsEnabled &&
-    !mcpEnabledForChat &&
-    !ragOn &&
-    !deepResearchEnabled
-  ) {
-    // Explicit false, not an omitted field: the server defaults tools on for a
-    // request that never mentions them, so every pill being off has to say so.
-    // The permission level rides along because `--enable-tools` still outranks
-    // that false in _effective_enable_tools, so a CLI policy can inject
-    // python/terminal into a pill-less request and the count would otherwise
-    // price sandboxed schemas against an unsandboxed completion. Inert whenever
-    // the false stands and no tool list is built.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
-  }
 
   return {
     enable_tools: true,
@@ -1997,6 +1980,7 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
+      "read_skill",
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -6210,17 +6194,7 @@ export function createOpenAIStreamAdapter(
               // belongs in the branch below. Sending this body for it would
               // attach permission_mode to a passthrough turn, which the route
               // answers with a 400.
-              ...(supportsStudioToolsForThisTurn &&
-              (toolsEnabled ||
-                studioLocalCodeTools.length > 0 ||
-                mcpEnabledForChat ||
-                ragEnabled ||
-                projectRagEnabled ||
-                // Armed research needs Studio's loop for the same reason the local body
-                // does: deep_research is appended past every tool filter, but only for a
-                // request that asked for the loop at all. Without it the turn proxies
-                // through, the model is never offered the tool, and arming does nothing.
-                deepResearchArmed)
+              ...(supportsStudioToolsForThisTurn
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -6228,6 +6202,7 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
+                      "read_skill",
                       ...studioLocalCodeTools,
                       // Hosted tools Unsloth has no local stand-in for. Their
                       // pills stay lit whether or not an Unsloth tool is on, so
@@ -6469,14 +6444,7 @@ export function createOpenAIStreamAdapter(
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(deepResearchArmed ? { deep_research_armed: true } : {}),
-            ...(supportsTools &&
-            (toolsEnabled ||
-              codeToolsEnabled ||
-              renderHtmlToolEnabledForThisTurn ||
-              mcpEnabledForChat ||
-              ragEnabled ||
-              projectRagEnabled ||
-              deepResearchArmed)
+            ...(supportsTools
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -6485,6 +6453,7 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
+                    "read_skill",
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file"]
                       : []),
