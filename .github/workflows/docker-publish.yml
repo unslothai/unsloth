@@ -375,7 +375,7 @@ jobs:
           # manifest creation and this inspection would export its digest, and
           # build-studio would layer this run's Studio over that commit's base.
           # type=sha carries no enable condition, so core-sha-* is always present.
-          TAG="$(jq -r '([.tags[] | select(contains("core-sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          TAG="$(jq -r '([.tags[] | select(contains(":core-sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
@@ -553,10 +553,14 @@ jobs:
 
       - name: Pull and smoke-test the base image
         run: |
-          # Use the first tag from the metadata output -- that is the image we
-          # just published. Falls back to :core only when the metadata is
-          # empty (defensive; should not happen on default-branch runs).
-          TAG="$(jq -r '.tags[0] // ""' <<<"$STEPS_META_BASE_JSON")"
+          # Smoke-test THIS run's image. tags[0] is not it: metadata-action sorts
+          # by priority (raw=200 above sha=100), so on a main push tags[0] is the
+          # mutable :core, and main runs are deliberately not serialised (per-sha
+          # concurrency group at the top of this file). An overlapping run can
+          # retag :core before this pull, so the smoke test would validate the
+          # other run's image. Prefer the run-specific core-sha- tag, which
+          # type=sha emits unconditionally.
+          TAG="$(jq -r '([.tags[] | select(contains(":core-sha-"))] | first) // .tags[0] // ""' <<<"$STEPS_META_BASE_JSON")"
           if [ -z "$TAG" ]; then
               TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:core"
           fi
@@ -583,7 +587,9 @@ jobs:
 
       - name: Boot the full image and probe Studio + Jupyter
         run: |
-          TAG="$(jq -r '.tags[0] // ""' <<<"$STEPS_META_STUDIO_JSON")"
+          # Same reasoning as the base smoke test above: tags[0] here is the
+          # mutable :latest, so pin the probe to this run's sha- tag.
+          TAG="$(jq -r '([.tags[] | select(contains(":sha-"))] | first) // .tags[0] // ""' <<<"$STEPS_META_STUDIO_JSON")"
           if [ -z "$TAG" ]; then
               TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           fi
