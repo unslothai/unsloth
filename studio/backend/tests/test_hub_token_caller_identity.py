@@ -978,8 +978,6 @@ def test_hub_cache_inventory_still_scans_for_a_ui_session(monkeypatch, path, sca
 
     monkeypatch.setattr(cache_inventory, scanner, _rows)
 
-    response = _hub_inventory_client(False).get(
-        path, headers = {"Authorization": "Bearer token"}
-    )
+    response = _hub_inventory_client(False).get(path, headers = {"Authorization": "Bearer token"})
     assert response.status_code == 200
     assert called["n"] == 1, "the UI session lost the host cache listing"
