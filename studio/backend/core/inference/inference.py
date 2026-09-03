@@ -420,9 +420,7 @@ class InferenceBackend:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
                         base_path = config.base_model
-                        abs_repo_path = resolve_bicodec_repo_path(
-                            base_path, hf_token = hf_token
-                        )
+                        abs_repo_path = resolve_bicodec_repo_path(base_path, hf_token = hf_token)
 
                         logger.info(
                             f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}"
@@ -446,17 +444,13 @@ class InferenceBackend:
                         llm_path = os.path.join(config.path, "LLM")
                         if not os.path.isdir(llm_path):
                             llm_path = config.path
-                        abs_repo_path = resolve_bicodec_repo_path(
-                            config.path, hf_token = hf_token
-                        )
+                        abs_repo_path = resolve_bicodec_repo_path(config.path, hf_token = hf_token)
                         logger.info(
                             f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
                         )
                     else:
                         # Base model: download full HF repo, load from /LLM subfolder
-                        abs_repo_path = resolve_bicodec_repo_path(
-                            config.path, hf_token = hf_token
-                        )
+                        abs_repo_path = resolve_bicodec_repo_path(config.path, hf_token = hf_token)
                         llm_path = os.path.join(abs_repo_path, "LLM")
                         logger.info(
                             f"Spark-TTS: repo at {abs_repo_path}, loading LLM from {llm_path}"

@@ -32530,7 +32530,6 @@ class LlamaCppBackend:
         if audio_type == "bicodec":
             from core.inference.audio_codecs import resolve_bicodec_repo_path
             from utils.utils import hf_env_offline
-
             model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)

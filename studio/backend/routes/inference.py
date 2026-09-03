@@ -7316,7 +7316,6 @@ def _preflight_speech_codec_for_switch(audio_type: str, load_path: str, is_gguf:
         )
     elif audio_type == "bicodec":
         from core.inference.audio_codecs import resolve_bicodec_repo_path
-
         resolve_bicodec_repo_path(
             None if is_gguf else load_path,
             hf_token = os.environ.get("HF_TOKEN"),

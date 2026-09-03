@@ -3784,9 +3784,7 @@ def test_gguf_bicodec_preflight_stages_weights_and_pinned_source(monkeypatch):
 
     inference_route._preflight_speech_codec_for_switch("bicodec", "/local/model.gguf", True)
 
-    assert calls == [
-        (None, {"hf_token": os.environ.get("HF_TOKEN"), "local_files_only": False}),
-    ]
+    assert calls == [(None, {"hf_token": os.environ.get("HF_TOKEN"), "local_files_only": False})]
 
 
 def test_bicodec_resolver_uses_the_active_cache(tmp_path, monkeypatch):
@@ -9629,9 +9627,7 @@ def test_an_unrecognized_minimax_safetensors_file_is_not_a_loadable_component(tm
         ("condition_encoder", "model"),
     ),
 )
-def test_minimax_components_require_their_own_loader_weight_name(
-    tmp_path, component, wrong_stem
-):
+def test_minimax_components_require_their_own_loader_weight_name(tmp_path, component, wrong_stem):
     from core.inference import native_audio
 
     pipeline = _complete_minimax_pipeline(tmp_path)
