@@ -62,12 +62,16 @@ if IS_WINDOWS:
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 # torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64,
 # and win_amd64. On other hosts the audio extras must be filtered out (the
-# extras-no-deps step would otherwise fail), regardless of NO_TORCH.
-PLATFORM_LACKS_TORCHCODEC_WHEEL = (
-    (IS_LINUX and platform.machine() in {"aarch64", "arm64"})
-    or (IS_WINDOWS and platform.machine().lower() in {"arm64", "aarch64"})
-    or IS_MAC_INTEL
+# extras-no-deps step would otherwise fail), regardless of NO_TORCH. Named as the
+# platforms that HAVE a wheel: listing the ones that do not missed every Linux
+# architecture past Arm, ppc64le and s390x among them, and the pyproject markers
+# this mirrors are written the same way round.
+_PLATFORM_HAS_TORCHCODEC_WHEEL = (
+    (IS_LINUX and platform.machine() in {"x86_64", "AMD64"})
+    or (IS_WINDOWS and platform.machine().lower() in {"amd64", "x86_64"})
+    or IS_MAC_ARM
 )
+PLATFORM_LACKS_TORCHCODEC_WHEEL = not _PLATFORM_HAS_TORCHCODEC_WHEEL
 
 
 def _is_windows_arm64() -> bool:
@@ -360,6 +364,45 @@ def _select_torchao_spec(torch_version: str | None) -> str:
             return _TORCHAO_TORCH_210_CUDA13_SPEC
         return _TORCHAO_TORCH_210_SPEC
     return _TORCHAO_DEFAULT_SPEC
+
+
+# torchcodec up to 0.11 is built against one torch minor and declares no
+# `Requires-Dist: torch`, so pip cannot catch a mismatch. 0.12+ is ABI-stable against torch
+# >=2.11, hence the open floor. Mirrors pyproject's audio-torch2xx and import_fixes.
+_TORCHCODEC_DEFAULT_SPEC = "torchcodec>=0.10.0,<0.11.0"
+_TORCHCODEC_ABI_STABLE_SPEC = "torchcodec>=0.12.0"
+_TORCHCODEC_TORCH_SPECS: dict[int, str] = {
+    12: _TORCHCODEC_ABI_STABLE_SPEC,
+    11: "torchcodec>=0.11.0,<0.12.0",
+    10: "torchcodec>=0.10.0,<0.11.0",
+    9: "torchcodec>=0.8.0,<0.10.0",
+    8: "torchcodec>=0.6.0,<0.8.0",
+    7: "torchcodec>=0.3.0,<0.6.0",
+    6: "torchcodec>=0.2.0,<0.4.0",
+    5: "torchcodec>=0.1.0,<0.3.0",
+}
+_TORCHCODEC_MAX_KNOWN_MINOR = max(_TORCHCODEC_TORCH_SPECS)
+
+
+def _select_torchcodec_spec(torch_version: "str | None") -> str:
+    """Map an installed torch version (e.g. '2.11.0+cu128') to the torchcodec spec built
+    against it. Falls back to _TORCHCODEC_DEFAULT_SPEC for torch <=2.4, a non-2.x major, or
+    an unparseable/missing version. Pure function."""
+    if not torch_version:
+        return _TORCHCODEC_DEFAULT_SPEC
+    release = str(torch_version).split("+", 1)[0]  # drop +cu128/+rocm7.2/+cpu
+    parts = release.split(".")
+    try:
+        # '11rc1' -> '11', matching _select_torchao_spec.
+        minor_str = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else ""
+        major, minor = int(parts[0]), int(minor_str)
+    except (IndexError, ValueError):
+        return _TORCHCODEC_DEFAULT_SPEC
+    if major != 2:
+        return _TORCHCODEC_DEFAULT_SPEC
+    # Clamp to the ABI-stable floor, never the 0.11 row: 0.11 is locked to torch 2.11 exactly.
+    minor = min(minor, _TORCHCODEC_MAX_KNOWN_MINOR)
+    return _TORCHCODEC_TORCH_SPECS.get(minor, _TORCHCODEC_DEFAULT_SPEC)
 
 
 # Memoized `import torch` classification of the target venv, reset by pip_install() and
@@ -6834,7 +6877,8 @@ def pip_install(
         # wheel. `unsloth studio update --local` does not pass
         # --no-torch, so the NO_TORCH filter above does not fire; do
         # the targeted skip independently so the audio extras step
-        # does not take down the whole update.
+        # does not take down the whole update. Nothing feeds torchcodec
+        # now; this stays for any file that reintroduces it.
         actual_req = _filter_requirements(actual_req, {"torchcodec"})
         temp_reqs.append(actual_req)
     req_args_pip: list[str] = []
@@ -7007,8 +7051,9 @@ def install_python_stack() -> int:
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)
-    base_total = 12 if IS_WINDOWS else 13
+    # Three lettered steps on top of the numbered ones: anyio repair (8b), diffusers pin
+    # (11b), torchcodec (13b, which reports progress on every branch including its skips).
+    base_total = 13 if IS_WINDOWS else 14
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -7461,6 +7506,35 @@ def install_python_stack() -> int:
         # installed with a transient explicit CPU pin looks, on the next launch, like a CPU wheel
         # beside a physical GPU.
         torch_flavor_tag = _expected_torch_flavor_tag()
+
+    # 13b. torchcodec, pinned to the venv's torch minor (_select_torchcodec_spec), which
+    #      extras-no-deps.txt cannot do because markers cannot see torch. Must run after the
+    #      repair above: that can move torch onto another minor, staling an earlier choice.
+    #      The runtime probe reports nothing on a timeout (the wedged-driver host it exists to
+    #      tolerate), so read the installed metadata before giving up: guessing here means
+    #      downgrading a matching codec onto the default and recreating the mismatch.
+    _codec_torch_ver = None
+    if not NO_TORCH and not PLATFORM_LACKS_TORCHCODEC_WHEEL:
+        _codec_torch_ver = _probe_installed_torch_version() or _installed_distribution_version(
+            "torch"
+        )
+    if NO_TORCH:
+        _progress("torchcodec (skipped, no torch)")
+    elif PLATFORM_LACKS_TORCHCODEC_WHEEL:
+        _progress("torchcodec (skipped, no wheel for this platform)")
+    elif not _codec_torch_ver:
+        _progress("torchcodec (skipped, torch version unknown)")
+        _note("could not read the installed torch version -- leaving torchcodec alone")
+    else:
+        _progress("torchcodec")
+        _codec_spec = _select_torchcodec_spec(_codec_torch_ver)
+        _safe_print(f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}")
+        pip_install(
+            "Installing torchcodec",
+            "--no-deps",
+            "--no-cache-dir",
+            _codec_spec,
+        )
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(

@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+import functools
 import json
 import os
 import pathlib
@@ -45,6 +46,7 @@ import tempfile
 import textwrap
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Iterator
 
@@ -83,6 +85,91 @@ COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 # subcommand surfaces NEW/REMOVED/CHANGED entries so upstream Colab base
 # image rotations land in CI within ~24h, giving R-INST-002/003/004/005
 # earlier signal.
+# The image's Python, read from the os-info oracle beside the pip freeze ("Python 3.13.15").
+# Only used to evaluate PEP 508 markers, so an unreadable or absent snapshot just means no
+# marker is evaluated and every requirement is replayed, which is the older behaviour.
+_COLAB_OS_INFO_FILE = DATA_DIR / "colab_os_info.gpu.txt"
+_COLAB_PYTHON_RE = re.compile(r"^Python\s+(\d+\.\d+(?:\.\d+)?)", re.MULTILINE)
+
+
+@functools.lru_cache(maxsize = 1)
+def _colab_python_version() -> str | None:
+    try:
+        text = _COLAB_OS_INFO_FILE.read_text(encoding = "utf-8")
+    except OSError:
+        return None
+    match = _COLAB_PYTHON_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
+    """The environment PEP 508 markers are evaluated against, or None to skip them.
+
+    Only for notebooks resolved against the Colab image, since that is the one environment
+    this can name. Everything else replays every requirement, as before.
+    """
+    if not colab:
+        return None
+    full = _colab_python_version()
+    if not full:
+        return None
+    parts = full.split(".")
+    return {
+        "python_version": ".".join(parts[:2]),
+        "python_full_version": full if len(parts) > 2 else f"{full}.0",
+        "sys_platform": "linux",
+        "platform_system": "Linux",
+        "platform_machine": "x86_64",
+        "os_name": "posix",
+    }
+
+
+# PEP 508 names a fixed set of marker variables. `Marker.evaluate` fills any field the given
+# environment omits from the running process, so a marker naming one of these would be judged
+# against this machine rather than the image and the answer would move between runners.
+_MARKER_VARIABLES = frozenset(
+    {
+        "os_name",
+        "sys_platform",
+        "platform_machine",
+        "platform_python_implementation",
+        "platform_release",
+        "platform_system",
+        "platform_version",
+        "python_version",
+        "python_full_version",
+        "implementation_name",
+        "implementation_version",
+        "extra",
+    }
+)
+
+
+def _requirement_applies(raw: str, environment: dict[str, str] | None) -> bool:
+    """False only when the requirement carries a marker that is false for `environment`.
+
+    pip skips such a requirement outright, so replaying its bounds moves a version the cell
+    never touches. An unparseable marker, a missing `packaging`, or no environment to judge
+    against all mean the requirement is replayed.
+    """
+    if environment is None or ";" not in raw:
+        return True
+    marker_text = raw.split(";", 1)[1].strip()
+    if not marker_text:
+        return True
+    # Outside the string literals: `sys_platform == 'platform_release'` references one
+    # variable, not two.
+    bare = re.sub(r"\"[^\"]*\"|'[^']*'", " ", marker_text)
+    named = set(re.findall(r"[A-Za-z_]\w*", bare)) & _MARKER_VARIABLES
+    if not named or named - environment.keys():
+        return True  # nothing to judge on, or a field the oracle cannot answer for
+    try:
+        from packaging.markers import Marker
+        return bool(Marker(marker_text).evaluate(environment))
+    except Exception:
+        return True
+
+
 COLAB_ORACLE_FILES: dict[str, str] = {
     "pip-freeze.gpu.txt": "colab_pip_freeze.gpu.txt",
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
@@ -100,7 +187,9 @@ COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-i
 
 # torch.minor -> set of compatible torchcodec.minor strings.
 # Source: pytorch/torchcodec compatibility matrix on its README.
+# Mirrors import_fixes._TORCH_TORCHCODEC_MINORS (test_torchcodec_torch_compat asserts equality).
 TORCH_TORCHCODEC: dict[str, set[str]] = {
+    "2.11": {"0.11"},
     "2.10": {"0.10"},
     "2.9": {"0.8", "0.9"},
     "2.8": {"0.6", "0.7"},
@@ -108,6 +197,10 @@ TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.6": {"0.2", "0.3"},
     "2.5": {"0.1", "0.2"},
 }
+
+# torchcodec 0.12+ is ABI-stable against torch >=2.11, so that half is open-ended.
+TORCHCODEC_ABI_STABLE_TORCH = "2.11"
+TORCHCODEC_ABI_STABLE_CODEC = "0.12"
 
 # When peft >= trigger is on the resolved set, torchao >= floor must also be.
 PEFT_TORCHAO_FLOOR: list[dict[str, str]] = [
@@ -185,6 +278,12 @@ def code_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
     return out
 
 
+# A shell line that runs pip somewhere in it. Anchored on the `!` so a `pip install` inside a
+# Python string is not a cell, and open after it so a chained or compound command is:
+# `!echo start; pip install x` and `!if ...; then pip install x; fi` both install.
+_PIP_CELL_RE = re.compile(r"^[ \t]*!.*\b(?:uv\s+)?pip\s+(?:install|uninstall)\b", re.MULTILINE)
+
+
 def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
     """Heuristic: any code cell that contains a `pip install`, `pip uninstall`
     or `uv pip install` shell command, or a top-line `%%capture` magic."""
@@ -194,7 +293,9 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
         if first and first[0].strip().startswith("%%capture"):
             out.append((i, src))
             continue
-        if re.search(r"^[ \t]*!\s*(uv\s+)?pip\s+(install|uninstall)\b", src, re.MULTILINE):
+        # Glued, since a `\\` continuation can put the `!` and the pip call on different
+        # physical lines.
+        if any(_PIP_CELL_RE.search(line) for _, line in _glue_line_continuations(src)):
             out.append((i, src))
     return out
 
@@ -269,10 +370,12 @@ class PipInvocation:
     packages: list[str]  # raw package specifiers (e.g. 'transformers==5.5.0')
     raw: str
     line_no: int = 0
+    action: str = "install"  # "install" | "uninstall"
+    conditional: bool = False  # the fallback side of an `||`: runs only if the left failed
 
 
 PIP_LINE_RE = re.compile(
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip)\s+(?:install|uninstall)\b(?P<rest>.*)$",
+    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip)\s+(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE,
 )
 NON_PKG_FLAG_TAKES_VAL = {
@@ -325,7 +428,14 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
         if t in ("install", "uninstall"):
             continue
         packages.append(t)
-    return PipInvocation(tool = tool, flags = flags, packages = packages, raw = line, line_no = line_no)
+    return PipInvocation(
+        tool = tool,
+        flags = flags,
+        packages = packages,
+        raw = line,
+        line_no = line_no,
+        action = m.group("action").lower(),
+    )
 
 
 def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
@@ -349,11 +459,322 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
+# Words that introduce a compound command. A pip call behind one still runs, so it has to
+# parse. Whether it is certain depends on which word: `if pip install ...` is the test and is
+# reached whenever the line is, while a `then` or `do` body runs only if that test said so.
+# Words that run the command after them rather than being it. `command pip install ...` and
+# `env FOO=1 pip install ...` install exactly as a bare `pip install ...` does.
+_SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", "builtin"})
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
+_PIP_WORD_RE = re.compile(r"(?:^|\s)((?:uv\s+)?pip|python[0-9.]*\s+-m\s+pip)\s+", re.IGNORECASE)
+
+_SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
+_SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
+_SHELL_KEYWORDS = _SHELL_TEST_KEYWORDS | _SHELL_BODY_KEYWORDS | {"fi", "done", "esac"}
+
+
+def _unquoted_arm_close(text: str) -> int | None:
+    """Index of the `)` that closes a case-arm pattern, or None when there is none.
+
+    Shell quoting decides: `"x")` is a pattern, while the `)` in `pip install "a)b"` and in a
+    `$( )` substitution belongs to the command.
+    """
+    quote = ""
+    depth = 0
+    index = -1
+    escaped = False
+    for index, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            escaped = True  # `x\\)y)` matches a literal `)`, so only the second one closes
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth:
+                depth -= 1
+            elif index:
+                return index
+            else:
+                return None
+    return None
+
+
+def _unwrap_shell_group(command: str) -> tuple[str, bool]:
+    """`( pip install x )` -> `("pip install x", False)`, `then pip install x` -> `(..., True)`.
+
+    A grouped or compound command still runs, so leaving the bracket or the keyword on hides
+    it from PIP_LINE_RE and with it from every rule, R-INST-001's git+ ban included. The flag
+    says the keyword made it conditional, which only a body word does: `if pip install ...` is
+    the test and is reached whenever the line is.
+    """
+    stripped = command.strip()
+    bang = stripped.startswith("!")
+    if bang:
+        stripped = stripped[1:].lstrip()
+    stripped = stripped.lstrip("({").strip().rstrip(")}").rstrip()
+    conditional = False
+    while True:
+        # Any whitespace, not a literal space: `then\tpip install ...` is the same command to
+        # the shell, and leaving `then\tpip` as one word hides it from every rule.
+        parts = stripped.split(maxsplit = 1)
+        if not parts or parts[0].lower() not in _SHELL_KEYWORDS:
+            break
+        conditional = conditional or parts[0].lower() in _SHELL_BODY_KEYWORDS
+        stripped = parts[1].strip() if len(parts) > 1 else ""
+    # A `case` arm label: `x in x) pip install ...`, a quoted `"x") ...`, and the bare
+    # `b) pip install ...` of a later arm. Only the matching arm runs, so the command is
+    # conditional. The label ends at the first unquoted `)` with nothing open before it; a `)`
+    # inside quotes or inside a `$( )` belongs to the command.
+    close = _unquoted_arm_close(stripped)
+    if close is not None:
+        stripped = stripped[close + 1 :].strip()
+        conditional = True
+    prefixed = False
+    while True:
+        parts = stripped.split(maxsplit = 1)
+        if not parts or not (
+            parts[0].lower() in _SHELL_EXEC_PREFIXES or _ENV_ASSIGNMENT_RE.match(parts[0])
+        ):
+            break
+        prefixed = True
+        stripped = parts[1].strip() if len(parts) > 1 else ""
+    if prefixed:
+        # A prefix brings its own options: `env -u VAR pip install ...`. Rather than a table
+        # per prefix, skip to where pip starts, which is the only thing any rule reads.
+        match = _PIP_WORD_RE.search(stripped)
+        if match and match.start():
+            stripped = stripped[match.start() :]
+    return (f"!{stripped}" if bang and stripped else stripped), conditional
+
+
+def _substitution_bodies(command: str) -> list[str]:
+    """The insides of every substitution in `command`, in the order the shell runs them.
+
+    `$( )`, backticks and the `<( )` / `>( )` process forms all run when the command runs, so
+    a pip call in one is an install like any other and the outer command is usually not pip.
+    Single quotes and an escaped `$` make the text literal, and then nothing runs.
+    """
+    bodies: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\" and quote != "'":
+            i += 2  # escaped: `\\$(` is a literal dollar
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = ""  # single quotes make the text literal, so nothing runs in there
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = "" if ch == quote else (quote or ch)
+            i += 1
+            continue
+        # `$( )` and backticks expand inside double quotes; `<( )` and `>( )` do not.
+        opens = command.startswith("$(", i) or (
+            not quote and ch in "<>" and command[i + 1 : i + 2] == "("
+        )
+        if opens:
+            depth, j = 1, i + 2
+            inner_quote = ""
+            while j < len(command) and depth:
+                inner = command[j]
+                if inner == "\\" and inner_quote != "'":
+                    j += 2
+                    continue
+                if inner_quote:
+                    if inner == inner_quote:
+                        inner_quote = ""
+                elif inner in "\"'":
+                    inner_quote = inner
+                elif inner == "(":
+                    depth += 1
+                elif inner == ")":
+                    depth -= 1
+                j += 1
+            bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
+            i = j
+        elif ch == "`":
+            j = command.find("`", i + 1)
+            if j == -1:
+                break
+            bodies.append(command[i + 1 : j])
+            i = j + 1
+        else:
+            i += 1
+    return [body.strip() for body in bodies if body.strip()]
+
+
+def _split_chained(line: str) -> list[tuple[str, bool]]:
+    """One shell line -> `(command, conditional)` per command. Only the first keeps the `!`.
+
+    `pip uninstall -y x && pip install x==1` is two commands with two actions; read as one,
+    the regex hands the whole line to the first and the reinstall lands in the uninstall's
+    package list. Scanned rather than split on a pattern because a PEP 508 marker puts a
+    quoted `;` inside a single argument (`"torch==2.12.0; python_version >= '3.10'"`), and a
+    backslash escapes the next character outside single quotes, as the shlex pass in
+    parse_pip_line does.
+
+    A `||` fallback runs only when the command before it failed, so it is flagged conditional
+    rather than dropped: it can still run, and the rules that must see every install path
+    (R-INST-001 and the git+ ban above all) have to keep seeing it. Only the effective-version
+    replay skips them. The tail ends at an `&&` or a `;`, since the lists are left-associative
+    and `(A || B) && C` runs C when A succeeded. Each group keeps its own tail, and a command
+    is conditional when any level above it is in one: the `&&` in `A || (B && C)` ends the
+    group's tail and leaves the outer one, the one in `(A || B && C)` ends the only tail there
+    is. A single `&` or `|` separates as well, and both sides run either way, so neither opens
+    a tail; `>&` and `&>` are redirections and are left alone. An unquoted `#` that starts a
+    word comments out the rest of the line, so scanning stops.
+    """
+    out: list[tuple[str, bool]] = []
+    buf: list[str] = []
+    quote = ""
+    # One flag per open group, plus the base list. A command is conditional when any level
+    # above it is in a fallback tail, so an inner list cannot clear an outer one.
+    tails = [False]
+    buf_conditional = False
+    # One entry per open `(`/`{`: True when it opened a grouping. A `)` closing a `$( )` is
+    # inside a word, so a `#` after it is a literal, not a comment.
+    groupings: list[bool] = []
+    grouping_closed = False
+    i = 0
+
+    def in_sub() -> bool:
+        return not all(groupings)
+
+    def flush() -> None:
+        nonlocal buf
+        out.append(("".join(buf), buf_conditional))
+        buf = []
+
+    while i < len(line):
+        ch = line[i]
+        in_substitution = in_sub()
+        if ch == "\\" and quote != "'" and i + 1 < len(line):
+            buf.append(ch)
+            buf.append(line[i + 1])
+            i += 2
+        elif quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+            i += 1
+        elif ch in "\"'":
+            quote = ch
+            buf.append(ch)
+            i += 1
+        elif ch in ")}" and in_substitution:
+            # Close it here, before the guard below would swallow the bracket.
+            grouping_closed = groupings.pop() if groupings else True
+            if len(tails) > 1:
+                tails.pop()
+            buf.append(ch)
+            i += 1
+        elif ch == "#" and (
+            i == 0
+            or line[i - 1].isspace()
+            or line[i - 1] in ";&|"
+            or (line[i - 1] in ")}" and grouping_closed)
+        ):
+            break  # an operator, or a bracket that closed a grouping, ends a word
+        elif in_substitution:
+            buf.append(ch)  # its separators are its own; the body is split on its own later
+            i += 1
+        elif line.startswith("||", i):
+            flush()
+            tails[-1] = True
+            buf_conditional = any(tails)
+            i += 2
+        elif line.startswith("&&", i):
+            flush()
+            # Left-associative: (A || B) && C runs C when A succeeded. Only this list's tail
+            # ends here, so an enclosing fallback still covers what follows.
+            tails[-1] = False
+            buf_conditional = any(tails)
+            i += 2
+        elif (
+            ch == ";"
+            or (
+                # `A & B` backgrounds A and runs B, `A | B` runs both: unconditional either way.
+                # `>&` and `&>` are redirections, not separators.
+                ch in "&|"
+                # `>&`, `&>` and `>|` are redirections rather than separators.
+                and not (ch == "&" and (line[i - 1 : i] == ">" or line[i + 1 : i + 2] == ">"))
+                and not (ch == "|" and line[i - 1 : i] == ">")
+            )
+        ):
+            flush()
+            tails[-1] = False
+            buf_conditional = any(tails)
+            i += 1
+        else:
+            if ch in "({":
+                # `$(`, `<(` and `>(` open a substitution, which lives inside a word and runs
+                # its own commands; a bare `(` groups this line's.
+                groupings.append(not (ch == "(" and buf and buf[-1] in "$<>"))
+                tails.append(False)
+                if not "".join(buf).strip():
+                    buf_conditional = any(tails)  # the group opens before the command
+            elif ch in ")}":
+                grouping_closed = groupings.pop() if groupings else True
+                if len(tails) > 1:
+                    # The command in hand belongs to the level being closed, so its flag stays
+                    # what it was; the pop only affects what comes after.
+                    tails.pop()
+            if ch not in ")}":
+                grouping_closed = False
+            buf.append(ch)
+            i += 1
+    flush()
+    (head, head_conditional), *rest = out
+    head_text, head_keyword = _unwrap_shell_group(head)
+    commands = [(head_text, head_conditional or head_keyword)]
+    for piece, flag in rest:
+        text, keyword = _unwrap_shell_group(piece.strip())
+        if text:
+            commands.append((f"!{text}", flag or keyword))
+    # `echo $(pip install x)` runs the install as surely as the echo, and the outer command is
+    # not pip, so the inner one has to be a command of its own. Read off the raw pieces: an
+    # assignment prefix like ``X=`pip install y` `` is stripped by the unwrap above.
+    ordered: list[tuple[str, bool]] = []
+    for (piece, flag), (text, command_flag) in zip(out, commands):
+        for inner in _substitution_bodies(piece):
+            ordered.extend(
+                (inner_text, flag or inner_flag)
+                for inner_text, inner_flag in _split_chained(f"!{inner}")
+            )
+        ordered.append((text, command_flag))
+    return ordered
+
+
+def unconditional_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
+    """The commands that certainly run.
+
+    Anything asking what the cell leaves installed wants this one. `iter_pip_invocations`
+    yields the `||` fallbacks too, and only a rule that must see every path a notebook could
+    take, R-INST-001's git+ ban above all, should be reading those.
+    """
+    for inv in iter_pip_invocations(install_cell):
+        if not inv.conditional:
+            yield inv
+
+
 def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
     for line_no, line in _glue_line_continuations(install_cell):
-        inv = parse_pip_line(line, line_no)
-        if inv is not None:
-            yield inv
+        for command, conditional in _split_chained(line):
+            inv = parse_pip_line(command, line_no)
+            if inv is not None:
+                inv.conditional = conditional
+                yield inv
 
 
 # Spec parsing: only what we need (no full PEP 440).
@@ -474,10 +895,11 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     out = dict(colab)
     pinned: set[str] = set()
     upper_bounds: dict[str, str] = {}
-    for inv in iter_pip_invocations(install_cell):
+    environment = _marker_environment(colab)
+    for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
-            if sp is None:
+            if sp is None or not _requirement_applies(raw, environment):
                 continue
             for op, ver in sp.pins:
                 if op == "==":
@@ -499,23 +921,85 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 # ----- Rules ----- #
 
 
+# A `git+` target runs to the next shell or quoting boundary. Case-insensitive: pip
+# normalises `Git+https://` to the same link.
+_GIT_SOURCE_RE = re.compile(r"""git\+[^\s'"]+""", re.IGNORECASE)
+
+
+def _git_source_repository(source: str) -> str:
+    """`git+https://user@github.com/Org/Repo.git@ref` -> `github.com/org/repo`.
+
+    Matched against the allowlist as a path rather than a substring: an arbitrary repository
+    can carry `github.com/unslothai/unsloth` inside its own path, and a substring test reads
+    that as permission.
+    """
+    remainder = source.split("+", 1)[1] if "+" in source else source
+    # pip normalises the scheme, so the comparison is on the lowered host and path below.
+    remainder = remainder.split("://", 1)[-1]
+    host, _, path = remainder.partition("/")
+    host = host.rsplit("@", 1)[-1]  # drop any credentials
+    path = path.split("#", 1)[0].split("?", 1)[0]
+    path = path.split("@", 1)[0].rstrip("/")  # drop a trailing @ref
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    # Resolve `.` and `..` the way a URL client does, or
+    # `github.com/unslothai/unsloth/../../attacker/repo` reads as an allowlisted prefix.
+    segments: list[str] = []
+    for segment in path.split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(segment)
+    return "/".join([host.lower(), *(segment.lower() for segment in segments)])
+
+
+def _git_source_is_allowed(source: str) -> bool:
+    """Exact repository match. Every allowlist entry is one `host/org/repo`, and pip puts a
+    subdirectory in the URL fragment rather than on the path, so nothing needs a prefix."""
+    repository = _git_source_repository(source)
+    return any(repository == allowed.lower() for allowed in GIT_PLUS_ALLOWLIST)
+
+
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
+    """Every pip command on the line, conditional ones included.
+
+    The question is whether the cell can reach a `git+` source at all, so the answer must not
+    depend on how the line splits: a fallback, a `(...)` group and an `if ...; then` body are
+    all reachable, and `unconditional_pip_invocations` would drop them. It does depend on the
+    command being pip: a `git+` in an `echo` beside an install installs nothing, and a `git+`
+    in a comment is documentation, which `_split_chained` has already dropped.
+
+    Each source is read twice over, from the command text and from the arguments shlex made
+    of it: `"git+"https://...` is one argument to pip and two words to a text scan, and a
+    source inside a construct only one of them can read still has to be seen.
+    """
     findings: list[Finding] = []
-    for inv in iter_pip_invocations(install_cell):
-        if any("git+" in p for p in inv.packages) or "git+" in inv.raw:
-            if any(allowed in inv.raw for allowed in GIT_PLUS_ALLOWLIST):
+    for line_no, line in _glue_line_continuations(install_cell):
+        sources: list[str] = []
+        for command, _ in _split_chained(line):
+            inv = parse_pip_line(command, line_no)
+            if inv is None:
                 continue
-            findings.append(
-                Finding(
-                    rule = "R-INST-001",
-                    file = file,
-                    cell = cell_idx,
-                    line = inv.line_no,
-                    severity = "error",
-                    message = "install line uses `git+` (volatile, not pinned to a release)",
-                    hint = f"replace with a `pip install foo==X.Y.Z` from PyPI; allow-list is {GIT_PLUS_ALLOWLIST}",
-                )
+            sources += _GIT_SOURCE_RE.findall(command)
+            sources += [arg for arg in inv.packages if arg.lower().startswith("git+")]
+        # Per source, not per line: one allowlisted repository beside a prohibited one must
+        # not clear the whole line.
+        if not sources or all(_git_source_is_allowed(source) for source in sources):
+            continue
+        findings.append(
+            Finding(
+                rule = "R-INST-001",
+                file = file,
+                cell = cell_idx,
+                line = line_no,
+                severity = "error",
+                message = "install line uses `git+` (volatile, not pinned to a release)",
+                hint = f"replace with a `pip install foo==X.Y.Z` from PyPI; allow-list is {GIT_PLUS_ALLOWLIST}",
             )
+        )
     return findings
 
 
@@ -524,12 +1008,13 @@ def rule_inst_002_no_deps_transitive(
 ) -> list[Finding]:
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
-    for inv in iter_pip_invocations(install_cell):
+    environment = _marker_environment(colab)
+    for inv in unconditional_pip_invocations(install_cell):
         if "--no-deps" not in inv.flags:
             continue
         for raw in inv.packages:
             sp = parse_spec(raw)
-            if sp is None:
+            if sp is None or not _requirement_applies(raw, environment):
                 continue
             v = explicit_pin(sp)
             if v is None:
@@ -564,21 +1049,305 @@ def rule_inst_002_no_deps_transitive(
     return findings
 
 
-def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
+def _install_cell_lower_bound(
+    install_cell: str,
+    target: str,
+    environment: dict[str, str] | None = None,
+) -> str | None:
     """Return the highest lower bound any install line places on `target`
     (treating `==V` as both bounds), or None. Used by R-INST-003 so a
     `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
     best: str | None = None
-    for inv in iter_pip_invocations(install_cell):
+    for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != target:
                 continue
+            if not _requirement_applies(raw, environment):
+                continue  # pip skips it, so it satisfies no floor
             for op, ver in sp.pins:
                 if op in ("==", ">="):
                     if best is None or cmp_versions(ver, best) > 0:
                         best = ver
     return best
+
+
+def _compatible_release_ceiling(version: str) -> str | None:
+    """The exclusive ceiling `~=version` implies: `~=2.10.0` allows `<2.11`, `~=2.10` `<3`.
+
+    PEP 440 drops the last component and increments what is then last.
+    """
+    parts = normalise_version(version).split(".")
+    if len(parts) < 2:
+        return None
+    head = parts[:-1]
+    try:
+        head[-1] = str(int(head[-1]) + 1)
+    except ValueError:
+        return None
+    return ".".join(head)
+
+
+# pip takes `<archive url/path>` as an install target and parse_spec skips anything with a
+# `://`, so a wheel that replaces the package reads as no install at all. The version sits in
+# the filename: PEP 427 puts it in the second `-` field.
+_ARCHIVE_RE = re.compile(
+    r"(?P<name>[A-Za-z0-9._-]+?)-(?P<version>\d[^-]*?)(?:-.*)?\.(?:whl|tar\.gz|zip)$",
+    re.IGNORECASE,
+)
+
+
+def _archive_requirement(argument: str) -> tuple[str, str | None] | None:
+    """`(project, version)` for a direct archive install, or None when it is not one.
+
+    The version is None when the target is named but its archive does not encode one, as in
+    `torchcodec @ https://.../v0.13.0.zip`: the package is replaced, by something this cannot
+    name.
+    """
+    named, sep, reference = argument.partition("@")
+    if sep and "://" in reference:
+        argument = reference.strip()
+        named = named.strip().split("[", 1)[0].replace("_", "-").lower()
+    else:
+        named = ""
+    lowered = argument.lower().split("#", 1)[0].split("?", 1)[0]
+    if "://" not in argument and not lowered.endswith((".whl", ".tar.gz", ".zip")):
+        return None
+    leaf = argument.split("#", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    leaf = urllib.parse.unquote(leaf)  # a URL spells the local tag `%2Bcu130`
+    match = _ARCHIVE_RE.match(leaf)
+    if match is None:
+        return (named, None) if named else None
+    project = match.group("name").replace("_", "-").lower()
+    return (named or project), match.group("version")
+
+
+def cmp_releases(a: str, b: str) -> int:
+    """`cmp_versions` with the release segments padded, as PEP 440 compares them.
+
+    `cmp_versions` stops at the shorter tuple, so it reads `0.11.0` as above `0.11`. That is
+    harmless for ordering across different releases and wrong wherever the question is whether
+    two spellings name the same one, which is what an exclusion and a minor bound both ask.
+    """
+    left = [int(part) for part in re.findall(r"\d+", normalise_version(a))]
+    right = [int(part) for part in re.findall(r"\d+", normalise_version(b))]
+    width = max(len(left), len(right))
+    left += [0] * (width - len(left))
+    right += [0] * (width - len(right))
+    return (left > right) - (left < right)
+
+
+def _exclusion_covers_minor(version: str, exclusion: str) -> bool:
+    """True when `!=exclusion` rules out every release in `version`'s minor.
+
+    Only a wildcard can: `!=0.11.*` takes the whole 0.11 line, while `!=0.11` and `!=0.11.1.*`
+    each remove one release or one patch line and leave the minor reachable.
+    """
+    wanted = normalise_version(exclusion).split(".")
+    if not wanted or wanted[-1] != "*":
+        return False
+    wanted = wanted[:-1]
+    return len(wanted) <= 2 and normalise_version(version).split(".")[: len(wanted)] == wanted
+
+
+def _version_is_excluded(version: str, exclusion: str) -> bool:
+    """True when `!=exclusion` rules `version` out. A trailing `.*` is a prefix match."""
+    wanted = normalise_version(exclusion).split(".")
+    if wanted and wanted[-1] == "*":
+        wanted = wanted[:-1]
+        return normalise_version(version).split(".")[: len(wanted)] == wanted
+    return cmp_releases(version, exclusion) == 0
+
+
+def _window_names_one_minor(
+    floor: str | None,
+    ceiling: str | None,
+    cap: str | None = None,
+) -> bool:
+    """True when the window above `floor` cannot leave the minor `floor` is in.
+
+    A window lands on the newest release it admits, which only the window itself names when
+    there is one minor to land in. `>=0.10,<0.11` and `>=0.10,<=0.10.5` qualify;
+    `>=0.10,<0.12` and `>=0.10,<=0.11` do not, and pip would pick 0.11 there.
+    """
+    if floor is None:
+        return False
+    if cap is not None and version_minor(cap) == version_minor(floor):
+        return True
+    if ceiling is None:
+        return False
+    next_minor = _compatible_release_ceiling(f"{version_minor(floor)}.0")
+    # Padded: `<0.11.0` and `<0.11` name the same boundary.
+    return next_minor is not None and cmp_releases(ceiling, next_minor) <= 0
+
+
+def _spec_window(
+    pins: list[tuple[str, str]],
+) -> tuple[str | None, str | None, str | None, str | None, list[str], bool]:
+    """`(exact, floor, cap, ceiling, exclusions, floor_excludes_itself)` for one requirement.
+
+    `cap` is an inclusive `<=`, which names the version pip lands on; `ceiling` is an
+    exclusive `<` or the one `~=` implies, which does not. A `>` floor comes back with the
+    flag set, since the endpoint it names is the one version pip will not install.
+    """
+    exact = floor = cap = ceiling = None
+    floor_excludes_itself = False
+    exclusions: list[str] = []
+    for op, ver in pins:
+        if op == "==":
+            exact = ver
+        elif op == "!=":
+            exclusions.append(ver)
+        elif op in (">=", ">", "~="):
+            if floor is None or cmp_releases(ver, floor) > 0:
+                floor = ver
+                floor_excludes_itself = op == ">"
+            elif cmp_releases(ver, floor) == 0 and op == ">":
+                # Same version, stricter operator: intersecting them keeps the exclusion.
+                floor_excludes_itself = True
+        elif op == "<=":
+            if cap is None or cmp_versions(ver, cap) < 0:
+                cap = ver
+        elif op == "<":
+            if ceiling is None or cmp_versions(ver, ceiling) < 0:
+                ceiling = ver
+        if op == "~=":
+            implied = _compatible_release_ceiling(ver)
+            if implied is not None and (ceiling is None or cmp_versions(implied, ceiling) < 0):
+                ceiling = implied
+    return exact, floor, cap, ceiling, exclusions, floor_excludes_itself
+
+
+# Flags that stop pip treating what is installed as satisfying an unbounded requirement, so
+# it resolves from the index instead of leaving the version alone.
+_RESOLVE_ANYWAY_LONG = frozenset({"--upgrade", "--force-reinstall", "--ignore-installed"})
+_RESOLVE_ANYWAY_SHORT = frozenset({"U", "I"})
+
+
+def _forces_resolution(flags: set[str]) -> bool:
+    """True when any flag makes pip re-resolve rather than keep what is installed.
+
+    Short options bundle: pip takes `-Uq` and parse_pip_line keeps it as one token, so the
+    letters are compared rather than the token.
+    """
+    if flags & _RESOLVE_ANYWAY_LONG:
+        return True
+    return any(
+        not flag.startswith("--") and flag.startswith("-") and set(flag[1:]) & _RESOLVE_ANYWAY_SHORT
+        for flag in flags
+    )
+
+
+def _effective_version(
+    install_cell: str,
+    target: str,
+    resolved: str | None,
+    environment: dict[str, str] | None = None,
+) -> tuple[str | None, bool]:
+    """`resolved` walked forward through the cell's own requirements, in invocation order.
+
+    resolved_set() drops every bound but `==` and `<=`, and applies those all at once at the
+    end. Order is what decides between them: a later requirement overrides an earlier one
+    either way. Without this R-INST-004's own `torchcodec>=0.12.0` remedy could not clear the
+    error it offers, and `torchcodec>=0.10,<0.11` could not raise one.
+
+    Each requirement is a window. An install moves the version into that window when it falls
+    outside and leaves it alone when it does not, which is what pip does. Where it moves to is
+    the window's floor, or an inclusive `<=` when the move is downwards. Moving down only
+    names a version when the window holds one minor, which is the granularity the callers
+    compare on: `>=0.10,<0.11` and `~=0.10.0` do, `>=0.10,<0.12` and `>=0.9,!=0.11.*` do not.
+    A `>` floor names the one version pip will not install, so it too only moves the version
+    when a ceiling pins the minor. Anything that cannot say where the install lands clears the
+    version rather than keeping a stale one, and a bound on an absent package leaves it
+    absent, unless the requirement carries a floor, which at least says it is installed and
+    how low it can be.
+
+    Returns `(version, exact)`. An open floor moves the version up but does not name it: pip
+    takes the newest release above it, so `>=0.8` can land anywhere from 0.8 upwards. That
+    comes back inexact, and the caller may only use it where every version at or above it
+    gives the same answer.
+    """
+    current = resolved
+    exact_known = True
+    for inv in unconditional_pip_invocations(install_cell):
+        # One command names a project once as far as pip is concerned: it intersects repeated
+        # arguments into a single requirement, so they have to be one window here too.
+        pins: list[tuple[str, str]] = []
+        named = False
+        replaced_unnamed = False
+        for raw in inv.packages:
+            if not _requirement_applies(raw, environment):
+                continue  # pip skips it, so its bounds never move anything
+            # Before parse_spec, which reads `./torchcodec-0.13.0-...whl` as a project called
+            # `.` and hides the archive behind a name that never matches.
+            archive = _archive_requirement(raw)
+            if archive is not None:
+                if archive[0] == target:
+                    named = True
+                    if archive[1] is None:
+                        replaced_unnamed = True  # installed, by something with no version here
+                    else:
+                        pins.append(("==", archive[1]))
+                continue
+            sp = parse_spec(raw)
+            if sp is None or sp.name != target:
+                continue
+            named = True
+            pins.extend(sp.pins)
+        if not named:
+            continue
+        if inv.action == "uninstall":
+            current = None  # removed; a later install can put it back
+            continue
+        if not pins and not replaced_unnamed and _forces_resolution(inv.flags):
+            # A bare name with any of these takes whatever the index offers: none of them let
+            # the installed version satisfy the requirement, so it is not what the cell ends
+            # on, and nothing here names what does.
+            current, exact_known = None, True
+            continue
+        if replaced_unnamed:
+            current, exact_known = None, True
+            continue
+        exact, floor, cap, ceiling, exclusions, exclusive_floor = _spec_window(pins)
+        # Where an install lands when it has to move, or None when nothing names it.
+        landing = floor if _window_names_one_minor(floor, ceiling, cap) else None
+        if exact is not None:
+            current, exact_known = exact, True
+        elif current is None:
+            # Absent, so the install puts it there. A floor is all that can be said about
+            # where; without one there is nothing to say at all.
+            if floor is not None and not exclusive_floor:
+                current, exact_known = floor, landing is not None
+        elif floor is not None and (
+            cmp_versions(floor, current) > 0
+            # `>V` is not satisfied by V itself, so equality still forces a move.
+            or (exclusive_floor and cmp_versions(floor, current) == 0)
+        ):
+            if cap is not None:
+                current, exact_known = cap, True  # `<=V` allows V, so V is what pip picks
+            elif landing is not None:
+                current, exact_known = landing, True  # the window pins the minor
+            elif exclusive_floor:
+                current, exact_known = None, True  # nothing names where it went
+            else:
+                current, exact_known = floor, False  # at least the floor, possibly newer
+        elif cap is not None and cmp_versions(current, cap) > 0:
+            current, exact_known = cap, True  # `<=V` allows V, so V is what pip picks
+        elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
+            current, exact_known = landing, True
+        # Whatever the requirement leaves in place still has to satisfy its own exclusions,
+        # which covers the version that was already installed and the one just landed on.
+        if current is not None and any(_version_is_excluded(current, ver) for ver in exclusions):
+            # A window that pins one minor still pins it: `>=0.11,<0.12,!=0.11.0` moves off
+            # 0.11.0 and stays in the 0.11 line, and the minor is what the callers compare.
+            # Only an exclusion covering the whole minor takes that away.
+            if landing is not None and not any(
+                _exclusion_covers_minor(landing, ver) for ver in exclusions
+            ):
+                current, exact_known = landing, True
+            else:
+                current, exact_known = None, True
+    return current, exact_known if current is not None else True
 
 
 def rule_inst_003_peft_torchao(
@@ -589,7 +1358,9 @@ def rule_inst_003_peft_torchao(
     peft_v = res.get("peft")
     if not peft_v:
         return findings
-    torchao_explicit = _install_cell_lower_bound(install_cell, "torchao")
+    torchao_explicit = _install_cell_lower_bound(
+        install_cell, "torchao", _marker_environment(colab)
+    )
     torchao_resolved = torchao_explicit or res.get("torchao")
     for floor in PEFT_TORCHAO_FLOOR:
         if cmp_versions(peft_v, floor["trigger_peft"]) >= 0:
@@ -615,15 +1386,46 @@ def rule_inst_004_torchcodec_torch(
 ) -> list[Finding]:
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
-    torch_v = res.get("torch")
-    codec_v = res.get("torchcodec")
+    environment = _marker_environment(colab)
+    torch_v, torch_exact = _effective_version(install_cell, "torch", res.get("torch"), environment)
+    codec_v, codec_exact = _effective_version(
+        install_cell, "torchcodec", res.get("torchcodec"), environment
+    )
     if not torch_v or not codec_v:
         return findings
+    # An inexact version is a floor: everything at or above it is possible. That is enough for
+    # the ABI check, which only asks whether both sides clear a floor of their own.
+    if (
+        cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) >= 0
+        and cmp_versions(codec_v, TORCHCODEC_ABI_STABLE_CODEC) >= 0
+    ):
+        return findings  # ABI-stable pairing, not locked to one torch minor
     t_minor = version_minor(torch_v)
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
-        return findings  # unknown torch minor — don't flag
+        if cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) < 0:
+            return findings  # torch older than the table — don't flag
+        if not codec_exact and cmp_versions(c_minor, TORCHCODEC_ABI_STABLE_CODEC) < 0:
+            return findings  # a newer codec above this floor would be ABI-stable and fine
+        # Past the ABI floor with a pre-0.12 codec: locked to an older torch minor.
+        findings.append(
+            Finding(
+                rule = "R-INST-004",
+                file = file,
+                cell = cell_idx,
+                severity = "error",
+                message = f"torch=={torch_v} (minor {t_minor}) is incompatible with torchcodec=={codec_v} (minor {c_minor}); torchcodec <{TORCHCODEC_ABI_STABLE_CODEC} is built against a single older torch minor",
+                hint = f"pin `torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0` (the ABI-stable line, which targets torch >={TORCHCODEC_ABI_STABLE_TORCH})",
+            )
+        )
+        return findings
+    if not torch_exact:
+        # The row that applies depends on which torch this floor resolves to.
+        return findings
+    if not codec_exact and cmp_versions(c_minor, sorted(allowed)[-1]) <= 0:
+        # Some release at or above the floor is in the row, so nothing is proven.
+        return findings
     if c_minor not in allowed:
         findings.append(
             Finding(
@@ -652,13 +1454,14 @@ def rule_inst_005_transformers_tokenizers(
     if not tf or tok is None:
         return findings
     # Find the transformers pin and check for --no-deps.
+    environment = _marker_environment(colab)
     transformers_line_no_deps = False
-    for inv in iter_pip_invocations(install_cell):
+    for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != "transformers":
                 continue
-            if explicit_pin(sp) is None:
+            if explicit_pin(sp) is None or not _requirement_applies(raw, environment):
                 continue
             if "--no-deps" in inv.flags:
                 transformers_line_no_deps = True

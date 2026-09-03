@@ -2444,7 +2444,10 @@ def patch_torchcodec_audio_decoder():
 
 
 # torch.minor -> compatible torchcodec.minor strings (see notebook_validator.py).
+# torchcodec ships no `Requires-Dist: torch`, so pip cannot catch a mismatch and this table
+# is the only check. Lockstep releases only; 0.12+ is the ABI-stable rule below.
 _TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
+    "2.11": {"0.11"},
     "2.10": {"0.10"},
     "2.9": {"0.8", "0.9"},
     "2.8": {"0.6", "0.7"},
@@ -2452,6 +2455,18 @@ _TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
     "2.6": {"0.2", "0.3"},
     "2.5": {"0.1", "0.2"},
 }
+
+
+# torch.minor -> the pyproject extra that pins the matching torchcodec line.
+_TORCH_TORCHCODEC_EXTRAS: dict[str, str] = {
+    "2.11": "audio-torch211",
+    "2.10": "audio-torch210",
+}
+
+# torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
+# to 2.11), so that half of the matrix is open-ended rather than a finite set of minors.
+_TORCHCODEC_ABI_STABLE_TORCH = (2, 11)
+_TORCHCODEC_ABI_STABLE_CODEC = (0, 12)
 
 
 def _torchcodec_exclusive_upper(pin: str) -> str:
@@ -2471,25 +2486,40 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     except Exception:
         return None
 
-    def _minor(version: str) -> str:
+    def _release(version: str) -> tuple:
         parts = Version(version.split("+", 1)[0]).release
-        return ".".join(str(p) for p in parts[:2])
+        return tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
 
     try:
-        torch_minor = _minor(torch.__version__)
-        codec_minor = _minor(torchcodec_version)
+        torch_release = _release(torch.__version__)
+        codec_release = _release(torchcodec_version)
     except Exception:
         # Non-PEP440 version strings must never break `import unsloth`.
         return None
+    if (
+        torch_release >= _TORCHCODEC_ABI_STABLE_TORCH
+        and codec_release >= _TORCHCODEC_ABI_STABLE_CODEC
+    ):
+        return None  # ABI-stable pairing, not locked to one torch minor
+    torch_minor = ".".join(str(p) for p in torch_release)
+    codec_minor = ".".join(str(p) for p in codec_release)
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
-    if allowed is None or codec_minor in allowed:
+    if allowed is None:
+        # No lockstep row: below the table stays silent; at or past the ABI floor this is a
+        # pre-0.12 codec, since 0.12+ already returned above.
+        if torch_release < _TORCHCODEC_ABI_STABLE_TORCH:
+            return None
+        abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
+        install_hint = f"`pip install 'torchcodec>={abi_pin}.0'`"
+    elif codec_minor in allowed:
         return None
-
-    pin = sorted(allowed)[-1]
-    upper = _torchcodec_exclusive_upper(pin)
-    install_hint = f"`pip install 'torchcodec>={pin},{upper}'`"
-    if torch_minor == "2.10":
-        install_hint += " or `pip install 'unsloth[audio-torch210]'`"
+    else:
+        pin = sorted(allowed)[-1]
+        upper = _torchcodec_exclusive_upper(pin)
+        install_hint = f"`pip install 'torchcodec>={pin},{upper}'`"
+        extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
+        if extra is not None:
+            install_hint += f" or `pip install 'unsloth[{extra}]'`"
     return (
         f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "
         f"install a matching build with {install_hint}."
