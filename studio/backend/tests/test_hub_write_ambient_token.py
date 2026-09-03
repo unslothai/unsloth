@@ -1089,3 +1089,78 @@ def test_a_worker_surviving_cancellation_keeps_its_token_store():
         # Do not leave a live-looking handle for the orchestrator's atexit to shut down.
         o._proc = None
         o._discard_token_store()
+
+
+def test_an_ambient_command_in_a_non_ambient_worker_gets_its_own_store(monkeypatch):
+    """The worker store may hold what the load caller's token persisted; a later UI export
+    must not read it back out through get_token()."""
+    import os
+
+    from core.export import worker
+
+    monkeypatch.setattr(worker, "_WORKER_IS_NON_AMBIENT", True)
+    monkeypatch.setenv("HF_TOKEN_PATH", "/nonexistent/worker-store/token")
+
+    with worker._credential_scope(None):
+        scoped = os.environ["HF_TOKEN_PATH"]
+        assert "unsloth-export-hf-cmd-" in scoped
+        assert not os.path.exists(scoped)
+
+    assert os.environ["HF_TOKEN_PATH"] == "/nonexistent/worker-store/token"
+
+
+def test_an_ambient_command_in_an_ambient_worker_keeps_the_operator_store(monkeypatch):
+    import os
+
+    from core.export import worker
+
+    monkeypatch.setattr(worker, "_WORKER_IS_NON_AMBIENT", False)
+    monkeypatch.setenv("HF_TOKEN_PATH", "/home/op/.cache/huggingface/token")
+
+    with worker._credential_scope(None):
+        assert os.environ["HF_TOKEN_PATH"] == "/home/op/.cache/huggingface/token"
+
+
+def test_cancellation_does_not_delete_a_replacement_workers_store():
+    """cancel_export holds no lock, so a reload can install a new store while it is joining."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    cancelled_store = o._new_token_store()
+
+    class _Proc:
+        pid = 7
+
+        def __init__(self):
+            self._alive = True
+
+        def is_alive(self):
+            return self._alive
+
+        def terminate(self):
+            self._alive = False
+
+        def join(self, timeout = None):
+            # The reload lands while this thread is still joining.
+            o._token_store = replacement
+
+        def kill(self):
+            pass
+
+    replacement = os.path.join(os.path.dirname(cancelled_store), "replacement-store")
+    os.makedirs(replacement, exist_ok = True)
+
+    o._proc = _Proc()
+    try:
+        assert o.cancel_export() is True
+        assert os.path.isdir(replacement), "the live worker's store must survive"
+        assert not os.path.exists(cancelled_store), "the cancelled worker's store must go"
+        assert o._token_store == replacement
+    finally:
+        o._proc = None
+        import shutil
+
+        shutil.rmtree(replacement, ignore_errors = True)
+        o._token_store = None

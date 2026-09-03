@@ -43,6 +43,10 @@ activate_native_tls()
 # Dropped lines are still echoed to the saved fds so the server log keeps them.
 _log_forward_gate = threading.Event()
 
+# Set at startup when this worker was loaded by a caller denied the ambient token. Its store
+# holds no operator credential and must not become a channel between its callers.
+_WORKER_IS_NON_AMBIENT = False
+
 
 def _setup_log_capture(resp_queue: Any) -> None:
     """Redirect fds 1 and 2 through pipes so every line printed by this worker
@@ -284,7 +288,10 @@ def _credential_scope(hf_token: HfTokenArg):
     store = None
     try:
         apply_token_to_child_env(os.environ, hf_token)
-        if is_anonymous(hf_token):
+        # In a non-ambient worker every command gets its own empty store, not just an
+        # anonymous one: the load caller's token may have been persisted into the worker's
+        # store, and a later ambient command would otherwise read it back out.
+        if is_anonymous(hf_token) or _WORKER_IS_NON_AMBIENT:
             # An empty store, so the in-process get_token() finds nothing either.
             store = tempfile.mkdtemp(prefix = "unsloth-export-hf-cmd-")
             token_path = os.path.join(store, "token")
@@ -660,6 +667,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg
 
     if not config.get("allow_ambient", True):
+        global _WORKER_IS_NON_AMBIENT
+        _WORKER_IS_NON_AMBIENT = True
         apply_token_to_child_env(os.environ, False)
         if config.get("hf_token_store"):
             _redirect_hf_token_store(config["hf_token_store"])

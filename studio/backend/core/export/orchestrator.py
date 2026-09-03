@@ -178,6 +178,9 @@ class ExportOrchestrator:
         """
         self._cancel_requested = True
         proc = self._proc
+        # Captured with proc: this runs without the lock, so a reload can install a new
+        # worker and a new store while we are in join(), and that one is not ours to delete.
+        store = getattr(self, "_token_store", None)
         if proc is None or not proc.is_alive():
             return False
         logger.info(
@@ -203,7 +206,7 @@ class ExportOrchestrator:
         # pulling the directory out from under it would both break its Hub calls and let it
         # recreate an untracked one. It is discarded by the next shutdown instead.
         if not proc.is_alive():
-            self._discard_token_store()
+            self._discard_token_store(only = store)
         else:
             logger.warning(
                 "Export subprocess survived cancellation; keeping its token store until it exits"
@@ -334,11 +337,19 @@ class ExportOrchestrator:
         self._token_store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
         return self._token_store
 
-    def _discard_token_store(self) -> None:
-        """Remove the worker's private token directory, credential and all."""
+    def _discard_token_store(self, only: Optional[str] = None) -> None:
+        """Remove the worker's private token directory, credential and all.
+
+        *only* pins the removal to one store, for a caller holding no lock: if a reload has
+        already installed a replacement, that one belongs to the live worker, not to us.
+        """
         import shutil
 
         store = getattr(self, "_token_store", None)
+        if only is not None and store != only:
+            if only:
+                shutil.rmtree(only, ignore_errors = True)
+            return
         if store:
             shutil.rmtree(store, ignore_errors = True)
         self._token_store = None
