@@ -410,18 +410,28 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
 
 
 def _triton_cache_defaults(root: Path) -> dict[str, str]:
-    """Triton's directories, without stepping on a TRITON_HOME the user set.
+    """Triton's regenerable directories, named one at a time.
 
     TRITON_HOME is the PARENT Triton joins ".triton" under, not that directory
-    itself, and is the one lever covering the cache, dump and override dirs at
-    once (triton-lang/triton#4265). TRITON_CACHE_DIR outranks that derivation, so
-    it is only ours to fill when TRITON_HOME is ours too.
+    itself, and it is the one lever covering the cache, dump AND override dirs
+    at once (triton-lang/triton#4265). That last one is why we do not pull it:
+    ~/.triton/override holds hand-written kernels, which are user files rather
+    than a cache, and moving their parent makes a TRITON_KERNEL_OVERRIDE=1 run
+    silently fall back to the compiler's own output. The dedicated variables
+    outrank the derivation (triton/knobs.py cache_knobs), so setting those moves
+    what is regenerable and leaves the overrides where Triton looks for them.
+    TRITON_DUMP_DIR landed in Triton 3.2 alongside TRITON_HOME; older releases
+    read TRITON_CACHE_DIR only and had no way to move dumps at all.
     """
     if (os.environ.get("TRITON_HOME") or "").strip():
+        # A user who moved the whole tree meant the cache with it, and
+        # TRITON_CACHE_DIR would outrank that.
         return {}
     return {
-        "TRITON_HOME": str(root),
         "TRITON_CACHE_DIR": str(root / "triton"),
+        # A sibling, not a child of the cache: dumps are asked for by hand and
+        # should outlive a cache wipe.
+        "TRITON_DUMP_DIR": str(root / "triton-dump"),
     }
 
 

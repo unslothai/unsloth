@@ -24,8 +24,8 @@ _ALWAYS_PINNED = (
     "VLLM_CACHE_ROOT",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
-    "TRITON_HOME",
     "TRITON_CACHE_DIR",
+    "TRITON_DUMP_DIR",
     "TORCH_EXTENSIONS_DIR",
     "CUDA_CACHE_PATH",
     "MPLCONFIGDIR",
@@ -45,6 +45,9 @@ def _clean_env(monkeypatch, tmp_path):
     for key in _ALWAYS_PINNED + _PORTABLE_ONLY + _HF_ENV:
         monkeypatch.delenv(key, raising = False)
     for key in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "STUDIO_HOME"):
+        monkeypatch.delenv(key, raising = False)
+    # Not pinned, but both change what Triton resolves under the test home.
+    for key in ("TRITON_HOME", "TRITON_OVERRIDE_DIR"):
         monkeypatch.delenv(key, raising = False)
     # _default_cache_home reads this before ~/.cache, and CI runners set it.
     monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
@@ -234,6 +237,72 @@ def test_an_explicit_triton_home_keeps_its_own_cache_dir(monkeypatch, tmp_path):
 
     assert os.environ["TRITON_HOME"] == str(chosen)
     assert "TRITON_CACHE_DIR" not in os.environ
+
+
+def test_triton_keeps_reading_the_default_override_dir(tmp_path):
+    # Kernel overrides are user files. TRITON_HOME would move their directory
+    # along with the cache, so a TRITON_KERNEL_OVERRIDE=1 run would quietly stop
+    # finding them and compile something else instead.
+    pytest.importorskip("triton")
+    override = tmp_path / "home" / ".triton" / "override" / "0123456789abcdef"
+    override.mkdir(parents = True)
+    (override / "kernel.ttir").write_text("// hand-tuned\n", encoding = "utf-8")
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    # A fresh interpreter: knobs read the environment, but torch may have
+    # imported Triton and pinned a cache dir already.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json; from triton import knobs;"
+            "print(json.dumps({'cache': knobs.cache.dir,"
+            "'dump': knobs.cache.dump_dir,"
+            "'override': knobs.cache.override_dir}))",
+        ],
+        env = dict(os.environ),
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    result = json.loads(probe.stdout.strip().splitlines()[-1])
+
+    assert Path(result["override"]) == override.parent
+    assert (Path(result["override"]) / override.name / "kernel.ttir").is_file()
+    assert result["cache"] == str(tmp_path / "studio" / "cache" / "triton")
+    assert result["dump"] == str(tmp_path / "studio" / "cache" / "triton-dump")
+
+
+def test_the_macos_matplotlib_config_dir_matches_matplotlibs_own(monkeypatch, tmp_path):
+    # macOS is matplotlib's "other platforms" branch, which is ~/.matplotlib and
+    # not ~/Library/Application Support. Getting that wrong either strands a real
+    # matplotlibrc or gives up containment for a directory nobody uses.
+    pytest.importorskip("matplotlib")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    sr = _load_storage_roots()
+
+    ours = sr._matplotlib_config_dir()
+
+    # sys.platform is read inside _get_config_or_cache_dir, so a fresh
+    # interpreter can be asked what it would do on a Mac.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, matplotlib; sys.platform = 'darwin';"
+            "print(matplotlib._get_config_or_cache_dir(matplotlib._get_xdg_config_dir))",
+        ],
+        env = {**os.environ, "HOME": str(tmp_path / "home"), "MPLCONFIGDIR": ""},
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    theirs = Path(probe.stdout.strip().splitlines()[-1])
+
+    assert ours is not None
+    assert ours.resolve() == theirs.resolve()
 
 
 def _matplotlib_config_dir(home: Path) -> Path:
