@@ -348,6 +348,25 @@ def _validate_runtime_paths(
         find_command = [find, "-P", *scan_roots]
         if not include_system_roots:
             find_command.append("-xdev" if sys.platform == "linux" else "-x")
+        else:
+            # Paths the sandbox UID cannot traverse cannot expose their contents.
+            find_command.extend(
+                [
+                    "(",
+                    "-type",
+                    "d",
+                    "(",
+                    "!",
+                    "-readable",
+                    "-o",
+                    "!",
+                    "-executable",
+                    ")",
+                    ")",
+                    "-prune",
+                    "-o",
+                ]
+            )
         find_command.extend(
             [
                 "(",
@@ -553,7 +572,9 @@ class LinuxBubblewrapBackend:
                 False,
                 f"Bubblewrap is not a root-controlled executable: {candidate}",
             )
-        system_roots = tuple(root for root in _LINUX_SYSTEM_ROOTS if os.path.exists(root))
+        system_roots = tuple(
+            path for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES) if os.path.exists(path)
+        )
         try:
             _validate_runtime_paths(
                 system_roots,
