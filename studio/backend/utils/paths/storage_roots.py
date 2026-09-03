@@ -39,6 +39,14 @@ STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
 # _in_root_master_root.
 MASTER_ROOT_RECORD = ".unsloth-master-root"
 
+# The whitespace install.sh's _trim_ws strips from a root, and nothing else.
+# str.strip() with no argument also eats U+00A0 and the rest of the Unicode
+# spaces, which sed's [[:space:]] leaves alone: a root ending in one passes the
+# installer's byte-level refusal and would then be read back here as a DIFFERENT
+# directory, which is the failure that refusal exists to prevent. The two sides
+# of the record have to agree on what surrounding whitespace is.
+_RECORD_TRIM = " \t\n\r\v\f"
+
 
 def _inherits_parent_portable_marker(root: Path) -> bool:
     """Whether a marker in ``root.parent`` names the install rooted at *root*.
@@ -185,13 +193,29 @@ def _in_root_master_root(root: Path) -> Path | None:
     if one exists there, and otherwise a silent fall back to ~/.unsloth. The same
     check catches a first line longer than the cap, which PATH_MAX makes
     unreachable for a real path and which would truncate in the same way.
+
+    Read as BYTES and decoded the way the filesystem spells names. install.sh
+    writes the path back out verbatim (`printf '%s\\n' "$UNSLOTH_ROOT"`), and a
+    POSIX path is a byte string: a root holding a byte that is not valid UTF-8,
+    which every POSIX filesystem permits and a directory copied off a latin-1 or
+    Shift-JIS volume really carries, came back through errors="replace" as U+FFFD
+    and named a directory that does not exist. That is not a cosmetic loss --
+    is_dir() then fails and the install falls all the way back to ~/.unsloth,
+    losing containment exactly where this record is the ONLY signal left, on the
+    group-writable master root whose parent marker _parent_marker_is_trustworthy
+    deliberately refuses. os.fsdecode round-trips those bytes through
+    surrogateescape, so the Path built below stats the directory that was really
+    installed into.
     """
     try:
-        with (root / MASTER_ROOT_RECORD).open(encoding = "utf-8", errors = "replace") as handle:
+        with (root / MASTER_ROOT_RECORD).open("rb") as handle:
             first = handle.readline(4096)
             if handle.readline(1):
                 return None
-        recorded = first.strip()
+        # Windows decodes with surrogatepass, which rejects a stray byte rather
+        # than smuggling it; a UnicodeDecodeError is a ValueError, so a record no
+        # install.ps1 wrote declines here instead of raising.
+        recorded = os.fsdecode(first).strip(_RECORD_TRIM)
     except (OSError, ValueError):
         return None
     if not recorded or not os.path.isabs(recorded):
@@ -599,6 +623,23 @@ def project_workspaces_root() -> Path:
 
 
 def tmp_root() -> Path:
+    """Scratch that does not outlive the process, in the system temp dir.
+
+    The one documented place a portable install still writes outside its root,
+    alongside the XDG_RUNTIME_DIR socket, and it stays that way deliberately.
+    Everything routed here is either deleted in a finally block -- the audio
+    decodes in routes/inference.py, the per-example OuteTTS wavs in
+    core/training/trainer.py -- or is a child process's own TMPDIR, which
+    local_callable_validators hands oxlint. A portable root is routinely a slow
+    or small removable volume, so churning per-example scratch onto it costs
+    throughput and space for no containment gain, and nothing reaps this
+    directory, so a run killed mid-write would leak into the root rather than
+    into a temp dir the OS clears.
+
+    That last point is the rule for anything added here: only files whose loss on
+    reboot is a no-op belong under this root. Anything PERSISTENT must hang off
+    studio_root() instead, which is what unstructured_seed_cache_root does.
+    """
     return Path(tempfile.gettempdir()) / "unsloth-studio"
 
 
@@ -607,6 +648,26 @@ def seed_uploads_root() -> Path:
 
 
 def unstructured_seed_cache_root() -> Path:
+    """Chunked parquet for a Data Designer unstructured seed.
+
+    Not scratch, whatever its parent used to be. Each file holds the FULL text of
+    a .txt/.md the user uploaded, split into a chunk_text column, and it is what
+    UnstructuredSeedReader.get_dataset_uri() hands duckdb for the entire
+    generation run rather than a preview aid. Nothing deletes it: not the
+    remove_unstructured_file route, which unlinks the upload and leaves this copy
+    behind, and not any reaper we run.
+
+    So in portable mode it moves under the root, beside the uploads it is derived
+    from. Under the system temp dir a portable run left the user's text sitting
+    outside the volume after `rm -rf <root>` -- the one promise this layout makes
+    -- and shared one path with every other user and install on the machine.
+    Stranding is bounded: the name is a sha256 of the source path, its size, its
+    mtime and the chunk settings, so an existing cache is not data but a saved
+    re-chunk, and the copies left in the old location are the leak being closed.
+    Non-portable installs keep the temp dir they have always used.
+    """
+    if portable_mode():
+        return cache_root() / "unstructured-seed-cache"
     return tmp_root() / "unstructured-seed-cache"
 
 

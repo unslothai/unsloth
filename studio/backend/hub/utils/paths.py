@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -23,14 +22,18 @@ from utils.paths.path_utils import wsl_automount_root
 # and only knew the env overrides and a share/studio.conf-or-bin/unsloth venv lookup, so a
 # nested portable backend launched from its own venv -- which keeps share/ and bin/ one
 # level up -- failed that lookup and sent Hub state to ~/.unsloth/studio while the rest of
-# the backend used the portable root. The helpers below stay wrappers rather than direct
-# re-exports so the module attribute remains the seam callers and tests already patch.
+# the backend used the portable root. tmp_root is imported for the third time the same
+# thing nearly happened: its copy here was a second literal spelling of the scratch dir,
+# so any decision about what may live in it had to be made twice to hold. The helpers
+# below stay wrappers rather than direct re-exports so the module attribute remains the
+# seam callers and tests already patch.
 from utils.paths.storage_roots import (
     lmstudio_model_dirs,
     ollama_model_dirs,
     studio_root,
     well_known_model_dirs,
 )
+from utils.paths.storage_roots import tmp_root as _storage_tmp_root
 
 logger = get_logger(__name__)
 
@@ -67,7 +70,7 @@ def exports_root() -> Path:
 
 
 def tmp_root() -> Path:
-    return Path(tempfile.gettempdir()) / "unsloth-studio"
+    return _storage_tmp_root()
 
 
 def ensure_dir(path: Path) -> Path:
