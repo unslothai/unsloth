@@ -185,14 +185,11 @@ def _reraise_device_type_error_with_gpu_hint(exception):
             f"Note: CUDA_VISIBLE_DEVICES is set to {mask!r}. If that mask selects no "
             f"installed GPU, it alone explains this and no torch reinstall will help.\n"
         )
-    # Diagnosis here, remedy in the install docs. Every copy-pasteable repair command tried
-    # was wrong a different way: it left torchvision, torchaudio and xformers built for the
-    # old torch; `--upgrade` crossed unsloth's supported ceiling; a hardcoded cuXXX and uv's
-    # `--torch-backend=auto` both misroute pre-Turing GPUs, since auto reads only the driver
-    # and not compute capability; `uv pip` targets the CWD's venv, not this interpreter; an
-    # interpolated sys.executable needs shell-specific quoting; and `unsloth` carries no
-    # torch dependency at all, so reinstalling it does not touch torch. install.sh and
-    # install.ps1 exist to compute that matrix.
+    # Diagnosis here, remedy in the install docs. Every copy-pasteable repair line tried broke
+    # somewhere: stale companion wheels and xformers, `--upgrade` past unsloth's ceiling,
+    # pre-Turing GPUs misrouted by both a fixed cuXXX and uv's driver-only
+    # `--torch-backend=auto`, `uv pip` targeting the CWD venv, sys.executable needing shell
+    # quoting, and `unsloth` carrying no torch dependency to reinstall.
     raise NotImplementedError(
         f"Unsloth: an NVIDIA GPU ({gpu_name}) is present -- nvidia-smi sees it -- but this "
         f"PyTorch build cannot use it (torch.cuda.is_available() is False).\n"

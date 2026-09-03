@@ -89,10 +89,7 @@ def test_generic_failure_gets_the_reinstall_hint(helper, monkeypatch, message):
 
 
 def test_hint_diagnoses_and_links_rather_than_printing_a_command(helper, monkeypatch):
-    """No copy-pasteable repair line survives review: it goes stale on the companion wheels
-    and xformers, `--upgrade` crosses unsloth's ceiling, a fixed cuXXX and uv's driver-only
-    `--torch-backend=auto` misroute pre-Turing GPUs, `uv pip` targets the CWD's venv, and
-    `unsloth` has no torch dependency to reinstall. The message owns the diagnosis only."""
+    """The message owns the diagnosis; the remedy is a link, for the reasons above."""
     _smi(monkeypatch)
 
     with pytest.raises(NotImplementedError) as excinfo:
