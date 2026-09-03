@@ -211,8 +211,11 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
         os.chmod(nb_dir, 0o700)
 
     head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd = remote,
-        capture_output = True, text = True, check = True,
+        ["git", "rev-parse", "HEAD"],
+        cwd = remote,
+        capture_output = True,
+        text = True,
+        check = True,
     ).stdout.strip()
     synced = dest / ".unsloth_sync_commit"
     marker = synced.read_text(encoding = "utf-8").strip() if synced.exists() else ""
