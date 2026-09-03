@@ -271,9 +271,7 @@ def _drive_mkdir_keep_owner(tmp_path: Path, target: Path) -> list:
     log = tmp_path / "chown.log"
     shim = bin_dir / "chown"
     shim.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf "%s\\n" "$*" >> "{log}"\n'
-        "exit 0\n",
+        "#!/usr/bin/env bash\n" f'printf "%s\\n" "$*" >> "{log}"\n' "exit 0\n",
         encoding = "utf-8",
     )
     shim.chmod(0o755)
@@ -324,14 +322,10 @@ def test_every_directory_creating_site_routes_through_the_helper():
     publish. Fixing one and leaving the others is how this class of bug keeps
     coming back, so none of them may call bare mkdir on a $DEST path."""
     source = SYNC_SH.read_text(encoding = "utf-8")
-    body = source[source.index("mkdir_keep_owner() {"):]
-    body = body[body.index("\n}\n"):]          # everything after the helper itself
-    stray = [
-        line.strip()
-        for line in body.splitlines()
-        if "mkdir -p" in line and "$DEST/" in line
-    ]
+    body = source[source.index("mkdir_keep_owner() {") :]
+    body = body[body.index("\n}\n") :]  # everything after the helper itself
+    stray = [line.strip() for line in body.splitlines() if "mkdir -p" in line and "$DEST/" in line]
     assert not stray, f"these still create a directory as root inside $DEST: {stray}"
-    assert body.count("mkdir_keep_owner ") == 3, (
-        "expected populate, restore and publish to route through the helper"
-    )
+    assert (
+        body.count("mkdir_keep_owner ") == 3
+    ), "expected populate, restore and publish to route through the helper"
