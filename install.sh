@@ -747,13 +747,44 @@ _resolve_studio_destinations() {
             # passes. share/studio.conf and bin/unsloth sit at <root> in BOTH layouts, so a
             # root that is already NESTED is excluded first -- otherwise a stray
             # <root>/unsloth_studio beside a real <root>/studio install would relocate it.
+            #
+            # And the two sentinels that live OUTSIDE the venv have to NAME it, not merely
+            # exist. `unsloth` is an ordinary word: a reused --root can hold somebody's own
+            # `bin/unsloth` helper script next to their own `unsloth_studio` virtualenv, and
+            # an existence-only test reads that pair as one of our flat installs. The guard
+            # below accepted the very same unverified file, so the two agreed on the wrong
+            # answer and the install moved the user's environment aside and then deleted the
+            # rollback copy on success. Every writer already records the venv in the sentinel
+            # it writes -- create_studio_shortcuts emits UNSLOTH_EXE='<venv>/bin/unsloth' into
+            # share/studio.conf, the portable block writes `exec '<venv>/bin/unsloth' "$@"` as
+            # the last line of its generated wrapper, and a non-portable env-mode install
+            # symlinks bin/unsloth straight at it -- so all three are matched against THIS
+            # candidate venv. The escaping is the writers' own (`'` -> `'\''`), and the paths
+            # compare literally because both sides come from the same `pwd -P` root. The
+            # in-venv marker needs no such match: it is inside the venv it vouches for.
+            # All three are written by a PREVIOUS run (the marker right after `uv venv`, the
+            # other two after setup.sh returns), which is what makes them usable here, before
+            # this run has written anything.
             # Inline, not a helper: several tests lift this function out on its own, where a
             # helper defined elsewhere would go silently inert.
             _rsd_flat_venv="$_resolved_root/unsloth_studio"
-            if [ -d "$_rsd_flat_venv" ] && [ ! -d "$_resolved_root/studio/unsloth_studio" ] \
-                && { [ -f "$_rsd_flat_venv/.unsloth-studio-owned" ] \
-                     || [ -f "$_resolved_root/share/studio.conf" ] \
-                     || [ -f "$_resolved_root/bin/unsloth" ]; }; then
+            _rsd_flat_owned=false
+            if [ -d "$_rsd_flat_venv" ] && [ ! -d "$_resolved_root/studio/unsloth_studio" ]; then
+                _rsd_flat_exe=$(printf '%s' "$_rsd_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+                if [ -f "$_rsd_flat_venv/.unsloth-studio-owned" ]; then
+                    _rsd_flat_owned=true
+                elif grep -qxF "UNSLOTH_EXE='$_rsd_flat_exe'" \
+                        "$_resolved_root/share/studio.conf" 2>/dev/null; then
+                    _rsd_flat_owned=true
+                elif [ -L "$_resolved_root/bin/unsloth" ] \
+                     && [ "$_resolved_root/bin/unsloth" -ef "$_rsd_flat_venv/bin/unsloth" ] 2>/dev/null; then
+                    _rsd_flat_owned=true
+                elif grep -qxF "exec '$_rsd_flat_exe' \"\$@\"" \
+                        "$_resolved_root/bin/unsloth" 2>/dev/null; then
+                    _rsd_flat_owned=true
+                fi
+            fi
+            if [ "$_rsd_flat_owned" = true ]; then
                 _PORTABLE_FLAT=true
             fi
             if [ "$_PORTABLE_FLAT" = true ]; then
@@ -3694,16 +3725,45 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
     # existing $STUDIO_HOME/unsloth_studio that lacks Unsloth sentinels.
     # Accept the in-VENV ownership marker so partial-install retries are
-    # not blocked. Sentinels must be regular files: -f follows symlinks
-    # to files (the legitimate ln -s shim shape) but rejects directories
-    # and broken/dir-targeted symlinks.
+    # not blocked.
+    #
+    # The two sentinels OUTSIDE the venv must NAME this venv, not merely exist at a
+    # path whose basename happens to be `unsloth`: a user-chosen workspace that holds
+    # their own bin/unsloth script and their own unsloth_studio virtualenv is exactly
+    # the shape this guard is here to refuse, and existence alone let it through and
+    # then moved that environment aside for good. Same four tests, same order, as the
+    # flat-layout selector in _resolve_studio_destinations, against the same paths
+    # whenever that selector chose flat (there STUDIO_HOME is the root) -- the two are
+    # a pair, and the one thing worse than a weak check is two checks that disagree
+    # about what they accept. Each shape is what its writer actually produces:
+    # UNSLOTH_EXE='<venv>/bin/unsloth' in share/studio.conf, an ln -s at bin/unsloth in
+    # non-portable env-mode, and `exec '<venv>/bin/unsloth' "$@"` as the last line of
+    # the generated --portable wrapper. All three predate this run: the marker is
+    # written right after `uv venv`, the other two once setup.sh has returned.
+    # The opener stays a two-line `if` with the marker on it: `    if [ "$_STUDIO_HOME_REDIRECT"
+    # = "env" ]; then` on one line is NOT unique in this file (create_studio_shortcuts has two
+    # of them, earlier), and the test above lifts this block out by that first line, so a
+    # one-line opener silently extracts an unrelated block from that function instead.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
-       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
-       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
-       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
-        echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
-        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
-        exit 1
+       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ]; then
+        _venv_guard_owned=false
+        # The escape the writers use, rebuilt here so the recorded line can be matched back.
+        _venv_guard_exe=$(printf '%s' "$VENV_DIR/bin/unsloth" | sed "s/'/'\\\\''/g")
+        if grep -qxF "UNSLOTH_EXE='$_venv_guard_exe'" \
+                "$STUDIO_HOME/share/studio.conf" 2>/dev/null; then
+            _venv_guard_owned=true
+        elif [ -L "$STUDIO_HOME/bin/unsloth" ] \
+             && [ "$STUDIO_HOME/bin/unsloth" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+            _venv_guard_owned=true
+        elif grep -qxF "exec '$_venv_guard_exe' \"\$@\"" \
+                "$STUDIO_HOME/bin/unsloth" 2>/dev/null; then
+            _venv_guard_owned=true
+        fi
+        if [ "$_venv_guard_owned" != true ]; then
+            echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
+            echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
+            exit 1
+        fi
     fi
     # Record the existing venv's torch BEFORE the replacement moves it aside: a re-run
     # rebuilds the venv for clean state, but must keep the torch release the user
