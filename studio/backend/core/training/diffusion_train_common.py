@@ -954,6 +954,8 @@ class DiffusionLoraConfig:
     # TF32 matmuls + cudnn autotuning for the run. Near-lossless; disable for strict bit-reproducibility A/Bs.
     enable_tf32: bool = True
     # DiT base transformer precision: "nf4" (bitsandbytes QLoRA, the memory floor and default), "bf16" (dense, fastest
+    # eager), "int8" (torchao weight-only), "fp8" (Ada/Hopper/Blackwell + compile) or "auto". Non-nf4 needs a dense
+    # base.
     base_precision: str = "nf4"
     # None resolves per family in normalized(); a number applies s*u/(1+(s-1)*u), and "auto" without
     # dynamic shifting falls back to identity.
