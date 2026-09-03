@@ -243,12 +243,20 @@ class TestGetGpuMemoryInfo:
         available_gb,
         recommended_gb,
         used_gb = 1.2,
+        legacy_mlx = False,
     ):
-        fake_core = types.ModuleType("mlx.core")
-        fake_core.device_info = lambda: {
+        props = {
             "device_name": "Apple M2",
             "max_recommended_working_set_size": int(recommended_gb * (1024**3)),
         }
+        fake_core = types.ModuleType("mlx.core")
+        if legacy_mlx:
+            # mlx below 0.30 only has mx.metal.device_info().
+            fake_metal = types.ModuleType("mlx.core.metal")
+            fake_metal.device_info = lambda: props
+            fake_core.metal = fake_metal
+        else:
+            fake_core.device_info = lambda: props
         fake_pkg = types.ModuleType("mlx")
         fake_pkg.core = fake_core
 
@@ -295,6 +303,19 @@ class TestGetGpuMemoryInfo:
 
         assert abs(busy["free_gb"] - idle["free_gb"]) < 0.01
         assert abs(busy["free_gb"] - 6.0) < 0.01
+
+    def test_mlx_free_reads_the_working_set_on_pre_0_30_mlx(self):
+        """The stack gate accepts mlx >= 0.22.0, and mlx below 0.30 spells this
+        mx.metal.device_info(). Reading only mx.device_info() left the cap
+        unapplied on an M1 running mlx 0.29.3, which the gate calls usable."""
+        legacy = self._mlx_memory_info(
+            available_gb = 15, recommended_gb = 11, legacy_mlx = True
+        )
+        current = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
+
+        assert abs(legacy["free_gb"] - 11.0) < 0.01
+        assert abs(legacy["free_gb"] - current["free_gb"]) < 0.01
+        assert legacy["device_name"] == current["device_name"]
 
     def test_mlx_free_survives_a_missing_working_set_size(self):
         result = self._mlx_memory_info(available_gb = 6, recommended_gb = 0)

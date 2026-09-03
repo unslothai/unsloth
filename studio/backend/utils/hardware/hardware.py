@@ -2396,6 +2396,26 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
 
 
+def _mlx_device_info(mx: Any) -> Dict[str, Any]:
+    """Metal device properties across the MLX rename.
+
+    ``mx.device_info()`` is the current spelling; mlx below 0.30 has only
+    ``mx.metal.device_info()``, and the stack gate accepts mlx >= 0.22.0
+    (utils.mlx_repair._MLX_MIN_VERSIONS), so reading just the new name leaves the
+    working set cap silently unapplied on a stack Studio considers usable.
+    """
+    for probe in (
+        getattr(mx, "device_info", None),
+        getattr(getattr(mx, "metal", None), "device_info", None),
+    ):
+        if callable(probe):
+            try:
+                return probe() or {}
+            except Exception:
+                continue
+    return {}
+
+
 def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
     """What is available right now, bounded by the Metal working set.
 
@@ -2675,13 +2695,9 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             agx = _read_apple_gpu_stats()
             allocated = agx.get("vram_used_bytes", 0) if agx else 0
 
-            try:
-                info = mx.device_info()
-                # prefer machine(); processor() can return "i386" on native arm64.
-                gpu_name = info.get("device_name") or platform.machine() or "arm64"
-            except Exception:
-                info = {}
-                gpu_name = platform.machine() or "arm64"
+            info = _mlx_device_info(mx)
+            # prefer machine(); processor() can return "i386" on native arm64.
+            gpu_name = info.get("device_name") or platform.machine() or "arm64"
             free = _apple_unified_free_bytes(getattr(memory, "available", 0), info)
 
             return {
