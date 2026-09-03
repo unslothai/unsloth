@@ -35,17 +35,16 @@ from core.inference.tool_loop_controller import (
 )
 from core.tool_healing import parse_tool_calls_from_text
 
-# Only the formats this healer's parser can promote -- narrower than the loops'
-# broader TOOL_XML_SIGNALS. A loop-only marker (Llama <|python_tag|>, bare
-# [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
+# narrower than the loops' TOOL_XML_SIGNALS
+# Only the formats this healer's parser can promote -- narrower than the loops' broader TOOL_XML_SIGNALS. A loop-only
+# marker (Llama <|python_tag|>, bare [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
 # healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
 _HEAL_SIGNALS = (
     "<tool_call>",
     "<|tool_call>",
     "<function=",
     "[TOOL_CALLS]",
-    # TML Inkling native call marker (leaks as text when the server-side
-    # parser misses a narration-then-call turn).
+    # TML Inkling native call marker (leaks as text when the server-side parser misses a narration-then-call turn).
     "<|content_invoke_tool_json|>",
 )
 
@@ -56,8 +55,8 @@ def _has_heal_signal(text: str) -> bool:
 
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
-# Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process
-# default with UNSLOTH_TOOL_CALL_NUDGE=1 (e.g. an `unsloth run` operator).
+# Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process default with UNSLOTH_TOOL_CALL_NUDGE=1 (e.g.
+# an `unsloth run` operator).
 _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
@@ -66,8 +65,9 @@ def nudge_enabled(request_flag: Optional[bool]) -> bool:
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
-# A suspected-but-unclosed tool block larger than this is declared a false
-# alarm and flushed, bounding memory on a model rambling XML-lookalike text.
+# a suspected-but-unclosed block larger than this is a false alarm, bounding memory on XML-lookalike prose
+# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a model
+# rambling XML-lookalike text.
 _MAX_HOLD_CHARS = 64 * 1024
 
 
@@ -329,14 +329,16 @@ class StreamToolCallHealer:
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
-        # Markup span each promoted call was cut from, keyed by its call id.
-        # Promotion is destructive -- the span never reaches the client -- so a
-        # caller that ends up DISCARDING a promoted call (a turn truncated at
-        # finish_reason "length" cannot be executed) has no other way to give
-        # the model's own words back. Bounded by _MAX_HOLD_CHARS per span.
+        # promotion is destructive, so a caller DISCARDING a promoted call (a turn truncated at finish_reason "length")
+        # has no other way to give the model's words back
+        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span never
+        # reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at finish_reason
+        # "length" cannot be executed) has no other way to give the model's own words back. Bounded by _MAX_HOLD_CHARS
+        # per span.
         self._promoted_spans: dict[str, str] = {}
-        # Structured delta.tool_calls seen upstream: grammar mode already
-        # worked, so healing goes dormant and text relays verbatim.
+        # structured delta.tool_calls upstream means grammar mode worked, so healing goes dormant
+        # Structured delta.tool_calls seen upstream: grammar mode already worked, so healing goes dormant and text
+        # relays verbatim.
         self.dormant = False
 
     @property
@@ -380,10 +382,6 @@ class StreamToolCallHealer:
                         events.append(("text", emit))
                     self._buffer = self._buffer[len(self._buffer) - keep :]
                     return events
-            # HOLD: drain the first contiguous run per pass so events keep document
-            # order (a later declared call must not overtake an earlier undeclared one
-            # flushing as text). A run is one markup call OR a whole Mistral [TOOL_CALLS]
-            # array of contiguous spans, so later calls in it are not stranded as text.
             parsed, spans = parse_tool_calls_from_text(
                 self._buffer,
                 id_offset = self._id_offset,
@@ -407,8 +405,8 @@ class StreamToolCallHealer:
             pos = 0
             run_end = spans[0][1]
             for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
-                # Stop at the first gap or incomplete trailing block: leave it for the
-                # next pass to re-hold and stream incrementally, not flush as text early.
+                # Stop at the first gap or incomplete trailing block: leave it for the next pass to re-hold and stream
+                # incrementally, not flush as text early.
                 if order and start != run_end:
                     break
                 promoted = _promote(
@@ -524,10 +522,9 @@ def response_has_promotable_calls(
         return False
     tool_calls = message.get("tool_calls")
     if tool_calls:
-        # ALL structured calls must be declared: the caller forwards the whole
-        # list (and a parallel cap could keep only the FIRST one), so a mixed
-        # response with a single hallucinated name could still hand the client
-        # an undeclared tool.
+        # ALL structured calls must be declared: the caller forwards the whole list (and a parallel cap could keep only
+        # the FIRST one), so a mixed response with a single hallucinated name could still hand the client an undeclared
+        # tool.
         return all(
             isinstance(tc, dict)
             and isinstance(tc.get("function"), dict)

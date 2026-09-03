@@ -55,6 +55,13 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    find: {
+      label: "पेज में खोजें",
+      previous: "पिछला मिलान",
+      next: "अगला मिलान",
+      close: "खोज बंद करें",
+      truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -225,6 +232,10 @@ export const hi = {
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
       actions: {
+        findInPage: {
+          label: "पेज में खोजें",
+          description: "इस पेज के टेक्स्ट में खोजें",
+        },
         openSettings: {
           label: "सेटिंग्स खोलें",
           description: "सेटिंग्स संवाद खोलें",
@@ -484,6 +495,13 @@ export const hi = {
           "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttDeviceLabel: "इसमें लोड करें",
+        sttDeviceAuto: "उपलब्ध होने पर GPU",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU उपलब्ध हो तो उसका उपयोग करें, अन्यथा CPU का।",
+        sttDeviceCpuDescription:
+          "मॉडल को सिस्टम RAM में रखें। ट्रांसक्रिप्शन धीमा होगा, पर GPU मेमोरी नहीं लगेगी।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
         sttModelSearching: "Hugging Face पर खोजा जा रहा है…",
         sttModelValidating: "Whisper संगतता जाँची जा रही है…",
@@ -834,6 +852,16 @@ export const hi = {
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
       },
+      repairInstall: {
+        label: "इंस्टॉलेशन ठीक करें",
+        description:
+          "प्रबंधित परिवेश पर इंस्टॉलर को फिर से चलाता है। यदि GPU का पता नहीं चल रहा है या ऐप शुरू नहीं हो रहा है तो इसका उपयोग करें।",
+        action: "इंस्टॉल ठीक करें",
+        confirmTitle: "क्या यह इंस्टॉलेशन ठीक करना है?",
+        confirmDescription:
+          "सर्वर रोकता है और इंस्टॉलर फिर से चलाता है, जो इस मशीन के GPU के लिए PyTorch को दोबारा इंस्टॉल करता है। चैट और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
+        confirmAction: "अभी ठीक करें",
+      },
       resetPreferences: {
         sectionTitle: "खतरनाक क्षेत्र",
         label: "सभी स्थानीय प्राथमिकताएं रीसेट करें",
@@ -1089,6 +1117,8 @@ export const hi = {
         currentLoad: "वर्तमान लोड",
         free: "{value} खाली",
         noGpu: "कोई दृश्यमान GPU नहीं",
+        gpuUnusable: "GPU अनुपयोगी",
+        gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
       },
       gpu: {
         title: "GPU डिवाइस",
@@ -1097,6 +1127,12 @@ export const hi = {
         detecting: "GPU खोजे जा रहे हैं...",
         unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
         noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
+        noUsableGpu: "इस मशीन का कोई भी GPU PyTorch के लिए उपयोग योग्य नहीं है।",
+        mismatchCpuBuild:
+          "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
+        mismatchUnavailable:
+          "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1217,7 +1253,7 @@ export const hi = {
       description:
         "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
       intro:
-        "Claude Code, Codex, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
       readDocs: "दस्तावेज़ पढ़ें",
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",

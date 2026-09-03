@@ -30,7 +30,6 @@ import {
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,6 +37,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { usePlatformStore } from "@/config/env";
@@ -79,13 +80,14 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { useSettingsDialogStore } from "@/features/settings";
 import {
   isTrackingSttDownload,
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
-import { useSettingsDialogStore } from "@/features/settings";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
@@ -100,30 +102,33 @@ import {
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
-  getAudioDownloadPlan,
   generateAudio,
+  getAudioDownloadPlan,
   listAudioGallery,
   setAudioClipFlags,
 } from "./api";
 import {
   type AudioBusy,
+  type AudioGenerationPhase,
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_SECONDS,
+  MOSS_TTS_DEFAULT_SECONDS,
+  MOSS_TTS_FRAMES_PER_SECOND,
+  MOSS_TTS_MAX_FRAMES,
   type SttDownloadedArtifact,
+  audioGenerationPresentation,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  isGgufTtsTarget,
   isTtsAudioType,
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
-  MOSS_TTS_DEFAULT_SECONDS,
-  MOSS_TTS_FRAMES_PER_SECOND,
-  MOSS_TTS_MAX_FRAMES,
-  MINIMAX_MUSIC_DEFAULT_SECONDS,
-  MINIMAX_MUSIC_FRAMES_PER_SECOND,
-  MINIMAX_MUSIC_MAX_SECONDS,
   minimaxMusicFramesForSeconds,
-  mossTtsMaxFrames,
   mossTtsFramesForSeconds,
+  mossTtsMaxFrames,
   nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
@@ -131,10 +136,10 @@ import {
   resolveSttResidency,
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
-  trainedTtsCheckpointIsLoadable,
-  trainedTtsCheckpointIsRunnableOnMac,
   sttDownloadedArtifacts,
   sttSelectionReady,
+  trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
 } from "./audio-page-policy";
 import {
   audioCapabilityLine,
@@ -327,6 +332,17 @@ export function AudioPage({
   const [busy, setBusy] = useState<AudioBusy>(null);
   const busyRef = useRef<AudioBusy>(busy);
   busyRef.current = busy;
+  const [generationPhase, setGenerationPhase] =
+    useState<AudioGenerationPhase>(null);
+  const generationPhaseRef = useRef<AudioGenerationPhase>(generationPhase);
+  const updateGenerationPhase = useCallback(
+    (nextPhase: AudioGenerationPhase) => {
+      generationPhaseRef.current = nextPhase;
+      setGenerationPhase(nextPhase);
+    },
+    [],
+  );
+  const generationPresentation = audioGenerationPresentation(generationPhase);
 
   // --- TTS (main inference slot) -----------------------------------------
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
@@ -351,6 +367,12 @@ export function AudioPage({
     MINIMAX_MUSIC_DEFAULT_SECONDS,
   );
   const generateAbort = useRef<AbortController | null>(null);
+  const handleStopGeneration = useCallback(() => {
+    const controller = generateAbort.current;
+    if (!controller || controller.signal.aborted) return;
+    updateGenerationPhase("stopping");
+    controller.abort();
+  }, [updateGenerationPhase]);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
   const pendingRoutedTtsPick = useRef<{
@@ -359,6 +381,7 @@ export function AudioPage({
     loadId?: string | null;
     audioType?: string | null;
     remoteCodeApproval?: RemoteCodeApproval;
+    isGguf?: boolean | null;
   } | null>(null);
   const ttsStatusRefreshGeneration = useRef(0);
   const ttsLoadGeneration = useRef(0);
@@ -443,6 +466,7 @@ export function AudioPage({
     loadId?: string | null;
     audioType?: string | null;
     remoteCodeApproval?: RemoteCodeApproval;
+    isGguf?: boolean | null;
     generation: number;
   } | null>(null);
   const stagedTtsLoadDeferred = useRef(false);
@@ -505,6 +529,11 @@ export function AudioPage({
   } = useScrollFades();
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_audio_advanced_open",
+  );
+  // Read at load time; the handler below ejects so a change takes effect.
+  const [audioDevice, setAudioDeviceState] = usePersistedChoice(
+    "unsloth_audio_device",
+    "auto",
   );
 
   const refreshStatus = useCallback(async () => {
@@ -874,6 +903,8 @@ export function AudioPage({
       loadId?: string | null,
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,
+      // The catalog's answer: the ids alone miss a GGUF repo that does not spell it.
+      isGguf?: boolean | null,
     ) => {
       // A routed pick that arrives while a previous load is still tearing down would
       // otherwise be dropped here, and the route effect has already cleared ?model=, so
@@ -885,6 +916,7 @@ export function AudioPage({
           loadId,
           audioType,
           remoteCodeApproval,
+          isGguf,
         };
         return;
       }
@@ -924,6 +956,7 @@ export function AudioPage({
           loadId,
           audioType,
           remoteCodeApproval,
+          isGguf,
         };
         return;
       }
@@ -973,6 +1006,8 @@ export function AudioPage({
             );
           if (controller.signal.aborted || !isCurrent()) return;
         }
+        const wantsCpu = audioDevice === "cpu";
+        const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId, isGguf });
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -985,6 +1020,18 @@ export function AudioPage({
             gguf_variant: ggufFilename ?? null,
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+            audio_device: wantsCpu ? "cpu" : "auto",
+            // GGUF ignores audio_device: llama.cpp offloads unless told not to.
+            // An absent speculative_type resolves to "auto", which may attach a GPU
+            // drafter, and the backend then evicts image/video for a CPU load.
+            ...(wantsCpu && isGgufLoad
+              ? // biome-ignore lint/style/useNamingConvention: API schema
+                {
+                  gpu_memory_mode: "manual" as const,
+                  gpu_layers: 0,
+                  speculative_type: "off" as const,
+                }
+              : {}),
           },
           {
             signal: controller.signal,
@@ -1006,6 +1053,17 @@ export function AudioPage({
           toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
           });
+          // Only the native runtime and GGUF can be held in RAM.
+          if (
+            wantsCpu &&
+            !isGgufLoad &&
+            !usesNativeAudioRuntime(repoId, res.audio_type)
+          ) {
+            toast.info(
+              "This model does not support CPU RAM yet, so it loaded on the GPU.",
+              { duration: 6000 },
+            );
+          }
         } else {
           toast.error(`${repoId} loaded but is not a supported TTS model.`, {
             id: toastId,
@@ -1036,7 +1094,7 @@ export function AudioPage({
         if (activeRef.current) replayQueuedTtsPick();
       }
     },
-    [refreshStatus],
+    [refreshStatus, audioDevice],
   );
 
   // Stage uncached Hub GGUFs through the shared manager so Audio gets the same
@@ -1055,6 +1113,7 @@ export function AudioPage({
       queued.loadId,
       queued.audioType,
       queued.remoteCodeApproval,
+      queued.isGguf,
     );
   }, []);
   const invalidatePendingStagedTts = useCallback(() => {
@@ -1073,7 +1132,9 @@ export function AudioPage({
         if (nextMode === "transcribe") invalidatePendingTtsSelection();
         return true;
       }
-      if (!canTransitionAudioMode(busyRef.current)) {
+      if (
+        !canTransitionAudioMode(busyRef.current, generationPhaseRef.current)
+      ) {
         toast.info(
           "Wait for the active audio task to finish before switching modes.",
         );
@@ -1081,7 +1142,7 @@ export function AudioPage({
       }
 
       if (nextMode === "transcribe") invalidatePendingTtsSelection();
-      if (busyRef.current === "generating") generateAbort.current?.abort();
+      if (busyRef.current === "generating") handleStopGeneration();
       stopAndDiscardRecording();
       setMode(nextMode);
       // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
@@ -1116,6 +1177,7 @@ export function AudioPage({
     },
     [
       invalidatePendingTtsSelection,
+      handleStopGeneration,
       mode,
       releaseTranscribeSelection,
       stopAndDiscardRecording,
@@ -1150,6 +1212,7 @@ export function AudioPage({
         pending.loadId,
         pending.audioType,
         pending.remoteCodeApproval,
+        pending.isGguf,
       );
     },
   });
@@ -1176,6 +1239,7 @@ export function AudioPage({
       pending.loadId,
       pending.audioType,
       pending.remoteCodeApproval,
+      pending.isGguf,
     );
   }, [active, busy]);
 
@@ -1245,6 +1309,7 @@ export function AudioPage({
               meta.loadId,
               meta.audioType,
               remoteCodeApproval,
+              meta.isGguf,
             );
             return;
           }
@@ -1264,6 +1329,7 @@ export function AudioPage({
             loadId: meta.loadId,
             audioType: meta.audioType,
             remoteCodeApproval,
+            isGguf: meta.isGguf,
             generation,
           };
           stageTtsDownload(
@@ -1290,6 +1356,7 @@ export function AudioPage({
           loadId: meta.loadId,
           audioType: meta.audioType,
           remoteCodeApproval,
+          isGguf: meta.isGguf,
           generation,
         };
         stageTtsDownload([
@@ -1311,6 +1378,7 @@ export function AudioPage({
         meta.loadId,
         meta.audioType,
         remoteCodeApproval,
+        meta.isGguf,
       );
     },
     [stageTtsDownload],
@@ -1553,10 +1621,7 @@ export function AudioPage({
       if (ttsPickGeneration.current !== selectionGeneration) return;
       const exactGguf = exactGgufLoadSelector(meta);
       const isGguf = Boolean(
-        meta.isGguf ||
-          exactGguf ||
-          /(?:^|[-/])gguf(?:$|[-/])/i.test(id) ||
-          id.toLowerCase().endsWith(".gguf"),
+        meta.isGguf || isGgufTtsTarget({ repoId: id, ggufFilename: exactGguf }),
       );
       const ggufSibling = isGguf ? null : ggufSiblingFor(id);
       const nativeRuntime =
@@ -1849,8 +1914,10 @@ export function AudioPage({
     if (busyRef.current) return;
     busyRef.current = "generating";
     setBusy("generating");
+    updateGenerationPhase("preparing");
     const releaseInFlight = pendingTranscribeRelease.current;
     if (releaseInFlight && !(await releaseInFlight)) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       setMode("transcribe");
@@ -1858,6 +1925,7 @@ export function AudioPage({
     }
     const instructions = audioInstructions.trim();
     if (musicGeneration && !instructions) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       toast.error("Add a music description for MiniMax Music 3.");
@@ -1866,6 +1934,7 @@ export function AudioPage({
     const language = audioLanguage.trim();
     const controller = new AbortController();
     generateAbort.current = controller;
+    updateGenerationPhase("generating");
     try {
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
@@ -1882,6 +1951,7 @@ export function AudioPage({
           : {}),
         signal: controller.signal,
       });
+      updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(
         generated.clip_id,
@@ -1918,6 +1988,7 @@ export function AudioPage({
       }
     } catch (error) {
       if (!controller.signal.aborted) {
+        updateGenerationPhase("finishing");
         toast.error(
           error instanceof Error ? error.message : "Audio generation failed.",
         );
@@ -1925,6 +1996,7 @@ export function AudioPage({
       }
     } finally {
       generateAbort.current = null;
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       if (activeRef.current && modeRef.current === "speak")
@@ -1942,16 +2014,13 @@ export function AudioPage({
     instructionsKind,
     temperature,
     temperatureEdited,
+    updateGenerationPhase,
     maxTokens,
     refreshGallery,
     refreshStatus,
     replayQueuedTtsPick,
     selectClip,
   ]);
-
-  const handleStopGeneration = useCallback(() => {
-    generateAbort.current?.abort();
-  }, []);
 
   // Only unmount aborts. RootLayout keeps this page mounted precisely so leaving
   // the tab does not cancel synthesis, and the clip is persisted server-side, so
@@ -2602,6 +2671,47 @@ export function AudioPage({
                     />
                   </Field>
                 ) : null}
+                {/* Field inlined: its label needs a form control to point
+                    at, and PillTabs is a tablist with its own name. */}
+                <div className="grid gap-1.5">
+                  <span className="text-ui-13 font-medium text-foreground">
+                    Load model into
+                  </span>
+                  <PillTabs
+                    ariaLabel="Load model into"
+                    value={audioDevice === "cpu" ? "cpu" : "auto"}
+                    // The eject below applies the change and cannot interrupt a load.
+                    disabled={busy !== null || isRecording}
+                    onValueChange={(value) => {
+                      const next = value === "cpu" ? "cpu" : "auto";
+                      if (next === audioDevice) return;
+                      // MiniMax needs CUDA, and the backend's refusal cannot save a
+                      // model already ejected here.
+                      if (next === "cpu" && status?.audio_type === "minimax_music3") {
+                        toast.info(
+                          "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
+                        );
+                        return;
+                      }
+                      setAudioDeviceState(next);
+                      if (ttsLoaded) handleEject();
+                    }}
+                    fit={true}
+                    className="h-[30px] self-start [&>button]:h-[30px] [&>button]:px-6"
+                    tabs={[
+                      { value: "auto", label: "GPU when available" },
+                      { value: "cpu", label: "CPU RAM" },
+                    ]}
+                  />
+                  {/* Phrased as what the next load will do, not as the resident
+                      model's state: a model loaded by another tab or client can
+                      be on the other device, and status does not report it. */}
+                  <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                    {audioDevice === "cpu"
+                      ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
+                      : "New loads use the GPU when there is one, and the CPU otherwise."}
+                  </p>
+                </div>
                 <AdvancedDisclosure
                   open={advancedOpen}
                   onOpenChange={setAdvancedOpen}
@@ -2721,30 +2831,52 @@ export function AudioPage({
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
             <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={
-                  busy === "generating" ? handleStopGeneration : handleGenerate
-                }
-                disabled={
-                  busy === "generating"
-                    ? false
-                    : busy !== null ||
-                      !ttsLoaded ||
-                      !prompt.trim() ||
-                      (musicGeneration && !audioInstructions.trim())
-                }
-                variant={busy === "generating" ? "destructive" : "default"}
-              >
-                {busy === "generating" ? (
+              <div className="flex w-full max-w-sm flex-col gap-2">
+                {busy === "generating" && generationPresentation ? (
                   <>
-                    <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
-                    Stop
+                    <output
+                      aria-live="polite"
+                      aria-atomic="true"
+                      className="text-center text-ui-12 text-muted-foreground"
+                    >
+                      {generationPresentation.status}
+                    </output>
+                    <Progress
+                      indeterminate
+                      aria-label="Audio task in progress"
+                      className="h-1.5"
+                    />
                   </>
-                ) : (
-                  "Generate"
-                )}
-              </Button>
+                ) : null}
+                <Button
+                  className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={
+                    generationPresentation?.canStop
+                      ? handleStopGeneration
+                      : handleGenerate
+                  }
+                  disabled={
+                    generationPresentation
+                      ? !generationPresentation.canStop
+                      : busy !== null ||
+                        !ttsLoaded ||
+                        !prompt.trim() ||
+                        (musicGeneration && !audioInstructions.trim())
+                  }
+                  variant={
+                    generationPresentation?.canStop ? "destructive" : "default"
+                  }
+                >
+                  {generationPresentation?.canStop ? (
+                    <>
+                      <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+                      Stop
+                    </>
+                  ) : (
+                    (generationPresentation?.actionLabel ?? "Generate")
+                  )}
+                </Button>
+              </div>
             </div>
           ) : null}
         </div>

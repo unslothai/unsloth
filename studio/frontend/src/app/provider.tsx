@@ -31,6 +31,7 @@ import {
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
+import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
@@ -43,6 +44,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -472,6 +474,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": "34px",
   "--studio-desktop-titlebar-height": "34px",
+  "--studio-titlebar-navigation-margin-top": "4px",
   "--studio-titlebar-navigation-offset-y": "4px",
   "--studio-mac-traffic-light-inset": "78px",
   "--studio-collapsed-chat-controls-inset": "188px",
@@ -555,7 +558,25 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     retryInstall,
     approveElevation,
     copyDiagnostics,
+    startRepair,
   } = useTauriBackend();
+
+  // Settings' manual repair reruns the INSTALLER, not `studio update`: an update reuses the
+  // environment it finds, so a venv whose PyTorch was replaced by a CPU-only wheel comes back
+  // from a successful update still CPU-only.
+  //
+  // Through a ref, not a dependency: startRepair is a plain function declaration rebuilt on
+  // every render, so listing it would give the context a new identity on each status tick and
+  // pinning it with [] would freeze the first render's closure.
+  const startRepairRef = useRef(startRepair);
+  startRepairRef.current = startRepair;
+  const repairController = useMemo(
+    () => ({
+      repairInstall: () => startRepairRef.current({ forceInstaller: true }),
+      isExternalServer,
+    }),
+    [isExternalServer],
+  );
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);
   const hasEnteredAppModeRef = useRef(false);
@@ -781,10 +802,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // alike, and a declined quit puts the user back where they were rather than remounting
   // the tree under them.
   const content = (
-    <>
+    <TauriRepairContext.Provider value={repairController}>
       {shell}
       {closing && <ClosingScreen />}
-    </>
+    </TauriRepairContext.Provider>
   );
 
   const chromeVars = (

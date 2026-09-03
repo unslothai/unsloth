@@ -130,13 +130,12 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
             return True
         drive, tail = os.path.splitdrive(root_real)
         if os.path.dirname(root_real) == root_real and not drive:
-            # Bare POSIX filesystem root ("/"): equality above is the only
-            # match; do not let it authorize arbitrary descendants.
+            # Bare POSIX filesystem root: the equality above is the only match, so it must not authorize
+            # arbitrary descendants.
             continue
         if drive.startswith(("\\\\", "//")) and not tail:
-            # Bare UNC share root (\\server\share): os.path.commonpath raises
-            # "can't mix absolute and relative" on it, so authorize its
-            # descendants with a boundary-safe prefix test (normcase applied).
+            # os.path.commonpath raises "can't mix absolute and relative" on a bare UNC share root, so authorize
+            # its descendants with a boundary-safe prefix test.
             if target_real.startswith(root_real.rstrip("\\/") + os.sep):
                 return True
             continue

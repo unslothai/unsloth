@@ -6,15 +6,17 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  canTransitionAudioMode,
-  exactGgufLoadSelector,
-  expectedGgufDownloadBytes,
-  isTtsAudioType,
-  macTtsPickAction,
   MINIMAX_MUSIC_DEFAULT_SECONDS,
   MINIMAX_MUSIC_FRAMES_PER_SECOND,
   MINIMAX_MUSIC_MAX_FRAMES,
   MINIMAX_MUSIC_MAX_SECONDS,
+  audioGenerationPresentation,
+  canTransitionAudioMode,
+  exactGgufLoadSelector,
+  expectedGgufDownloadBytes,
+  isGgufTtsTarget,
+  isTtsAudioType,
+  macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
   minimaxMusicFramesForSeconds,
@@ -39,10 +41,51 @@ const chatApiSource = readFileSync(
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
-  assert.equal(canTransitionAudioMode("generating"), true);
+  assert.equal(canTransitionAudioMode("generating", "generating"), true);
+  assert.equal(canTransitionAudioMode("generating", "preparing"), false);
+  assert.equal(canTransitionAudioMode("generating", "stopping"), false);
+  assert.equal(canTransitionAudioMode("generating", "finishing"), false);
   assert.equal(canTransitionAudioMode("loading"), false);
   assert.equal(canTransitionAudioMode("unloading"), false);
   assert.equal(canTransitionAudioMode("transcribing"), false);
+});
+
+test("audio generation phases expose truthful indeterminate presentation", () => {
+  assert.equal(audioGenerationPresentation(null), null);
+  assert.deepEqual(audioGenerationPresentation("preparing"), {
+    status: "Preparing audio…",
+    actionLabel: "Preparing…",
+    canStop: false,
+  });
+  assert.deepEqual(audioGenerationPresentation("generating"), {
+    status: "Generating audio…",
+    actionLabel: "Stop",
+    canStop: true,
+  });
+  assert.deepEqual(audioGenerationPresentation("stopping"), {
+    status: "Stopping audio…",
+    actionLabel: "Stopping…",
+    canStop: false,
+  });
+  assert.deepEqual(audioGenerationPresentation("finishing"), {
+    status: "Finishing audio…",
+    actionLabel: "Finishing…",
+    canStop: false,
+  });
+
+  for (const phase of [
+    "preparing",
+    "generating",
+    "stopping",
+    "finishing",
+  ] as const) {
+    const presentation = audioGenerationPresentation(phase);
+    assert.ok(presentation);
+    assert.doesNotMatch(
+      `${presentation.status} ${presentation.actionLabel}`,
+      /%|percent|eta|remaining/i,
+    );
+  }
 });
 
 test("staged TTS completion requires the same Speak ownership generation", () => {
@@ -565,7 +608,7 @@ test("generating waits for the transcribe release the mode switch started", () =
   // dictation model, which OOMs a device that fits either one alone.
   assert.match(
     audioPageSource,
-    /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,900}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,200}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,80}?setMode\("transcribe"\);/,
+    /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,1100}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,240}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,160}?setMode\("transcribe"\);/,
   );
 });
 
@@ -610,12 +653,12 @@ test("generation is claimed before the transcribe release is awaited", () => {
   // each resumed into its own generateAudio while generateAbort tracked only the last.
   assert.match(
     audioPageSource,
-    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
+    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*updateGenerationPhase\("preparing"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
   );
   // And a release that failed hands the slot back rather than wedging the button.
   assert.match(
     audioPageSource,
-    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
   );
 });
 
@@ -692,4 +735,66 @@ test("a capped restore refresh invalidates a page fetched from the older cursor"
     audioPageSource,
     /const cursor = galleryCache\.nextCursor;\s*try\s*{\s*const page = await listAudioGallery\(\s*0,\s*PAGE_SIZE,\s*cursor,?\s*\);\s*if \(\s*refreshGeneration !== galleryRefreshGeneration\.current \|\|\s*cursor !== galleryCache\.nextCursor\s*\)\s*return;/,
   );
+});
+
+test("a direct .gguf pick is a GGUF target even without a variant filename", () => {
+  // Local direct rows supply neither ggufFilename nor ggufVariant, so a check on the
+  // selector alone left them on GPU offload.
+  assert.equal(
+    isGgufTtsTarget({ repoId: "/models/orpheus-3b-Q4_K_M.gguf" }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "Orpheus TTS", loadId: "/m/x.GGUF" }),
+    true,
+  );
+  assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft-GGUF" }), true);
+  assert.equal(
+    isGgufTtsTarget({ repoId: "unsloth/orpheus", ggufFilename: "x-Q4.gguf" }),
+    true,
+  );
+});
+
+test("the catalog's own answer outranks the name heuristics", () => {
+  // Invisible to every test below; only the catalog knows. Losing it dropped offload.
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: true }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox-GGUF", isGguf: false }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: null }),
+    false,
+  );
+});
+
+test("a safetensors pick is not a GGUF target", () => {
+  assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft" }), false);
+  assert.equal(isGgufTtsTarget({ repoId: "bosonai/higgs-tts-2-3b-base" }), false);
+  // "gguf" only as a bare path segment, so a name merely containing it does not match.
+  assert.equal(isGgufTtsTarget({ repoId: "acme/ggufology" }), false);
+});
+
+test("a CPU GGUF audio load declares speculation off", () => {
+  // An absent speculative_type resolves to "auto", which can attach a GPU drafter;
+  // zero_vram_chat_load then takes the arbiter and cancels an image or video job.
+  assert.match(
+    audioPageSource,
+    /gpu_memory_mode: "manual" as const,\s*gpu_layers: 0,\s*speculative_type: "off" as const,/,
+  );
+});
+
+test("selecting CPU never ejects a resident MiniMax, which cannot load on CPU", () => {
+  // The backend's refusal cannot help once ejected: recovery needs the refused load.
+  const handler = audioPageSource.slice(
+    audioPageSource.indexOf('const next = value === "cpu" ? "cpu" : "auto";'),
+  );
+  const guard = handler.indexOf('status?.audio_type === "minimax_music3"');
+  const eject = handler.indexOf("handleEject()");
+  assert.ok(guard > -1, "no MiniMax guard on the placement control");
+  assert.ok(guard < eject, "the guard must return before the eject");
+  assert.match(handler.slice(guard, eject), /return;/);
 });

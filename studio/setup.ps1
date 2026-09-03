@@ -5507,12 +5507,14 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
         $_tritonTmp = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth_triton_xpu_$([guid]::NewGuid().ToString('N').Substring(0,8))"
         try {
             New-Item -ItemType Directory -Force -Path $_tritonTmp -ErrorAction SilentlyContinue | Out-Null
+            # Fast-Download is an advanced function, so PowerShell binds `-d` to `-Debug`
+            # instead of forwarding it to pip. Use the long `--dest` flag (#10018).
             if ($script:UnslothVerbose) {
-                Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                Fast-Download --no-deps --only-binary=:all: --dest $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
                 $tritonDlExit = $LASTEXITCODE
                 $tritonDlOutput = ""
             } else {
-                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
+                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: --dest $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
                 $tritonDlExit = $LASTEXITCODE
             }
             # The exit code alone is not enough: no wheel on disk means nothing to install from.
