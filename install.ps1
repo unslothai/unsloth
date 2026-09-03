@@ -5546,7 +5546,7 @@ exit 0
             # it must prove a native win_arm64 CUDA wheel exists on the index.
             $global:LASTEXITCODE = -1
             try {
-                & uv pip install --python $VenvPython --dry-run --reinstall "torch>=2.4,<2.11.0" --default-index $TorchIndexUrl *> $null
+                & $script:UvExe pip install --python $VenvPython --dry-run --reinstall "torch>=2.4,<2.11.0" --default-index $TorchIndexUrl *> $null
                 $_nativeCudaTorchOk = ($LASTEXITCODE -eq 0)
             } catch { $_nativeCudaTorchOk = $false } finally { $ErrorActionPreference = $prevEapProbe }
             if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
@@ -5720,7 +5720,7 @@ exit 0
         } finally {
             $ErrorActionPreference = $prevEapWsl
         }
-        Write-Host ""
+        Write-StudioLine ""
         # Download sentinel: the installer never ran, so the probes below would only
         # re-validate a stale venv from a previous install.
         if ($wslRc -eq 86) {
@@ -5926,21 +5926,40 @@ exit 0
                 $prevEapL = $ErrorActionPreference; $ErrorActionPreference = "Continue"
                 try {
                     $_llamaUrl = "https://raw.githubusercontent.com/unslothai/unsloth/$(Get-UnslothInstallRef)/studio/scripts/provision_llama_cuda.sh"
-                    # Step 1: fetch the provision script + write a runner (base64 to dodge
-                    # quoting layers). The runner restores PATH (non-login shells miss the
-                    # /usr/lib/wsl/lib nvidia-smi) and exports the env knobs below. A runner
-                    # FILE lets the detached launcher pass only space-free args, avoiding
-                    # Start-Process mis-splitting `bash -lc <str>`.
-                    $_pathLine = 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib:$PATH"' + "`n"
-                    $_jobsLine = if ($env:UNSLOTH_LLAMA_BUILD_JOBS) { "export UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS)`n" } else { "" }
+                    # Step 1: fetch the provision script + write a runner. The runner
+                    # restores PATH (non-login shells miss the /usr/lib/wsl/lib
+                    # nvidia-smi) and exports the env knobs below. A runner FILE lets the
+                    # detached launcher pass only space-free args, avoiding Start-Process
+                    # mis-splitting `bash -lc <str>`.
+                    #
+                    # Written one `printf` per line rather than piped through a decoder:
+                    # an encoded payload is an AV-scored shape (see
+                    # tests/studio/test_installer_av_shapes.py), and it is not needed here.
+                    # No runner line contains a single quote, so each one survives verbatim
+                    # inside `printf '%s\n' '<line>'`, and the whole command stays one
+                    # newline-free string through the PowerShell -> wsl.exe -> bash layers.
+                    $_runnerLines = @(
+                        '#!/usr/bin/env bash',
+                        'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib:$PATH"'
+                    )
+                    if ($env:UNSLOTH_LLAMA_BUILD_JOBS) {
+                        $_runnerLines += "export UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS)"
+                    }
                     # Bridge UNSLOTH_LLAMA_TAG / UNSLOTH_LLAMA_PR pins into WSL, else the
                     # deferred build ignores them. Same allow-lists as the other forwarded
-                    # knobs so a quote can't break out of the single-quoted export.
-                    $_tagLine = if ($env:UNSLOTH_LLAMA_TAG -and ($env:UNSLOTH_LLAMA_TAG -match '^[A-Za-z0-9][A-Za-z0-9._/-]*$')) { "export UNSLOTH_LLAMA_TAG='$($env:UNSLOTH_LLAMA_TAG)'`n" } else { "" }
-                    $_prLine = if ($env:UNSLOTH_LLAMA_PR -and ($env:UNSLOTH_LLAMA_PR -match '^\d+$')) { "export UNSLOTH_LLAMA_PR='$($env:UNSLOTH_LLAMA_PR)'`n" } else { "" }
-                    $_runner = "#!/usr/bin/env bash`n" + $_pathLine + $_jobsLine + $_tagLine + $_prLine + "exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1`n"
-                    $_runnerB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_runner))
-                    $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; echo ' + $_runnerB64 + ' | base64 -d > /root/.unsloth/run_llama_build.sh; chmod +x /root/.unsloth/run_llama_build.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
+                    # knobs, and double quotes here so the line carries no single quote of
+                    # its own; the allow-lists exclude $ and ` so nothing can expand.
+                    if ($env:UNSLOTH_LLAMA_TAG -and ($env:UNSLOTH_LLAMA_TAG -match '^[A-Za-z0-9][A-Za-z0-9._/-]*$')) {
+                        $_runnerLines += 'export UNSLOTH_LLAMA_TAG="' + $env:UNSLOTH_LLAMA_TAG + '"'
+                    }
+                    if ($env:UNSLOTH_LLAMA_PR -and ($env:UNSLOTH_LLAMA_PR -match '^\d+$')) {
+                        $_runnerLines += 'export UNSLOTH_LLAMA_PR="' + $env:UNSLOTH_LLAMA_PR + '"'
+                    }
+                    $_runnerLines += 'exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1'
+                    $_writeRunner = ($_runnerLines | ForEach-Object {
+                        "printf '%s\n' '" + $_ + "' >> /root/.unsloth/run_llama_build.sh"
+                    }) -join '; '
+                    $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; : > /root/.unsloth/run_llama_build.sh; ' + $_writeRunner + '; chmod +x /root/.unsloth/run_llama_build.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
                     $_fetchOut = & wsl.exe -d $distro --cd /root -u root -- bash -lc $_fetchCmd 2>$null
                     if ("$_fetchOut" -match 'PROV_FETCHED') {
                         # Step 2: a detached Windows-side wsl.exe keeps the WSL VM up for the

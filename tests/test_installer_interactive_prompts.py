@@ -51,6 +51,9 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_python_stack.py",
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
+    # setup.sh runs this, and install.ps1 fetches it into the WSL distro and runs
+    # it there for the Windows-on-ARM CUDA llama.cpp build.
+    "studio/scripts/provision_llama_cuda.sh",
     # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
 )

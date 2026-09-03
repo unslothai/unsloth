@@ -5792,8 +5792,9 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ -n "${UNSLOTH_INSTALL_REF:-}" ] && [ "${UNSLOTH_INSTALL_REF}" != "main" ] && [ "$PACKAGE_NAME" = "unsloth" ]; then
         # Pre-merge testing: install unsloth from a git ref (set by install.ps1)
         # so the branch's setup.sh + patches run. Name unsloth-zoo explicitly --
-        # it is not a base dep, and SKIP_STUDIO_BASE skips the shared base
-        # requirements file, so it would otherwise never install.
+        # it is not a dependency of the git spec, and SKIP_STUDIO_BASE skips the
+        # shared requirements step that install_python_stack.py owns, so nothing
+        # else would pull it in.
         substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
         run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
