@@ -107,15 +107,18 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
     iconClassName: "text-emerald-600 dark:text-emerald-400",
   },
   marginal: {
-    label: "Might fit",
+    label: "Over budget",
+    // Not conditional on other apps: _vram_usable_mib gives free - reserve, which on an idle card
+    // is exactly the budget this tier has already passed, so the load takes --fit every time.
+    // Same words the chat picker uses.
     tooltip:
-      "Might fit. Within the last GB of VRAM headroom, so loading can fail if other apps are using GPU memory.",
+      "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.",
     iconClassName: "text-amber-600 dark:text-amber-400",
   },
   partial: {
     label: "Partial offload",
     tooltip:
-      "Partial offload possible. Exceeds VRAM but fits with system RAM offload. Inference will be slower.",
+      "Model may not fit but still works with offloading. Expect slower inference.",
     iconClassName: "text-sky-600 dark:text-sky-400",
   },
   ram: {
@@ -125,8 +128,11 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
     iconClassName: "text-sky-600 dark:text-sky-400",
   },
   oom: {
-    label: "Won't fit",
-    tooltip: "Exceeds combined VRAM and system RAM budget.",
+    label: "Does not fit",
+    // Not "won't fit": llama-server never refuses a GGUF on size, it hands it to --fit. Same words
+    // the chat picker uses, where this class and `partial` share one mark.
+    tooltip:
+      "Model may not fit but still works with offloading. Expect slower inference.",
     iconClassName: "text-rose-600 dark:text-rose-400",
   },
 };
@@ -238,7 +244,12 @@ interface GgufVariantMenuItem {
 
 function createGgufVariantMenuItems(
   variants: readonly GgufVariantDetail[] | null,
-  resources: { gpuGb?: number; systemRamGb?: number; budgetFraction?: number },
+  resources: {
+    gpuGb?: number;
+    gpuCount?: number;
+    systemRamGb?: number;
+    budgetFraction?: number;
+  },
 ): GgufVariantMenuItem[] {
   if (!variants) return [];
   return variants.map((variant) => ({
@@ -537,12 +548,14 @@ export function GgufDownloadCard({
   preferredFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
+  gpuCount,
   systemRamGb,
   cachePath,
   preferLocalCache = false,
   isPartial = false,
   onChange,
   showMemoryBar = true,
+  mediaRuntime = false,
 }: {
   repoId: string;
   isActive: boolean;
@@ -552,6 +565,8 @@ export function GgufDownloadCard({
   preferredFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
   preferLocalCache?: boolean;
@@ -564,6 +579,11 @@ export function GgufDownloadCard({
    *  weights-only verdict anyway, which is a confident number about the wrong
    *  runtime. The picker suppresses these rows for the same reason. */
   showMemoryBar?: boolean;
+  /** This repo is placed by the diffusion planner, not llama-server. Suppresses the fit badges
+   *  for the same reason it suppresses the memory bar: the budget and the offload rules here are
+   *  llama.cpp's, and an oversized diffusion model gets told it "still works with offloading"
+   *  when on a host pool the planner refuses the load outright. */
+  mediaRuntime?: boolean;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
@@ -615,10 +635,11 @@ export function GgufDownloadCard({
     if (!variants) return null;
     return sortDownloadableGgufVariants(variants, {
       gpuGb,
+      gpuCount,
       systemRamGb,
       budgetFraction,
     });
-  }, [variants, gpuGb, systemRamGb, budgetFraction]);
+  }, [variants, gpuGb, gpuCount, systemRamGb, budgetFraction]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -643,10 +664,11 @@ export function GgufDownloadCard({
     () =>
       createGgufVariantMenuItems(sortedVariants, {
         gpuGb,
+        gpuCount,
         systemRamGb,
         budgetFraction,
       }),
-    [gpuGb, sortedVariants, systemRamGb, budgetFraction],
+    [gpuGb, gpuCount, sortedVariants, systemRamGb, budgetFraction],
   );
 
   const selectedQuant =
@@ -732,17 +754,20 @@ export function GgufDownloadCard({
   const ctaDisabled = isLoadingThisModel || !selected;
   const selectedIsActive =
     isActive && activeQuant && ggufVariantsMatch(selected?.quant, activeQuant);
-  const showFitInfo = Boolean(gpuGb) || Boolean(systemRamGb);
+  // No verdict beats a wrong one: a media repo's fit is the diffusion planner's question, and
+  // this card only knows how to answer llama.cpp's. The picker still badges those rows.
+  const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));
   const selectedFit = useMemo(
     () =>
       selected
         ? classifyGgufFit(selected.size_bytes, {
             gpuGb,
+            gpuCount,
             systemRamGb,
             budgetFraction,
           })
         : null,
-    [gpuGb, selected?.size_bytes, systemRamGb, budgetFraction],
+    [gpuGb, gpuCount, selected?.size_bytes, systemRamGb, budgetFraction],
   );
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)

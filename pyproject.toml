@@ -84,18 +84,17 @@ exclude = [
     "tests*",
     "studio.backend.tests*",
     "studio.backend.*.tests*",
+    "unsloth_cli.tests*",
+    "unsloth.kernels.moe.tests*",
     "unsloth_compiled_cache*",
     "*.unsloth_compiled_cache*",
     "*.node_modules",
     "*.node_modules.*",
 ]
 
-# packages.find only decides what is importable. include-package-data then hands
-# every tracked file to the nearest parent package that survived, so dropping
-# studio.backend.tests above just re-shipped the same 505 files as data of
-# studio.backend (pypa/setuptools#3260). exclude-package-data has the highest
-# precedence of the file selection options, so the veto has to be repeated here.
-# Source layout, not the wheel, so the sdist keeps the suites either way.
+# Excluding a tests package above is not enough: include-package-data re-ships its
+# files as data of the surviving parent (pypa/setuptools#3260), and only
+# exclude-package-data outranks that.
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
@@ -144,7 +143,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.8.16",
+    "unsloth_zoo>=2026.9.1",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -191,7 +190,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.8.16",
+    "unsloth_zoo>=2026.9.1",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -715,7 +714,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.8.16",
+    "unsloth_zoo>=2026.9.1",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",

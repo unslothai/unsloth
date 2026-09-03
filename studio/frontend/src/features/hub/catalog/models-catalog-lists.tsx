@@ -9,7 +9,7 @@ import {
 } from "@/features/model-picker";
 import {
   CubeIcon,
-  DownloadCircle02Icon,
+  Download01Icon,
   PinIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
@@ -26,6 +26,12 @@ import type {
   DiscoverRow,
   LocalInventoryRow,
 } from "../types";
+import {
+  compareInventoryItemsByRecent,
+  type InventoryItem,
+  inventoryItemSize,
+  inventoryItemTitle,
+} from "./inventory-sort";
 import {
   DiscoverFetchMoreFooter,
   DiscoverFetchMoreState,
@@ -48,18 +54,6 @@ import {
   ResultGridRow,
   ResultSplitRow,
 } from "./models-table";
-
-type InventoryItem =
-  | { variant: "cached"; row: CachedInventoryRow }
-  | { variant: "local"; row: LocalInventoryRow };
-
-function inventoryItemTitle(item: InventoryItem): string {
-  return item.variant === "cached" ? item.row.repo : item.row.title;
-}
-
-function inventoryItemSize(item: InventoryItem): number {
-  return item.variant === "cached" ? item.row.bytes : 0;
-}
 
 export function InventoryWarningRow({
   isDataset,
@@ -338,7 +332,12 @@ export function DownloadedList({
     if (sort === "recent") {
       return merged
         .map((item, index) => ({ item, index }))
-        .sort((a, b) => pinRank(a.item) - pinRank(b.item) || a.index - b.index)
+        .sort(
+          (a, b) =>
+            pinRank(a.item) - pinRank(b.item) ||
+            compareInventoryItemsByRecent(a.item, b.item) ||
+            a.index - b.index,
+        )
         .map((entry) => entry.item);
     }
     return merged
@@ -445,7 +444,7 @@ export function DownloadedList({
     }
     return (
       <EmptyState
-        icon={query.trim() ? Search01Icon : DownloadCircle02Icon}
+        icon={query.trim() ? Search01Icon : Download01Icon}
         title={query.trim() ? "No matches on device" : "Nothing on device yet"}
         body={
           query.trim()

@@ -184,7 +184,7 @@ def _run_cpu_fallback_load(
         launches.append((list(cmd), dict(kwargs["env"])))
         return _Process(returncodes[index])
 
-    def _wait_for_health(timeout):
+    def _wait_for_health(timeout, **_kw):
         if len(launches) == 1 and first_output:
             backend._stdout_lines = [first_output]
         if cancel_after is not None and len(launches) >= cancel_after:
@@ -206,7 +206,7 @@ def _run_cpu_fallback_load(
         )
         if not available:
             return None
-        return ["/staged/llama-server", "--device", "none"], None
+        return ["/staged/llama-server", "--device", "none"], None, None
 
     backend._wait_for_health = _wait_for_health
     backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
@@ -614,7 +614,7 @@ class TestCpuIsolatedReplay:
 
         prepared = backend._prepare_cpu_fallback_launch("/original/server", ["original"], env, {})
 
-        assert prepared == (["/staged/server", "--device", "none"], None)
+        assert prepared == (["/staged/server", "--device", "none"], None, None)
         assert env[loader_path] == "/staged/libs"
         assert env["KEEP"] == "1"
 
@@ -1228,7 +1228,7 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     backend._is_vulkan_backend = lambda _binary = None: True
     backend._vulkan_prebuilt_was_auto_selected = lambda _binary: True
     backend.probe_server_capabilities = lambda _binary: {"found": True}
-    backend._wait_for_health = lambda timeout: False
+    backend._wait_for_health = lambda timeout, **_kw: False
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
     backend._llama_server_env_for_binary = lambda _binary: {
@@ -1612,7 +1612,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
         code = returncodes[idx] if idx < len(returncodes) else 1
         return _Process(code)
 
-    def _wait_for_health(timeout = 600.0):
+    def _wait_for_health(timeout = 600.0, **_kw):
         idx = len(launches) - 1
         if 0 <= idx < len(outputs):
             backend._stdout_lines = [outputs[idx]]

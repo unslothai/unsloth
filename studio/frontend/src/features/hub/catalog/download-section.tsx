@@ -20,11 +20,13 @@ export function DownloadSection({
   preferredGgufFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
+  gpuCount,
   systemRamGb,
   cachePath,
   knownBytes,
   onChange,
   showMemoryBar = true,
+  mediaRuntime = false,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -40,6 +42,7 @@ export function DownloadSection({
   preferredGgufFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
+  gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
   knownBytes?: number | null;
@@ -47,6 +50,7 @@ export function DownloadSection({
   /** False for diffusion / audio / video GGUFs, which do not load through
    *  llama.cpp and so have nothing the KV estimator can say about them. */
   showMemoryBar?: boolean;
+  mediaRuntime?: boolean;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -58,11 +62,13 @@ export function DownloadSection({
         preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
+        gpuCount={gpuCount}
         systemRamGb={systemRamGb}
         cachePath={cachePath}
         isPartial={isPartial}
         onChange={onChange}
         showMemoryBar={showMemoryBar}
+        mediaRuntime={mediaRuntime}
       />
     );
   }

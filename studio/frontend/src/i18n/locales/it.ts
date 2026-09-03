@@ -19,6 +19,13 @@ export const it = {
     shutdown: "Arresta",
   },
   shell: {
+    find: {
+      label: "Trova nella pagina",
+      previous: "Risultato precedente",
+      next: "Risultato successivo",
+      close: "Chiudi ricerca",
+      truncated: "Questa pagina è troppo lunga per essere cercata per intero.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -190,6 +197,10 @@ export const it = {
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       actions: {
+        findInPage: {
+          label: "Trova nella pagina",
+          description: "Cerca il testo di questa pagina",
+        },
         openSettings: {
           label: "Apri le impostazioni",
           description: "Apri la finestra delle impostazioni",
@@ -451,6 +462,13 @@ export const it = {
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
+        sttDeviceLabel: "Carica in",
+        sttDeviceAuto: "GPU quando disponibile",
+        sttDeviceCpu: "RAM della CPU",
+        sttDeviceAutoDescription:
+          "Usa la GPU quando c'è, altrimenti la CPU.",
+        sttDeviceCpuDescription:
+          "Tieni il modello nella RAM di sistema. La trascrizione è più lenta, ma non usa memoria GPU.",
         sttModelSearchPlaceholder: "Cerca un modello",
         sttModelSearching: "Ricerca su Hugging Face…",
         sttModelValidating: "Verifica della compatibilità con Whisper…",
@@ -665,7 +683,7 @@ export const it = {
         sectionTitle: "Cambio automatico del modello (API OpenAI)",
         enable: "Cambia modello in base alla richiesta",
         enableDescription:
-          "Carica un GGUF già scaricato indicato in una richiesta API prima di rispondere. Disattivato per impostazione predefinita.",
+          "Carica un modello già scaricato indicato in una richiesta API prima di rispondere. Disattivato per impostazione predefinita.",
         autoDownload: "Scarica i modelli mancanti",
         autoDownloadDescription:
           "Scarica un GGUF indicato in una richiesta API se non è ancora presente. Chiunque abbia una chiave API potrà così consumare spazio su disco e banda.",
@@ -824,6 +842,16 @@ export const it = {
         copied: "Percorso copiato",
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
+      },
+      repairInstall: {
+        label: "Ripara l'installazione",
+        description:
+          "Riesegue il programma di installazione sull'ambiente gestito. Utile se la GPU non viene rilevata o se l'app non si avvia.",
+        action: "Ripara installazione",
+        confirmTitle: "Riparare questa installazione?",
+        confirmDescription:
+          "Arresta il server e riesegue il programma di installazione, che reinstalla PyTorch per la GPU di questa macchina. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
+        confirmAction: "Ripara ora",
       },
       resetPreferences: {
         sectionTitle: "Zona pericolosa",
@@ -1078,6 +1106,8 @@ export const it = {
         currentLoad: "Carico attuale",
         free: "Disponibili: {value}",
         noGpu: "Nessuna GPU visibile",
+        gpuUnusable: "GPU non utilizzabile",
+        gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
       },
       gpu: {
         title: "Dispositivi GPU",
@@ -1087,6 +1117,12 @@ export const it = {
         unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
+        noUsableGpu: "Nessuna GPU di questa macchina è utilizzabile da PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1209,7 +1245,7 @@ export const it = {
       description:
         "Collega agenti di programmazione come Claude Code e Codex a un modello locale con unsloth start.",
       intro:
-        "collega Claude Code, Codex, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
+        "collega Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
       readDocs: "Leggi la documentazione",
       copy: "Copia",
       copied: "Copiato",
@@ -1384,6 +1420,13 @@ export const it = {
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
       },
+      currentDate: {
+        label: "Comunica al modello la data di oggi",
+        description:
+          "Aggiunge la data corrente al prompt in modo che la ricerca web e Deep Research cerchino fonti recenti invece di basarsi sulla data di fine addestramento del modello.",
+        loadError: "Impossibile caricare le impostazioni della data corrente",
+        saveError: "Impossibile aggiornare le impostazioni della data corrente",
+      },
       tools: {
         collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
         collapseByDefaultDescription:
@@ -1406,6 +1449,11 @@ export const it = {
         blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
         blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
         blockedBannerAction: "Consenti per questo Canvas",
+        blockedTitle: "L'accesso alla rete del Canvas è disattivato",
+        blockedHint:
+          "Attiva “{setting}” in Impostazioni → Chat per consentire ai Canvas di caricare risorse esterne, oppure consentilo solo per questo Canvas.",
+        blockedSettingsAction: "Apri impostazioni",
+        blockedDismiss: "Ignora",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",
@@ -1480,6 +1528,8 @@ export const it = {
       archivedImagesDescription: "Visualizza e gestisci le immagini che hai archiviato.",
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
+      archivedAudio: "Audio archiviati",
+      archivedAudioDescription: "Visualizza e gestisci le clip audio che hai archiviato.",
       manageAction: "Gestisci",
       manageChats: "Gestisci chat",
       manageChatsDescription:
@@ -1670,7 +1720,7 @@ export const it = {
         desktopAvailable:
           "È disponibile la versione {version} dell'app desktop",
         desktopAvailableDescription:
-          "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
+          "Aggiorna ora per prepararlo in background. Puoi continuare a lavorare e riavviare quando è pronto.",
         desktopExternalServer:
           "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
         desktopManualInstall:
@@ -1681,11 +1731,20 @@ export const it = {
         desktopCurrent: "L'app desktop è aggiornata",
         desktopCurrentDescription:
           "Unsloth continuerà a verificare automaticamente la disponibilità di aggiornamenti.",
+        desktopPreparingDescription:
+          "L'aggiornamento viene preparato in background. Puoi continuare a lavorare.",
+        desktopReadyToRestartDescription:
+          "È tutto pronto. Riavvia per completare l'installazione dell'aggiornamento.",
+        desktopReadyToInstallDescription:
+          "L'aggiornamento dell'app è stato scaricato. Completa l'aggiornamento del backend per installarlo.",
         checkForUpdates: "Verifica aggiornamenti",
         checkAgain: "Verifica di nuovo",
         retryCheck: "Riprova",
         checking: "Verifica in corso...",
+        preparing: "Preparazione...",
         updateNow: "Aggiorna ora",
+        restartToUpdate: "Riavvia per aggiornare",
+        finishUpdate: "Completa aggiornamento",
         openReleasePage: "Apri la pagina della release",
         unknownInstall:
           "Impossibile rilevare come è stato installato Unsloth. Per installazioni tramite installer o PyPI, usa i comandi sopra.",

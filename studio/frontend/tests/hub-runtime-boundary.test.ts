@@ -103,6 +103,10 @@ test("residency remains a cache mutation safety input", () => {
   );
   assert.match(
     hubPage,
+    /adoptingExistingServerModel:\s*previous\.checkpoint === null \|\| previous\.checkpoint === "",/,
+  );
+  assert.match(
+    hubPage,
     /checkpointId: isSpeechOnlyStatus\(status\)\s*\? null\s*: resolveInferenceCheckpointId\(status\),/,
   );
   assert.match(hubPage, /speechOnly: isSpeechOnlyStatus\(status\),/);

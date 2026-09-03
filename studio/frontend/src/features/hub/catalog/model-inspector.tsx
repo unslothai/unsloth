@@ -387,6 +387,8 @@ export type ModelInspectorRuntime = {
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
 };
 
@@ -422,6 +424,7 @@ export const ModelInspector = memo(function ModelInspector({
     minMemory,
     vramInfo,
     gpuGb,
+    gpuCount,
     systemRamGb,
   } = runtime;
   const { onInventoryChange, onSearchHub } = actions;
@@ -652,6 +655,7 @@ export const ModelInspector = memo(function ModelInspector({
               isActive={isActive}
               isLoading={isLoadingThisModel}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
@@ -666,6 +670,7 @@ export const ModelInspector = memo(function ModelInspector({
           ) : (
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
+              mediaRuntime={runsOnMediaRuntime}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               isDownloaded={model.isDownloaded}
@@ -679,6 +684,7 @@ export const ModelInspector = memo(function ModelInspector({
               preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
               cachePath={model.path}
               knownBytes={model.cachedBytes}

@@ -48,8 +48,11 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeTimestamp,
 } from "./view-models";
+export {
+  epochMillisecondsToSeconds,
+  normalizeTimestamp,
+} from "./inventory-timestamps";
 export {
   resolveInventoryResource,
   type InventoryResourceFormatHint,
@@ -58,6 +61,7 @@ export {
 export {
   dedupeSameSourceHubCacheRows,
   findCompleteHfCacheLocalRow,
+  partialSetFromRows,
 } from "./inventory-dedupe";
 export {
   fetchInventorySource,

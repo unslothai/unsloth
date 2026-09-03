@@ -39,12 +39,12 @@ def _seed_sys_version_cache() -> None:
             cleaned = m.group(0) + cleaned[p:]
 
     if cleaned == raw:
-        return  # Nothing to fix
+        return
 
     try:
         result = platform._sys_version(cleaned)
     except ValueError:
-        return  # Still unparsable; don't make things worse
+        return
 
     # Seed the cache so future calls with the raw string skip parsing
     cache = getattr(platform, "_sys_version_cache", None)
