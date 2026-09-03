@@ -751,7 +751,7 @@ def test_hf_login_treats_none_as_fetch_the_operators_stored_token():
     assert hf_login(False) is False
 
 
-def test_non_ambient_worker_gets_a_private_hf_token_store(monkeypatch, worker_in_process):
+def test_non_ambient_worker_gets_a_private_hf_token_store(monkeypatch, tmp_path, worker_in_process):
     """Scrubbing the environment is half of it.
 
     get_token() also reads ~/.cache/huggingface/token, and login() writes there, so a shared
@@ -762,6 +762,8 @@ def test_non_ambient_worker_gets_a_private_hf_token_store(monkeypatch, worker_in
     worker = worker_in_process
     monkeypatch.setenv("HF_TOKEN", "hf_operator_secret_123")
     monkeypatch.delenv("HF_TOKEN_PATH", raising = False)
+    store = str(tmp_path / "store")
+    os.makedirs(store)
 
     seen = {}
 
@@ -775,11 +777,16 @@ def test_non_ambient_worker_gets_a_private_hf_token_store(monkeypatch, worker_in
         worker.run_export_process(
             cmd_queue = MagicMock(),
             resp_queue = MagicMock(),
-            config = {"checkpoint_path": "/tmp/m", "allow_ambient": False, "hf_token": None},
+            config = {
+                "checkpoint_path": "/tmp/m",
+                "allow_ambient": False,
+                "hf_token": None,
+                "hf_token_store": store,
+            },
         )
 
     path = seen["token_path"]
-    assert path and "unsloth-export-hf-" in path
+    assert path == os.path.join(store, "token")
     assert not os.path.exists(path), "the private store starts empty, so get_token() finds nothing"
 
 
@@ -817,3 +824,28 @@ def test_export_command_scopes_the_credential_it_can_reach(
     # Restored, so the next command decides for itself.
     assert os.environ.get("HF_TOKEN") == "hf_operator_secret_123"
     assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") is None
+
+
+def test_orchestrator_owns_the_token_store_so_a_kill_cannot_orphan_it(monkeypatch, tmp_path):
+    """atexit does not run on terminate() or kill(), and the cancel path uses both."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    store = o._new_token_store()
+    assert os.path.isdir(store)
+
+    # Whatever the loader persisted there goes with it.
+    with open(os.path.join(store, "token"), "w") as fh:
+        fh.write("hf_caller_own_token")
+
+    o._discard_token_store()
+    assert not os.path.exists(store)
+
+    # A second load replaces the first store rather than accumulating them.
+    first = o._new_token_store()
+    second = o._new_token_store()
+    assert first != second
+    assert not os.path.exists(first)
+    o._discard_token_store()

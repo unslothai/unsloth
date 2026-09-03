@@ -299,12 +299,35 @@ class ExportOrchestrator:
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
+        self._discard_token_store()
         logger.info("Export subprocess shut down")
         return True
 
     def _cleanup(self):
         """atexit handler."""
         self._shutdown_subprocess(timeout = 5.0)
+
+    def _new_token_store(self) -> str:
+        """A private Hugging Face token directory for the next non-ambient worker.
+
+        The worker points HF_TOKEN_PATH here so the operator's stored login is out of its
+        reach and any token the loader persists lands somewhere disposable. The parent holds
+        the path so it can delete it even when the worker is killed rather than exiting.
+        """
+        import tempfile
+
+        self._discard_token_store()
+        self._token_store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
+        return self._token_store
+
+    def _discard_token_store(self) -> None:
+        """Remove the worker's private token directory, credential and all."""
+        import shutil
+
+        store = getattr(self, "_token_store", None)
+        if store:
+            shutil.rmtree(store, ignore_errors = True)
+        self._token_store = None
 
     def _ensure_subprocess_alive(self) -> bool:
         """Check if subprocess is alive."""
@@ -430,6 +453,10 @@ class ExportOrchestrator:
             "subject": subject,
             "hf_token": hf_token,
             "allow_ambient": allow_ambient,
+            # Owned here, not in the worker: a cancel goes through terminate() and then
+            # kill(), neither of which runs the child's atexit, and the loader may have
+            # persisted the caller's token into it by then.
+            "hf_token_store": self._new_token_store() if not allow_ambient else None,
         }
 
         with self._lock:

@@ -167,8 +167,8 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
-def _redirect_hf_token_store() -> None:
-    """Point this worker's Hugging Face token file at a private throwaway.
+def _redirect_hf_token_store(store: str) -> None:
+    """Point this worker's Hugging Face token file into the store the parent made.
 
     Scrubbing the environment is only half of it. ``get_token()`` also reads the stored
     login at ``~/.cache/huggingface/token``, so a non-ambient worker would still find the
@@ -176,18 +176,15 @@ def _redirect_hf_token_store() -> None:
     The traffic goes the other way too: ``huggingface_hub.login()`` *saves* what it is
     given (``_validate_and_save_token``), and unsloth's loaders call it on every
     ``from_pretrained``, so a caller's own token would overwrite the operator's stored
-    login for the whole machine. An empty per-worker store gives neither a place to live.
+    login for the whole machine. An empty private store gives neither a place to live.
+
+    The directory belongs to the orchestrator, which deletes it once the worker is gone:
+    a cancel terminates and then kills, so nothing here would run to clean it up.
 
     Must run before huggingface_hub is imported: HF_TOKEN_PATH is read once, at import,
     and HF_STORED_TOKENS_PATH is derived from its directory.
     """
-    import atexit
-    import shutil
-    import tempfile
-
-    store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
     os.environ["HF_TOKEN_PATH"] = os.path.join(store, "token")
-    atexit.register(shutil.rmtree, store, True)
 
 
 def _activate_transformers_version(model_name: str, hf_token: HfTokenArg = None) -> None:
@@ -664,7 +661,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     if not config.get("allow_ambient", True):
         apply_token_to_child_env(os.environ, False)
-        _redirect_hf_token_store()
+        if config.get("hf_token_store"):
+            _redirect_hf_token_store(config["hf_token_store"])
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
