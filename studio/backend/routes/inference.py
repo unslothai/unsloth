@@ -21021,6 +21021,19 @@ async def produce_openai_chat_completions(
                         get_preemption_controller(
                             str(getattr(llama_backend, "base_url", "llama-server"))
                         ).note_tokens(completion_id, int(_lease.tokens or 0))
+                        # And SWEEP on the new figure. note_tokens only records it, and
+                        # only observe() plans evictions, so a round that grew the prompt
+                        # by thousands of tokens updated the ledger silently and nothing
+                        # was evicted until 32 more tokens had been generated. A round
+                        # boundary is where prompts grow -- after a tool result, and after
+                        # a resume replays its partial -- so three chats could prefill
+                        # together and pass the cache before the sweep next ran. Observed
+                        # as three slots holding 4237 + 5400 + 7390 = 17027 tokens against
+                        # a 16384 cache with the watermark at 15608.
+                        #
+                        # Zero generated is right here: note_tokens has just re-baselined,
+                        # so growth is measured from this round rather than from admission.
+                        _gguf_observe_tokens(0)
                 except Exception:
                     pass
                 _openai_llama_admission_recost(

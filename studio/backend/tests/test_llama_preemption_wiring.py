@@ -1507,3 +1507,69 @@ class TestTheResumeGrantReadsTheCacheAfresh:
         assert "ledger-drift" in source, (
             "a cache overrun could not be attributed to the ledger or to the sweep"
         )
+
+
+class TestTheSweepIsNotBlindDuringPrefill:
+    """A round boundary grows the prompt, so it has to be a sweep point.
+
+    The watermark ran from the token callback alone. `_gguf_recost` told the controller
+    the new size at each round through `note_tokens`, but note_tokens only records and
+    only observe() plans evictions, so the larger figure sat in the ledger unacted on
+    until 32 more tokens had been generated.
+
+    That window is exactly where the prompts are biggest: after a tool result, and after
+    a resume replays its whole partial. Three chats prefilling together could pass the
+    cache before the sweep next ran, which is how three slots came to hold
+    4237 + 5400 + 7390 = 17027 tokens against a 16384 cache with the watermark at 15608.
+    """
+
+    def _recost_body(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        return source.split("def _gguf_recost", 1)[1].split("\n            def ", 1)[0]
+
+    def test_the_round_boundary_sweeps_and_does_not_merely_record(self):
+        body = self._recost_body()
+        assert "note_tokens(" in body, "the new size must still be recorded"
+        assert "_gguf_observe_tokens(" in body, (
+            "recording without sweeping leaves the eviction until the next 32 tokens"
+        )
+
+    def test_it_sweeps_after_recording_not_before(self):
+        body = self._recost_body()
+        assert body.index("note_tokens(") < body.index("_gguf_observe_tokens("), (
+            "sweeping first would plan against the previous round's figure"
+        )
+
+    def test_note_tokens_rebaselines_so_zero_growth_is_correct(self):
+        """The sweep is passed zero generated, which is only right after a re-baseline."""
+        from core.inference.llama_preemption import PreemptionController
+
+        controller = PreemptionController("prefill")
+        controller.configure(budget = 16384, kv_unified = True)
+        controller.register("a", tokens = 1000)
+        controller.observe("a", 500)
+        assert controller.participant("a").tokens == 1500
+
+        controller.note_tokens("a", 9000)          # a round restated the conversation
+        controller.observe("a", 0)                 # the sweep that follows it
+        assert controller.participant("a").tokens == 9000, (
+            "growth must be measured from the new round, not added to the old total"
+        )
+
+    def test_a_round_that_grows_past_the_watermark_evicts_someone(self):
+        from core.inference.llama_preemption import PreemptionController
+
+        controller = PreemptionController("prefill-evict")
+        controller.configure(budget = 16384, kv_unified = True, slots = 4)
+        controller.register("older", tokens = 4000)
+        controller.register("newer", tokens = 4000)
+        assert controller.plan_preemptions() == [], "nothing to do yet"
+
+        snapshot = controller.snapshot()
+        controller.note_tokens("newer", snapshot.budget - snapshot.buffer)
+        victims = [p.gen_id for p in controller.observe("newer", 0)]
+        assert victims, "the round grew past the watermark and nobody was asked to stop"
