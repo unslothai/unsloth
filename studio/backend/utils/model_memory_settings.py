@@ -30,7 +30,8 @@ DEFAULT_NO_RAM_RESERVE = False
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, Any]] = {}
-# Bumped on every write. A read that began before a write must not fill
+# Bumped on every write. A read that began before a write must not fill the cache with the value it already fetched, or
+# the new setting would appear to revert for the rest of the TTL and a load could launch contradicting it.
 _generation: dict[str, int] = {}
 
 
