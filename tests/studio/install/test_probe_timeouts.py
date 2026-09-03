@@ -284,3 +284,78 @@ def test_detect_rocm_version_tag_returns_when_a_source_hangs(hanging_tool):
         assert "RC=0" in proc.stdout
     finally:
         shutil.rmtree(workdir, ignore_errors = True)
+
+
+# ── The aarch64 + NVIDIA gates added for the Spark/WoA path ──
+# These live in the main script bodies rather than inside a helper function, so
+# the function-scoped assertions above cannot see them. They run nvidia-smi on
+# exactly the hosts whose driver is most likely to be wedged (WSL2 GPU-PV), so
+# they must be bounded like every other probe in these scripts.
+
+_NEW_SMI_CALL_SITES = [
+    # (file, resolver variable, bounded wrapper that must appear on the line)
+    ("studio/setup.sh", "_NVSMI_GATE", "_setup_run_smi"),
+    ("install.sh", "_bnb_nvsmi", "_run_bounded"),
+]
+
+
+@pytest.mark.parametrize("rel,resolver,wrapper", _NEW_SMI_CALL_SITES)
+def test_aarch64_gate_probes_are_bounded(rel, resolver, wrapper):
+    """A wedged nvidia-smi must not hang the aarch64 gates.
+
+    Measured before this assertion existed: a fake nvidia-smi that sleeps 60s
+    held the WSL deferral gate for the full 60s. With the wrapper it returns in
+    ~10s, matching every other probe in these scripts.
+    """
+    src = (PACKAGE_ROOT / rel).read_text(encoding = "utf-8")
+    offenders = [
+        line.strip()
+        for line in src.splitlines()
+        if re.search(rf'"\${resolver}"\s+-L', line)
+        and wrapper not in line
+        and not line.lstrip().startswith("#")
+    ]
+    assert not offenders, f"{rel}: nvidia-smi executed without {wrapper}:\n" + "\n".join(offenders)
+
+
+def test_setup_sh_aarch64_gates_respect_hidden_devices():
+    """CUDA_VISIBLE_DEVICES=""/-1 means "no usable NVIDIA" everywhere else here.
+
+    All three aarch64 gates must consult _setup_nvidia_usable, or a user who
+    deliberately hid the GPU still gets CUDA llama.cpp provisioned for it.
+    """
+    src = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    gates = [
+        "WSL2 aarch64 + NVIDIA, no nvcc yet: defer to the background CUDA build",
+        "Native Linux aarch64 + NVIDIA, no nvcc yet: skip the CPU build too",
+        "llama.cpp when the source build above could not",
+    ]
+    for marker in gates:
+        start = src.index(marker)
+        cond = src[src.index("\nif ", start) : src.index("; then", start)]
+        assert "_setup_nvidia_usable" in cond, f"gate {marker!r} ignores hidden NVIDIA devices"
+
+
+def test_woa_reroute_does_not_run_wmi_on_x64_installs():
+    """Get-HostMachineArch already distinguishes an x64-emulated shell on ARM64.
+
+    A Win32_Processor CIM query on every install is slow and is the kind of WMI
+    probe the desktop installers moved away from (#8586), so it may only run when
+    all three architecture signals were unreadable.
+    """
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "$_hostArch = Get-HostMachineArch" in src
+    cim = src.find("Get-CimInstance Win32_Processor")
+    if cim >= 0:
+        guard = src.find("-ieq 'unknown'")
+        assert 0 <= guard < cim, "Win32_Processor probe is not gated behind an unknown arch"
+
+
+def test_woa_reroute_honours_an_explicit_wheel_index_pin():
+    """An explicit pin is authoritative for the ROCm and XPU reroutes beside it.
+
+    Without this the WSL reroute overrides a deliberate cpu / mirror pin on a
+    Windows-on-ARM host that happens to have an NVIDIA GPU.
+    """
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "-and (-not $TorchIndexPinned) -and ($env:UNSLOTH_NO_WSL_FALLBACK" in src

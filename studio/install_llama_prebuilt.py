@@ -10,6 +10,7 @@ import argparse
 import atexit
 import errno
 import fnmatch
+import functools
 import glob
 import hashlib
 import json
@@ -2457,6 +2458,55 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     return _tokens[0]
 
 
+@functools.lru_cache(maxsize = 1)
+def _running_under_wsl() -> bool:
+    """WSL kernels self-identify with 'microsoft' in the release string."""
+    try:
+        return "microsoft" in platform.uname().release.lower()
+    except Exception:
+        return False
+
+
+def _nvidia_smi_capture(
+    command: list[str],
+    *,
+    attempts: int | None = None,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """run_capture for nvidia-smi probes, hardened against transient slowness.
+
+    nvidia-smi normally answers in well under a second, but under WSL2 GPU-PV it
+    can take far longer when the host is under heavy CPU load -- e.g. the
+    concurrent pip / frontend / cmake work during an `unsloth studio` install.
+    A single short timeout then raises TimeoutExpired, detect_host treats the
+    GPU as ABSENT, and the host is misrouted to a CPU prebuilt / slow source
+    build instead of the CUDA bundle it can actually use. Retry with a longer
+    per-attempt timeout there. Off WSL that slowness mode does not exist, so
+    bare metal keeps a single attempt at the 20s bound detect_host has always
+    used -- shortening it would newly misroute a loaded many-GPU node whose
+    nvidia-smi takes 10-20s. Only ever reached when nvidia-smi exists on PATH,
+    so CPU-only hosts never incur this wait.
+
+    The WSL retry budget is deliberately modest. detect_host makes three probes,
+    so a per-attempt timeout of T with N attempts costs 3*N*T on a host whose
+    nvidia-smi is wedged rather than merely slow (broken driver, revoked
+    container GPU); 2 x 30s keeps that worst case near the ~1 minute bare metal
+    already had instead of stretching it to six.
+    """
+    _on_wsl = _running_under_wsl()
+    _attempts = max(1, attempts if attempts is not None else (2 if _on_wsl else 1))
+    _timeout = timeout if timeout is not None else (30 if _on_wsl else 20)
+    last_exc: Exception | None = None
+    for _attempt in range(_attempts):
+        try:
+            return run_capture(command, timeout = _timeout)
+        except subprocess.TimeoutExpired as exc:
+            last_exc = exc
+            if _attempt + 1 < _attempts:  # don't sleep after the final attempt
+                time.sleep(2)
+    raise last_exc if last_exc is not None else RuntimeError("nvidia-smi capture failed")
+
+
 # Display-adapter device class: one NNNN subkey per installed display driver
 # config, each carrying the driver's DriverDesc and PCI MatchingDeviceId.
 _WINDOWS_DISPLAY_CLASS_KEY = (
@@ -2527,6 +2577,14 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None
 
     nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        # Root WSL sessions drop /usr/lib/wsl/lib (the only nvidia-smi home under
+        # WSL2 GPU-PV) from PATH, misrouting an ARM NVIDIA WSL host to the CPU
+        # prebuilt; mirror setup.sh's resolver order.
+        for _cand in ("/usr/lib/wsl/lib/nvidia-smi", "/usr/bin/nvidia-smi"):
+            if os.access(_cand, os.X_OK):
+                nvidia_smi = _cand
+                break
     driver_cuda_version = None
     compute_caps: list[str] = []
     visible_cuda_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -2540,7 +2598,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         # container leftovers), which would otherwise misclassify an AMD
         # ROCm host as NVIDIA and short-circuit the ROCm path.
         try:
-            listing = run_capture([nvidia_smi, "-L"], timeout = 20)
+            listing = _nvidia_smi_capture([nvidia_smi, "-L"])
             gpu_lines = [line for line in listing.stdout.splitlines() if line.startswith("GPU ")]
             if gpu_lines:
                 has_physical_nvidia = True
@@ -2549,7 +2607,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             pass
 
         try:
-            result = run_capture([nvidia_smi], timeout = 20)
+            result = _nvidia_smi_capture([nvidia_smi])
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
             # Newer NVIDIA drivers (e.g. 610.x on Windows) print
             # "CUDA UMD Version: X.Y" instead of the legacy
@@ -2567,13 +2625,12 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             log(f"nvidia-smi driver probe failed: {exc}")
 
         try:
-            caps = run_capture(
+            caps = _nvidia_smi_capture(
                 [
                     nvidia_smi,
                     "--query-gpu=index,uuid,compute_cap",
                     "--format=csv,noheader",
                 ],
-                timeout = 20,
             )
             visible_gpu_rows: list[tuple[str, str, str]] = []
             for raw in caps.stdout.splitlines():
