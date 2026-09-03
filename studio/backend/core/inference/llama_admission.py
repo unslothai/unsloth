@@ -70,6 +70,12 @@ DEFAULT_ADMISSION_KV_BUDGET = True
 # shut for every other caller, so an unbounded wait freezes the queue. See recost_waiting.
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
+# How much longer than its patience a reparking lease may wait while the pool is visibly
+# draining. The wait resets on every drain, so this is the only thing that bounds a pool
+# that churns forever without ever fitting this particular lease. Matches the preemptor's
+# MAX_RESUME_WAIT_MULTIPLE; the two waits are the same wait, one layer apart.
+_MAX_REPARK_WAIT_MULTIPLE = 20
+
 
 def _executor_workers() -> int:
     """Threads asyncio's default executor runs to_thread work on.
@@ -539,13 +545,34 @@ class LlamaAdmissionLease:
             commitment_only = self._parked or self._slot is not None
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         if commitment_only:
+            # Stall, not wall clock. A resume queued behind a long answer waits through
+            # entirely healthy draining, and a flat deadline cannot tell that from a pool
+            # that has stopped moving. Observed 2026-09-03: a chat gave up here after the
+            # preemptor had already confirmed the cache had room for it, because the wait
+            # was simply shorter than the answer ahead of it. The deadline resets whenever
+            # the pool's commitment falls, which is exactly when room is handed back;
+            # growth never resets it, so a pool that only fills still times out.
+            patience = None if deadline is None else float(timeout_s)
+            hard_deadline = (
+                None if patience is None
+                else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
+            )
+            last_committed = queue.committed_now()
             while True:
                 if queue.try_recost(0, want):
                     return self._record_resume(queue, want, slot = None)
                 if self._released or (cancel_event is not None and cancel_event.is_set()):
                     return False
-                if deadline is not None and time.monotonic() >= deadline:
-                    return False
+                if deadline is not None:
+                    now = time.monotonic()
+                    current = queue.committed_now()
+                    if current < last_committed:
+                        deadline = now + patience
+                    last_committed = current
+                    if now >= deadline or (
+                        hard_deadline is not None and now >= hard_deadline
+                    ):
+                        return False
                 await asyncio.sleep(poll_s)
         slot = await queue.acquire_parked_slot(
             tokens = want,
@@ -647,7 +674,23 @@ class LlamaAdmissionLease:
                 return True
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
-        deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
+        # Stall, not wall clock, for the same reason the preemptor's resume wait measures
+        # it that way: a lease reparking behind a 10k-token answer waits minutes through
+        # entirely healthy draining, and a flat deadline cannot tell that from a pool that
+        # has stopped moving. Observed 2026-09-03, one chat gave up here even though the
+        # layer above had already confirmed the cache had room for it.
+        #
+        # The deadline resets whenever the pool's commitment FALLS, which is precisely
+        # when somebody hands room back. Growth never resets it, so a pool that only fills
+        # still times out on schedule, and `hard_deadline` bounds a pool that churns
+        # forever without ever fitting this lease.
+        patience = None if not timeout_s or timeout_s <= 0 else float(timeout_s)
+        started = time.monotonic()
+        deadline = None if patience is None else started + patience
+        hard_deadline = (
+            None if patience is None else started + patience * _MAX_REPARK_WAIT_MULTIPLE
+        )
+        last_committed = queue.committed_now()
         try:
             while True:
                 if queue.try_reclaim_commitment(want):
@@ -667,8 +710,16 @@ class LlamaAdmissionLease:
                     return False
                 if cancel_event is not None and cancel_event.is_set():
                     return self._give_up_repark(queue, held, cancelled = True)
-                if deadline is not None and time.monotonic() >= deadline:
-                    return self._give_up_repark(queue, held, cancelled = False)
+                if deadline is not None:
+                    now = time.monotonic()
+                    current = queue.committed_now()
+                    if current < last_committed:
+                        deadline = now + patience
+                    last_committed = current
+                    if now >= deadline or (
+                        hard_deadline is not None and now >= hard_deadline
+                    ):
+                        return self._give_up_repark(queue, held, cancelled = False)
                 time.sleep(poll_s)
         except BaseException:
             self._give_up_repark(queue, held, cancelled = True)
@@ -1043,6 +1094,16 @@ class LlamaAdmissionQueue:
             self._committed = max(0, self._committed - max(0, int(tokens or 0)))
             self._reparking += 1
             self._grant_waiters_locked()
+
+    def committed_now(self) -> int:
+        """Tokens the pool currently believes are spoken for.
+
+        Read by a reparking lease to tell "the pool is draining, keep waiting" from
+        "nothing here is moving". Only ever falls when somebody gives room back, which
+        is exactly the event a waiter is waiting for.
+        """
+        with self._lock:
+            return int(self._committed)
 
     def try_reclaim_commitment(self, tokens: int) -> bool:
         """The other half: take a commitment of ``tokens``, or report that it does not fit.

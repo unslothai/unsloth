@@ -203,6 +203,55 @@ class TestResumeDoesNotChargeTwice:
         assert queue.snapshot().committed == 15000, "a failed resume must commit nothing"
 
     @pytest.mark.asyncio
+    async def test_a_draining_pool_buys_more_patience_than_the_wall_clock(self):
+        """The 2026-09-03 give-up the layer above could not explain.
+
+        `await_resume` had already confirmed the cache had room, then resume_async
+        refused anyway: its deadline was flat wall clock, and the wait was longer than
+        the answer it was queued behind. Room arriving late must extend the wait, not
+        arrive after it.
+        """
+        import asyncio as _asyncio
+
+        queue = LlamaAdmissionQueue("k")
+        blocker = await _lease(queue, tokens = 15000, capacity = 2)
+        victim = await _lease(queue, tokens = 1000, capacity = 2)
+        # Parked, so the resume takes the commitment-only path: that is the loop the
+        # live give-up came out of, and it has its own deadline.
+        assert victim.park() is True
+        victim.preempt()
+        assert blocker is not None
+
+        # Budget 16384, blocker holding 15000. The victim wants 5000, so it can only be
+        # served once the blocker is down to 11384. Draining 1000 every 20ms reaches that
+        # at ~80ms, well past the 50ms flat deadline, while never pausing longer than
+        # 50ms between drains. That gap is the whole test: a flat deadline fires at 50ms,
+        # a stall deadline never expires because progress keeps arriving.
+        async def drain_slowly():
+            for _ in range(6):
+                await _asyncio.sleep(0.02)
+                blocker.recost(max(0, blocker.tokens - 1000))
+
+        drainer = _asyncio.ensure_future(drain_slowly())
+        try:
+            resumed = await victim.resume_async(5000, poll_s = 0.005, timeout_s = 0.05)
+        finally:
+            await drainer
+        assert resumed is True, (
+            "gave up while the pool was draining; the deadline must reset on progress"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_pool_that_never_moves_still_times_out(self):
+        """The bound has to survive: a reparker holds the wait line shut for everyone."""
+        queue = LlamaAdmissionQueue("k")
+        blocker = await _lease(queue, tokens = 15000, capacity = 2)
+        victim = await _lease(queue, tokens = 1000, capacity = 2)
+        victim.preempt()
+        assert blocker is not None
+        assert await victim.resume_async(15000, poll_s = 0.001, timeout_s = 0.05) is False
+
+    @pytest.mark.asyncio
     async def test_a_parked_lease_never_takes_a_second_slot(self):
         """Its slot belongs to the park machinery and comes back through unpark_async;
         a ticket here would put one lease in two slots."""
