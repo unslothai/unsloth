@@ -11,6 +11,7 @@ import os
 import shutil
 import socket
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
@@ -287,6 +288,16 @@ def test_linux_runtime_beneath_tmp_is_mounted_after_private_tmpfs(monkeypatch, t
         assert private_tmpfs < runtime_mount
     finally:
         prepared.cleanup()
+
+
+def test_linux_seccomp_filter_rejects_x32_syscalls_on_x86(monkeypatch):
+    monkeypatch.setattr(os_sandbox.platform, "machine", lambda: "x86_64")
+    with os_sandbox._linux_seccomp_filter() as stream:
+        raw = stream.read()
+    instructions = [
+        struct.unpack("=HBBI", raw[offset : offset + 8]) for offset in range(0, len(raw), 8)
+    ]
+    assert (0x45, 7, 0, 0x40000000) in instructions
 
 
 @pytest.mark.parametrize(

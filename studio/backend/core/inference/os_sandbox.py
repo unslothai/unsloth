@@ -30,10 +30,10 @@ _PROBE_TOKEN = "UNSLOTH_OS_SANDBOX_PROBE_OK"
 _PROBE_UDP_TOKEN = b"UNSLOTH_OS_SANDBOX_UDP_PROBE"
 _AF_VSOCK = 40
 _LINUX_SECCOMP_ABIS = {
-    "aarch64": (0xC00000B7, 198, 198, 199, 199),
-    "arm64": (0xC00000B7, 198, 198, 199, 199),
-    "amd64": (0xC000003E, 41, 0x40000029, 53, 0x40000035),
-    "x86_64": (0xC000003E, 41, 0x40000029, 53, 0x40000035),
+    "aarch64": (0xC00000B7, 0, 198, 198, 199, 199),
+    "arm64": (0xC00000B7, 0, 198, 198, 199, 199),
+    "amd64": (0xC000003E, 0x40000000, 41, 0x40000029, 53, 0x40000035),
+    "x86_64": (0xC000003E, 0x40000000, 41, 0x40000029, 53, 0x40000035),
 }
 _LINUX_SYSTEM_ROOTS = (
     "/usr/bin",
@@ -118,11 +118,12 @@ def _linux_seccomp_filter() -> BinaryIO:
         raise SandboxUnavailableError(
             f"Linux architecture {platform.machine() or 'unknown'} is not qualified for seccomp"
         )
-    audit_arch, socket_nr, socket_alt_nr, socketpair_nr, socketpair_alt_nr = abi
+    audit_arch, x32_syscall_bit, socket_nr, socket_alt_nr, socketpair_nr, socketpair_alt_nr = abi
     # struct seccomp_data: nr@0, arch@4, args[0]@16. Any ABI change kills the
     # process; AF_VSOCK and io_uring are denied while AF_UNIX remains available.
     load_word = 0x20
     jump_equal = 0x15
+    jump_bits_set = 0x45
     return_value = 0x06
     kill_process = 0x80000000
     return_errno = 0x00050000 | errno.EPERM
@@ -133,6 +134,7 @@ def _linux_seccomp_filter() -> BinaryIO:
         (jump_equal, 1, 0, audit_arch),
         (return_value, 0, 0, kill_process),
         (load_word, 0, 0, 0),
+        (jump_bits_set, 7, 0, x32_syscall_bit),
         (jump_equal, 6, 0, io_uring_setup_nr),
         (jump_equal, 3, 0, socket_nr),
         (jump_equal, 2, 0, socket_alt_nr),
