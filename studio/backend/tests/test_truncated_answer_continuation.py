@@ -554,6 +554,76 @@ def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeyp
     assert "add_generation_prompt" not in replayed
 
 
+def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch):
+    """The synthetic request is the latest user group, so the real one is evictable.
+
+    `truncate_oldest_messages` protects the newest user group, which after the reasoning
+    recovery is its own "answer now" request. The rolling anchor normally covers the real
+    question, but only by `id`, and a question carrying control markup is rewritten by the
+    neutralizing sweep into a new dict the anchor no longer matches. A replacement window
+    too small for the lot then evicted the question together with the partial, and the
+    retry went out as the generic request alone.
+    """
+
+    question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in messages
+        )
+        // 2,
+    )
+
+    def _respawned() -> bool:
+        # Holds the refitted conversation, not the conversation plus the recovery tail.
+        backend._effective_context_length = 300
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", _respawned)
+
+    healthy = backend._stream_with_retry
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky_stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            payloads.append(copy.deepcopy(args[2]))
+            raise httpx.RemoteProtocolError("llama-server died before the headers")
+        with healthy(*args, **kwargs) as response:
+            yield response
+
+    monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": question}],
+            tools = [],
+            max_tool_iterations = 0,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    replayed = json.dumps(payloads[-1]["messages"])
+    assert "QUESTION_MARKER" in replayed, "the eviction dropped the question being answered"
+    assert "ctx.arc(6, -5, 5, 0" in replayed, "the eviction dropped the partial being continued"
+
+
 def test_the_final_continuation_is_capped(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(

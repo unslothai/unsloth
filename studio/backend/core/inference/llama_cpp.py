@@ -28782,6 +28782,7 @@ class LlamaCppBackend:
             tools,
             reasoning_kw,
             continue_flag = False,
+            protect = None,
         ):
             """Drop older turns from a continuation candidate that is one eviction short.
 
@@ -28795,6 +28796,15 @@ class LlamaCppBackend:
             preflight: that one archives, recalls and moves this thread's sticky boundary,
             and none of that should happen a second time in the middle of one turn.
             Returns the evicted candidate, or None when there was nothing to evict.
+
+            ``protect`` names messages this eviction must not lose. The evictor keeps the
+            LATEST user group, which is the reasoning recovery's own synthetic request
+            once one has been appended, leaving the question being answered and the
+            partial being continued as the oldest thing in the list. The rolling anchor
+            usually covers the question, but only by `id`, and a question that carried
+            control markup was rewritten by the neutralizing sweep into a new dict the
+            anchor no longer matches -- so the retry went out as the generic request
+            alone, with neither the task nor the answer it was meant to continue.
             """
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
@@ -28822,7 +28832,9 @@ class LlamaCppBackend:
                         continue_final_message = continue_flag,
                     ),
                     estimate_message = estimate_message_tokens_without_unpriced_media,
-                    anchor_ids = _rolling_anchor_ids,
+                    # A new set: the caller's is also the recall-anchor set and outlives
+                    # this fit.
+                    anchor_ids = (_rolling_anchor_ids | protect) if protect else _rolling_anchor_ids,
                 )
             except Exception:
                 logger.debug("continuation eviction: fit failed", exc_info = True)
@@ -31758,11 +31770,24 @@ class LlamaCppBackend:
                     if not _continuation_would_be_served(
                         stream_payload["messages"], _refit_continue
                     ):
+                        # The turn being recovered, named for the evictor: the tail, and
+                        # the run behind it back through the question it answers. Without
+                        # it a recovery tail ending on the synthetic request makes that
+                        # request the latest user group, and the question and the partial
+                        # go instead. See `_evict_until_it_fits`.
+                        _refit_protect = {id(_message) for _message in _refit_tail}
+                        for _message in reversed(
+                            _refit_messages[: len(_refit_messages) - len(_refit_tail)]
+                        ):
+                            _refit_protect.add(id(_message))
+                            if _message.get("role") == "user":
+                                break
                         _refit_evicted = _evict_until_it_fits(
                             stream_payload["messages"],
                             None,
                             stream_payload.get("chat_template_kwargs"),
                             _refit_continue,
+                            _refit_protect,
                         )
                         if _refit_evicted is not None:
                             # Adopted whether or not it clears the gate. When it does
