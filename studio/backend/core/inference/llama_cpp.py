@@ -28797,14 +28797,11 @@ class LlamaCppBackend:
             and none of that should happen a second time in the middle of one turn.
             Returns the evicted candidate, or None when there was nothing to evict.
 
-            ``protect`` names messages this eviction must not lose. The evictor keeps the
-            LATEST user group, which is the reasoning recovery's own synthetic request
-            once one has been appended, leaving the question being answered and the
-            partial being continued as the oldest thing in the list. The rolling anchor
-            usually covers the question, but only by `id`, and a question that carried
-            control markup was rewritten by the neutralizing sweep into a new dict the
-            anchor no longer matches -- so the retry went out as the generic request
-            alone, with neither the task nor the answer it was meant to continue.
+            ``protect`` names messages this must not lose. The evictor keeps the LATEST
+            user group, which after the reasoning recovery is its own synthetic request,
+            and the rolling anchor that would have saved the real question matches by
+            `id`, so the neutralizing sweep rewriting it loses that too: the retry went
+            out as the generic request alone.
             """
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
@@ -28832,8 +28829,6 @@ class LlamaCppBackend:
                         continue_final_message = continue_flag,
                     ),
                     estimate_message = estimate_message_tokens_without_unpriced_media,
-                    # A new set: the caller's is also the recall-anchor set and outlives
-                    # this fit.
                     anchor_ids = (_rolling_anchor_ids | protect) if protect else _rolling_anchor_ids,
                 )
             except Exception:
@@ -31647,22 +31642,18 @@ class LlamaCppBackend:
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []
-        # What this pass has put on the PAYLOAD that `conversation` never learned about:
-        # a continuation's partial, and the reasoning recovery's progress turn plus its
-        # request. Both recoveries can run in one turn, in either order, so the tail
-        # accumulates. `_refit_tail_merged` covers only its FIRST message: that one may
-        # have been folded into a turn `conversation` still holds, and then it replaces
-        # that turn rather than sitting after it.
+        # What this pass put on the PAYLOAD that `conversation` never learned about: a
+        # continuation's partial, and the recovery's progress turn plus its request. Both
+        # can run in one turn, in either order, so it accumulates.
         _refit_tail: list = []
         _refit_tail_merged = False
 
         def _record_refit_tail(committed: list, added: int, merged: bool) -> None:
             """Take the *added* newest messages of *committed* onto the refit tail.
 
-            Recorded where it is committed rather than sniffed off the payload later,
-            because only the committing site knows whether `append_assistant_turn` merged
-            its message into the turn the list already ended on -- and if it did, the
-            merged turn REPLACES what it absorbed instead of following it.
+            Only the committing site knows whether `append_assistant_turn` merged its
+            message into the turn the list already ended on, and a merged one REPLACES
+            what it absorbed. `_refit_tail_merged` says that of the FIRST message only.
             """
             nonlocal _refit_tail, _refit_tail_merged
             _new = committed[-added:]
@@ -31731,31 +31722,21 @@ class LlamaCppBackend:
                 from core.inference import context_refusal  # noqa: PLC0415
 
                 context_refusal.record_fit(truncation)
-                # `conversation` never learned what this pass recovered with -- both the
-                # answer continuation and the reasoning recovery append to the PAYLOAD
-                # alone -- so putting it back unchanged sends a retry missing turns that
-                # `cumulative` and `_last_emitted` still hold, and with the flags
-                # describing a list that no longer ends where they say. Neither half can
-                # be dropped on its own: llama-server takes `continue_final_message` with
-                # no trailing assistant turn (measured on b10715) and renders the prompt
-                # with no generation prompt at all, so the model continues the USER's
-                # message instead of answering it; and dropping the flags instead
-                # restarts an answer already on screen, so the fresh reply is appended to
-                # it. The tail rides across.
-                #
-                # Copied first: the sweep hands back the SAME list when nothing needed
-                # rewriting, so writing the tail in place would grow `conversation`
-                # itself and every later reader of it.
+                # `conversation` never learned what this pass recovered with: the
+                # continuation and the reasoning recovery append to the PAYLOAD alone.
+                # Neither half can go alone -- llama-server takes
+                # `continue_final_message` with no trailing assistant turn (b10715) and
+                # renders with NO generation prompt, so the model continues the USER's
+                # message; and dropping the flags restarts an answer already on screen.
+                # Copied because the sweep returns the SAME list when nothing needed
+                # rewriting, so writing in place would grow `conversation`.
                 _refit_messages = list(
                     neutralize_control_markup_in_messages(conversation, None, self.markup_profile)
                 )
                 if _refit_tail:
-                    # Already neutralized where the candidate was built, so the tail goes
-                    # in after the sweep rather than through it. `_refit_tail_merged`
-                    # says the first of them was folded INTO the assistant turn the list
-                    # then ended on, so it carries that turn's text and replaces it;
-                    # appending as well would replay a caller's prefill twice, across two
-                    # consecutive assistant turns.
+                    # Already neutralized where the candidate was built, so it goes in
+                    # after the sweep, not through it. A merged first message carries the
+                    # turn it absorbed: appending as well replays a prefill twice.
                     if _refit_tail_merged and trailing_assistant_text(_refit_messages) is not None:
                         _refit_messages[-1:] = _refit_tail
                     else:
@@ -31763,18 +31744,13 @@ class LlamaCppBackend:
                 stream_payload["messages"] = _refit_messages
                 if _refit_tail:
                     # The fit above priced `conversation` alone, so the tail is room the
-                    # replacement window has not been asked about. Same two steps the
-                    # recovery took when it was first committed, now against the window
-                    # the respawn actually came back with.
+                    # replacement window has not been asked about.
                     _refit_continue = bool(stream_payload.get("continue_final_message"))
                     if not _continuation_would_be_served(
                         stream_payload["messages"], _refit_continue
                     ):
-                        # The turn being recovered, named for the evictor: the tail, and
-                        # the run behind it back through the question it answers. Without
-                        # it a recovery tail ending on the synthetic request makes that
-                        # request the latest user group, and the question and the partial
-                        # go instead. See `_evict_until_it_fits`.
+                        # The turn being recovered, named for the evictor: the tail
+                        # plus the run back through the question it answers.
                         _refit_protect = {id(_message) for _message in _refit_tail}
                         for _message in reversed(
                             _refit_messages[: len(_refit_messages) - len(_refit_tail)]
@@ -31790,12 +31766,9 @@ class LlamaCppBackend:
                             _refit_protect,
                         )
                         if _refit_evicted is not None:
-                            # Adopted whether or not it clears the gate. When it does
-                            # not, nothing else will either -- what is left is the
-                            # current turn and the tail, and neither can go -- so the
-                            # smaller of the two candidates is the retry's best chance,
-                            # and llama-server's own context error names the real numbers
-                            # if it still does not fit.
+                            # Adopted whether or not it clears the gate: what is left is
+                            # the current turn and the tail, neither can go, and
+                            # llama-server's context error names the real numbers.
                             stream_payload["messages"] = _refit_evicted
                 if truncation:
                     if _records_boundary(truncation):
@@ -32120,9 +32093,8 @@ class LlamaCppBackend:
                                 _served = True
                         if _served:
                             stream_payload["messages"] = _candidate_messages
-                            # One turn past what `conversation` knows, for the respawn
-                            # refit. Read off the COMMITTED list, so an eviction above
-                            # cannot leave the refit replaying a turn that is gone.
+                            # The COMMITTED list, so an eviction above cannot leave the
+                            # refit replaying a turn that is gone.
                             _record_refit_tail(_candidate_messages, 1, _merged_f)
                             _final_replayed_chars = len(_last_emitted)
                             stream_payload["continue_final_message"] = True
@@ -32236,9 +32208,8 @@ class LlamaCppBackend:
                                     _served_r = True
                             if _served_r:
                                 stream_payload["messages"] = _candidate_r
-                                # Two turns past what `conversation` knows: the progress
-                                # note and the request for the answer. Both have to
-                                # survive a respawn refit, or the retry asks the original
+                                # The progress note and the request, both of which have to
+                                # survive a respawn refit or the retry asks the original
                                 # question again with the partial still on screen.
                                 _record_refit_tail(_candidate_r, 2, _merged_r)
                                 # The retry ends on a USER turn, so the flags from any
