@@ -1,27 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The "torch cannot see your GPU" hint, and the four ways it must stay quiet.
+"""Every case where replacing zoo's "you need a GPU" with a reinstall hint would be WRONG.
 
-`_reraise_device_type_error_with_gpu_hint` replaces unsloth_zoo's bare "you need a
-GPU" with the reinstall it actually takes. Everything here pins a case where that
-replacement would be WRONG, because each one costs a user a pointless torch
-reinstall or buries the real error:
-
-- Zoo already gave ROCm repair advice. It is told apart by "ROCm", not "AMD": zoo's
-  generic message names AMD as a supported vendor ("Unsloth currently only works on
-  NVIDIA, AMD and Intel GPUs."), and that is the message raised on any torch without
-  `torch.accelerator` (2.6+), i.e. exactly the mismatched build this hint is for.
-- CUDA_VISIBLE_DEVICES=""/-1 hides the GPU on purpose. nvidia-smi ignores the
-  variable (see install.sh `_cvd_hides_nvidia`), so the mask is indistinguishable
-  from a broken build unless we look.
-- nvidia-smi cannot answer. The probe returns None rather than raising, so the
-  original error is re-raised outside the handler; raising inside it chains the
-  probe's FileNotFoundError on as __context__ and every CPU-only host reads a
-  spurious nvidia-smi traceback first.
-
-The command it prints is asserted too: torch alone leaves a stale torchvision that
-fails the next import, and a hardcoded cuXXX is wrong on pre-Turing hosts.
+- Zoo's ROCm advice, told apart by "ROCm": its generic message names AMD as a supported
+  vendor, and that is the one raised on any torch without `torch.accelerator` (2.6+).
+- CUDA_VISIBLE_DEVICES=""/-1, a deliberate mask nvidia-smi ignores (install.sh
+  `_cvd_hides_nvidia`). Other masks can resolve to nothing too, so the message names them.
+- No answer from nvidia-smi: the probe returns None, so the re-raise happens outside the
+  handler and no probe traceback lands ahead of the real error.
+- The printed command, which must replace all three wheels and pick no concrete cuXXX.
 """
 
 from __future__ import annotations
@@ -135,9 +123,8 @@ def test_deliberately_hidden_gpu_is_not_a_broken_build(helper, monkeypatch, mask
 
 @pytest.mark.parametrize("mask", ["0", "0,1", "1", "GPU-fake-uuid"])
 def test_a_partial_mask_keeps_the_hint_but_names_itself(helper, monkeypatch, mask):
-    """`1` on a single-GPU host and a stale UUID also expose zero devices, and no reinstall
-    fixes that. Ruling it out needs CUDA's left-to-right parse, so the message says which
-    mask is set rather than guessing whether it resolves."""
+    """`1` on a single-GPU host and a stale UUID also expose zero devices; the message names
+    the mask rather than reimplementing CUDA's left-to-right parse to prove it."""
     _smi(monkeypatch)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
 
@@ -176,6 +163,5 @@ def test_probe_failures_return_the_original_error(helper, monkeypatch, kwargs):
 
     assert excinfo.value is original
     assert excinfo.value.__cause__ is None
-    # The probe's own failure must not surface: a CPU-only host would otherwise read
-    # "FileNotFoundError: nvidia-smi ... During handling of the above exception".
+    # Otherwise a CPU-only host reads "FileNotFoundError: nvidia-smi" first.
     assert excinfo.value.__context__ is None
