@@ -109,6 +109,47 @@ def _class_const(source: str, name: str) -> str:
     return match.group(1)
 
 
+def _skip_literal(source: str, at: int) -> int:
+    """The index just past the string or template literal opening at `at`."""
+    quote = source[at]
+    index = at + 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+            continue
+        if source[index] == quote:
+            return index + 1
+        index += 1
+    raise AssertionError(f"unterminated {quote} literal")
+
+
+def _opening_tag(source: str, at: int) -> tuple[int, int]:
+    """The bounds of the JSX opening tag containing the attribute at `at`.
+
+    Both ends, scanned with the brackets and string literals tracked, so the
+    `>` of an inline arrow (`onClick={() => ...}`) does not end the tag early.
+    Attributes are then searched over the whole tag rather than the part before
+    some other attribute, which is an order dependency of exactly the kind this
+    file is being fixed for.
+    """
+    start = source.rindex("<", 0, at)
+    depth = 0
+    index = start
+    while index < len(source):
+        char = source[index]
+        if char in "\"'`":
+            index = _skip_literal(source, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ">" and depth == 0 and index > start:
+            return start, index
+        index += 1
+    raise AssertionError("unterminated JSX opening tag")
+
+
 def _class_on_testid(source: str, testid: str) -> str:
     """The literal class string of the element carrying `data-testid=testid`.
 
@@ -117,11 +158,11 @@ def _class_on_testid(source: str, testid: str) -> str:
     inserted or reordered, which is the failure this file is being fixed for,
     and it fails by raising rather than by reporting a missing rule.
     """
-    at = source.index(f'data-testid="{testid}"')
-    opening = source[source.rindex("<", 0, at) : at]
+    start, end = _opening_tag(source, source.index(f'data-testid="{testid}"'))
+    tag = source[start:end]
     key = 'className="'
-    assert key in opening, f"{testid} carries no literal class string"
-    at_class = source.rindex("<", 0, at) + opening.index(key) + len(key)
+    assert key in tag, f"{testid} carries no literal class string"
+    at_class = start + tag.index(key) + len(key)
     return source[at_class : source.index('"', at_class)]
 
 
@@ -1427,29 +1468,58 @@ _COMMENT = re.compile(r"//[^\n]*")
 _BANNER_ROOT = re.compile(r'data-testid="(?:web|tauri)-update-banner"')
 
 
+def _unpositioned_branch(text: str) -> str:
+    """The `: ...` arm of `positioned ? ... : ...`.
+
+    The two arms are two different elements: `positioned` is the standalone
+    banner, and the rail-facing card is the alternative. Reading both at once
+    would let a rule move from the card to the standalone banner and still
+    satisfy a check about the card. Split at the colon at bracket depth zero
+    and outside any literal, so a Tailwind variant in the first arm
+    (`dark:bg-card`) is not mistaken for the separator.
+    """
+    index = text.index("?", text.index("positioned"))
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char in "\"'`":
+            index = _skip_literal(text, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ":" and depth == 0 and text[index - 1] != "?":
+            return text[index + 1 :]
+        index += 1
+    raise AssertionError("the positioned card has no unpositioned branch")
+
+
 def _card_slot(source: str) -> str:
     """The rail-facing root of an update card, comments stripped.
 
     Not one string literal: the root is a `cn()` of several, so an assertion
     anchored on the first of them cannot see the floor at all. Anchored on the
-    `data-testid` that names the card and the `cn(` before it, so no class has
-    to keep its place for the root to be found. Comments go because both files
-    name the very classes under test in prose beside them, and a rule that a
-    comment can satisfy is not being tested.
+    `data-testid` that names the card, so no class has to keep its place for
+    the root to be found, and narrowed to the branch the overlay rail actually
+    renders. Comments go because both files name the very classes under test in
+    prose beside them, and a rule that a comment can satisfy is not tested.
     """
     match = _BANNER_ROOT.search(source)
     assert match, "the update card has lost its data-testid"
-    return _COMMENT.sub(
-        "", source[source.rindex("className={cn(", 0, match.start()) : match.start()]
-    )
+    start, _ = _opening_tag(source, match.start())
+    key = "className={cn("
+    at = source.index(key, start)
+    return _unpositioned_branch(_COMMENT.sub("", source[at : match.start()]))
 
 
 def _card_surface(source: str) -> str:
     """The painted surface: the first element inside the card's root."""
     match = _BANNER_ROOT.search(source)
     assert match, "the update card has lost its data-testid"
+    _, end = _opening_tag(source, match.start())
     key = 'className="'
-    at = source.index(key, match.end()) + len(key)
+    at = source.index(key, end) + len(key)
     return source[at : source.index('"', at)]
 
 
@@ -1515,6 +1585,22 @@ def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
     assert _applies("md:shrink-0", "shrink-0"), "the absence check must see a gated rule"
     assert _unconditional("md:shrink-0", "shrink-0") is False
     assert _unconditional("flex shrink-0 flex-col", "shrink-0")
+
+
+def test_the_class_anchors_do_not_depend_on_any_order():
+    """An anchor that needs an attribute or a branch to keep its place is the
+    same brittleness one level up, so both are read structurally."""
+    # An arrow function's `>` does not end the opening tag, and the attribute
+    # is found on either side of the one that names the element.
+    for tag in (
+        '<ul className="a b" data-testid="x" onClick={() => go()}>',
+        '<ul onClick={() => go()} data-testid="x" className="a b">',
+    ):
+        assert _class_on_testid(tag, "x") == "a b", tag
+    # The two arms of the ternary are two different elements. A variant in the
+    # first arm does not read as the separator, and only the second is returned.
+    branch = _unpositioned_branch('positioned ? "fixed dark:bg-card" : cn("rail shrink-0")')
+    assert "rail" in branch and "fixed" not in branch
 
 
 def test_the_overlay_stack_fits_the_viewport():
