@@ -563,6 +563,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
 
     # One canvas for the run, from the FIRST clip's aspect ratio: every other clip is cover-cropped
     # onto it, so a mixed-aspect dataset trains on one geometry.
@@ -618,6 +620,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
 
     # ── phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
