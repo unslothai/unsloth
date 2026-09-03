@@ -114,31 +114,34 @@ def main() -> int:
         home.mkdir()
 
         print("\n[1] a parent anyone can write is NOT trusted")
-        for label, mode in (("world-writable", 0o777), ("group-writable", 0o775),
-                            ("sticky shared", 0o1777)):
+        for label, mode in (
+            ("world-writable", 0o777),
+            ("group-writable", 0o775),
+            ("sticky shared", 0o1777),
+        ):
             root = _portable_master(tmp / f"shared-{mode:o}", mode = mode)
             r = _run({"UNSLOTH_STUDIO_HOME": str(root)}, home)
             check(f"{label}: names no master root", None, r["unsloth_home"])
             check(f"{label}: stays out of portable mode", False, r["portable"])
             # Fails CLOSED, back to the in-root path this PR's base already used.
-            check(f"{label}: llama.cpp stays inside the root",
-                  str(root / "llama.cpp"), r["llama"])
+            check(f"{label}: llama.cpp stays inside the root", str(root / "llama.cpp"), r["llama"])
             check(f"{label}: CLI inherits nothing", None, r["cli_marker_root"])
-            check(f"{label}: CLI exports the in-root path",
-                  str(root / "llama.cpp"), r["cli_llama"])
+            check(f"{label}: CLI exports the in-root path", str(root / "llama.cpp"), r["cli_llama"])
 
         print("\n[2] the legitimate nested install still inherits")
         for label, mode in (("installer default", 0o755), ("private root", 0o700)):
             master = tmp / f"portable-{mode:o}"
             root = _portable_master(master, mode = mode)
             r = _run({"UNSLOTH_STUDIO_HOME": str(root)}, home)
-            check(f"{label}: master root found from the marker alone",
-                  str(master), r["unsloth_home"])
+            check(
+                f"{label}: master root found from the marker alone", str(master), r["unsloth_home"]
+            )
             check(f"{label}: portable mode on", True, r["portable"])
             check(f"{label}: llama.cpp beside studio/", str(master / "llama.cpp"), r["llama"])
             check(f"{label}: CLI agrees on the master root", str(master), r["cli_marker_root"])
-            check(f"{label}: CLI exports the master path",
-                  str(master / "llama.cpp"), r["cli_llama"])
+            check(
+                f"{label}: CLI exports the master path", str(master / "llama.cpp"), r["cli_llama"]
+            )
 
         print("\n[3] a marker IN the root is unaffected (flat layout)")
         # Nothing above it is consulted, so a shared parent cannot veto it either.

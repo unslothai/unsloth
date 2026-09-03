@@ -101,8 +101,7 @@ def main() -> int:
         check("torch home inside the root", str(torch_home), r["torch_home"])
         check(
             "every default is pinned",
-            ["HF_ASSETS_CACHE", "HF_DATASETS_CACHE", "TORCH_HOME",
-             "UNSLOTH_STUDIO_PROJECTS_HOME"],
+            ["HF_ASSETS_CACHE", "HF_DATASETS_CACHE", "TORCH_HOME", "UNSLOTH_STUDIO_PROJECTS_HOME"],
             r["default_keys"],
         )
 
