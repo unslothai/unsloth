@@ -245,9 +245,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # the shared-cache guards in model_config.py test is_anonymous(), which a plain None fails,
     # so a scrubbed environment alone would still serve this caller the operator's cached
     # private snapshots. Rebuild the canonical HfTokenArg once, here, for the whole load.
-    hf_token = hf_token_arg(
-        cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True)
-    )
+    hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
