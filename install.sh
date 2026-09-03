@@ -761,20 +761,27 @@ _resolve_studio_destinations() {
 _resolve_studio_destinations
 UNSLOTH_ROOT="${UNSLOTH_ROOT:-}"
 
-# Prior state of the .unsloth-portable-root marker, so it can roll back with the venv. Both
-# writers run before the install can succeed -- the publish in _export_portable_roots is
-# before the uv bootstrap, and _clear_stale_portable_marker's removal is earlier still -- so
-# a failed run would otherwise leave the restored environment described by a marker that no
-# longer matches it. _restore_portable_marker, beside the venv rollback below, is what puts
-# these back; the writers only record, and record inline, so a snippet lifted out of either
-# one still runs on its own the way the tests around them do it.
+# Prior state of the portable root records, so they can roll back with the venv. Every writer
+# runs before the install can succeed -- the publish in _export_portable_roots is before the
+# uv bootstrap, and _clear_stale_portable_marker's removal is earlier still -- so a failed run
+# would otherwise leave the restored environment described by a record that no longer matches
+# it. _restore_portable_marker, beside the venv rollback below, is what puts these back; the
+# writers only record, and record inline, so a snippet lifted out of any one of them still
+# runs on its own the way the tests around them do it.
 #
-# Two slots, statically assigned, so nothing has to be allocated: a portable run publishes one
-# marker (slot 1), a normal run clears at most the flat-layout marker (slot 1) and the
-# nested-layout parent marker (slot 2), and the two runs are mutually exclusive. Each holds
-# "y" plus the file's bytes, or "n" for absent. Content is informational -- every reader
-# (storage_roots.unsloth_home, setup.sh's _setup_portable_mode, scripts/uninstall.sh) only
-# tests existence -- so losing a trailing newline in the round trip changes nothing.
+# Three slots, statically assigned, so nothing has to be allocated:
+#   1  the .unsloth-portable-root marker a portable run publishes at $UNSLOTH_ROOT, and the
+#      flat-layout one a normal run clears at $STUDIO_HOME. The two runs are mutually
+#      exclusive, so one slot covers both.
+#   2  the nested-layout parent marker a normal run clears at $STUDIO_HOME/.., which can fire
+#      in the same run as the flat arm above.
+#   3  the .unsloth-master-root record at $STUDIO_HOME: written by a nested portable run,
+#      cleared by a normal one. Same path in both directions, so again one slot.
+# Each holds "y" plus the file's bytes, or "n" for absent. Slots 1 and 2 are informational --
+# every reader of that marker (storage_roots.unsloth_home, setup.sh's _setup_portable_mode,
+# scripts/uninstall.sh) only tests existence. Slot 3 is NOT: storage_roots._in_root_master_root
+# reads the path out of it. The round trip keeps the bytes either way, since `$(cat)` drops
+# only trailing newlines and the restore prints one back.
 #
 # The launcher a conversion displaces rolls back the same way, on the pairs below. Three
 # conversions displace one, and they need TWO pairs, for the same reason the marker needs two
@@ -799,6 +806,8 @@ _PORTABLE_MARKER_PATH_1=""
 _PORTABLE_MARKER_PRIOR_1=""
 _PORTABLE_MARKER_PATH_2=""
 _PORTABLE_MARKER_PRIOR_2=""
+_PORTABLE_MARKER_PATH_3=""
+_PORTABLE_MARKER_PRIOR_3=""
 _PORTABLE_FLAT_SHIM_PATH=""
 _PORTABLE_FLAT_SHIM_BACKUP=""
 _PORTABLE_SHIM_PATH=""
@@ -877,6 +886,61 @@ _export_portable_roots() {
         exit 1
     fi
 
+    # The same association again, recorded INSIDE the Studio root, which is what makes it
+    # trustworthy. The marker above sits at $UNSLOTH_ROOT, one level ABOVE the tree this install
+    # owns, and a marker there is honoured by handing $UNSLOTH_ROOT to the backend as
+    # UNSLOTH_HOME -- the directory the managed llama.cpp, node and whisper.cpp are then resolved
+    # from and EXECUTED. So every reader first has to prove our installer wrote it
+    # (storage_roots._parent_marker_is_trustworthy: owned by this euid or root, and not group- or
+    # world-writable). Under the `umask 002` that is standard on multi-user boxes and CI images
+    # the root the user picked is group-writable, so that proof fails for an install that
+    # SUCCEEDED, and the documented `source $STUDIO_HOME/unsloth_studio/bin/activate` path
+    # resolves back to $HOME/.unsloth -- the caches, the projects root and studio.db outside the
+    # selected root, silently. $STUDIO_HOME needs no such proof: it is where the venv goes, so
+    # anything able to write this file can already replace the interpreter it points at.
+    # Written for the NESTED layout, and REMOVED for the flat one, which is not a no-op: a flat
+    # run puts its own marker AT $STUDIO_HOME, and a record left there by an earlier nested
+    # install of the same directory names the level ABOVE it and outranks that marker in every
+    # reader. Either way the file describes this install or is not there.
+    # Fatal for the same reason the publish above is, and reachable for one more: $UNSLOTH_ROOT
+    # was checked writable, $STUDIO_HOME never was, so an unwritable one says so here instead of
+    # failing obscurely in `uv venv` several minutes later. The flat removal only warns -- a
+    # record that cannot be removed still resolves to a real portable root, one level too high
+    # rather than nowhere at all.
+    # Inline, not a helper, like the snapshot above: tests lift this block out and run it alone.
+    _epr_record="$STUDIO_HOME/.unsloth-master-root"
+    if [ "$STUDIO_HOME" != "$UNSLOTH_ROOT" ]; then
+        _PORTABLE_MARKER_PATH_3="$_epr_record"
+        if [ -f "$_epr_record" ]; then
+            _PORTABLE_MARKER_PRIOR_3="y$(cat -- "$_epr_record" 2>/dev/null)"
+        else
+            _PORTABLE_MARKER_PRIOR_3=n
+        fi
+        if ! printf '%s\n' "$UNSLOTH_ROOT" > "$_epr_record" 2>/dev/null; then
+            _PORTABLE_MARKER_PATH_3=""
+            _PORTABLE_MARKER_PRIOR_3=""
+            echo "ERROR: could not write the master root record at $_epr_record." >&2
+            if [ -d "$_epr_record" ]; then
+                echo "       A directory is in its place. Remove or rename it and re-run." >&2
+            else
+                echo "       Check that it is writable and has free space, then re-run." >&2
+            fi
+            echo "       Without it this install is not portable: an activated venv would fall" >&2
+            echo "       back to $HOME/.unsloth and write outside the root you selected." >&2
+            exit 1
+        fi
+    elif [ -f "$_epr_record" ]; then
+        _PORTABLE_MARKER_PATH_3="$_epr_record"
+        _PORTABLE_MARKER_PRIOR_3="y$(cat -- "$_epr_record" 2>/dev/null)"
+        if rm -f -- "$_epr_record" 2>/dev/null; then
+            substep "removed the nested master root record in $STUDIO_HOME"
+        else
+            _PORTABLE_MARKER_PATH_3=""
+            _PORTABLE_MARKER_PRIOR_3=""
+            substep "could not remove $_epr_record; this root still resolves one level up" "$C_WARN"
+        fi
+    fi
+
     substep "portable: everything under $UNSLOTH_ROOT"
 }
 _export_portable_roots
@@ -895,6 +959,27 @@ _clear_stale_portable_marker() {
     # reinstall that converts a tree back; carrying no portable environment is
     # normal for it, and it must not cost a working portable install its marker.
     if [ "$_SHORTCUTS_ONLY" = true ]; then return 0; fi
+    # The in-root master root record first. It sits at $STUDIO_HOME itself, the directory this
+    # reinstall is taking over, and it outranks both markers below in every reader because it is
+    # the one signal that needs no permission check -- so leaving it behind would keep
+    # storage_roots.unsloth_home() answering the OLD master root no matter what happens to the
+    # markers. Unconditional, not gated on the `*/studio` leaf the parent arm below matches:
+    # this file is INSIDE the tree being reinstalled, so it is ours to drop whatever the
+    # directory is called, whereas a marker one level up may belong to a neighbour. Its own
+    # slot, because both arms below can also fire in the same run and this is a third path.
+    # Snapshot before the removal, and inline, exactly as those arms do it.
+    _spm_record="$STUDIO_HOME/.unsloth-master-root"
+    if [ -f "$_spm_record" ]; then
+        _PORTABLE_MARKER_PATH_3="$_spm_record"
+        _PORTABLE_MARKER_PRIOR_3="y$(cat -- "$_spm_record" 2>/dev/null)"
+        if rm -f -- "$_spm_record" 2>/dev/null; then
+            substep "removed the stale master root record in $STUDIO_HOME"
+        else
+            _PORTABLE_MARKER_PATH_3=""
+            _PORTABLE_MARKER_PRIOR_3=""
+            substep "could not remove $_spm_record; this install still reads as portable" "$C_WARN"
+        fi
+    fi
     _spm_name=".unsloth-portable-root"
     # Flat layout: the master root IS the Studio root, so the marker sits in the
     # directory being installed into. Unless a nested portable install still lives
@@ -1278,9 +1363,11 @@ _restore_portable_shim() {
 _restore_portable_marker() {
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_1" "$_PORTABLE_MARKER_PRIOR_1"
     _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_2" "$_PORTABLE_MARKER_PRIOR_2"
+    _restore_portable_marker_slot "$_PORTABLE_MARKER_PATH_3" "$_PORTABLE_MARKER_PRIOR_3"
     _restore_portable_shim
     _PORTABLE_MARKER_PATH_1=""
     _PORTABLE_MARKER_PATH_2=""
+    _PORTABLE_MARKER_PATH_3=""
     return 0
 }
 
@@ -1292,6 +1379,8 @@ _commit_portable_marker() {
     _PORTABLE_MARKER_PRIOR_1=""
     _PORTABLE_MARKER_PATH_2=""
     _PORTABLE_MARKER_PRIOR_2=""
+    _PORTABLE_MARKER_PATH_3=""
+    _PORTABLE_MARKER_PRIOR_3=""
     # The conversion stands, so the launcher it displaced stays displaced -- retired in one
     # direction, renamed over in the other; drop the copy that was only there to put it back.
     # An `if`, not `[ ... ] && rm`: set -e is on and the false branch of that AND-list would

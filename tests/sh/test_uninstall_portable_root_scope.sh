@@ -62,6 +62,11 @@ printf "UNSLOTH_EXE='%s'\n" \
 echo "portable" > "$PORTABLE_ROOT/studio/studio.db"
 : > "$PORTABLE_ROOT/studio/unsloth_studio/.unsloth-studio-owned"
 printf '%s\n' "$PORTABLE_ROOT" > "$PORTABLE_ROOT/.unsloth-portable-root"
+# The in-root master root record install.sh writes for a nested layout. It needs no removal
+# rule of its own -- it lives INSIDE the Studio root, which goes wholesale -- and this asserts
+# that rather than assuming it, so a uninstaller that ever stops taking the tree whole cannot
+# leave a file behind that still reads as a portable install.
+printf '%s\n' "$PORTABLE_ROOT" > "$PORTABLE_ROOT/studio/.unsloth-master-root"
 printf "UNSLOTH_EXE='%s'\nexport UNSLOTH_HOME='%s'\n" \
     "$PORTABLE_ROOT/studio/unsloth_studio/bin/unsloth" "$PORTABLE_ROOT" \
     > "$PORTABLE_ROOT/share/studio.conf"
@@ -74,6 +79,8 @@ env -i PATH="$PATH" HOME="$FAKE_HOME" TMPDIR="$_TMP_ROOT" \
     sh "$UNINSTALL_SH" > "$_TMP_ROOT/uninstall.log" 2>&1
 
 assert_gone "UNSLOTH_HOME removes the portable root" "$PORTABLE_ROOT"
+assert_gone "the master root record goes with the tree" \
+    "$PORTABLE_ROOT/studio/.unsloth-master-root"
 assert_gone "UNSLOTH_HOME also removes the default install" "$FAKE_HOME/.unsloth/studio"
 assert_gone "UNSLOTH_HOME also removes the default chat history" \
     "$FAKE_HOME/.unsloth/studio/studio.db"
@@ -129,6 +136,13 @@ mkdir -p "$PARTIAL_HOME/.local/share" "$PARTIAL_HOME/.local/bin" \
 printf '%s\n' "$PARTIAL_ROOT" > "$PARTIAL_ROOT/.unsloth-portable-root"
 printf '%s\n' "$BARE_ROOT" > "$BARE_ROOT/.unsloth-portable-root"
 echo "not ours" > "$BARE_ROOT/notes.txt"
+# Same rule for the record: it is an ownership signal for the RESOLVERS, which only ever read
+# one inside a root they already resolved. It is not evidence that a directory handed to the
+# uninstaller is ours, and _is_studio_root deliberately does not consult it.
+RECORD_ONLY_ROOT="$_TMP_ROOT/record-only"
+mkdir -p "$RECORD_ONLY_ROOT/studio"
+printf '%s\n' "$RECORD_ONLY_ROOT" > "$RECORD_ONLY_ROOT/studio/.unsloth-master-root"
+echo "not ours" > "$RECORD_ONLY_ROOT/notes.txt"
 
 uninstall_root() { # root logname
     env -i PATH="$PATH" HOME="$PARTIAL_HOME" TMPDIR="$_TMP_ROOT" \
@@ -146,6 +160,10 @@ assert_present "a directory with the marker alone is refused" "$BARE_ROOT"
 assert_present "and its contents are kept" "$BARE_ROOT/notes.txt"
 check_block "the refusal is reported" yes "$(cat "$_TMP_ROOT/uninstall-bare.log")" \
     "refusing to remove non-Unsloth path"
+
+uninstall_root "$RECORD_ONLY_ROOT" record
+assert_present "a directory with the master root record alone is refused" "$RECORD_ONLY_ROOT"
+assert_present "and its contents are kept" "$RECORD_ONLY_ROOT/notes.txt"
 
 # So the portable closing message must not print that command as the removal.
 done_block="$(sed -n '/portable install; everything lives in:/,/were left untouched/p' "$INSTALL_SH")"

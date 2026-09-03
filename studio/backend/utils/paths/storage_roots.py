@@ -32,6 +32,13 @@ STUDIO_CHILD_DIRNAME = "studio"
 # prove a flat layout. See _is_flat_portable_root.
 STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
 
+# Written by install.sh INSIDE the Studio root of a NESTED portable install, and
+# holding the master root path. The record PORTABLE_MARKER cannot be: that one
+# lives one level up, outside the tree the install owns, so it is only believable
+# after a permissions check that a root created under `umask 002` fails. See
+# _in_root_master_root.
+MASTER_ROOT_RECORD = ".unsloth-master-root"
+
 
 def _inherits_parent_portable_marker(root: Path) -> bool:
     """Whether a marker in ``root.parent`` names the install rooted at *root*.
@@ -121,6 +128,78 @@ def _parent_portable_root(root: Path) -> Path | None:
     return parent
 
 
+# One notice per master root, not per call: _in_root_master_root runs from
+# unsloth_home(), which every cache-var lookup reaches.
+_warned_open_master_roots: set[str] = set()
+
+
+def _warn_world_writable_master_root(master: Path) -> None:
+    if str(master) in _warned_open_master_roots:
+        return
+    _warned_open_master_roots.add(str(master))
+    logger.warning(
+        "The portable root %s is writable by any user on this machine, and the "
+        "managed llama.cpp, node and whisper.cpp are run from it. Honouring it "
+        "because this install recorded it, but re-install under a directory only "
+        "you can write if this machine has other users.",
+        master,
+    )
+
+
+def _in_root_master_root(root: Path) -> Path | None:
+    """Master root *root* records for itself, or None.
+
+    Trusted on nothing but its location. It is INSIDE *root*, the directory the
+    operator installed into and the one already resolved as the Studio root, so
+    anyone able to write it can equally rewrite <root>/unsloth_studio and be
+    executed directly on the next launch: a permission gate here would protect
+    nothing that is not already lost. That is the entire reason the record is
+    kept here instead of beside PORTABLE_MARKER in root.parent, which
+    _parent_marker_is_trustworthy has to interrogate before believing, and which
+    a root created or reused under a `umask 002` fails.
+
+    Unforgeable in the way that matters: only install.sh writes this, and only
+    inside the root of an install that ASKED to be portable. The escalation
+    _parent_marker_is_trustworthy closes is a marker PLANTED beside a Studio root
+    that never had a master root, and such an install has no record here, so the
+    planted marker still has to pass that check and still does not. What is left
+    is `--root` pointed at a directory other users can write, which is the
+    operator's own choice and exposes the whole install rather than this one
+    file; said out loud rather than second-guessed, because refusing it is what
+    made a legitimate install undiscoverable in the first place.
+
+    install.sh writes it for the NESTED layout only, where bin/, share/ and the
+    marker all sit one level up and nothing inside *root* otherwise names the
+    master root. A flat install's marker is already at the resolved root.
+
+    Absolute paths only: a relative one would resolve against the working
+    directory, which is not something the installer can have written. A recorded
+    directory that is gone declines rather than exporting a dead UNSLOTH_HOME, so
+    the older signals below still get their turn. Read one capped line, since a
+    stray file at the name should be rejected rather than pulled into memory.
+    """
+    try:
+        with (root / MASTER_ROOT_RECORD).open(encoding = "utf-8", errors = "replace") as handle:
+            recorded = handle.readline(4096).strip()
+    except (OSError, ValueError):
+        return None
+    if not recorded or not os.path.isabs(recorded):
+        return None
+    master = _resolved(recorded)
+    try:
+        if not master.is_dir():
+            return None
+        # 0o002 is other-write. Group-write is deliberately NOT flagged: it is
+        # what `umask 002` produces on a normal single-user install, and warning
+        # there would be the noise version of the refusal being fixed. Windows
+        # synthesises the mode, and install.ps1 writes no record.
+        if os.name != "nt" and master.stat().st_mode & 0o002:
+            _warn_world_writable_master_root(master)
+    except OSError:
+        return None
+    return master
+
+
 def _venv_studio_home_candidates(prefix_value: str) -> list[Path]:
     """STUDIO_HOME spellings to test for *prefix_value*, resolved one first.
 
@@ -164,6 +243,13 @@ def _has_installer_sentinel(candidate: Path) -> bool:
     Unchanged by the candidate list above: widening which spellings are OFFERED
     must not widen what is ACCEPTED, or a dev venv named unsloth_studio gets
     adopted through whichever spelling happens to sit next to a marker.
+
+    The in-root record is what keeps a nested portable install recognizable at
+    all when its master root is group-writable: share/ and bin/ are one level up,
+    so the parent marker used to be the ONLY sentinel here, and refusing it sent
+    the whole install back to ~/.unsloth/studio. Checked through
+    _in_root_master_root rather than on existence, so a candidate accepted here
+    is one unsloth_home() can really name a master root for.
     """
     shim_name = "unsloth.exe" if os.name == "nt" else "unsloth"
     return (
@@ -171,6 +257,7 @@ def _has_installer_sentinel(candidate: Path) -> bool:
         or (candidate / "bin" / shim_name).is_file()
         # A nested portable install keeps share/ and bin/ one level up.
         or (candidate / PORTABLE_MARKER).is_file()
+        or _in_root_master_root(candidate) is not None
         or _parent_portable_root(candidate) is not None
     )
 
@@ -272,14 +359,25 @@ def unsloth_home() -> Path | None:
     llama.cpp, node and whisper.cpp are SIBLINGS of studio/, the spelling
     studio/setup.sh and scripts/build_whisper_cpp.sh already give UNSLOTH_HOME,
     which is why node_runtime, stt_ggml_sidecar and run.py resolve them here.
-    Falls back to the on-disk marker so a directly-invoked venv binary, carrying
-    none of the installer's environment, still finds the same root.
+    Falls back to the on-disk records so a directly-invoked venv binary, carrying
+    none of the installer's environment, still finds the same root. In-root
+    record first: it is the only one written inside the tree this install owns,
+    so it needs no permissions argument, and it also names a master root the
+    other two cannot -- a <root>/studio the installer reached through a symlink,
+    or one still carrying the flat marker of an install that used to live there.
+    The marker AT the root and the one ABOVE it stay as the fallback for installs
+    made by earlier builds, which have no record; the one above is still
+    provenance-checked, so the escalation _parent_marker_is_trustworthy closes
+    stays closed.
     """
     from_env = _env_unsloth_home()
     if from_env is not None:
         return from_env
     root = studio_root()
     try:
+        recorded = _in_root_master_root(root)
+        if recorded is not None:
+            return recorded
         if (root / PORTABLE_MARKER).is_file():
             return root
         return _parent_portable_root(root)

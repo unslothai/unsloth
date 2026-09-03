@@ -62,6 +62,9 @@ _STUDIO_CHILD_DIRNAME = "studio"
 # storage_roots.STUDIO_OWNED_MARKER, likewise. See _is_flat_portable_root.
 _STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
 
+# storage_roots.MASTER_ROOT_RECORD, likewise. See _in_root_master_root.
+_MASTER_ROOT_RECORD = ".unsloth-master-root"
+
 
 def _is_flat_portable_root(master: Path) -> bool:
     """Whether *master* holds the Studio venv directly, rather than in studio/.
@@ -167,6 +170,34 @@ def _parent_portable_root(root: Path) -> Optional[Path]:
     return parent
 
 
+def _in_root_master_root(root: Path) -> Optional[Path]:
+    """Master root *root* records for itself, or None.
+
+    storage_roots._in_root_master_root, duplicated for the same reason the marker
+    constants are; the two must not disagree, since this CLI exports UNSLOTH_HOME
+    into the backend where it outranks the backend's own lookup. Trusted on its
+    location alone: it is inside the Studio root, so anyone able to write it can
+    equally rewrite the venv it points at, and a permissions check would protect
+    nothing already unprotected. That is why it exists -- the parent marker needs
+    one, and a root created under `umask 002` cannot pass it.
+    """
+    try:
+        with (root / _MASTER_ROOT_RECORD).open(encoding = "utf-8", errors = "replace") as handle:
+            recorded = handle.readline(4096).strip()
+    except (OSError, ValueError):
+        return None
+    if not recorded or not os.path.isabs(recorded):
+        return None
+    try:
+        master = Path(recorded).expanduser().resolve()
+    except (OSError, ValueError):
+        master = Path(recorded).expanduser()
+    try:
+        return master if master.is_dir() else None
+    except OSError:
+        return None
+
+
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
     unsloth_studio is not misidentified as a custom Unsloth root.
@@ -190,8 +221,12 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     # so neither sentinel below is beside it and the CLI fell back to
     # ~/.unsloth/studio. Same spellings as _infer_studio_home_from_venv, parent
     # lookup included: a venv under an unrelated child of a portable root has no
-    # sentinel of its own and must keep falling back.
-    if (candidate / _PORTABLE_MARKER).is_file() or _parent_portable_root(candidate) is not None:
+    # sentinel of its own and must keep falling back. The in-root record is what
+    # keeps that install recognizable when its master root is group-writable and
+    # the parent marker can no longer be believed.
+    if (candidate / _PORTABLE_MARKER).is_file() or _in_root_master_root(candidate) is not None:
+        return True
+    if _parent_portable_root(candidate) is not None:
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -299,12 +334,18 @@ STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
 
 def _portable_marker_root() -> Optional[Path]:
-    """Master root the installer recorded beside or above STUDIO_HOME, or None.
+    """Master root the installer recorded inside, beside or above STUDIO_HOME.
 
-    The parent lookup is the nested layout only; see
-    _inherits_parent_portable_marker for why it cannot be every child.
+    Same order as storage_roots.unsloth_home(); the two must not disagree. The
+    in-root record first, since it is the only one written inside the tree the
+    install owns and so needs no permissions argument. The parent lookup is the
+    nested layout only; see _inherits_parent_portable_marker for why it cannot be
+    every child.
     """
     try:
+        recorded = _in_root_master_root(STUDIO_HOME)
+        if recorded is not None:
+            return recorded
         if (STUDIO_HOME / _PORTABLE_MARKER).is_file():
             return STUDIO_HOME
         return _parent_portable_root(STUDIO_HOME)
