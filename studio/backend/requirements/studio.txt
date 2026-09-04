@@ -14,8 +14,11 @@ matplotlib==3.10.9
 # pandas==2.3.3, and 2.3.3 is also the newest release that still installs on
 # 3.9. Bump both together. Windows on ARM is the exception: win_arm64 pandas
 # wheels start at 3.0, so 2.3.3 would source-build there (constraints.txt matches).
-pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64"
-pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64"
+# The 3.11 floor on the ARM64 row is pandas 3's own requires-python; without it the
+# row is unsatisfiable on a 3.9/3.10 ARM64 interpreter. Below 3.11 that host falls to
+# 2.3.3 and source-builds, as it would have before win_arm64 wheels existed.
+pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64" or python_version < "3.11"
+pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and python_version >= "3.11"
 nest_asyncio==1.6.0
 datasets==4.3.0
 pyjwt==2.13.0

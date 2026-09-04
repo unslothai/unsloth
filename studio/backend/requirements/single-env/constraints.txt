@@ -27,8 +27,8 @@ websockets>=15.0.1
 anyio<4.14.0
 
 # pandas publishes win_arm64 wheels from 3.0 only; 2.3.x would source-build there.
-pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64"
-pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64"
+pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64" or python_version < "3.11"
+pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and python_version >= "3.11"
 
 # av (PyAV) 16+ builds its macOS arm64 wheels against macosx_14_0, so on macOS 13 none
 # are installable and the resolver falls back to a source build, which needs FFmpeg

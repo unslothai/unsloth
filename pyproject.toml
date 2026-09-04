@@ -113,9 +113,12 @@ studio = [
     "packaging==26.3",
     "matplotlib==3.10.9",
     # Mirrors studio.txt: win_arm64 pandas wheels start at 3.0, so 2.3.3 would
-    # source-build on Windows on ARM.
-    "pandas==2.3.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    "pandas>=3.0,<4 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
+    # source-build on Windows on ARM. The 3.11 floor is pandas 3's own
+    # requires-python: without it this row is simply unsatisfiable on a 3.9 or 3.10
+    # ARM64 interpreter, which requires-python above still admits. Below 3.11 that
+    # host takes 2.3.3 and source-builds, which is slow but resolvable.
+    "pandas==2.3.3 ; sys_platform != 'win32' or platform_machine != 'ARM64' or python_version < '3.11'",
+    "pandas>=3.0,<4 ; sys_platform == 'win32' and platform_machine == 'ARM64' and python_version >= '3.11'",
     "nest_asyncio==1.6.0",
     "datasets==4.3.0",
     "pyjwt==2.13.0",

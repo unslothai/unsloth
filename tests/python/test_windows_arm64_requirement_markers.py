@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -256,3 +257,82 @@ def test_the_woa_split_is_used_where_we_claim_it_is(label, expected):
                 f"{label}: {name} should be excluded on Windows on ARM by a negative "
                 f"marker only; found positive={positive}"
             )
+
+
+# A package's OWN requires-python floor, for rows whose specifier pins into a range that
+# does not exist for every interpreter this project supports. Only entries where the floor
+# is above our own 3.9 are worth listing; the rest cannot make a row unsatisfiable.
+#
+# Verified against PyPI when added. pandas 3.x is >=3.11 and its win_arm64 wheels start at
+# cp311, which is exactly why the Windows-on-ARM row exists.
+PACKAGE_PYTHON_FLOORS = {
+    "pandas": [(SpecifierSet(">=3.0"), (3, 11))],
+}
+
+
+def _minor(py: str) -> tuple:
+    major, minor = py.split(".")
+    return (int(major), int(minor))
+
+
+@pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
+def test_a_selected_row_is_installable_on_the_python_it_was_selected_for(label, reqs):
+    """
+    Splitting on platform is not enough on its own: a row can be live for an interpreter
+    that no release in its range supports, which is not a resolution failure anyone reads
+    as a marker bug -- pip just reports that no version matches.
+
+    This is how `pandas>=3.0,<4` for win32+ARM64 shipped unsatisfiable on 3.9 and 3.10.
+    The marker partition was exact, every environment had exactly one live row, and the
+    row it had could never install. requires-python is part of whether a split is
+    complete, so assert it here rather than trusting the platform axis alone.
+    """
+    for plat in PLATFORMS:
+        for py in PYTHONS:
+            env = _env(plat, py)
+            for req in reqs:
+                if req.marker is not None and not req.marker.evaluate(env):
+                    continue
+                floors = PACKAGE_PYTHON_FLOORS.get(req.name.lower())
+                if not floors:
+                    continue
+                for spec, floor in floors:
+                    # Does this row admit ONLY versions that need a newer interpreter?
+                    if not spec.contains(_lowest_allowed(req), prereleases = True):
+                        continue
+                    assert _minor(py) >= floor, (
+                        f"{label}: `{req}` is live on Python {py} {plat[2]}, but every "
+                        f"version it admits needs Python >= {floor[0]}.{floor[1]}. "
+                        "The row is unsatisfiable there; the marker needs a "
+                        "python_version bound as well as a platform one."
+                    )
+
+
+def _lowest_allowed(req) -> str:
+    """The smallest concrete version the row's specifier admits, for floor comparison."""
+    lowers = [s.version for s in req.specifier if s.operator in (">=", "==", "~=", ">")]
+    return lowers[0] if lowers else "0"
+
+
+def test_the_woa_pandas_split_covers_every_supported_python():
+    """
+    The complement of the test above: having added a python_version bound, no ARM64
+    interpreter may be left with no pandas row at all. 3.9 and 3.10 fall back to the
+    2.3.3 row and source-build, which is what they did before win_arm64 wheels existed.
+    """
+    arm64 = ("win32", "Windows", "ARM64", "nt")
+    for label, reqs in ALL_SOURCES:
+        rows = [r for r in reqs if r.name.lower() == "pandas"]
+        if not rows:
+            continue
+        for py in PYTHONS:
+            env = _env(arm64, py)
+            live = [r for r in rows if r.marker is None or r.marker.evaluate(env)]
+            assert len(live) == 1, (
+                f"{label}: Windows ARM64 on Python {py} has {len(live)} live pandas "
+                f"rows, expected exactly 1: {[str(r) for r in live]}"
+            )
+            if _minor(py) < (3, 11):
+                assert "3.0" not in str(live[0].specifier), (
+                    f"{label}: Python {py} must not be handed the pandas 3 row"
+                )

@@ -6042,7 +6042,18 @@ if ($LocalLlamaCppLinked) {
                 # machine's: a Windows-on-ARM host on the x64 fallback runs the prebuilt helper
                 # under an emulated x64 python, which installs windows-cuda. Asking the machine
                 # would call that bundle mismatched and discard a working runtime.
-                $_nvidiaKinds = if (Test-WinArm64Venv) { @("windows-arm64-cuda") } else { @("windows-cuda") }
+                # UNSLOTH_LLAMA_ARM64_CUDA=0 makes the selector install the ARM64 CPU
+                # bundle on this very host, so expecting only the CUDA kind would call a
+                # correct install mismatched and delete it on every setup and update --
+                # and leave the user with no llama.cpp at all when the reinstall cannot
+                # download. Expect the CPU kind INSTEAD of the CUDA one, not as well as
+                # it, so a bundle installed before the opt-out is still replaced by the
+                # one the flag asks for. Falsy spellings are _upstream_arm64_cuda_allowed's
+                # in install_llama_prebuilt.py; unset means allowed, as it does there.
+                $_arm64CudaOptOut = ("$env:UNSLOTH_LLAMA_ARM64_CUDA").Trim().ToLowerInvariant() -in @("0", "false", "no", "off")
+                $_nvidiaKinds = if (Test-WinArm64Venv) {
+                    if ($_arm64CudaOptOut) { @("windows-arm64") } else { @("windows-arm64-cuda") }
+                } else { @("windows-cuda") }
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
