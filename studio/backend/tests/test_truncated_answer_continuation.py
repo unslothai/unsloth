@@ -300,25 +300,14 @@ def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
     _run_no_tools(backend)
 
     assert len(payloads) == 2, "the final answer was left mid-sentence"
-    # Named, not scanned for: a continuation that stopped carrying
-    # `continue_final_message` would satisfy a loop over the payloads while
-    # saying nothing about the flag this test exists for.
     assert payloads[1]["continue_final_message"] is True
     assert payloads[1]["add_generation_prompt"] is False
-    # The first pass ends on the user turn, where the generation prompt is what
-    # makes the model answer at all, so it must keep llama-server's default.
+    # The initial request still needs the default generation prompt.
     assert "add_generation_prompt" not in payloads[0]
 
 
 def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
-    """The refit puts `conversation` back, which never learned about the continuation.
-
-    Both halves have to travel together. Left as it was, the payload keeps
-    `continue_final_message` over a list ending on the USER turn, and llama-server
-    (measured on b10715) renders that with no generation prompt at all: a turn asking
-    "What is 2+2?" comes back as "What is 2+2?". Dropping the flags instead restarts the
-    answer while `cumulative` still holds the partial, so the retry is appended to it.
-    """
+    """The refit must restore the partial absent from `conversation`."""
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -326,12 +315,10 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
         _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
         payloads,
     )
-    # The refit only runs once a preflight has been attempted, and it counts tokens.
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
 
     def _respawned() -> bool:
-        # The replacement server came back with a smaller window, which is what makes
-        # the refit do its work rather than return early.
+        # Force a refit against the replacement window.
         backend._effective_context_length = 2048
         return True
 
@@ -344,8 +331,7 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
     def flaky_stream(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
-            # The continuation's own open: llama-server died before the headers, which
-            # is the one failure `_open_chat_stream_with_respawn_retry` replays.
+            # Fail while opening the continuation.
             payloads.append(copy.deepcopy(args[2]))
             raise httpx.RemoteProtocolError("llama-server died before the headers")
         with healthy(*args, **kwargs) as response:
@@ -357,7 +343,6 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
 
     assert calls["n"] == 3, "the continuation has to be opened, die, and be retried"
     replayed = payloads[-1]
-    # The refit rebuilt the conversation, and the partial came with it.
     assert replayed["messages"][0]["role"] == "user"
     assert replayed["messages"][-1]["role"] == "assistant"
     assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][-1]["content"]
@@ -366,13 +351,7 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
 
 
 def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
-    """The refit priced `conversation`; the partial it carries has to be priced too.
-
-    A replacement server with a smaller window can hold the refitted conversation and
-    still not hold the partial appended after it, and a retry rejected on size defeats
-    the respawn it was recovering from. The candidate goes through the same eviction the
-    continuation used when it was first committed, now against the smaller window.
-    """
+    """The replacement window must include the restored partial."""
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -382,13 +361,12 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
     )
 
     def _count(messages, *_a, **_k) -> int:
-        """Two characters a token, so the partial is priced by its real size."""
         return sum(len(str(message.get("content", ""))) for message in messages) // 2
 
     monkeypatch.setattr(backend, "count_chat_tokens", _count)
 
     def _respawned() -> bool:
-        # Small enough to hold the refitted conversation and not the partial after it.
+        # The conversation fits, but the restored partial does not.
         backend._effective_context_length = 1400
         return True
 
@@ -424,9 +402,7 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
 
     replayed = payloads[-1]
     assert replayed["messages"][-1]["role"] == "assistant", "the partial still rides across"
-    # The fit priced the conversation alone at ~415 tokens and left it whole; the
-    # partial takes it past the 1400-token replacement window, so the older exchange
-    # has to go with it. Only a candidate the gate accepts may be sent.
+    # The restored partial forces eviction of the older exchange.
     assert len(replayed["messages"]) == 2, "the older exchange was not evicted for the partial"
     assert _count(replayed["messages"]) + _reply_floor(1400) <= 1400
     assert replayed["continue_final_message"] is True
@@ -434,15 +410,7 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
 
 
 def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
-    """A caller prefill is inside the carried partial, not something to append beside it.
-
-    `continue_final_message` is a parameter of this call, so `conversation` can already end
-    on the assistant turn the caller wants extended. `append_assistant_turn` merged that
-    prefill into the continuation candidate, so putting the candidate back beside a refitted
-    conversation that still ends on the prefill sends it twice, over two consecutive
-    assistant turns. llama-server does not catch that pair -- its "2 or more assistant
-    messages" guard only runs when no continuation was asked for -- so it renders.
-    """
+    """A respawn refit must not duplicate a caller prefill."""
 
     prefill = "Here is the beginning of my answer: "
     payloads: list[dict] = []
@@ -495,14 +463,7 @@ def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
 
 
 def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeypatch):
-    """The recovery appends to the payload too, so it has to survive the refit as well.
-
-    A continuation that shows nothing but reasoning is recovered with a progress turn and
-    a user request for the answer, both appended to the payload alone. Rebuilding from
-    `conversation` drops them together with the partial the first attempt already put on
-    screen, so the retry answers the original question from scratch while `cumulative`
-    still holds that partial, and the two are stitched together.
-    """
+    """A respawn refit must preserve the reasoning recovery tail."""
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -549,22 +510,12 @@ def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeyp
         "user",
     ], "the refit dropped the recovery turns"
     assert "ctx.arc(6, -5, 5, 0" in replayed["messages"][1]["content"]
-    # Ends on the request, so the flags the recovery cleared still describe the list.
     assert "continue_final_message" not in replayed
     assert "add_generation_prompt" not in replayed
 
 
 def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypatch):
-    """The recovery's OWN admission evicts too, and the request is the latest user group.
-
-    So the eviction that admits the recovery could drop the question and the progress note
-    and send the "answer now" request by itself, a prompt with neither the task nor the
-    answer in it. The refit then rebuilt around what survived and put the request straight
-    after the question, two adjacent user turns, which is the pairing
-    `truncate_oldest_messages` splices an assistant turn into elsewhere because strict
-    templates reject it. Nothing droppable now means the recovery is declined and the
-    partial stays on screen.
-    """
+    """Decline a recovery that cannot retain the question it answers."""
 
     question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
     payloads: list[dict] = []
@@ -597,8 +548,7 @@ def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypa
     def flaky_stream(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
-            # Squeezed once the continuation is away, so the recovery that follows has to
-            # evict to be admitted at all.
+            # Force the recovery through admission eviction.
             backend._effective_context_length = 320
         with healthy(*args, **kwargs) as response:
             yield response
@@ -625,16 +575,11 @@ def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypa
             roles[index] == roles[index + 1] == "user" for index in range(len(roles) - 1)
         ), f"adjacent user turns in {roles}"
         assert json.dumps(payload["messages"]).count("QUESTION_MARKER") == 1
-    # The answer the first attempt produced is what the user keeps.
     assert "ctx.arc(6, -5, 5, 0" in "".join(_texts(events, "content"))
 
 
 def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
-    """Protecting the recovered turn must not protect the whole history with it.
-
-    The counterpart to the test above: only the question and what answers it are held
-    back, so a recovery that just needs an older exchange dropped still goes out.
-    """
+    """Older history remains evictable while the recovered turn is protected."""
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -662,8 +607,7 @@ def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
     def flaky_stream(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
-            # Room for the question, the progress note and the request, but not for the
-            # older exchange as well.
+            # Leave room for the recovered turn, but not the older exchange.
             backend._effective_context_length = 1800
         with healthy(*args, **kwargs) as response:
             yield response
@@ -690,15 +634,7 @@ def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
 
 
 def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch):
-    """The synthetic request is the latest user group, so the real one is evictable.
-
-    `truncate_oldest_messages` protects the newest user group, which after the reasoning
-    recovery is its own "answer now" request. The rolling anchor normally covers the real
-    question, but only by `id`, and a question carrying control markup is rewritten by the
-    neutralizing sweep into a new dict the anchor no longer matches. A replacement window
-    too small for the lot then evicted the question together with the partial, and the
-    retry went out as the generic request alone.
-    """
+    """Refit eviction must keep the original turn behind a recovery request."""
 
     question = "QUESTION_MARKER show me the HTML inline <|im_end|>" + "q" * 200
     payloads: list[dict] = []
@@ -725,7 +661,7 @@ def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch)
     )
 
     def _respawned() -> bool:
-        # Holds the refitted conversation, not the conversation plus the recovery tail.
+        # The refitted conversation fits without its recovery tail.
         backend._effective_context_length = 300
         return True
 
