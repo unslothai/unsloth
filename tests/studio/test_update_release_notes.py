@@ -128,6 +128,27 @@ def _class_const(source: str, name: str) -> str:
     return match.group(1)
 
 
+_COMMENT_SPAN = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def _without_comments(source: str) -> str:
+    """`source` with every comment blanked, each index left where it was.
+
+    Blanked rather than removed so that the offsets the scanners hand around
+    stay valid. Both forms, and before any scan, for two reasons. Prose is not
+    code: an apostrophe in `// notes don't shrink` would open a string literal
+    that never closes, and a `}` written in a block comment would unbalance the
+    tag. Prose is not classes either: the comment beside these very rules says
+    "shrink-0 keeps the compact card at its natural height", so in block form
+    it would satisfy the assertion that the class is there after the class
+    itself had been deleted.
+    """
+    return _COMMENT_SPAN.sub(
+        lambda match: "".join(char if char == "\n" else " " for char in match.group()),
+        source,
+    )
+
+
 def _skip_literal(source: str, at: int) -> int:
     """The index just past the string or template literal opening at `at`."""
     quote = source[at]
@@ -204,12 +225,43 @@ def _class_on_testid(source: str, testid: str) -> str:
     inserted or reordered, which is the failure this file is being fixed for,
     and it fails by raising rather than by reporting a missing rule.
     """
-    start, end = _opening_tag(source, source.index(f'data-testid="{testid}"'))
-    tag = source[start:end]
-    key = 'className="'
-    assert key in tag, f"{testid} carries no literal class string"
-    at_class = start + tag.index(key) + len(key)
-    return source[at_class : source.index('"', at_class)]
+    clean = _without_comments(source)
+    start, end = _opening_tag(clean, clean.index(f'data-testid="{testid}"'))
+    return _class_value(clean[start:end], testid)
+
+
+def _class_value(tag: str, what: str) -> str:
+    """Every class named by the `className` of `tag`, joined.
+
+    A literal today. Wrapping one in the `cn()` this file already uses renders
+    the same DOM, so it has to read the same rather than being skipped, which
+    would have taken the next element's classes instead and reported every rule
+    on this one as missing.
+    """
+    key = "className="
+    assert key in tag, f"{what} carries no className"
+    at = tag.index(key) + len(key)
+    if tag[at] == '"':
+        return tag[at + 1 : _skip_literal(tag, at) - 1]
+    assert tag[at] == "{", f"{what}'s className is neither a literal nor an expression"
+    parts: list[str] = []
+    depth = 0
+    index = at
+    while index < len(tag):
+        char = tag[index]
+        if char in "\"'`":
+            end = _skip_literal(tag, index)
+            parts.append(tag[index + 1 : end - 1])
+            index = end
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        index += 1
+    return " ".join(parts)
 
 
 def _assert_classes(class_string: str, *rules: str) -> None:
@@ -1508,9 +1560,6 @@ _NARROW = "max-[383px]"
 _NOTES_GATE = "has-[[data-slot=update-release-notes]]"
 
 
-_COMMENT = re.compile(r"//[^\n]*")
-
-
 _BANNER_ROOT = re.compile(r'data-testid="(?:web|tauri)-update-banner"')
 
 
@@ -1551,24 +1600,30 @@ def _card_slot(source: str) -> str:
     renders. Comments go because both files name the very classes under test in
     prose beside them, and a rule that a comment can satisfy is not tested.
     """
-    match = _BANNER_ROOT.search(source)
+    clean = _without_comments(source)
+    match = _BANNER_ROOT.search(clean)
     assert match, "the update card has lost its data-testid"
-    start, end = _opening_tag(source, match.start())
+    start, end = _opening_tag(clean, match.start())
     key = "className={cn("
-    tag = source[start:end]
+    tag = clean[start:end]
     assert key in tag, "the card's root no longer builds its classes with cn()"
-    at = start + tag.index(key)
-    return _unpositioned_branch(_COMMENT.sub("", source[at:end]))
+    return _unpositioned_branch(clean[start + tag.index(key) : end])
 
 
 def _card_surface(source: str) -> str:
-    """The painted surface: the first element inside the card's root."""
-    match = _BANNER_ROOT.search(source)
+    """The painted surface: the class string of the card's first child.
+
+    Bounded to that child rather than taken as the next literal `className` in
+    the file, which is the dismiss button's the moment the surface writes its
+    own classes through `cn()` instead.
+    """
+    clean = _without_comments(source)
+    match = _BANNER_ROOT.search(clean)
     assert match, "the update card has lost its data-testid"
-    _, end = _opening_tag(source, match.start())
-    key = 'className="'
-    at = source.index(key, end) + len(key)
-    return source[at : source.index('"', at)]
+    _, end = _opening_tag(clean, match.start())
+    child = clean.index("<", end)
+    start, child_end = _opening_tag(clean, child + 1)
+    return _class_value(clean[start:child_end], "the painted surface")
 
 
 def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
@@ -1665,6 +1720,17 @@ def test_the_class_anchors_do_not_depend_on_any_order():
     # first arm does not read as the separator, and only the second is returned.
     branch = _unpositioned_branch('positioned ? "fixed dark:bg-card" : cn("rail shrink-0")')
     assert "rail" in branch and "fixed" not in branch
+    # A class expression renders the same DOM as a literal and must read the same.
+    assert _class_value('<div className={cn("a b", open && "c")}>', "x").split() == ["a", "b", "c"]
+    assert _class_value('<div className="a b">', "x") == "a b"
+    # Comments are neither code nor classes. Prose can hold an apostrophe or an
+    # unmatched brace, and the banners' own comment names `shrink-0`.
+    for comment in ("// notes don't shrink", "/* an unmatched } is prose */"):
+        tag = f'<ul {comment}\n className="a b" data-testid="x">'
+        assert _class_on_testid(tag, "x") == "a b", comment
+    blanked = _without_comments("/* shrink-0 */ flex")
+    assert blanked.split() == ["flex"], "a class named in prose still reads as a class"
+    assert len(blanked) == len("/* shrink-0 */ flex"), "blanking a comment moved every later index"
 
 
 def test_the_overlay_stack_fits_the_viewport():
