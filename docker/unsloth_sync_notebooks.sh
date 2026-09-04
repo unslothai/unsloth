@@ -409,7 +409,7 @@ updated=0; kept=0; unchanged=0; failed=0
 # path the copy failures already take. The three sites that already increment `failed`
 # are left alone: their gate fires regardless of whether the append landed.
 record_tmpstate() {
-    printf '%s  %s\n' "$1" "$2" >> "$TMPSTATE" || failed=$((failed + 1))
+    printf '%s  %s\n' "$1" "$2" >> "$TMPSTATE" || { failed=$((failed + 1)); return 1; }
 }
 while IFS= read -r -d '' f; do
     rel="${f#"$TMP"/}"
@@ -455,8 +455,21 @@ while IFS= read -r -d '' f; do
         # a single-FILE bind mount cannot be renamed over (EBUSY)
         if mv -f "$new" "$dst" 2>/dev/null || { rm -f "$new"; cp_keep_meta "$f" "$dst"; }; then
             # $staged, not hash_of "$dst": both branches write the bytes of "$f"
-            record_tmpstate "$staged" "$rel"
-            updated=$((updated + 1))
+            if record_tmpstate "$staged" "$rel"; then
+                updated=$((updated + 1))
+            else
+                # PUBLISHED but not recordable, the one combination that cannot be left
+                # alone. Withholding the marker is not enough: the truncated state is
+                # still published below, so the NEXT refresh reads this file as a user
+                # edit, keeps it, finds nothing failed and stamps the marker over it --
+                # unmanaged for good. Discarding the whole staged state instead would
+                # strand every notebook this run DID record, which is worse.
+                # We only get here when $dst was absent or hashed exactly to our own
+                # previous record, so it holds no user edit and removing it costs
+                # nothing: the next refresh re-copies and re-records it. The unlink
+                # also gives back the space that just ran out.
+                rm -f "$dst" 2>/dev/null || true
+            fi
         else
             # carry the PREVIOUS record forward, or the next refresh reads $dst as
             # user-owned and keeps the stale copy forever
