@@ -2614,9 +2614,7 @@ class TestAnthropicMessagesToolRouting:
         payload = _basic_payload(tools = [{"name": "lookup", "input_schema": {"type": "object"}}])
 
         with pytest.raises(HTTPException) as excinfo:
-            _drive(
-                anthropic_messages(payload, request = self._Request(), current_subject = "t")
-            )
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert excinfo.value.status_code == 400
         assert excinfo.value.detail["error"]["type"] == "invalid_request_error"
