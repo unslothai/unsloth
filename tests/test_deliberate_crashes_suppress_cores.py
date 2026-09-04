@@ -64,9 +64,7 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "temp", "b
 # `abort` needs the receiver check: Playwright's `route.abort()` and a thread's `.abort()` are ordinary calls that share
 # the name and crash nothing.
 _CRASH_CALLS = {
-    "string_at": {
-        "arg0": 0
-    },  # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV
+    "string_at": {"arg0": 0},  # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV
     "abort": {"owners": ("os", "ctypes", "libc", "CDLL")},  # -> SIGABRT
     "_sigsegv": {},  # faulthandler._sigsegv()
 }
