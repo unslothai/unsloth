@@ -66,12 +66,13 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
-# The four arches the messaging table owns.
+# The four arches the messaging table owns. Nothing here may produce an index.
 _UNSUPPORTED_ARCHES = ["gfx803", "gfx1010", "gfx1011", "gfx1012"]
 
 # The same arches as the installers may actually receive them.
 # UNSLOTH_ROCM_GFX_ARCH is user-typed (so any case), and a gcnArchName copied out of hipinfo/rocminfo carries the target
 # features ("gfx1010:xnack-"), which is why the override reader lowercases and splits on ":".
+# A routing bypass written against a prefix would take these too.
 _UNSUPPORTED_ARCH_INPUTS = (
     _UNSUPPORTED_ARCHES
     + [a.upper() for a in _UNSUPPORTED_ARCHES]
@@ -123,7 +124,6 @@ class TestPythonIndexResolversAreAskedDirectly:
     def test_no_unsupported_arch_reaches_repo_amd_com(self, arch, is_windows):
         """The same claim stated as the consequence, so that a resolver which starts
         returning some other truthy non-index string still fails here."""
-        # reachable from this host; the Windows arm is the one #8529 was filed from.
         with patch.object(stack_mod, "IS_WINDOWS", is_windows):
             url = stack_mod._amd_arch_index_url(arch) or ""
         assert "repo.amd.com" not in url, f"{arch} reaches an AMD wheel index: {url!r}"
@@ -215,11 +215,12 @@ class TestInstallShIndexFamilyRuns:
         assert calls >= 3, f"install.sh calls the index-family selector {calls} times, expected 3"
 
 
-# What get_torch_index_url calls that is not in the two functions extracted below.
-# Each stub is the shape of a host with an AMD GPU, no NVIDIA GPU and no readable ROCm userspace, the arrangement that
-# carries a user-pinned arch all the way to the routing decision.
 # ── install.sh's whole index selector, executed under sh ─────────────────────
 
+# What get_torch_index_url calls that is not in the two functions extracted below.
+# Each stub is the shape of a host with an AMD GPU, no NVIDIA GPU and no readable ROCm userspace, the arrangement that
+# carries a user-pinned arch all the way to the routing decision. The probe stub reproduces the override arm of the
+# real _probe_amd_gfx_arch so a case-shifted pin arrives at the selector as it would on a real host.
 _INDEX_URL_STUBS = """
 uname() { case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac; }
 _has_usable_nvidia_gpu() { return 1; }
@@ -326,7 +327,9 @@ _SETUP_SH_UNSUPPORTED_HELPERS = ("_setup_unsupported_gfx_any", "_setup_unsupport
 
 _ROUTED_SETUP_VARS = ("_setup_gfx", "_setup_mkt")
 
-# Assignment targets anywhere in a line, not only at its start:
+# Assignment targets anywhere in a line, not only at its start: the lookup is captured mid-condition
+# (`elif _setup_unsup_gfx=$(...); then`), which is exactly where the routed variable would be substituted for the
+# report-only one.
 _SH_ASSIGN_TARGET = re.compile(r"(?:^|[;&|(]|\s)([A-Za-z_][A-Za-z0-9_]*)=")
 
 
@@ -347,7 +350,8 @@ def test_setup_sh_never_feeds_the_unsupported_lookup_into_a_routed_variable():
                 f"That variable selects --rocm-gfx for the llama.cpp and whisper installers, "
                 f"so an uncovered card would be built for as if it had wheels"
             )
-    # The same ban one hop later:
+    # The same ban one hop later: capturing the lookup in its own variable and then copying that into the routed one is
+    # the same mutation written in two lines.
     relayed = [
         line.strip()
         for line in code
@@ -430,7 +434,8 @@ _PS_TABLES = [
 ]
 _PS_TABLE_IDS = [f"{p.name}:{h.split()[0][1:]}" for p, h, _o, _c in _PS_TABLES]
 
-# Every way PowerShell can change $archFamilyMap:
+# Every way PowerShell can change $archFamilyMap: a keyed assignment, a rebind, a merge, or one of the IDictionary
+# mutators. Reads (`.ContainsKey($a)`, `$map[$a]` as a value) deliberately do not match.
 _PS_MAP_WRITE = re.compile(
     r"\$archFamilyMap\s*(?:\[[^\]]*\]\s*=(?!=)|=(?!=)|\+=|\.\s*(?:Add|Remove|Clear|set_Item)\s*\()",
     re.IGNORECASE,
@@ -504,6 +509,9 @@ class TestPowerShellMapEvaluated:
             f"}}\n"
             f"if ($archFamilyMap.ContainsKey('gfx1030')) {{ 'CONTROL_OK' }}\n"
         )
+        # run_pwsh, not subprocess.run: the returncode assertion below reads a non-zero exit as $archFamilyMap failing
+        # to evaluate, and a signal-killed interpreter would be filed as that same map being broken.
+        # See tests/_shared/unsloth_pwsh_runner.py.
         out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             stdout = subprocess.PIPE,
@@ -766,6 +774,8 @@ class TestSetupShReportBlamesTheRightCard:
             stderr = subprocess.DEVNULL,
             text = True,
             timeout = 30,
+            # sh itself still has to be found; the point is that lspci is not on PATH, so a fallback that ran would
+            # come back empty and fail this.
             env = {"PATH": os.path.dirname(shutil.which("sh") or "/bin")},
         )
         assert out.stdout.strip() == "gfx803"
@@ -803,8 +813,6 @@ class TestSetupShReportBlamesTheRightCard:
             stderr = subprocess.DEVNULL,
             text = True,
             timeout = 30,
-            # sh itself still has to be found;
-            # the point is that lspci is not on PATH, so a fallback that ran would come back empty and fail this.
             env = {"PATH": os.path.dirname(shutil.which("sh") or "/bin")},
         )
         assert out.stdout.strip() == "gfx1010"
@@ -942,7 +950,9 @@ def _ps_unsupported(path: Path, names):
         f"  Write-Output $hit\n"
         f"}}\n"
     )
-    # run_pwsh, not subprocess.run:
+    # run_pwsh, not subprocess.run: this run's stdout is compared line by line against the Python table, so an
+    # interpreter that died mid-list would show up as the PowerShell name-to-arch rows disagreeing.
+    # See tests/_shared/unsloth_pwsh_runner.py.
     out = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         stdout = subprocess.PIPE,

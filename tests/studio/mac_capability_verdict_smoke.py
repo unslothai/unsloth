@@ -84,14 +84,17 @@ AUTH_DIR = Path(
 # stay a rounding error next to the warm. While detection is unsettled /api/health spends up to its own 1s budget per
 # call anyway, so the real rate over the interesting window is set by the server, not by this.
 POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_VERDICT_POLL_S", "0.25"))
-# How long a verdict is watched after it settles.
+# How long a verdict is watched after it settles. A verdict that settles and then goes back to provisional is the same
+# bug wearing a different hat.
 STABLE_HOLD_S = float(os.environ.get("STUDIO_MAC_VERDICT_STABLE_S", "15"))
 # Detection is stage one of the warm, so this covers a cold `import torch` and no more.
 SETTLE_BUDGET_S = float(os.environ.get("STUDIO_MAC_VERDICT_SETTLE_S", "300"))
-# The self-heal is scheduled after join_background_warm(), i.e.
-# behind transformers, datasets and unsloth_zoo as well.
+# The self-heal is scheduled after join_background_warm(), i.e. behind transformers, datasets and unsloth_zoo as well.
+# Minutes on a cold runner, hence the separate budget.
 REPAIR_START_BUDGET_S = float(os.environ.get("STUDIO_MAC_VERDICT_REPAIR_START_S", "600"))
-# How long the stub installer runs.
+# How long the stub installer runs. Must clear main._MLX_PRESTART_GRACE_AFTER_WARM_S with room to spare: samples taken
+# after that grace would have expired are the only ones that prove the LIVE WORKER is holding the verdict rather than
+# the pre-start window.
 UV_SLEEP_S = float(os.environ.get("STUDIO_MAC_VERDICT_UV_SLEEP_S", "75"))
 # Where "the grace has certainly expired" starts, measured from the installer's first
 # breath. Comfortably past the 30s grace so a slow scheduler cannot blur the two.
@@ -137,6 +140,8 @@ def _get(
     except urllib.error.HTTPError as exc:
         return exc.code, None
     except Exception:
+        # Connection refused before the socket binds, and read timeouts while a C-extension import holds the GIL.
+        # Neither is a reply, so neither is a sample.
         return None, None
 
 
@@ -157,7 +162,6 @@ def _post(
     except urllib.error.HTTPError as exc:
         return exc.code, None
     except Exception:
-        # Connection refused before the socket binds, and read timeouts while a C-extension import holds the GIL.
         return None, None
 
 
@@ -245,6 +249,7 @@ class HealthPoller(threading.Thread):
                     self.samples.append(Sample(now, token is not None, body))
             elif status is not None and status != 200:
                 # A non-200 from /api/health is not a verdict, but it is worth seeing:
+                # the route has no failure mode that should ever produce one.
                 info(f"/api/health answered {status}")
             self._stop.wait(POLL_INTERVAL_S)
 
@@ -492,7 +497,8 @@ def boot(port: int, log: Path, env: dict) -> int | None:
     )
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
-    # Flushed here, not left to the next print:
+    # Flushed here, not left to the next print: everything else in this file flushes as it goes, so an unflushed boot
+    # banner surfaces minutes later next to the timeout it preceded, and reads like the boot itself took that long.
     sys.stdout.flush()
     sys.stderr.flush()
     match = re.search(r"pid (\d+)", result.stdout)
@@ -685,7 +691,9 @@ def scenario_real_mlx(port: int, log: Path) -> None:
     """A healthy Apple Silicon host must never look chat-only, not even briefly."""
     step("scenario real-mlx: the verdict on a Mac whose MLX stack works")
 
-    # Preflight in this process, with the product's own criterion.
+    # Preflight in this process, with the product's own criterion. On a host where the stack is genuinely broken the
+    # boot below would take the chat-only path, quietly test nothing this scenario claims, and set a real 15-minute
+    # reinstall going.
     sys.path.insert(0, str(REPO / "studio" / "backend"))
     from utils.mlx_repair import mlx_stack_available  # noqa: PLC0415
 
@@ -707,7 +715,9 @@ def scenario_real_mlx(port: int, log: Path) -> None:
         info(f"verdict settled at t+{settled.t:.2f}s")
 
         assert_watched_the_window(poller)
-        # The reported bug in the exact shape it reached users:
+        # The reported bug in the exact shape it reached users: a settled chat-only answer on a Mac that can train,
+        # greying Train and Video until the self-heal takes it back. Checked over every reply, because it was only ever
+        # true for a while.
         assert_never_published(
             poller,
             lambda s: s.chat_only is True,
@@ -748,6 +758,8 @@ def scenario_no_mlx_settles(port: int, log: Path, work: Path) -> None:
     env["UNSLOTH_DISABLE_MLX_AUTOREPAIR"] = "1"
 
     with booted(port, log, env) as (poller, getter):
+        # The window under test opens once detection settles, not at the first byte, so gating on the repo's health
+        # wait here costs nothing and buys its log tail.
         if not wait_for_health(port, log):
             fail("the server never became healthy")
             return
@@ -794,8 +806,6 @@ def scenario_no_mlx_repair(port: int, log: Path, work: Path) -> None:
     env.pop("UNSLOTH_DISABLE_MLX_AUTOREPAIR", None)
 
     with booted(port, log, env) as (poller, getter):
-        # The window under test opens once detection settles, not at the first byte, so gating on the repo's health wait
-        # here costs nothing and buys its log tail.
         if not wait_for_health(port, log):
             fail("the server never became healthy")
             return
@@ -815,7 +825,8 @@ def scenario_no_mlx_repair(port: int, log: Path, work: Path) -> None:
                 "in-flight hold; check that the post-warm scheduler ran"
             )
             return
-        # Anchor the installer's clock to the poller's, so the two timelines can be compared.
+        # Anchor the installer's clock to the poller's, so the two timelines can be compared. Both come from this host;
+        # only the origin differs.
         uv_started = record["started"] - (time.time() - time.monotonic()) - poller.t0
         argv = " ".join(record.get("argv", []))
         info(f"installer invoked at t+{uv_started:.2f}s: uv {argv[:300]}")
@@ -852,9 +863,8 @@ def scenario_no_mlx_repair(port: int, log: Path, work: Path) -> None:
                 ok(f"{len(in_flight)} replies during the install, none published")
 
             # The pre-start window would have expired 30s after the warm ended, and the warm ends before the scheduler
-            # Must clear main._MLX_PRESTART_GRACE_AFTER_WARM_S with room to spare: samples taken after that grace would
-            # have expired are the only ones that prove the LIVE WORKER is holding the verdict rather than the pre-start
-            # window.
+            # runs. A reply this late that is still held back can only be held by the live worker, which is the half of
+            # the hold no clock bounds.
             proof = [s for s in in_flight if s.t >= uv_started + WORKER_PROOF_MARGIN_S]
             if not proof:
                 fail(

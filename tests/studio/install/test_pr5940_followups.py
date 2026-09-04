@@ -175,7 +175,7 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
     ps_rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding = "utf-8"))
     assert sh_rows, "no name->arch case table found in install.sh"
     cases = {
-        "AMD Radeon(TM) 8060S Graphics": "gfx1151",
+        "AMD Radeon(TM) 8060S Graphics": "gfx1151",  # Strix Halo
         "AMD Ryzen AI Max+ PRO 395 w/ Radeon 8060S": "gfx1151",
         "AMD Radeon 890M Graphics": "gfx1150",  # Strix Point (NOT gfx1151)
         "AMD Ryzen AI 9 HX 370 w/ Radeon 890M": "gfx1150",
@@ -213,9 +213,6 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
     }.items():
         got = _sh_resolve(setup_rows, name)
         assert got == expect, f"setup.sh: {name!r} -> {got!r}, expected {expect!r}"
-
-
-# On Windows w/o a HIP SDK, amd-smi pops a UAC/DiskPart prompt RunAsInvoker can't suppress, so _amd_smi_allowed() skips
 
 
 # ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────
@@ -273,7 +270,7 @@ def test_amd_smi_opt_out_overrides_hip_sdk():
 
 
 def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
-    # The venv hipInfo.exe (AMD wheel via the bnb fix) is NOT a HIP SDK and must not re-open the gate
+    # The venv hipInfo.exe (AMD wheel via the bnb fix) is NOT a HIP SDK and must not re-open the gate --
     # else amd-smi pops the DiskPart UAC mid-install on Strix Halo with no real HIP SDK (the snapcast3r/UBER6 bug).
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
@@ -288,6 +285,8 @@ def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
 
 
 def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
+    # A hipinfo from a real HIP SDK (outside the venv) still opens the gate, so HIP-SDK Windows users keep amd-smi
+    # (no regression for the venv-exclusion).
     sdk_bin = tmp_path / "hipsdk" / "bin"
     sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
@@ -300,13 +299,12 @@ def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
 
 
 def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
-    # Venv hipInfo first on PATH, real SDK's later:
+    # Venv hipInfo first on PATH (bnb fix), real SDK's later, HIP_PATH/ROCM_PATH unset. A first-hit which/Get-Command
+    # stops at the venv copy and wrongly closes the gate; scanning every PATH entry must still find the external SDK.
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
     venv_scripts.mkdir(parents = True)
     (venv_scripts / "hipinfo.exe").write_text("")
-    # A hipinfo from a real HIP SDK (outside the venv) still opens the gate, so
-    # HIP-SDK Windows users keep amd-smi (no regression for the venv-exclusion).
     sdk_bin = tmp_path / "hipsdk" / "bin"
     sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
@@ -350,7 +348,7 @@ def test_amd_smi_allowed_when_env_root_hipinfo_outside_venv(tmp_path):
 
 def test_external_hipinfo_on_path_skips_venv_only(tmp_path):
     # The helper itself: a PATH holding only the venv-internal hipInfo must not
-    # The venv exclusion must also cover the HIP_PATH/ROCM_PATH fallback:
+    # count as an external HIP SDK (the whole point of the venv filter).
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
     venv_scripts.mkdir(parents = True)
@@ -373,8 +371,8 @@ def test_python_hipinfo_gates_scan_all_path_entries():
 
 
 def test_path_inside_venv_resolves_symlinks(tmp_path):
-    # realpath, not abspath:
     # realpath (not abspath): a venv reached through a symlink/junction must still count as inside, else its hipInfo
+    # escapes the filter and amd-smi pops the DiskPart UAC. abspath would leave the alias unresolved here.
     real = tmp_path / "real"
     (real / "Scripts").mkdir(parents = True)
     (real / "Scripts" / "hipInfo.exe").write_text("")
@@ -469,12 +467,15 @@ def test_install_setup_ps_rocm_torch_floors_in_sync():
         ), f"{prefix!r} floor map drift:\ninstall.ps1={i_map}\nsetup.ps1={s_map}"
     # Strix Halo (the field case) must be pinned, not bare.
     assert _ps_floor_map(it, "torchvision>=").get("gfx1151") == "torchvision>=0.26.0,<0.27.0"
+    # The ROCm install must pass the pinned companion specs, not bare names.
     assert (
         "$torchSpec $visionSpec $audioSpec" in it
     ), "install.ps1 ROCm install must use the pinned companion specs"
 
 
 def test_install_ps1_rocm_cpu_fallback_uses_retry():
+    # The ROCm->CPU fallback (likeliest to hit a transient index issue) once used the non-retrying helper; it must
+    # retry like every other torch install here.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
@@ -503,9 +504,9 @@ def test_setup_ps1_rocm_cpu_fallback_force_reinstalls():
         "setup.ps1 must flag the AMD ROCm->CPU fallback so the CPU install can force-"
         "reinstall a partial ROCm torch"
     )
-    # Build $cpuForce as a real array:
-    # The ROCm install must pass the pinned companion specs, not bare names.
-    # Build $cpuForce as a real array, NOT via an if-expression:
+    # Build $cpuForce as a real array, NOT via an if-expression: PowerShell collapses
+    # `$x = if (..) { @("--force-reinstall") }` to a scalar string, which @splat then enumerates char-by-char into
+    # broken single-letter args (- - f o r c e ...).
     assert (
         "$cpuForce = @()" in text
         and 'if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }' in text
@@ -521,6 +522,7 @@ def test_setup_ps1_rocm_cpu_fallback_force_reinstalls():
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
     # Regression for the DiskPart UAC prompt: every function naming `amd-smi`
+    # AND spawning a subprocess must gate it behind _amd_smi_allowed().
     import ast
 
     src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
@@ -603,14 +605,15 @@ def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
 
 
 def test_python_hipinfo_strips_quotes_in_all_copies():
+    # All three copies of the PATH scan must strip surrounding quotes from entries.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert "strip('\"')" in text, f"{src.name} must strip quotes from PATH entries"
 
 
 def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
-    # If sys.prefix resolves to a bare root (C:\ or /), commonpath matches every path and classifies a real external
-    # All three copies of the PATH scan must strip surrounding quotes from entries.
+    # If sys.prefix resolves to a bare root (C:\ or /), commonpath matches every path on the filesystem and classifies
+    # a real external hipinfo as venv-internal, silently disabling amd-smi. All three copies must guard it.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
@@ -671,8 +674,8 @@ def test_install_ps1_clears_rocm_index_after_cpu_fallback():
 
 
 def test_install_ps1_rocm_repair_pins_companions():
-    # After the ROCm->CPU fallback, $ROCmIndexUrl must be cleared so the later flavor-repair block doesn't retry the
     # The flavor-repair ROCm reinstall must use the pinned companion specs (like the fresh ROCm install), not bare
+    # torchvision/torchaudio, which can resolve an ABI-incompatible trio on AMD's per-arch index.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("PyTorch flavor mismatch (installed $installedTorchTag, need ROCm)")
     assert i != -1, "ROCm flavor-repair block not found in install.ps1"
@@ -688,6 +691,8 @@ def test_install_sh_wsl_reroute_uses_pipefail():
     # input, so the reroute would wrongly report success and exit 0 from the parent installer.
     text = _INSTALL_SH.read_text(encoding = "utf-8")
     assert "set -o pipefail" in text, "reroute must enable pipefail"
+    # The reroute targets the selected distro ($_rr_target: 24.04 preferred, 22.04 fallback) via bash -lc; find that
+    # exec line.
     i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
     assert i != -1, "WSL reroute command not found in install.sh"
     # pipefail is set in the exports prefix the reroute bash -lc runs;
@@ -699,11 +704,10 @@ def test_install_sh_wsl_reroute_uses_pipefail():
 
 
 def test_install_sh_wsl_reroute_propagates_tauri_need_sudo_exit():
-    # masked by sh exiting 0 on empty input, so the reroute would wrongly report
     # In --tauri mode the rerouted child uses exit 2 ([TAURI:NEED_SUDO]) to ask the desktop app to elevate for the
+    # target distro. The reroute must propagate that code instead of masking it as a generic failure and dropping to
+    # CPU here.
     text = _INSTALL_SH.read_text(encoding = "utf-8")
-    # The reroute targets the selected distro ($_rr_target: 24.04 preferred, 22.04 fallback) via bash -lc; find that
-    # exec line.
     i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
     assert i != -1, "WSL reroute command not found in install.sh"
     window = text[i : i + 500]
@@ -755,7 +759,9 @@ def test_uninstall_removes_managed_node_runtime():
 
 
 def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
-    # The Windows AMD ROCm repair in _ensure_rocm_torch() must mirror the PS installer:
+    # The Windows AMD ROCm repair in _ensure_rocm_torch() must mirror the PS installer: (1) pin torchvision/torchaudio
+    # for the arches the PS side pins so the per-arch index resolves an ABI-consistent trio, and (2) be nonfatal so a
+    # transient index failure doesn't abort the install after the PS side already fell back to CPU torch.
     text = _PYSTACK_PY.read_text(encoding = "utf-8")
     assert (
         "_WINDOWS_ROCM_TORCH_PKG_SPECS" in text
@@ -818,6 +824,7 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
     monkeypatch.setattr(
         ps, "_windows_rocm_index_url", lambda a: "https://repo.amd.com/rocm/whl/gfx1151/"
     )
+    # torch is not already a ROCm build -> the version probe prints nothing.
     monkeypatch.setattr(
         ps.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b"")
     )
@@ -830,7 +837,6 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
     monkeypatch.setattr(
         ps, "pip_install", lambda *a, **k: calls.__setitem__("fatal", calls["fatal"] + 1)
     )
-    # torch is not already a ROCm build -> the version probe prints nothing.
     monkeypatch.setattr(
         ps,
         "_install_bnb_windows_rocm",

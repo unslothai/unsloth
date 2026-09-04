@@ -72,8 +72,9 @@ def _ps_file(directory: Path, name: str, script: str) -> str:
     return str(path)
 
 
-# The chain Get-StudioFinalPath dispatches to.
-# rather than as a missing helper (issue #9140).
+# The chain Get-StudioFinalPath dispatches to. It used to compile the native helper inline, so a test could extract
+# it alone; extracting the dispatcher by itself now yields a body whose calls are all undefined, which reads as
+# "could not resolve" rather than as a missing helper (issue #9140).
 _FINAL_PATH_CHAIN = (
     "Write-StudioLine",
     "Test-StudioDirectoryUsable",
@@ -103,7 +104,8 @@ def _mutex_helpers(source: str) -> str:
         for name in (
             # Test-StudioPathEqual reports an unresolvable identity through this, and these scripts run under
             # -ErrorActionPreference Stop, so leaving it out made the CATCH path throw CommandNotFound and every test
-            # that reaches it fail for a reason that has nothing to do with what it measures.
+            # that reaches it fail for a reason that has nothing to do with what it measures. Extracted rather than
+            # stubbed: it is self-contained, and a stub would keep passing if the real call ever went wrong.
             "Write-StudioLine",
             "Enter-StudioNamedMutex",
             # Get-StudioFinalPath is a dispatcher now: it falls back to the pure
@@ -894,7 +896,7 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     )
     assert "if ($StudioRedirectMode -eq 'legacy')" not in source
     assert "& $UnslothExe studio -p 8888" not in source
-    # Anchored past the command token:
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
     assert "--clear" not in source[source.index("venv $VenvDir") :][:200]
 
 
@@ -946,9 +948,11 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     provision_wait = desktop_auth_source.index("child.wait_with_output()", provision_spawn)
     assert provision_guard < provision_spawn < provision_wait
 
+    # run_child owns the whole child lifetime.
     update_child_fn = update_source.index("let run_child = || {")
     update_spawn = update_source.index("spawn_update(&bin, &state", update_child_fn)
     update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
+    # a live update inherits the parent gate through its whole lifetime.
     update_call = update_source.index(
         "crate::process::with_studio_runtime_launch_guard(",
         update_wait,
@@ -1095,8 +1099,8 @@ def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     extracted = helpers(source)
-    # Every top-level installer function, i.e.
-    # everything the harness COULD be missing.
+    # Every top-level installer function, i.e. everything the harness COULD be missing. A call to a cmdlet or to a
+    # function defined inside the scripts is not this test's business.
     installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))
     provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
     assert provided, "the helper extraction produced nothing"

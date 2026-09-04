@@ -201,7 +201,7 @@ def test_every_enumerated_candidate_is_screened():
 
 # The launcher below is a /bin/sh script.
 # Windows has no shebang and no PATHEXT entry for an extensionless file, so `Get-Command py` does not find it and the
-# resolver reports "none" whatever the versions are
+# resolver reports "none" whatever the versions are -- which would make the negative case pass for the wrong reason.
 # The PowerShell under test is the same text on every platform, and pwsh runs it here, so these three cases run on POSIX
 # and the rest of the file still covers Windows.
 _POSIX_LAUNCHER_ONLY = pytest.mark.skipif(
@@ -215,7 +215,7 @@ def _fake_launcher(root: Path, versions: dict[str, str]) -> Path:
     branches = []
     for minor, full in versions.items():
         exe = root / f"python{minor.replace('.', '')}"
-        # S -c "import sys; print(sys.base_prefix)" for the conda screen.
+        # -S -c "import sys; print(sys.base_prefix)" for the conda screen.
         exe.write_text('#!/bin/sh\necho "/usr"\n', encoding = "utf-8")
         exe.chmod(0o755)
         branches.append(f'  {minor}) ver="{full}"; exe="{exe}" ;;')
@@ -277,7 +277,9 @@ else {{ Write-Output "RESULT: $($found.Version)" }}
 
 @_POSIX_LAUNCHER_ONLY
 def test_the_resolver_falls_through_to_the_next_minor(tmp_path):
-    # The offline/locked-down case: 3.13.8 and a healthy 3.12 both installed and nothing installable.
+    # The offline/locked-down case: 3.13.8 and a healthy 3.12 both installed and nothing installable. Ending the search
+    # on the 3.13 would leave the caller with a Python that cannot import torch; refusing it outright would fail a
+    # machine that has a perfectly good interpreter one entry down the list.
     assert _resolve(tmp_path, {"3.13": "3.13.8", "3.12": "3.12.11"}) == "3.12"
 
 
@@ -324,7 +326,8 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    # NoTorch must leave 3.13.8 in place, and dying before the RESULT line is printed is indistinguishable here from
+    # -NoTorch must leave 3.13.8 in place, and dying before the RESULT line is printed is indistinguishable here from
+    # the screen having removed it.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,

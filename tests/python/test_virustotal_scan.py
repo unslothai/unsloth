@@ -338,7 +338,7 @@ class TestSingleUseUploadUrl:
                     return 200, b'{"data": "' + token.encode() + b'"}'
                 self.posts += 1
                 if self.posts == 1:
-                    return 500, b""
+                    return 500, b""  # server-side blip on the first signed URL
                 return 200, b'{"data": {"id": "an-2"}}'
 
         transport = Transport()
@@ -481,8 +481,7 @@ class TestRenderMarkdown:
 
     def test_a_flagged_asset_gets_a_submission_packet(self):
         # The build job only ever assembled a packet for the Windows -setup.exe, so the one detection that actually
-        # arrived
-        # Trojan:Script/Wacatac.B!ml on the Linux AppImage
+        # arrived -- Trojan:Script/Wacatac.B!ml on the Linux AppImage -- produced nothing to submit.
         text = vt.render_markdown(
             [
                 vt.FileReport(
@@ -502,7 +501,8 @@ class TestRenderMarkdown:
         assert "wdsi/filesubmission" in text
 
     def test_a_flagged_asset_with_no_readable_engine_list_still_gets_a_packet(self):
-        # stats and results are separate fields of the same response.
+        # stats and results are separate fields of the same response. The table reports the count, so the packet has
+        # to key on the same thing or it skips the one asset that needs one.
         text = vt.render_markdown(
             [
                 vt.FileReport(
@@ -581,8 +581,8 @@ class TestDeadlineIsNotOverrunByThrottling:
 
     def test_transport_never_starts_after_the_deadline(self):
         client, transport, now = self._clocked_client({"x.example": (200, b"{}")})
-        client._last_request_at = now[0]
-        deadline = now[0] + 5.0
+        client._last_request_at = now[0]  # force a full interval of pacing
+        deadline = now[0] + 5.0  # less budget than the pacing needs
         with pytest.raises(TimeoutError, match = "pacing"):
             client.request("GET", "https://x.example/y", deadline = deadline)
         assert transport.calls == []
@@ -654,6 +654,7 @@ class TestMalformedUploadAcknowledgement:
             if "/files/upload_url" in url:
                 state["n"] += 1
                 return (200, b'{"data": "https://up.example/%d"}' % state["n"])
+            # First ack is unparseable, second is well formed.
             if state["n"] == 1:
                 return (200, b"not json")
             return (200, b'{"data": {"id": "an-2"}}')
@@ -928,13 +929,21 @@ class TestWorkflowOrdering:
         return argv[argv.index("scripts/virustotal_scan.py") + 1 :]
 
     def test_the_scan_is_its_own_job_gated_on_publish_release(self):
+        # Pins the post-publish ordering rather than merely tolerating it: the job must exist and must be downstream
+        # of publish-release, so dropping either the job or the `needs` turns this red.
         job = self._scan_job()
         assert job["needs"] == ["publish-release"]
 
     def test_the_scan_job_is_not_conditioned_away(self):
         # `needs:` alone carries GitHub's default `success()` gating, so whether the scan runs is decided by
-        # publish-release and nothing else.
-        # A job-level `if:` fails in both directions: `always()` or `success() || inputs.scan_anyway` sends build
+        # publish-release and nothing else. The job therefore carries no `if:` at all, and this rejects every one
+        # rather than trying to sort the safe conditions from the unsafe.
+        #
+        # Sorting them does not work. A job-level `if:` fails in both directions: `always()` or
+        # `success() || inputs.scan_anyway` sends build artifacts to a third party after a publish that failed, while
+        # `${{ false }}` or `success() && <anything falsey>` silently skips the sweep after a publish that succeeded.
+        # Any rule permissive enough to admit an arbitrary trailing predicate admits the second kind, so the contract
+        # is simply that reaching this job is `needs:`'s decision alone.
         job = self._scan_job()
         assert "if" not in job, (
             f"virustotal-scan carries `if: {job.get('if')}`; a job-level condition "
@@ -967,7 +976,9 @@ class TestWorkflowOrdering:
         assert download["uses"].startswith("actions/download-artifact@")
         assert download["with"]["merge-multiple"] is True
 
-        # Tie the scan's input to publish-release's own download rather than to a literal repeated in both places:
+        # Tie the scan's input to publish-release's own download rather than to a literal repeated in both places: if
+        # publish ever ships a different artifact set, a scan still pulling the old pattern leaves the shipped
+        # installers unscanned and still reports a clean sweep.
         publish_download = next(
             step
             for step in self._publish_step_list()
@@ -983,7 +994,8 @@ class TestWorkflowOrdering:
             publish_download["with"]["path"]
         ), (download["with"]["path"], publish_download["with"]["path"])
 
-        # And the scan has to be pointed at that same directory.
+        # And the scan has to be pointed at that same directory. The script takes its target as an argument, so
+        # comparing only the two download steps lets a repointed argument scan an empty directory and report clean.
         argv = self._scan_script_argv()
         scan_paths = list(itertools.takewhile(lambda argument: not argument.startswith("-"), argv))
         assert scan_paths, argv
@@ -1005,7 +1017,8 @@ class TestWorkflowOrdering:
         assert names.index("Download published assets") < names.index("VirusTotal scan")
 
     def test_the_publish_job_no_longer_runs_the_scan(self):
-        # #8194 moved the scan out wholesale.
+        # #8194 moved the scan out wholesale. Re-inlining it would put ~9 minutes back into the critical path of every
+        # release for a check that cannot block one, and would leave two scans burning the same 4/min quota.
         for step in self._publish_step_list():
             assert "virustotal" not in (step.get("name") or "").lower()
             assert "virustotal_scan.py" not in (step.get("run") or "")
@@ -1027,7 +1040,8 @@ class TestWorkflowOrdering:
         assert "desktop-release-notes.md" in metadata
 
     def test_a_missing_release_stops_the_publish(self):
-        # Nothing is created here any more, so an absent release is a dispatch mistake:
+        # Nothing is created here any more, so an absent release is a dispatch mistake: say how to fix it instead of
+        # publishing into thin air.
         run = self._publish_step_map()["Validate versioned release state"]["run"]
         assert "gh release create" not in run
         missing = run.split("does not exist.", 1)[1]
@@ -1069,7 +1083,8 @@ class TestWorkflowOrdering:
         assert "--fail-threshold" not in run
 
     def test_the_advisory_escape_hatch_is_confined_to_the_scan_job(self):
-        # `continue-on-error` anywhere else would let a genuine release failure pass as success.
+        # `continue-on-error` anywhere else would let a genuine release failure pass as success. Exactly one in the
+        # file, on virustotal-scan itself.
         jobs = self._workflow()["jobs"]
         assert self._scan_job()["continue-on-error"] is True
 
@@ -1088,8 +1103,9 @@ class TestWorkflowOrdering:
         assert tolerant_steps == []
 
     def test_the_scan_job_makes_the_scan_script_available(self):
-        # The job publishes nothing and so has no source tree of its own;
-        # the sparse checkout is the only thing that puts scripts/virustotal_scan.py on disk.
+        # The job publishes nothing and so has no source tree of its own; the sparse checkout is the only thing that
+        # puts scripts/virustotal_scan.py on disk. Assert the mechanism, not a step name: a checkout that stops
+        # fetching the script leaves the scan unable to run at all.
         checkouts = [
             step
             for step in self._scan_job()["steps"]
@@ -1110,14 +1126,16 @@ class TestWorkflowOrdering:
         assert "exit 1" in guard.split("if [ ! -f scripts/virustotal_scan.py ]; then", 1)[1]
 
     def test_the_scan_verdict_is_always_reported(self):
+        # continue-on-error means nobody is forced to look at the job result, so the step summary is the report. It
+        # must be written even when the scan itself failed, which is exactly the case worth reading.
         summary = self._scan_step_map()["Publish VirusTotal summary"]
         assert summary["if"] == "always()"
         assert "$GITHUB_STEP_SUMMARY" in summary["run"]
         assert "virustotal-summary.md" in summary["run"]
 
     def test_the_placeholder_summary_matches_the_real_one(self):
-        # continue-on-error means nobody is forced to look at the job result, so the step summary is the report.
         # The placeholder stands in when the scan produced no summary, so a heading that drifts from the script's
+        # renders as a second, unrelated section instead of the report the reader came for.
         summary = self._scan_step_map()["Publish VirusTotal summary"]
         assert vt.SUMMARY_HEADING in summary["run"], summary["run"]
 

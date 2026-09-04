@@ -64,7 +64,9 @@ SETTLE_S = float(os.environ.get("PW_POLL_SETTLE_S", "20"))
 WATCH_S = float(os.environ.get("PW_POLL_WATCH_S", "75"))
 WALL_TIMEOUT_S = SETTLE_S + WATCH_S + 180
 
-# A boot read fires once. A retry fires twice.
+# A boot read fires once. A retry fires twice. Three identical requests while the user is doing nothing at all is a
+# timer, and the threshold is deliberately this blunt: anything cleverer (spacing regularity, variance) turns a gate
+# into a coin toss on a shared runner.
 POLL_THRESHOLD = 3
 
 # Sidebar sections to walk, so section-scoped timers get a chance to run.
@@ -175,7 +177,9 @@ def main() -> int:
         page.wait_for_timeout(int(SETTLE_S * 1000))
         counting = True
 
-        # Sitting on the default screen sees almost nothing:
+        # Sitting on the default screen sees almost nothing: measured, the chat view polls two paths. Most timers belong
+        # to a section, so walk the sidebar and dwell on each long enough for a 5s poll to fire several times. Without
+        # this the suite passes by watching a screen where nothing could have regressed.
         dwell = max(int(WATCH_S * 1000 / (len(SECTIONS) + 1)), 20_000)
         for label in SECTIONS:
             try:
@@ -185,7 +189,7 @@ def main() -> int:
                 continue
             page.wait_for_timeout(dwell)
             close_dwell()
-        page.wait_for_timeout(dwell)
+        page.wait_for_timeout(dwell)  # a final idle dwell wherever we ended up
         close_dwell()
         counting = False
 
@@ -222,6 +226,9 @@ def main() -> int:
     )
 
     if len(polled) < MIN_POLLED_PATHS:
+        # Too thin to mean anything: the listener never attached, the walk never left one screen, or the window was too
+        # short. A clean sheet from a run like that is not a pass, it is an absence of evidence, so say so instead of
+        # reporting green.
         info(
             f"FAIL saw only {len(polled)} polled path(s), expected at least "
             f"{MIN_POLLED_PATHS}; this run cannot vouch for anything"
@@ -230,13 +237,10 @@ def main() -> int:
             info(f"  {path}  {n}x")
         return 1
 
-    # never sees them.
-    # Declared-but-unobserved is NOT a failure.
+    # Declared-but-unobserved is NOT a failure. Several entries only poll while a pane is open (the settings dialog, a
+    # download, the log viewer), and an idle run legitimately never sees them.
     unobserved = sorted(declared - set(polled))
     if unobserved:
-        # Too thin to mean anything: the listener never attached, the walk never left one screen, or the window was too
-        # short. A clean sheet from a run like that is not a pass, it is an absence of evidence, so say so instead of
-        # reporting green.
         info(
             f"note: {len(unobserved)} declared polls not seen while idle "
             f"(expected for pane-scoped and busy-only polls)"
