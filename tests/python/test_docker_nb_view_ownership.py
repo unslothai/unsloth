@@ -106,3 +106,55 @@ def test_a_rebuild_is_stable_for_the_links_it_owns(view_mod, tree):
     first = sorted(str(p.relative_to(view)) for p in view.rglob("*"))
     view_mod.build_view(str(dest), str(view))
     assert sorted(str(p.relative_to(view)) for p in view.rglob("*")) == first
+
+
+# The view is built as root while /workspace is a host bind mount, so every directory
+# the tool creates has to be handed back to whoever owns the mount. The tests run
+# unprivileged, where a chown to the anchor's own uid is a no-op and therefore
+# invisible in the result, so record the calls instead of inspecting st_uid.
+
+
+@pytest.fixture
+def chowns(monkeypatch):
+    calls = []
+    real = os.chown
+
+    def _record(path, uid, gid, *a, **kw):
+        calls.append((str(path), uid, gid))
+        return real(path, uid, gid, *a, **kw)
+
+    monkeypatch.setattr(os, "chown", _record)
+    return calls
+
+
+def test_the_view_root_and_every_category_folder_are_handed_to_the_host_user(
+    view_mod, tree, chowns
+):
+    dest, view = tree
+    view.rmdir()  # first boot: the tool creates the view root itself
+    anchor = os.stat(view.parent)
+
+    view_mod.build_view(str(dest), str(view))
+
+    created = [str(view)] + [str(p) for p in sorted(view.iterdir()) if p.is_dir()]
+    assert len(created) >= 3, created
+    for path in created:
+        assert (path, anchor.st_uid, anchor.st_gid) in chowns, (path, chowns)
+
+
+def test_an_existing_directory_is_left_alone(view_mod, tree, chowns):
+    """Only directories this run created are re-owned. Chowning one the user already
+    had would take their view away rather than give it to them."""
+    dest, view = tree  # the fixture already created the view root
+    view_mod.build_view(str(dest), str(view))
+    assert str(view) not in [c[0] for c in chowns], chowns
+
+
+def test_the_view_uses_the_same_directory_maker_as_unsloth_run(view_mod):
+    """A third copy of the walk would drift, and a silent import failure would put the
+    view straight back to creating root-owned folders."""
+    helper = view_mod._MAKEDIRS_AS_HOST
+    assert helper is not None, "the shared helper stopped resolving"
+    assert helper.__name__ == "_makedirs_as_host"
+    source = Path(helper.__code__.co_filename).resolve()
+    assert source == (REPO_ROOT / "docker" / "unsloth_run.py").resolve(), source

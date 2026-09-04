@@ -21,6 +21,49 @@ _NB_RE = re.compile(r"nb/([\w.()%\-]+?\.ipynb)")
 _OTHER = "Other Notebooks"
 
 
+def _load_makedirs_as_host():
+    """unsloth_run's directory maker, or None.
+
+    mkdir(2) gives a new directory the CALLER's uid and only setgid carries down, so
+    building the view as root under a host bind mount leaves the view root and every
+    category folder root:root: the host user cannot add their own link to a category,
+    or delete the generated view, without escalating. unsloth_sync_notebooks.sh grew
+    mkdir_keep_owner and unsloth_run has _makedirs_as_host for exactly this; the view
+    was the sibling both of them missed.
+
+    Imported rather than copied a third time. __file__ is the /usr/local/bin symlink
+    in the image, so resolve it before deriving the directory, and
+    test_the_view_uses_the_same_directory_maker_as_unsloth_run fails if this stops
+    resolving rather than letting it degrade quietly back to the bug.
+    """
+    here = os.path.dirname(os.path.realpath(__file__))
+    added = here not in sys.path
+    if added:
+        sys.path.insert(0, here)
+    try:
+        from unsloth_run import _makedirs_as_host
+
+        return _makedirs_as_host
+    except Exception:
+        return None
+    finally:
+        if added:
+            try:
+                sys.path.remove(here)
+            except ValueError:
+                pass
+
+
+_MAKEDIRS_AS_HOST = _load_makedirs_as_host()
+
+
+def _makedirs(path):
+    if _MAKEDIRS_AS_HOST is not None:
+        _MAKEDIRS_AS_HOST(path)
+    else:
+        os.makedirs(path, exist_ok = True)
+
+
 def clean_section(title):
     title = title.strip().strip("#").strip()
     title = re.sub(r"^[^\w]+", "", title)
@@ -112,12 +155,12 @@ def build_view(
     # elsewhere survives the rebuild
     nb_real = os.path.realpath(nb_dir)
     _clear_view(view, nb_real)
-    os.makedirs(view, exist_ok = True)
+    _makedirs(view)
 
     n_links = 0
     for i, section in enumerate(order, start = 1):
         folder = os.path.join(view, f"{i:02d} {section}")
-        os.makedirs(folder, exist_ok = True)
+        _makedirs(folder)
         for fname in by_section[section]:
             link = os.path.join(folder, fname)
             target = os.path.join(nb_dir, fname)
