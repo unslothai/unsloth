@@ -4971,17 +4971,17 @@ def test_the_anthropic_paths_promote_a_replayed_mcp_envelope():
     from routes import inference
 
     generate = inspect.getsource(inference.anthropic_messages)
-    assert "_promote_mcp_history_images_async(" in generate, (
-        "the /v1/messages path never promotes the replayed envelope"
-    )
-    assert "replayed_image_parts = tuple(_anthropic_replayed_image_parts)" in generate, (
-        "the loop's conversation cap has to start from what promotion put back"
-    )
+    assert (
+        "_promote_mcp_history_images_async(" in generate
+    ), "the /v1/messages path never promotes the replayed envelope"
+    assert (
+        "replayed_image_parts = tuple(_anthropic_replayed_image_parts)" in generate
+    ), "the loop's conversation cap has to start from what promotion put back"
 
     count = inspect.getsource(inference.anthropic_count_tokens)
-    assert "promote_mcp_history_images(" in count, (
-        "the count endpoint prices the base64 the completion never sends"
-    )
+    assert (
+        "promote_mcp_history_images(" in count
+    ), "the count endpoint prices the base64 the completion never sends"
 
 
 def test_an_anthropic_replay_hands_the_model_the_picture_not_the_base64():
@@ -5029,8 +5029,7 @@ def test_an_anthropic_replay_hands_the_model_the_picture_not_the_base64():
     )
 
     text = "".join(
-        message["content"] if isinstance(message.get("content"), str) else ""
-        for message in out
+        message["content"] if isinstance(message.get("content"), str) else "" for message in out
     ) + "".join(
         part.get("text", "")
         for message in out
@@ -5041,13 +5040,16 @@ def test_an_anthropic_replay_hands_the_model_the_picture_not_the_base64():
     assert mcp_images.SENTINEL not in text
     assert payload not in text, "the base64 reached the model as prompt text"
     assert len(promoted) == 1
-    assert sum(
-        1
-        for message in out
-        if isinstance(message.get("content"), list)
-        for part in message["content"]
-        if part.get("type") == "image_url"
-    ) == 1
+    assert (
+        sum(
+            1
+            for message in out
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image_url"
+        )
+        == 1
+    )
 
 
 def test_a_text_only_anthropic_model_is_not_shown_the_envelope_either():

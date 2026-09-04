@@ -19409,7 +19409,12 @@ def _build_external_messages(
     return promote_mcp_history_images(result, vision = promote, promoted_out = promoted_out)
 
 
-async def _promote_mcp_history_images_async(messages, *, vision: bool, promoted_out = None):
+async def _promote_mcp_history_images_async(
+    messages,
+    *,
+    vision: bool,
+    promoted_out = None,
+):
     """Promotion off the shared loop when there is really an envelope to rebuild.
     Same hop, and the same reason, as the local and external replay paths take."""
     if vision and _messages_have_mcp_image_envelope(messages):
@@ -29141,9 +29146,7 @@ async def anthropic_count_tokens(
     # Priced as the images the request really sends, not as the base64 the envelope
     # carries: rendered verbatim a replayed screenshot counts thousands of tokens the
     # completion never sends, and the two endpoints must agree on the same prompt.
-    openai_messages = promote_mcp_history_images(
-        openai_messages, vision = llama_backend.is_vision
-    )
+    openai_messages = promote_mcp_history_images(openai_messages, vision = llama_backend.is_vision)
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
