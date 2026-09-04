@@ -50,8 +50,7 @@ import pathlib
 
 ROUTES = pathlib.Path(__file__).resolve().parent.parent / "routes" / "inference.py"
 PREEMPTION = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "core" / "inference" / "llama_preemption.py"
+    pathlib.Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_preemption.py"
 )
 
 CHAT_HANDLER = "produce_openai_chat_completions"
@@ -202,9 +201,9 @@ class TestEveryLeaseIsAccountedFor:
 
         def count(name):
             return sum(
-                1 for n in ast.walk(tree)
-                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                and n.func.id == name
+                1
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
             )
 
         reserves = count("_openai_llama_admission_reserve")
@@ -227,13 +226,17 @@ class TestEveryLeaseIsAccountedFor:
         source = ROUTES.read_text()
         tree = ast.parse(source)
         counted = sum(
-            1 for n in ast.walk(tree)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            1
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
             and n.func.id == "_openai_llama_count_raw_holder"
         )
         disarms = sum(
-            1 for n in ast.walk(tree)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            1
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
             and n.func.id == "_openai_llama_preemption_disarm"
         )
         assert disarms >= counted

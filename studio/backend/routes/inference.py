@@ -2486,9 +2486,7 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
             return
         if lease is None:
             return
-        get_preemption_controller(
-            str(getattr(llama_backend, "base_url", "llama-server"))
-        ).register(
+        get_preemption_controller(str(getattr(llama_backend, "base_url", "llama-server"))).register(
             gen_id,
             lease = lease,
             tokens = int(getattr(lease, "tokens", 0) or 0),
@@ -28707,7 +28705,9 @@ async def _responses_stream(
             # cancel. It does fill real cells, and a holder the controller cannot see makes
             # the watermark fire late by exactly its size.
             _openai_llama_count_raw_holder(
-                llama_backend = llama_backend, lease = lease, gen_id = resp_id,
+                llama_backend = llama_backend,
+                lease = lease,
+                gen_id = resp_id,
             )
             iterator = event_generator()
             stream_started = True
@@ -30043,10 +30043,9 @@ async def anthropic_messages(
         _anthropic_preempt_loop = asyncio.get_running_loop()
     except RuntimeError:
         _anthropic_preempt_loop = None
-    _anthropic_refresh_residency, _anthropic_observe_tokens = (
-        _openai_llama_residency_observer(
-            llama_backend = llama_backend, completion_id = message_id,
-        )
+    _anthropic_refresh_residency, _anthropic_observe_tokens = _openai_llama_residency_observer(
+        llama_backend = llama_backend,
+        completion_id = message_id,
     )
 
     def _arm_anthropic(reservation) -> None:
@@ -30171,7 +30170,8 @@ async def anthropic_messages(
                 # only ever grew: one chat of four hung 2400s waiting for room that could
                 # not arrive while llama-server sat idle with every slot released.
                 _openai_llama_preemption_disarm(
-                    llama_backend = llama_backend, gen_id = message_id,
+                    llama_backend = llama_backend,
+                    gen_id = message_id,
                 )
                 if lease is not None:
                     lease.release()
@@ -32973,8 +32973,10 @@ async def _openai_passthrough_stream_admitted(
                             # Only a retry that is actually going upstream keeps the slot.
                             if not closed:
                                 _release_admission(
-                                    admission_lease, _tracker,
-                                    llama_backend = llama_backend, gen_id = completion_id,
+                                    admission_lease,
+                                    _tracker,
+                                    llama_backend = llama_backend,
+                                    gen_id = completion_id,
                                 )
                         send_task = None
                         target_url = retry_url
@@ -32995,8 +32997,10 @@ async def _openai_passthrough_stream_admitted(
                         await _aclose_stream_resources(resp = resp, client = client)
                     finally:
                         _release_admission(
-                            admission_lease, _tracker,
-                            llama_backend = llama_backend, gen_id = completion_id,
+                            admission_lease,
+                            _tracker,
+                            llama_backend = llama_backend,
+                            gen_id = completion_id,
                         )
                 raise HTTPException(
                     status_code = 502,
@@ -33015,8 +33019,10 @@ async def _openai_passthrough_stream_admitted(
                         await _aclose_stream_resources(client = client)
                     finally:
                         _release_admission(
-                            admission_lease, _tracker,
-                            llama_backend = llama_backend, gen_id = completion_id,
+                            admission_lease,
+                            _tracker,
+                            llama_backend = llama_backend,
+                            gen_id = completion_id,
                         )
                 return _SameTaskStreamingResponse(
                     iter(()),
@@ -33661,8 +33667,10 @@ async def _openai_passthrough_stream_admitted(
                         )
                     finally:
                         _release_admission(
-                            admission_lease, _tracker,
-                            llama_backend = llama_backend, gen_id = completion_id,
+                            admission_lease,
+                            _tracker,
+                            llama_backend = llama_backend,
+                            gen_id = completion_id,
                         )
 
         async def _unstarted_cleanup() -> None:
@@ -33677,8 +33685,10 @@ async def _openai_passthrough_stream_admitted(
                     await _aclose_stream_resources(resp = resp, client = client)
                 finally:
                     _release_admission(
-                        admission_lease, _tracker,
-                        llama_backend = llama_backend, gen_id = completion_id,
+                        admission_lease,
+                        _tracker,
+                        llama_backend = llama_backend,
+                        gen_id = completion_id,
                     )
 
         return _SameTaskStreamingResponse(
@@ -33706,8 +33716,10 @@ async def _openai_passthrough_stream_admitted(
                 await _aclose_stream_resources(resp = resp, client = client)
             finally:
                 _release_admission(
-                    admission_lease, _tracker,
-                    llama_backend = llama_backend, gen_id = completion_id,
+                    admission_lease,
+                    _tracker,
+                    llama_backend = llama_backend,
+                    gen_id = completion_id,
                 )
         raise
 
@@ -33778,7 +33790,9 @@ async def _openai_passthrough_non_streaming(
         # Counted, never chosen: one upstream generation per HTTP call, with no Studio-side
         # conversation to resume, so it cannot be paused. It still fills cells.
         _openai_llama_count_raw_holder(
-            llama_backend = llama_backend, lease = lease, gen_id = _raw_gen_id,
+            llama_backend = llama_backend,
+            lease = lease,
+            gen_id = _raw_gen_id,
         )
         return await _openai_passthrough_non_streaming_upstream(
             llama_backend,
