@@ -128,6 +128,7 @@ def _install(
     backend,
     *,
     supports_tools = True,
+    supports_reasoning = False,
 ):
     import routes.inference as inf
     from state.tool_policy import reset_tool_policy
@@ -140,7 +141,10 @@ def _install(
     monkeypatch.setattr(
         inf,
         "_detect_safetensors_features",
-        lambda *a, **k: {"supports_tools": supports_tools},
+        lambda *a, **k: {
+            "supports_tools": supports_tools,
+            "supports_reasoning": supports_reasoning,
+        },
     )
     return monitor
 
@@ -1223,3 +1227,59 @@ def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
     assert backend.calls[0]["image"] is not None
+
+
+# --- response_format on this path ------------------------------------------------------
+# The reply is a document the route must not re-read, and the contract reaches the backend
+# with the route's own answer to whether reasoning is separated here.
+
+_RF_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+_RF_FORMAT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _RF_SCHEMA}}
+_MARKUP_DOC = '{"city":"<think>Paris</think>"}'
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids = ["whole", "streamed"])
+@pytest.mark.parametrize(
+    "prefix, prefilled, reasoning",
+    [
+        ("", False, ""),
+        ("<think>weighing</think>", False, "weighing"),
+        ("<think>weighing</think>", True, "weighing"),
+        ("", True, ""),
+    ],
+)
+def test_markers_inside_a_constrained_document_stay_in_it(chunked, prefix, prefilled, reasoning):
+    """A document may legitimately contain the text the reasoning protocol uses."""
+    from routes.inference import _ResponsesReasoningExtractor
+
+    extractor = _ResponsesReasoningExtractor(
+        parse_think_markers = True, reasoning_prefilled = prefilled, single_block = True
+    )
+    text = prefix + _MARKUP_DOC
+    got_reasoning = got_content = ""
+    for piece in text if chunked else [text]:
+        delta_reasoning, delta_content = extractor.feed(piece)
+        got_reasoning += delta_reasoning
+        got_content += delta_content
+    delta_reasoning, delta_content = extractor.finish()
+
+    assert got_content + delta_content == _MARKUP_DOC
+    assert got_reasoning + delta_reasoning == reasoning
+    assert json.loads(_MARKUP_DOC)["city"] == "<think>Paris</think>"
+
+
+@pytest.mark.parametrize("reasoning", [False, True], ids = ["plain", "reasoning"])
+def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeypatch, reasoning):
+    """The contract travels with the route's own answer to whether reasoning is separated, so
+    the grammar leaves room for a block exactly where one is taken back out."""
+    pytest.importorskip("llguidance.mlx")
+    backend = _ScriptedBackend(_fixed(_MARKUP_DOC))
+    backend.models["sf-model"]["is_mlx"] = True
+    caps = {"supports_tools": False, "supports_reasoning": reasoning}
+    reply = _call(_request(response_format = _RF_FORMAT), monkeypatch, backend, **caps)
+    body = _json_body(reply)
+    assert backend.calls[0]["response_format"] == _RF_FORMAT
+    assert backend.calls[0]["reasoning_is_extracted"] is reasoning
+    message = body["choices"][0]["message"]
+    assert message["content"] == _MARKUP_DOC
+    assert not message.get("reasoning_content")

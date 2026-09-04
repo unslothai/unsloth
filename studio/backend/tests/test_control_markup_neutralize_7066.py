@@ -3866,10 +3866,9 @@ def test_anthropic_healing_is_gated_on_the_sanitized_catalog():
     assert "heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)" not in source
     # The third argument is the reconciled choice the body carries, not the caller's: see
     # test_healing_is_gated_on_the_tool_choice_actually_sent.
-    assert (
-        source.count('heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))')
-        == 2
-    )
+    packed = " ".join(source.split()).replace("( ", "(")
+    gate = 'heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice")'
+    assert packed.count(gate + ",") + packed.count(gate + ")") == 2
     assert "nudge_should_retry(data, _allowed_tools, openai_tools)" not in source
 
 
@@ -5105,9 +5104,10 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
         "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
     )
     assert "_sf_renderable_tools," in source and "asyncio.to_thread(" in source
-    assert (
-        "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)" in source
-    )
+    packed = " ".join(source.split()).replace("( ", "(")
+    # Third argument pinned too: the reconciled choice the payload carries, not the caller's.
+    gate = "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice"
+    assert packed.count(gate + ",") + packed.count(gate + ")") == 1
     for call in (
         "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
         "heal_openai_message(_msg, _sf_heal, _sf_healing_tools)",

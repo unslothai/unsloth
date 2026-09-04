@@ -10557,3 +10557,33 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+
+
+def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():
+    """llama-server takes a json_schema request's schema only from ``json_schema.schema``, so
+    unrewritten, one top-level request would mean an integer on MLX and an object on GGUF."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _response_format_for_llama_server as for_llama
+
+    schema = {"type": "integer"}
+    wrapped = {"type": "json_schema", "json_schema": {"schema": schema}}
+    lenient = {"type": "json_schema", "schema": schema}
+    # Absent means missing or null, the reading the MLX side takes.
+    assert for_llama(lenient) == wrapped
+    assert for_llama({"type": "json_schema", "json_schema": None, "schema": schema}) == wrapped
+    # Spellings llama-server already reads pass untouched, json_object included: it takes
+    # that one's schema from the top level, so wrapping would hide it.
+    for already in (
+        {"type": "json_schema", "json_schema": {"name": "x", "schema": schema}},
+        {"type": "json_schema", "json_schema": {"schema": schema}, "schema": {}},
+        {"type": "json_object", "schema": schema},
+        {"type": "json_object"},
+        {"type": "text"},
+        None,
+    ):
+        assert for_llama(already) is already
+    # And the body actually handed to llama-server carries the rewritten form.
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "hi"}], response_format = lenient
+    )
+    assert _build_openai_passthrough_body(request)["response_format"] == wrapped

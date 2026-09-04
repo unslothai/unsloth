@@ -213,6 +213,13 @@ _install_httpcore_asyncgen_silencer()
 _STATUS_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-status")
 
 
+# Compiling a response_format's grammar is CPU-bound and as large as the client's schema
+# (10k properties measured at ~2s); same reason as the probes above.
+_SCHEMA_VALIDATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers = 2, thread_name_prefix = "inference-response-format"
+)
+
+
 # Lease waiters must not consume default workers needed by the current holder.
 _OLLAMA_LEASE_EXECUTOR = ThreadPoolExecutor(
     max_workers = 2, thread_name_prefix = "inference-ollama-lease"
@@ -313,6 +320,13 @@ def _friendly_gen_stream_error(value) -> str:
     if getattr(value, "public", False):
         return text
     return safe_error_detail(RuntimeError(text), fallback = "An internal error occurred.")
+
+
+def _refused_parameter(value) -> Optional[str]:
+    """The request field a generation failure refuses, or None for a backend fault; a contract
+    checkable only once the prompt is rendered must not become a 500 for being found late."""
+    param = getattr(value, "openai_param", None)
+    return param if getattr(value, "public", False) and param else None
 
 
 def _friendly_upstream_error(text: str) -> str:
@@ -20499,11 +20513,8 @@ async def produce_openai_chat_completions(
             or bool(payload.openai_code_exec_container_id)
             or bool(payload.anthropic_code_exec_container_id)
             # A JSON-schema response_format is guided-decoding structured output the
-            # router forwards to the llama-server passthrough, not Unsloth's tool
-            # loop, so a --enable-tools policy must not 400 it as a local-confirm
-            # request under ask/auto. Read with the predicate the router itself
-            # uses, so this gate cannot admit a request the router then rejects
-            # after a model switch, nor reject one the router would have served.
+            # router answers with a grammar engine, not Unsloth's tool loop, and is read
+            # with the router's own predicate so the two cannot disagree.
             or _response_format_constrains_decoding(payload)
         )
         # permission_mode only implies the confirm gate for that local loop.
@@ -20741,15 +20752,48 @@ async def produce_openai_chat_completions(
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
-        if _response_format_constrains_decoding(payload):
-            _raise_unsupported_openai_parameter(
-                "response_format",
-                "response_format needs the llama.cpp grammar engine; load a GGUF model to use it.",
-            )
-
         # ── Audio TTS path: auto-route to audio generation ────
         # (Whisper is ASR not TTS -- handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
+        if _response_format_constrains_decoding(payload):
+            # No grammar constrains a waveform or a transcript. Matched on the route taken,
+            # and asked first so the answer names the real obstacle.
+            _audio_reply = model_info.get("is_audio") and model_info.get("audio_type") != "whisper"
+            _transcribes = model_info.get("audio_type") == "whisper"
+            _listens = payload.audio_base64 and model_info.get("has_audio_input")
+            if _audio_reply or _transcribes or _listens:
+                _raise_unsupported_openai_parameter(
+                    "response_format",
+                    "response_format is not supported when the reply comes from an audio "
+                    "route: a waveform admits no grammar, and transcription and audio-input "
+                    "answers are decoded without one. Send the request to a text model.",
+                )
+            if not model_info.get("is_mlx"):
+                _raise_unsupported_openai_parameter(
+                    "response_format",
+                    "response_format needs a grammar engine, and the transformers backend "
+                    "has none; load an MLX or GGUF model to use it.",
+                )
+            if payload.tool_choice not in (None, "auto", "none"):
+                # The grammar admits the document alone, so a forced call is unmeetable.
+                _raise_unsupported_openai_parameter(
+                    "tool_choice",
+                    "response_format cannot be combined with a tool_choice that requires a "
+                    "call: guided decoding admits only the document, so no tool would be "
+                    "called. Use tool_choice 'auto' or 'none'.",
+                )
+            if _continue_final_message(payload):
+                # The grammar starts a fresh document, so resuming would append a second.
+                _raise_unsupported_openai_parameter(
+                    "response_format",
+                    "response_format cannot resume a partial assistant message: guided "
+                    "decoding starts a new document rather than continuing the text before "
+                    "it. Send the turn without continue_final_message.",
+                )
+            # Off the loop, and off the default executor with it.
+            await asyncio.get_running_loop().run_in_executor(
+                _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
+            )
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("non-GGUF audio chat completions")
@@ -23014,6 +23058,12 @@ async def produce_openai_chat_completions(
         and _request_states_tool_intent(payload)
     ):
         _sf_tools_on = False
+    # A contract needing a grammar belongs to the guided path, where the GGUF router sends
+    # one; a --enable-tools policy alone must not claim it here instead.
+    if _response_format_constrains_decoding(payload) and not _explicit_studio_tool_loop_requested(
+        payload
+    ):
+        _sf_tools_on = False
     _sf_mcp_allowed = bool(payload.mcp_enabled) and _sf_cli_policy is not False
 
     # Named templates may expose native reasoning only in their ``tool_use``
@@ -23095,6 +23145,10 @@ async def produce_openai_chat_completions(
     _sf_continue = _continue_final_message(payload)
     _sf_continued_turn = [_sf_continue]
 
+    # Whether a grammar shaped this reply, decided once and passed to every split a contract
+    # reaches, so no two of them can disagree about its markers.
+    _sf_single_block = _response_format_constrains_decoding(payload)
+
     def _new_sf_reasoning_extractor():
         prefilled = _sf_reasoning_prefilled
         if _sf_continued_turn[0]:
@@ -23103,6 +23157,8 @@ async def produce_openai_chat_completions(
         return _ResponsesReasoningExtractor(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
+            # The reply is the document, behind at most one block; later markers are its data.
+            single_block = _sf_single_block,
         )
 
     cancel_event = _chat_cancel_event(request)
@@ -23147,6 +23203,21 @@ async def produce_openai_chat_completions(
 
     if _sf_use_tools and _wants_multiple_choices(payload):
         _raise_unsupported_n("non-GGUF tool chat completions", monitor_id)
+
+    if _sf_use_tools and _response_format_constrains_decoding(payload):
+        # Mirrors the GGUF loop: a schema grammar would forbid the tool-call syntax the loop
+        # exists to run. A client catalog goes into the template below instead.
+        raise _reject(
+            400,
+            openai_error_body(
+                "response_format is not supported with Unsloth tool execution; "
+                "send the request without enable_tools or mcp_enabled to use "
+                "guided decoding.",
+                status = 400,
+                code = "unsupported_parameter",
+                param = "response_format",
+            ),
+        )
 
     if _sf_use_tools:
         # permission_mode ask/auto require the confirm gate for Unsloth's own tool
@@ -23632,6 +23703,8 @@ async def produce_openai_chat_completions(
         frequency_penalty = payload.frequency_penalty,
         logit_bias = payload.logit_bias,
         stop = normalized_stop,
+        # Guided decoding, honored by MLX; the gate above refused the backends that are not.
+        response_format = _extract_response_format(payload),
     )
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.
@@ -23730,7 +23803,12 @@ async def produce_openai_chat_completions(
         else None
     )
     _sf_heal = (
-        heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)
+        heal_gate(
+            payload.auto_heal_tool_calls,
+            _sf_healing_tools,
+            payload.tool_choice,
+            response_format = _extract_response_format(payload),
+        )
         if _sf_client_tools
         else None
     )
@@ -23798,6 +23876,10 @@ async def produce_openai_chat_completions(
         template = _sf_image_tpl,
         prefer_tool_use = _sf_image_tpl is None,
     )
+    if gen_kwargs.get("response_format") is not None:
+        # The backend allows a reasoning block only where this says the reply's reasoning is
+        # separated, decided here so an override cannot make the two differ.
+        gen_kwargs["reasoning_is_extracted"] = bool(_sf_parse_think)
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
@@ -23890,8 +23972,17 @@ async def produce_openai_chat_completions(
                         backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(cumulative)
                         api_monitor.fail(monitor_id, _msg)
+                        _refused = _refused_parameter(cumulative)
+                        # Status line already sent; the error object still names the field.
                         yield _openai_stream_error_sse(
-                            {"error": {"message": _msg, "type": "server_error"}}
+                            openai_error_body(
+                                _msg,
+                                status = 400,
+                                code = "unsupported_parameter",
+                                param = _refused,
+                            )
+                            if _refused
+                            else {"error": {"message": _msg, "type": "server_error"}}
                         )
                         return
                     if await request.is_disconnected():
@@ -24030,7 +24121,14 @@ async def produce_openai_chat_completions(
                 backend.reset_generation_state(cancel_event)
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
-                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
+                _refused = _refused_parameter(exc)
+                yield _openai_stream_error_sse(
+                    openai_error_body(
+                        _msg, status = 400, code = "unsupported_parameter", param = _refused
+                    )
+                    if _refused
+                    else {"error": {"message": _msg, "type": "server_error"}}
+                )
             except Exception as e:
                 backend.reset_generation_state(cancel_event)
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
@@ -24112,6 +24210,17 @@ async def produce_openai_chat_completions(
                     backend.reset_generation_state(cancel_event)
                     _msg = _friendly_gen_stream_error(full_text)
                     api_monitor.fail(monitor_id, _msg)
+                    _refused = _refused_parameter(full_text)
+                    if _refused:
+                        raise _reject(
+                            400,
+                            openai_error_body(
+                                _msg,
+                                status = 400,
+                                code = "unsupported_parameter",
+                                param = _refused,
+                            ),
+                        )
                     raise HTTPException(status_code = 500, detail = _msg)
 
                 # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
@@ -24121,6 +24230,7 @@ async def produce_openai_chat_completions(
                     full_text,
                     parse_think_markers = _sf_parse_think,
                     reasoning_prefilled = _sf_reasoning_prefilled and not _sf_continue,
+                    single_block = _sf_single_block,
                 )
                 # Client-tool passthrough: promote text-form calls; opt-in single
                 # nudge retry on unparseable tool markup.
@@ -24137,7 +24247,10 @@ async def produce_openai_chat_completions(
                 if _sf_heal:
                     if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
                         _finish = "tool_calls"
-                    elif nudge_enabled(payload.nudge_tool_calls):
+                    elif nudge_enabled(
+                        payload.nudge_tool_calls,
+                        response_format = _extract_response_format(payload),
+                    ):
                         _data = {
                             "choices": [
                                 {"message": {"role": "assistant", "content": _visible_text}}
@@ -24311,10 +24424,18 @@ async def produce_openai_chat_completions(
             raise
         except GenStreamErrorRaised as exc:
             # Adapter-controlled (compare-mode) backend failure. Honor the public
-            # flag so operational errors surface their real message.
+            # flag, and the refused parameter so a contract refusal stays a client error.
             backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
             api_monitor.fail(monitor_id, _msg)
+            _refused = _refused_parameter(exc)
+            if _refused:
+                raise _reject(
+                    400,
+                    openai_error_body(
+                        _msg, status = 400, code = "unsupported_parameter", param = _refused
+                    ),
+                )
             raise HTTPException(status_code = 500, detail = _msg)
         except Exception as e:
             backend.reset_generation_state(cancel_event)
@@ -26131,13 +26252,17 @@ class _ResponsesReasoningExtractor:
         *,
         parse_think_markers: bool = False,
         reasoning_prefilled: bool = False,
+        single_block: bool = False,
     ) -> None:
         self._buffer = ""
         # reasoning_prefilled: the template inserts an unclosed <think>, so output begins inside
-        # the block; start in reasoning until the first close tag. Existing callers pass False.
-        self._in_reasoning = reasoning_prefilled
+        # the block; start in reasoning until the first close tag. Not consulted under a
+        # contract, where the backend re-emits the opener when a block was allowed.
+        self._in_reasoning = reasoning_prefilled and not single_block
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
+        # single_block: a block counts only as a prefix, so a later <think> is schema data.
+        self._single_block = single_block
 
     def feed(
         self,
@@ -26176,6 +26301,19 @@ class _ResponsesReasoningExtractor:
                 emit = self._buffer[:-keep] if keep else self._buffer
                 reasoning_parts.append(emit.replace(_RESPONSES_THINK_OPEN, ""))
                 self._buffer = self._buffer[-keep:] if keep else ""
+                break
+
+            if self._single_block:
+                # A block counts only when the reply opens with it; markers elsewhere are data.
+                if self._buffer.startswith(_RESPONSES_THINK_OPEN):
+                    self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
+                    self._in_reasoning = True
+                    continue
+                if _RESPONSES_THINK_OPEN.startswith(self._buffer):
+                    break  # still short of the opener; it may yet arrive
+                self._parse_think_markers = False
+                visible_parts.append(self._buffer)
+                self._buffer = ""
                 break
 
             open_idx = self._buffer.find(_RESPONSES_THINK_OPEN)
@@ -26221,10 +26359,12 @@ def _extract_responses_reasoning(
     *,
     parse_think_markers: bool = False,
     reasoning_prefilled: bool = False,
+    single_block: bool = False,
 ) -> tuple[str, str]:
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = parse_think_markers,
         reasoning_prefilled = reasoning_prefilled,
+        single_block = single_block,
     )
     reasoning, visible = extractor.feed(text, reasoning_content)
     final_reasoning, final_visible = extractor.finish()
@@ -26654,6 +26794,8 @@ async def _responses_non_streaming(
                 raw_text,
                 msg.get("reasoning_content"),
                 parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+                # Already split under this contract; re-parsing would take its markers out.
+                single_block = _response_format_constrains_decoding(chat_req),
             )
             tool_calls = msg.get("tool_calls") or []
 
@@ -26880,7 +27022,9 @@ async def _responses_stream(
         # From the chat chunks; applied once before finish, so chunk order does not matter.
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
-            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
+            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+            # As above: these deltas are already split under the same contract.
+            single_block = _response_format_constrains_decoding(chat_req),
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         message_state: dict[str, Any] = {
@@ -26904,6 +27048,7 @@ async def _responses_stream(
             getattr(chat_req, "auto_heal_tool_calls", None),
             body.get("tools"),
             body.get("tool_choice"),
+            response_format = body.get("response_format"),
         )
         healer = StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
         healed_tc_index = 0
@@ -30700,7 +30845,12 @@ async def _anthropic_passthrough_stream(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(
+            auto_heal_tool_calls,
+            _healing_tools,
+            body.get("tool_choice"),
+            response_format = body.get("response_format"),
+        )
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
@@ -31020,13 +31170,18 @@ async def _anthropic_passthrough_non_streaming(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(
+            auto_heal_tool_calls,
+            _healing_tools,
+            body.get("tool_choice"),
+            response_format = body.get("response_format"),
+        )
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
         if (
             _allowed_tools
-            and nudge_enabled(nudge_tool_calls)
+            and nudge_enabled(nudge_tool_calls, response_format = body.get("response_format"))
             and nudge_should_retry(data, _allowed_tools, _healing_tools)
         ):
             first_data = data
@@ -31568,6 +31723,24 @@ def _extract_response_format(payload):
     return rf if isinstance(rf, dict) else None
 
 
+def _response_format_for_llama_server(response_format):
+    """The contract spelled the one way llama-server reads it: for ``json_schema`` it takes the
+    schema only from ``json_schema.schema`` (tools/server/server-common.cpp:1170), while clients
+    commonly send it at the top level and the MLX path honors both. Rewriting the lenient
+    spelling leaves one schema for both backends, not one that shifts with the model loaded."""
+    if (
+        isinstance(response_format, dict)
+        and response_format.get("type") == "json_schema"
+        # Absent means missing or null, the reading the MLX path takes, so both agree.
+        and response_format.get("json_schema") is None
+        and isinstance(response_format.get("schema"), dict)
+    ):
+        wrapped = {key: value for key, value in response_format.items() if key != "schema"}
+        wrapped["json_schema"] = {"schema": response_format["schema"]}
+        return wrapped
+    return response_format
+
+
 def _response_format_constrains_decoding(payload) -> bool:
     """Whether the request's ``response_format`` needs a grammar engine.
 
@@ -31578,8 +31751,21 @@ def _response_format_constrains_decoding(payload) -> bool:
     members it does not know -- is a contract the caller expects to be kept, so it
     goes where such a contract can be answered or rejected rather than dropped.
     """
-    rf = _extract_response_format(payload)
-    return isinstance(rf, dict) and rf != {"type": "text"}
+    from core.inference.passthrough_healing import response_format_constrains_decoding
+    return response_format_constrains_decoding(_extract_response_format(payload))
+
+
+def _reject_unhonorable_response_format(payload) -> None:
+    """Reject a guided-decoding contract this build cannot keep: compiling needs the schema
+    only, so a rejected shape fails the request before any generation work starts."""
+    from core.inference.grammar_constraint import (
+        ResponseFormatError,
+        constraint_spec_from_response_format,
+    )
+    try:
+        constraint_spec_from_response_format(_extract_response_format(payload))
+    except ResponseFormatError as exc:
+        _raise_unsupported_openai_parameter("response_format", str(exc))
 
 
 def _build_openai_passthrough_body(
@@ -31628,7 +31814,7 @@ def _build_openai_passthrough_body(
         frequency_penalty = payload.frequency_penalty,
         logit_bias = payload.logit_bias,
         tool_choice = tool_choice,
-        response_format = _extract_response_format(payload),
+        response_format = _response_format_for_llama_server(_extract_response_format(payload)),
         chat_template_kwargs = tpl_kwargs,
         backend_ctx = backend_ctx,
         seed = payload.seed,
@@ -31927,7 +32113,10 @@ async def _openai_passthrough_stream_admitted(
         # auto_heal_tool_calls=false keep the unhealed relay. tool_choice constrains
         # the allowlist ("none" disables, a forced function narrows to it).
         _allowed_tools = heal_gate(
-            payload.auto_heal_tool_calls, body.get("tools"), body.get("tool_choice")
+            payload.auto_heal_tool_calls,
+            body.get("tools"),
+            body.get("tool_choice"),
+            response_format = body.get("response_format"),
         )
 
         # Keep the pre-header window short so accepted SSE clients receive
@@ -32959,7 +33148,10 @@ async def _openai_passthrough_non_streaming_upstream(
     _do_fence = _guided_fence and _extract_response_format(payload) is not None
     _cap_parallel = payload.parallel_tool_calls is False
     _allowed_tools = heal_gate(
-        payload.auto_heal_tool_calls, body.get("tools"), body.get("tool_choice")
+        payload.auto_heal_tool_calls,
+        body.get("tools"),
+        body.get("tool_choice"),
+        response_format = body.get("response_format"),
     )
 
     try:
@@ -32981,7 +33173,7 @@ async def _openai_passthrough_non_streaming_upstream(
     usage_aggregated = False
     if (
         _allowed_tools
-        and nudge_enabled(payload.nudge_tool_calls)
+        and nudge_enabled(payload.nudge_tool_calls, response_format = body.get("response_format"))
         and nudge_should_retry(data, _allowed_tools, body.get("tools"))
     ):
         first_data = data
