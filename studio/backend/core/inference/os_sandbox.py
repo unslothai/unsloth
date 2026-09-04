@@ -530,6 +530,8 @@ def _validate_runtime_paths(
                 stdout = subprocess.PIPE,
                 stderr = subprocess.PIPE,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 8,
                 close_fds = True,
             )
@@ -610,7 +612,7 @@ def _read_text(path: str) -> str:
         return ""
 
 
-def _linux_environment() -> str:
+def _linux_environment(*, run_detector: bool = True) -> str:
     release = ""
     release = _read_text("/proc/sys/kernel/osrelease").lower()
     if "microsoft" in release or os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
@@ -626,6 +628,8 @@ def _linux_environment() -> str:
         or any(marker in cgroup for marker in container_markers)
     ):
         return "container"
+    if not run_detector:
+        return "linux_unknown"
     detector = "/usr/bin/systemd-detect-virt"
     if _trusted_linux_executable(detector):
         try:
@@ -649,9 +653,11 @@ def _linux_environment() -> str:
     return "linux_unknown"
 
 
-def _environment_class() -> str:
+def _environment_class(*, run_detector: bool = True) -> str:
     if sys.platform == "linux":
-        return _linux_environment()
+        if run_detector:
+            return _linux_environment()
+        return _linux_environment(run_detector = False)
     if sys.platform == "darwin":
         return "macos"
     if sys.platform == "win32":
@@ -664,11 +670,12 @@ def _excluded_linux_environment() -> str | None:
     return None
 
 
-def _environment_fingerprint(backend: "SandboxBackend | None") -> str:
+def _environment_fingerprint(backend: "SandboxBackend | None", *, run_detector: bool = True) -> str:
+    environment = _environment_class() if run_detector else _environment_class(run_detector = False)
     data: dict[str, object] = {
         "platform": sys.platform,
         "architecture": platform.machine().lower(),
-        "environment": _environment_class(),
+        "environment": environment,
         "python": os.path.realpath(sys.executable),
     }
     try:
@@ -1354,7 +1361,7 @@ for path in ({external_file!r}, os.path.join(wd, 'escape')):
     except OSError:
         pass
 try:
-    open(os.path.join(os.path.dirname(wd), 'outside-write'), 'w').close()
+    open(os.path.join(os.path.dirname(wd), 'outside-write'), 'w', encoding='utf-8').close()
     raise AssertionError('wrote outside workdir')
 except OSError:
     pass
@@ -1483,6 +1490,8 @@ def _live_macos_probe(backend: MacOSSeatbeltBackend) -> SandboxCapability:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.PIPE,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = _PROBE_TIMEOUT_SECONDS,
                 close_fds = True,
                 preexec_fn = prepared.preexec_fn,
@@ -1569,7 +1578,7 @@ try:
 except OSError:
     pass
 try:
-    open('/unsloth-host-escape', 'w').close()
+    open('/unsloth-host-escape', 'w', encoding='utf-8').close()
     raise AssertionError('wrote outside workdir')
 except OSError:
     pass
@@ -1966,6 +1975,45 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         )
     canonical = replace(spec, workdir = os.path.realpath(spec.workdir))
     backend = _platform_backend()
+
+    if canonical.requested_mode == "full":
+        # Full access does not depend on an OS sandbox. In particular, do not
+        # run a live sandbox probe here: the existing escape hatch must not
+        # create helper processes or become unavailable because a backend is
+        # missing. Its record still carries a deterministic launch identity.
+        environment = _environment_class(run_detector = False)
+        fingerprint = _environment_fingerprint(backend, run_detector = False)
+        identity = _capability_with_identity(
+            SandboxCapability(
+                backend.identity if backend is not None else f"unsupported-{sys.platform}",
+                False,
+                "OS sandbox capability was not probed for Full access",
+            ),
+            environment = environment,
+            fingerprint = fingerprint,
+        )
+        record = ToolExecutionRecord(
+            requested_mode = "full",
+            effective_mode = "full",
+            environment = environment,
+            backend = "none",
+            profile_id = "full-access-v1",
+            probe_generation = identity.probe_generation,
+            os_isolation = False,
+            retained_safeguards = _FULL_SAFEGUARDS,
+        )
+        return PreparedSandboxLaunch(
+            argv = canonical.argv,
+            workdir = canonical.workdir,
+            env = canonical.env,
+            preexec_fn = canonical.preexec_fn,
+            backend = record.backend,
+            execution_record = record,
+            timeout_seconds = canonical.timeout_seconds,
+            close_fds = canonical.close_fds,
+            terminate_descendants = canonical.terminate_descendants,
+        )
+
     capability = capability_snapshot()
 
     if canonical.requested_mode == "limited":
@@ -2000,29 +2048,6 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             probe_generation = capability.probe_generation,
             os_isolation = False,
             retained_safeguards = _LIMITED_SAFEGUARDS,
-        )
-        return PreparedSandboxLaunch(
-            argv = canonical.argv,
-            workdir = canonical.workdir,
-            env = canonical.env,
-            preexec_fn = canonical.preexec_fn,
-            backend = record.backend,
-            execution_record = record,
-            timeout_seconds = canonical.timeout_seconds,
-            close_fds = canonical.close_fds,
-            terminate_descendants = canonical.terminate_descendants,
-        )
-
-    if canonical.requested_mode == "full":
-        record = ToolExecutionRecord(
-            requested_mode = "full",
-            effective_mode = "full",
-            environment = capability.environment,
-            backend = "none",
-            profile_id = "full-access-v1",
-            probe_generation = capability.probe_generation,
-            os_isolation = False,
-            retained_safeguards = _FULL_SAFEGUARDS,
         )
         return PreparedSandboxLaunch(
             argv = canonical.argv,

@@ -28461,11 +28461,11 @@ class LlamaCppBackend:
         # admission can charge what this run occupies rather than its opening estimate.
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
-        on_conversation_grew: Optional[Callable[[list], None]] = None,
         tool_execution_mode: str = "os_isolation_required",
         current_subject: Optional[str] = None,
         tool_ui_session_id: Optional[str] = None,
         limited_grant: Optional[str] = None,
+        on_conversation_grew: Optional[Callable[[list], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.

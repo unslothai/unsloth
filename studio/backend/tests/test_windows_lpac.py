@@ -119,7 +119,11 @@ def test_workdir_rejects_root_and_nested_reparse_points(monkeypatch, tmp_path):
             return SimpleNamespace(st_file_attributes = 0x400)
         info = original_lstat(path)
         return SimpleNamespace(
-            st_file_attributes = 0, st_dev = info.st_dev, st_ino = info.st_ino, st_nlink = info.st_nlink
+            st_file_attributes = 0,
+            st_mode = info.st_mode,
+            st_dev = info.st_dev,
+            st_ino = info.st_ino,
+            st_nlink = info.st_nlink,
         )
 
     monkeypatch.setattr(windows_lpac.os, "lstat", fake_lstat)

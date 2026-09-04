@@ -4897,7 +4897,7 @@ async def _select_request_tools(
     # how that server runs.
     if payload.bypass_permissions:
         tools = apply_full_access_tool_descriptions(tools)
-    elif payload.tool_execution_mode == "limited":
+    elif getattr(payload, "tool_execution_mode", "os_isolation_required") == "limited":
         tools = apply_limited_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()

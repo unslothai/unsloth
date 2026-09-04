@@ -191,6 +191,11 @@ def test_full_mode_keeps_lifecycle_plan_without_claiming_os_isolation(
     monkeypatch, tmp_path, isolated_capability_cache
 ):
     monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda: pytest.fail("Full access must not run an OS sandbox capability probe"),
+    )
     plan = os_sandbox.replace(_spec(tmp_path), requested_mode = "full")
 
     prepared = os_sandbox.prepare_tool_launch(plan)
