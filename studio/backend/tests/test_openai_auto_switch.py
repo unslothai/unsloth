@@ -168,6 +168,59 @@ def test_flag_off_never_loads(monkeypatch):
     assert rec.calls == []
 
 
+def test_cold_start_loads_requested_model_when_auto_switch_off(monkeypatch):
+    # PocketPal / OpenAI clients hit /v1 with nothing loaded: mirror the browser's
+    # pre-chat load without requiring Settings > API auto-switch.
+    backend = _FakeBackend(loaded_id = None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/B-GGUF"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+
+
+def test_cold_start_reload_only_loads_last_local_model(monkeypatch):
+    from routes import settings as settings_route
+
+    backend = _FakeBackend(loaded_id = None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, object(), "tester"
+        )
+    )
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+
 def test_unknown_model_falls_through(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     rec = _LoadRecorder(backend)

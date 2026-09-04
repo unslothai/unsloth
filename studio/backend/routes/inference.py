@@ -7912,6 +7912,49 @@ async def _reject_unservable_model(
     )
 
 
+async def _resident_model_is_loaded() -> bool:
+    """True when either llama.cpp or the inference orchestrator has a live model."""
+    if get_llama_cpp_backend().is_loaded:
+        return True
+    return bool(
+        getattr(
+            await asyncio.to_thread(get_inference_backend), "active_model_name", None
+        )
+    )
+
+
+async def _resolve_last_local_model_for_cold_start(
+    current_subject: str,
+) -> Optional[tuple[str, Optional[str], str]]:
+    """Resolve the per-user last-local-model record for a cold API start.
+
+    The Studio UI records every successful load via ``PUT /api/settings/last-local-model``
+    and auto-loads it before chat. OpenAI-compatible clients (PocketPal, etc.) hit
+    ``/v1`` directly, so mirror that behavior when nothing is resident yet.
+    """
+    from routes.settings import _read_last_local_model
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    stored = _read_last_local_model(current_subject)
+    if not isinstance(stored, dict):
+        return None
+    model_id = stored.get("id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        return None
+    model_id = model_id.strip()
+    kind = stored.get("kind")
+    variant = stored.get("gguf_variant")
+    if isinstance(variant, str):
+        variant = variant.strip() or None
+    else:
+        variant = None
+    if kind == "gguf" and variant:
+        ref = f"{model_id}:{variant}"
+    else:
+        ref = model_id
+    return await asyncio.to_thread(resolve_local_gguf, ref)
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -8039,14 +8082,22 @@ async def _maybe_auto_switch_model(
         )
 
     # configured, not effective: residency zeroes the TTL, and the stash still has to restore.
+    cold_start = not await _resident_model_is_loaded()
+    cold_start_load = False
     if not auto_switch_on and not idle_unload_is_configured():
-        # No switching to do, but a named model must still not be answered by another.
-        # Reject first: a request that is turned away here must not claim the slot.
-        await _reject_unservable_model(requested_model, fastapi_request)
-        # Auto-switch off: this non-preview turn uses the resident model, claim it.
-        if claim_resident:
-            _claim_slot_for_non_preview(fastapi_request)
-        return
+        if not cold_start:
+            # No switching to do, but a named model must still not be answered by another.
+            # Reject first: a request that is turned away here must not claim the slot.
+            await _reject_unservable_model(requested_model, fastapi_request)
+            # Auto-switch off: this non-preview turn uses the resident model, claim it.
+            if claim_resident:
+                _claim_slot_for_non_preview(fastapi_request)
+            return
+        # API cold-start: the browser loads via /api/inference/load before chat; PocketPal
+        # and other OpenAI clients hit /v1 directly, so load a downloaded request model
+        # (or the last model the user loaded in Studio) without the auto-switch toggle.
+        cold_start_load = True
+        auto_switch_on = True
 
     # The common Unsloth path names the model that is already serving. Resolve that
     # from resident state before consulting the filesystem index: rebuilding a stale
@@ -8061,7 +8112,7 @@ async def _maybe_auto_switch_model(
 
     keyless_caller = request_admitted_without_credential(fastapi_request)
     # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
-    if auto_switch_on and keyless_caller:
+    if auto_switch_on and keyless_caller and not cold_start:
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
@@ -8101,6 +8152,9 @@ async def _maybe_auto_switch_model(
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
             last = get_last_unloaded_model()
+            if cold_start_load:
+                # Cold-start only loads the named or last-local model; idle stash is separate.
+                last = None
             # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload leaves the
             # GGUF slot empty but is the live model; don't resurrect the stale GGUF over it
             # (that load would tear the active model down).
@@ -8111,29 +8165,35 @@ async def _maybe_auto_switch_model(
                     await asyncio.to_thread(get_inference_backend), "active_model_name", None
                 )
             ):
-                # Unknown name, model already resident: the non-preview call uses it,
-                # so claim it for Unsloth.
-                if claim_resident:
-                    _claim_slot_for_non_preview(fastapi_request)
-                return
-            if len(last) == 3:
-                target_id, variant, override_id = last
-            else:  # pre-3-tuple stash: fall back to the path as the override key
-                target_id, variant = last
-                override_id = target_id
-            # A credential-less caller may restore only the model it explicitly
-            # named (or the reload-only sentinel used when the model is omitted).
-            # Check before loading so an unrelated name cannot trigger an expensive
-            # stash restore and only then receive the normal mismatch response.
-            if keyless_caller and not reload_only:
-                requested_base, requested_variant = split_model_ref(requested_model)
-                if not _matches_any(
-                    requested_base, (target_id, override_id, public_model_id(target_id))
-                ) or (
-                    looks_like_quant(requested_variant)
-                    and (not variant or requested_variant.lower() != variant.lower())
-                ):
+                if reload_only and cold_start:
+                    resolved = await _resolve_last_local_model_for_cold_start(current_subject)
+                if resolved is None:
+                    # Unknown name, model already resident: the non-preview call uses it,
+                    # so claim it for Unsloth.
+                    if claim_resident:
+                        _claim_slot_for_non_preview(fastapi_request)
                     return
+            if resolved is None:
+                if len(last) == 3:
+                    target_id, variant, override_id = last
+                else:  # pre-3-tuple stash: fall back to the path as the override key
+                    target_id, variant = last
+                    override_id = target_id
+                # A credential-less caller may restore only the model it explicitly
+                # named (or the reload-only sentinel used when the model is omitted).
+                # Check before loading so an unrelated name cannot trigger an expensive
+                # stash restore and only then receive the normal mismatch response.
+                if keyless_caller and not reload_only:
+                    requested_base, requested_variant = split_model_ref(requested_model)
+                    if not _matches_any(
+                        requested_base, (target_id, override_id, public_model_id(target_id))
+                    ) or (
+                        looks_like_quant(requested_variant)
+                        and (not variant or requested_variant.lower() != variant.lower())
+                    ):
+                        return
+            else:
+                target_id, variant, override_id = resolved
         else:
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
