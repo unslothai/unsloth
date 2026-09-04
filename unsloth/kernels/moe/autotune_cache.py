@@ -73,7 +73,7 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
         with open(cache_file, "r", encoding = "utf-8") as f:
             cached_data = json.load(f)
 
-        # Invalidate if device capability changed
+        # Invalidate if device capability changed.
         current_device_capability = torch.cuda.get_device_capability()
         if cached_data.get("device_capability") != current_device_capability:
             logger.info("Device capability changed, invalidating cache")
@@ -167,11 +167,9 @@ def get_or_autotune_moe_kernels(
         logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
         return _kernel_config_cache[cache_key]
 
-    # Try to load from disk
     if not force_autotune:
         cached_data = load_cached_config(cache_key)
         if cached_data is not None:
-            # Reconstruct config objects from cache
             try:
                 from .grouped_gemm.kernels.tuning import (
                     KernelConfigForward,
@@ -206,7 +204,6 @@ def get_or_autotune_moe_kernels(
         _kernel_config_cache[cache_key] = configs
         _autotune_completed[cache_key] = True
 
-        # Save to disk
         config_fwd, config_bwd_dx, config_bwd_dw = configs
         save_cached_config(
             cache_key,
@@ -244,7 +241,7 @@ def _run_moe_autotuning(
     """Run the actual auto-tuning for MoE kernels."""
 
     device = "cuda"
-    # Fixed token count avoids OOMs and seq_len dependency; we ignore the passed seq_len here
+    # Fixed token count avoids OOMs and a seq_len dependency, so the passed seq_len is ignored.
     num_tokens = 4096
     total_tokens = num_tokens * top_k
 
@@ -309,7 +306,6 @@ def _run_moe_autotuning(
         use_tma_store = triton_config_fwd.kwargs.get("USE_TMA_STORE", False),
     )
 
-    # Autotune backward dX kernel
     logger.info("Autotuning backward dX kernel...")
     dummy_grad = torch.randn(total_tokens, 2 * intermediate_dim, device = device, dtype = dtype)
     _ = grouped_gemm_dX(
@@ -324,6 +320,7 @@ def _run_moe_autotuning(
     )
     triton_config_bwd_dx = _autotuned_grouped_gemm_dX_kernel.best_config
 
+    # Safe Backward Configs: 64x64x256
     config_bwd_dx = KernelConfigBackward_dX(
         BLOCK_SIZE_M = triton_config_bwd_dx.kwargs["BLOCK_SIZE_M"],
         BLOCK_SIZE_N = triton_config_bwd_dx.kwargs["BLOCK_SIZE_N"],
@@ -335,7 +332,6 @@ def _run_moe_autotuning(
         use_tma_store = triton_config_bwd_dx.kwargs.get("USE_TMA_STORE", False),
     )
 
-    # Autotune backward dW kernel
     logger.info("Autotuning backward dW kernel...")
     _ = grouped_gemm_dW(
         X = hidden_states,
@@ -376,7 +372,7 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
         KernelConfigBackward_dW,
     )
 
-    # Safe Forward Config: 64x128x128 (Fits A100 SMEM)
+    # Safe forward config 64x128x128 fits A100 SMEM; the backward pair below is 64x64x256.
     config_fwd = KernelConfigForward(
         BLOCK_SIZE_M = 64,
         BLOCK_SIZE_N = 128,
@@ -390,7 +386,6 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
         use_tma_store = False,
     )
 
-    # Safe Backward Configs: 64x64x256
     config_bwd_dx = KernelConfigBackward_dX(
         BLOCK_SIZE_M = 64,
         BLOCK_SIZE_N = 64,

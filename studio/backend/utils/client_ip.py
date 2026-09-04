@@ -42,9 +42,9 @@ def _normalize_addr(value: str | None) -> str | None:
     raw = (value or "").strip().strip('"')
     if not raw:
         return None
-    if raw.startswith("["):  # [ipv6]:port
+    if raw.startswith("["):
         raw = raw[1:].split("]", 1)[0]
-    elif raw.count(":") == 1:  # ipv4:port
+    elif raw.count(":") == 1:
         raw = raw.split(":", 1)[0]
     try:
         return ipaddress.ip_address(raw).compressed

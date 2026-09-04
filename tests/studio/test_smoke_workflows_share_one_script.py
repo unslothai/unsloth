@@ -179,6 +179,7 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
         # A different last turn every call, so no two replays ever agree.
         return ["58 + 27 = 95", "the answer was 95", "paris", f"paris {calls['n']}"]
 
+    monkeypatch.setattr(script, "assert_reproducible_backend", lambda: None)
     monkeypatch.setattr(script, "run_openai", always_divergent)
     monkeypatch.setattr(script, "run_anthropic", always_divergent)
     with pytest.raises(AssertionError, match = "non-deterministic"):
@@ -209,8 +210,69 @@ def test_a_non_divergence_failure_is_not_retried(script, monkeypatch):
         calls["n"] += 1
         return ["58 + 27 = 95", "b", "paris", "Okay, I'm ready."]
 
+    monkeypatch.setattr(script, "assert_reproducible_backend", lambda: None)
     monkeypatch.setattr(script, "run_openai", no_history)
     monkeypatch.setattr(script, "run_anthropic", no_history)
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.main()
     assert calls["n"] == 2, f"retried a non-divergence failure {calls['n']} times"
+
+
+def test_every_leg_pins_the_probe_load_to_a_reproducible_backend():
+    """The determinism assertion is only answerable against a pinned load.
+
+    A non-MTP GGUF like gemma-3-270m-it takes llama.cpp's `--spec-default` branch,
+    which is live n-gram drafting, not the absence of a drafter: the server logs
+    `draft acceptance = 0.46875 (30 accepted / 64 generated)`. The draft pool is
+    built from text the server has already seen, so the first turn-1 request after a
+    load drafts nothing and decodes one token at a time while every later one
+    verifies a ~32-token draft in one batch, and llama-server's README is explicit
+    that logits are not bit-for-bit identical across batch shapes. Since
+    check(runner(), runner()) always compares the cold replay against a warm one,
+    that made attempt 1 structurally unable to agree, and the whole check a coin
+    flip the retry usually won.
+
+    Only the load that feeds the multi-turn probe is pinned. The tool-calling and
+    vision phases deliberately keep the defaults, so the shipped path stays covered.
+    """
+    for name in LEGS:
+        text = _workflow(name)
+        # rsplit, not split: two of the legs also name the script in their `paths:`
+        # filter, long before the step that runs it.
+        probe = text.rsplit("studio_smoke/multi_turn_chat.py", 1)[0]
+        assert '\\"speculative_type\\":\\"off\\"' in probe, (
+            f"{name} loads the multi-turn probe's model without pinning "
+            f"speculative_type=off, so a drafted batch can replace sequential decode "
+            f"between the two replays and greedy output stops being reproducible"
+        )
+        assert '\\"n_parallel\\":1' in probe, (
+            f"{name} loads the multi-turn probe's model without pinning n_parallel=1, "
+            f"so --kv-unified shares one KV pool across slots and its occupancy is "
+            f"another input to the batch"
+        )
+
+
+def test_the_probe_refuses_a_backend_that_cannot_be_reproducible(script, monkeypatch):
+    """The workflow pin is worth nothing if a load can silently drop it.
+
+    A divergence below is only evidence of a fault if the server was in a
+    configuration that could have avoided one, so main() checks before it generates
+    and names what is wrong instead of reporting a mystery disagreement.
+    """
+    clean = ["58 + 27 = 95", "the answer was 95", "paris", "paris"]
+    monkeypatch.setattr(script, "run_openai", lambda: list(clean))
+    monkeypatch.setattr(script, "run_anthropic", lambda: list(clean))
+
+    def _with(status):
+        monkeypatch.setattr(script, "_read_backend_status", lambda: status)
+
+    _with({"speculative_type": "default", "parallel_slots": 1})
+    with pytest.raises(AssertionError, match = "speculative decoding off"):
+        script.main()
+
+    _with({"speculative_type": "off", "parallel_slots": 4})
+    with pytest.raises(AssertionError, match = "one decode slot"):
+        script.main()
+
+    _with({"speculative_type": "off", "parallel_slots": 1})
+    assert script.main() == 0

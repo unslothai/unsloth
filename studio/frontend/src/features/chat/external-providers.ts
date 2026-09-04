@@ -18,11 +18,9 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
-  /**
-   * The provider type as the BACKEND stores it, which is not always `providerType`
-   * above: `resolveUiProviderTypeFromConfig` shows a row saved as `openai` with a
-   * custom name or base URL as "custom". Absent means unknown, not custom.
-   */
+  /** The provider type as the BACKEND stores it, which is not always `providerType` above:
+   *  `resolveUiProviderTypeFromConfig` shows a row saved as `openai` with a custom name or base
+   *  URL as "custom". Absent means unknown, not custom. */
   backendProviderType?: string;
   /** Optional Max Tokens cap for this connection, replacing the undocumented-model fallback. */
   maxOutputTokens?: number;
@@ -35,30 +33,24 @@ export interface ExternalProviderConfig {
   authStatus?: ProviderAuthStatus;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
-  /**
-   * Anthropic prompt-cache TTL bucket. Only meaningful when `enablePromptCaching`
-   * is true and the provider supports the choice (Anthropic today). Maps to
-   * backend `prompt_cache_ttl`, which sets `cache_control.ttl` on the cache
-   * marker. Omitted = inherit Anthropic's default 5-minute pool.
-   */
+  /** Anthropic prompt-cache TTL bucket. Only meaningful when `enablePromptCaching` is true and
+   *  the provider supports the choice. Maps to backend `prompt_cache_ttl`, which sets
+   *  `cache_control.ttl`. Omitted = inherit Anthropic's default 5-minute pool. */
   promptCacheTtl?: "5m" | "1h";
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
-  /**
-   * Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the
-   * "Create container" dialog and is the TTL the auto-create-per-thread path POSTs
-   * to /v1/containers. OpenAI's hard default is 20. Only for OpenAI cloud.
-   */
+  /** Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the create dialog
+   *  and is the TTL the auto-create-per-thread path POSTs. OpenAI's hard default is 20. */
   openaiContainerTtlMinutes?: number;
   createdAt: number;
   updatedAt: number;
 }
 
 // Gemini supports prompt caching, but the wire flow needs a separate POST to
-// /v1beta/cachedContents before generateContent can reference the cache; the
-// enable_prompt_caching boolean alone isn't enough. Until that two-step flow
-// ships, keep the picker off so the toggle doesn't silently no-op for Gemini.
-// See https://ai.google.dev/gemini-api/docs/caching.
+// /v1beta/cachedContents before generateContent can reference the cache. Until that two-step
+// flow ships, keep the picker off so the toggle does not silently no-op for Gemini. See
+// https://ai.google.dev/gemini-api/docs/caching.
+// The enable_prompt_caching boolean alone is not enough.
 const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
 
 export function supportsProviderPromptCaching(
@@ -67,11 +59,9 @@ export function supportsProviderPromptCaching(
   return providerType != null && PROMPT_CACHING_PROVIDER_TYPES.has(providerType);
 }
 
-/**
- * Whether the provider lets the user choose between a short and long prompt-cache
- * pool. Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl`;
- * OpenAI's automatic cache has no equivalent knob, so it stays off the picker.
- */
+/** Whether the provider lets the user choose between a short and long prompt-cache pool.
+ *  Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl`; OpenAI's automatic
+ *  cache has no equivalent knob. */
 const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic"]);
 
 export function supportsProviderPromptCacheTtl(
@@ -88,8 +78,8 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
   return typeof value === "string" && PROMPT_CACHE_TTL_VALUES.has(value as "5m" | "1h");
 }
 
-// Provider types exposing the connection-level "reasoning model" toggle.
-// vLLM's OpenAI-compat endpoint doesn't advertise this per model.
+// Provider types exposing the connection-level "reasoning model" toggle. vLLM's OpenAI-compat
+// endpoint does not advertise this per model.
 const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
 
 export function supportsProviderReasoningToggle(
@@ -184,20 +174,12 @@ export function setProviderModelCapabilities(
   persistProviderModelCapabilities();
 }
 
-/** Drop persisted capabilities for provider types the registry no longer lists.
- *
- * This map outlives the backend that wrote it: it is localStorage, so a browser
- * carries it across a downgrade, and a per-entry write can only ever correct the
- * entries the registry still returns. A provider that has been hidden or that a
- * rolled-back backend does not know about is simply absent from the response, so
- * without this its last-known `studio_tools: true` latches forever and the
- * composer keeps offering a loop that backend cannot run.
- *
- * Convergence is the point: the registry response is the whole truth about which
- * provider types exist, so an empty one legitimately means "none", and clearing
- * is the safe direction anyway (an unknown capability reads as null, which every
- * caller treats as "not capable").
- */
+/** Drop persisted capabilities for provider types the registry no longer lists. This
+ *  localStorage map outlives the backend that wrote it, and a per-entry write can only
+ *  correct entries the registry still returns. A hidden or rolled-back provider is simply
+ *  absent from the response, so without this its last-known `studio_tools: true` latches
+ *  forever. The registry response is the whole truth, so an empty one legitimately means
+ *  "none", and clearing is the safe direction: an unknown capability reads as null. */
 export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<string>): void {
   hydrateProviderModelCapabilities();
   const known = new Set(knownProviderTypes);
@@ -226,9 +208,8 @@ export function providerModelSupportsVision(
 }
 
 
-/** Provider-level capability key. Self-hosted model ids are user-supplied, so
- * there is no per-model entry to look up: the registry declares the capability
- * once for the whole provider type and it applies to every model on it. */
+/** Provider-level capability key. Self-hosted model ids are user-supplied, so there is no
+ *  per-model entry: the registry declares the capability once for the whole provider type. */
 export const PROVIDER_CAPABILITY_WILDCARD = "*";
 
 export function providerModelSupportsStudioTools(
@@ -246,12 +227,9 @@ export function providerModelSupportsStudioTools(
   return typeof providerDefault === "boolean" ? providerDefault : null;
 }
 
-/** Whether the connection behind an ``external::`` model id runs Unsloth tools.
- *
- * Resolves the provider type from the saved connection, so callers that only
- * have a checkpoint id (the runtime store) can ask the capability question
- * without reaching for the providers store and risking an import cycle.
- */
+/** Whether the connection behind an `external::` model id runs Unsloth tools. Resolves the
+ *  provider type from the saved connection, so callers holding only a checkpoint id can ask
+ *  the capability question without risking an import cycle. */
 export function externalModelSupportsStudioTools(
   checkpoint: string | null | undefined,
 ): boolean {
@@ -285,14 +263,10 @@ export function normalizeProviderMaxOutputTokens(
   return value;
 }
 
-/**
- * Whether a connection may carry a per-connection Max Tokens limit. Every type may,
- * except ChatGPT subscriptions, whose routing, model list and output cap are all fixed,
- * so an override there would be stored and never read.
- *
- * Both types are checked: the stored one is what the server validates against, the UI
- * one is all the dialog has for a connection with no server row yet.
- */
+/** Whether a connection may carry a per-connection Max Tokens limit. Every type may, except
+ *  ChatGPT subscriptions, whose routing, model list and output cap are fixed. Both types are
+ *  checked: the stored one is what the server validates against, the UI one is all the dialog
+ *  has for a connection with no server row yet. */
 export function supportsProviderMaxOutputTokens(
   uiProviderType: string | null | undefined,
   backendProviderType: string | null | undefined,
@@ -379,8 +353,8 @@ export function supportsRemoteModelCatalog(
   );
 }
 
-/** Presets that hide the API-key field. Ollama is not skipped: Ollama cloud
- * requires a key; local servers leave the optional field empty. */
+/** Presets that hide the API-key field. Ollama is not skipped: Ollama cloud requires a key;
+ *  local servers leave the optional field empty. */
 export function customPresetSkipsApiKeyField(
   providerType: string | null | undefined,
 ): boolean {
@@ -439,13 +413,13 @@ export function toExternalBackendProviderType(
 ): string | undefined {
   if (!providerType) return undefined;
   // vLLM's /v1/responses applies the loaded model's chat template, which 400s on
-  // strict-alternation templates (e.g. Gemma 3). Pass the type through so the
-  // backend routes vLLM to /v1/chat/completions instead of the Responses path.
+  // strict-alternation templates. Pass the type through so the backend routes vLLM to
+  // /v1/chat/completions instead.
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";
-  // Generic custom servers are OpenAI-compatible, but should still use the
-  // chat-completions backend path instead of OpenAI's Responses API route.
+  // Generic custom servers are OpenAI-compatible, but should still use the chat-completions
+  // backend path instead of OpenAI's Responses API route.
   if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
     return LEGACY_CUSTOM_PROVIDER_TYPE;
   }
@@ -660,8 +634,7 @@ export function saveExternalProviders(
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
-    // Legacy keys are migration input. Preserve unmatched entries until the
-    // backend confirms the exact key was stored.
+    // Legacy keys are migration input. Preserve unmatched entries until the backend confirms the exact key was stored.
   } catch {
     // ignore
   }

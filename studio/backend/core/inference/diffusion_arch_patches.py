@@ -179,7 +179,9 @@ def _spec_zimage_forward():
     return (cls, "forward", _zimage_forward)
 
 
-# flux.1: FluxTransformerBlock / FluxSingleTransformerBlock. Block modulation goes via AdaLayerNormZero; here we fuse the inline norm2 modulation and the gated residual adds.
+# flux.1: block modulation goes via AdaLayerNormZero
+# flux.1: FluxTransformerBlock / FluxSingleTransformerBlock. Block modulation goes via AdaLayerNormZero; here we fuse
+# the inline norm2 modulation and the gated residual adds.
 def _flux_double_forward(
     self,
     hidden_states,
@@ -305,7 +307,9 @@ def _spec_flux_single():
     return (cls, "forward", _flux_single_forward)
 
 
-# flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock. Modulation is INLINE, so fuse both; scale/shift/gate are [B,1,dim], so no [:, None].
+# flux.2-klein: modulation is INLINE, and scale/shift/gate are [B,1,dim], so no [:, None]
+# flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock. Modulation is INLINE, so fuse both;
+# scale/shift/gate are [B,1,dim], so no [:, None].
 def _flux2_double_forward(
     self,
     hidden_states,
@@ -482,6 +486,7 @@ def _spec_krea2_forward():
     return (cls, "forward", _krea2_block_forward)
 
 
+# each entry is a zero-arg resolver returning (cls, attr, new_fn) or None; all COMPILE-SAFE
 # registry + lifecycle. Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None. All COMPILE-SAFE.
 _SPECS: tuple[Callable[[], Optional[tuple]], ...] = (
     _spec_qwen_modulate,

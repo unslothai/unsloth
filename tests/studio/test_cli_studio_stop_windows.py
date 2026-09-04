@@ -5,7 +5,9 @@
 
 `stop` once used `os.kill(pid, 0)`, which raises WinError 87 on Windows before
 reaching taskkill; the fix adds cross-platform `_pid_alive` (tasklist on Windows,
-signal-0 elsewhere). AST + mock-only; no real processes, no Unsloth deps imported.
+signal-0 elsewhere). AST + mock-only, except the two code-page tests, which run a real
+Python child in place of the Windows command they read. The second of those covers
+`unsloth start`: #10173 is one defect across both helpers.
 """
 
 import ast
@@ -16,6 +18,9 @@ import types
 from pathlib import Path
 
 import pytest
+import typer
+
+import unsloth_cli.commands.start as start_cli
 
 _STUDIO_CMD_PY = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
 _SOURCE = _STUDIO_CMD_PY.read_text(encoding = "utf-8")
@@ -31,8 +36,8 @@ def _func_source(name: str) -> str:
 
 
 def _load_pid_alive(platform: str, fake_run = None):
-    """Exec just `_pid_alive` with injectable sys/subprocess to drive the win32
-    branch on any host without importing unsloth_cli."""
+    """Exec just `_pid_alive` with injectable sys/subprocess, so the win32 branch runs
+    on any host."""
     src = _func_source("_pid_alive")
     fake_sys = types.SimpleNamespace(platform = platform)
     fake_sub = types.SimpleNamespace(run = fake_run) if fake_run is not None else subprocess
@@ -91,6 +96,7 @@ def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
         capture_output = False,
         text = False,
         timeout = None,
+        **decode_kwargs,
     ):
         assert cmd[0] == "tasklist"
         assert "/FI" in cmd  # filtered by PID
@@ -129,3 +135,44 @@ def test_pid_alive_posix_true_for_self_false_for_dead():
     pid_alive = _load_pid_alive("linux")
     assert pid_alive(os.getpid()) is True
     assert pid_alive(2_000_000_000) is False
+
+
+# What a localized tasklist writes, which -X utf8 decodes as UTF-8 (#10173).
+_LOCALIZED_TASKLIST = (
+    "import sys\n"
+    "sys.stdout.buffer.write('\\u4fe1\\u606f: \\u6ca1\\u6709\\u8fd0\\u884c\\u7684\\u4efb\\u52a1\\u5339\\u914d\\u6307\\u5b9a\\u6807\\u51c6\\u3002\\n'.encode('gbk'))\n"
+)
+
+
+def test_pid_alive_reads_a_localized_tasklist_notice(tmp_path):
+    fake = tmp_path / "tasklist.py"
+    fake.write_text(_LOCALIZED_TASKLIST, encoding = "utf-8")
+
+    def run_fake_tasklist(command, *args, **kwargs):
+        assert command[0] == "tasklist"
+        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        return subprocess.run([sys.executable, str(fake), *command[1:]], *args, **kwargs)
+
+    pid_alive = _load_pid_alive("win32", fake_run = run_fake_tasklist)
+    assert pid_alive(43210) is False
+
+
+def test_a_profile_that_does_not_decode_fails_loudly(monkeypatch, tmp_path, capsys):
+    fake = tmp_path / "cmd.py"
+    fake.write_text(
+        "import sys\nsys.stdout.buffer.write('C:\\\\Users\\\\\\u4e02\\u5f20\\u4e09\\n'.encode('gbk'))\n",
+        encoding = "utf-8",
+    )
+    real_check_output = subprocess.check_output
+
+    def run_fake_cmd(command, *args, **kwargs):
+        if command[0] != "cmd.exe":
+            return real_check_output(command, *args, **kwargs)
+        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        return real_check_output([sys.executable, str(fake)], *args, **kwargs)
+
+    monkeypatch.delenv("USERPROFILE", raising = False)
+    monkeypatch.setattr(start_cli.subprocess, "check_output", run_fake_cmd)
+    with pytest.raises(typer.Exit):
+        start_cli._wsl_windows_user_profile(sys.executable)
+    assert "set USERPROFILE" in capsys.readouterr().err

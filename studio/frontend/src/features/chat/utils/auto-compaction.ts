@@ -97,8 +97,8 @@ export function ggufCompactionRequestFields(options: {
 } {
   if (!options.isGguf) return {};
   if (!options.autoCompactEnabled) {
-    // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still
-    // compact. "error" is an explicit refusal of that fallback.
+    // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still compact. "error" is an
+    // explicit refusal of that fallback.
     return { context_overflow: "error" };
   }
   if (options.contextPolicy === "rolling") {

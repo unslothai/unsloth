@@ -107,6 +107,8 @@ RELEASE_NOTES = {
     "release_notes_url": "https://unsloth.ai/docs/new/changelog",
     "error": None,
 }
+# A successful lookup with no previewable body.
+RELEASE_NOTES_NONE = dict(RELEASE_NOTES, markdown = "", matched = False)
 LLAMA_STATUS = {
     "supported": True,
     "update_available": True,
@@ -115,6 +117,7 @@ LLAMA_STATUS = {
     "installed_tag": "b10333",
     "latest_tag": "b10333-mix-e34b418",
     "update_size_bytes": 28 * 1024 * 1024,
+    "source_build": False,
     "component": "llama.cpp",
     "whisper": {
         "update_available": False,
@@ -133,6 +136,40 @@ LLAMA_STATUS = {
         "progress": None,
         "finished_at": None,
     },
+}
+LLAMA_CHANGELOG = {
+    "matched": True,
+    "installed_tag": "b10333",
+    "latest_tag": "b10333-mix-e34b418",
+    "changes": [
+        {
+            "summary": "model: add GLM-5-Next (GLM-5.3-Flash)",
+            "links": [
+                {
+                    "label": "#27754",
+                    "url": "https://github.com/ggml-org/llama.cpp/pull/27754",
+                },
+                {
+                    "label": "commit 949f7ef",
+                    "url": "https://github.com/ggml-org/llama.cpp/pull/27754/commits/949f7ef",
+                },
+            ],
+        },
+        {
+            "summary": "llama: batched readahead for lazily read gather tables",
+            "links": [
+                {
+                    "label": "unslothai/llama.cpp#137",
+                    "url": "https://github.com/unslothai/llama.cpp/pull/137",
+                }
+            ],
+        },
+        {"summary": "MTP for Qwen3.8-Flash-Next", "links": []},
+    ],
+    "total_changes": 3,
+    "truncated": False,
+    "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
+    "error": None,
 }
 # The same card, renamed: whisper.cpp is not a second banner.
 WHISPER_STATUS = dict(
@@ -237,6 +274,9 @@ NOTHING_STT = {
 # Short windows on the chat route: the ones where the rail used to leave its
 # corner. Two is enough, since what is being checked does not vary with size.
 INDICATOR_VIEWPORTS = [(921, 534), (768, 500)]
+
+# One roomy viewport and one capped viewport.
+NO_PREVIEW_VIEWPORTS = [(1440, 900), (921, 534)]
 
 # Where the rail actually is, against the corner it is anchored to. It was
 # placed from JS for a while, lifting clear of the boxes in the frame store,
@@ -412,6 +452,16 @@ MEASURE = """
     if (bottom <= top || right <= left) return null;
     return {top, bottom, left, right, width: right - left, height: bottom - top};
   };
+  // Measure any height the slot reserves but its surface does not paint.
+  const dead = (el) => {
+    if (!el || !el.firstElementChild) return null;
+    const a = el.getBoundingClientRect();
+    const b = el.firstElementChild.getBoundingClientRect();
+    const round = (n) => Math.round(n * 10) / 10;
+    return {above: round(b.top - a.top), below: round(a.bottom - b.bottom),
+            slot: round(a.height), painted: round(b.height),
+            minHeight: getComputedStyle(el).minHeight};
+  };
   const q = (sel) => document.querySelector(sel);
   const card = q('[data-testid="web-update-banner"]');
   const llama = q('[data-testid="llama-update-banner"]');
@@ -431,6 +481,7 @@ MEASURE = """
     // Clipped by the card, not by the rail. What the rail hides is under a
     // fold the reader can scroll to; what the card hides is gone for good.
     card: rect(card), llama: rect(llama),
+    cardDead: dead(card), llamaDead: dead(llama),
     // The same two, as much of them as the rail is SHOWING. Containment is
     // asked of these: a card the rail has folded away is not on screen at all,
     // and judging its unclipped rect against the viewport fails it for being
@@ -634,6 +685,16 @@ def measure(page, label: str) -> dict:
             facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
+    # A floor must not leave unpainted space around a compact card.
+    for name in ("card", "llama"):
+        hole = facts[f"{name}Dead"]
+        if hole is None:
+            continue
+        check(
+            f"{label}: the {name}'s slot reserves no height it does not paint",
+            hole["above"] <= 1.0 and hole["below"] <= 1.0,
+            f"{name}Dead={hole}",
+        )
     # The notes are allowed to yield all of their height, and do; the controls
     # are not, and a card clipped to nothing is the failure being tested for.
     for name in ("card", "llama", "toggle", "snooze", "copy"):
@@ -715,6 +776,82 @@ def boot(page, path: str) -> None:
     landed = page.evaluate("location.pathname")
     if landed.startswith(("/login", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {landed}")
+
+
+LLAMA_CHANGELOG_GEOMETRY = """
+() => {
+  const q = (selector) => document.querySelector(selector);
+  const rect = (element) => {
+    if (!element) return null;
+    const box = element.getBoundingClientRect();
+    return {top: box.top, bottom: box.bottom, left: box.left, right: box.right,
+            width: box.width, height: box.height};
+  };
+  const banner = q('[data-testid="llama-update-banner"]');
+  const surface = banner ? banner.firstElementChild : null;
+  const list = q('[data-testid="llama-update-changelog-list"]');
+  const toggle = q('[data-testid="llama-update-changelog-toggle"]');
+  const update = q('[data-testid="llama-update-button"]');
+  const footer = update ? update.closest('div').parentElement : null;
+  return {
+    surface: rect(surface), list: rect(list), toggle: rect(toggle),
+    update: rect(update), footer: rect(footer),
+    listScrolls: list ? list.scrollHeight > list.clientHeight : null,
+  };
+}
+"""
+
+
+def exercise_llama_changelog(page, label: str) -> None:
+    toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
+    check(
+        f"{label}: the llama.cpp changelog starts collapsed",
+        toggle.count() == 1 and toggle.get_attribute("aria-expanded") == "false",
+    )
+    if toggle.count() != 1:
+        return
+    with page.expect_response("**/api/llama/update-changelog*", timeout = 10_000):
+        toggle.click()
+    listing = page.locator('[data-testid="llama-update-changelog-list"]')
+    listing.wait_for(state = "visible", timeout = 10_000)
+    text = listing.inner_text()
+    check(
+        f"{label}: expansion shows only the new carried changes",
+        "GLM-5-Next" in text
+        and "MTP for Qwen3.8-Flash-Next" in text
+        and "Add TML Inkling" not in text,
+        f"list={text!r}",
+    )
+    check(
+        f"{label}: expansion exposes its state to assistive technology",
+        toggle.get_attribute("aria-expanded") == "true",
+    )
+    pull = listing.locator('a[href="https://github.com/ggml-org/llama.cpp/pull/27754"]')
+    check(
+        f"{label}: change references are safe external links",
+        pull.count() == 1
+        and pull.get_attribute("target") == "_blank"
+        and pull.get_attribute("rel") == "noopener noreferrer",
+    )
+    geometry = page.evaluate(LLAMA_CHANGELOG_GEOMETRY)
+    surface, body, footer = geometry["surface"], geometry["list"], geometry["footer"]
+    check(
+        f"{label}: the changelog stays inside its card and above its actions",
+        surface is not None
+        and body is not None
+        and footer is not None
+        and body["left"] >= surface["left"] - 1
+        and body["right"] <= surface["right"] + 1
+        and body["bottom"] <= footer["top"] + 1,
+        f"geometry={geometry}",
+    )
+    page.screenshot(path = str(ART / f"{label.replace(' ', '-')}-llama-expanded.png"))
+    toggle.click()
+    check(
+        f"{label}: the changelog collapses without dismissing the update",
+        toggle.get_attribute("aria-expanded") == "false"
+        and page.locator('[data-testid="llama-update-banner"]').count() == 1,
+    )
 
 
 def main() -> int:
@@ -812,6 +949,7 @@ def main() -> int:
                     body = json.dumps(llama_payload[0]),
                 ),
             )
+            context.route("**/api/llama/update-changelog*", stub(LLAMA_CHANGELOG))
             page = context.new_page()
             for name, path in ROUTES[:1] if SPOT else ROUTES:
                 size = f"{width}x{height}"
@@ -830,6 +968,9 @@ def main() -> int:
                     toggle.click()
                     page.wait_for_timeout(1500)
                     measure(page, f"{size} {name} expanded")
+                    toggle.click()
+                if path == "/":
+                    exercise_llama_changelog(page, f"{size} {name}")
 
             # whisper.cpp renames the same card rather than adding a second one.
             llama_payload[0] = WHISPER_STATUS
@@ -842,6 +983,39 @@ def main() -> int:
                 f"text={facts['llamaText']!r}",
             )
             llama_payload[0] = LLAMA_STATUS
+            context.close()
+
+        # Exercise the compact app card omitted by the notes-bearing fixtures.
+        for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
+            context = browser.new_context(
+                viewport = {"width": width, "height": height},
+                reduced_motion = "reduce",
+            )
+            context.add_init_script(seed_js)
+            for pattern, payload in (
+                ("**/api/studio/update-status*", UPDATE_STATUS),
+                ("**/api/studio/release-notes*", RELEASE_NOTES_NONE),
+                ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
+            ):
+                context.route(pattern, stub(payload))
+            page = context.new_page()
+            boot(page, "/")
+            panel = page.locator('[data-testid="update-release-notes-panel"]')
+            check(
+                f"{width}x{height} with no preview: the collapsed card shows no notes",
+                panel.count() == 0,
+                "the card is at its full height, so this pass proves nothing",
+            )
+            measure(page, f"{width}x{height} with no preview")
+            page.screenshot(path = str(ART / f"{width}x{height}-no-preview.png"))
+            # Expanded, the panel is back and so is the floor it pays for.
+            toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
+            if toggle.count() == 1:
+                toggle.click()
+                panel.wait_for(state = "visible", timeout = 10_000)
+                page.wait_for_timeout(SETTLED_MS)
+                measure(page, f"{width}x{height} with no preview, expanded")
             context.close()
 
         # The loaded models indicator, switched on. It is the last child of the
@@ -864,6 +1038,7 @@ def main() -> int:
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
                 ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
                 ("**/api/inference/status", CHAT_LOADED),
                 ("**/api/inference/images/status", NOTHING_DIFFUSION),
                 ("**/api/inference/video/status", NOTHING_VIDEO),
@@ -920,6 +1095,7 @@ def main() -> int:
             ("**/api/studio/update-status*", UPDATE_STATUS),
             ("**/api/studio/release-notes*", RELEASE_NOTES),
             ("**/api/llama/update-status*", LLAMA_STATUS),
+            ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
         ):
             context.route(pattern, stub(payload))
         page = context.new_page()
@@ -954,6 +1130,7 @@ def main() -> int:
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
                 ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
             ):
                 fresh_context.route(pattern, stub(payload))
             fresh_page = fresh_context.new_page()
@@ -996,6 +1173,7 @@ def main() -> int:
                     ("**/api/studio/update-status*", UPDATE_STATUS),
                     ("**/api/studio/release-notes*", RELEASE_NOTES),
                     ("**/api/llama/update-status*", LLAMA_STATUS),
+                    ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
                 ):
                     context.route(pattern, stub(payload))
                 page = context.new_page()

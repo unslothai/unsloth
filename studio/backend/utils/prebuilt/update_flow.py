@@ -36,9 +36,7 @@ RESOLVE_TTL_SECONDS = 24 * 60 * 60
 # Matches the installer's download progress lines, e.g.
 # "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
 PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
-# The installer announces each server it starts to validate a build. They are
-# grandchildren, so a parent-death signal or a sweep of the installer pid alone
-# never reaches them, and one left running holds the GPU and the staged files.
+# The installer announces each server it starts to validate a build.
 CHILD_PID_LINE_RE = re.compile(r"\AUNSLOTH_INSTALLER_CHILD (started|stopped) (\d+)\Z")
 # The download dominates the update; extract/validate fill the last slice.
 DOWNLOAD_PROGRESS_CEILING = 0.95
@@ -304,7 +302,7 @@ def resolve_prebuilt_for_host(
     except Exception as exc:  # pragma: no cover - subprocess/json defensive
         logger.debug(log_message, error = str(exc))
         value = None
-    if value is not None:  # cache real answers; let failures retry next poll
+    if value is not None:
         memo.update(at = now, key = cache_key, value = value)
     return value
 
@@ -363,8 +361,8 @@ def managed_install_root(
         return marker_root
     if not binary:
         return None
-    # The server-path pin is an explicit user choice that wins in discovery; never
-    # auto-replace its tree (even the user's own checkout).
+    # The server-path pin is an explicit user choice that wins in discovery, so never auto-replace
+    # its tree, even the user's own checkout.
     if os.environ.get(server_path_var):
         return None
     p = Path(binary)
@@ -470,10 +468,8 @@ def stream_installer(
         errors = "replace",
         # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(env),
-        # Deliberately NOT start_new_session: the desktop stop path force-kills
-        # this backend's process group, and a session of its own would take the
-        # installer out of it, leaving it rewriting files after the app reports
-        # the backend stopped.
+        # Deliberately NOT start_new_session: the desktop stop path force-kills this process group, and a session of its
+        # own would leave the installer rewriting files after the app reports stopped.
         **child_popen_kwargs(),
     )
     # The kwargs above are empty on macOS, so record it: an installer that
@@ -484,10 +480,8 @@ def stream_installer(
     announced = AnnouncedChildren()
 
     def _stop_announced() -> None:
-        # This process keeps running after an installer error, so no startup
-        # sweep is coming and its own record shields these from one anyway: a
-        # validation server left here holds the GPU and the staged files
-        # through the retry that follows.
+        # This process keeps running after an installer error, so no startup sweep is coming: a validation server left
+        # here holds the GPU and the staged files through the retry.
         while True:
             pid = announced.take()
             if pid is None:
@@ -534,8 +528,8 @@ def stream_installer(
                 hint_lines.append(line)
             child = child_line
             if child is not None:
-                # Recorded while it runs and dropped when the installer says it
-                # stopped; one it never got to report stays for the sweep.
+                # Recorded while it runs and dropped when the installer says it stopped; one it never got to report
+                # stays for the sweep.
                 started, child_pid = child.group(1) == "started", int(child.group(2))
                 if started:
                     adopt_pid(child_pid)
@@ -553,8 +547,8 @@ def stream_installer(
         watchdog.cancel()
         if proc.poll() is not None:
             forget_pid(proc.pid)
-        # Anything it started and never reported as stopped, whether it timed
-        # out, exited nonzero, or died mid-line.
+        # Anything it started and never reported as stopped, whether it timed out, exited nonzero, or
+        # died mid-line.
         _stop_announced()
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
@@ -649,8 +643,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         offset += weight
         with job_lock:
             if result.get("skipped"):
-                # Skipped with a reason, not a success with no message: deciding late
-                # must not mean explaining less.
+                # Skipped with a reason.
                 job["phases"][name].update(
                     state = PHASE_SKIPPED,
                     reason = result.get("skip_reason") or "up_to_date",
@@ -664,15 +657,12 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
                 )
         if result.get("message"):
             done_messages.append(result["message"])
-        # Only phases affecting the primary (llama) server may raise the job-level
-        # reload flag: the frontend resyncs chat model state off it, and a
-        # whisper-only sidecar reload must not clear the chat checkpoint. Per-phase
-        # reload_required stays visible under job["phases"].
+        # Only phases affecting the primary llama server may raise the job-level reload flag: the
+        # frontend resyncs chat model state off it, and a whisper-only sidecar reload must not clear
+        # the chat checkpoint. Per-phase reload_required stays visible under job["phases"].
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
-            # The legacy job-level to_tag means "the llama build now installed";
-            # a whisper-only round must leave it unset or the UI reports a llama
-            # update that never ran (per-phase to_tag remains under phases).
+            # The legacy job-level to_tag means "the llama build now installed"
             if primary_to_tag is None:
                 primary_to_tag = result.get("to_tag")
 

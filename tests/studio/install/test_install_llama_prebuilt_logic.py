@@ -6700,3 +6700,51 @@ def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kin
     )
     marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["supported_sms"] == []
+
+
+# What a localized nvidia-smi writes, which -X utf8 decodes as UTF-8 (#10173). The
+# banner leads with GBK 0x81 0x40 so a cp1252 host cannot decode it either.
+_LOCALIZED_NVIDIA_SMI = (
+    "import sys\n"
+    "a = sys.argv[1:]\n"
+    "if a == ['-L']:\n"
+    "    sys.stdout.buffer.write(b'GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-a)\\n')\n"
+    "elif a and a[0].startswith('--query-gpu'):\n"
+    "    sys.stdout.buffer.write(b'0, GPU-a, 8.6\\n')\n"
+    "else:\n"
+    "    sys.stdout.buffer.write(b'| NVIDIA-SMI 591.86    CUDA Version: 13.1 |\\n')\n"
+    "    sys.stdout.buffer.write('\\u4e02\\u4fdd\\u7559\\u6240\\u6709\\u6743\\u5229\\u3002\\n'.encode('gbk'))\n"
+)
+
+
+def test_run_capture_keeps_ascii_lines_when_a_child_writes_another_code_page():
+    result = INSTALL_LLAMA_PREBUILT.run_capture(
+        [sys.executable, "-c", _LOCALIZED_NVIDIA_SMI], timeout = 30
+    )
+    assert "CUDA Version: 13.1" in result.stdout
+    assert "\ufffd" in result.stdout
+
+
+def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
+    monkeypatch, tmp_path
+):
+    fake = tmp_path / "nvidia-smi.py"
+    fake.write_text(_LOCALIZED_NVIDIA_SMI, encoding = "utf-8")
+    real_run = subprocess.run
+
+    def run_fake_nvidia_smi(command, *args, **kwargs):
+        if command and command[0] == "nvidia-smi":
+            command = [sys.executable, str(fake), *command[1:]]
+        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.subprocess, "run", run_fake_nvidia_smi)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "which",
+        lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
+    )
+    host = INSTALL_LLAMA_PREBUILT.detect_host()
+    assert host.compute_caps == ["86"]
+    assert host.driver_cuda_version == (13, 1)

@@ -2396,6 +2396,50 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
 
 
+def _mlx_device_info(mx: Any) -> Dict[str, Any]:
+    """Metal device properties across the MLX rename.
+
+    ``mx.device_info()`` is the current spelling; mlx below 0.30 has only
+    ``mx.metal.device_info()``, and the stack gate accepts mlx >= 0.22.0
+    (utils.mlx_repair._MLX_MIN_VERSIONS), so reading just the new name leaves the
+    working set cap silently unapplied on a stack Studio considers usable.
+    """
+    for probe in (
+        getattr(mx, "device_info", None),
+        getattr(getattr(mx, "metal", None), "device_info", None),
+    ):
+        if callable(probe):
+            try:
+                return probe() or {}
+            except Exception:
+                continue
+    return {}
+
+
+def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
+    """What is available right now, bounded by the Metal working set.
+
+    Total RAM minus GPU-only usage counts host RAM as free, which the
+    training-method policy then reads as room it does not have.
+
+    The cap is not reduced by the AGX "In use system memory" counter: that is
+    whole-device and only the active subset (a real M4 Pro reports 4.70 GiB
+    allocated against 0.61 GiB in use), while the working set is a per-process
+    budget, which is how torch.mps applies it.
+
+    A floor rather than a capacity: macOS reclaims compressed and file-backed
+    pages, so MLX can still allocate past what psutil calls available. Reading
+    low costs a QLoRA suggestion where LoRA would have fit; reading high costs
+    an OOM partway through a run.
+    """
+    free = max(0, int(available_bytes or 0))
+    try:
+        recommended = int(device_info.get("max_recommended_working_set_size") or 0)
+    except Exception:
+        recommended = 0
+    return min(free, recommended) if recommended > 0 else free
+
+
 def _context_free_cuda_memory_info(
     idx: int,
     total_bytes: int,
@@ -2646,16 +2690,15 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             import psutil
 
             # Unified memory: total = system RAM, GPU used from IORegistry AGX.
-            total = psutil.virtual_memory().total
+            memory = psutil.virtual_memory()
+            total = memory.total
             agx = _read_apple_gpu_stats()
             allocated = agx.get("vram_used_bytes", 0) if agx else 0
 
-            try:
-                info = mx.device_info()
-                # prefer machine(); processor() can return "i386" on native arm64.
-                gpu_name = info.get("device_name") or platform.machine() or "arm64"
-            except Exception:
-                gpu_name = platform.machine() or "arm64"
+            info = _mlx_device_info(mx)
+            # prefer machine(); processor() can return "i386" on native arm64.
+            gpu_name = info.get("device_name") or platform.machine() or "arm64"
+            free = _apple_unified_free_bytes(getattr(memory, "available", 0), info)
 
             return {
                 "available": True,
@@ -2665,7 +2708,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
                 "reserved_gb": allocated / (1024**3),
-                "free_gb": (total - allocated) / (1024**3),
+                "free_gb": free / (1024**3),
                 "utilization_pct": (allocated / total) * 100 if total else 0,
             }
         except Exception as e:
@@ -3384,15 +3427,29 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         return None
 
 
-def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
-    """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes)."""
+def _engine_instance_luid(instance_name: str) -> Optional[int]:
+    """The LUID ``_parse_adapter_luid`` reads, behind a ``pid_<pid>_`` prefix."""
+    head = instance_name.lower().find("luid_0x")
+    if head < 0:
+        return None
+    return _parse_adapter_luid(instance_name[head:])
+
+
+def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
+    """Query AMD GPU compute utilization via Windows Performance Counters (3D engine nodes).
+
+    ``luid`` narrows the sum to one adapter's engines, matched here rather than in the
+    counter path so tests can reach it. The engine type stays in the path, where it
+    keeps the sample set to one type per process.
+    """
     if platform.system() != "Windows":
         return None
     try:
         ps = (
             "$s=(Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){[math]::Min(($s|Measure-Object CookedValue -Sum).Sum,100)}else{-1}"
+            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
+            "else{'__NONE__'}"
         )
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -3404,8 +3461,31 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
         )
         if r.returncode != 0 or not r.stdout.strip():
             return None
-        val = float(r.stdout.strip())
-        return round(val, 1) if val >= 0 else None
+        total = 0.0
+        matched = False
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line or line == "__NONE__" or "|" not in line:
+                continue
+            instance, _, raw = line.rpartition("|")
+            instance = instance.strip()
+            # Hosts spell it engtype_3D and engtype_3d both.
+            if "engtype_3d" not in instance.lower():
+                continue
+            if luid is not None and _engine_instance_luid(instance) != luid:
+                continue
+            try:
+                value = float(raw.strip())
+            except (ValueError, TypeError):
+                continue
+            # 0.0 is an idle engine, so a reading; NaN / inf / negative is not.
+            if value != value or value in (float("inf"), float("-inf")) or value < 0:
+                continue
+            total += value
+            matched = True
+        if not matched:
+            return None
+        return round(min(total, 100.0), 1)
     except Exception:
         return None
 
@@ -3649,6 +3729,168 @@ def _parse_adapter_luid(instance_name: str) -> Optional[int]:
         return (int(m.group(1), 16) << 32) | int(m.group(2), 16)
     except ValueError:
         return None
+
+
+# hipDeviceProp_tR0600 opens with name[256], hipUUID[16], luid[8],
+# luidDeviceNodeMask[4]. The R0600 suffix IS the ABI version, so that prefix is
+# fixed by the same contract that named it; the name is read back and compared
+# against the device's own anyway, so a layout that ever moved is caught rather
+# than trusted.
+_HIP_PROPS_NAME = slice(0, 256)
+_HIP_PROPS_LUID = slice(272, 280)
+_HIP_PROPS_NODE_MASK = slice(280, 284)
+# Oversized on purpose: HIP writes the whole struct, ~2 KiB, and only the prefix
+# above is read back.
+_HIP_PROPS_BUFFER_BYTES = 64 * 1024
+
+
+def _rocm_windows_hip_adapter_ids(
+    ordinals: list[int], names: list[str]
+) -> Optional[list[tuple[int, int]]]:
+    """The ``(luid, node_mask)`` HIP itself reports for each visible ordinal.
+
+    ``hipDeviceProp_tR0600`` carries the same DXGI LUID the ``GPU Adapter
+    Memory`` counter instances are named after, so asking HIP joins the two
+    sides on the adapter itself rather than on anything about it. Windows
+    reassigns LUIDs across a reboot or a driver restart, and all three sources
+    move together, so the value is only ever compared within one poll.
+
+    ``node_mask`` is ``luidDeviceNodeMask``: which nodes of a linked adapter
+    this ordinal owns, and 0 on the ordinary adapter that is the whole thing.
+
+    Returns one pair per ordinal, or None when the runtime cannot be asked at
+    all (off Windows, the DLL not loaded into this process, the symbol absent,
+    an ordinal that will not answer, an all-zero LUID, or a name that does not
+    read back) so the caller falls back to the DirectX join. All or nothing for
+    the same reason that map is: a partially resolved set would let one card's
+    counter answer for another.
+
+    Idea and the R0600 route from @pablo86gr in #8793.
+    """
+    if platform.system() != "Windows" or not ordinals:
+        return None
+    try:
+        import ctypes
+
+        torch = sys.modules.get("torch")
+        major = str(getattr(getattr(torch, "version", None), "hip", "")).split(".", 1)[0]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        # Only a module already in this process: torch loaded the runtime it is
+        # built against, and LoadLibrary could pull in a different one.
+        hip = None
+        for dll in dict.fromkeys(
+            [f"amdhip64_{major}.dll" if major.isdigit() else "", "amdhip64.dll"]
+        ):
+            handle = kernel32.GetModuleHandleW(dll) if dll else None
+            if handle:
+                hip = ctypes.WinDLL(dll, handle = handle)
+                break
+        if hip is None:
+            return None
+        get_properties = hip.hipGetDevicePropertiesR0600
+        get_properties.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        get_properties.restype = ctypes.c_int
+
+        identities: list[tuple[int, int]] = []
+        for ordinal, name in zip(ordinals, names):
+            raw = ctypes.create_string_buffer(_HIP_PROPS_BUFFER_BYTES)
+            if get_properties(ctypes.byref(raw), ordinal) != 0:
+                return None
+            blob = bytes(raw)
+            if blob[_HIP_PROPS_NAME].rstrip(b"\x00").decode("utf-8", "replace") != name:
+                # Not the struct this reads, so the offsets below mean nothing.
+                logger.debug("HIP properties prefix did not read back ordinal %d", ordinal)
+                return None
+            luid_bytes = blob[_HIP_PROPS_LUID]
+            if not any(luid_bytes):
+                return None  # the runtime has no LUID for this device
+            identities.append(
+                (
+                    int.from_bytes(luid_bytes, "little"),
+                    int.from_bytes(blob[_HIP_PROPS_NODE_MASK], "little"),
+                )
+            )
+        return identities
+    except Exception as e:
+        logger.debug("HIP adapter identity probe unavailable: %s", e)
+        return None
+
+
+def _match_adapter_used_by_hip_luid(
+    adapters: list[tuple[str, float]], dev_meta: list[Dict[str, Any]]
+) -> Optional[tuple[list[Optional[float]], float, list[Optional[int]]]]:
+    """Attribute per-adapter used bytes on the LUID HIP reports for each ordinal.
+
+    The exact key, so unlike the DirectX join this separates two cards of one
+    model. Ordinals come from ``visible_ordinal``, not from this list's own
+    positions, which are compacted when a device fails to probe.
+
+    A linked-node adapter puts several ordinals behind one LUID, and the
+    counters index its nodes as ``phys_N`` without saying which ordinal owns
+    which. The node mask says how many nodes each ordinal holds, which is
+    enough to tell "these counters are exactly these ordinals' nodes" from "one
+    of them belongs to a node HIP is not showing us" -- but not enough to pair
+    them, so several ordinals under one LUID report unknown per device and
+    contribute only to the aggregate, which the pairing does not change.
+
+    The third return is that LUID, only where the device is the whole adapter, which
+    is what the engine counters need to filter safely.
+    """
+    ordinals = [int(meta["visible_ordinal"]) for meta in dev_meta]
+    identities = _rocm_windows_hip_adapter_ids(ordinals, [str(meta["name"]) for meta in dev_meta])
+    if identities is None:
+        return None
+
+    useds_by_luid: dict[int, list[float]] = {}
+    physes_by_luid: dict[int, set[int]] = {}
+    for instance, used in adapters:
+        luid = _parse_adapter_luid(instance)
+        phys = re.search(r"_phys_(\d+)", instance, re.IGNORECASE)
+        if luid is None or phys is None:
+            continue
+        index = int(phys.group(1))
+        if index in physes_by_luid.setdefault(luid, set()):
+            # One physical node cannot report twice; summing would double-count.
+            return None
+        physes_by_luid[luid].add(index)
+        useds_by_luid.setdefault(luid, []).append(used)
+
+    positions_by_luid: dict[int, list[int]] = {}
+    nodes_by_luid: dict[int, int] = {}
+    for position, (luid, node_mask) in enumerate(identities):
+        positions_by_luid.setdefault(luid, []).append(position)
+        # A plain adapter reports no mask and is one node.
+        nodes_by_luid[luid] = nodes_by_luid.get(luid, 0) + (bin(node_mask).count("1") or 1)
+
+    assigned: list[Optional[float]] = [None] * len(dev_meta)
+    whole_adapter: list[Optional[int]] = [None] * len(dev_meta)
+    total_used = 0.0
+    for luid, positions in positions_by_luid.items():
+        useds = useds_by_luid.get(luid, [])
+        # Fewer counters than nodes means a visible node has no reading; more
+        # means the adapter has a node these ordinals do not own, whose usage is
+        # not theirs to claim.
+        if len(useds) != nodes_by_luid[luid]:
+            return None
+        used = float(sum(useds))
+        # The carve-out, not the displayed total: on a unified APU the latter is
+        # the whole driver pool, against which no reading is out of range.
+        capacity = sum(_adapter_counter_capacity(dev_meta[position]) for position in positions)
+        if used > capacity:
+            return None
+        total_used += used
+        if len(positions) == 1:
+            assigned[positions[0]] = used
+            # Counts say how many nodes this ordinal owns, never which. The mask
+            # names them (bit i is node i), so the observed phys_N set has to BE
+            # those or the LUID covers a node this device does not own; a zero
+            # mask names nothing and leaves the count check alone.
+            named = {i for i in range(32) if identities[positions[0]][1] >> i & 1}
+            if not named or named == physes_by_luid.get(luid, set()):
+                whole_adapter[positions[0]] = luid
+    return assigned, total_used, whole_adapter
 
 
 _ADAPTER_NAME_NOISE = re.compile(r"\((?:tm|r)\)|[™®]", re.IGNORECASE)
@@ -4353,12 +4595,21 @@ def _rocm_windows_per_device_vram(
     if adapters is None:
         adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
+    whole_adapter: list[Optional[int]] = [None] * len(dev_meta)
     if adapters:
-        # LUID first: it answers by identity, where capacity ranking declines
-        # unless the sizes force a pairing -- which one visible GPU never does.
-        by_luid = _match_adapter_used_by_luid(adapters, dev_meta)
-        if by_luid is not None:
-            assigned, aggregate_bytes = by_luid
+        # Identity first, in the order the keys are exact: HIP's own LUID, then
+        # the DirectX record reached by name or arch. Either answers where
+        # capacity ranking declines unless the sizes force a pairing, which one
+        # visible GPU never does.
+        by_hip = _match_adapter_used_by_hip_luid(adapters, dev_meta)
+        by_identity: Optional[tuple[list[Optional[float]], float]] = None
+        if by_hip is not None:
+            assigned, aggregate_bytes, whole_adapter = by_hip
+            by_identity = (assigned, aggregate_bytes)
+        else:
+            by_identity = _match_adapter_used_by_luid(adapters, dev_meta)
+        if by_identity is not None:
+            assigned, aggregate_bytes = by_identity
         else:
             adapter_useds = [used for _, used in adapters]
             # Capacities the counters can fill, not the displayed totals.
@@ -4436,7 +4687,7 @@ def _rocm_windows_per_device_vram(
         )
 
     devices: list[Dict[str, Any]] = []
-    for meta, used_bytes in zip(dev_meta, assigned):
+    for meta, used_bytes, luid in zip(dev_meta, assigned, whole_adapter):
         total_gb = round(meta["total_bytes"] / (1024**3), 2)
         used_gb = round(used_bytes / (1024**3), 2) if used_bytes is not None else None
         devices.append(
@@ -4446,6 +4697,8 @@ def _rocm_windows_per_device_vram(
                 "name": meta["name"],
                 "used_gb": used_gb,
                 "total_gb": total_gb,
+                # Internal: filters the engine counters. Never served.
+                "luid": luid,
             }
         )
     return devices, aggregate_gb
@@ -4547,10 +4800,11 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 _win_ids = list(range(_torch_get_physical_gpu_count() or 0))
             _win_devices, _win_aggregate = _rocm_windows_per_device_vram(_win_ids)
             if _win_devices:
-                # A single visible GPU can own the aggregate 3D-engine utilization;
-                # across several GPUs the sum isn't per-device, so leave it unset.
+                # Across several GPUs the engine sum isn't per-device, so leave it unset.
                 _win_util = (
-                    _rocm_windows_perf_counter_gpu_util_pct() if len(_win_devices) == 1 else None
+                    _rocm_windows_perf_counter_gpu_util_pct(_win_devices[0].get("luid"))
+                    if len(_win_devices) == 1
+                    else None
                 )
                 return _gpu_utilization_payload(
                     device,
@@ -5102,6 +5356,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "temperature_c": None,
                     "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
                     "vram_total_gb": round(mem.get("total_gb", 0), 2),
+                    # Unified memory: free is not total - used, so publish it
+                    # rather than let the caller subtract.
+                    "vram_free_gb": round(mem.get("free_gb", 0), 2),
                     "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
                     "power_draw_w": None,
                     "power_limit_w": None,

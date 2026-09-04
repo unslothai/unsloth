@@ -877,6 +877,66 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert status["loaded"] is False
 
 
+def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, monkeypatch):
+    """Video shares the image path's whole-model offload lifecycle, and its weights are larger,
+    so the same host-allocator retention applies. Reclaim once per successful generation, only
+    under the 'model' policy, and only after progress has been cleared."""
+    from core.inference import video as video_mod
+
+    trace = []
+    monkeypatch.setattr(
+        video_mod,
+        "reclaim_offload_host_memory",
+        lambda policy, logger = None: trace.append(policy) or True,
+    )
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    for policy in ("none", "group", "streaming", "sequential", "model"):
+        backend._state = dataclasses.replace(backend._state, offload_policy = policy)
+        backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
+    assert trace == ["none", "group", "streaming", "sequential", "model"]
+
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: None)
+    assert [diffusion_memory.reclaim_offload_host_memory(p) for p in trace] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+
+    # Progress must already be idle: the trim can block for a few hundred ms.
+    assert backend.generate_progress()["active"] is False
+
+
+def test_a_stop_during_the_reclaim_cannot_be_answered_true(fake_runtime, tmp_path, monkeypatch):
+    """The trim blocks for a few hundred ms after the last is_set() check, so a Stop landing in
+    that window used to be told it succeeded while the clip was still returned and persisted.
+    The event must be deregistered before the trim, under the lock cancel_generate takes."""
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = dataclasses.replace(backend._state, offload_policy = "model")
+
+    answered = []
+
+    def stop_midway(policy, logger = None):
+        # Press Stop while the stubbed blocking trim runs.
+        answered.append(backend.cancel_generate())
+        return True
+
+    monkeypatch.setattr(video_mod, "reclaim_offload_host_memory", stop_midway)
+
+    result = backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
+    assert result["mp4_bytes"] == b"MP4"
+    assert answered == [False], "cancel_generate answered true for a clip that was still persisted"
+
+
 def test_load_holds_generate_lock_across_placement(fake_runtime, tmp_path, monkeypatch):
     # The video load must hold _generate_lock across GPU placement so an unload -- which barriers on that lock -- cannot
     # hand the GPU away mid-move. unload() must block until placement releases it, and the superseded load then aborts.

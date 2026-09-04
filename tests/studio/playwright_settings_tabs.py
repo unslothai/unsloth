@@ -399,12 +399,73 @@ def run_lan_address_actions(page) -> None:
     log("each LAN address keeps its own QR and copy target")
 
 
+def assert_persisted_monitor_restores(page) -> None:
+    """An open resource monitor returns after reload without opening Settings."""
+    page.evaluate(
+        """() => localStorage.setItem(
+            'unsloth_monitor_overlay',
+            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 }),
+        )"""
+    )
+    page.reload(wait_until = "domcontentloaded")
+    page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
+
+    monitor = page.locator('[data-testid="floating-monitor"]')
+    try:
+        monitor.wait_for(state = "visible", timeout = 15000)
+        visible = True
+    except Exception:
+        visible = False
+    dialog_count = page.locator('div[role="dialog"]').count()
+    report["persisted_monitor"] = {
+        "visible_after_reload": visible,
+        "settings_dialog_count": dialog_count,
+    }
+    if not visible:
+        fail("persisted open resource monitor did not return after reload")
+    elif dialog_count:
+        fail("persisted monitor required Settings to open")
+    else:
+        log("persisted resource monitor restored before Settings opened")
+
+    page.evaluate("() => window.__settingsSmoke.open('resources')")
+    dialog = page.locator('div[role="dialog"]').first
+    dialog.wait_for(state = "visible", timeout = 15000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-testid=\"floating-monitor\"]').length === 1",
+        timeout = 15000,
+    )
+    while_open = monitor.count()
+    page.evaluate("() => window.__settingsSmoke.close()")
+    dialog.wait_for(state = "hidden", timeout = 15000)
+    monitor.wait_for(state = "visible", timeout = 15000)
+    after_close = monitor.count()
+    report["persisted_monitor"].update(
+        {
+            "count_while_settings_open": while_open,
+            "count_after_settings_close": after_close,
+        }
+    )
+    if while_open != 1 or after_close != 1:
+        fail(
+            "resource monitor ownership did not transfer cleanly through Settings "
+            f"(open={while_open}, closed={after_close})"
+        )
+
+    page.evaluate("() => window.__settingsSmoke.setMonitor(false)")
+    monitor.wait_for(state = "hidden", timeout = 15000)
+    report["steps"].append("persisted-monitor-reload")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
         return
+
     # --- 1. a deep-open walked away from mid-load is not replayed later --------------
     run_abandoned_deep_open(page)
+
+    assert_persisted_monitor_restores(page)
 
     # --- 2. every tab renders when selected -----------------------------------------
     open_dialog(page)

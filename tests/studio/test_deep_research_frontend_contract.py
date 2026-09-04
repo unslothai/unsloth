@@ -146,7 +146,11 @@ def test_research_presave_keeps_the_follow_up_parent() -> None:
     assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
     assert "const userMessageParentId =" in presave
     assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
-    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" in presave
+    # A stored null is an edited root; `??` would reparent it under the predecessor.
+    assert "storedUserMessage && storedUserMessage.parentId !== undefined" in presave
+    assert "? storedUserMessage.parentId" in presave
+    assert ": userMessageParentId," in presave
+    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" not in presave
     assert "parentId: storedUserMessage?.parentId ?? null" not in presave
 
 
@@ -427,7 +431,7 @@ def test_the_handoff_uses_the_turn_that_asked_for_it() -> None:
 def test_a_local_model_without_tools_cannot_consume_research_without_classifying() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
     fallback = adapter.split("if (\n        deepResearchArmed &&", 1)[1].split(
-        "// Project sources auto-scope", 1
+        "      const ragProjectId = await resolveProjectId(", 1
     )[0]
 
     assert "!supportsTools" in fallback

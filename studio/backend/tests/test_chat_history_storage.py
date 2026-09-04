@@ -1491,3 +1491,75 @@ def test_sync_preserves_non_list_attachments_and_malformed_stored_json(tmp_path,
     by_id = {message["id"]: message for message in restored}
     assert by_id["user-a"]["attachments"] == {"legacy": True, "name": "notes.md"}
     assert "attachments" not in by_id["user-b"]
+
+
+def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch):
+    """Repeated identical user sends (e.g. user sending 'Hello' multiple times) have distinct IDs and persist separately."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    msg1 = {
+        "id": "u1",
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "user",
+        "content": [{"type": "text", "text": "Hello"}],
+        "attachments": [{"name": "doc.pdf", "content": [{"type": "text", "text": "raw"}]}],
+        "createdAt": 1000,
+    }
+    studio_db.upsert_chat_message(msg1)
+    studio_db.upsert_chat_message(
+        {
+            "id": "a1",
+            "threadId": "thread-1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hi"}],
+            "createdAt": 1500,
+        }
+    )
+
+    # Second turn with identical text & attachments, but distinct message ID
+    msg2 = {
+        "id": "u2",
+        "threadId": "thread-1",
+        "parentId": "a1",
+        "role": "user",
+        "content": [{"type": "text", "text": "Hello"}],
+        "attachments": [{"name": "doc.pdf", "content": [{"type": "text", "text": "raw"}]}],
+        "createdAt": 2000,
+    }
+    res = studio_db.upsert_chat_message(msg2)
+    assert res["id"] == "u2"
+
+    # Both messages must persist separately
+    messages = studio_db.list_chat_messages("thread-1")
+    assert {m["id"] for m in messages} == {"u1", "a1", "u2"}
+
+
+def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, monkeypatch):
+    """In a flat thread where parent_id is None, repeated identical sends with different IDs must not collapse."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    payload = [
+        {
+            "id": "u1",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+            "createdAt": 1000,
+        },
+        {
+            "id": "u2",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+            "createdAt": 2000,
+        },
+    ]
+    messages = studio_db.sync_chat_messages("thread-1", payload)
+    assert len(messages) == 2
+    assert [m["id"] for m in messages] == ["u1", "u2"]

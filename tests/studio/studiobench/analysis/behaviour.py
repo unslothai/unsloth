@@ -54,42 +54,29 @@ from typing import Any, Optional
 from .parity import MATCH, NOT_APPLICABLE, NOT_COMPARABLE, NOT_EXERCISED
 
 #: Verdict for a behavioural invariant that moved. Distinct from the digest's DIFFER so a report
-#: can never present the two as the same kind of evidence.
+#: cannot present the two as the same kind of evidence.
 BROKEN = "broken"
 
-#: How far a quantity that should be IDENTICAL may drift. 2%, the same figure the seeded-versus-
-#: streamed equivalence check uses, and for the same reason: two runs of one build never produce
-#: bit-identical character counts once a stream is involved.
+#: How far a quantity that should be IDENTICAL may drift. 2%, as in the seeded-versus-streamed
+#: equivalence check: two runs of one build never produce bit-identical character counts once a
+#: stream is involved.
 EXACT_TOLERANCE = 0.02
 
-#: How far the scroll extent may drift. 10%, much looser, because a windowed list computes its
-#: total height from estimated row heights and corrects them as real rows are measured. Loose
-#: enough to admit a correct virtualizer, nowhere near loose enough to admit one that dropped
-#: rows: the failure this catches is an extent that is a FRACTION of the real one, not one that is
-#: 6% out.
+#: How far the scroll extent may drift. 10%, looser, because a windowed list computes its height
+#: from estimated row heights and corrects them; the failure this catches is an extent that is a
+#: FRACTION of the real one, not one 6% out.
 EXTENT_TOLERANCE = 0.10
 
-#: How much of the thread the clipboard must carry, and how much more than the thread it may carry.
-#:
-#: TWO-SIDED, AND MEASURED AGAINST THE THREAD, because there are two ways to get a copy wrong and
-#: the check used to see only one of them.
-#:
-#: The lower bound catches TRUNCATION, which is the defect this invariant was written for: a
-#: windowed mount cannot select what it has not mounted, so a naive copy carries only the visible
-#: fraction. Measured at 0.61 of the thread on a real 100K arm.
-#:
-#: The upper bound catches SUBSTITUTION, which is what a fix for the first defect turns into if
-#: nobody is watching. Serialising from the message store is the right repair, but the obvious
-#: serialiser is the "save this reply" one, which emits reasoning, tool-call arguments and tool
-#: results -- none of which a user can select, because the panes holding them are collapsed and a
-#: collapsed Radix Collapsible is not in the DOM at all. Measured at 2.16 of the thread on the same
-#: arm: the truncation was fixed and the content was then wrong in the other direction.
-#:
-#: The gap between them is the honest allowance for two different serialisations of the same
-#: content. The base arm's clipboard is the DOM's RENDERED TEXT; a store-based copy is markdown
-#: SOURCE, so fences, emphasis and LaTeX delimiters exist in one and not the other. Measured at
-#: ~0.9% on a scale fixture. Ten percent is generous against that and still refuses 2.16 by a
-#: factor of twenty.
+#:How much of the thread the clipboard must carry, and how much more than the thread it may carry.
+#:TWO-SIDED, AND MEASURED AGAINST THE THREAD, because there are two ways to get a copy wrong.
+#: The lower bound catches TRUNCATION: a windowed mount cannot select what it has not mounted,
+#: so a naive copy carries only the visible fraction (0.61 of the thread on a real 100K arm).
+#: The upper bound catches SUBSTITUTION, what a fix for the first turns into unwatched:
+#: serialising from the message store is right, but the obvious serialiser emits reasoning,
+#: tool-call arguments and tool results, none of which a user can select (2.16 on the same arm).
+#: The gap between them allows for two serialisations of the same content: the base arm's
+#: clipboard is the DOM's RENDERED TEXT, a store-based copy is markdown SOURCE (~0.9% on a scale
+#: fixture). Ten percent is generous against that and still refuses 2.16 by a factor of twenty.
 MIN_CLIPBOARD_COVERAGE = 0.95
 MAX_CLIPBOARD_COVERAGE = 1.10
 
@@ -175,8 +162,8 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
     ):
         mounted, total = _expect(row, "messages_mounted"), _expect(row, "messages_total")
         if not _expect(row, "clipboard_readable"):
-            # NOT A PASS. An unreadable clipboard is a surface that went unmeasured, and this is
-            # the one invariant where "we could not tell" must never look like "it was fine".
+            # NOT A PASS. An unreadable clipboard is a surface that went unmeasured, and this is the one
+            # invariant where 'we could not tell' must never look like 'it was fine'.
             out.append(
                 _check(
                     f"clipboard_readable:{label}",
@@ -196,19 +183,14 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
                 required = True,
             )
         )
-    # THE CHECK THAT DETECTS THE DATA LOSS, scored against THE THREAD rather than against the
-    # other arm -- which is what the docstring above has always said and what the code did not do.
-    #
-    # Comparing the two clipboards directly, at a 2% tolerance, asks whether two different
-    # serialisations of the same conversation are the same LENGTH. They are not and cannot be: the
-    # base arm's clipboard is the DOM's rendered text and a store-based copy is markdown source.
-    # A correct fix therefore fails that comparison, and the only way to make it pass is to widen
-    # the tolerance until it stops testing anything.
-    #
-    # The reference is the thread's own visible text, measured by the arm that has all of it in
-    # the DOM: on a fully mounted arm `Selection.toString()` over the whole thread IS the thread.
-    # If neither arm mounts everything there is no reference and the pair is not comparable, which
-    # is reported rather than assumed either way.
+    # THE CHECK THAT DETECTS THE DATA LOSS, scored against THE THREAD rather than the other arm.
+    # Comparing the two clipboards directly at 2% asks whether two different serialisations of the
+    # same conversation are the same LENGTH. They cannot be, so a correct fix fails and the only
+    # way to pass is to widen the tolerance until it tests nothing.
+    # The reference is the thread's own visible text, measured by the arm that has all of it: on a
+    # fully mounted arm `Selection.toString()` over the thread IS the thread. If neither arm mounts
+    # everything there is no reference and the pair is not comparable, which is reported rather
+    # than assumed.
     reference = _expect(base_row, "selected_chars")
     base_full = _expect(base_row, "mounted_fraction")
     if not isinstance(reference, (int, float)) or reference <= 0 or base_full != 1:
@@ -242,8 +224,7 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
                 required = True,
             )
         )
-    # Reported, never gated: on a windowed arm the selection is SUPPOSED to be short, and gating
-    # on it would fail the fix.
+    # Reported, never gated: on a windowed arm the selection is SUPPOSED to be short.
     out.append(
         _check(
             "selection_shrank_as_expected",
@@ -295,33 +276,22 @@ def thread_survives_reopen(base_row: dict, treat_row: dict) -> list[dict]:
         completed = _reopen_completed(row)
         detail = f"the thread had {before} messages and came back with {after}"
         # MATCHING COUNTS ARE ONLY AN INVARIANT IF THE THREAD ACTUALLY CAME BACK.
-        #
-        # `messages_after` is `threadTotal()`, which is `aria-setsize` -- the store's DECLARATION of
-        # how long the conversation is, published by the very first reopened row. When the rebuild
-        # times out, scene/actions.py records `ran = True`, `expect_ok = False`, a null `reopen_ms`
-        # and the outstanding conditions, and leaves the two counts equal because both are that same
-        # declaration. Scored as equality it read as a held invariant, the route check passed
-        # because the sidebar click had worked, and the pair came out MATCH with the rebuild having
-        # timed out at three of eighteen messages mounted. "A declaration is not a rebuild" is the
-        # defect the action itself was fixed for; this is the same defect one layer up.
-        #
+        # `messages_after` is `aria-setsize`, the store's DECLARATION of the conversation length,
+        # published by the first reopened row. On a timed-out rebuild scene/actions.py records
+        # `ran=True, expect_ok=False` and leaves the two counts equal because both are that
+        # declaration, so equality read as a held invariant with three of eighteen messages mounted.
+        # A timed-out rebuild also leaves `reopen_ms` null.
+        # Read through `threadTotal()`.
         # NOT COMPARABLE RATHER THAN BROKEN, AND ONLY FOR THE EQUAL CASE:
-        #
-        #   counts DISAGREE     BROKEN, whatever the gate said. The thread came back shorter than it
-        #                       left, which is the data loss this invariant exists for, and a
-        #                       readiness failure corroborates it rather than excusing it. Routing
-        #                       this to NOT COMPARABLE would have downgraded the one finding the
-        #                       whole action is written to catch.
-        #   counts AGREE, no
-        #   finished rebuild    NOT COMPARABLE. The comparison was not made: both numbers are the
-        #                       same declaration read off a thread that never finished building. And
-        #                       the timeout that produced it is bounded by the harness's OWN
-        #                       remaining budget (a 10 s floor, a 60 s ceiling, against the 180 s the
-        #                       cell's opening gate had), so calling it BROKEN would file a budget
-        #                       exhaustion on a shared machine as a user-visible defect of the arm.
-        #
-        # The arm's failure is not lost by this: `ran = True, expect_ok = False` already excludes
-        # the cell from scoring through `report/payload.py`, and the reason travels with the row.
+        # counts DISAGREE: BROKEN whatever the gate said. The thread came back shorter than it left,
+        # which is the data loss this exists for; routing it to NOT COMPARABLE would downgrade the one
+        # finding the action is written to catch.
+        # counts AGREE with no finished rebuild: NOT COMPARABLE. Both numbers are the same declaration
+        # off a thread that never finished building, and the timeout is bounded by the harness's own
+        # remaining budget, so BROKEN would file a budget exhaustion as a defect of the arm.
+        # The arm's failure is not lost: `ran=True, expect_ok=False` already excludes the cell from
+        # scoring, and the reason travels with the row.
+        # The exclusion happens in `report/payload.py`.
         if before is None or after is None:
             ok: Optional[bool] = None
             required = False
@@ -343,8 +313,8 @@ def thread_survives_reopen(base_row: dict, treat_row: dict) -> list[dict]:
                 f"(outstanding {failed or 'unrecorded'})"
             )
         out.append(_check(f"reopen_keeps_every_message:{label}", ok, detail, required = required))
-        # The route matters as much as the count. A row measured after a full page navigation is a
-        # row about a page load; see `_click_or_navigate` in scene/actions.py.
+        # The route matters as much as the count: a row measured after a full page navigation is a row
+        # about a page load. See `_click_or_navigate`.
         via = _expect(row, "reopened_via")
         out.append(
             _check(
@@ -429,21 +399,15 @@ def _comparable_extents(base_row: dict, treat_row: dict) -> tuple[Any, Any, str]
 def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
     """scroll_after: the gesture covers the ground it commanded and no more, on both arms."""
     out = []
-    # THE PAIR'S REFERENCE EXTENT, NOT THE ARM'S OWN, and for the same reason `_drift` divides by
-    # the larger of the two: an estimate correction is the arm closing the gap to the REAL extent,
-    # so the gap is what bounds it, and the arm that is wrong is the one whose own extent is the
-    # worse yardstick. Taken per arm the two checks read one tolerance off two denominators, and
-    # disagreed inside it: extents of 10,000 and 9,050 pass `scroll_extent` at 9.5% drift while
-    # the 950 px correction that closes that very gap came out BROKEN against a ceiling granting
-    # 10% of 9,050. A false red is not free here -- it removes the cell from `readings_by_arm`,
-    # takes its healthy partner with it through the arm intersection, and
-    # `unmeasured_planned_cells` can then VOID the plan -- so the two now enforce the same
-    # allowance on the same quantity.
-    #
-    # It only ever loosens: `max` is never below the arm's own extent. An arm carrying NO extent
-    # still gets no ceiling rather than borrowing its partner's, because that would newly bound an
-    # arm this check has always left unbounded above, which is the one direction that could invent
-    # a red rather than retire one.
+    # THE PAIR'S REFERENCE EXTENT, NOT THE ARM'S OWN, for the same reason `_drift` divides by the
+    # larger of the two: an estimate correction closes the gap to the REAL extent, so the gap
+    # bounds it. Per arm, extents of 10,000 and 9,050 pass `scroll_extent` at 9.5% drift while the
+    # 950 px correction closing that gap came out BROKEN against 10% of 9,050.
+    # A false red is not free: it removes the cell from `readings_by_arm`, takes its healthy partner
+    # with it through the arm intersection, and `unmeasured_planned_cells` can then VOID the plan.
+    # It only ever loosens: `max` is never below the arm's own extent. An arm with NO extent still
+    # gets no ceiling rather than borrowing its partner's, which would newly bound an arm always
+    # left unbounded above.
     reference = max(
         (
             abs(extent)
@@ -457,30 +421,22 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
         commanded = _expect(row, "commanded_px")
         travelled = _expect(row, "travelled_px")
         # THE ALLOWANCE IS A FRACTION OF THE EXTENT, so it is taken on the extent. `bottom` is
-        # `scrollHeight - clientHeight`, and reading `EXTENT_TOLERANCE` off it is the same defect
-        # `_extent_of` exists to fix one check below: on a 10,000 px extent behind an 800 px
-        # viewport it grants 920 px where the tolerance says 1,000, so a 941 px correction -- 9.4%
-        # of the extent, inside the declared 10% -- came out BROKEN.
+        # `scrollHeight - clientHeight`: on a 10,000 px extent behind an 800 px viewport it grants 920
+        # px where the tolerance says 1,000, so a 941 px correction inside the declared 10% came out
+        # BROKEN.
         extent, _reconstructed = _extent_of(row)
         # BOUNDED ABOVE AS WELL AS BELOW, and the ceiling is DERIVED rather than chosen.
-        #
-        # The lower bound is what this invariant was written for: Unsloth's intent-aware autoscroll
-        # snapping a programmatic move back to the bottom leaves the gesture having covered
-        # nothing. But the predicate was `fraction >= 0.9` and nothing above it, so an arm whose
-        # viewport moved TWICE as far as commanded passed exactly as 1.0 did and the pair returned
-        # MATCH. `travelled` sums `|scrollTop_after - target_before|`, so every pixel above
-        # `commanded` is the viewport being moved by something other than the gesture -- the same
-        # anchor instability this action exists to detect, in the other direction.
-        #
-        # WHY THIS CEILING AND NOT A NUMBER PICKED TO LOOK SYMMETRIC WITH 0.9. Overshoot has one
-        # legitimate source: a windowed list correcting estimated row heights, which moves the
-        # offset by the error in the estimate. Those errors total the error in the arm's extent,
-        # and this file already declares how far the extent may be wrong (`EXTENT_TOLERANCE`). So
-        # the gesture may exceed its command by that fraction of the arm's own extent, both terms
-        # read off the row. No second constant, and it scales with the rung.
-        #
-        # It degrades to no ceiling rather than to a guess: an arm carrying no extent gets the
-        # lower bound alone, said in the detail, because a ceiling of zero fails every correct arm.
+        # The lower bound is what this was written for: intent-aware autoscroll snapping a programmatic
+        # move back to the bottom leaves the gesture having covered nothing. But `fraction >= 0.9` with
+        # no upper bound passed an arm whose viewport moved TWICE as far as commanded; `travelled` sums
+        # |scrollTop_after - target_before|, so every pixel above `commanded` is the same anchor
+        # instability in the other direction.
+        # WHY THIS CEILING. Overshoot has one legitimate source, a windowed list correcting estimated
+        # row heights, and those errors total the error in the arm's extent, already declared as
+        # `EXTENT_TOLERANCE`. So the gesture may exceed its command by that fraction of the arm's own
+        # extent, both terms read off the row: no second constant, and it scales with the rung.
+        # It degrades to no ceiling rather than a guess: an arm carrying no extent gets the lower bound
+        # alone, said in the detail, because a ceiling of zero fails every correct arm.
         ceiling: Optional[float] = None
         if (
             isinstance(commanded, (int, float))
@@ -506,14 +462,12 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
             )
         out.append(_check(f"scroll_travelled:{label}", ok, detail))
     # THE EXTENT, NOT `bottom`, AND AT THE EXTENT'S OWN ALLOWANCE. This compared `bottom` through
-    # `_same_number` and so through `EXACT_TOLERANCE`, 2%, while `scroll_extent` grants the same
-    # physical quantity 10% a few checks earlier and says why a correct virtualizer needs it. An
-    # arm inside the declared allowance was reported behaviourally BROKEN, and a false red is not
-    # free: it removes the cell from `readings_by_arm`, takes its healthy partner with it through
-    # the arm intersection, and `unmeasured_planned_cells` can then VOID the plan.
-    #
-    # `_same_number` is deliberately NOT widened. Its other three keys -- `selected_chars`,
-    # `visible_chars`, `clipboard_chars` -- are not extents and are correctly strict at 2%.
+    # `_same_number` at 2% while `scroll_extent` grants the same physical quantity 10%, so an arm
+    # inside the declared allowance was reported BROKEN, and a false red removes the cell, its
+    # partner, and can VOID the plan.
+    # The 2% is `EXACT_TOLERANCE`.
+    # `_same_number` is deliberately NOT widened: its other three keys are not extents and are correctly strict at 2%.
+    # They are `selected_chars`, `visible_chars` and `clipboard_chars`.
     b_ext, t_ext, what = _comparable_extents(base_row, treat_row)
     drift = _drift(b_ext, t_ext)
     out.append(
@@ -527,9 +481,9 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
     return out
 
 
-#: action -> the invariants that apply to it. An action absent from this table has no behavioural
-#: invariant declared and is reported as UNCHECKED rather than as passing, on the same principle
-#: that keeps NOT_COMPARABLE out of the pass column in the digest report.
+#: action -> the invariants that apply to it. An action absent from this table has no declared
+#: invariant and is reported as UNCHECKED rather than as passing, on the principle that keeps
+#: NOT_COMPARABLE out of the pass column.
 INVARIANTS = {
     "select_all_copy": clipboard_coverage,
     "select_text": lambda b, t: [
@@ -581,9 +535,8 @@ def compare_behaviour(base_row: Optional[dict], treat_row: Optional[dict]) -> di
         got = rule(base_row, treat_row)
         checks.extend(got if isinstance(got, list) else [got])
 
-    # A REQUIRED CHECK THAT COULD NOT BE READ VOIDS THE PAIR. See `_check`: without this, an
-    # action whose entire subject went unmeasured scores MATCH on the strength of the checks that
-    # happened to survive.
+    # A REQUIRED CHECK THAT COULD NOT BE READ VOIDS THE PAIR: without this, an action whose entire
+    # subject went unmeasured scores MATCH on the checks that survived.
     unread = [c for c in checks if c.get("required") and c["ok"] is None]
     if unread:
         return {
@@ -600,13 +553,10 @@ def compare_behaviour(base_row: Optional[dict], treat_row: Optional[dict]) -> di
             "checks": checks,
         }
     # A PASS REQUIRES AN ACTION-SPECIFIC INVARIANT TO HAVE HELD.
-    #
-    # The scroll extent is checked on every action and it is a property of the THREAD, not of the
-    # action: it holds or fails identically across all eighteen. Counting an action as passing
-    # because the thread's scrollbar was the right length would report `model_change`,
-    # `image_upload` and `settings` as verified on a windowed arm when nothing whatsoever about
-    # them was examined. That is the same mistake `compare_rows` exists to prevent on the digest
-    # side, where an action that never ran used to contribute a match.
+    # The scroll extent is checked on every action but is a property of the THREAD, so it holds or
+    # fails identically across all eighteen. Counting an action as passing on it would report
+    # `model_change`, `image_upload` and `settings` as verified when nothing about them was
+    # examined.
     specific = [c for c in checks if c["ok"] is not None and c["invariant"] != "scroll_extent"]
     if not specific:
         return {

@@ -540,14 +540,24 @@ def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(tmp_path, 
     assert active_intent.gguf_path == resolved
 
 
-_UNSUPPORTED_RUNTIME_LAYERS = (
+# Modelfile metadata nearly every pulled model carries.
+_METADATA_LAYERS = (
     "application/vnd.ollama.image.params",
     "application/vnd.ollama.image.template",
     "application/vnd.ollama.image.system",
     "application/vnd.ollama.image.messages",
-    "application/vnd.ollama.image.adapter",
     "application/vnd.ollama.image.prompt",
+)
+
+_UNSUPPORTED_RUNTIME_LAYERS = (
+    "application/vnd.ollama.image.adapter",
     "application/vnd.ollama.image.future-runtime",
+)
+
+# Carried by a real manifest but dropped by the load without changing its output.
+_IGNORABLE_LAYERS = (
+    "application/vnd.ollama.image.draft",
+    "application/vnd.ollama.image.embed",
 )
 
 
@@ -555,7 +565,9 @@ def _rich_manifest_ref(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
     from hub.services.models import ollama
 
     root = tmp_path / "ollama-rich"
-    tag_file = _write_ollama_store(root, extra_layers = _UNSUPPORTED_RUNTIME_LAYERS)
+    tag_file = _write_ollama_store(
+        root, extra_layers = _METADATA_LAYERS + _UNSUPPORTED_RUNTIME_LAYERS
+    )
     monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
     ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
     return root, ref
@@ -564,6 +576,65 @@ def _rich_manifest_ref(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
 def test_rich_manifest_is_withheld_from_inventory(tmp_path, monkeypatch):
     from hub.services.models import ollama
     root, _ = _rich_manifest_ref(tmp_path, monkeypatch)
+
+    assert ollama.scan_ollama_dir(root) == []
+
+
+def test_a_normally_pulled_model_is_listed(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-pulled"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    rows = ollama.scan_ollama_dir(root)
+    assert len(rows) == 1
+    assert ollama.is_ollama_manifest_ref(rows[0].load_id)
+
+
+def test_a_normally_pulled_model_resolves_for_a_load(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+    from models.inference import LoadRequest
+    from routes.inference import _resolve_model_identifier_for_request
+
+    root = tmp_path / "ollama-pulled-load"
+    tag_file = _write_ollama_store(root, extra_layers = _METADATA_LAYERS)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    resolved, _link_name, _is_dir = _resolve_model_identifier_for_request(
+        LoadRequest(model_path = ref), operation = "load-model"
+    )
+    assert resolved.endswith(".gguf")
+
+
+@pytest.mark.parametrize("ignorable", _IGNORABLE_LAYERS)
+def test_an_ignorable_layer_does_not_hide_the_primary_model(tmp_path, monkeypatch, ignorable):
+    # Neither layer stops llama.cpp loading the model layer beside it, so neither is a
+    # reason to withhold the row: a draft model only accelerates speculative decoding,
+    # and ollama has ignored the embed layer since 0.1.2.
+    from hub.services.models import ollama
+
+    root = tmp_path / f"ollama-{ignorable.rpartition('.')[2]}"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS + (ignorable,))
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    rows = ollama.scan_ollama_dir(root)
+    assert len(rows) == 1
+    assert ollama.is_ollama_manifest_ref(rows[0].load_id)
+
+
+@pytest.mark.parametrize("unsupported", _UNSUPPORTED_RUNTIME_LAYERS)
+def test_one_unsupported_layer_still_withholds_beside_the_metadata(
+    tmp_path, monkeypatch, unsupported
+):
+    # Pins each unsupported type on its own. The withholding test above carries both at
+    # once, so admitting just one of them back into the loadable set would still pass it.
+    from hub.services.models import ollama
+
+    root = tmp_path / f"ollama-{unsupported.rpartition('.')[2]}"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS + (unsupported,))
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
 
     assert ollama.scan_ollama_dir(root) == []
 
