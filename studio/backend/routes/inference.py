@@ -25990,7 +25990,13 @@ async def _studio_embeddings(
             semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
         raise
-    if await _embeddings_client_gone(request):
+    try:
+        gone = await _embeddings_client_gone(request)
+    except asyncio.CancelledError:
+        semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    if gone:
         semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
         raise asyncio.CancelledError()

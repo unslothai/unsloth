@@ -958,3 +958,49 @@ def test_props_probe_never_raises_before_the_server_is_up():
 
     # An un-started server has no port, so the URL itself is invalid.
     assert embed_llama_server.LlamaServerBackend()._server_batch() is None
+
+
+def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_embedder):
+    lock = threading.Lock()
+    gate = threading.Event()
+    active = {"now": 0, "peak": 0}
+
+    def encode(texts, **_kwargs):
+        with lock:
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+        gate.wait(timeout = 5)
+        with lock:
+            active["now"] -= 1
+        return _vectors(texts)
+
+    class _Stuck(_Request):
+        async def is_disconnected(self):
+            await asyncio.sleep(3600)
+            return False
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", encode)
+    cap = inference_route._STUDIO_EMBED_CONCURRENCY
+
+    async def run():
+        stuck = asyncio.create_task(inference_route.openai_embeddings(_Stuck({"input": "x"}), "t"))
+        await asyncio.sleep(0.05)
+        stuck.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stuck
+        tasks = [
+            asyncio.create_task(inference_route.openai_embeddings(_Request({"input": "y"}), "t"))
+            for _ in range(cap)
+        ]
+        for _ in range(500):
+            await asyncio.sleep(0.01)
+            if active["now"] == cap:
+                break
+        assert active["now"] == cap
+        gate.set()
+        await asyncio.gather(*tasks)
+
+    asyncio.run(run())
