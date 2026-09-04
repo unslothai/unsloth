@@ -1768,7 +1768,11 @@ class CompactionContentPart(BaseModel):
 
 
 class InputAudio(BaseModel):
-    data: str = Field(..., description = "Base64-encoded audio, without a data: prefix.")
+    # Non-empty: an empty payload is not lifted, so the turn would otherwise proceed as
+    # text alone and answer "transcribe this" about a recording that was never sent.
+    data: str = Field(
+        ..., min_length = 1, description = "Base64-encoded audio, without a data: prefix."
+    )
     format: Optional[str] = Field(
         None, description = 'Declared container, e.g. "wav"; the decoder sniffs it anyway.'
     )

@@ -16775,6 +16775,10 @@ async def generate_audio(
     Works with both GGUF (llama-server) and Unsloth/transformers backends."""
     import base64
 
+    # _extract_content_parts keeps only text, so an unmodelled part would be spoken past in
+    # silence. Refuse it the way the completion does rather than voicing the text alone.
+    _reject_unsupported_content_parts(payload)
+
     # Extract text from the last user message
     _, chat_messages, _ = _extract_content_parts(payload.messages)
     if not chat_messages:
@@ -18638,10 +18642,12 @@ def _normalise_chat_content_parts(payload) -> None:
     Every audio check downstream reads ``audio_base64``, and an explicit one wins over a part.
     ``getattr``, because /chat/count_tokens carries that field as an extra rather than declaring it.
 
-    Only the final user turn is lifted. That field is positionless and ``_inject_audio_part``
-    appends to the last user message, so lifting a recording from an earlier turn would re-attach
-    it to a later question -- the model would answer about the audio again instead of the follow-up.
-    A recording from an earlier turn has already been answered, so it is dropped as history.
+    Only the final user turn is lifted, and only that turn's part is removed. The field is
+    positionless and ``_inject_audio_part`` appends to the last user message, so lifting an
+    earlier turn's recording would re-attach it to a later question and the model would answer
+    about the audio instead of the follow-up. Earlier turns keep their part where the caller put
+    it -- it rides through to the model on its own turn the way an image part does, so resending
+    history to ask something the first answer did not cover still has its source material.
     """
     last_user = None
     for index, msg in enumerate(payload.messages):
@@ -18649,13 +18655,12 @@ def _normalise_chat_content_parts(payload) -> None:
             last_user = index
     lifted: Optional[str] = None
     for index, msg in enumerate(payload.messages):
-        if not isinstance(msg.content, list):
+        if index != last_user or not isinstance(msg.content, list):
             continue
         kept = []
         for part in msg.content:
             if isinstance(part, InputAudioContentPart):
-                if index == last_user and part.input_audio.data:
-                    lifted = part.input_audio.data
+                lifted = part.input_audio.data
                 continue
             kept.append(part)
         if len(kept) != len(msg.content):

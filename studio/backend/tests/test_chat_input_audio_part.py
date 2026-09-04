@@ -253,21 +253,25 @@ def test_the_external_path_refuses_an_unmodelled_part_rather_than_dropping_it():
     assert "'file'" in response.json()["detail"]["error"]["message"]
 
 
-def test_a_recording_from_an_earlier_turn_is_not_re_attached_to_the_follow_up():
+def test_a_recording_from_an_earlier_turn_stays_on_its_own_turn():
     """``audio_base64`` is positionless and _inject_audio_part appends to the last user turn.
 
-    Lifting an earlier turn's recording would move it onto a later question, so the model would
-    answer about the audio again instead of the follow-up.
+    So an earlier turn's recording is neither lifted (which would move it onto the follow-up and
+    have the model answer about the audio instead of the question) nor dropped (which would lose
+    the only source material for a question the first answer did not cover). It stays put and
+    rides to the model on its own turn, the way an image part does.
     """
     payload = _request(
         _audio_message(text = "transcribe this"),
         {"role": "assistant", "content": "It says hello."},
-        {"role": "user", "content": [{"type": "text", "text": "now translate it to French"}]},
+        {"role": "user", "content": [{"type": "text", "text": "who is in the background?"}]},
     )
 
     _normalise_chat_content_parts(payload)
 
     assert payload.audio_base64 is None
+    assert [p.type for p in payload.messages[0].content] == ["text", "input_audio"]
+    assert payload.messages[0].content[1].input_audio.data == AUDIO_B64
 
 
 def test_a_recording_on_the_final_turn_is_still_lifted():
@@ -280,3 +284,46 @@ def test_a_recording_on_the_final_turn_is_still_lifted():
     _normalise_chat_content_parts(payload)
 
     assert payload.audio_base64 == AUDIO_B64
+
+
+def test_an_empty_audio_payload_is_refused_rather_than_dropped():
+    """``{"data": ""}`` is falsy, so it was never lifted but the part was still removed.
+
+    "transcribe this" then ran as a text-only prompt and answered about a recording nobody sent.
+    """
+    with pytest.raises(ValidationError):
+        _request(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "transcribe this"},
+                    {"type": "input_audio", "input_audio": {"data": "", "format": "wav"}},
+                ],
+            }
+        )
+
+
+def test_the_tts_route_refuses_an_unmodelled_part():
+    """/audio/generate shares this request model but reads only text parts.
+
+    Before the catch-all it 422'd on an unknown tag; without this it would voice the text alone.
+    """
+    with _route_client() as client:
+        response = client.post(
+            "/audio/generate",
+            json = {
+                "model": "default",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "read this out"},
+                            {"type": "file", "file": {"file_id": "file_abc"}},
+                        ],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "'file'" in response.json()["detail"]["error"]["message"]
