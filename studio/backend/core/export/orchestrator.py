@@ -453,7 +453,11 @@ class ExportOrchestrator:
             with self._state_guard():
                 self._owned_token_stores.discard(path)
 
-    def _discard_token_store(self, only: Any = _UNPINNED, owner: Any = _UNPINNED) -> None:
+    def _discard_token_store(
+        self,
+        only: Any = _UNPINNED,
+        owner: Any = _UNPINNED,
+    ) -> None:
         """Retire the current worker's private token directory, credential and all.
 
         *only* pins the removal to one store, for a caller holding no lock: if a reload has
