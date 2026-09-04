@@ -1684,12 +1684,13 @@ export const de = {
       revokeAction: "„{name}“ widerrufen",
       revoking: "Wird widerrufen...",
       usageNoModel:
-        "Es ist noch nichts heruntergeladen, daher nennt dieses Beispiel ein Modell, das dieser Server nicht hat. Laden Sie eines aus dem Hub herunter, dann nennt das Beispiel dieses.",
+        "Auf diesem Server ist kein Chat-Modell verfügbar, daher nennt dieses Beispiel eines, das er nicht hat. Laden Sie ein Chat-Modell aus dem Hub herunter, dann nennt das Beispiel dieses.",
       usageModelNotLoaded:
         "{model} ist nicht geladen. Aktivieren Sie oben „Modell je Anfrage wechseln“ oder laden Sie es im Chat, bevor Sie dieses Beispiel ausführen.",
       usageModelNotLoadedKeyless:
         "{model} ist nicht geladen. Erstellen Sie einen API-Schlüssel und verwenden Sie ihn in dieser Anfrage, oder laden Sie das Modell im Chat, bevor Sie dieses Beispiel ausführen.",
       exampleModel: "Modell",
+      exampleModelFollow: "Dem geladenen Modell folgen",
       exampleQuant: "Quantisierung",
       modelLoaded: "Geladen",
     },

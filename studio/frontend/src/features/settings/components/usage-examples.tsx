@@ -159,6 +159,9 @@ const DOC_LINKS = [
 // CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
 // (see ../api/coding-agents.ts).
 const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes", "dsh"];
+// Sentinel for the model select's "follow whatever is loaded" entry. Not a model id:
+// it clears the stored pick rather than naming anything.
+const FOLLOW_LOADED_MODEL = "__follow_loaded__";
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
@@ -836,9 +839,15 @@ export function UsageExamples({
   };
 
   const handlePickModel = (id: string) => {
-    // Picking the model the server serves on its own means "follow it" again.
+    // Radix fires nothing when the value does not change, so re-selecting the model
+    // already shown could never clear a stored pick -- and a pick that outlives the
+    // load it matched would then hold the examples on a model the server no longer
+    // serves. The explicit entry above the list is the way back to following.
     setPickedModel(
-      followed !== null && sameBaseModelId(id, followed) ? null : id,
+      id === FOLLOW_LOADED_MODEL ||
+        (followed !== null && sameBaseModelId(id, followed))
+        ? null
+        : id,
     );
   };
 
@@ -945,6 +954,14 @@ export function UsageExamples({
               </SelectValue>
             </SelectTrigger>
             <SelectContent align="start" className="max-w-[calc(100vw-2rem)]">
+              {/* Always reachable, so a stored pick can be undone even when it names
+                  the model already on screen. */}
+              <SelectItem
+                value={FOLLOW_LOADED_MODEL}
+                className="font-sans text-ui-11"
+              >
+                {t("settings.apiKeys.exampleModelFollow")}
+              </SelectItem>
               {example.options.map((option) => (
                 <SelectItem
                   key={option.id}
@@ -963,14 +980,18 @@ export function UsageExamples({
               ))}
             </SelectContent>
           </Select>
-          {/* Only when there is a choice. A repo the server can only name one quant for
-              -- a standalone .gguf, or weights with no quant sub-selection -- rendered a
-              control that looked switchable and was not. The one quant is already in
-              the snippet below. */}
-          {example.option && example.option.quants.length > 1 ? (
+          {/* Hidden only when there is nothing to choose. A sole quant still has to be
+              selectable while it is not the one pinned -- that is how a resident model
+              with no quant of its own reaches the one GGUF variant beside it. Once it
+              IS pinned the control is inert, so it is disabled rather than dead. */}
+          {example.option && example.option.quants.length > 0 ? (
             <Select
               value={splitPinnedQuant(model ?? "").quant ?? ""}
               onValueChange={handlePickQuant}
+              disabled={
+                example.option.quants.length === 1 &&
+                splitPinnedQuant(model ?? "").quant === example.option.quants[0]
+              }
             >
               <SelectTrigger
                 size="sm"

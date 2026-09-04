@@ -472,3 +472,17 @@ test("a single-quant model offers no quant choice", () => {
     assert.equal(r.model, `org/Foo:${quant}`);
   }
 });
+
+// A loaded row carries only the resident quant; the scan row for the other spelling
+// carries the whole inventory. Taking the plural list only when nothing was there left
+// the picker showing one quant and none of the alternatives.
+test("a loaded row adopts the vouched inventory over its own single quant", () => {
+  const options = exampleModelOptions([
+    { id: "Org/Foo", loaded: true, quant: "Q8_0" },
+    { id: "org/Foo", loaded: false, quant: "Q8_0", quants: ["Q8_0", "Q4_K_M"] },
+  ]);
+  assert.equal(options.length, 1);
+  assert.deepEqual(options[0].quants, ["Q8_0", "Q4_K_M"]);
+  assert.equal(options[0].loaded, true);
+  assert.equal(options[0].residentQuant, "Q8_0");
+});

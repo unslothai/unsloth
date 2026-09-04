@@ -724,3 +724,23 @@ def test_a_standalone_gguf_beside_a_repo_keeps_the_repo_quant_list(monkeypatch):
     monkeypatch.setattr(inf, "_cached_local_catalog", _dir_and_file)
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["org/Foo"]["quants"] == ["Q8_0", "Q4_K_M", "BF16"]
+
+
+def test_copies_that_agree_out_of_order_are_not_ambiguous(monkeypatch):
+    # Ambiguity is about WHICH quants exist, not the order a scan walked them in. Two
+    # copies reporting the same labels in different order agree, and every pin is valid
+    # against either, so the picker must keep its alternatives.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16", "Q4_K_M"), ("Q4_K_M", "BF16")]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    # Display order comes from the scan that published first.
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]

@@ -1598,12 +1598,13 @@ export const zhCN = {
       revokeAction: "撤销“{name}”",
       revoking: "撤销中...",
       usageNoModel:
-        "尚未下载任何模型，因此此示例指定的是此服务器上没有的模型。从 Hub 下载一个后，示例会改为指定它。",
+        "此服务器没有可用的聊天模型，因此该示例指定了一个它没有的模型。请从 Hub 下载聊天模型，示例便会指定该模型。",
       usageModelNotLoaded:
         "{model} 尚未加载。运行此示例前，请先在上方开启“按请求切换模型”，或在聊天中加载它。",
       usageModelNotLoadedKeyless:
         "{model} 未加载。运行此示例前，请创建 API 密钥并在此请求中使用，或在聊天中加载该模型。",
       exampleModel: "模型",
+      exampleModelFollow: "跟随已加载的模型",
       exampleQuant: "量化",
       modelLoaded: "已加载",
     },

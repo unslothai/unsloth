@@ -1657,12 +1657,13 @@ export const ptBR = {
       revokeAction: 'Revogar "{name}"',
       revoking: "Revogando...",
       usageNoModel:
-        "Nada foi baixado ainda, então este exemplo indica um modelo que este servidor não tem. Baixe um no Hub e o exemplo passará a indicá-lo.",
+        "Este servidor não tem nenhum modelo de chat disponível, portanto este exemplo indica um que ele não possui. Baixe um modelo de chat do Hub e o exemplo passará a indicá-lo.",
       usageModelNotLoaded:
         "{model} não está carregado. Ative \"Trocar de modelo por requisição\" acima, ou carregue-o no Chat, antes de executar este exemplo.",
       usageModelNotLoadedKeyless:
         "{model} não está carregado. Crie uma chave de API e use-a nesta requisição, ou carregue o modelo no Chat, antes de executar este exemplo.",
       exampleModel: "Modelo",
+      exampleModelFollow: "Acompanhar o modelo carregado",
       exampleQuant: "Quantização",
       modelLoaded: "Carregado",
     },

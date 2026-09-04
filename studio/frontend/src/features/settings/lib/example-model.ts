@@ -87,7 +87,11 @@ export function exampleModelOptions(
       // it. Only the plural field: when two copies of one id disagree the server
       // withholds `quants` and keeps the singular `quant`, and promoting that here
       // would offer a pin from an arbitrary copy -- the very thing it withheld.
-      if (existing.quants.length === 0 && m.quants?.length) {
+      // A loaded row often carries only the singular resident `quant`, while the scan
+      // row for the other spelling carries the whole inventory. Prefer the vouched
+      // plural list: adopting it only when nothing was there left the picker showing
+      // the one resident quant and none of the alternatives.
+      if (m.quants?.length && m.quants.length > existing.quants.length) {
         existing.quants = m.quants;
       }
       // An explicit empty list is the server saying it cannot vouch for any pin on

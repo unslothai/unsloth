@@ -25289,7 +25289,7 @@ async def _openai_catalog_objects() -> list[dict]:
     # physical copies of one id disagree about what is on disk, nothing here can tell
     # which pin would resolve, so the listing drops `quants` for that id rather than
     # hand out a `repo:quant` that 404s. Rows themselves are listed exactly as before.
-    quants_seen: dict[str, tuple[str, ...]] = {}
+    quants_seen: dict[str, frozenset[str]] = {}
     quants_owner: dict[str, dict] = {}
     ambiguous_quants: set[str] = set()
 
@@ -25313,7 +25313,10 @@ async def _openai_catalog_objects() -> list[dict]:
             return
         # Compare the way `_quant_list` dedupes, or two copies that hold the same
         # files under different spellings read as a disagreement and lose their list.
-        found_key = tuple(q.lower() for q in found)
+        # A set: two copies holding the same files disagree about nothing, whatever
+        # order their scans happened to walk them in. Display order still comes from
+        # whichever scan published first.
+        found_key = frozenset(q.lower() for q in found)
         if not found_key:
             return
         seen = quants_seen.get(key)

@@ -1591,12 +1591,13 @@ export const en = {
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
       usageNoModel:
-        "Nothing is downloaded yet, so this example names a model this server does not have. Download one from the Hub and the example will name it.",
+        "This server has no chat model available, so this example names one it does not have. Download a chat model from the Hub and the example will name it.",
       usageModelNotLoaded:
         "{model} is not loaded. Turn on \"Switch model by request\" above, or load it in Chat, before running this example.",
       usageModelNotLoadedKeyless:
         "{model} is not loaded. Create an API key and use it in this request, or load the model in Chat, before running this example.",
       exampleModel: "Model",
+      exampleModelFollow: "Follow the loaded model",
       exampleQuant: "Quantization",
       modelLoaded: "Loaded",
       usageTools: "Tools",

@@ -1609,12 +1609,13 @@ export const it = {
       copyNow: "Copialo ora: non verrà mostrato di nuovo.",
       usageExamples: "Esempi d'uso",
       usageNoModel:
-        "Non è stato ancora scaricato nulla, quindi questo esempio indica un modello che questo server non ha. Scaricane uno dall'Hub e l'esempio lo indicherà.",
+        "Questo server non ha alcun modello di chat disponibile, quindi questo esempio indica un modello che non possiede. Scarica un modello di chat dall'Hub e l'esempio lo indicherà.",
       usageModelNotLoaded:
         "{model} non è caricato. Attiva \"Cambia modello in base alla richiesta\" qui sopra, o caricalo in Chat, prima di eseguire questo esempio.",
       usageModelNotLoadedKeyless:
         "{model} non è caricato. Crea una chiave API e usala in questa richiesta, oppure carica il modello in Chat, prima di eseguire questo esempio.",
       exampleModel: "Modello",
+      exampleModelFollow: "Segui il modello caricato",
       exampleQuant: "Quantizzazione",
       modelLoaded: "Caricato",
       usageTools: "Strumenti",
