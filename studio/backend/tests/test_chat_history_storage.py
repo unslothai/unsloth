@@ -911,9 +911,7 @@ def test_an_unfinished_alias_scan_does_not_block_managed_workspaces(
     assert Path(switched["workspacePath"]).is_dir()
 
 
-def test_a_managed_delete_walks_only_its_own_folder(
-    tmp_path, monkeypatch, workspace_projects_home
-):
+def test_a_managed_delete_walks_only_its_own_folder(tmp_path, monkeypatch, workspace_projects_home):
     _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
     external = tmp_path / "repository"
     (external / "node_modules" / "left-pad").mkdir(parents = True)

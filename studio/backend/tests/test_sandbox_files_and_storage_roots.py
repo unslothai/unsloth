@@ -6808,9 +6808,7 @@ def test_an_unfinished_orphan_scan_is_not_an_adoption_match(tmp_path, monkeypatc
     monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 1)
     updated = []
 
-    changed, _ = tools.adopt_orphaned_workspace_when_idle(
-        str(picked), lambda: updated.append(True)
-    )
+    changed, _ = tools.adopt_orphaned_workspace_when_idle(str(picked), lambda: updated.append(True))
 
     assert changed is True
     assert updated == [True]
