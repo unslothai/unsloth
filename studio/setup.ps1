@@ -1030,6 +1030,35 @@ function Test-TorchXpuAvailable {
     return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
 }
 
+# The step "gpu" line comes from hipinfo / nvidia-smi / the marketing name table; the backend's
+# verdict is torch.cuda.is_available() in its own process, and the two share no state, so a host
+# whose torch cannot open the device is told "AMD ROCm (gfx1201)" and then runs CPU-only with "No
+# visible GPU" (#8473). Answered False is a separate fact from SeesGpu False.
+function Get-TorchGpuVisibility {
+    param([string]$PythonExe, [int]$TimeoutSec = 90)
+    $result = [pscustomobject]@{
+        Answered = $false; SeesGpu = $false; SeesXpu = $false; DeviceCount = 0
+        TorchVersion = ""; Hip = ""; Error = ""
+    }
+    # One -c line, so no double quotes (Invoke-BoundedPythonProbe wraps $Code in them).
+    $code = "import torch; print('UNSLOTHTORCHGPU=' + ('1' if torch.cuda.is_available() else '0') + " +
+        "'|' + str(torch.cuda.device_count()) + '|' + torch.__version__ + " +
+        "'|' + str(getattr(torch.version, 'hip', None) or '') + " +
+        "'|' + ('1' if (hasattr(torch, 'xpu') and torch.xpu.is_available()) else '0'))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code -TimeoutSec $TimeoutSec
+    $result.Error = $probe.Error
+    # Line-anchored like every other probe here, so a stdout banner cannot be read as the answer.
+    if ($probe.Ok -and $probe.Output -match '(?m)^UNSLOTHTORCHGPU=([01])\|(\d+)\|(\S*)\|(\S*)\|([01])\s*$') {
+        $result.Answered = $true
+        $result.SeesGpu = ($Matches[1] -eq "1")
+        $result.DeviceCount = [int]$Matches[2]
+        $result.TorchVersion = $Matches[3]
+        $result.Hip = $Matches[4]
+        $result.SeesXpu = ($Matches[5] -eq "1")
+    }
+    return $result
+}
+
 # Post-install XPU runtime check. A WMI name match says the part is XPU-capable, not that the
 # compute runtime works: on an old Intel driver the wheel installs fine, never initializes, and
 # unsloth/device_type.py raises NotImplementedError at import -- a hard crash, not a chat-only
@@ -1156,13 +1185,17 @@ function Test-VenvTorchIsXpu {
 # the two-component 2.8.0+rocm6.4 (Linux only). "gfx" is accepted anyway, cheaply, so a future
 # per-arch local label cannot make this read a ROCm venv as unknown and delete it. The dist-info
 # name is NOT usable either -- pip normalises the local label out of it.
+#
+# A build off AMD's own tree or off source carries no local label at all ("2.5.0a0+git1234567")
+# and records ROCm in the `hip` field instead, so the label alone read one as unknown. A QUOTED
+# value is required, since every CUDA and CPU wheel carries `hip: Optional[str] = None`.
 function Test-VenvTorchIsRocm {
     param([string]$VenvPath)
     if (-not $VenvPath) { return $false }
     try {
         $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
         if (-not (Test-Path -LiteralPath $verPy)) { return $false }
-        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+(rocm|gfx)")
+        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "(__version__\s*=\s*'[^']*\+(rocm|gfx))|(^hip\s*(:[^=]*)?=\s*'[^'])")
     } catch { return $false }
 }
 
@@ -2088,6 +2121,83 @@ function Test-VisibleDevicesPinned {
     return $false
 }
 
+# True when the FIRST mask that is set hides every device (empty, or a leading negative entry).
+# First-set-wins is clr's chain itself, not a convenience: it reads
+# `(HIP_VISIBLE_DEVICES[0] != '\0') ? HIP_VISIBLE_DEVICES : CUDA_VISIBLE_DEVICES`, and a
+# present-but-empty variable is stored as " ", so an empty HIP still wins and still hides all.
+# Callers pass HIP before CUDA and pass nothing else. Do NOT model this on Resolve-VisibleGpuIndex,
+# which also reads ROCR: on Linux ROCR is a second layer that COMPOSES with clr's chain, which is
+# why setup.sh judges both, but Windows forces the PAL path and clr never reads ROCR there, so an
+# arm for it here would only let a benign ROCR=0 shadow a CUDA=-1 that does hide the card.
+# Untyped: a [string] cast turns an unset $env: read from
+# $null into "", which reads as hide-all and would mute every host. ([string[]] does NOT -- bound
+# positionally it leaves $null elements alone -- but the singular cast is the one a future edit
+# reaches for, and it is the one that breaks this.)
+function Test-VisibleMaskHidesAll {
+    param($Masks)
+    foreach ($mask in @($Masks)) {
+        if ($null -eq $mask) { continue }
+        $value = "$mask".Trim()
+        # A leading negative entry hides everything, not just an exact "-1": both runtimes stop at
+        # the first invalid entry and discard everything after it, so "-1,0" leaves nothing
+        # visible. Nothing legal starts with "-" -- ordinals are non-negative and the UUID forms
+        # are GPU-/MIG-prefixed -- so this cannot swallow a selection like "0,-1".
+        return ($value -eq "" -or $value.StartsWith("-"))
+    }
+    return $false
+}
+
+# The Intel twin of the hide-all masks above: an Arc user who sets ONEAPI_DEVICE_SELECTOR=*:cpu
+# means torch to see no GPU, while WMI still announces the card. Grammar per Intel's SYCL runtime
+# reference: `;`-separated `<backend>:<devices>`, `!` discards, discards outrank accepts and alone
+# imply accept-all. Only forms that PROVABLY admit no GPU count; an ordinal may name a GPU.
+function Test-OneApiSelectorExcludesGpu {
+    # No [AllowNull()]: it is inert on a [string] parameter (the converter turns $null into "",
+    # so there is never a null to allow) and on a non-mandatory one, and carrying it here reads
+    # as a null path that is handled when none exists.
+    param([string]$Selector)
+    $value = "$Selector".Trim()
+    if ($value -eq "") { return $false }
+    $accepts = @()
+    foreach ($term in ($value -split ';')) {
+        $t = $term.Trim()
+        if ($t -eq "") { continue }
+        if ($t.StartsWith("!")) {
+            # Every backend's GPUs discarded at once empties the set on its own.
+            if ($t -match '^!\s*\*\s*:\s*(gpu|\*)\s*$') { return $true }
+            continue
+        }
+        $accepts += $t
+    }
+    if ($accepts.Count -eq 0) { return $false }
+    foreach ($t in $accepts) {
+        if ($t -notmatch '^[^:!]+:\s*cpu\s*$') { return $false }
+    }
+    return $true
+}
+
+# The other Level Zero hide, and the one an Arc user reaches for out of CUDA habit.
+# compute-runtime's parseAffinityMask (execution_environment.cpp) returns early on "" and
+# "default", so an EMPTY value hides nothing and must stay a no-op here -- reading it as hide-all
+# would mute every Intel host whose runtime is genuinely broken, which is the report's whole
+# purpose. A non-empty value does filter: each entry is parsed as an unsigned root-device index,
+# anything out of range is skipped, and the device list is then rebuilt from the entries that
+# survived. A negative entry can never name a device, so a mask made only of them enables nothing
+# and leaves zero root devices -- the same fact "-1" states to CUDA_VISIBLE_DEVICES and
+# HIP_VISIBLE_DEVICES above. Nothing else is claimed: an in-range-looking index may well name the
+# card, so any other shape fails open to $false and the mismatch is still reported.
+function Test-ZeAffinityMaskHidesAll {
+    param([string]$Mask)
+    $value = "$Mask".Trim()
+    if ($value -eq "" -or $value -eq "default") { return $false }
+    $entries = @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    if ($entries.Count -eq 0) { return $false }
+    foreach ($entry in $entries) {
+        if ($entry -notmatch '^-\d+(\.\d+)*$') { return $false }
+    }
+    return $true
+}
+
 # The one mask -> index resolver for every pick site below; the sites used to inline
 # their own expressions and disagreed (hipinfo rejected " 1 ", amd-smi rejected "1,0"),
 # and a mask Resolve-ShadowingGfxPick honours but the index ignores lands on GPU 0, the
@@ -2520,7 +2630,23 @@ $_rocmWheelArches = @(
 )
 # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
 # unmapped arches (Vega, RDNA1) too, and those install CPU torch.
-$AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+$AmdHasGpuWheels = [bool](
+    $script:ROCmGfxArch -and
+    ($_rocmWheelArches -contains $script:ROCmGfxArch)
+)
+
+# Host arch is deliberately NOT folded into $AmdHasGpuWheels above. AMD publishes win_amd64 only
+# under repo.amd.com/rocm/whl/<family>, so an ARM64 host reading as wheeled is wrong for THIS
+# report -- but $AmdHasGpuWheels has seven other consumers, and the stale-venv check at :4288 is
+# one of them. Demoting it there expects "cpu", sees the +rocm wheel the ROCm override at :5167
+# installs with no host-arch gate of its own, and deletes a working venv, after which setup exits
+# because the venv is gone. So the demotion lives here, on the diagnostic only.
+# The ARM64 demotion deliberately does NOT live here, and must not be folded into
+# $AmdHasGpuWheels above. That flag has seven consumers and the stale-venv check is one of them:
+# demoting it there expects "cpu", meets the +rocm wheel the ROCm override installs with no
+# host-arch gate of its own, deletes the venv, and setup exits because only install.ps1 creates
+# venvs. The one place that wants the host machine is the reconciliation gate, and it asks
+# Get-HostMachineArch directly rather than reading a flag that means two things at once.
 
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after
 # install.ps1 reported a usable Arc GPU. Self-contained, because `studio update` runs setup.ps1
@@ -2581,8 +2707,18 @@ if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     }
 }
 
+# What the summary below ANNOUNCED, recorded by the branch that printed it, so the torch
+# reconciliation quotes the same GPU instead of re-deriving one from the detection flags, which
+# disagree on an Intel Arc host that also has an unwheeled AMD card. $null = nothing to reconcile:
+# no accelerator, or an AMD card outside $_rocmWheelArches, which gets CPU torch by design --
+# unless a pin overrides that, since the pinned ROCm path routes a gfx*/rocm* leaf through the GPU
+# index whatever the arch. The leaf must be non-empty: $null -ne "cpu" is TRUE in PowerShell.
+$_amdPinLeaf = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
+$_amdPinIsGpu = [bool]$_amdPinLeaf -and ($_amdPinLeaf -ne "cpu")
+$script:GpuSummaryAnnounced = $null
 if ($HasNvidiaSmi) {
     step "gpu" "NVIDIA GPU detected"
+    $script:GpuSummaryAnnounced = "NVIDIA GPU"
 } elseif ($script:IsIntelXpu) {
     # Ranks above every AMD branch: only true when AMD gets no GPU wheel ($AmdHasGpuWheels gates
     # the scan above), so those branches would all end on CPU torch.
@@ -2591,10 +2727,14 @@ if ($HasNvidiaSmi) {
     substep "$IntelGpuLabel"
     substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
     Write-StudioLine ""
+    $script:GpuSummaryAnnounced = "Intel GPU"
 } elseif ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
     # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
     # and only a market name, which sets $HasROCm without an arch.
     step "gpu" $ROCmGpuLabel
+    $script:GpuSummaryAnnounced = if ($AmdHasGpuWheels -or $_amdPinIsGpu) {
+        if ($script:ROCmGfxArch) { "AMD GPU ($script:ROCmGfxArch)" } else { "AMD GPU" }
+    } else { $null }
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
     if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
@@ -2606,6 +2746,9 @@ if ($HasNvidiaSmi) {
     Write-StudioLine ""
     step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
     substep "Detected: $ROCmGpuLabel" "Yellow"
+    $script:GpuSummaryAnnounced = if ($AmdHasGpuWheels -or $_amdPinIsGpu) {
+        if ($script:ROCmGfxArch) { "AMD GPU ($script:ROCmGfxArch)" } else { "AMD GPU" }
+    } else { $null }
     substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
     substep "       This is a driver issue, not an SDK issue." "Yellow"
     substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
@@ -2618,6 +2761,9 @@ if ($HasNvidiaSmi) {
     substep "Detected: $ROCmGpuLabel" "Cyan"
     substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
     Write-StudioLine ""
+    $script:GpuSummaryAnnounced = if ($AmdHasGpuWheels -or $_amdPinIsGpu) {
+        if ($script:ROCmGfxArch) { "AMD GPU ($script:ROCmGfxArch)" } else { "AMD GPU" }
+    } else { $null }
 } elseif ($script:ROCmUnsupportedGfxArch) {
     # Detected, identified, out of scope for ROCm PyTorch. Ranks above the "arch
     # unknown" arm below: the arch is known here, and that arm's advice cannot succeed
@@ -2659,11 +2805,24 @@ if ($HasNvidiaSmi) {
     substep "UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm PyTorch:" "Yellow"
     substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     Write-StudioLine ""
+    # No arch means no GPU torch, so nothing to reconcile -- unless a pin installs a GPU wheel here.
+    $script:GpuSummaryAnnounced = if ($_amdPinIsGpu) { "AMD GPU" } else { $null }
 } else {
     Write-StudioLine ""
     step "gpu" "none (chat-only / GGUF)" "Yellow"
     substep "Training and GPU inference require an NVIDIA, AMD ROCm, or Intel Arc GPU." "Yellow"
     Write-StudioLine ""
+}
+
+# Backstop, and inert against the chain above with ONE exception: the $script:ROCmUnsupportedGfxArch
+# arm does not assign, and this is where a pinned RDNA 1 / Polaris host gets its announcement
+# (unpinned it stays $null -- $AmdHasGpuWheels is false whenever that arm is reached). Otherwise it
+# is here because that chain keeps growing arms, and an arm that forgets the assignment fails
+# silently, dropping the reconciliation on a host that does expect a GPU.
+if ($null -eq $script:GpuSummaryAnnounced -and
+    ($HasROCm -or $ROCmGpuLabel -or $script:ROCmGfxArch) -and
+    ($AmdHasGpuWheels -or $_amdPinIsGpu)) {
+    $script:GpuSummaryAnnounced = if ($script:ROCmGfxArch) { "AMD GPU ($script:ROCmGfxArch)" } else { "AMD GPU" }
 }
 
 # ============================================
@@ -4761,6 +4920,12 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
     $SkipPythonDeps = $false
 }
 
+# Declared out here, not just inside the branch: the GPU visibility check reads both, and on the
+# fast path the branch never runs, so under a caller's Set-StrictMode the read is fatal. That run
+# is the one this whole check exists for.
+$ROCmCpuFallback = $false
+$XpuCpuFallback = $false
+
 if (-not $SkipPythonDeps) {
 
 # install_python_stack.py drops the manifest before its own dependency pass, but
@@ -5376,6 +5541,125 @@ if ($stackExit -ne 0) {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
+}
+
+# ── Does PyTorch see the GPU this installer announced? ──
+# Outside the fast-path gate above on purpose: the reported case is an update that prints "AMD
+# ROCm (gfx1201)" and then "dependencies up to date", so a check nested inside the dependency pass
+# would stay silent on exactly the run being complained about (#8473).
+# Loud, never fatal: a timeout or crash means the probe failed, not that the GPU is missing.
+$_gpuCheckAnnounced = $script:GpuSummaryAnnounced
+$_gpuCheckPy = Join-Path $VenvDir "Scripts\python.exe"
+# An explicit CPU pin is a request, not a fault. Resolved fresh, since $TorchIndexPinned / $CuTag
+# are assigned inside the dependency-pass branch and $null on the run this check exists for.
+$_gpuCheckPinLeaf = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
+# A hide-all mask is a request too, and detection cannot see it: nvidia-smi ignores
+# CUDA_VISIBLE_DEVICES and the AMD arch can come from a WMI name. Scoped to the mask governing
+# what was announced, so an idle HIP mask cannot mute a genuine NVIDIA mismatch.
+# No ROCR_VISIBLE_DEVICES here, unlike setup.sh: clr declares only HIP_VISIBLE_DEVICES and
+# CUDA_VISIBLE_DEVICES, so an inherited ROCR var hides nothing on Windows and would only let a
+# benign ROCR=0 shadow a CUDA=-1 that really does hide the card.
+$_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
+    Test-VisibleMaskHidesAll $env:CUDA_VISIBLE_DEVICES
+} elseif ($_gpuCheckAnnounced -like "AMD*") {
+    Test-VisibleMaskHidesAll @($env:HIP_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)
+} elseif ($_gpuCheckAnnounced -like "Intel*") {
+    # Both Intel hides, for the same reason the AMD arm reads two masks: either one on its own is
+    # a request. ZE_AFFINITY_MASK is read for a NON-EMPTY value only -- parseAffinityMask returns
+    # early on "" / "default", but a non-empty mask does filter and drops every entry it cannot
+    # enable, so "-1" leaves zero root devices, the same fact it states to the two masks above.
+    (Test-OneApiSelectorExcludesGpu $env:ONEAPI_DEVICE_SELECTOR) -or
+        (Test-ZeAffinityMaskHidesAll $env:ZE_AFFINITY_MASK)
+} else { $false }
+# An ARM64 AMD host usually gets CPU torch by design, and a CPU verdict there is the routing
+# working. "Usually" is the whole difficulty: the stale-venv fix on this same branch established
+# that the ROCm override carries no host-arch gate of its own, so the emulated x64 Python this
+# installer prefers really can end up holding a win_amd64 +rocm wheel here, and an explicit ROCm
+# pin routes the same way. Excusing the host outright would then silence the one report #8473
+# exists to make. So this only marks the host as a CANDIDATE; whether it is excused is decided
+# below against the wheel the probe actually found.
+#
+# The machine is asked DIRECTLY. Inferring it from a "do wheels reach this host" flag conflates
+# two unrelated reasons for being false, ARM64 and an arch with no wheels, and only the first is
+# what this excuses. An x64 host on an unmapped arch with an explicit non-CPU pin is announced as
+# AMD (the pin routes it to a GPU index), so the inverted form marked it an ARM64 candidate and,
+# if the pinned index served a wheel with no HIP build, excused it into silence.
+$_gpuCheckArm64Amd = ($_gpuCheckAnnounced -like "AMD*") -and ((Get-HostMachineArch) -eq "arm64")
+# This run already told the user the GPU wheel would not install and fell back to CPU on purpose
+# ($ROCmCpuFallback / $XpuCpuFallback, set at the two force-reinstall arms below the index
+# selection). $InstallerTorchTag does not carry either, so without these terms the failure the
+# user just read is followed by a red accusation and a request to file an issue about it.
+#
+# $ROCmCpuFallback records what THIS script decided, not what is installed, and the dependency
+# pass runs after it: _ensure_rocm_torch retries the AMD index on Windows precisely because setup
+# fell back (install_python_stack.py:2980), so the venv can be holding a ROCm wheel by the time
+# this runs -- and a ROCm wheel that cannot see its GPU is the whole report. The excuse holds only
+# while a CPU wheel is really what is there. Read off disk, and short-circuited on the fast path,
+# where the flag is never set. $XpuCpuFallback needs none of it: _ensure_xpu_torch returns on
+# Windows (install_python_stack.py:2481), so setup.ps1 owns that wheel end to end and nothing
+# reinstalls over the CPU fallback. Deciding it on the wheel would also contradict the XPU
+# suppression below, which reads what the probe SAW so a +xpu wheel with a dead runtime is
+# reported rather than excused.
+$_gpuCheckLocalCpuFallback = $XpuCpuFallback -or
+    ($ROCmCpuFallback -and -not (Test-VenvTorchIsRocm -VenvPath $VenvDir))
+# The Windows half of the resolved-backend exclusion: install.ps1 routes an NVIDIA host whose CUDA
+# is below 11 to the CPU index by design. $null is "did not say" and must still be reconciled.
+if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and
+    ($InstallerTorchTag -ne "cpu") -and
+    -not $_gpuCheckMasked -and
+    -not $_gpuCheckLocalCpuFallback -and
+    -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
+    (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
+    $_gpuVisibility = Get-TorchGpuVisibility -PythonExe $_gpuCheckPy
+    # A hybrid Intel/NVIDIA host on the XPU wheel answers False for CUDA and still runs on the GPU
+    # (_detect_hardware_locked falls through CUDA -> XPU), so reporting it would be a false alarm.
+    # Gated on what the probe SAW, not the wheel label: a +xpu wheel with a dead runtime is reported.
+    # The ARM64 AMD excuse, decided here rather than at the gate because it needs the wheel and
+    # only the probe knows it. torch.version.hip is a BUILD constant: a ROCm wheel reports it even
+    # when the runtime cannot initialise, which is exactly the state being reported. So a hip-less
+    # wheel on an ARM64 AMD host is the documented CPU routing and is excused, while a +rocm wheel
+    # that cannot see its GPU is reported like anywhere else.
+    $_gpuCheckArm64Excused = $_gpuCheckArm64Amd -and -not $_gpuVisibility.Hip
+    if ($_gpuVisibility.Answered -and -not $_gpuVisibility.SeesGpu -and
+        -not $_gpuVisibility.SeesXpu -and -not $_gpuCheckArm64Excused) {
+        $_gpuCheckHip = if ($_gpuVisibility.Hip) { $_gpuVisibility.Hip } else { "none" }
+        # An Intel announcement is held to BOTH answers, so only there may the report name torch.xpu.
+        $_gpuCheckApi = if ($_gpuCheckAnnounced -like "Intel*") {
+            "torch.cuda.is_available() and torch.xpu.is_available() are False"
+        } else { "torch.cuda.is_available() is False" }
+        step "gpu check" "PyTorch cannot see the $_gpuCheckAnnounced reported above" "Red"
+        substep "$_gpuCheckApi in $VenvDir" "Red"
+        substep "torch $($_gpuVisibility.TorchVersion), device_count $($_gpuVisibility.DeviceCount), torch.version.hip $_gpuCheckHip" "Red"
+        # Name the symptom, so the user does not file it as a second, separate bug.
+        substep "PyTorch training and GPU inference are unavailable; chat and GGUF still work." "Red"
+        substep "If the Live monitor shows VRAM `"--`" and `"No visible GPU`", that is this, not a second bug." "Red"
+        # "the two lines above" named the two ADVICE lines, which carry no diagnostic at all.
+        substep "Please report the torch.cuda and torch version lines above at" "Red"
+        substep "https://github.com/unslothai/unsloth/issues" "Red"
+    } elseif (-not $_gpuVisibility.Answered) {
+        # Quiet when TORCH is absent: nothing to reconcile, and a warning would be noise on every
+        # update of a GGUF-only install. Only that one message, matched with the closing quote
+        # CPython puts around the module name, so a missing transitive dep is not swallowed too.
+        if (-not ($_gpuVisibility.Error -match "No module named 'torch'")) {
+            # A fixed message plus the command to reproduce, the shape setup.sh:2226 already uses.
+            # Interpolating .Error put a raw multi-line traceback through `substep`, which pads
+            # only its first line, and the second line of a CPython SyntaxError traceback is the
+            # whole 250-character probe source. It can also be empty -- a non-zero exit with no
+            # stderr, or stdout that misses the line anchor -- leaving a WARN with nothing after
+            # the colon. One line alone carries the reason without either failure.
+            # The LAST line, not the first: CPython puts the exception type and message there and
+            # the banner first, so taking the first reported "Traceback (most recent call last):"
+            # on every real failure and threw away the only useful part -- including
+            # "OSError: [WinError 126] The specified module could not be found.", which is the
+            # single most common way torch fails to import on Windows. Still one line, and still
+            # never the probe source: that is line two of a SyntaxError traceback, never the last.
+            $_gpuCheckWhy = @("$($_gpuVisibility.Error)" -split "`r?`n" |
+                Where-Object { $_.Trim() -ne "" } | Select-Object -Last 1)
+            $_gpuCheckWhy = if ($_gpuCheckWhy.Count -gt 0) { ": $($_gpuCheckWhy[0].Trim())" } else { "" }
+            substep "[WARN] could not check whether PyTorch sees this GPU$_gpuCheckWhy" "Yellow"
+            substep "       $_gpuCheckPy -c `"import torch; print(torch.cuda.is_available())`"" "Yellow"
+        }
+    }
 }
 
 # ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
