@@ -32,6 +32,20 @@ class _Exec(Exception):
         self.argv = list(argv)
 
 
+class _BakedImage:
+    """Stands in for _installed_names() on an image where every bake succeeded.
+
+    Only `in` is asked of the return value, so answering the prefix rule here keeps
+    nvidia-* wheels present too, which a plain set of _KEEP cannot express.
+    """
+
+    def __init__(self, mod):
+        self._mod = mod
+
+    def __contains__(self, name):
+        return name in self._mod._KEEP or name.startswith(self._mod._KEEP_PREFIX)
+
+
 @pytest.fixture()
 def shim(tmp_path, monkeypatch):
     """Fresh shim copy, marker in tmp_path, os.execv patched to capture the exec."""
@@ -48,6 +62,10 @@ def shim(tmp_path, monkeypatch):
         raise _Exec(path, argv)
 
     monkeypatch.setattr(mod.os, "execv", _fake_execv)
+    # the shim now skips a protected package only when it is really installed, so pin
+    # the fully baked image here: otherwise these assertions read the CI venv, which
+    # has no torchcodec, and pass or fail on the runner rather than on the shim
+    monkeypatch.setattr(mod, "_installed_names", lambda: _BakedImage(mod))
     mod._marker_path = marker
     return mod
 

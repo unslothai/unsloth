@@ -32,6 +32,20 @@ class _Exec(Exception):
         self.argv = list(argv)
 
 
+class _BakedImage:
+    """Stands in for _installed_names() on an image where every bake succeeded.
+
+    Only `in` is asked of the return value, so answering the prefix rule here keeps
+    nvidia-* wheels present too, which a plain set of _KEEP cannot express.
+    """
+
+    def __init__(self, mod):
+        self._mod = mod
+
+    def __contains__(self, name):
+        return name in self._mod._KEEP or name.startswith(self._mod._KEEP_PREFIX)
+
+
 @pytest.fixture()
 def shim(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_NB_TF_MARKER", str(tmp_path / "requested_transformers"))
@@ -45,6 +59,10 @@ def shim(tmp_path, monkeypatch):
         raise _Exec(path, argv)
 
     monkeypatch.setattr(mod.os, "execv", _fake_execv)
+    # the shim now skips a protected package only when it is really installed, so pin
+    # the fully baked image here: otherwise these assertions read the CI venv, which
+    # has no torchcodec, and pass or fail on the runner rather than on the shim
+    monkeypatch.setattr(mod, "_installed_names", lambda: _BakedImage(mod))
     return mod
 
 
@@ -177,6 +195,103 @@ def test_protection_survives_a_direct_wheel_url(shim):
 
 def test_protection_survives_an_editable_vcs_install(shim):
     assert _run(shim, ["-e", "git+https://github.com/huggingface/trl.git", UNBAKED]) == [UNBAKED]
+
+
+# A protected package that the image never managed to bake is nothing to protect, and
+# dropping it turned the recovery install into a silent success. MISSING is a _KEEP
+# member the Dockerfile is allowed to leave out (see the fail-soft premise test below).
+MISSING = "vllm"
+
+
+def _without(mod, missing):
+    """_installed_names() for an image whose `missing` bake was skipped."""
+    baked = _BakedImage(mod)
+
+    class _Partial:
+        def __contains__(self, name):
+            return name != missing and name in baked
+
+    return _Partial()
+
+
+@pytest.fixture()
+def shim_without_vllm(shim, monkeypatch):
+    """The same shim over an image whose vLLM bake was skipped."""
+    monkeypatch.setattr(shim, "_installed_names", lambda: _without(shim, MISSING))
+    return shim
+
+
+def test_the_baked_premise_holds_before_the_absence_tests_mean_anything(shim):
+    """Non-vacuity: the two views must disagree, or every test below is trivial."""
+    assert _run(shim, [MISSING]) is None
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(shim, "_installed_names", lambda: _without(shim, MISSING))
+        assert _run(shim, [MISSING]) == [MISSING]
+
+
+def test_a_protected_package_the_image_never_baked_still_installs(shim_without_vllm):
+    # the arm64 vLLM bake is fail-soft, so `!pip install vllm` was the documented
+    # recovery; skipping it printed "kept baked versions" over an image with no vLLM
+    assert _run(shim_without_vllm, [MISSING]) == [MISSING]
+    assert _run(shim_without_vllm, [f"{MISSING}==0.20.0"]) == [f"{MISSING}==0.20.0"]
+    assert _run(shim_without_vllm, [MISSING], tool = "uv") == [MISSING]
+
+
+def test_the_absence_check_reaches_the_requirements_file_path(shim_without_vllm, tmp_path):
+    req = tmp_path / "requirements.txt"
+    req.write_text(f"trl==0.22.2\n{MISSING}==0.20.0\n")
+    execd = _run(shim_without_vllm, ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r"
+    filtered = Path(execd[1]).read_text()
+    assert MISSING in filtered, filtered
+    assert "trl" not in filtered, filtered
+
+
+def test_the_absence_check_reaches_the_flag_target_path(shim_without_vllm):
+    # -e and -P classify their value through a separate helper; it drifted before
+    assert _run(shim_without_vllm, ["-P", MISSING, UNBAKED]) == ["-P", MISSING, UNBAKED]
+    assert _run(shim_without_vllm, ["-P", "trl", UNBAKED]) == [UNBAKED]
+
+
+def test_an_unreadable_metadata_scan_keeps_the_stricter_answer(shim, monkeypatch):
+    """Never open the stack up because the venv could not be read."""
+    monkeypatch.setattr(shim, "_installed_names", lambda: None)
+    assert _run(shim, [MISSING]) is None
+    assert _run(shim, ["torch"]) is None
+
+
+def test_installed_names_reads_a_real_venv(shim):
+    """The helper itself, unpatched: a stub returning an empty set would pass every
+    test above while forwarding the whole baked stack in the image."""
+    spec = importlib.util.spec_from_file_location("unsloth_pip_shim_unpatched", SHIM_PATH)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    names = fresh._installed_names()
+    assert names is not None
+    assert "pytest" in names, "the running interpreter must at least see pytest"
+    assert "definitely-not-a-real-distribution" not in names
+
+
+def test_every_drop_decision_goes_through_the_one_predicate(shim):
+    """The three call sites drifted apart before; keep them on _is_protected."""
+    source = SHIM_PATH.read_text(encoding = "utf-8")
+    raw = [
+        line
+        for line in source.splitlines()
+        if "_KEEP_PREFIX)" in line and "_KEEP_PREFIX = " not in line
+    ]
+    # only the predicate itself and the constraints builder may spell the rule out;
+    # the constraints builder is already scoped to installed distributions
+    assert len(raw) == 2, raw
+
+
+def test_the_dockerfile_still_lets_a_protected_bake_fail(shim):
+    """Premise pin: if every bake becomes mandatory, the absence path is dead code and
+    this file should be revisited rather than left asserting a case that cannot arise."""
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
+    assert "torchcodec bake skipped" in dockerfile
+    assert "fail-soft on non-amd64" in dockerfile
+    assert MISSING in shim._KEEP
 
 
 def test_forwarded_installs_pin_the_protected_set_for_the_resolver(shim):

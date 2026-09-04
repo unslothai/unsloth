@@ -6,8 +6,9 @@
 
 Sits ahead of the real tools on PATH so a notebook `!pip install` cell cannot clobber
 the baked cu128 stack: `transformers==X` is recorded for the unsloth_nb_compat sidecar
-instead of installed, other _KEEP packages are skipped, everything else passes
-through. The real tools are invoked by absolute path, so there is no recursion.
+instead of installed, other _KEEP packages are skipped WHEN THEY ARE ACTUALLY BAKED
+IN, everything else passes through. The real tools are invoked by absolute path, so
+there is no recursion.
 """
 
 import os, re, sys, tempfile
@@ -154,6 +155,49 @@ def _norm_name(name):
     return re.sub(r"[-_.]+", "-", name.strip()).lower() or None
 
 
+_INSTALLED_NAMES = []
+
+
+def _installed_names():
+    """Every distribution name in this venv, PEP 503 normalised, or None when the scan
+    fails. Cached because importlib.metadata rescans sys.path on every call."""
+    if not _INSTALLED_NAMES:
+        try:
+            from importlib.metadata import distributions
+
+            found = set()
+            for dist in distributions():
+                try:
+                    n = _norm_name(dist.metadata["Name"] or "")
+                except Exception:
+                    n = None
+                if n:
+                    found.add(n)
+            _INSTALLED_NAMES.append(found)
+        except Exception:
+            _INSTALLED_NAMES.append(None)
+    return _INSTALLED_NAMES[0]
+
+
+def _is_protected(name):
+    """True when `name` is a baked package that is REALLY installed. Every drop
+    decision goes through here so the three call sites cannot drift apart.
+
+    An absent package is nothing to protect, and dropping it turned a recovery
+    install into a silent success: the Dockerfile lets the torchcodec bake and the
+    non-amd64 vLLM bake fail on purpose, so a notebook `pip install vllm` printed
+    "kept baked versions, skipped: vllm" over an image that had no vLLM at all, and
+    the GRPO fast_inference path stayed broken. Forwarding instead either installs it
+    under the protected constraints or fails loudly, and both beat a false success.
+    An unreadable metadata scan keeps the old, stricter answer."""
+    if name is None:
+        return False
+    if not (name in _KEEP or name.startswith(_KEEP_PREFIX)):
+        return False
+    present = _installed_names()
+    return present is None or name in present
+
+
 def _sdist_name(basename):
     """Name from a `{name}-{version}.ext` basename, split at the first hyphen before a
     digit so legacy hyphenated names resolve too."""
@@ -277,7 +321,7 @@ def _classify_flag_target(spec):
     name = _canon(spec)
     if name == "transformers":
         return "drop", _version_pin(spec)
-    if name is not None and (name in _KEEP or name.startswith(_KEEP_PREFIX)):
+    if _is_protected(name):
         return "drop", None
     return "keep", None
 
@@ -383,7 +427,7 @@ def _filter_requirements_file(path, _depth = 0):
             dropped.append(spec)
             changed = True
             continue
-        if name in _KEEP or name.startswith(_KEEP_PREFIX):
+        if _is_protected(name):
             dropped.append(spec)
             changed = True
             continue
@@ -606,7 +650,7 @@ def main():
                 recorded = v
             dropped.append(tok)
             continue
-        if name in _KEEP or name.startswith(_KEEP_PREFIX):
+        if _is_protected(name):
             dropped.append(tok)
             continue
         keep_args.append(tok)
