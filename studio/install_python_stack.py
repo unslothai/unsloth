@@ -86,6 +86,33 @@ def _is_windows_arm64() -> bool:
     )
 
 
+@functools.lru_cache(maxsize = None)
+def _is_win_arm64_interpreter() -> bool:
+    """Windows on ARM, the arch of THIS INTERPRETER rather than of the machine.
+
+    The distinction decides which wheels exist. ``_is_windows_arm64`` above answers
+    for the machine, and is true even under an emulated x64 Python -- which is what
+    every install predating native ARM64 support is running, because install.ps1
+    deliberately fetched an x64 interpreter there. Such a venv wants the x64 wheels
+    and gets them: ``platform_machine == "ARM64"`` in a requirement marker is the
+    INTERPRETER's arch, so the marker rows and this predicate have to agree or the
+    same machine is served two different answers.
+
+    ``sysconfig.get_platform()`` is what pip and uv tag wheels with, so it is the
+    same authority; ``platform.machine()`` is the fallback and reports AMD64 under
+    emulation, which is the answer we want there.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        tag = (sysconfig.get_platform() or "").strip().lower()
+        if tag:
+            return tag == "win-arm64"
+    except Exception:
+        pass
+    return (platform.machine() or "").strip().lower() in {"arm64", "aarch64"}
+
+
 def _windows_arm64_has_torchaudio() -> bool:
     """Does the CUDA index this install used publish a win_arm64 torchaudio?
 
@@ -4004,7 +4031,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # that has no win_arm64 wheel at all, which fails the install after everything else
     # succeeded. A CPU build still falls through to the repair below, so a host that
     # genuinely lost its GPU torch is still fixed. Mirrors the same guard in setup.ps1.
-    if _is_windows_arm64():
+    if _is_win_arm64_interpreter():
         _installed = _probe_installed_torch_version()
         if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
             return True
@@ -6935,7 +6962,7 @@ def pip_install(
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
-    if actual_req is not None and _is_windows_arm64():
+    if actual_req is not None and _is_win_arm64_interpreter():
         _arm64_skip = _windows_arm64_skip_packages()
         if _arm64_skip:
             actual_req = _filter_requirements(actual_req, _arm64_skip)

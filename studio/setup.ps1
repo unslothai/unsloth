@@ -4078,6 +4078,15 @@ $InstallerTorchTag = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_INSTALLER_TOR
 $script:_winArm64Venv = $null
 function Test-WinArm64Venv {
     if ($null -ne $script:_winArm64Venv) { return $script:_winArm64Venv }
+    # An ARM64 venv can only exist on an ARM64 machine, and this answers before any
+    # interpreter is launched. That keeps the whole function free on x64: the callers
+    # below sit in the stale-venv path, which previously executed nothing at all, and
+    # launching a venv's python there to learn something already known would hand a
+    # corrupt or lock-blocked interpreter a chance to hang the install.
+    if ((Get-HostMachineArch) -ne "arm64") {
+        $script:_winArm64Venv = $false
+        return $false
+    }
     # The managed interpreter by path first: this is called from the torch-flavor logic,
     # which runs before `python` is necessarily the venv's own on PATH. Asking the wrong
     # interpreter -- or none -- would answer "not ARM64" for an ARM64 venv, and the answer
@@ -6149,9 +6158,12 @@ if ($LocalLlamaCppLinked) {
                 # write_prebuilt_metadata does not persist an install_kind key, so
                 # $existingKind is always null; keep $expectedKinds in sync with the
                 # kinds install_llama_prebuilt.py installs before relying on it.
-                # windows-arm64-cuda is the Windows-on-ARM NVIDIA kind (GB10 / N1X): an
-                # NVIDIA host can legitimately carry either CUDA kind depending on its arch.
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda", "windows-arm64-cuda") } else { @("windows-cpu", "windows-arm64") }
+                # windows-arm64-cuda is the Windows-on-ARM NVIDIA kind (GB10 / N1X).
+                # Added for the arch that can actually carry it and no other: accepting
+                # it on x64 would keep an install this machine cannot run, where today
+                # that install is removed as mismatched.
+                $_nvidiaKinds = if ((Get-HostMachineArch) -eq "arm64") { @("windows-arm64-cuda") } else { @("windows-cuda") }
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue

@@ -39,7 +39,11 @@ structlog>=24.1.0
 diceware==1.0.1
 ddgs==9.14.4; python_version >= "3.10"
 ddgs==9.8.0; python_version < "3.10"
-cryptography>=42.0.0
+cryptography>=42.0.0; sys_platform != "win32" or platform_machine != "ARM64"
+# Windows on ARM: 46.0.7 publishes no win_arm64 wheel and the sdist needs a Rust
+# toolchain, so cap at the newest release that ships one. Matches the cap in
+# single-env/constraints.txt, which does not reach a plain pip install of the extra.
+cryptography>=42.0.0,<=46.0.3; sys_platform == "win32" and platform_machine == "ARM64"
 boto3>=1.34.0                    # optional: S3 dataset loading
 httpx>=0.27.0
 fastmcp>=3.0.2

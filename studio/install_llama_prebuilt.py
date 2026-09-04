@@ -750,8 +750,13 @@ def _upstream_arm64_cuda_allowed() -> bool:
 
 
 def windows_cuda_arch_for_host(host: HostInfo) -> str:
-    """CUDA prebuilt arch token for a Windows host: arm64 on Windows on ARM, else x64."""
-    return "arm64" if host.is_arm64 else "x64"
+    """CUDA prebuilt arch token for a Windows host: arm64 on Windows on ARM, else x64.
+
+    ``is_arm64`` is also true for macOS arm64 and Linux aarch64, so the Windows test
+    is part of the question rather than the caller's job. Every caller today is already
+    inside a Windows branch; this keeps the answer right if one ever is not.
+    """
+    return "arm64" if (host.is_windows and host.is_arm64) else "x64"
 
 
 def windows_cuda_install_kind_for_arch(arch: str) -> str:
@@ -2997,7 +3002,10 @@ def windows_cuda_attempts(
         arch = windows_cuda_arch_for_host(host)
     install_kind = windows_cuda_install_kind_for_arch(arch)
     selection_log = list(selection_preamble)
-    selection_log.append(f"windows_cuda_selection: arch={arch}")
+    # x64 is the historical, unspoken default; saying so would add a line to every
+    # existing Windows install log for no new information.
+    if arch != "x64":
+        selection_log.append(f"windows_cuda_selection: arch={arch}")
     driver_runtime = pick_windows_cuda_runtime(host)
     detected_runtime_lines, runtime_dirs = detected_windows_runtime_lines()
     compatible_runtime_lines = compatible_windows_runtime_lines(host)
@@ -3215,8 +3223,12 @@ def published_windows_cuda_attempts(
     # actually provides on the host, preferring the torch line. Routing them
     # through the synthetic-minor path wrongly dropped cuda13 on a 13.0 driver.
     legacy_minors: list[str] = []
+    # Scoped to the arch being resolved. Hardcoding x64 here happened to be harmless
+    # while no arm64 CUDA artifact was published (the scan simply found nothing), but
+    # it would silently mis-order the runtime lines the day one is.
+    _legacy_pattern = rf"-bin-win-cuda-(\d+\.\d+)-{re.escape(arch)}\.zip$"
     for artifact in published_artifacts:
-        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
+        m = re.search(_legacy_pattern, artifact.asset_name)
         if m:
             legacy_minors.append(m.group(1))
     if legacy_minors:

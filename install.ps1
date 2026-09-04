@@ -325,6 +325,17 @@ function Install-UnslothStudio {
     $script:WoaPyarrowSource = $null     # "pypi" | "wheelhouse" | "local"
     $script:WoaPyarrowWheelName = $null  # staged wheel filename, for the version pin
 
+    # Does this file open as a zip? A wheel is one, so this separates a complete
+    # download from what an interrupted run left behind, without trusting its size.
+    function Test-ZipArchiveReadable {
+        param([string]$Path)
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        } catch { return $false }
+        try { return ($zip.Entries.Count -gt 0) } catch { return $false } finally { $zip.Dispose() }
+    }
+
     # A wheel's real filename, read from inside the archive. NVIDIA hands out these
     # prebuilt wheels as bare .bin artifacts, and uv/pip both refuse a wheel whose
     # filename does not encode its tags, so reconstruct "<name>-<version>-<tag>.whl" from
@@ -4648,6 +4659,22 @@ exit 0
     # inherits these through the environment, so the rules are stated once here instead
     # of being threaded through each call site. All of it is scoped to this host: the
     # variables are set only inside this branch.
+    #
+    # Drop what a PREVIOUS run of this script left behind, and nothing else. These three
+    # steer every resolver step below, and `irm | iex` twice in one shell leaves them
+    # pointing at a wheelhouse and an overrides file this run may have decided not to use
+    # (re-running with UNSLOTH_WOA_NATIVE=0, or on a host that failed the probe). Matched
+    # by path against this StudioHome's own woa directory, so an inherited UV_FIND_LINKS
+    # that a user set for their own wheelhouse is left exactly as it was -- clearing that
+    # would break an air-gapped install on every Windows host, which is not this PR's
+    # business. Same intent as always assigning UNSLOTH_WOA_HAS_TORCHAUDIO.
+    $_woaOwnedPrefix = Join-Path $StudioHome "woa"
+    foreach ($_woaResolverVar in 'UV_OVERRIDE', 'UV_FIND_LINKS', 'PIP_FIND_LINKS') {
+        $_woaInherited = [Environment]::GetEnvironmentVariable($_woaResolverVar)
+        if ($_woaInherited -and $_woaInherited.StartsWith($_woaOwnedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item "Env:$_woaResolverVar" -ErrorAction SilentlyContinue
+        }
+    }
     if ($script:WoaNativeCudaTorch) {
         $WoaDir = Join-Path $StudioHome "woa"
         $WoaWheelDir = Join-Path $WoaDir "wheels"
@@ -4703,7 +4730,7 @@ exit 0
                 } catch {}
                 if ($wheelName) {
                     try {
-                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$wheelName" -OutFile (Join-Path $WoaWheelDir $wheelName) -UseBasicParsing -ErrorAction Stop
+                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$wheelName" -OutFile (Join-Path $WoaWheelDir $wheelName) -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
                         $script:WoaPyarrowWheelName = $wheelName
                         substep "windows on arm: downloaded pyarrow wheel $wheelName"
                     } catch {
@@ -4744,11 +4771,24 @@ exit 0
                     if ($name -like "pyarrow-*") { continue }
                     if ($name -notlike "*win_arm64*" -and $name -notlike "*-any.whl") { continue }
                     $dest = Join-Path $WoaWheelDir $name
-                    if (Test-Path -LiteralPath $dest) { $WoaExtraStaged++; continue }
+                    # A wheel already here is reused, but only if it is one: an
+                    # interrupted run leaves a truncated file, and skipping on mere
+                    # existence would keep handing the resolver that corpse on every
+                    # retry. A wheel is a zip, so opening it is the whole check.
+                    if (Test-Path -LiteralPath $dest) {
+                        if (Test-ZipArchiveReadable -Path $dest) { $WoaExtraStaged++; continue }
+                        Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+                    }
                     try {
-                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$name" -OutFile $dest -UseBasicParsing -ErrorAction Stop
+                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$name" -OutFile $dest -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                        if (-not (Test-ZipArchiveReadable -Path $dest)) {
+                            Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+                            continue
+                        }
                         $WoaExtraStaged++
-                    } catch {}
+                    } catch {
+                        Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+                    }
                 }
             } catch {}
         }
