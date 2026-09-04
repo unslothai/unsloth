@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -82,34 +83,55 @@ def _read_limited(
     *,
     contained_in: Optional[Path] = None,
 ) -> bytes:
+    descriptor: Optional[int] = None
     try:
-        with path.open("rb") as handle:
-            status = os.fstat(handle.fileno())
-            if contained_in is not None:
-                if _is_linked_path(contained_in):
-                    raise SkillError("Skill resources cannot use symbolic links or reparse points.")
-                root = contained_in.resolve(strict = True)
-                relative = path.relative_to(contained_in)
-                current = contained_in
-                for part in relative.parts:
-                    current = current / part
-                    if _is_linked_path(current):
-                        raise SkillError(
-                            "Skill resources cannot use symbolic links or reparse points."
-                        )
-                path.resolve(strict = True).relative_to(root)
-                current_status = os.stat(path, follow_symlinks = False)
-                if not os.path.samestat(status, current_status):
-                    raise SkillError("Skill resource changed while it was being opened.")
-            if not stat.S_ISREG(status.st_mode):
-                raise SkillError(f"{path.name} must be a regular file.")
-            if status.st_size > limit:
-                raise SkillError(f"{path.name} exceeds the {limit // 1024} KB limit.")
+        if contained_in is not None and _is_linked_path(path):
+            raise SkillError("Skill resources cannot use symbolic links or reparse points.")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(path, flags)
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise SkillError(f"{path.name} must be a regular file.")
+        if contained_in is not None:
+            if _is_linked_path(contained_in):
+                raise SkillError("Skill resources cannot use symbolic links or reparse points.")
+            root = contained_in.resolve(strict = True)
+            relative = path.relative_to(contained_in)
+            current = contained_in
+            for part in relative.parts:
+                current = current / part
+                if _is_linked_path(current):
+                    raise SkillError(
+                        "Skill resources cannot use symbolic links or reparse points."
+                    )
+            path.resolve(strict = True).relative_to(root)
+            current_status = os.stat(path, follow_symlinks = False)
+            if not os.path.samestat(status, current_status):
+                raise SkillError("Skill resource changed while it was being opened.")
+        if status.st_size > limit:
+            raise SkillError(f"{path.name} exceeds the {limit // 1024} KB limit.")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
             raw = handle.read(limit + 1)
     except SkillError:
         raise
     except (OSError, ValueError) as exc:
+        if isinstance(exc, OSError) and exc.errno == errno.ELOOP:
+            raise SkillError(
+                "Skill resources cannot use symbolic links or reparse points."
+            ) from exc
         raise SkillError(f"Could not read {path.name}.") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
     if len(raw) > limit:
         raise SkillError(f"{path.name} exceeds the {limit // 1024} KB limit.")
     return raw
@@ -262,7 +284,16 @@ def _candidate_dirs(root: Path) -> list[Path]:
         raise SkillError("Could not scan an Agent Skills directory.") from exc
     if len(candidates) > MAX_SKILLS_PER_ROOT:
         raise SkillError(f"Agent Skills directory exceeds the {MAX_SKILLS_PER_ROOT}-entry limit.")
-    return [candidate for candidate in candidates if not candidate.name.startswith(".")]
+    visible = []
+    for candidate in candidates:
+        if candidate.name.startswith("."):
+            continue
+        try:
+            candidate.name.encode("utf-8")
+        except UnicodeEncodeError:
+            continue
+        visible.append(candidate)
+    return visible
 
 
 def list_skills(*, home: Optional[Path] = None) -> list[dict]:

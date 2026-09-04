@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -108,6 +110,20 @@ def test_invalid_skill_is_reported_without_hiding_valid_skills(
     assert next(item for item in records if item["name"] == "valid")["valid"] is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Surrogate-escaped POSIX filenames are unavailable on Windows")
+def test_non_utf8_directory_name_does_not_hide_valid_skills(isolated_skills):
+    home, _ = isolated_skills
+    root = home / ".agents" / "skills"
+    root.mkdir(parents = True)
+    os.mkdir(os.fsencode(root) + b"/bad-\xff")
+    _write_skill(home, "agents", "valid")
+
+    records = skills.list_skills(home = home)
+
+    assert [record["name"] for record in records] == ["valid"]
+    json.dumps(records, ensure_ascii = False).encode("utf-8")
+
+
 def test_disable_override_persists_without_touching_or_falling_through(isolated_skills):
     home, studio = isolated_skills
     winner = _write_skill(home, "agents", "shared", body = "winner")
@@ -141,6 +157,36 @@ def test_read_resource_is_contained_utf8_and_paginated(isolated_skills):
         skills.read_skill_resource("reader", home = home)
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "POSIX FIFOs are unavailable on this platform")
+def test_read_resource_rejects_fifo_without_blocking(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    pipe = root / "pipe"
+    os.mkfifo(pipe)
+    finished = threading.Event()
+    errors = []
+
+    def read_pipe():
+        try:
+            skills.read_skill_resource("reader", "pipe", home = home)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target = read_pipe, daemon = True)
+    worker.start()
+    completed_without_writer = finished.wait(1)
+    if not completed_without_writer:
+        with pipe.open("wb"):
+            pass
+    worker.join(1)
+
+    assert completed_without_writer, "reading a FIFO waited for a writer"
+    assert errors and isinstance(errors[0], skills.SkillError)
+    assert "regular file" in str(errors[0])
+
+
 def test_read_resource_rejects_escaping_symlink(isolated_skills):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "reader")
@@ -165,7 +211,7 @@ def test_read_resource_rejects_link_swapped_during_open(isolated_skills, monkeyp
     resource.write_text("safe", encoding = "utf-8")
     outside = home / "secret.txt"
     outside.write_text("secret", encoding = "utf-8")
-    original_open = Path.open
+    original_open = os.open
     swapped = False
 
     def replacing_open(path, *args, **kwargs):
@@ -180,7 +226,7 @@ def test_read_resource_rejects_link_swapped_during_open(isolated_skills, monkeyp
                 pytest.skip("symlinks are unavailable on this platform")
         return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", replacing_open)
+    monkeypatch.setattr(os, "open", replacing_open)
     with pytest.raises(skills.SkillError, match = "symbolic links"):
         skills.read_skill_resource("reader", "guide.md", home = home)
 
