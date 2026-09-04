@@ -184,7 +184,11 @@ def png_payloads(images: Sequence[dict]) -> list[str]:
     return [url.split(",", 1)[1] for url in _decoded_urls(images)]
 
 
-def _turn_text(shown: int, total: int, lead: str = IMAGE_TURN_TEXT) -> str:
+def _turn_text(
+    shown: int,
+    total: int,
+    lead: str = IMAGE_TURN_TEXT,
+) -> str:
     # The tool result's own note counts every image it returned, so a turn that
     # carries fewer has to say so rather than let the model wait for the rest.
     if total > shown:
