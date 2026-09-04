@@ -106,9 +106,7 @@ def _read_limited(
             for part in relative.parts:
                 current = current / part
                 if _is_linked_path(current):
-                    raise SkillError(
-                        "Skill resources cannot use symbolic links or reparse points."
-                    )
+                    raise SkillError("Skill resources cannot use symbolic links or reparse points.")
             path.resolve(strict = True).relative_to(root)
             current_status = os.stat(path, follow_symlinks = False)
             if not os.path.samestat(status, current_status):

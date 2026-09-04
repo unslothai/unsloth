@@ -110,7 +110,9 @@ def test_invalid_skill_is_reported_without_hiding_valid_skills(
     assert next(item for item in records if item["name"] == "valid")["valid"] is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "Surrogate-escaped POSIX filenames are unavailable on Windows")
+@pytest.mark.skipif(
+    os.name == "nt", reason = "Surrogate-escaped POSIX filenames are unavailable on Windows"
+)
 def test_non_utf8_directory_name_does_not_hide_valid_skills(isolated_skills):
     home, _ = isolated_skills
     root = home / ".agents" / "skills"
@@ -157,7 +159,9 @@ def test_read_resource_is_contained_utf8_and_paginated(isolated_skills):
         skills.read_skill_resource("reader", home = home)
 
 
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "POSIX FIFOs are unavailable on this platform")
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason = "POSIX FIFOs are unavailable on this platform"
+)
 def test_read_resource_rejects_fifo_without_blocking(isolated_skills):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "reader")
