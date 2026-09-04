@@ -459,10 +459,7 @@ def trim_image_turns(
     # payload on the next trim -- which is the attachment being deleted by the very
     # argument that names it.
     dropped = set(drop)
-    return tuple(
-        index - sum(1 for gone in dropped if gone < index)
-        for index in protected
-    )
+    return tuple(index - sum(1 for gone in dropped if gone < index) for index in protected)
 
 
 def trim_image_url_turns(

@@ -988,17 +988,29 @@ def test_the_eligible_pass_keeps_candidates_behind_an_undecodable_result():
     """It cannot decode either, so a newest result of formats Pillow rejects must not
     starve the valid pictures behind it."""
     history = [
-        {"role": "tool", "name": "mcp__s__a", "content": _envelope("[4]", *[_image() for _ in range(4)])},
-        {"role": "tool", "name": "mcp__s__b", "content": _envelope("[4]", *[_image() for _ in range(4)])},
-        {"role": "tool", "name": "mcp__s__c", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        {
+            "role": "tool",
+            "name": "mcp__s__a",
+            "content": _envelope("[4]", *[_image() for _ in range(4)]),
+        },
+        {
+            "role": "tool",
+            "name": "mcp__s__b",
+            "content": _envelope("[4]", *[_image() for _ in range(4)]),
+        },
+        {
+            "role": "tool",
+            "name": "mcp__s__c",
+            "content": _envelope("[4]", *[_image() for _ in range(4)]),
+        },
     ]
 
     eligible = mcp_images.eligible_replay_images(history)
 
     assert eligible[2] == 4 and eligible[1] == 4, eligible
-    assert eligible[0] == mcp_images.DECODE_FAILURE_ALLOWANCE, (
-        "the spare allowance keeps the oldest result as candidates"
-    )
+    assert (
+        eligible[0] == mcp_images.DECODE_FAILURE_ALLOWANCE
+    ), "the spare allowance keeps the oldest result as candidates"
     assert sum(eligible.values()) <= (
         mcp_images.MAX_TOTAL_MODEL_IMAGES + mcp_images.DECODE_FAILURE_ALLOWANCE
     )
