@@ -227,9 +227,7 @@ def _remap(path, notify = True):
         # Heal only while the real prefix directory is absent, so a genuine host mount / user directory at that prefix
         # is never shadowed.
         prefix_is_absent = os.name == "nt" or not os.path.exists(prefix)
-        if (
-            comparison == prefix or comparison.startswith(prefix + "/")
-        ) and prefix_is_absent:
+        if (comparison == prefix or comparison.startswith(prefix + "/")) and prefix_is_absent:
             return _map_onto_cwd(prefix, comparison, notify = notify)
     return path
 
