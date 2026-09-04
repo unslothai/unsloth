@@ -8,6 +8,8 @@ import errno
 import importlib.util
 import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -879,6 +881,18 @@ def test_torch_extension_cache_keeps_an_abi_folder(tmp_path):
     assert pinned.name.startswith(f"py{sys.version_info.major}{sys.version_info.minor}")
 
 
+def _interpreter_prefix() -> str:
+    """The interpreter-and-ABI part of the tag, spelled out here rather than imported.
+
+    Reusing storage_roots' own helper would make every assertion below agree with whatever
+    it happens to produce, so the exact-string tests would stop being able to catch a change
+    in the tag at all.
+    """
+    abi = getattr(sys, "abiflags", "")
+    host = re.sub(r"[^A-Za-z0-9.]+", "-", f"{sys.platform}-{platform.machine() or 'unknown'}")
+    return f"py{sys.version_info.major}{sys.version_info.minor}{abi}_{host}"
+
+
 def test_torch_extension_cache_separates_incompatible_builds(tmp_path):
     sr = _load_storage_roots()
 
@@ -907,8 +921,7 @@ def test_torch_extension_tag_survives_a_missing_torch(tmp_path):
         finally:
             sys.path[:] = saved
 
-    abi = getattr(sys, "abiflags", "")
-    assert tag == f"py{sys.version_info.major}{sys.version_info.minor}{abi}"
+    assert tag == _interpreter_prefix()
 
 
 def test_torch_extension_cache_separates_builds_sharing_one_version_string(tmp_path):
@@ -922,7 +935,7 @@ def test_torch_extension_cache_separates_builds_sharing_one_version_string(tmp_p
             tags.append(sr._torch_runtime_tag())
 
     assert len(set(tags)) == 3, f"builds with different CUDA ABIs shared one dir: {tags}"
-    prefix = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
+    prefix = _interpreter_prefix()
     assert tags[0] == f"{prefix}_cpu_2.9.1"
     assert tags[1] == f"{prefix}_cu126_2.9.1"
     assert tags[2] == f"{prefix}_cu128_2.9.1"
@@ -940,6 +953,36 @@ def test_torch_extension_cache_separates_a_rocm_build_from_a_cpu_build(tmp_path)
 
     assert tags[0] != tags[1], f"a ROCm build shared the CPU extension dir: {tags[0]}"
     assert "rocm6.4.43484-123eb5128" in tags[1]
+
+
+def test_torch_extension_cache_separates_two_host_architectures(tmp_path, monkeypatch):
+    # An arm64 python and a Rosetta x86_64 python on ONE Mac, sharing ONE $HOME, agree on
+    # version_info, abiflags, torch.__version__ and 'cpu'. torch's own py<ver>_<cu_str> folder
+    # gives them the same directory, ninja reads the other one's build as up to date, and the
+    # .so fails to load. Nothing has to be moved between machines for this.
+    sr = _load_storage_roots()
+
+    tags = []
+    for machine in ("arm64", "x86_64"):
+        monkeypatch.setattr(platform, "machine", lambda m = machine: m)
+        with _only_torch(_fake_torch_on_path(tmp_path, machine, "2.9.1")):
+            tags.append(sr._torch_runtime_tag())
+
+    assert tags[0] != tags[1], f"two host architectures shared one extension dir: {tags[0]}"
+    assert "arm64" in tags[0] and "x86-64" in tags[1]
+
+
+def test_torch_extension_cache_survives_an_unnameable_architecture(tmp_path, monkeypatch):
+    # platform.machine() returns "" when the platform cannot answer. The tag has to stay a
+    # usable directory name rather than growing an empty segment.
+    sr = _load_storage_roots()
+
+    monkeypatch.setattr(platform, "machine", lambda: "")
+    with _only_torch(_fake_torch_on_path(tmp_path, "blank", "2.9.1")):
+        tag = sr._torch_runtime_tag()
+
+    assert "__" not in tag and not tag.endswith("_")
+    assert "unknown" in tag
 
 
 def test_torch_extension_cache_separates_a_debug_build(tmp_path):
