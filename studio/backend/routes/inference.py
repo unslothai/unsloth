@@ -18637,32 +18637,37 @@ def _messages_have_input_audio(messages) -> bool:
 
 
 def _normalise_chat_content_parts(payload) -> None:
-    """Lift an ``input_audio`` part onto ``audio_base64``, in place.
+    """Lift the request's ``input_audio`` part onto ``audio_base64``, in place.
 
-    Every audio check downstream reads ``audio_base64``, and an explicit one wins over a part.
-    ``getattr``, because /chat/count_tokens carries that field as an extra rather than declaring it.
+    Everything that makes audio safe to serve reads that field: the capability check that keeps
+    a text-only target from being loaded for it, the size bound, the decoder, the duration limit,
+    and /chat/count_tokens' refusal. So the part is lifted rather than left standing -- a part the
+    field never sees is a recording none of those checks can act on.
 
-    Only the final user turn is lifted, and only that turn's part is removed. The field is
-    positionless and ``_inject_audio_part`` appends to the last user message, so lifting an
-    earlier turn's recording would re-attach it to a later question and the model would answer
-    about the audio instead of the follow-up. Earlier turns keep their part where the caller put
-    it -- it rides through to the model on its own turn the way an image part does, so resending
-    history to ask something the first answer did not cover still has its source material.
+    The field holds one recording and ``_inject_audio_part`` appends it to the last user message,
+    so a recording carried on an earlier turn is replayed on the latest one. That loses the turn
+    it was authored on, which is the price of a positionless field; carrying several recordings
+    with their turns is a larger change than this, so two of them are refused rather than silently
+    reduced to one. An explicit ``audio_base64`` still wins over a part.
     """
-    last_user = None
-    for index, msg in enumerate(payload.messages):
-        if msg.role == "user":
-            last_user = index
-    lifted: Optional[str] = None
-    for index, msg in enumerate(payload.messages):
-        if index != last_user or not isinstance(msg.content, list):
+    parts = [
+        (index, part)
+        for index, msg in enumerate(payload.messages)
+        if isinstance(msg.content, list) and msg.role == "user"
+        for part in msg.content
+        if isinstance(part, InputAudioContentPart)
+    ]
+    if len(parts) > 1:
+        _raise_unsupported_openai_parameter(
+            "messages",
+            "Only one audio recording per request is supported, and this one carries "
+            f"{len(parts)}.",
+        )
+    lifted = parts[0][1].input_audio.data if parts else None
+    for msg in payload.messages:
+        if not isinstance(msg.content, list):
             continue
-        kept = []
-        for part in msg.content:
-            if isinstance(part, InputAudioContentPart):
-                lifted = part.input_audio.data
-                continue
-            kept.append(part)
+        kept = [part for part in msg.content if not isinstance(part, InputAudioContentPart)]
         if len(kept) != len(msg.content):
             msg.content = kept
     if lifted and not getattr(payload, "audio_base64", None):

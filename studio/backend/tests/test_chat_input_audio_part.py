@@ -61,12 +61,17 @@ def test_an_explicit_audio_base64_wins():
     assert payload.audio_base64 == AUDIO_B64
 
 
-def test_the_newest_user_part_wins():
+def test_two_recordings_are_refused_rather_than_reduced_to_one():
+    """``audio_base64`` holds one recording, so a second was silently discarded.
+
+    A request to compare two clips would have been answered from the last one alone.
+    """
     payload = _request(_audio_message(data = "Zmlyc3Q="), _audio_message(data = "c2Vjb25k"))
 
-    _normalise_chat_content_parts(payload)
-
-    assert payload.audio_base64 == "c2Vjb25k"
+    with pytest.raises(HTTPException) as exc:
+        _normalise_chat_content_parts(payload)
+    assert exc.value.status_code == 400
+    assert "one audio recording" in str(exc.value.detail)
 
 
 def test_an_assistant_audio_part_is_not_treated_as_an_attachment():
@@ -253,13 +258,14 @@ def test_the_external_path_refuses_an_unmodelled_part_rather_than_dropping_it():
     assert "'file'" in response.json()["detail"]["error"]["message"]
 
 
-def test_a_recording_from_an_earlier_turn_stays_on_its_own_turn():
-    """``audio_base64`` is positionless and _inject_audio_part appends to the last user turn.
+def test_a_recording_carried_on_an_earlier_turn_is_still_lifted():
+    """Replayed history must reach the field every audio check reads.
 
-    So an earlier turn's recording is neither lifted (which would move it onto the follow-up and
-    have the model answer about the audio instead of the question) nor dropped (which would lose
-    the only source material for a question the first answer did not cover). It stays put and
-    rides to the model on its own turn, the way an image part does.
+    Leaving it standing on its own turn would read better, but nothing downstream inspects the
+    part: the capability check, the size bound, the decoder and /chat/count_tokens' refusal all
+    read ``audio_base64``, so an unlifted recording is one none of them can act on -- a text-only
+    model could be loaded to answer it. The cost is that _inject_audio_part replays it on the
+    latest turn rather than the one it was authored on.
     """
     payload = _request(
         _audio_message(text = "transcribe this"),
@@ -269,21 +275,8 @@ def test_a_recording_from_an_earlier_turn_stays_on_its_own_turn():
 
     _normalise_chat_content_parts(payload)
 
-    assert payload.audio_base64 is None
-    assert [p.type for p in payload.messages[0].content] == ["text", "input_audio"]
-    assert payload.messages[0].content[1].input_audio.data == AUDIO_B64
-
-
-def test_a_recording_on_the_final_turn_is_still_lifted():
-    payload = _request(
-        _audio_message(data = "b2xk", text = "transcribe this"),
-        {"role": "assistant", "content": "It says hello."},
-        _audio_message(text = "and this one?"),
-    )
-
-    _normalise_chat_content_parts(payload)
-
     assert payload.audio_base64 == AUDIO_B64
+    assert [p.type for p in payload.messages[0].content] == ["text"]
 
 
 def test_an_empty_audio_payload_is_refused_rather_than_dropped():
