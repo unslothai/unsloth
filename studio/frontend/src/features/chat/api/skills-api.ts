@@ -22,16 +22,17 @@ export type SkillRecord = {
 type SkillsSnapshot = {
   skills: readonly SkillRecord[];
   loading: boolean;
+  initialized: boolean;
   error: string | null;
 };
 
 const EMPTY_SNAPSHOT: SkillsSnapshot = {
   skills: [],
   loading: false,
+  initialized: false,
   error: null,
 };
 let snapshot = EMPTY_SNAPSHOT;
-let initialized = false;
 let requestGeneration = 0;
 let pending: Promise<readonly SkillRecord[]> | null = null;
 const listeners = new Set<() => void>();
@@ -74,17 +75,16 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
     .then((response) => parseResponse<SkillRecord[]>(response))
     .then((skills) => {
       if (generation === requestGeneration) {
-        initialized = true;
-        publish({ skills, loading: false, error: null });
+        publish({ skills, loading: false, initialized: true, error: null });
       }
       return skills;
     })
     .catch((error: unknown) => {
       if (generation === requestGeneration) {
-        initialized = true;
         publish({
           ...snapshot,
           loading: false,
+          initialized: true,
           error:
             error instanceof Error
               ? error.message
@@ -121,6 +121,7 @@ export async function setSkillEnabled(
         : skill,
     ),
     loading: false,
+    initialized: true,
     error: null,
   });
   channel?.postMessage("changed");
@@ -137,9 +138,9 @@ export function useSkillsCatalog(): SkillsSnapshot {
     () => EMPTY_SNAPSHOT,
   );
   useEffect(() => {
-    if (!initialized && !value.loading)
+    if (!value.initialized && !value.loading)
       void listSkills().catch(() => undefined);
-  }, [value.loading, value.skills.length]);
+  }, [value.initialized, value.loading]);
   return value;
 }
 

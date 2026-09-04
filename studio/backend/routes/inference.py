@@ -4482,21 +4482,26 @@ _AGENT_SKILLS_CACHE_LOCK = threading.Lock()
 _AGENT_SKILLS_CACHE: tuple[float, list[dict]] = (0.0, [])
 
 
+def _invalidate_agent_skills_cache() -> None:
+    global _AGENT_SKILLS_CACHE
+    with _AGENT_SKILLS_CACHE_LOCK:
+        _AGENT_SKILLS_CACHE = (0.0, [])
+
+
 def _enabled_agent_skills() -> list[dict]:
     from core.inference.skills import SkillError, enabled_skills
 
     global _AGENT_SKILLS_CACHE
-    now = time.monotonic()
     with _AGENT_SKILLS_CACHE_LOCK:
         cached_at, cached = _AGENT_SKILLS_CACHE
-        if now - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
+        if time.monotonic() - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
             return cached
         try:
             current = enabled_skills()
         except SkillError as exc:
             logger.warning("Agent Skills unavailable: %s", exc)
             current = []
-        _AGENT_SKILLS_CACHE = (now, current)
+        _AGENT_SKILLS_CACHE = (time.monotonic(), current)
         return current
 
 
@@ -28036,6 +28041,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "web_fetch_20260209": "web_search",
     "python": "python",
     "terminal": "terminal",
+    "read_skill": "read_skill",
 }
 # Server tools that never need a confirmation prompt (read-only / non code-
 # executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).

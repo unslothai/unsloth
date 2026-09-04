@@ -33,7 +33,7 @@ import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides"
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
 
-import { getSkillsSnapshot } from "./skills-api";
+import { getSkillsSnapshot, listSkills } from "./skills-api";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   SANDBOX_FILE_TOOLS,
@@ -1851,6 +1851,11 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+
+  const skillsSnapshot = getSkillsSnapshot();
+  if (!skillsSnapshot.initialized) {
+    await listSkills().catch(() => undefined);
+  }
   const hasEnabledSkills = getSkillsSnapshot().skills.some(
     (skill) => skill.valid && !skill.shadowed && skill.enabled,
   );

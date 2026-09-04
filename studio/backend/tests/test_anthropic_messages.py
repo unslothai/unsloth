@@ -2403,6 +2403,10 @@ class TestAnthropicRequestedStudioTools:
         tools = [{"type": "web_search_20250305", "name": "web_search"}]
         assert _anthropic_requested_studio_tools(tools) == {"web_search"}
 
+    def test_recognizes_read_skill_server_tool_by_type(self):
+        tools = [{"type": "read_skill", "name": "read_skill"}]
+        assert _anthropic_requested_studio_tools(tools) == {"read_skill"}
+
     def test_bare_name_without_type_is_not_treated_as_server_tool(self):
         # Anthropic dispatches server tools by `type`; bare-name matching
         # would let a malformed client tool (missing input_schema) silently

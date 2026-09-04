@@ -51,7 +51,11 @@ def update_skill_enabled(
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, Any]:
     try:
-        return set_skill_enabled(name, payload.enabled)
+        updated = set_skill_enabled(name, payload.enabled)
+        from routes.inference import _invalidate_agent_skills_cache
+
+        _invalidate_agent_skills_cache()
+        return updated
     except SkillNotFoundError as exc:
         raise HTTPException(status_code = 404, detail = str(exc)) from exc
     except SkillError as exc:

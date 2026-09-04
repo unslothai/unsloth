@@ -41,6 +41,26 @@ def isolated_skills(tmp_path, monkeypatch):
     return home, studio
 
 
+def test_enabled_skill_cache_is_fresh_after_slow_discovery(monkeypatch):
+    from routes import inference as inference_routes
+
+    scans = 0
+
+    def discover():
+        nonlocal scans
+        scans += 1
+        return [{"name": "cached"}]
+
+    clock = iter((10.0, 12.0, 12.5))
+    monkeypatch.setattr(skills, "enabled_skills", discover)
+    monkeypatch.setattr(inference_routes.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(inference_routes, "_AGENT_SKILLS_CACHE", (0.0, []))
+
+    assert inference_routes._enabled_agent_skills() == [{"name": "cached"}]
+    assert inference_routes._enabled_agent_skills() == [{"name": "cached"}]
+    assert scans == 1
+
+
 def test_discovers_both_roots_with_agents_precedence(isolated_skills):
     home, _ = isolated_skills
     _write_skill(home, "agents", "shared", description = "Agent copy")
@@ -129,7 +149,8 @@ def test_read_resource_rejects_escaping_symlink(isolated_skills):
     try:
         (root / "link.txt").symlink_to(outside)
     except (OSError, NotImplementedError):
-        pytest.skip("symlinks are unavailable")
+        # Reason: Windows may deny symlink creation without Developer Mode.
+        pytest.skip("symlinks are unavailable on this platform")
 
     with pytest.raises(skills.SkillError, match = "symbolic links"):
         skills.read_skill_resource("reader", "link.txt", home = home)
@@ -155,7 +176,8 @@ def test_read_resource_rejects_link_swapped_during_open(isolated_skills, monkeyp
             try:
                 path.symlink_to(outside)
             except (OSError, NotImplementedError):
-                pytest.skip("symlinks are unavailable")
+                # Reason: Windows may deny symlink creation without Developer Mode.
+                pytest.skip("symlinks are unavailable on this platform")
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", replacing_open)
@@ -179,7 +201,8 @@ def test_read_resource_rejects_skill_root_swapped_after_selection(isolated_skill
         try:
             root.symlink_to(outside, target_is_directory = True)
         except (OSError, NotImplementedError):
-            pytest.skip("symlinks are unavailable")
+            # Reason: Windows may deny symlink creation without Developer Mode.
+            pytest.skip("symlinks are unavailable on this platform")
         return record, path
 
     monkeypatch.setattr(skills, "_selected_skill", replacing_selected_skill)
@@ -244,6 +267,15 @@ def test_authenticated_list_and_toggle_routes(isolated_skills, monkeypatch):
     response = client.put("/api/skills/api-skill/enabled", json = {"enabled": False})
     assert response.status_code == 200
     assert response.json()["enabled"] is False
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(
+        inference_routes, "_AGENT_SKILLS_CACHE", (float("inf"), [{"name": "stale"}])
+    )
+    response = client.put("/api/skills/api-skill/enabled", json = {"enabled": True})
+    assert response.status_code == 200
+    assert inference_routes._AGENT_SKILLS_CACHE == (0.0, [])
     assert client.put("/api/skills/api-skill/enabled", json = {"enabled": "false"}).status_code == 422
 
 
