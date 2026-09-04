@@ -1427,3 +1427,118 @@ def test_pip_keeps_resolving_a_relative_requirements_file_from_the_cwd(shim, mon
     ran = _full_argv(shim, ["pip", "install", "-r", "requirements.txt"])
     assert ran is not None, "the shim ran nothing"
     assert shim._marker_path.read_text() == "4.99.0"
+
+
+# A local project target is a filesystem lookup too: _classify_flag_target -> _canon
+# -> _local_project_name stats the directory to learn the project's real name. uv
+# stats it from ITS working directory, so resolving it from ours reports a protected
+# project as unknown and forwards it. That one is silent where the requirements-file
+# case is loud, because the injected constraint only rejects a version MISMATCH: a
+# local checkout whose version equals the baked one resolves cleanly and installs.
+
+
+def _local_project(
+    root,
+    name,
+    version = "2026.6.9",
+):
+    proj = root / name
+    proj.mkdir(parents = True)
+    (proj / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\nversion = "{version}"\n', encoding = "utf-8"
+    )
+    return proj
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda d: ["uv", "pip", "--directory", d, "install", "-e", "./unsloth"],
+        lambda d: ["uv", "pip", "--directory", d, "install", "./unsloth"],
+        lambda d: ["uv", "--directory", d, "pip", "install", "-e", "./unsloth"],
+        lambda d: ["uv", "pip", "install", "--directory", d, "-e", "./unsloth"],
+    ],
+    ids = ["editable", "positional", "before-pip", "after-install"],
+)
+def test_a_local_protected_project_is_found_in_uvs_working_directory(
+    shim, monkeypatch, tmp_path, build
+):
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    _local_project(there, "unsloth")
+    monkeypatch.chdir(here)
+
+    ran = _full_argv(shim, build(str(there)))
+    assert ran is None or not any(
+        "unsloth" in a for a in ran
+    ), f"the baked unsloth was forwarded for replacement: {ran}"
+
+
+def test_the_working_dir_env_also_finds_a_local_protected_project(shim, monkeypatch, tmp_path):
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    _local_project(there, "unsloth")
+    monkeypatch.chdir(here)
+    monkeypatch.setenv("UV_WORKING_DIR", str(there))
+
+    ran = _full_argv(shim, ["uv", "pip", "install", "-e", "./unsloth"])
+    assert ran is None or not any(
+        "unsloth" in a for a in ran
+    ), f"the baked unsloth was forwarded for replacement: {ran}"
+
+
+def test_a_local_project_relative_to_the_cwd_is_still_classified(shim, monkeypatch, tmp_path):
+    """The ordinary no-directory case must keep working: pip never changes directory
+    and uv without --directory resolves from the cwd exactly as we do."""
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    here = tmp_path / "here"
+    here.mkdir()
+    _local_project(here, "unsloth")
+    monkeypatch.chdir(here)
+
+    ran = _full_argv(shim, ["pip", "install", "-e", "./unsloth"])
+    assert ran is None or not any(
+        "unsloth" in a for a in ran
+    ), f"the baked unsloth was forwarded for replacement: {ran}"
+
+
+def test_an_unrelated_local_project_still_reaches_the_real_tool(shim, monkeypatch, tmp_path):
+    """Resolving from uv's directory must not start dropping things: a local project
+    that is not protected still has to be installed."""
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    _local_project(there, "mytool", version = "0.1.0")
+    monkeypatch.chdir(here)
+
+    ran = _full_argv(shim, ["uv", "pip", "--directory", str(there), "install", "-e", "./mytool"])
+    assert ran is not None and any(
+        "mytool" in a for a in ran
+    ), f"an unprotected local project was dropped: {ran}"
+
+
+@pytest.mark.parametrize(
+    "spec",
+    ["./unsloth#subdirectory=sub", "./unsloth#foo=1"],
+    ids = ["subdirectory", "unknown-fragment"],
+)
+def test_a_fragment_does_not_hide_a_local_protected_project(shim, monkeypatch, tmp_path, spec):
+    """The stat has to happen on the path alone. `#egg=` is recognised earlier, but
+    any other fragment reaches the directory lookup still attached, and leaving it on
+    makes the stat miss and forwards the project for replacement."""
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    _local_project(there, "unsloth")
+    monkeypatch.chdir(here)
+
+    ran = _full_argv(shim, ["uv", "pip", "--directory", str(there), "install", "-e", spec])
+    assert ran is None or not any(
+        "unsloth" in a for a in ran
+    ), f"the baked unsloth was forwarded for replacement: {ran}"

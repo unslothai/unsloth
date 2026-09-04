@@ -331,7 +331,12 @@ def _local_project_name(token):
     """Name pip/uv would build for a local project dir, falling back to the basename
     only when the dir is an installable project at all. None for a metadata-less dir,
     so ordinary paths pass through."""
-    path = token.split("#", 1)[0]
+    # from uv's working directory, not ours: `uv pip --directory X install -e ./p`
+    # stats ./p from X, so resolving it here against our own cwd misses and reports
+    # the project as unknown. That is silent, and worse than the requirements-file
+    # case, because the injected constraint only rejects a version MISMATCH: a local
+    # checkout whose version equals the baked one installs and replaces it.
+    path = _resolve_read_path(token.split("#", 1)[0])
     if not os.path.isdir(path):
         return None
     _pyproject = os.path.join(path, "pyproject.toml")
