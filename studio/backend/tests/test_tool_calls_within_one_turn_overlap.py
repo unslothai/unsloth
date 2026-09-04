@@ -534,3 +534,44 @@ class TestTheLocalGgufLoopOverlapsToo:
         # And the batch as a whole must not be handed more than one call's worth of the
         # window three times over.
         assert sum(given) <= max(given) * 3.3
+
+
+class TestTheRoundLevelLimitsThatAreReadWhileItIsPrepared:
+    """Anything the loop reads per call and updates per RESULT is a hazard here.
+
+    An overlapped round prepares every call before any of them finishes, so a counter that
+    is read while preparing and written when settling is consulted at its starting value
+    every time. Two of these were found by running it: the controller's duplicate ledger,
+    which is why a repeated call keeps the round sequential, and the RAG search cap below.
+    """
+
+    def test_the_search_cap_is_not_exceeded_by_a_single_round(self):
+        from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN
+        assert RAG_MAX_SEARCHES_PER_TURN >= 1
+
+    def test_the_cap_counts_launches_not_finishes(self, monkeypatch):
+        """More searches in one turn than the cap allows, all distinct so the round overlaps.
+
+        Counting them as they settle lets the whole round through, because every call read
+        the counter before any of them had incremented it.
+        """
+        from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_TOOLS
+
+        tool = sorted(RAG_SEARCH_TOOLS)[0]
+        ran: list = []
+
+        def _execute(name, arguments, **_kwargs):
+            ran.append(arguments.get("query"))
+            return f"RESULT<{arguments.get('query')}>"
+
+        n = RAG_MAX_SEARCHES_PER_TURN + 2
+        _gguf_events(
+            monkeypatch,
+            [(f"call_{i}", tool, {"query": f"q{i}"}) for i in range(n)],
+            _execute,
+            tools = [{"type": "function", "function": {"name": tool}}],
+        )
+        assert len(ran) <= RAG_MAX_SEARCHES_PER_TURN, (
+            f"{len(ran)} searches ran against a cap of {RAG_MAX_SEARCHES_PER_TURN}: the "
+            "cap was read while the round was being prepared and written when it settled"
+        )

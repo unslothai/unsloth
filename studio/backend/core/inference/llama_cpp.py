@@ -31927,6 +31927,20 @@ class LlamaCppBackend:
                                     _starved_call,
                                 )
                             )
+                            # Counted HERE, not when it settles. The cap above is read once
+                            # per call while the round is being prepared, and every call in
+                            # an overlapped round is prepared before any of them finishes:
+                            # counting at the end lets four searches through a cap of three,
+                            # which is the same shape of bug as deciding a duplicate before
+                            # its first result exists.
+                            if decision.tool_name in RAG_SEARCH_TOOLS:
+                                _kb_search_count += 1
+                            # Spent by THIS call, for the same reason. The settle path
+                            # clears it too, which is then a no-op; leaving it set until
+                            # then would offer the forced choice to the next call in the
+                            # round as though the first had not taken it.
+                            if _forced_tool_call_pending:
+                                _forced_tool_call_pending = False
                             continue
                         try:
                             result = yield from _tool_stream
@@ -31987,8 +32001,8 @@ class LlamaCppBackend:
                                 _tool_exc,
                             )
                             result = f"Error: tool raised an exception: {_tool_exc}"
-                    if _p_decision.tool_name in RAG_SEARCH_TOOLS:
-                        _kb_search_count += 1
+                    # Already counted at launch, above. A capped call is not counted at
+                    # all, on either path: it ran no search.
                     yield from _settle_tool_call(_p_decision, result, _p_budget, _p_starved)
                 _pending_calls = []
 
