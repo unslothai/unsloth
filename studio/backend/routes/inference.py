@@ -25303,7 +25303,9 @@ async def _openai_catalog_objects() -> list[dict]:
         key = str(row.get("id", "")).lower()
         if not key or key in ambiguous_quants:
             return
-        found_key = tuple(found)
+        # Compare the way `_quant_list` dedupes, or two copies that hold the same
+        # files under different spellings read as a disagreement and lose their list.
+        found_key = tuple(q.lower() for q in found)
         seen = quants_seen.get(key)
         if seen is None:
             quants_seen[key] = found_key

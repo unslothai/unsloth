@@ -653,3 +653,21 @@ def test_a_quant_spelled_two_ways_is_listed_once(monkeypatch):
     _resident_repo_catalog(monkeypatch, on_disk = ("Q4_K_M", "BF16"), resident = "q4_k_m")
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["org/Foo"]["quants"] == ["q4_k_m", "BF16"]
+
+
+def test_copies_that_agree_apart_from_spelling_are_not_ambiguous(monkeypatch):
+    # Two copies holding the same files under different label casing agree; treating
+    # that as a conflict would drop a quant list both copies can serve.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("bf16",)]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
