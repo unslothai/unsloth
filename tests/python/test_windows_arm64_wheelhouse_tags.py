@@ -101,9 +101,9 @@ class TestWheelMatchesInterpreter:
         ft_wheel = _wheel("cffi", exact, f"{exact}t")
         assert ips._wheel_matches_interpreter(ft_wheel) is bool(gil_disabled)
         # And the forward-compatible spelling stays gated the same way.
-        assert ips._wheel_matches_interpreter(
-            _wheel("cffi", f"cp{major}2", "abi3")
-        ) is (not gil_disabled)
+        assert ips._wheel_matches_interpreter(_wheel("cffi", f"cp{major}2", "abi3")) is (
+            not gil_disabled
+        )
 
     def test_foreign_platform_does_not_match(self, ips):
         major, minor = sys.version_info[:2]

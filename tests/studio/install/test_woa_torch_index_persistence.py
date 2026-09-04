@@ -795,14 +795,18 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         start = text.index("$_arm64CudaOptOut =")
         tail = '} else { @("windows-cuda") }'
         end = text.index(tail, start) + len(tail)
-        script = "\n".join([
-            "function Test-WinArm64Venv { $true }",
-            text[start:end].strip(),
-            "Write-Output ($_nvidiaKinds -join ' ')",
-        ])
+        script = "\n".join(
+            [
+                "function Test-WinArm64Venv { $true }",
+                text[start:end].strip(),
+                "Write-Output ($_nvidiaKinds -join ' ')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
             env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value},
         )
         assert done.returncode == 0, done.stderr
@@ -817,7 +821,10 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         start = source.index("def resolve_asset_choice(")
         body = source[start:]
         marker = body.index("host.is_windows and host.is_arm64")
-        assert 'published_asset_choice_for_kind(release, "windows-arm64")' in body[marker : marker + 4000]
+        assert (
+            'published_asset_choice_for_kind(release, "windows-arm64")'
+            in body[marker : marker + 4000]
+        )
 
     def test_widening_does_not_strand_anyone_on_cpu(self):
         """
@@ -829,9 +836,9 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         source = STACK_LLAMA.read_text(encoding = "utf-8")
         raise_at = source.index("raise ExistingInstallSatisfied(attempt, tried_fallback)")
         window = source[max(0, raise_at - 1200) : raise_at]
-        assert "choice = attempt" in window, (
-            "the reuse check is per attempt; a plan-level one would pin the user to CPU"
-        )
+        assert (
+            "choice = attempt" in window
+        ), "the reuse check is per attempt; a plan-level one would pin the user to CPU"
 
     def test_the_falsy_spellings_match_the_python_helper(self):
         """One vocabulary; the two must not drift apart."""
@@ -1099,7 +1106,8 @@ class TestManifestWriterAndReaderAcceptTheSameSet:
     @requires_pwsh
     def test_and_the_reader_still_refuses_it(self, tmp_path: pathlib.Path):
         (tmp_path / "unsloth_install_manifest.json").write_text(
-            json.dumps({"schema": 1, "woa_torch_index": self.PORTED}), encoding = "utf-8",
+            json.dumps({"schema": 1, "woa_torch_index": self.PORTED}),
+            encoding = "utf-8",
         )
         assert TestReadSide._invoke(tmp_path) == ""
 
@@ -1160,19 +1168,23 @@ class TestTheSuppliedPyarrowWheelIsValidated:
     def _probe(wheel: str) -> str:
         """Get-WoaPyarrowSource with its network branches stubbed out."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            "function substep { param($m, $c) }",
-            "function Join-UrlPath { param($Base, $Path) return $Base }",
-            "function Test-WoaWheelhouseIsLocal { $false }",
-            "function Invoke-RestMethod { throw 'no network in this test' }",
-            "$script:WoaWheelhouse = 'https://example.test/wheels'",
-            _function_source(text, "Get-WoaPyarrowSource"),
-            f"$env:UNSLOTH_PYARROW_WHEEL = '{wheel}'",
-            "Write-Output \"[$(Get-WoaPyarrowSource -PythonMinor '3.13')]\"",
-        ])
+        script = "\n".join(
+            [
+                "function substep { param($m, $c) }",
+                "function Join-UrlPath { param($Base, $Path) return $Base }",
+                "function Test-WoaWheelhouseIsLocal { $false }",
+                "function Invoke-RestMethod { throw 'no network in this test' }",
+                "$script:WoaWheelhouse = 'https://example.test/wheels'",
+                _function_source(text, "Get-WoaPyarrowSource"),
+                f"$env:UNSLOTH_PYARROW_WHEEL = '{wheel}'",
+                "Write-Output \"[$(Get-WoaPyarrowSource -PythonMinor '3.13')]\"",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip().splitlines()[-1][1:-1]
@@ -1188,7 +1200,7 @@ class TestCallerResolverConfigurationSurvives:
 
     def test_the_overrides_are_folded_not_replaced(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        block = text[text.index("$_woaOwnNames = @{}"):][:2000]
+        block = text[text.index("$_woaOwnNames = @{}") :][:2000]
         assert "$env:UV_OVERRIDE -split" in block, "the caller's files are read"
         assert "$WoaOverrideLines += $_woaOvLine" in block, "and their lines kept"
         assert "$_woaOwnNames.ContainsKey($_woaOvName)" in block, (
@@ -1198,12 +1210,13 @@ class TestCallerResolverConfigurationSurvives:
 
     def test_the_find_links_are_appended_with_the_right_separators(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert '$env:UV_FIND_LINKS = if ($_woaCallerUvLinks) { "$WoaWheelDir,$_woaCallerUvLinks" }' in text, (
-            "UV_FIND_LINKS is comma-separated"
-        )
-        assert '"$_woaSafeWheelDir $_woaCallerPipLinks"' in text, (
-            "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
-        )
+        assert (
+            '$env:UV_FIND_LINKS = if ($_woaCallerUvLinks) { "$WoaWheelDir,$_woaCallerUvLinks" }'
+            in text
+        ), "UV_FIND_LINKS is comma-separated"
+        assert (
+            '"$_woaSafeWheelDir $_woaCallerPipLinks"' in text
+        ), "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
 
     def test_ours_is_searched_first(self):
         """A win_arm64 wheel staged for this host must win a tie against the same name."""

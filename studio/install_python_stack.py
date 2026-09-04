@@ -5414,8 +5414,7 @@ def _wheel_matches_interpreter(filename: str) -> bool:
             # stable ABI (CPython #111506, PEP 703); PEP 803 adds a separate "abi3t" tag
             # for them in 3.15, which is outside this project's requires-python.
             if py_tag == this_cpython and (
-                abi_tag in ("none", this_abi)
-                or (abi_tag == "abi3" and not free_threaded)
+                abi_tag in ("none", this_abi) or (abi_tag == "abi3" and not free_threaded)
             ):
                 return True
             if abi_tag == "none":
