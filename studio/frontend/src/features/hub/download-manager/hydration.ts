@@ -343,6 +343,7 @@ export function hydrateDownloadManager(): void {
       ...(job.inventoryKind ? { inventoryKind: job.inventoryKind } : {}),
       ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
       ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+      ...(job.presentation ? { presentation: job.presentation } : {}),
       expectedBytes: job.expectedBytes,
     };
     void probeHydratedJob(job.key, req, 0);

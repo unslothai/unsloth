@@ -22,6 +22,10 @@ export interface ManagedDownload {
   completedBytes: number;
   completeOnDisk: boolean;
   expectedBytes: number;
+  /** Optional display scope when an atomic model plan is transferring only one
+   *  missing companion. Counters remain plan-wide; the panel subtracts the
+   *  already-cached prefix for an honest artifact-sized progress bar. */
+  presentation?: DownloadPresentation;
   fraction: number;
   bytesPerSec: number;
   etaSeconds: number;
@@ -45,10 +49,17 @@ export interface DownloadRequest {
   variant: string | null;
   inventoryKind?: Exclude<InventoryHint["kind"], "dataset">;
   expectedBytes: number;
+  presentation?: DownloadPresentation;
   scopeId?: string | null;
   files?: string[];
   checkpoint?: boolean;
   callerToast?: CallerToast;
+}
+
+export interface DownloadPresentation {
+  label: string;
+  filename: string;
+  expectedBytes: number;
 }
 
 export interface CallerToast {
