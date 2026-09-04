@@ -27573,7 +27573,13 @@ class LlamaCppBackend:
     # ── Generation (proxy to llama-server) ────────────────────────
 
     @contextlib.contextmanager
-    def _open_stream(self, url: str, payload: dict, cancel_event, preempt_event = None):
+    def _open_stream(
+        self,
+        url: str,
+        payload: dict,
+        cancel_event,
+        preempt_event = None,
+    ):
         """Open a streaming POST to llama-server, retrying through prefill, and
         yield ``(response, first_token_deadline)`` once a 200 lands. Owns the
         httpx.Client + auth headers for the stream's lifetime; raises
@@ -28320,7 +28326,9 @@ class LlamaCppBackend:
 
         try:
             with self._open_stream(
-                url, payload, cancel_event,
+                url,
+                payload,
+                cancel_event,
                 # Conditional, never `preempt_event = preempt_event`. A test guards this
                 # and names the failure it is guarding: a monkeypatched double with the
                 # old signature must never be handed the kwarg.
@@ -28661,7 +28669,7 @@ class LlamaCppBackend:
         return max(0, (len(visible or "") + len(reasoning or "")) // 4)
 
     def _assemble_preempt_resume(
-        self, conversation, checkpoint, content_accum, reasoning_accum,
+        self, conversation, checkpoint, content_accum, reasoning_accum
     ) -> bool:
         """Put a paused attempt's partial back so the next one continues it.
 
@@ -28706,11 +28714,13 @@ class LlamaCppBackend:
                     "reasoning_content": prior + reasoning_accum,
                 }
             else:
-                conversation.append({
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": reasoning_accum,
-                })
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": reasoning_accum,
+                    }
+                )
             return True
 
         return False
@@ -31873,12 +31883,16 @@ class LlamaCppBackend:
                 # token already takes.
                 try:
                     _resume_assembled = self._assemble_preempt_resume(
-                        conversation, _checkpoint, content_accum, reasoning_accum,
+                        conversation,
+                        _checkpoint,
+                        content_accum,
+                        reasoning_accum,
                     )
                 except Exception:
                     logger.warning(
                         "Could not assemble a preemption resume; re-issuing the attempt "
-                        "whole and continuing", exc_info = True,
+                        "whole and continuing",
+                        exc_info = True,
                     )
                     _resume_assembled = False
                 continue_final_message = _resume_assembled or continue_final_message

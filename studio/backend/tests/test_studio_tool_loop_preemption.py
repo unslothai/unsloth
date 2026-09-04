@@ -30,7 +30,11 @@ from core.inference.studio_tool_loop import (
 )
 
 
-def _sse(delta = None, finish = None, **extra) -> str:
+def _sse(
+    delta = None,
+    finish = None,
+    **extra,
+) -> str:
     choice: dict = {"index": 0, "delta": delta or {}}
     if finish is not None:
         choice["finish_reason"] = finish
@@ -98,7 +102,12 @@ class PausingTransport:
     heals_text_tool_calls = True
     sanitizes_provider_frames = False
 
-    def __init__(self, turns, signal, request_on_turn: int = 0):
+    def __init__(
+        self,
+        turns,
+        signal,
+        request_on_turn: int = 0,
+    ):
         self.turns = [list(turn) for turn in turns]
         self.signal = signal
         self.request_on_turn = request_on_turn
@@ -108,9 +117,7 @@ class PausingTransport:
 
     def stream(self, *, messages, tools, tool_choice, cancel_event):
         turn_index = len(self.requests)
-        self.requests.append(
-            {"messages": [dict(m) for m in messages], "tools": tools}
-        )
+        self.requests.append({"messages": [dict(m) for m in messages], "tools": tools})
         self.visible_at_turn_start.append(self.signal.is_set())
         lines = self.turns.pop(0) if self.turns else [_DONE]
         should_request = turn_index == self.request_on_turn
@@ -139,7 +146,13 @@ def executed(monkeypatch):
     return calls
 
 
-def _run(transport, *, signal, tools = None, **policy_kwargs):
+def _run(
+    transport,
+    *,
+    signal,
+    tools = None,
+    **policy_kwargs,
+):
     fields = {
         "tools": tools if tools is not None else [WEB],
         "max_calls": 25,
@@ -205,9 +218,7 @@ class TestTheToolIsRunExactlyOnce:
         _run(transport, signal = signal)
 
         assert seen_during_execution, "the tool never ran"
-        assert not any(seen_during_execution), (
-            "a pause was visible while a tool was executing"
-        )
+        assert not any(seen_during_execution), "a pause was visible while a tool was executing"
 
     def test_the_request_is_deferred_not_dropped(self, executed):
         """Deferring is only safe because nothing is lost by it."""
@@ -233,9 +244,9 @@ class TestWhereThePauseLands:
         _run(transport, signal = signal)
         assert len(transport.visible_at_turn_start) >= 2
         assert transport.visible_at_turn_start[0] is False
-        assert transport.visible_at_turn_start[1] is True, (
-            "the deferred pause should be visible by the next round's stream"
-        )
+        assert (
+            transport.visible_at_turn_start[1] is True
+        ), "the deferred pause should be visible by the next round's stream"
 
     def test_a_turn_with_no_calls_never_opens_a_window(self, executed):
         """Nothing is executing, so there is nothing to protect and a pause may

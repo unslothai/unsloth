@@ -50,9 +50,7 @@ class _SimChat:
         self.resident = participant.tokens
         self.remaining = 0
         self.state = (
-            "parked"
-            if participant.state == ParticipantState.PARKED_ON_TOOL
-            else "decoding"
+            "parked" if participant.state == ParticipantState.PARKED_ON_TOOL else "decoding"
         )
 
 
@@ -77,25 +75,20 @@ class TestTheShippedOrderIsTheBenchmarkedOne:
             controller.register(
                 f"gen{i}",
                 tokens = tokens,
-                state = (
-                    ParticipantState.PARKED_ON_TOOL if parked else ParticipantState.DECODING
-                ),
+                state = (ParticipantState.PARKED_ON_TOOL if parked else ParticipantState.DECODING),
             )
             population.append(i)
 
         # BEFORE the sweep: plan_preemptions marks each victim PREEMPTING, so reading
         # state afterwards loses the parked flag and makes a correct implementation look
         # like a divergence. Cost 31 failing tests before it was spotted.
-        sim_chats = [
-            _SimChat(controller.participant(f"gen{i}"), i) for i in population
-        ]
+        sim_chats = [_SimChat(controller.participant(f"gen{i}"), i) for i in population]
 
         victims = [p.gen_id for p in controller.plan_preemptions(needed = ceiling)]
         if not victims:
             pytest.skip("this population never crossed the watermark")
         expected = [
-            f"gen{c.cid}"
-            for c in sorted(sim_chats, key = preempt_sim.POLICIES["newest_first"])
+            f"gen{c.cid}" for c in sorted(sim_chats, key = preempt_sim.POLICIES["newest_first"])
         ]
         # The sweep stops once it fits and always leaves one holder, so compare the
         # prefix it actually took rather than the whole ordering.
@@ -107,14 +100,11 @@ class TestTheShippedOrderIsTheBenchmarkedOne:
     def test_parked_holders_come_first_in_both(self):
         controller = _controller()
         controller.register("decoding_new", tokens = 3000)
-        controller.register(
-            "parked_old", tokens = 3000, state = ParticipantState.PARKED_ON_TOOL
-        )
+        controller.register("parked_old", tokens = 3000, state = ParticipantState.PARKED_ON_TOOL)
         controller.register("decoding_newest", tokens = 3000)
         snapshot = controller.snapshot()
         victims = [
-            p.gen_id
-            for p in controller.plan_preemptions(needed = snapshot.budget - snapshot.buffer)
+            p.gen_id for p in controller.plan_preemptions(needed = snapshot.budget - snapshot.buffer)
         ]
         assert victims[0] == "parked_old", (
             "a chat holding cells while consuming no compute is the cheapest room to "
@@ -135,6 +125,6 @@ class TestTheShippedOrderIsTheBenchmarkedOne:
             target_hi = 14000,
             evict_latency = 2,
         )
-        assert rows["newest_first"]["makespan"] <= rows["largest_first"]["makespan"], (
-            "largest-first now wins on makespan; the shipped policy should be revisited"
-        )
+        assert (
+            rows["newest_first"]["makespan"] <= rows["largest_first"]["makespan"]
+        ), "largest-first now wins on makespan; the shipped policy should be revisited"

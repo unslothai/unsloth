@@ -49,14 +49,11 @@ def _backend(*, window, total, slots):
 
 def _budget(backend):
     from routes.inference import _openai_llama_admission_budget
-
     return _openai_llama_admission_budget(backend)
 
 
 def _enforced(payload, backend):
-    return _openai_llama_admission_enforced_max_tokens(
-        payload, request = None, llama_backend = backend
-    )
+    return _openai_llama_admission_enforced_max_tokens(payload, request = None, llama_backend = backend)
 
 
 class TestTheInvariant:
@@ -85,9 +82,9 @@ class TestTheInvariant:
             payload = _chat(max_tokens = total)
             enforced = _enforced(payload, backend)
             assert enforced is not None
-            assert _prompt_tokens(payload) + enforced <= total, (
-                f"{total}: a single request may occupy more than the whole window"
-            )
+            assert (
+                _prompt_tokens(payload) + enforced <= total
+            ), f"{total}: a single request may occupy more than the whole window"
 
     def test_it_holds_for_a_long_prompt(self):
         backend = _backend(window = 16384, total = 16384, slots = 4)
@@ -100,9 +97,9 @@ class TestTheInvariant:
         """The point of the change: a chat is no longer rationed by the slot count."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         enforced = _enforced(_chat(max_tokens = 16384), backend)
-        assert enforced > 16384 // 4 * 3, (
-            f"permitted {enforced} still looks like a share of the cache"
-        )
+        assert (
+            enforced > 16384 // 4 * 3
+        ), f"permitted {enforced} still looks like a share of the cache"
 
     def test_it_holds_at_other_slot_counts(self):
         for slots in (2, 3, 4, 8):
@@ -190,7 +187,6 @@ class TestTheEdges:
 
 def _prompt_tokens(payload):
     from routes.inference import _openai_llama_admission_prompt_tokens
-
     return _openai_llama_admission_prompt_tokens(payload) or 0
 
 
@@ -209,7 +205,6 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         from pathlib import Path
 
         import core.inference.llama_cpp as llama_cpp
-
         return Path(llama_cpp.__file__).read_text()
 
     def test_both_payload_sites_apply_the_allowance(self):
@@ -217,9 +212,9 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         applied = source.count(
             'payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)'
         )
-        assert applied == 2, (
-            f"expected the plain stream and the tool loop to bound the wire cap, found {applied}"
-        )
+        assert (
+            applied == 2
+        ), f"expected the plain stream and the tool loop to bound the wire cap, found {applied}"
 
     def test_the_loop_budget_never_sees_it(self):
         """`_loop_budget_left` answers "did the CALLER cap this", and an admission bound
@@ -228,20 +223,19 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         start = next(i for i, l in enumerate(lines) if "def _loop_budget_left" in l)
         indent = len(lines[start]) - len(lines[start].lstrip())
         body = []
-        for line in lines[start + 1:]:
+        for line in lines[start + 1 :]:
             if line.strip() and (len(line) - len(line.lstrip())) <= indent:
                 break
             body.append(line)
         assert body, "could not read the body of _loop_budget_left"
-        assert "admission_output_allowance" not in "\n".join(body), (
-            "the admission bound leaked into the caller's continuation budget"
-        )
+        assert "admission_output_allowance" not in "\n".join(
+            body
+        ), "the admission bound leaked into the caller's continuation budget"
 
     def test_both_entry_points_accept_it(self):
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
-
         for name in ("generate_chat_completion", "generate_chat_completion_with_tools"):
             params = inspect.signature(getattr(LlamaCppBackend, name)).parameters
             assert "admission_output_allowance" in params, name
@@ -261,7 +255,6 @@ class TestChargedAndPermittedCannotDrift:
 
     def _charged(self, budget, share, prompt):
         from routes.inference import _openai_llama_admission_output_allowance
-
         allowance = _openai_llama_admission_output_allowance(
             None,
             budget = budget,
@@ -321,9 +314,9 @@ class TestChargedAndPermittedCannotDrift:
                 charged = self._charged(budget, share, prompt)
                 # It must still be cheap enough that a full capacity fits, which is the
                 # property that actually bounds how many chats are admitted at once.
-                assert charged * slots <= budget or charged <= share, (
-                    f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
-                )
+                assert (
+                    charged * slots <= budget or charged <= share
+                ), f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
                 # And it must not silently become the permission again.
                 assert charged < prompt + max(1, budget - prompt)
 
@@ -332,6 +325,6 @@ class TestChargedAndPermittedCannotDrift:
         for budget, slots in ((16384, 4), (4096, 4), (32768, 8), (262144, 4)):
             share = budget // slots
             charged = self._charged(budget, share, 8)
-            assert charged * slots <= budget, (
-                f"budget={budget} slots={slots}: {slots} small chats charge {charged * slots}"
-            )
+            assert (
+                charged * slots <= budget
+            ), f"budget={budget} slots={slots}: {slots} small chats charge {charged * slots}"

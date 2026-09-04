@@ -31,9 +31,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 
 def _delta(content: str) -> str:
-    return (
-        "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
-    )
+    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
 
 
 def _finish(reason: str = "stop") -> str:
@@ -51,7 +49,14 @@ def _done() -> str:
 class _Recorder:
     """A backend whose stream pauses itself partway through chosen attempts."""
 
-    def __init__(self, monkeypatch, streams, *, signal, pause_attempts = (0,)):
+    def __init__(
+        self,
+        monkeypatch,
+        streams,
+        *,
+        signal,
+        pause_attempts = (0,),
+    ):
         self.payloads: list[dict] = []
         self.signal = signal
         self.pause_attempts = set(pause_attempts)
@@ -207,8 +212,9 @@ class TestAPlainChatPauses:
             ],
             signal = signal,
         )
-        chunks = [c for c in _run(recorder.backend, signal = signal, policy = policy)
-                  if isinstance(c, str)]
+        chunks = [
+            c for c in _run(recorder.backend, signal = signal, policy = policy) if isinstance(c, str)
+        ]
         assert "".join(chunks).count("Once upon a time") == 1
 
 

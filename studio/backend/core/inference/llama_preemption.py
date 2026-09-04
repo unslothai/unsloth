@@ -46,6 +46,7 @@ _log = get_logger(__name__)
 PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
 DEFAULT_PREEMPT_ENABLED = True
 
+
 # Room held clear of the budget. A commitment is an estimate, and the cost of being a
 # little wrong is the crash this module exists to prevent, so the last few per cent are
 # never handed out.
@@ -392,19 +393,23 @@ class ParticipantState:
 
 
 # Holds KV at llama-server, so it counts against the budget.
-_HOLDS_KV = frozenset({
-    ParticipantState.DECODING,
-    ParticipantState.PARKED_ON_TOOL,
-    ParticipantState.TOOLS_RUNNING,
-    ParticipantState.PREEMPTING,
-})
+_HOLDS_KV = frozenset(
+    {
+        ParticipantState.DECODING,
+        ParticipantState.PARKED_ON_TOOL,
+        ParticipantState.TOOLS_RUNNING,
+        ParticipantState.PREEMPTING,
+    }
+)
 
 # May be asked to stop. QUEUED holds nothing yet, PAUSED already stopped, DONE is gone,
 # and TOOLS_RUNNING is excluded for the reason on its constant.
-_PREEMPTABLE = frozenset({
-    ParticipantState.DECODING,
-    ParticipantState.PARKED_ON_TOOL,
-})
+_PREEMPTABLE = frozenset(
+    {
+        ParticipantState.DECODING,
+        ParticipantState.PARKED_ON_TOOL,
+    }
+)
 # PREEMPTING is deliberately absent: it has already been asked and asking twice would
 # double-count the room its pause is going to free.
 
@@ -414,7 +419,11 @@ def preemption_enabled() -> bool:
 
 
 def preemption_buffer_tokens(
-    budget: int, *, draft_tokens: int = 0, slots: int = 1, batch_tokens: int = 0
+    budget: int,
+    *,
+    draft_tokens: int = 0,
+    slots: int = 1,
+    batch_tokens: int = 0,
 ) -> int:
     """Tokens held clear of ``budget``. Zero for an unknown budget, which disables it.
 
@@ -541,8 +550,17 @@ class PreemptionController:
     """
 
     __slots__ = (
-        "key", "_lock", "_participants", "_seq", "_epoch_winner", "_budget",
-        "_kv_unified", "_draft_tokens", "_slots", "_batch_tokens", "_resident",
+        "key",
+        "_lock",
+        "_participants",
+        "_seq",
+        "_epoch_winner",
+        "_budget",
+        "_kv_unified",
+        "_draft_tokens",
+        "_slots",
+        "_batch_tokens",
+        "_resident",
         "_reclaimable",
         "_residency_probe",
         "_drift_logged_at",
@@ -768,9 +786,7 @@ class PreemptionController:
         """The arithmetic behind `room_for`, callable by a holder of the lock."""
         ceiling = max(0, self._budget - self._buffer_locked())
         ledger_others = sum(
-            p.tokens
-            for gid, p in self._participants.items()
-            if p.holds_kv and gid != gen_id
+            p.tokens for gid, p in self._participants.items() if p.holds_kv and gid != gen_id
         )
         # Resident cells count too, minus whatever this generation itself still holds, or
         # an idle slot's leftovers would be invisible here exactly as they were to the
@@ -842,7 +858,9 @@ class PreemptionController:
             _log.debug("residency probe failed", exc_info = True)
 
     def note_resident(
-        self, resident: Optional[int], reclaimable: int = 0
+        self,
+        resident: Optional[int],
+        reclaimable: int = 0,
     ) -> None:
         """The cache as llama-server actually sees it. None means the read failed.
 
@@ -1079,10 +1097,14 @@ class PreemptionController:
                 _log.info(
                     "llama preemption ledger-drift: committed=%s resident=%s measured=%s "
                     "pending=%s ledger=%s ceiling=%s want=%s holders=%s",
-                    total, self._resident,
+                    total,
+                    self._resident,
                     sum(p.tokens for p in holders if p.measured),
                     sum(p.tokens for p in holders if not p.measured),
-                    ledger, ceiling, want, len(holders),
+                    ledger,
+                    ceiling,
+                    want,
+                    len(holders),
                 )
             if total + want <= ceiling:
                 return []
@@ -1243,8 +1265,11 @@ class ControllerPreemptionPolicy:
         self._resumes = checkpoint.resumes
         _log.info(
             "llama preemption paused: gen_id=%s resumes=%s kept_chars=%s kept=%s charged=%s",
-            self._gen_id, checkpoint.resumes, checkpoint.kept_chars(),
-            "prose" if checkpoint.has_resume_point()
+            self._gen_id,
+            checkpoint.resumes,
+            checkpoint.kept_chars(),
+            "prose"
+            if checkpoint.has_resume_point()
             else ("thought" if checkpoint.has_reasoning_resume_point() else "nothing"),
             checkpoint.charged_tokens,
         )
@@ -1258,7 +1283,9 @@ class ControllerPreemptionPolicy:
         if chosen_at:
             _log.info(
                 "llama preemption evict-latency: gen_id=%s ms=%.1f tokens=%s",
-                self._gen_id, (time.monotonic() - chosen_at) * 1000.0, participant.tokens,
+                self._gen_id,
+                (time.monotonic() - chosen_at) * 1000.0,
+                participant.tokens,
             )
             participant.preempt_chosen_at = 0.0
         # Before the state change, so a sweep that runs between the two sees the larger
@@ -1308,7 +1335,9 @@ class ControllerPreemptionPolicy:
             # and hangs until the client disconnects.
             _log.info(
                 "llama preemption too-large: gen_id=%s want=%s (exceeds the cache; "
-                "finishing the turn)", self._gen_id, want,
+                "finishing the turn)",
+                self._gen_id,
+                want,
             )
             return False
         if self._controller.outgrew_the_shared_ceiling(want):
@@ -1316,7 +1345,9 @@ class ControllerPreemptionPolicy:
             # else is out, so this only has to say why the wait may be long.
             _log.info(
                 "llama preemption needs-the-cache: gen_id=%s want=%s (past the shared "
-                "ceiling; waiting for the cache to itself)", self._gen_id, want,
+                "ceiling; waiting for the cache to itself)",
+                self._gen_id,
+                want,
             )
         _log.info("llama preemption awaiting-room: gen_id=%s want=%s", self._gen_id, want)
         # Wait for the cache to actually have room before taking the lease back. Without
@@ -1379,13 +1410,18 @@ class ControllerPreemptionPolicy:
             if now >= deadline:
                 _log.info(
                     "llama preemption gave-up: gen_id=%s want=%s (no progress for %ss)",
-                    self._gen_id, want, timeout,
+                    self._gen_id,
+                    want,
+                    timeout,
                 )
                 return False
             if now >= hard_deadline:
                 _log.info(
                     "llama preemption gave-up: gen_id=%s want=%s (still unserved after "
-                    "%ss of a moving cache)", self._gen_id, want, round(now - started, 1),
+                    "%ss of a moving cache)",
+                    self._gen_id,
+                    want,
+                    round(now - started, 1),
                 )
                 return False
             time.sleep(0.1)
@@ -1402,7 +1438,9 @@ class ControllerPreemptionPolicy:
                 self._controller.note_resume_failed(self._gen_id)
             _log.info(
                 "llama preemption %s: gen_id=%s want=%s",
-                "resumed" if got else "gave-up", self._gen_id, want,
+                "resumed" if got else "gave-up",
+                self._gen_id,
+                want,
             )
             return got
         except Exception as exc:
@@ -1410,7 +1448,9 @@ class ControllerPreemptionPolicy:
             # that the room did not come back, and the caller finishes the turn.
             _log.warning(
                 "llama preemption resume-failed: gen_id=%s want=%s error=%s",
-                self._gen_id, want, exc,
+                self._gen_id,
+                want,
+                exc,
             )
             return False
 
@@ -1535,10 +1575,7 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
 
 
 def reclaim_idle_slots(
-    occupancy: Optional[dict],
-    erase: Callable[[int], int],
-    *,
-    needed: int,
+    occupancy: Optional[dict], erase: Callable[[int], int], *, needed: int
 ) -> int:
     """Free dead residue before asking a live chat to stop.
 

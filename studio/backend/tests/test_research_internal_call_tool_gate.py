@@ -116,8 +116,14 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     # reason: they are fresh per request, so comparing them by identity fails for any pair
     # of requests. They are asserted for presence below, exactly as perf_callback is, so
     # dropping them cannot hide a path that quietly stopped arming preemption.
-    drop = {"cancel_event", "perf_callback", "tools_withheld",
-            "preempt_event", "preempt_policy", "on_tokens"}
+    drop = {
+        "cancel_event",
+        "perf_callback",
+        "tools_withheld",
+        "preempt_event",
+        "preempt_policy",
+        "on_tokens",
+    }
     # But dropping perf_callback outright would also pass if the opt-out stopped supplying it at
     # all, silently costing that path its tok/s readout. Compare presence first, then exclude.
     assert callable(before_kwargs.get("perf_callback")) == callable(

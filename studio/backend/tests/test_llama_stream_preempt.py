@@ -22,7 +22,11 @@ from core.inference.llama_cpp import LlamaCppBackend, _interrupt_event
 class _FakeResponse:
     """Enough of httpx.Response for _iter_text_cancellable."""
 
-    def __init__(self, chunks, on_close = None):
+    def __init__(
+        self,
+        chunks,
+        on_close = None,
+    ):
         self._chunks = list(chunks)
         self.closed = False
         self._on_close = on_close
@@ -38,9 +42,14 @@ class _FakeResponse:
             self._on_close()
 
 
-def _drain(response, *, cancel_event = None, preempt_event = None, deadline_s = 30.0):
+def _drain(
+    response,
+    *,
+    cancel_event = None,
+    preempt_event = None,
+    deadline_s = 30.0,
+):
     import time
-
     return list(
         LlamaCppBackend._iter_text_cancellable(
             response,
@@ -86,17 +95,12 @@ class TestWhichExceptionComesOut:
         response = _FakeResponse(["data: a\n", "data: b\n"])
         with pause.unsafe_window():
             pause.request()
-            chunks = _drain(
-                response, cancel_event = threading.Event(), preempt_event = pause
-            )
+            chunks = _drain(response, cancel_event = threading.Event(), preempt_event = pause)
         assert chunks == ["data: a\n", "data: b\n"]
 
     def test_no_signal_at_all_is_the_old_path(self):
         response = _FakeResponse(["data: a\n", "data: b\n"])
-        assert _drain(response, cancel_event = threading.Event()) == [
-            "data: a\n",
-            "data: b\n",
-        ]
+        assert _drain(response, cancel_event = threading.Event()) == ["data: a\n", "data: b\n"]
 
 
 class TestThePauseIsSeenBetweenChunks:
@@ -135,7 +139,6 @@ class TestTheSignaturesStayBackwardsCompatible:
 
     def test_every_funnel_defaults_the_new_argument(self):
         import inspect
-
         funnels = (
             LlamaCppBackend._iter_text_cancellable,
             LlamaCppBackend._install_cancel_aware_read,
@@ -150,10 +153,7 @@ class TestTheSignaturesStayBackwardsCompatible:
 
     def test_the_tool_loop_accepts_a_policy_and_a_signal(self):
         import inspect
-
-        params = inspect.signature(
-            LlamaCppBackend.generate_chat_completion_with_tools
-        ).parameters
+        params = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         for name in ("preempt_event", "preempt_policy"):
             assert name in params
             assert params[name].default is None
@@ -164,16 +164,13 @@ class TestTheSignaturesStayBackwardsCompatible:
         import pathlib
         import re
 
-        source = pathlib.Path(
-            LlamaCppBackend.__module__.replace(".", "/") + ".py"
-        )
+        source = pathlib.Path(LlamaCppBackend.__module__.replace(".", "/") + ".py")
         text = source.read_text() if source.exists() else ""
         if not text:
             import core.inference.llama_cpp as module
-
             text = pathlib.Path(module.__file__).read_text()
         # Every forward of the argument is conditional on it existing.
         unconditional = re.findall(r"^\s*preempt_event = preempt_event,\s*$", text, re.M)
-        assert not unconditional, (
-            "a preempt_event forwarded unconditionally breaks old-signature doubles"
-        )
+        assert (
+            not unconditional
+        ), "a preempt_event forwarded unconditionally breaks old-signature doubles"

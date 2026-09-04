@@ -47,7 +47,11 @@ def fetch_llama_slots(base_url, timeout_s = 3.0):
     return payload if isinstance(payload, list) else None
 
 
-def erase_llama_slot(base_url, slot_id, timeout_s = 3.0) -> int:
+def erase_llama_slot(
+    base_url,
+    slot_id,
+    timeout_s = 3.0,
+) -> int:
     """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure.
 
     Cheaper than preempting: the cache belongs to a request that has already finished, so

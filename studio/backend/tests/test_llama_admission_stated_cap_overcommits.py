@@ -57,12 +57,12 @@ class TestTheStatedCapNoLongerSerialises:
         before = _charged(cap, prompt, active = False)
         after = _charged(cap, prompt, active = True)
         assert before == cap, "the old behaviour was to charge the cap in full"
-        assert BUDGET // (prompt + before) == 1, (
-            "which is why four chats at max_tokens 6000 ran one at a time"
-        )
-        assert BUDGET // (prompt + after) >= SLOTS, (
-            f"charged {after}, so only {BUDGET // (prompt + after)} of {SLOTS} fit"
-        )
+        assert (
+            BUDGET // (prompt + before) == 1
+        ), "which is why four chats at max_tokens 6000 ran one at a time"
+        assert (
+            BUDGET // (prompt + after) >= SLOTS
+        ), f"charged {after}, so only {BUDGET // (prompt + after)} of {SLOTS} fit"
 
     def test_a_stated_cap_is_charged_the_same_as_an_unstated_one(self):
         """Which is the whole point: the cap stops being an admission decision.
@@ -133,8 +133,10 @@ class TestTheGateIsTheEnforcementItself:
         There are more callers of this than the two that were updated, in tests and in
         paths not yet reviewed, and none of them should silently become optimistic.
         """
-        assert allowance(6000, budget = BUDGET, prompt_tokens = 3000,
-                         context_window = BUDGET, share = SHARE) == 6000
+        assert (
+            allowance(6000, budget = BUDGET, prompt_tokens = 3000, context_window = BUDGET, share = SHARE)
+            == 6000
+        )
 
 
 class TestTheSumStillHasSomethingHoldingIt:
@@ -151,6 +153,6 @@ class TestTheSumStillHasSomethingHoldingIt:
         charged = _charged(6000, prompt, active = True)
         assert (prompt + charged) * SLOTS <= BUDGET, "a full capacity must still be admitted"
         permitted = (prompt + (BUDGET - prompt)) * SLOTS
-        assert permitted > BUDGET, (
-            "the cache is meant to be overcommitted now; preemption is the enforcement"
-        )
+        assert (
+            permitted > BUDGET
+        ), "the cache is meant to be overcommitted now; preemption is the enforcement"

@@ -183,6 +183,4 @@ class TestTheDefaultPolicy:
         assert policy.await_resume() is True
 
     def test_it_satisfies_the_protocol(self):
-        assert isinstance(
-            preemption.NullPreemptionPolicy(), preemption.PreemptionPolicy
-        )
+        assert isinstance(preemption.NullPreemptionPolicy(), preemption.PreemptionPolicy)

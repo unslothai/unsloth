@@ -53,9 +53,7 @@ def _calls(node: ast.AST, name: str) -> int:
     return sum(
         1
         for sub in ast.walk(node)
-        if isinstance(sub, ast.Call)
-        and isinstance(sub.func, ast.Name)
-        and sub.func.id == name
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == name
     )
 
 

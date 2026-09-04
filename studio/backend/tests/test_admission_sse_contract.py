@@ -41,7 +41,10 @@ class TestTheSignalsLineUp:
         """A guard on the guard: if this file is renamed or restructured, the test below
         would silently start asserting nothing at all."""
         assert _frontend_comments() == {
-            "admission-wait", "admission-done", "preempt-paused", "preempt-resumed",
+            "admission-wait",
+            "admission-done",
+            "preempt-paused",
+            "preempt-resumed",
         }
 
     def test_every_readable_signal_is_emitted_somewhere(self):
@@ -66,9 +69,9 @@ class TestTheSignalsLineUp:
             "_OPENAI_PREEMPT_SSE_PAUSED",
             "_OPENAI_PREEMPT_SSE_RESUMED",
         ):
-            assert routes.count(name) >= 2, (
-                f"{name} is defined but never yielded, so the client is told nothing"
-            )
+            assert (
+                routes.count(name) >= 2
+            ), f"{name} is defined but never yielded, so the client is told nothing"
             assert f"yield {name}" in routes or f"{name}\n" in routes
 
     def test_the_pause_signal_has_a_producer_in_the_generator(self):

@@ -56,7 +56,13 @@ def _clean_registry():
     reset_preemption_controllers()
 
 
-def _backend(*, window = 16384, slots = 4, unified = True, url = "http://127.0.0.1:1/"):
+def _backend(
+    *,
+    window = 16384,
+    slots = 4,
+    unified = True,
+    url = "http://127.0.0.1:1/",
+):
     return SimpleNamespace(
         base_url = url,
         context_length = window,
@@ -125,9 +131,9 @@ class TestAFinishedChatStopsCounting:
         assert controller.committed_tokens() == 8192
         # The route never says a word; the lease ending is enough.
         leases[0].release()
-        assert controller.committed_tokens() == 4096, (
-            "a finished generation still counted against the budget"
-        )
+        assert (
+            controller.committed_tokens() == 4096
+        ), "a finished generation still counted against the budget"
 
     @pytest.mark.asyncio
     async def test_pruning_frees_the_charge(self):
@@ -182,7 +188,6 @@ class TestTheRouteActuallyArmsIt:
 
     def _route(self):
         import routes.inference as inference
-
         return inference
 
     @pytest.mark.asyncio
@@ -210,9 +215,9 @@ class TestTheRouteActuallyArmsIt:
         # are held back by the watermark buffer, which the snapshot reports separately.
         assert snapshot.budget == inference._openai_llama_admission_budget(_backend())
         assert snapshot.budget == 16384
-        assert 0 < snapshot.buffer < snapshot.budget, (
-            "nothing is held back, so the cache can be worked to its last cell"
-        )
+        assert (
+            0 < snapshot.buffer < snapshot.budget
+        ), "nothing is held back, so the cache can be worked to its last cell"
 
     @pytest.mark.asyncio
     async def test_a_private_cache_per_slot_is_not_armed(self):
@@ -263,16 +268,16 @@ class TestTheRouteActuallyArmsIt:
         import routes.inference as inference
 
         source = Path(inference.__file__).read_text()
-        assert "preempt_event = _gguf_preempt_signal," in source, (
-            "the tool loop is not handed the preempt signal"
-        )
-        assert "preempt_policy = _gguf_preempt_policy_hold," in source, (
-            "the tool loop is not handed the policy"
-        )
+        assert (
+            "preempt_event = _gguf_preempt_signal," in source
+        ), "the tool loop is not handed the preempt signal"
+        assert (
+            "preempt_policy = _gguf_preempt_policy_hold," in source
+        ), "the tool loop is not handed the policy"
         assert "_openai_llama_preemption_arm(" in source
-        assert source.count("_gguf_preempt_policy_hold.bind(") == 1, (
-            "the policy is never bound, so it stays inert forever"
-        )
+        assert (
+            source.count("_gguf_preempt_policy_hold.bind(") == 1
+        ), "the policy is never bound, so it stays inert forever"
 
 
 class TestSpeculativeDraftsAreReserved:
@@ -298,7 +303,6 @@ class TestSpeculativeDraftsAreReserved:
 
     def test_no_speculation_reserves_nothing_extra(self):
         from core.inference.llama_preemption import preemption_buffer_tokens
-
         assert preemption_buffer_tokens(16384, draft_tokens = 0, slots = 4) == (
             preemption_buffer_tokens(16384, slots = 4)
         )
@@ -313,9 +317,7 @@ class TestSpeculativeDraftsAreReserved:
 
     def test_the_controller_reserves_them(self):
         controller = PreemptionController("spec")
-        controller.configure(
-            budget = 16384, kv_unified = True, draft_tokens = 2, slots = 4
-        )
+        controller.configure(budget = 16384, kv_unified = True, draft_tokens = 2, slots = 4)
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         # Derived, not a constant: the ratio is tunable and was raised after measurement,
@@ -402,18 +404,16 @@ class TestALoneChatStillNeedsRoomForItsOwnBatch:
 
     def _controller(self, **kw):
         controller = PreemptionController("solo-batch")
-        controller.configure(
-            budget = 16384, kv_unified = True, slots = 4, draft_tokens = 6, **kw
-        )
+        controller.configure(budget = 16384, kv_unified = True, slots = 4, draft_tokens = 6, **kw)
         return controller
 
     def test_the_solo_ceiling_leaves_a_batch_clear(self):
         controller = self._controller(batch_tokens = 2048)
         controller.register("only", tokens = 100, signal = PreemptSignal())
         # Alone, so `others` is zero and only the solo ceiling can refuse it.
-        assert controller.room_for("only", 16297) is False, (
-            "87 cells is not enough for a 2048 token prefill batch"
-        )
+        assert (
+            controller.room_for("only", 16297) is False
+        ), "87 cells is not enough for a 2048 token prefill batch"
         assert controller.room_for("only", 14000) is True
 
     def test_a_backend_without_a_stated_batch_is_unchanged(self):
@@ -438,7 +438,6 @@ class TestTheBufferCanHoldOnePrefillChunk:
 
     def test_the_buffer_covers_the_batch(self):
         from core.inference.llama_preemption import preemption_buffer_tokens
-
         buffer = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048)
         assert buffer >= 2048, (
             "a buffer smaller than one prefill chunk cannot prevent the decode failure "
@@ -450,9 +449,7 @@ class TestTheBufferCanHoldOnePrefillChunk:
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         plain = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048)
-        drafted = preemption_buffer_tokens(
-            16384, slots = 4, batch_tokens = 2048, draft_tokens = 6
-        )
+        drafted = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048, draft_tokens = 6)
         assert drafted == plain + 6 * 4
 
     def test_reaction_headroom_still_wins_when_it_is_larger(self):
@@ -462,7 +459,6 @@ class TestTheBufferCanHoldOnePrefillChunk:
         several slots decoding at once still needs.
         """
         from core.inference.llama_preemption import preemption_buffer_tokens
-
         assert preemption_buffer_tokens(16384, slots = 8, batch_tokens = 64) == (
             preemption_buffer_tokens(16384, slots = 8)
         )
@@ -586,9 +582,9 @@ class TestTheDraftReserveActuallyApplied:
         backend.speculative_type = "draft-mtp"
         backend.spec_draft_n_max = None
         backend._spec_draft_n_max = None
-        assert inference._openai_llama_speculative_draft_tokens(backend) == 6, (
-            "None means the platform default, not zero"
-        )
+        assert (
+            inference._openai_llama_speculative_draft_tokens(backend) == 6
+        ), "None means the platform default, not zero"
 
     def test_nothing_drafting_reserves_nothing(self):
         import routes.inference as inference
@@ -625,11 +621,10 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
 
     def test_the_future_is_never_awaited_unbounded(self):
         import inspect
-
         source = inspect.getsource(ControllerPreemptionPolicy.await_resume)
-        assert "timeout = None if timeout is None" not in source, (
-            "the future would block forever when the caller stated no timeout"
-        )
+        assert (
+            "timeout = None if timeout is None" not in source
+        ), "the future would block forever when the caller stated no timeout"
 
     def test_it_always_returns_promptly_rather_than_blocking(self):
         """The value depends on the path taken; the point is that it RETURNS.
@@ -639,15 +634,12 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         the hang violated.
         """
         import time
-
         for gen_id in ("known", "missing"):
             controller = PreemptionController(f"prompt-{gen_id}")
             controller.configure(budget = 16384, kv_unified = True)
             if gen_id == "known":
                 controller.register(gen_id, tokens = 100, signal = PreemptSignal())
-            policy = ControllerPreemptionPolicy(
-                controller, gen_id, PreemptSignal(), loop = None
-            )
+            policy = ControllerPreemptionPolicy(controller, gen_id, PreemptSignal(), loop = None)
             started = time.monotonic()
             result = policy.await_resume()
             assert result in (True, False)
@@ -658,9 +650,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         knows how to do. An exception here would surface as a failed generation."""
         controller = PreemptionController("gave-up")
         controller.configure(budget = 16384, kv_unified = True)
-        policy = ControllerPreemptionPolicy(
-            controller, "missing", PreemptSignal(), loop = None
-        )
+        policy = ControllerPreemptionPolicy(controller, "missing", PreemptSignal(), loop = None)
         assert policy.await_resume(timeout = 0.01) is False
 
     @staticmethod
@@ -684,12 +674,8 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target = loop.run_forever, daemon = True)
         thread.start()
-        controller.register(
-            gen_id, lease = _Lease(), tokens = tokens, signal = PreemptSignal()
-        )
-        policy = ControllerPreemptionPolicy(
-            controller, gen_id, PreemptSignal(), loop = loop
-        )
+        controller.register(gen_id, lease = _Lease(), tokens = tokens, signal = PreemptSignal())
+        policy = ControllerPreemptionPolicy(controller, gen_id, PreemptSignal(), loop = loop)
         return policy, loop
 
     @staticmethod
@@ -717,14 +703,14 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         assert 9000 <= ceiling < 18000, ceiling
 
         assert controller.room_for("a", 9000) is True
-        assert controller.room_for("b", 9000) is True, (
-            "the question is answered the same way twice, which is the bug"
-        )
+        assert (
+            controller.room_for("b", 9000) is True
+        ), "the question is answered the same way twice, which is the bug"
 
         assert controller.try_grant_resume("a", 9000) is True
-        assert controller.try_grant_resume("b", 9000) is False, (
-            "the second waiter must be refused: the first has already booked the room"
-        )
+        assert (
+            controller.try_grant_resume("b", 9000) is False
+        ), "the second waiter must be refused: the first has already booked the room"
 
     def test_a_grant_that_does_not_resume_is_handed_back(self):
         controller = PreemptionController("grant-rollback")
@@ -735,9 +721,9 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         assert controller.try_grant_resume("a", 9000) is True
         assert controller.try_grant_resume("b", 9000) is False
         controller.note_resume_failed("a")
-        assert controller.try_grant_resume("b", 9000) is True, (
-            "room booked by a resume that never happened must not stay booked"
-        )
+        assert (
+            controller.try_grant_resume("b", 9000) is True
+        ), "room booked by a resume that never happened must not stay booked"
 
     def test_a_stalled_wait_still_ends(self):
         """The hang this bound exists for: nothing decoding, nothing moving.
@@ -890,9 +876,9 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
 
         source = Path(module.__file__).read_text()
         assert "from loggers import get_logger" in source
-        assert "logging.getLogger" not in source, (
-            "a stdlib logger here is dropped, and silence gets read as absence"
-        )
+        assert (
+            "logging.getLogger" not in source
+        ), "a stdlib logger here is dropped, and silence gets read as absence"
 
 
 class TestTheCacheIsNeverHandedOutToTheLastToken:
@@ -916,7 +902,6 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
 
     def _buffer(self, budget, drafts, slots):
         from core.inference.llama_preemption import preemption_buffer_tokens
-
         return preemption_buffer_tokens(budget, draft_tokens = drafts, slots = slots)
 
     def test_the_headroom_covers_the_drafts(self):
@@ -925,9 +910,9 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
 
     def test_the_ceiling_is_below_the_cache(self):
         budget = 16384
-        assert budget - self._buffer(budget, 2, 4) < budget, (
-            "the cache would be worked to its last cell, which is how the drafts overran"
-        )
+        assert (
+            budget - self._buffer(budget, 2, 4) < budget
+        ), "the cache would be worked to its last cell, which is how the drafts overran"
 
     def test_it_holds_across_cache_sizes_and_slot_counts(self):
         for total in (2048, 4096, 16384, 65536, 262144):
@@ -965,6 +950,7 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
         backend.spec_draft_n_max = 2
         assert inference._openai_llama_admission_budget(backend) == 16384
 
+
 class TestEveryChatGetsTheWholeWindow:
     """N for everyone, then evict. The design asked for from the start.
 
@@ -975,7 +961,11 @@ class TestEveryChatGetsTheWholeWindow:
     preempts at a watermark; so do we now.
     """
 
-    def _backend(self, slots = 4, total = 16384):
+    def _backend(
+        self,
+        slots = 4,
+        total = 16384,
+    ):
         backend = _backend()
         backend.effective_parallel_slots = slots
         backend.context_length = total
@@ -995,9 +985,9 @@ class TestEveryChatGetsTheWholeWindow:
             payload, request = None, llama_backend = backend
         )
         share = inference._openai_llama_admission_budget(backend) // 4
-        assert permitted > share * 3, (
-            f"permitted {permitted} is still a share ({share}), not the window"
-        )
+        assert (
+            permitted > share * 3
+        ), f"permitted {permitted} is still a share ({share}), not the window"
 
     def test_four_chats_are_each_permitted_the_window(self):
         """They collectively exceed the cache ON PURPOSE. Preemption reclaims."""
@@ -1013,16 +1003,23 @@ class TestEveryChatGetsTheWholeWindow:
 
     def test_a_stated_cap_is_still_honoured(self):
         import routes.inference as inference
-
-        assert inference._openai_llama_admission_enforced_max_tokens(
-            _chat_payload(max_tokens = 512), request = None, llama_backend = self._backend()
-        ) is None
+        assert (
+            inference._openai_llama_admission_enforced_max_tokens(
+                _chat_payload(max_tokens = 512), request = None, llama_backend = self._backend()
+            )
+            is None
+        )
 
 
 class TestTheWatermarkSweep:
     """With the arithmetic no longer preventing an overrun, this is what does."""
 
-    def _filled(self, budget = 16384, chats = 4, each = 1000):
+    def _filled(
+        self,
+        budget = 16384,
+        chats = 4,
+        each = 1000,
+    ):
         controller = PreemptionController(f"sweep-{budget}-{chats}-{each}")
         controller.configure(budget = budget, kv_unified = True)
         signals = {}
@@ -1069,9 +1066,9 @@ class TestTheWatermarkSweep:
         assert controller.committed_tokens() == 1500
         controller.note_tokens("c0", 6000)
         controller.observe("c0", 100)
-        assert controller.committed_tokens() == 6100, (
-            "growth after a round must be measured from the round, not from admission"
-        )
+        assert (
+            controller.committed_tokens() == 6100
+        ), "growth after a round must be measured from the round, not from admission"
 
 
 def _chat_payload(**fields):
@@ -1100,19 +1097,18 @@ class TestTheStreamActuallyReportsGrowth:
         from pathlib import Path
 
         import core.inference.llama_cpp as llama_cpp
-
         return Path(llama_cpp.__file__).read_text()
 
     def test_the_chunk_loop_counts_tokens(self):
-        assert "_tokens_this_stream += 1" in self._source(), (
-            "nothing increments the live token count, so the sweep sees a frozen n_i"
-        )
+        assert (
+            "_tokens_this_stream += 1" in self._source()
+        ), "nothing increments the live token count, so the sweep sees a frozen n_i"
 
     def test_the_count_is_reported_to_the_preemptor(self):
         source = self._source()
-        assert "on_tokens(_tokens_this_stream)" in source, (
-            "the count is kept but never handed to the watermark sweep"
-        )
+        assert (
+            "on_tokens(_tokens_this_stream)" in source
+        ), "the count is kept but never handed to the watermark sweep"
 
     def test_the_report_is_batched_not_per_token(self):
         """A lock per token would put the preemptor on the hot path."""
@@ -1133,9 +1129,7 @@ class TestTheStreamActuallyReportsGrowth:
         for slots in (1, 2, 4, 8, 16):
             worst = _TOKEN_REPORT_EVERY * slots
             buffer = preemption_buffer_tokens(16384, slots = slots)
-            assert worst < buffer, (
-                f"{slots} slots lag by {worst} tokens against a {buffer} buffer"
-            )
+            assert worst < buffer, f"{slots} slots lag by {worst} tokens against a {buffer} buffer"
 
     def test_the_route_supplies_the_callback(self):
         from pathlib import Path
@@ -1162,9 +1156,9 @@ class TestResumingDoesNotThrash:
         controller.configure(budget = 16384, kv_unified = True)
         for index in range(2):
             controller.register(f"c{index}", tokens = 7000, signal = PreemptSignal())
-        assert controller.room_for("c0", 12000) is False, (
-            "a resume was permitted while the cache was already over its watermark"
-        )
+        assert (
+            controller.room_for("c0", 12000) is False
+        ), "a resume was permitted while the cache was already over its watermark"
 
     def test_room_appears_once_a_holder_stops(self):
         """The approved policy: the longest chat continues, and the rest resume once it
@@ -1189,17 +1183,17 @@ class TestResumingDoesNotThrash:
         controller.configure(budget = 16384, kv_unified = True)
         for index in range(4):
             controller.register(f"c{index}", tokens = 9000, signal = PreemptSignal())
-        assert controller.room_for("c0", 9000) is True, (
-            "with preemption off nothing should wait on its watermark"
-        )
+        assert (
+            controller.room_for("c0", 9000) is True
+        ), "with preemption off nothing should wait on its watermark"
 
     def test_the_resume_path_consults_it(self):
         import inspect
 
         source = inspect.getsource(ControllerPreemptionPolicy.await_resume)
-        assert "room_for" in source, (
-            "await_resume takes the lease back without checking the live cache"
-        )
+        assert (
+            "room_for" in source
+        ), "await_resume takes the lease back without checking the live cache"
         assert "gave-up" in source, "giving up after the timeout must be visible"
 
 
@@ -1279,9 +1273,9 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
                 "next_token": [{"n_decoded": 6323}],
             },
         ]
-        assert read_slot_occupancy(lambda: slots)["resident"] == 18955, (
-            "n_prompt_tokens_cache is the prompt only, so generation is still missing"
-        )
+        assert (
+            read_slot_occupancy(lambda: slots)["resident"] == 18955
+        ), "n_prompt_tokens_cache is the prompt only, so generation is still missing"
 
     def test_a_finished_slot_is_not_counted_twice(self):
         """An idle slot's prompt cache already holds the whole sequence it produced, so
@@ -1312,25 +1306,26 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         # field takes, which would not test the reader at all.
         for shape in ([{"n_decoded": 500}], {"n_decoded": 500}):
             slots = [
-                {"id": 0, "is_processing": True, "n_prompt_tokens_cache": 1000,
-                 "next_token": shape},
+                {
+                    "id": 0,
+                    "is_processing": True,
+                    "n_prompt_tokens_cache": 1000,
+                    "next_token": shape,
+                },
             ]
             assert read_slot_occupancy(lambda: slots)["resident"] == 1500, shape
 
     def test_a_missing_or_malformed_next_token_reads_as_zero(self):
         """An occupancy read that raises takes the whole watermark sweep with it."""
         from core.inference.llama_preemption import read_slot_occupancy
-
         for shape in (None, [], "nonsense", {"n_decoded": "abc"}, {}):
             slots = [
-                {"id": 0, "is_processing": True, "n_prompt_tokens": 1000,
-                 "next_token": shape},
+                {"id": 0, "is_processing": True, "n_prompt_tokens": 1000, "next_token": shape},
             ]
             assert read_slot_occupancy(lambda: slots)["resident"] == 1000, shape
 
     def test_an_unreadable_endpoint_is_not_an_empty_cache(self):
         from core.inference.llama_preemption import read_slot_occupancy
-
         assert read_slot_occupancy(lambda: None) is None
         assert read_slot_occupancy(lambda: []) is None
 
@@ -1343,9 +1338,9 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller.note_resident(16383)
         # "a" has not decoded a token, so its 2000 are NOT among the 16383 the cache is
         # already holding: they are a prefill still to come, and both have to fit.
-        assert controller.committed_tokens() == 18383, (
-            "the cache is full and the ledger does not know it"
-        )
+        assert (
+            controller.committed_tokens() == 18383
+        ), "the cache is full and the ledger does not know it"
         controller.note_resident(None)
         assert controller.committed_tokens() == 2000, "a failed read falls back, not to zero"
 
@@ -1363,15 +1358,15 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         # One token comes back: whatever "a" really holds, the cache has now reported it.
         controller.observe("a", 1)
         controller.note_resident(1400)
-        assert controller.committed_tokens() == 4097, (
-            "the ledger is the larger of the two opinions about the same cells"
-        )
+        assert (
+            controller.committed_tokens() == 4097
+        ), "the ledger is the larger of the two opinions about the same cells"
         # And once the round boundary restates the conversation honestly, the reservation
         # stops inflating the total at all.
         controller.note_tokens("a", 1400)
-        assert controller.committed_tokens() == 1400, (
-            "a measured chat must be counted once, not once per source"
-        )
+        assert (
+            controller.committed_tokens() == 1400
+        ), "a measured chat must be counted once, not once per source"
 
     def test_a_lagging_reading_cannot_shrink_a_measured_chat(self):
         """resident lags a prefill in progress, so the larger figure still wins."""
@@ -1397,9 +1392,9 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller.set_state("waiter", ParticipantState.PAUSED)
         # Everything resident is idle residue, exactly the live reading.
         controller.note_resident(21304, 21304)
-        assert controller.room_for("waiter", 5000) is True, (
-            "a cache holding nothing but reclaimable residue must not block a resume"
-        )
+        assert (
+            controller.room_for("waiter", 5000) is True
+        ), "a cache holding nothing but reclaimable residue must not block a resume"
 
     def test_live_cells_still_block_a_resume(self):
         """The discount is for idle residue only; a decoding chat still counts."""
@@ -1465,7 +1460,6 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
 
     def test_nothing_is_erased_when_nothing_is_needed(self):
         from core.inference.llama_preemption import read_slot_occupancy, reclaim_idle_slots
-
         occupancy = read_slot_occupancy(
             lambda: [{"id": 0, "is_processing": False, "n_prompt_tokens_cache": 900}]
         )
@@ -1479,9 +1473,9 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         source = Path(inference.__file__).read_text()
         assert "_gguf_refresh_residency(controller)" in source
         assert "controller.note_resident(" in source
-        assert "reclaim_idle_slots(" in source, (
-            "a live chat is paused without first freeing dead residue"
-        )
+        assert (
+            "reclaim_idle_slots(" in source
+        ), "a live chat is paused without first freeing dead residue"
 
 
 class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
@@ -1500,9 +1494,9 @@ class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
         import routes.inference as inference
 
         source = Path(inference.__file__).read_text()
-        assert "reclaimed-idle-early" in source, (
-            "residue is only reclaimed once a live chat is already being paused"
-        )
+        assert (
+            "reclaimed-idle-early" in source
+        ), "residue is only reclaimed once a live chat is already being paused"
         # And the reclaim must sit in the residency refresh, not behind the victim check.
         refresh = source.split("def _gguf_refresh_residency", 1)[1].split("def ", 1)[0]
         assert "reclaim_idle_slots(" in refresh
@@ -1513,13 +1507,15 @@ class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
         import routes.inference as inference
 
         refresh = (
-            Path(inference.__file__).read_text()
-            .split("def _gguf_refresh_residency", 1)[1].split("def ", 1)[0]
+            Path(inference.__file__)
+            .read_text()
+            .split("def _gguf_refresh_residency", 1)[1]
+            .split("def ", 1)[0]
         )
         assert "controller.note_resident(" in refresh
-        assert "- freed" in refresh, (
-            "the controller would keep planning against the pre-erase figure"
-        )
+        assert (
+            "- freed" in refresh
+        ), "the controller would keep planning against the pre-erase figure"
 
 
 class TestEveryNameThePreemptPathCallsIsActuallyBound:
@@ -1581,7 +1577,6 @@ class TestEveryNameThePreemptPathCallsIsActuallyBound:
 
     def test_the_helpers_import_from_their_own_module(self):
         import core.inference.chat_template_helpers as helpers
-
         assert callable(helpers.trailing_assistant_reasoning)
         assert callable(helpers.trailing_assistant_resumable)
 
@@ -1592,7 +1587,9 @@ class TestEveryNameThePreemptPathCallsIsActuallyBound:
         from core.inference import llama_cpp
 
         source = Path(llama_cpp.__file__).read_text()
-        assert "                                        trailing_assistant_reasoning,\n" not in source
+        assert (
+            "                                        trailing_assistant_reasoning,\n" not in source
+        )
 
 
 class TestAFailureInTheResumeCannotKillTheChat:
@@ -1605,9 +1602,9 @@ class TestAFailureInTheResumeCannotKillTheChat:
         block = source.split("_carried_truncations = list(_respawn_truncations)", 1)[1]
         block = block.split("preempt_policy.on_preempted", 1)[0]
         assert "_assemble_preempt_resume(" in block
-        assert "except Exception:" in block, (
-            "a bug in the save-the-chat path would end the chat it was saving"
-        )
+        assert (
+            "except Exception:" in block
+        ), "a bug in the save-the-chat path would end the chat it was saving"
 
     def test_a_raising_assembly_degrades_to_re_issuing_whole(self):
         from core.inference.llama_preemption import StreamCheckpoint
@@ -1624,7 +1621,10 @@ class TestAFailureInTheResumeCannotKillTheChat:
         resumed = None
         try:
             resumed = Boom()._assemble_preempt_resume(
-                convo, StreamCheckpoint(reasoning_text = "x"), "", "x",
+                convo,
+                StreamCheckpoint(reasoning_text = "x"),
+                "",
+                "x",
             )
         except Exception:
             resumed = False
@@ -1637,7 +1637,11 @@ class TestAFailureInTheResumeCannotKillTheChat:
 
         convo = [{"role": "user", "content": "hi"}]
         out = LlamaCppBackend._assemble_preempt_resume(
-            object(), convo, StreamCheckpoint(), "", "",
+            object(),
+            convo,
+            StreamCheckpoint(),
+            "",
+            "",
         )
         assert out is False
         assert len(convo) == 1, "an empty assistant turn would be refused downstream"
@@ -1648,14 +1652,17 @@ class TestAFailureInTheResumeCannotKillTheChat:
 
         convo = [{"role": "user", "content": "hi"}]
         out = LlamaCppBackend._assemble_preempt_resume(
-            object(), convo, StreamCheckpoint(reasoning_text = "half a thought"),
-            "", "half a thought",
+            object(),
+            convo,
+            StreamCheckpoint(reasoning_text = "half a thought"),
+            "",
+            "half a thought",
         )
         assert out is True
         assert convo[-1]["reasoning_content"] == "half a thought"
-        assert convo[-1]["content"] == "", (
-            "a thought placed in content would be rendered as the answer"
-        )
+        assert (
+            convo[-1]["content"] == ""
+        ), "a thought placed in content would be rendered as the answer"
 
     def test_a_second_pause_merges_rather_than_replaces_the_thought(self):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1666,8 +1673,11 @@ class TestAFailureInTheResumeCannotKillTheChat:
             {"role": "assistant", "content": "", "reasoning_content": "first half "},
         ]
         LlamaCppBackend._assemble_preempt_resume(
-            object(), convo, StreamCheckpoint(reasoning_text = "second half"),
-            "", "second half",
+            object(),
+            convo,
+            StreamCheckpoint(reasoning_text = "second half"),
+            "",
+            "second half",
         )
         # The accumulators reset each round, so replacing would lose the first pause.
         assert convo[-1]["reasoning_content"] == "first half second half"
@@ -1692,24 +1702,25 @@ class TestAPauseActuallyFreesCells:
         from pathlib import Path
 
         import routes.inference as inference
-
         return (
-            Path(inference.__file__).read_text()
-            .split("def _gguf_refresh_residency", 1)[1].split("\n            def ", 1)[0]
+            Path(inference.__file__)
+            .read_text()
+            .split("def _gguf_refresh_residency", 1)[1]
+            .split("\n            def ", 1)[0]
         )
 
     def test_waiting_alone_triggers_a_reclaim(self):
         source = self._refresh_source()
-        assert "snapshot, \"paused\"" in source or "getattr(snapshot, \"paused\"" in source, (
-            "reclaim still fires only when over the watermark, so a pause frees nothing"
-        )
+        assert (
+            'snapshot, "paused"' in source or 'getattr(snapshot, "paused"' in source
+        ), "reclaim still fires only when over the watermark, so a pause frees nothing"
 
     def test_the_reclaim_is_not_gated_on_being_over_the_ceiling(self):
         source = self._refresh_source()
-        assert "if needed > 0 and occupancy.get(\"idle\")" in source
-        assert "if over > 0 and occupancy.get(\"idle\")" not in source, (
-            "the old gate is back; a paused chat's cells would be held until overflow"
-        )
+        assert 'if needed > 0 and occupancy.get("idle")' in source
+        assert (
+            'if over > 0 and occupancy.get("idle")' not in source
+        ), "the old gate is back; a paused chat's cells would be held until overflow"
 
     def test_the_waiter_count_is_logged(self):
         """So a run can be read afterwards without guessing why a reclaim fired."""
@@ -1737,9 +1748,7 @@ class TestAFinishedGenerationGivesItsChargeBack:
 
         source = Path(inference.__file__).read_text()
         calls = source.count("_openai_llama_preemption_disarm(")
-        assert calls >= 2, (
-            "disarm is defined but never called, so charges accumulate forever"
-        )
+        assert calls >= 2, "disarm is defined but never called, so charges accumulate forever"
 
     def test_it_runs_in_a_finally_so_an_error_path_still_releases(self):
         from pathlib import Path
@@ -1753,7 +1762,8 @@ class TestAFinishedGenerationGivesItsChargeBack:
         preceding = source[:call_at]
         # The nearest block opener before the call, ignoring comments and blank lines.
         openers = [
-            line.strip() for line in preceding.splitlines()
+            line.strip()
+            for line in preceding.splitlines()
             if line.strip().endswith(":") and not line.strip().startswith("#")
         ]
         assert openers and openers[-1] == "finally:", (
@@ -1777,9 +1787,9 @@ class TestAFinishedGenerationGivesItsChargeBack:
         assert controller.snapshot().committed == 12000
 
         controller.unregister("a")
-        assert controller.snapshot().committed == 4000, (
-            "a finished chat still counts against the cache"
-        )
+        assert (
+            controller.snapshot().committed == 4000
+        ), "a finished chat still counts against the cache"
         assert controller.participant("a") is None
         # And the survivor is untouched.
         assert controller.participant("b").state == ParticipantState.DECODING
@@ -1827,9 +1837,9 @@ class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
     def test_the_disarm_releases_cells_as_well_as_the_charge(self):
         body = self._disarm_source()
         assert "unregister(" in body, "the charge is not released"
-        assert "reclaim_idle_slots(" in body, (
-            "only the charge is released, so the ledger reports room the cache lacks"
-        )
+        assert (
+            "reclaim_idle_slots(" in body
+        ), "only the charge is released, so the ledger reports room the cache lacks"
 
     def test_the_cells_go_after_the_charge_not_before(self):
         """Order matters: the slot is only idle once the response is finished."""
@@ -1838,9 +1848,9 @@ class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
 
     def test_neither_half_can_fail_the_response(self):
         body = self._disarm_source()
-        assert body.count("except Exception:") >= 2, (
-            "bookkeeping must never fail a response that already succeeded"
-        )
+        assert (
+            body.count("except Exception:") >= 2
+        ), "bookkeeping must never fail a response that already succeeded"
 
     def test_the_release_is_logged(self):
         body = self._disarm_source()
@@ -1848,9 +1858,9 @@ class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
 
     def test_the_residency_figure_is_corrected(self):
         body = self._disarm_source()
-        assert "note_resident(" in body, (
-            "the controller would keep planning against the pre-erase figure"
-        )
+        assert (
+            "note_resident(" in body
+        ), "the controller would keep planning against the pre-erase figure"
 
 
 def _await_resume_body(source: str) -> str:
@@ -1874,7 +1884,13 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
     llama-server idle and every slot released.
     """
 
-    def _adapter(self, *, budget = 16384, drafts = 2, slots = 4):
+    def _adapter(
+        self,
+        *,
+        budget = 16384,
+        drafts = 2,
+        slots = 4,
+    ):
         from core.inference.llama_preemption import (
             ControllerPreemptionPolicy,
             PreemptSignal,
@@ -1882,9 +1898,7 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
         )
 
         controller = PreemptionController("resume-wait")
-        controller.configure(
-            budget = budget, kv_unified = True, draft_tokens = drafts, slots = slots
-        )
+        controller.configure(budget = budget, kv_unified = True, draft_tokens = drafts, slots = slots)
         return controller, ControllerPreemptionPolicy, PreemptSignal
 
     def test_the_wait_is_told_when_nothing_can_ever_fit(self):
@@ -1896,9 +1910,9 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
         snapshot = controller.snapshot()
         want = snapshot.budget - snapshot.buffer + 1
         assert controller.outgrew_the_shared_ceiling(want)
-        assert not controller.cannot_ever_fit(want), (
-            "it fits with the cache to itself, so ending the turn would be premature"
-        )
+        assert not controller.cannot_ever_fit(
+            want
+        ), "it fits with the cache to itself, so ending the turn would be premature"
 
     def test_both_questions_are_asked_before_the_spin(self):
         from pathlib import Path
@@ -1907,9 +1921,9 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
 
         body = _await_resume_body(Path(llama_preemption.__file__).read_text())
         spin = body.index("while not self._controller.try_grant_resume")
-        assert body.index("cannot_ever_fit(") < spin, (
-            "a chat larger than the cache would spin until its client gave up"
-        )
+        assert (
+            body.index("cannot_ever_fit(") < spin
+        ), "a chat larger than the cache would spin until its client gave up"
         assert body.index("outgrew_the_shared_ceiling(") < spin
 
     def test_giving_up_is_reported_as_finishing_not_as_failure(self):
@@ -1957,7 +1971,6 @@ class TestTheResumeGrantReadsTheCacheAfresh:
 
     def test_no_probe_is_harmless(self):
         from core.inference.llama_preemption import PreemptionController
-
         PreemptionController("no-probe").refresh_residency()
 
     def test_the_resume_wait_refreshes_before_it_asks(self):
@@ -1967,9 +1980,9 @@ class TestTheResumeGrantReadsTheCacheAfresh:
 
         body = _await_resume_body(Path(llama_preemption.__file__).read_text())
         first_ask = body.index("while not self._controller.try_grant_resume")
-        assert body.index("refresh_residency()") < first_ask, (
-            "the first grant would be decided on a cached figure"
-        )
+        assert (
+            body.index("refresh_residency()") < first_ask
+        ), "the first grant would be decided on a cached figure"
 
     def test_the_route_registers_the_probe(self):
         from pathlib import Path
@@ -1986,9 +1999,9 @@ class TestTheResumeGrantReadsTheCacheAfresh:
         from core.inference import llama_preemption
 
         source = Path(llama_preemption.__file__).read_text()
-        assert "ledger-drift" in source, (
-            "a cache overrun could not be attributed to the ledger or to the sweep"
-        )
+        assert (
+            "ledger-drift" in source
+        ), "a cache overrun could not be attributed to the ledger or to the sweep"
 
 
 class TestTheSweepIsNotBlindDuringPrefill:
@@ -2016,15 +2029,15 @@ class TestTheSweepIsNotBlindDuringPrefill:
     def test_the_round_boundary_sweeps_and_does_not_merely_record(self):
         body = self._recost_body()
         assert "note_tokens(" in body, "the new size must still be recorded"
-        assert "_gguf_observe_tokens(" in body, (
-            "recording without sweeping leaves the eviction until the next 32 tokens"
-        )
+        assert (
+            "_gguf_observe_tokens(" in body
+        ), "recording without sweeping leaves the eviction until the next 32 tokens"
 
     def test_it_sweeps_after_recording_not_before(self):
         body = self._recost_body()
-        assert body.index("note_tokens(") < body.index("_gguf_observe_tokens("), (
-            "sweeping first would plan against the previous round's figure"
-        )
+        assert body.index("note_tokens(") < body.index(
+            "_gguf_observe_tokens("
+        ), "sweeping first would plan against the previous round's figure"
 
     def test_note_tokens_rebaselines_so_zero_growth_is_correct(self):
         """The sweep is passed zero generated, which is only right after a re-baseline."""
@@ -2036,11 +2049,11 @@ class TestTheSweepIsNotBlindDuringPrefill:
         controller.observe("a", 500)
         assert controller.participant("a").tokens == 1500
 
-        controller.note_tokens("a", 9000)          # a round restated the conversation
-        controller.observe("a", 0)                 # the sweep that follows it
-        assert controller.participant("a").tokens == 9000, (
-            "growth must be measured from the new round, not added to the old total"
-        )
+        controller.note_tokens("a", 9000)  # a round restated the conversation
+        controller.observe("a", 0)  # the sweep that follows it
+        assert (
+            controller.participant("a").tokens == 9000
+        ), "growth must be measured from the new round, not added to the old total"
 
     def test_a_round_that_grows_past_the_watermark_evicts_someone(self):
         from core.inference.llama_preemption import PreemptionController

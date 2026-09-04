@@ -552,7 +552,8 @@ class LlamaAdmissionLease:
             # growth never resets it, so a pool that only fills still times out.
             patience = None if deadline is None else float(timeout_s)
             hard_deadline = (
-                None if patience is None
+                None
+                if patience is None
                 else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
             )
             last_committed = queue.committed_now()
@@ -567,9 +568,7 @@ class LlamaAdmissionLease:
                     if current < last_committed:
                         deadline = now + patience
                     last_committed = current
-                    if now >= deadline or (
-                        hard_deadline is not None and now >= hard_deadline
-                    ):
+                    if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
                         return False
                 await asyncio.sleep(poll_s)
         slot = await queue.acquire_parked_slot(
@@ -684,9 +683,7 @@ class LlamaAdmissionLease:
         patience = None if not timeout_s or timeout_s <= 0 else float(timeout_s)
         started = time.monotonic()
         deadline = None if patience is None else started + patience
-        hard_deadline = (
-            None if patience is None else started + patience * _MAX_REPARK_WAIT_MULTIPLE
-        )
+        hard_deadline = None if patience is None else started + patience * _MAX_REPARK_WAIT_MULTIPLE
         last_committed = queue.committed_now()
         try:
             while True:
@@ -712,9 +709,7 @@ class LlamaAdmissionLease:
                     if current < last_committed:
                         deadline = now + patience
                     last_committed = current
-                    if now >= deadline or (
-                        hard_deadline is not None and now >= hard_deadline
-                    ):
+                    if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
                         return self._give_up_repark(queue, held, cancelled = False)
                 time.sleep(poll_s)
         except BaseException:

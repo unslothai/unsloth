@@ -58,7 +58,12 @@ class TestToolCallsOverlapAcrossChats:
         from core.inference import studio_tool_loop
 
         source = Path(studio_tool_loop.__file__).read_text()
-        for gate in ("asyncio.Lock()", "asyncio.Semaphore(", "threading.Lock()", "threading.Semaphore("):
+        for gate in (
+            "asyncio.Lock()",
+            "asyncio.Semaphore(",
+            "threading.Lock()",
+            "threading.Semaphore(",
+        ):
             assert gate not in source, f"{gate} in the tool loop serialises all chats"
 
     def test_a_blocking_tool_is_never_run_on_the_event_loop(self):

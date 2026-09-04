@@ -58,16 +58,32 @@ def _ceiling(controller):
     return snapshot.budget - snapshot.buffer
 
 
-def _fill(controller, gen_id, fraction, state = ParticipantState.DECODING):
+def _fill(
+    controller,
+    gen_id,
+    fraction,
+    state = ParticipantState.DECODING,
+):
     """Register a participant holding `fraction` of the ceiling."""
     return _register(controller, gen_id, int(_ceiling(controller) * fraction), state = state)
 
 
-def _register(controller, gen_id, tokens, state = ParticipantState.DECODING):
+def _register(
+    controller,
+    gen_id,
+    tokens,
+    state = ParticipantState.DECODING,
+):
     return controller.register(gen_id, tokens = tokens, state = state)
 
 
-async def _lease(queue, *, tokens, capacity = 4, budget = 16384):
+async def _lease(
+    queue,
+    *,
+    tokens,
+    capacity = 4,
+    budget = 16384,
+):
     reservation = queue.reserve(
         capacity = capacity,
         config = LlamaAdmissionConfig(),
@@ -237,9 +253,9 @@ class TestResumeDoesNotChargeTwice:
             resumed = await victim.resume_async(5000, poll_s = 0.005, timeout_s = 0.05)
         finally:
             await drainer
-        assert resumed is True, (
-            "gave up while the pool was draining; the deadline must reset on progress"
-        )
+        assert (
+            resumed is True
+        ), "gave up while the pool was draining; the deadline must reset on progress"
 
     @pytest.mark.asyncio
     async def test_a_pool_that_never_moves_still_times_out(self):
@@ -412,9 +428,9 @@ class TestWhoStops:
         controller.plan_preemptions()
         assert victim.state == ParticipantState.PREEMPTING
         assert victim.preempt_event.is_set(), "the decision and the signal must not drift apart"
-        assert controller.committed_tokens() == before, (
-            "asking for a pause must not free room that is still occupied"
-        )
+        assert (
+            controller.committed_tokens() == before
+        ), "asking for a pause must not free room that is still occupied"
 
     def test_a_queued_chat_is_not_a_victim(self):
         controller = _controller(budget = 16384)
@@ -465,6 +481,7 @@ class TestNobodyIsExemptFromEviction:
         victims = [p.gen_id for p in controller.plan_preemptions(needed = 14000)]
         assert len(victims) >= 2, f"the sweep stopped early, got {victims}"
 
+
 class TestStarvation:
     """Losing repeatedly must not become never finishing.
 
@@ -498,9 +515,9 @@ class TestStarvation:
         _fill(controller, "newcomer", 0.28)
         victims = [p.gen_id for p in controller.plan_preemptions()]
         assert victims, "something had to stop"
-        assert victims[0] != "starved", (
-            f"the promoted chat was taken first anyway, order was {victims}"
-        )
+        assert (
+            victims[0] != "starved"
+        ), f"the promoted chat was taken first anyway, order was {victims}"
 
     def test_the_debt_clears_once_it_runs_again_unmolested(self):
         controller = _controller(budget = 16384)
@@ -520,6 +537,7 @@ class TestStarvation:
         _register(controller, "hog2", 12000)
         controller.plan_preemptions()
         assert starved.consecutive_preemptions <= 1
+
 
 class TestTheSwitchesThatTurnItOff:
     def test_a_private_cache_per_slot_is_never_preempted(self):
@@ -568,16 +586,21 @@ class TestTheSwitchesThatTurnItOff:
 
 class TestTheReclaimBarrier:
     def test_it_waits_until_the_count_falls(self):
-        readings = iter([
-            {"requests_processing": 3.0},
-            {"requests_processing": 2.0},
-            {"requests_processing": 1.0},
-        ])
-        assert wait_for_reclaim(
-            lambda: next(readings),
-            target_processing = 1,
-            sleep = lambda _s: None,
-        ) is True
+        readings = iter(
+            [
+                {"requests_processing": 3.0},
+                {"requests_processing": 2.0},
+                {"requests_processing": 1.0},
+            ]
+        )
+        assert (
+            wait_for_reclaim(
+                lambda: next(readings),
+                target_processing = 1,
+                sleep = lambda _s: None,
+            )
+            is True
+        )
 
     def test_it_returns_at_once_when_already_clear(self):
         calls = []
@@ -590,21 +613,27 @@ class TestTheReclaimBarrier:
         assert len(calls) == 1
 
     def test_a_server_without_the_counter_is_not_a_confirmation(self):
-        assert wait_for_reclaim(
-            lambda: {"n_decode_total": 5.0},
-            target_processing = 0,
-            sleep = lambda _s: None,
-        ) is False
+        assert (
+            wait_for_reclaim(
+                lambda: {"n_decode_total": 5.0},
+                target_processing = 0,
+                sleep = lambda _s: None,
+            )
+            is False
+        )
 
     def test_an_unreadable_metrics_endpoint_times_out_rather_than_blocking(self):
         clock = iter([0.0, 0.0, 1.0, 99.0])
-        assert wait_for_reclaim(
-            lambda: None,
-            target_processing = 0,
-            timeout_s = 1.0,
-            sleep = lambda _s: None,
-            monotonic = lambda: next(clock),
-        ) is False
+        assert (
+            wait_for_reclaim(
+                lambda: None,
+                target_processing = 0,
+                timeout_s = 1.0,
+                sleep = lambda _s: None,
+                monotonic = lambda: next(clock),
+            )
+            is False
+        )
 
     def test_it_never_claims_to_know_which_generation_finished(self):
         """It is a barrier, not an attribution: the gauge cannot say who owns a slot."""
@@ -658,9 +687,9 @@ class TestAPauseMidThoughtKeepsTheThought:
 
         cp = StreamCheckpoint(visible_text = "The answer is", reasoning_text = "thinking")
         assert cp.has_resume_point()
-        assert not cp.has_reasoning_resume_point(), (
-            "resuming as a thought would push already-visible prose back into the block"
-        )
+        assert (
+            not cp.has_reasoning_resume_point()
+        ), "resuming as a thought would push already-visible prose back into the block"
         assert cp.kept_chars() == len("The answer is")
 
     def test_nothing_generated_keeps_nothing(self):
@@ -700,7 +729,6 @@ class TestTheWireCarriesAThoughtPartial:
 
     def test_a_tool_call_turn_is_never_resumable(self):
         from core.inference.chat_template_helpers import trailing_assistant_resumable
-
         convo = [
             {"role": "user", "content": "hi"},
             {
@@ -718,7 +746,7 @@ class TestTheWireCarriesAThoughtPartial:
         from core.inference import llama_cpp
 
         source = Path(llama_cpp.__file__).read_text()
-        assert 'if continue_final_message and trailing_assistant_resumable(conversation):' in source
+        assert "if continue_final_message and trailing_assistant_resumable(conversation):" in source
 
     def test_the_splice_path_still_uses_visible_text_only(self):
         """The manual splice appends its result as VISIBLE text.
@@ -759,9 +787,9 @@ class TestReplayedWorkIsStillCharged:
         controller.note_replayed("a", 500)
         # Those 500 are now prompt, and the next attempt's counter starts at zero.
         controller.observe("a", 0)
-        assert controller.participant("a").tokens == 1500, (
-            "occupancy fell back to the admission prompt and lost the replayed partial"
-        )
+        assert (
+            controller.participant("a").tokens == 1500
+        ), "occupancy fell back to the admission prompt and lost the replayed partial"
 
     def test_replays_accumulate_across_pauses(self):
         controller = self._controller()
@@ -799,9 +827,7 @@ class TestReplayedWorkIsStillCharged:
         controller.observe("a", 0)
         assert controller.participant("a").tokens == 1000
 
-        policy.on_preempted(
-            StreamCheckpoint(charged_tokens = 700, reasoning_text = "a thought")
-        )
+        policy.on_preempted(StreamCheckpoint(charged_tokens = 700, reasoning_text = "a thought"))
         controller.observe("a", 0)
         assert controller.participant("a").tokens == 1700
 
@@ -819,13 +845,16 @@ class TestAChatThatOutgrewTheSharedCeiling:
     makespan from 166799 steps to 924 and starvation from 1.6 chats of eight to none.
     """
 
-    def _controller_with_drafts(self, budget = 16384, drafts = 2, slots = 4):
+    def _controller_with_drafts(
+        self,
+        budget = 16384,
+        drafts = 2,
+        slots = 4,
+    ):
         from core.inference.llama_preemption import PreemptionController
 
         controller = PreemptionController("solo-test")
-        controller.configure(
-            budget = budget, kv_unified = True, draft_tokens = drafts, slots = slots
-        )
+        controller.configure(budget = budget, kv_unified = True, draft_tokens = drafts, slots = slots)
         return controller
 
     def test_a_want_past_the_shared_ceiling_is_recognised(self):

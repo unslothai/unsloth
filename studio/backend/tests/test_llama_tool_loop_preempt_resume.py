@@ -42,9 +42,7 @@ _TOOL = {
 
 
 def _delta(content: str) -> str:
-    return (
-        "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
-    )
+    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
 
 
 def _finish(reason: str = "stop") -> str:
@@ -62,8 +60,15 @@ def _done() -> str:
 class _Recorder:
     """A backend whose stream pauses itself partway through the first attempt."""
 
-    def __init__(self, monkeypatch, streams, *, signal, pause_after_attempt = 0,
-                 pause_attempts = None):
+    def __init__(
+        self,
+        monkeypatch,
+        streams,
+        *,
+        signal,
+        pause_after_attempt = 0,
+        pause_attempts = None,
+    ):
         self.payloads: list[dict] = []
         self.signal = signal
         self.pause_attempts = (
@@ -96,9 +101,7 @@ class _Recorder:
         ):
             recorder.payloads.append(copy.deepcopy(payload))
             stream = recorder._streams.pop(0)
-            yield type(
-                "FakeResponse", (), {"status_code": 200, "chunks": stream}
-            )()
+            yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
 
         def fake_iter_text_cancellable(
             response,
@@ -168,9 +171,7 @@ class TestThePauseIsResumed:
             signal = signal,
         )
         _run(recorder.backend, signal = signal, policy = policy)
-        assert len(recorder.payloads) == 2, (
-            "a paused attempt must be re-opened, not abandoned"
-        )
+        assert len(recorder.payloads) == 2, "a paused attempt must be re-opened, not abandoned"
 
     def test_the_resumed_request_continues_the_partial(self, monkeypatch):
         signal = preemption.PreemptSignal()
@@ -189,9 +190,9 @@ class TestThePauseIsResumed:
         assert resumed.get("add_generation_prompt") is False
         trailing = resumed["messages"][-1]
         assert trailing["role"] == "assistant"
-        assert "Once upon a time" in trailing["content"], (
-            "the partial must go back as the turn to EXTEND"
-        )
+        assert (
+            "Once upon a time" in trailing["content"]
+        ), "the partial must go back as the turn to EXTEND"
 
     def test_the_policy_handshake_runs_in_order(self, monkeypatch):
         signal = preemption.PreemptSignal()
@@ -260,9 +261,9 @@ class TestWhatAPauseMustNotCost:
             pause_attempts = range(pauses),
         )
         _run(recorder.backend, signal = signal, policy = policy, max_tool_iterations = 1)
-        assert len(recorder.payloads) == pauses + 1, (
-            "a paused turn was cut short by the tool-iteration bound"
-        )
+        assert (
+            len(recorder.payloads) == pauses + 1
+        ), "a paused turn was cut short by the tool-iteration bound"
 
 
 class TestWhenItCannotOrMustNotResume:
@@ -308,7 +309,12 @@ class TestWhenItCannotOrMustNotResume:
         )
 
         # Pause on the very first chunk, which carries no content.
-        def fake_iter(response, _cancel_event, first_token_deadline = None, preempt_event = None):
+        def fake_iter(
+            response,
+            _cancel_event,
+            first_token_deadline = None,
+            preempt_event = None,
+        ):
             attempt = len(recorder.payloads) - 1
             if attempt == 0:
                 raise preemption.LlamaStreamPreempted
@@ -318,9 +324,9 @@ class TestWhenItCannotOrMustNotResume:
         _run(recorder.backend, signal = signal, policy = policy)
 
         assert len(recorder.payloads) == 2
-        assert not recorder.payloads[1].get("continue_final_message"), (
-            "there was no partial, so nothing should be continued"
-        )
+        assert not recorder.payloads[1].get(
+            "continue_final_message"
+        ), "there was no partial, so nothing should be continued"
         assert policy.checkpoints[0].has_resume_point() is False
 
 

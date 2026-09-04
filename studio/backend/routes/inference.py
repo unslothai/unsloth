@@ -2312,7 +2312,12 @@ def _openai_llama_effective_batch_tokens(llama_backend) -> int:
     return _OPENAI_LLAMA_DEFAULT_N_BATCH
 
 
-def _llama_preemption_log(event: str, *, level: str = "info", **fields) -> None:
+def _llama_preemption_log(
+    event: str,
+    *,
+    level: str = "info",
+    **fields,
+) -> None:
     """One line per preemption decision.
 
     Added after a live run where the honest answer to "did preemption engage" was that
@@ -2395,9 +2400,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # exactly what the waiter needs; the cost is a prefill on resume, which
         # is what RECOMPUTE pays too.
         waiting = int(getattr(snapshot, "paused", 0) or 0)
-        needed = over if over > 0 else (
-            int(occupancy.get("resident") or 0) if waiting else 0
-        )
+        needed = over if over > 0 else (int(occupancy.get("resident") or 0) if waiting else 0)
         if needed > 0 and occupancy.get("idle"):
             freed = reclaim_idle_slots(
                 occupancy,
@@ -2448,9 +2451,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                         needed = sum(v.tokens for v in victims),
                     )
                     if freed:
-                        _llama_preemption_log(
-                            "reclaimed-idle", freed = freed, gen_id = completion_id
-                        )
+                        _llama_preemption_log("reclaimed-idle", freed = freed, gen_id = completion_id)
                         # Re-read rather than assume the erase was enough.
                         _gguf_slots_seen["at"] = 0.0
         except Exception:
@@ -2483,8 +2484,7 @@ def _openai_llama_preemption_arm(
     if lease is None:
         # Queued, not yet granted. It holds no cache, so there is nothing to preempt and
         # nothing to preempt FOR.
-        _llama_preemption_log("not-armed", reason = "no-lease-yet", gen_id = gen_id,
-                              level = "debug")
+        _llama_preemption_log("not-armed", reason = "no-lease-yet", gen_id = gen_id, level = "debug")
         return None
     key = str(getattr(llama_backend, "base_url", "llama-server"))
     controller = get_preemption_controller(key)
@@ -2515,8 +2515,10 @@ def _openai_llama_preemption_arm(
         _llama_preemption_log(
             "not-armed",
             reason = (
-                "no-kv-unified" if not getattr(llama_backend, "_kv_cache_unified", False)
-                else "no-budget" if not _openai_llama_admission_budget(llama_backend)
+                "no-kv-unified"
+                if not getattr(llama_backend, "_kv_cache_unified", False)
+                else "no-budget"
+                if not _openai_llama_admission_budget(llama_backend)
                 else "switched-off"
             ),
             gen_id = gen_id,
@@ -2596,6 +2598,8 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
             )
     except Exception:
         pass
+
+
 def _openai_llama_admission_enforced_max_tokens(
     payload,
     *,
@@ -22048,10 +22052,9 @@ async def produce_openai_chat_completions(
 
             # One implementation, shared with the plain chat surfaces. See
             # _openai_llama_residency_observer for why it is not defined here any more.
-            _gguf_refresh_residency, _gguf_observe_tokens = (
-                _openai_llama_residency_observer(
-                    llama_backend = llama_backend, completion_id = completion_id,
-                )
+            _gguf_refresh_residency, _gguf_observe_tokens = _openai_llama_residency_observer(
+                llama_backend = llama_backend,
+                completion_id = completion_id,
             )
             _gguf_preempt_policy_hold = DeferredPreemptionPolicy()
             # Captured on the event loop, used from the stream's worker thread. The
@@ -22525,7 +22528,8 @@ async def produce_openai_chat_completions(
                     # chat of four hanging 2400s while llama-server sat idle with every
                     # slot released.
                     _openai_llama_preemption_disarm(
-                        llama_backend = llama_backend, gen_id = completion_id,
+                        llama_backend = llama_backend,
+                        gen_id = completion_id,
                     )
                     try:
                         if not stream_completed:
@@ -22934,10 +22938,9 @@ async def produce_openai_chat_completions(
         # evicted, because `observe()` is the only thing that plans an eviction and
         # `on_tokens` is the only thing that calls it. Same implementation the tool loop
         # uses, not a second copy.
-        _plain_refresh_residency, _plain_observe_tokens = (
-            _openai_llama_residency_observer(
-                llama_backend = llama_backend, completion_id = completion_id,
-            )
+        _plain_refresh_residency, _plain_observe_tokens = _openai_llama_residency_observer(
+            llama_backend = llama_backend,
+            completion_id = completion_id,
         )
         try:
             _plain_preempt_loop = asyncio.get_running_loop()
@@ -23386,7 +23389,8 @@ async def produce_openai_chat_completions(
                     # only ever grew, and once it believed the cache was full the next
                     # chat waited for room that could not arrive.
                     _openai_llama_preemption_disarm(
-                        llama_backend = llama_backend, gen_id = completion_id,
+                        llama_backend = llama_backend,
+                        gen_id = completion_id,
                     )
                     if lease is not None:
                         lease.release()
@@ -23403,7 +23407,8 @@ async def produce_openai_chat_completions(
                 # and a registration left behind is the failure that hangs the NEXT chat,
                 # not this one, which makes it expensive to trace back here.
                 _openai_llama_preemption_disarm(
-                    llama_backend = llama_backend, gen_id = completion_id,
+                    llama_backend = llama_backend,
+                    gen_id = completion_id,
                 )
                 if stream_lease is not None:
                     stream_lease.release()
@@ -23751,7 +23756,8 @@ async def produce_openai_chat_completions(
                 # Same rule as the streaming path: arming registers a charge, so every
                 # exit unregisters it, and before the tokens go back.
                 _openai_llama_preemption_disarm(
-                    llama_backend = llama_backend, gen_id = completion_id,
+                    llama_backend = llama_backend,
+                    gen_id = completion_id,
                 )
                 if admission_lease is not None:
                     admission_lease.release()

@@ -213,9 +213,9 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
         accounting, real occupancy peaked at 12350 of a 16384 cache, never reached the 14312
         ceiling, and the run still preempted 9 times and lost two turns.
         """
-        assert self._cost(262144, 4) == self._cost(32768, 4), (
-            "a large cache must not be charged more for the same unstated request"
-        )
+        assert self._cost(262144, 4) == self._cost(
+            32768, 4
+        ), "a large cache must not be charged more for the same unstated request"
         for budget in (32768, 262144):
             assert self._cost(budget, 4) < budget // 4
 

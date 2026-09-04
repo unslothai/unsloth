@@ -244,11 +244,11 @@ class TestOldCallers:
             f"a parameter was inserted before the hook, rebinding positional callers: "
             f"{names[hook_at - 2:hook_at + 1]}"
         )
-        for later in names[hook_at + 1:]:
+        for later in names[hook_at + 1 :]:
             assert (
-                inspect.signature(
-                    LlamaCppBackend.generate_chat_completion_with_tools
-                ).parameters[later].default
+                inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
+                .parameters[later]
+                .default
                 is None
             ), f"{later} was appended without an optional default"
 
