@@ -24,7 +24,12 @@ from auth.authentication import get_current_subject  # noqa: E402
 from core.inference import local_model_resolver as resolver  # noqa: E402
 from core.inference import media_model_index as mmi  # noqa: E402
 from core.inference.media_model_index import MediaModelPick  # noqa: E402
+from unforgettable import VIRTUAL_MODEL_ID  # noqa: E402
 from utils.api_errors import install_api_error_handlers  # noqa: E402
+
+
+def _without_virtual(models):
+    return [m for m in models if m.get("id") != VIRTUAL_MODEL_ID]
 
 
 class _Info:
@@ -232,7 +237,7 @@ def test_ambiguous_same_token_media_builds_are_not_both_loaded(monkeypatch):
     }
     _catalog(monkeypatch, [], resident, picks = picks)
 
-    models = asyncio.run(inf._openai_catalog_objects())
+    models = _without_virtual(asyncio.run(inf._openai_catalog_objects()))
     assert {model["id"]: model["loaded"] for model in models} == {
         "image-a": False,
         "image-b": False,
@@ -256,7 +261,7 @@ def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch
         }
     }
     _catalog(monkeypatch, [], resident, picks = {"text-to-image": [pick]})
-    data = asyncio.run(inf._openai_catalog_objects())
+    data = _without_virtual(asyncio.run(inf._openai_catalog_objects()))
     assert [m["id"] for m in data] == ["z-image"]
     assert data[0]["loaded"] is True and data[0]["quant"] == "Q4_K_M"
     assert "/srv/" not in json.dumps(data)
@@ -274,7 +279,7 @@ def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
         media_locality, "is_edit_only", lambda pick: pick.model_id == "org/qwen-image-edit"
     )
     _catalog(monkeypatch, [], picks = {"text-to-image": [edit, plain]})
-    ids = [m["id"] for m in asyncio.run(inf._openai_catalog_objects())]
+    ids = [m["id"] for m in _without_virtual(asyncio.run(inf._openai_catalog_objects()))]
     assert ids == ["org/plain-image"]
 
 
@@ -383,7 +388,7 @@ def test_loaded_non_gguf_media_stays_listed_when_discovery_misses_it(monkeypatch
         }
     }
     _catalog(monkeypatch, [], resident, picks = {})
-    (model,) = asyncio.run(inf._openai_catalog_objects())
+    (model,) = _without_virtual(asyncio.run(inf._openai_catalog_objects()))
     assert model["id"] == "black-forest-labs/FLUX.1-dev"
     assert model["task"] == "text-to-image" and model["loaded"] is True
     assert resident_answers_media_request(resident["text-to-image"], model["id"], owner = DIFFUSION)
@@ -399,7 +404,7 @@ def test_edit_only_resident_missing_from_discovery_is_not_advertised(monkeypatch
         }
     }
     _catalog(monkeypatch, [], resident, picks = {})
-    assert asyncio.run(inf._openai_catalog_objects()) == []
+    assert _without_virtual(asyncio.run(inf._openai_catalog_objects())) == []
 
 
 def _stt(
@@ -727,7 +732,7 @@ def test_downloaded_tts_model_is_not_advertised_without_switch_support(monkeypat
         is_gguf = False,
     )
     _catalog(monkeypatch, [tts], picks = {})
-    assert asyncio.run(inf._openai_catalog_objects()) == []
+    assert _without_virtual(asyncio.run(inf._openai_catalog_objects())) == []
 
 
 def test_resident_media_status(monkeypatch):
@@ -798,7 +803,7 @@ def test_retrieve_and_list_media_models_over_http(monkeypatch):
 
     listing = client.get("/v1/models").json()
     assert listing["object"] == "list"
-    assert {m["id"]: m.get("task") for m in listing["data"]} == {
+    assert {m["id"]: m.get("task") for m in _without_virtual(listing["data"])} == {
         "Qwen3-Q4": None,
         "unsloth/Z-Image-Turbo-GGUF": "text-to-image",
         "Lightricks/LTX-2": "text-to-video",

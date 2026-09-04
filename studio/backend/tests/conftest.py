@@ -37,8 +37,13 @@ from pathlib import Path
 
 import pytest
 
-# Add backend root to sys.path (mirrors app launch)
+# Add backend root to sys.path (mirrors app launch). Repo root too, but after
+# the backend: Studio face modules import the sibling Apache package
+# ``unforgettable``, and putting the repo first would shadow ``tests``.
 _backend_root = Path(__file__).resolve().parent.parent
+_repo_root = _backend_root.parent.parent
+if str(_repo_root) not in sys.path:
+    sys.path.append(str(_repo_root))
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 

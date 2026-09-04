@@ -41,6 +41,7 @@ dependencies = [
 
 [project.scripts]
 unsloth = "unsloth_cli:app"
+unforgettable = "unforgettable.cli:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "unsloth._version.__version__"}
@@ -78,7 +79,7 @@ studio = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
+include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*", "unforgettable*"]
 exclude = [
     "images*",
     "tests*",
@@ -90,6 +91,7 @@ exclude = [
     "*.unsloth_compiled_cache*",
     "*.node_modules",
     "*.node_modules.*",
+    "unforgettable.tests*",
 ]
 
 # Excluding a tests package above is not enough: include-package-data re-ships its
@@ -98,6 +100,7 @@ exclude = [
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
+"unforgettable" = ["tests/*"]
 
 [project.optional-dependencies]
 # Unsloth's server stack, mirroring studio/backend/requirements/studio.txt.
@@ -1498,6 +1501,7 @@ pythonpath = ["."]
 markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+    "scenario: optional Unforgettable CPU/B week; run with -o addopts= -m scenario",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with

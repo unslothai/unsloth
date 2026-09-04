@@ -33,6 +33,8 @@ import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides"
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
+import { loadUnforgettableSettings } from "@/features/settings/api/unforgettable";
+import { mergeUnforgettableChatExtras } from "@/features/unforgettable/lib/merge-extras";
 import {
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
@@ -6394,7 +6396,11 @@ export function createOpenAIStreamAdapter(
             };
           }
 
-          return {
+          const unforgettableExtras = mergeUnforgettableChatExtras(
+            params.checkpoint,
+            await loadUnforgettableSettings().catch(() => null),
+          );
+          const request: OpenAIChatCompletionsRequest = {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
@@ -6541,6 +6547,8 @@ export function createOpenAIStreamAdapter(
                 // tool pill lit has to say so.
                 { enable_tools: false }),
           };
+          Object.assign(request, unforgettableExtras);
+          return request;
         };
 
         let retriedWithRefreshedKey = false;

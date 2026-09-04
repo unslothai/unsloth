@@ -216,6 +216,7 @@ import {
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
+import { UNFORGETTABLE_NAV_ITEM_META } from "@/features/unforgettable/studio-ui";
 import {
   Fragment,
   useCallback,
@@ -2140,6 +2141,19 @@ export function AppSidebar() {
       },
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/api-monitor" }));
+      },
+    },
+    unforgettable: {
+      icon: UNFORGETTABLE_NAV_ITEM_META.icon,
+      label: t(UNFORGETTABLE_NAV_ITEM_META.labelKey),
+      active:
+        pathname === "/unforgettable" || pathname.startsWith("/unforgettable/"),
+      onClick: () => {
+        navigate({ to: "/unforgettable" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/unforgettable" }));
       },
     },
   };

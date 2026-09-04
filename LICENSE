@@ -187,7 +187,7 @@
       identification within third-party archives.
 
    Copyright [2024-] [Unsloth AI. Inc team, Daniel Han-Chen & Michael Han-Chen]
-   Files under unsloth/*, tests/*, scripts/* are Apache 2.0 licensed.
+   Files under unsloth/*, unforgettable/*, tests/*, scripts/* are Apache 2.0 licensed.
    Files under studio/*, unsloth_cli/* which is optional to install are AGPLv3 licensed.
 
    Licensed under the Apache License, Version 2.0 (the "License");

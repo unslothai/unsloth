@@ -4854,6 +4854,22 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    # Memory/rims specs live in Apache, not ALL_TOOLS. Offer them only on the
+    # inner generate of the virtual model so ordinary Studio chat never sees them.
+    try:
+        from core.unforgettable_host import in_inner_generate
+        from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
+        if in_inner_generate():
+            have = {t["function"]["name"] for t in tools}
+            extras = [
+                spec
+                for spec in (*MEMORY_TOOLS, *CONTACT_TOOLS)
+                if spec["function"]["name"] not in have
+            ]
+            if extras:
+                tools = list(tools) + extras
+    except Exception:
+        get_logger(__name__).debug("unforgettable inner-generate tool union skipped", exc_info = True)
     # Same rule for the conversation archive: offered only once this thread has had turns
     # evicted, so a short chat never sees the extra schema. On the first compaction the
     # tool is still absent (the archive is written mid-request) and the forced recall
@@ -20384,6 +20400,13 @@ async def produce_openai_chat_completions(
         if _m.role == "developer":
             _m.role = "system"
 
+    from core.unforgettable_host import handle_chat_completions, in_inner_generate, is_virtual_model
+
+    if is_virtual_model(payload.model) and not in_inner_generate():
+        return await handle_chat_completions(
+            payload, request, current_subject, openai_chat_completions
+        )
+
     if payload.logprobs:
         _raise_unsupported_openai_parameter(
             "logprobs", "logprobs is not supported for chat completions."
@@ -25313,6 +25336,14 @@ async def _openai_catalog_objects() -> list[dict]:
     )
     for obj in media:
         by_id.setdefault(obj["id"], obj)
+
+    from core.unforgettable_host import catalog_entry as _unforgettable_catalog_entry
+
+    # Alias, not a resident backend. Keep it off `_openai_model_objects` so a
+    # loaded GGUF is still the only "currently loaded" entry; mark the alias
+    # loaded here only when an inner model can actually serve it.
+    virtual = _unforgettable_catalog_entry(_created, loaded = bool(by_id))
+    by_id.setdefault(virtual["id"], virtual)
 
     return list(by_id.values())
 

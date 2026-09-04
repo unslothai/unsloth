@@ -24,6 +24,7 @@ from routes.mcp_servers import router as mcp_servers_router
 from routes.rag import router as rag_router
 from routes.research_runs import router as research_runs_router
 from routes.chat_generation_runs import router as chat_generation_runs_router
+from routes.unforgettable import router as unforgettable_router
 from routes.youtube import router as youtube_router
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     "rag_router",
     "research_runs_router",
     "chat_generation_runs_router",
+    "unforgettable_router",
     "youtube_router",
 ]
 
@@ -55,5 +57,6 @@ _ = (
     video_openai_router,
     research_runs_router,
     chat_generation_runs_router,
+    unforgettable_router,
     youtube_router,
 )

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { unforgettableMessages } from "../features/unforgettable/i18n/en";
+import { mergeMessageTrees } from "../features/unforgettable/i18n/merge-message-trees";
 import { getLocale } from "./locale-store";
-import { en } from "./locales/en";
+import { en as upstreamEnglish } from "./locales/en";
 import type { InterpolationValues, MessageKey, MessageTree } from "./types";
+
+const en = mergeMessageTrees(upstreamEnglish, unforgettableMessages);
 
 export const LOCALES = {
   en: { label: "English", nativeLabel: "English" },
@@ -127,7 +131,10 @@ export function loadLocaleMessages(
   const load = importer(locale, retryUrl)
     .then(
       (module) => {
-        loadedMessages[locale] = readCatalog(module, locale);
+        loadedMessages[locale] = mergeMessageTrees(
+          readCatalog(module, locale),
+          unforgettableMessages,
+        );
         catalogRetryUrls.delete(locale);
       },
       (error: unknown) => {

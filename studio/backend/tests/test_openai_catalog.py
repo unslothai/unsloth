@@ -14,6 +14,11 @@ if str(_BACKEND) not in sys.path:
 
 import routes.inference as inf  # noqa: E402
 from core.inference import local_model_resolver as resolver  # noqa: E402
+from unforgettable import VIRTUAL_MODEL_ID  # noqa: E402
+
+
+def _without_virtual(models):
+    return [m for m in models if m.get("id") != VIRTUAL_MODEL_ID]
 
 
 class _Info:
@@ -141,7 +146,7 @@ def test_a_manually_loaded_non_gguf_model_has_one_catalog_row(monkeypatch):
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
     monkeypatch.setattr(resolver, "local_servable_model", lambda _info: (False, ()))
-    data = asyncio.run(inf._openai_catalog_objects())
+    data = _without_virtual(asyncio.run(inf._openai_catalog_objects()))
 
     assert data == [
         {
@@ -179,7 +184,7 @@ def test_non_gguf_catalog_dedupe_keeps_a_distinct_same_basename_path(monkeypatch
     monkeypatch.setattr(resolver, "local_servable_model", lambda _info: (False, ()))
     ids = {entry["id"]: entry for entry in asyncio.run(inf._openai_catalog_objects())}
 
-    assert set(ids) == {"model", "publisher-b/model"}
+    assert set(ids) - {VIRTUAL_MODEL_ID} == {"model", "publisher-b/model"}
     assert ids["model"]["loaded"] is True
     assert ids["publisher-b/model"]["loaded"] is False
 

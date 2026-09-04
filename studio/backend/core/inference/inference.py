@@ -2038,10 +2038,16 @@ class InferenceBackend:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
 
             def generate_fn():
+                from core.unforgettable_host import (
+                    prepare_sidecar_adapter,
+                    restore_sidecar_adapter,
+                )
                 with self._generation_lock:
+                    snap = None
                     try:
                         if _adapter_state is not None:
-                            self._apply_adapter_state(_adapter_state)
+                            adapter_state, snap = prepare_sidecar_adapter(self, _adapter_state)
+                            self._apply_adapter_state(adapter_state)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count;
@@ -2053,6 +2059,11 @@ class InferenceBackend:
                             streamer.abort()
                         logger.error(f"Generation error: {e}")
                     finally:
+                        if snap is not None:
+                            try:
+                                restore_sidecar_adapter(self, snap)
+                            except Exception:
+                                logger.exception("Failed to restore adapter after sidecar attach")
                         timer.finish()
                         try:
                             streamer.end()

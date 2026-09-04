@@ -43,6 +43,7 @@ TABS = [
     "remote-lan",
     "agents",
     "keyboard-shortcuts",
+    "unforgettable",
     "debugging",
     "about",
 ]

@@ -21,6 +21,7 @@ and healing downstream are untouched.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import queue
 import threading
@@ -180,8 +181,12 @@ def stream_tool_execution(
             # poll-interval latency.
             output_queue.put(done_sentinel)
 
+    # Copy ContextVars into the worker. Unforgettable binds episode db/traces
+    # on the request task; a raw Thread would write memory_* to the default
+    # home db and leave _pass_failure blind to world tool failures.
     worker = threading.Thread(
-        target = _run,
+        target = contextvars.copy_context().run,
+        args = (_run,),
         daemon = True,
         name = f"tool-exec-{tool_name or 'unknown'}",
     )

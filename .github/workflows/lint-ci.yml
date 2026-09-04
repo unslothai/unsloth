@@ -154,7 +154,7 @@ jobs:
         # files. Hard gate.
         run: |
           python -m compileall -q -j 0 \
-            unsloth unsloth_cli studio tests cli.py unsloth-cli.py
+            unsloth unsloth_cli studio unforgettable tests cli.py unsloth-cli.py
 
       - name: Dynamic-execution gate self-test
         run: python scripts/lint_exec_literals.py --self-test
@@ -168,7 +168,7 @@ jobs:
         # comparisons, undefined names. The whole repo passes today,
         # so this is a hard gate.
         run: |
-          ruff check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
+          ruff check unsloth unsloth_cli studio unforgettable tests cli.py unsloth-cli.py
 
       - name: Import-hoist verifier self-test
         # scripts/verify_import_hoist.py is a scope-aware (LEGB) AST
@@ -568,7 +568,7 @@ jobs:
         # non-blocking until the custom pipeline is wired in here.
         continue-on-error: true
         run: |
-          ruff format --check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
+          ruff format --check unsloth unsloth_cli studio unforgettable tests cli.py unsloth-cli.py
 
       # Collects the two lanes launched before the lint steps. This step is the whole
       # reason the backgrounding is safe: without it a lane's failure would be invisible
