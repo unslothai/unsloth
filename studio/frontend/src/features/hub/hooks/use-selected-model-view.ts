@@ -83,6 +83,7 @@ export function useSelectedModelView({
             : null,
           baseModelHubId: selectedDiscoverRow.result.baseModel ?? null,
           isDownloaded: !selectedLocalRow.partial,
+          runtimeCanChat: selectedLocalRow.capabilities.canChat,
           isPartial: selectedLocalRow.partial ?? false,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
@@ -154,6 +155,10 @@ export function useSelectedModelView({
           : null,
         baseModelHubId: selectedDiscoverRow.result.baseModel ?? null,
         isDownloaded: isResolvedOnDevice,
+        runtimeCanChat:
+          selectedCachedRow?.capabilities.canChat ??
+          selectedLocalRow?.capabilities.canChat ??
+          false,
         isPartial: isResolvedPartial,
         partialTransport:
           selectedCachedRow?.partialTransport ??
@@ -225,6 +230,7 @@ export function useSelectedModelView({
         baseModelSource: mergedBaseModel ? "huggingface" : null,
         baseModelHubId: mergedBaseModel,
         isDownloaded: !selectedCachedRow.partial,
+        runtimeCanChat: selectedCachedRow.capabilities.canChat,
         isPartial: selectedCachedRow.partial ?? false,
         partialTransport: selectedCachedRow.partialTransport ?? null,
         partialResumable: selectedCachedRow.partialResumable === true,
@@ -300,6 +306,7 @@ export function useSelectedModelView({
           requiresVariant: selectedLocalRow.capabilities.requiresVariant,
           modelFormat: selectedLocalRow.modelFormat,
           isDownloaded: false,
+          runtimeCanChat: selectedLocalRow.capabilities.canChat,
           isPartial: true,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
@@ -355,6 +362,7 @@ export function useSelectedModelView({
         adapterType: selectedLocalRow.adapterType ?? null,
         trainingMethod: selectedLocalRow.trainingMethod ?? null,
         isDownloaded: true,
+        runtimeCanChat: selectedLocalRow.capabilities.canChat,
         capabilities: detectViewCapabilities(
           mergedTags,
           mergedPipelineTag,

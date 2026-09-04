@@ -3,6 +3,7 @@
 
 import {
   applyModelLoadConfigToRuntime,
+  clearModelConfigHandoff,
   currentRuntimePerModelConfig,
   type DeletedModelRef,
   type ExternalConnectionRef,
@@ -14,9 +15,11 @@ import {
   type PerModelConfig,
   isServedByMlx,
   loadedContextFields,
+  modelConfigHandoffForDestination,
   resolveInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
+  useModelConfigHandoffStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
@@ -2296,6 +2299,24 @@ export function ChatPage({
   // Controlled, so the chord can open the switcher and not just its trigger.
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
+  const modelConfigRequest = useModelConfigHandoffStore((state) =>
+    modelConfigHandoffForDestination(state.request, {
+      active,
+      newChatId: search.new,
+      threadId: search.thread,
+      compareId: search.compare,
+      projectId: search.project,
+    }),
+  );
+  const handleModelConfigRequestAdopted = useCallback(
+    (requestId: string) => {
+      setSettingsOpen(false);
+      setModelSelectorLocked(false);
+      setModelSelectorOpen(true);
+      clearModelConfigHandoff(requestId);
+    },
+    [setSettingsOpen],
+  );
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when
   // compare was opened from a path that doesn't set viewBeforeCompareRef.
@@ -4076,13 +4097,17 @@ export function ChatPage({
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
+                configRequest={modelConfigRequest}
+                onConfigRequestAdopted={handleModelConfigRequestAdopted}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
-                open={active && modelSelectorOpen}
+                open={
+                  active && (modelSelectorOpen || modelConfigRequest !== null)
+                }
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
@@ -4373,7 +4398,7 @@ export function ChatPage({
       </div>
 
       <ChatSettingsPanel
-        open={active && settingsOpen}
+        open={active && modelConfigRequest === null && settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
         }}

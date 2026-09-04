@@ -21,6 +21,7 @@ import {
   DeleteConfirmDialog,
   DownloadActionButton,
   DownloadCard,
+  ModelRunActionButton,
 } from "./download-card";
 import { QuantOptionsMenu } from "./gguf-download-card";
 import { useCardDelete } from "./use-card-delete";
@@ -51,6 +52,8 @@ export function SafetensorsDownloadCard({
   isLoadingThisModel,
   cachePath,
   knownBytes,
+  onRun,
+  runPending = false,
   onChange,
 }: {
   repoId: string;
@@ -64,6 +67,8 @@ export function SafetensorsDownloadCard({
   /** Owning cache dir, threaded into delete so it targets this copy. */
   cachePath?: string | null;
   knownBytes?: number | null;
+  onRun?: () => void;
+  runPending?: boolean;
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
@@ -146,12 +151,22 @@ export function SafetensorsDownloadCard({
   });
   const showDownloadAction =
     !isDownloaded || downloading || cancelling || downloadAction.starting;
+  const showRunAction =
+    Boolean(onRun) &&
+    isDownloaded &&
+    !isPartial &&
+    !downloading &&
+    !cancelling &&
+    !downloadAction.starting &&
+    !isLoadingThisModel &&
+    !repoPeerActive;
   const canDelete =
     (isDownloaded || isPartial) &&
     !downloading &&
     !repoPeerActive &&
     !isActive &&
-    !isLoadingThisModel;
+    !isLoadingThisModel &&
+    !runPending;
 
   // Same preview the On Device and picker rows run: without it this card kept an enabled Delete
   // for a companion base an installed image GGUF still needs, and the refusal arrived as a 400
@@ -235,7 +250,7 @@ export function SafetensorsDownloadCard({
             )}
           </div>
         </div>
-        {showDownloadAction && <CardDivider />}
+        {(showDownloadAction || showRunAction) && <CardDivider />}
         {showDownloadAction && (
           <DownloadActionButton
             downloading={downloadAction.downloading}
@@ -248,6 +263,13 @@ export function SafetensorsDownloadCard({
             disabled={downloadAction.disabled}
             onClick={downloadAction.onClick}
             className={repoPeerActive ? "opacity-70" : undefined}
+          />
+        )}
+        {showRunAction && onRun && (
+          <ModelRunActionButton
+            label={`Configure and run ${repoId}`}
+            onClick={onRun}
+            loading={runPending}
           />
         )}
       </DownloadCard>

@@ -44,6 +44,10 @@ import { memo, useDeferredValue, useMemo } from "react";
 import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
+import {
+  type HubModelRunSelection,
+  isHubModelRunEligible,
+} from "../lib/model-run-selection";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -396,6 +400,8 @@ export type ModelInspectorRuntime = {
 export type ModelInspectorActions = {
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
+  onOpenRunConfig?: (selection: HubModelRunSelection) => void;
+  runConfigPending?: boolean;
 };
 
 export const ModelInspector = memo(function ModelInspector({
@@ -428,9 +434,16 @@ export const ModelInspector = memo(function ModelInspector({
     gpuCount,
     systemRamGb,
   } = runtime;
-  const { onInventoryChange, onSearchHub } = actions;
+  const {
+    onInventoryChange,
+    onSearchHub,
+    onOpenRunConfig,
+    runConfigPending = false,
+  } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const chatOnlyMeasured = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -538,6 +551,17 @@ export const ModelInspector = memo(function ModelInspector({
     studioPageForTask(
       taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
     ) !== undefined;
+  const openRunConfig =
+    !hasActiveHubDownload &&
+    isHubModelRunEligible({
+      model,
+      isDataset,
+      mediaRuntime: runsOnMediaRuntime,
+      safetensorsRuntimeAvailable:
+        !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+    })
+      ? onOpenRunConfig
+      : undefined;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
@@ -638,6 +662,7 @@ export const ModelInspector = memo(function ModelInspector({
             <LocalOnDeviceCard
               showMemoryBar={!runsOnMediaRuntime}
               modelId={model.id}
+              displayName={model.title}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}
               source={model.localSource ?? "custom"}
@@ -664,6 +689,8 @@ export const ModelInspector = memo(function ModelInspector({
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
+              onRun={openRunConfig}
+              runPending={runConfigPending}
               onChange={onInventoryChange}
             />
           ) : (
@@ -684,6 +711,8 @@ export const ModelInspector = memo(function ModelInspector({
               systemRamGb={systemRamGb}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
+              onRun={openRunConfig}
+              runPending={runConfigPending}
               onChange={onInventoryChange}
             />
           )}
@@ -780,7 +809,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
-          chatOnly={chatOnly}
+          chatOnly={chatOnlyMeasured}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />

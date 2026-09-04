@@ -23,6 +23,7 @@ import {
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
+  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -92,6 +93,39 @@ export function CardDivider() {
       aria-hidden="true"
       className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
     />
+  );
+}
+
+export function ModelRunActionButton({
+  label,
+  onClick,
+  loading = false,
+}: {
+  label: string;
+  onClick: () => void;
+  loading?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={loading ? `${label}. Opening configuration.` : label}
+      aria-busy={loading}
+      disabled={loading}
+      onClick={onClick}
+      className="hub-run-action-btn w-28"
+    >
+      {loading ? (
+        <>
+          <Spinner />
+          Opening…
+        </>
+      ) : (
+        <>
+          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+          Run
+        </>
+      )}
+    </button>
   );
 }
 

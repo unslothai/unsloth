@@ -32,6 +32,7 @@ import {
   deleteCachedModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
+import type { HubModelRunSelection } from "../lib/model-run-selection";
 
 import {
   ggufFilenamesMatch,
@@ -48,8 +49,10 @@ import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
+  CardDivider,
   CardUpdateButton,
   DeleteConfirmDialog,
+  ModelRunActionButton,
   UpdateConfirmDialog,
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
@@ -59,6 +62,7 @@ import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
 interface LocalOnDeviceCardProps {
   modelId: string;
+  displayName: string;
   repoId: string | null;
   sourceLabel: string;
   source: LocalModelInfo["source"];
@@ -87,6 +91,8 @@ interface LocalOnDeviceCardProps {
   gpuCount?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
+  onRun?: (selection: HubModelRunSelection) => void;
+  runPending?: boolean;
   onChange?: () => void;
 }
 
@@ -181,6 +187,7 @@ function BaseModelReference({
 
 export function LocalOnDeviceCard({
   modelId,
+  displayName,
   repoId,
   sourceLabel,
   source,
@@ -204,6 +211,8 @@ export function LocalOnDeviceCard({
   gpuCount,
   systemRamGb,
   unsupportedReason,
+  onRun,
+  runPending = false,
   onChange,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -284,7 +293,11 @@ export function LocalOnDeviceCard({
   }));
 
   const canDelete =
-    source === "hf_cache" && !!repoId && !isActive && !isLoading;
+    source === "hf_cache" &&
+    !!repoId &&
+    !isActive &&
+    !isLoading &&
+    !runPending;
   const variants = useMemo(() => {
     const localVariants = currentVariantState.variants;
     const remoteVariants = remoteVariantState.variants;
@@ -388,6 +401,7 @@ export function LocalOnDeviceCard({
     !!repoId &&
     !isActive &&
     !isLoading &&
+    !runPending &&
     !updateJobActive &&
     updateAvailable;
   // Update runs as a MANAGED download (same path as a normal download) so it
@@ -425,6 +439,11 @@ export function LocalOnDeviceCard({
   const formatTone =
     modelFormat === "adapter" ? "adapter" : isGguf ? "gguf" : "checkpoint";
   const showOldCacheHint = source === "hf_cache" && !!unsupportedReason;
+  const selectedVariantReady =
+    !needsVariantSelection ||
+    (selectedVariant?.downloaded === true && selectedVariant.partial !== true);
+  const showRunAction =
+    Boolean(onRun) && selectedVariantReady && !updateJobActive && !isLoading;
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -449,11 +468,16 @@ export function LocalOnDeviceCard({
               <DotTag tone="success" label="On device" />
               <DotTag tone={formatTone} label={formatLabel} />
               {needsVariantSelection && (
-                <Popover open={variantOpen} onOpenChange={setVariantOpen}>
+                <Popover
+                  open={runPending ? false : variantOpen}
+                  onOpenChange={(nextOpen) => {
+                    if (!runPending) setVariantOpen(nextOpen);
+                  }}
+                >
                   <PopoverTrigger asChild={true}>
                     <button
                       type="button"
-                      disabled={currentVariantState.loading}
+                      disabled={currentVariantState.loading || runPending}
                       className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <span className="truncate">
@@ -561,6 +585,30 @@ export function LocalOnDeviceCard({
               <PathInfoButton path={path} />
             </div>
           </div>
+          {showRunAction && onRun && (
+            <>
+              <CardDivider />
+              <ModelRunActionButton
+                label={`Configure and run ${displayName.trim() || "this model"}`}
+                loading={runPending}
+                onClick={() =>
+                  onRun(
+                    needsVariantSelection && selectedVariant
+                      ? {
+                          ggufVariant: selectedVariant.quant,
+                          ggufFilename: selectedVariant.filename,
+                          expectedBytes:
+                            selectedVariant.download_size_bytes &&
+                            selectedVariant.download_size_bytes > 0
+                              ? selectedVariant.download_size_bytes
+                              : selectedVariant.size_bytes,
+                        }
+                      : {},
+                  )
+                }
+              />
+            </>
+          )}
         </div>
         {/* Render the full-width memory bar below the horizontal card row so it
             does not compete with row controls for width. */}

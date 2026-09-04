@@ -71,6 +71,7 @@ import {
   ggufVariantsMatch,
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
+import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import { DownloadStopIndicator } from "./download-cancel-indicator";
@@ -78,6 +79,7 @@ import {
   CardDivider,
   DeleteConfirmDialog,
   DownloadCard,
+  ModelRunActionButton,
   UpdateConfirmDialog,
 } from "./download-card";
 import {
@@ -553,6 +555,8 @@ export function GgufDownloadCard({
   cachePath,
   preferLocalCache = false,
   isPartial = false,
+  onRun,
+  runPending = false,
   onChange,
   showMemoryBar = true,
   mediaRuntime = false,
@@ -571,6 +575,8 @@ export function GgufDownloadCard({
   cachePath?: string | null;
   preferLocalCache?: boolean;
   isPartial?: boolean;
+  onRun?: (selection: HubModelRunSelection) => void;
+  runPending?: boolean;
   onChange?: () => void;
   /** False for diffusion / audio / video GGUFs. They load through a different
    *  planner onto a single torch device rather than the aggregate inference
@@ -881,6 +887,7 @@ export function GgufDownloadCard({
     updateAvailable &&
     !selectedIsActive &&
     !isLoadingThisModel &&
+    !runPending &&
     !cancelling &&
     !downloadAction.starting &&
     !downloadingThisVariant;
@@ -889,6 +896,14 @@ export function GgufDownloadCard({
     downloadingThisVariant ||
     cancelling ||
     downloadAction.starting;
+  const showRunAction =
+    Boolean(onRun) &&
+    selected?.downloaded === true &&
+    selected.partial !== true &&
+    !downloadingThisVariant &&
+    !cancelling &&
+    !downloadAction.starting &&
+    !isLoadingThisModel;
 
   // Keep showing download progress while the variant list is unavailable, so a
   // remount never hides an in-flight download behind the variant status card.
@@ -982,15 +997,21 @@ export function GgufDownloadCard({
           </>
         }
       >
-        <Popover open={open} onOpenChange={setOpen}>
+        <Popover
+          open={runPending ? false : open}
+          onOpenChange={(nextOpen) => {
+            if (!runPending) setOpen(nextOpen);
+          }}
+        >
           <PopoverTrigger asChild={true}>
             <button
               type="button"
+              disabled={runPending}
               onClick={(e) => {
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06] dark:disabled:hover:bg-transparent"
             >
               {/* Quant label + status tags travel together as one left-aligned
                   group so the fit-info icon never floats orphaned from its tags.
@@ -1064,6 +1085,7 @@ export function GgufDownloadCard({
                     item={item}
                     selected={item.key === selectedVariantKey}
                     mutationBlocked={
+                      runPending ||
                       isLoadingThisModel ||
                       (isActive && item.key === activeVariantKey)
                     }
@@ -1092,7 +1114,8 @@ export function GgufDownloadCard({
                 Boolean(selected.downloaded || selected.partial) &&
                 !selectedIsActive &&
                 !downloadingThisVariant &&
-                !isLoadingThisModel
+                !isLoadingThisModel &&
+                !runPending
               }
               onDelete={(q) => q && handleDeleteVariant(q)}
               showPin={false}
@@ -1101,7 +1124,9 @@ export function GgufDownloadCard({
             />
           )}
 
-        {(showUpdateAction || showDownloadAction) && <CardDivider />}
+        {(showUpdateAction || showDownloadAction || showRunAction) && (
+          <CardDivider />
+        )}
 
         {showUpdateAction && (
           <button
@@ -1160,6 +1185,24 @@ export function GgufDownloadCard({
               </>
             )}
           </button>
+        )}
+
+        {showRunAction && onRun && selected && (
+          <ModelRunActionButton
+            label={`Configure and run ${repoId} ${selectedLabel ?? selected.quant}`}
+            loading={runPending}
+            onClick={() =>
+              onRun({
+                ggufVariant: selected.quant,
+                ggufFilename: selected.filename,
+                expectedBytes:
+                  selected.download_size_bytes &&
+                  selected.download_size_bytes > 0
+                    ? selected.download_size_bytes
+                    : selected.size_bytes,
+              })
+            }
+          />
         )}
       </DownloadCard>
       {/* Only a quant actually on disk gets charted: an undownloaded one has no

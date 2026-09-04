@@ -61,6 +61,7 @@ export interface SelectedModelView {
   adapterType?: string | null;
   trainingMethod?: string | null;
   isDownloaded: boolean;
+  runtimeCanChat: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;

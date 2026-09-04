@@ -8,7 +8,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const HUB_ROOT = path.join(HERE, "..", "src/features/hub");
+const FRONTEND_ROOT = path.join(HERE, "..");
+const HUB_ROOT = path.join(FRONTEND_ROOT, "src/features/hub");
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -143,7 +144,7 @@ test("residency remains a cache mutation safety input", () => {
 
   assert.match(
     ggufCard,
-    /mutationBlocked=\{\s*isLoadingThisModel \|\|\s*\(isActive && item\.key === activeVariantKey\)/,
+    /mutationBlocked=\{\s*runPending \|\|\s*isLoadingThisModel \|\|\s*\(isActive && item\.key === activeVariantKey\)/,
   );
   assert.match(
     ggufCard,
@@ -163,15 +164,86 @@ test("residency remains a cache mutation safety input", () => {
   );
   assert.match(
     safetensorsCard,
-    /const canDelete =[\s\S]*?!isActive &&[\s\S]*?!isLoadingThisModel;/,
+    /const canDelete =[\s\S]*?!isActive &&[\s\S]*?!isLoadingThisModel &&[\s\S]*?!runPending;/,
   );
 });
 
-test("the Hub does not expose model run, eject, training, or loaded actions", () => {
-  assert.doesNotMatch(HUB_RENDER_SOURCES, /hub-run-action-btn/);
+test("the Hub hands Run to shared configuration without owning runtime actions", () => {
+  const hubPage = readFileSync(path.join(HUB_ROOT, "hub-page.tsx"), "utf8");
+  const modelInspector = readFileSync(
+    path.join(HUB_ROOT, "catalog/model-inspector.tsx"),
+    "utf8",
+  );
+  const ggufCard = readFileSync(
+    path.join(HUB_ROOT, "catalog/gguf-download-card.tsx"),
+    "utf8",
+  );
+  const localCard = readFileSync(
+    path.join(HUB_ROOT, "catalog/local-on-device-card.tsx"),
+    "utf8",
+  );
+  const safetensorsCard = readFileSync(
+    path.join(HUB_ROOT, "catalog/safetensors-download-card.tsx"),
+    "utf8",
+  );
+
+  assert.match(HUB_RENDER_SOURCES, /hub-run-action-btn/);
+  assert.match(HUB_RENDER_SOURCES, />\s*Run\s*</);
+  assert.match(
+    hubPage,
+    /clearNewChatDraft\(\);[\s\S]*?setActiveThreadId\(null\);[\s\S]*?setActiveProjectId\(null\);[\s\S]*?setIncognito\(false\);[\s\S]*?requestModelConfigHandoff\(request\)/,
+  );
+  assert.match(hubPage, /requestModelConfigHandoff\(request\)/);
+  assert.match(hubPage, /to: "\/chat", search: \{ new: requestId \}/);
+  assert.match(
+    hubPage,
+    /const controller = runConfigOpenCoordinator\.begin\(\);[\s\S]*?await waitForRunConfigRefresh\(\s*refreshResidentModelStatus\(\),\s*controller\.signal,\s*\);\s*if \(controller\.signal\.aborted\) return;/,
+  );
+  assert.match(hubPage, /const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;/);
+  assert.match(
+    hubPage,
+    /const handleCloseDetail = useCallback\(\(\) => \{\s*runConfigOpenCoordinator\.cancel\(\);\s*setRunConfigOpening\(null\);/,
+  );
+  assert.match(HUB_RENDER_SOURCES, /Opening…/);
+  assert.match(HUB_RENDER_SOURCES, /aria-busy=\{loading\}/);
+  assert.match(ggufCard, /open=\{runPending \? false : open\}/);
+  assert.match(ggufCard, /disabled=\{runPending\}/);
+  assert.match(localCard, /open=\{runPending \? false : variantOpen\}/);
+  assert.match(
+    localCard,
+    /disabled=\{currentVariantState\.loading \|\| runPending\}/,
+  );
+  assert.match(
+    localCard,
+    /label=\{`Configure and run \$\{displayName\.trim\(\) \|\| "this model"\}`\}/,
+  );
+  assert.doesNotMatch(
+    localCard,
+    /label=\{`Configure and run \$\{repoId \?\? modelId\}`\}/,
+  );
+  assert.match(
+    safetensorsCard,
+    /const showRunAction =[^;]*?!isLoadingThisModel[^;]*?;/s,
+  );
+  assert.match(
+    ggufCard,
+    /const showRunAction =[^;]*?!isLoadingThisModel[^;]*?;/s,
+  );
+  assert.match(
+    localCard,
+    /const showRunAction =[^;]*?!isLoading[^;]*?;/s,
+  );
+  assert.match(
+    modelInspector,
+    /s\.isChatOnly\(\) && !s\.capabilitiesUnknown\(\)/,
+  );
+  assert.match(
+    modelInspector,
+    /safetensorsRuntimeAvailable:\s*!chatOnlyMeasured &&\s*unslothSupport\.status !== "unsupported"/,
+  );
   assert.doesNotMatch(
     HUB_RENDER_SOURCES,
-    />\s*(?:Run|Eject|Loaded|Use in Chat|New Chat|Train)\s*</,
+    />\s*(?:Eject|Loaded|Use in Chat|New Chat|Train)\s*</,
   );
   assert.doesNotMatch(
     HUB_SOURCES,
@@ -184,6 +256,52 @@ test("the Hub does not expose model run, eject, training, or loaded actions", ()
 
   // This is an image lifecycle callback, not a model runtime action.
   assert.deepEqual(filesWithOnLoad.sort(), ["catalog/owner-avatar.tsx"]);
+});
+
+test("the Run handoff opens configuration immediately and remains nonce-scoped", () => {
+  const chatPage = readFileSync(
+    path.join(FRONTEND_ROOT, "src/features/chat/chat-page.tsx"),
+    "utf8",
+  );
+  const modelSelector = readFileSync(
+    path.join(
+      FRONTEND_ROOT,
+      "src/features/model-picker/components/model-selector.tsx",
+    ),
+    "utf8",
+  );
+
+  assert.match(chatPage, /modelConfigHandoffForDestination\(state\.request,/);
+  assert.match(
+    chatPage,
+    /active,\s*newChatId: search\.new,\s*threadId: search\.thread,\s*compareId: search\.compare,\s*projectId: search\.project,/,
+  );
+  assert.match(chatPage, /modelSelectorOpen \|\| modelConfigRequest !== null/);
+  assert.match(modelSelector, /requestedConfigTarget \?\? configTarget/);
+  assert.match(
+    modelSelector,
+    /`Run settings for \$\{visibleConfigTarget\.displayName\}`/,
+  );
+  assert.match(
+    modelSelector,
+    /modelConfigInstanceKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*visibleLoadedConfig,/,
+  );
+  assert.match(
+    modelSelector,
+    /setAdoptedConfigRequestId\(configRequest\.requestId\);\s*setConfigTarget\(requestedConfigTarget\)/,
+  );
+  assert.match(
+    modelSelector,
+    /onConfigRequestAdopted\?\.\(configRequest\.requestId\)/,
+  );
+  assert.match(
+    chatPage,
+    /setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
+  );
+  assert.match(
+    chatPage,
+    /open=\{active && modelConfigRequest === null && settingsOpen\}/,
+  );
 });
 
 test("the shared model row menu no longer offers Hub model settings", () => {

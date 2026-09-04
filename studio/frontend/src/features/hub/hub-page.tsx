@@ -4,6 +4,7 @@
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
+  clearNewChatDraft,
   getInferenceStatus,
   isExternalModelId,
   isSpeechOnlyStatus,
@@ -13,8 +14,11 @@ import {
 import { useHubInfiniteScroll } from "@/features/hub";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import {
+  clearModelConfigHandoff,
+  createModelConfigHandoffRequestId,
   hfModelFitsDevice,
   loadScopedGpu,
+  requestModelConfigHandoff,
 } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -85,6 +89,10 @@ import {
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import { residentModelIdMatches } from "./lib/model-identity";
 import {
+  createHubModelConfigHandoff,
+  type HubModelRunSelection,
+} from "./lib/model-run-selection";
+import {
   type ModelTypeFilter,
   matchesModelType,
 } from "./lib/model-type-filter";
@@ -121,9 +129,54 @@ const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
+const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 
 // Iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
+
+async function waitForRunConfigRefresh(
+  refresh: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) return;
+  let timeoutId: number | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    await Promise.race([
+      refresh,
+      new Promise<void>((resolve) => {
+        timeoutId = window.setTimeout(resolve, RUN_CONFIG_REFRESH_TIMEOUT_MS);
+      }),
+      new Promise<void>((resolve) => {
+        onAbort = resolve;
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+class RunConfigOpenCoordinator {
+  private active: AbortController | null = null;
+
+  begin(): AbortController {
+    this.cancel();
+    const controller = new AbortController();
+    this.active = controller;
+    return controller;
+  }
+
+  cancel(): void {
+    this.active?.abort();
+    this.active = null;
+  }
+
+  finish(controller: AbortController): void {
+    if (this.active === controller) this.active = null;
+  }
+}
 
 /** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
 export type OwnerScope = "unsloth" | "all";
@@ -1149,17 +1202,31 @@ export function ModelsPage() {
     accessToken: apiHfToken,
     online,
   });
+  const [runConfigOpenCoordinator] = useState(
+    () => new RunConfigOpenCoordinator(),
+  );
+  const [runConfigOpening, setRunConfigOpening] = useState<{
+    modelId: string;
+    controller: AbortController;
+  } | null>(null);
+  useEffect(() => {
+    return () => runConfigOpenCoordinator.cancel();
+  }, [runConfigOpenCoordinator, selectedId]);
 
   const handleSelect = useCallback(
     (id: string) => {
+      runConfigOpenCoordinator.cancel();
+      setRunConfigOpening(null);
       void navigate({
         to: "/hub",
         search: (prev) => ({ ...prev, model: id, file: undefined }),
       });
     },
-    [navigate],
+    [navigate, runConfigOpenCoordinator],
   );
   const handleCloseDetail = useCallback(() => {
+    runConfigOpenCoordinator.cancel();
+    setRunConfigOpening(null);
     // From split view, "Back to Hub" returns to the main hub feed (not the filtered list): leave
     // split mode, reset discover state, and clear the inline preview and channel.
     if (allModelsView === "split") {
@@ -1183,7 +1250,7 @@ export function ModelsPage() {
       to: "/hub",
       search: (prev) => ({ ...prev, model: undefined }),
     });
-  }, [navigate, allModelsView]);
+  }, [navigate, allModelsView, runConfigOpenCoordinator]);
   const handleQueryChange = useCallback(
     (next: string) => {
       if (next.trim() === "") {
@@ -1357,6 +1424,47 @@ export function ModelsPage() {
     },
     [navigate, setModelsTab, setOwnerScope],
   );
+  const handleOpenRunConfig = useCallback(
+    async (selection: HubModelRunSelection) => {
+      if (!selectedModel) return;
+      const controller = runConfigOpenCoordinator.begin();
+      setRunConfigOpening({ modelId: selectedModel.id, controller });
+      try {
+        await waitForRunConfigRefresh(
+          refreshResidentModelStatus(),
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        const requestId = createModelConfigHandoffRequestId();
+        const request = createHubModelConfigHandoff({
+          requestId,
+          model: selectedModel,
+          selection,
+        });
+        if (!request) return;
+        clearNewChatDraft();
+        const chatRuntime = useChatRuntimeStore.getState();
+        chatRuntime.setActiveThreadId(null);
+        chatRuntime.setActiveProjectId(null);
+        chatRuntime.setIncognito(false);
+        requestModelConfigHandoff(request);
+        void navigate({ to: "/chat", search: { new: requestId } }).catch(() => {
+          clearModelConfigHandoff(requestId);
+        });
+      } finally {
+        runConfigOpenCoordinator.finish(controller);
+        setRunConfigOpening((current) =>
+          current?.controller === controller ? null : current,
+        );
+      }
+    },
+    [
+      navigate,
+      refreshResidentModelStatus,
+      runConfigOpenCoordinator,
+      selectedModel,
+    ],
+  );
 
   const inspectorRuntime = useMemo(
     () => ({
@@ -1389,8 +1497,16 @@ export function ModelsPage() {
     () => ({
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
+      onOpenRunConfig: handleOpenRunConfig,
+      runConfigPending: runConfigOpening?.modelId === selectedModel?.id,
     }),
-    [handleSearchHub, refreshInventory],
+    [
+      handleOpenRunConfig,
+      handleSearchHub,
+      refreshInventory,
+      runConfigOpening,
+      selectedModel?.id,
+    ],
   );
 
   const catalogState = useMemo<ModelsCatalogState>(

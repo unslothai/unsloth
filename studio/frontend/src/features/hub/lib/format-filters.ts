@@ -11,6 +11,29 @@ export type FormatFilterModelFormat =
 
 export type FormatFilterValue = "all" | "gguf" | "checkpoint" | "mlx";
 
+const MLX_NAME_PATTERN = /(?:^|[-_./])mlx(?:$|[-_./])/i;
+
+export function isMlxFormat(result: {
+  id?: string | null;
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+}): boolean {
+  if (result.libraryName?.trim().toLowerCase() === "mlx") {
+    return true;
+  }
+  if (result.tags?.some((tag) => tag.trim().toLowerCase() === "mlx")) {
+    return true;
+  }
+  const id = result.id?.trim();
+  if (!id) {
+    return false;
+  }
+  if (id.toLowerCase().startsWith("mlx-community/")) {
+    return true;
+  }
+  return MLX_NAME_PATTERN.test(id.split("/").filter(Boolean).at(-1) ?? id);
+}
+
 export function matchesFormat(
   modelFormat: boolean | FormatFilterModelFormat | null | undefined,
   formatFilter: FormatFilterValue,
@@ -28,15 +51,13 @@ export function matchesFormat(
 }
 
 export function detectResultFormat(result: {
+  id?: string;
   isGguf: boolean;
   tags?: string[];
   libraryName?: string;
 }): FormatFilterModelFormat {
   if (result.isGguf) return "gguf";
-  if (
-    result.libraryName?.toLowerCase() === "mlx" ||
-    result.tags?.some((tag) => tag.toLowerCase() === "mlx")
-  ) {
+  if (isMlxFormat(result)) {
     return "mlx";
   }
   return "safetensors";

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ModelInventoryFormat } from "../inventory";
+import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { GgufDownloadCard } from "./gguf-download-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
 
@@ -24,6 +25,8 @@ export function DownloadSection({
   systemRamGb,
   cachePath,
   knownBytes,
+  onRun,
+  runPending = false,
   onChange,
   showMemoryBar = true,
   mediaRuntime = false,
@@ -46,6 +49,8 @@ export function DownloadSection({
   systemRamGb?: number;
   cachePath?: string | null;
   knownBytes?: number | null;
+  onRun?: (selection: HubModelRunSelection) => void;
+  runPending?: boolean;
   onChange?: () => void;
   /** False for diffusion / audio / video GGUFs, which do not load through
    *  llama.cpp and so have nothing the KV estimator can say about them. */
@@ -66,6 +71,8 @@ export function DownloadSection({
         systemRamGb={systemRamGb}
         cachePath={cachePath}
         isPartial={isPartial}
+        onRun={onRun}
+        runPending={runPending}
         onChange={onChange}
         showMemoryBar={showMemoryBar}
         mediaRuntime={mediaRuntime}
@@ -84,6 +91,8 @@ export function DownloadSection({
       isLoadingThisModel={isLoadingThisModel}
       cachePath={cachePath}
       knownBytes={knownBytes}
+      onRun={onRun ? () => onRun({}) : undefined}
+      runPending={runPending}
       onChange={onChange}
     />
   );
