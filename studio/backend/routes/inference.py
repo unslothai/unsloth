@@ -25295,6 +25295,7 @@ async def _openai_catalog_objects() -> list[dict]:
         if seen != tuple(found):
             ambiguous_quants.add(key)
             quants_owner.pop(key, {}).pop("quants", None)
+
     # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
