@@ -67,8 +67,7 @@ def test_run_timed_does_not_speak_for_its_callers() -> None:
         "run_timed still promises the caller will judge on assertions; three "
         "callers treat a timeout as fatal instead, and the reader sees both"
     )
-    # It must still say the cap was hit -- silence here is how a stall reads as
-    # an ordinary non-zero exit.
+    # It must still say the cap was hit -- silence here is how a stall reads as an ordinary non-zero exit.
     assert "did not exit within" in body
 
 
@@ -93,9 +92,8 @@ def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
         "the documented flow drifted -- the one thing a cap does not show"
     )
     assert "not implicated" in branch, "the message does not clear the recipe it used to blame"
-    # Still fatal. Waiving a cap here would report "connection OK" for a recipe
-    # that printed a banner and then blocked on a headless prompt, which is the
-    # failure this job exists to catch.
+    # Still fatal. Waiving a cap here would report "connection OK" for a recipe that printed a banner and then blocked
+    # on a headless prompt, which is the failure this job exists to catch.
     assert "exit 1" in branch, (
         "a timed-out connection must stay fatal; assert_reply cannot tell a "
         "finished reply from a startup banner"

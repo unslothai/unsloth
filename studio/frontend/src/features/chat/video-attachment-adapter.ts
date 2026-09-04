@@ -25,9 +25,8 @@ function newAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Video shares the "Add photos & files" picker, like audio. llama-server
- * samples the clip into frames with ffmpeg, so the container is forwarded
- * untouched. */
+/** Video shares the "Add photos & files" picker, like audio. llama-server samples the clip into
+ *  frames with ffmpeg, so the container is forwarded untouched. */
 export class VideoAttachmentAdapter implements AttachmentAdapter {
   accept = VIDEO_ACCEPT;
   private readonly attachmentIds = new Set<string>();
@@ -39,8 +38,7 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
     if (!modelLoaded) {
-      // Mirror the image and audio gates: a failed load reads differently from
-      // no model picked.
+      // Mirror the image and audio gates: a failed load reads differently from no model picked.
       unavailableReason = state.lastModelLoadError
         ? "The last model failed to load. Check the server logs, then load a model before adding video."
         : "Load a model before adding video.";
@@ -50,8 +48,8 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
         externalModelLabel(checkpoint) ||
         checkpoint ||
         "Current model";
-      // Three causes land here and the server does not say which, so name all
-      // three: /props reports video only when all of them line up.
+      // Three causes land here and the server does not say which, so name all three: /props reports
+      // video only when all of them line up.
       unavailableReason = `${label} cannot accept video. Video needs a GGUF model whose mmproj supports video, a llama.cpp build with video enabled, and ffmpeg installed on this machine.`;
     }
     if (unavailableReason) {
@@ -95,9 +93,8 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
             type: "file",
             filename: attachment.name,
             data,
-            // Normalised at pick time: the extractor keys off this, and a
-            // browser that answered "" or application/octet-stream for an mkv
-            // would otherwise cost the clip silently.
+            // Normalised at pick time: the extractor keys off this, and a browser that answered "" or
+            // application/octet-stream for an mkv would otherwise cost the clip silently.
             mimeType: attachment.contentType || "video/mp4",
           },
         ],
