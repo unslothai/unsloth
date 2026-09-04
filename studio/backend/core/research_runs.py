@@ -322,13 +322,25 @@ def _peek_inference_backend() -> Any:
     )
 
 
-def _loaded_context_length() -> int | None:
+def _external_provider_run(inference: dict[str, Any] | None) -> bool:
+    return bool((inference or {}).get("providerType"))
+
+
+def _run_inference_request(run: dict) -> dict[str, Any]:
+    return (run.get("config") or {}).get("inferenceRequest") or {}
+
+
+def _loaded_context_length(inference: dict[str, Any] | None = None) -> int | None:
     """Best-effort read of the active model's context window in tokens, or None if unknown.
 
     Mirrors routes.inference._monitor_context_length (llama.cpp backend, else the inference
     orchestrator) so grounding sizes evidence to the same context the API layer serves. The ML
     backends live in a worker subprocess, so the core.inference.inference singleton is unpopulated
-    here and importing it pulls in the ML stack; read the orchestrator the routes use instead."""
+    here and importing it pulls in the ML stack; read the orchestrator the routes use instead.
+
+    A run carrying a providerType runs on that connection, not on either local backend."""
+    if _external_provider_run(inference):
+        return None
     try:
         from routes.inference import get_llama_cpp_backend
         llama = get_llama_cpp_backend()
@@ -382,8 +394,9 @@ def _clamp_max_tokens_for_context(
     messages: list[dict],
     *,
     context_length: int | None = None,
+    inference: dict[str, Any] | None = None,
 ) -> int:
-    ctx = context_length if context_length is not None else _loaded_context_length()
+    ctx = context_length if context_length is not None else _loaded_context_length(inference)
     if not ctx:
         return requested
     available = max(1, ctx - _estimate_prompt_tokens(messages))
@@ -396,7 +409,7 @@ def _resolve_max_tokens(
     requested = int(max_tokens or inference.get("maxTokens") or 4096)
     ceiling = 16384 if max_tokens is not None else 8192
     capped = min(requested, ceiling)
-    return _clamp_max_tokens_for_context(capped, messages)
+    return _clamp_max_tokens_for_context(capped, messages, inference = inference)
 
 
 def _normalize_completion_usage(raw: Any) -> dict[str, int] | None:
@@ -415,22 +428,33 @@ def _completion_hit_context_wall(
     *,
     requested_max_tokens: int,
     context_length: int | None = None,
+    inference: dict[str, Any] | None = None,
 ) -> bool:
     if not usage:
         return False
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
     total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
-    ctx = context_length if context_length is not None else _loaded_context_length()
+    ctx = context_length if context_length is not None else _loaded_context_length(inference)
     if ctx is not None and total_tokens >= ctx:
         return True
     return completion_tokens < requested_max_tokens
 
 
 def _synthesis_length_limit_error(
-    usage: dict[str, int] | None, *, requested_max_tokens: int
+    usage: dict[str, int] | None,
+    *,
+    requested_max_tokens: int,
+    inference: dict[str, Any] | None = None,
 ) -> str:
-    if _completion_hit_context_wall(usage, requested_max_tokens = requested_max_tokens):
+    # A saved connection never touched the loaded context, so neither half of the local
+    # wording holds: the cap it reached is the provider's own output limit, and Context
+    # Length in chat settings does not move it.
+    if _external_provider_run(inference):
+        return "Connected model report reached its output limit before completion"
+    if _completion_hit_context_wall(
+        usage, requested_max_tokens = requested_max_tokens, inference = inference
+    ):
         return (
             "Local model report hit the loaded context window before completion. "
             "Increase Context Length in chat settings or reduce the research evidence size."
@@ -671,14 +695,14 @@ async def _wall_clock_timeout(seconds: float | None) -> AsyncIterator[None]:
         handle.cancel()
 
 
-def _prompt_char_budget(reserve_tokens: int) -> int | None:
+def _prompt_char_budget(reserve_tokens: int, inference: dict[str, Any] | None = None) -> int | None:
     """Chars the whole prompt may occupy on the loaded context, or None when it is unknown.
 
     The output reserve is capped at half the window: a flat reserve at or above the context
     (4096 on the 4096-token GGUF floor) would leave a budget of 0 and empty the prompt, and a
     truncated completion is far better than one that never saw the question.
     """
-    ctx = _loaded_context_length()
+    ctx = _loaded_context_length(inference)
     if not ctx:
         return None
     reserve = min(reserve_tokens, max(1, ctx // 2))
@@ -697,10 +721,12 @@ def _trimmable_budget(total: int | None, fixed_chars: int, hard_cap: int) -> int
     return max(0, min(hard_cap, total - fixed_chars))
 
 
-def _synthesis_evidence_budget(fixed_chars: int = 0) -> int:
+def _synthesis_evidence_budget(
+    fixed_chars: int = 0, inference: dict[str, Any] | None = None
+) -> int:
     """Char budget for synthesis evidence (full cap when the context is unknown)."""
     return _trimmable_budget(
-        _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS),
+        _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS, inference),
         fixed_chars,
         _MAX_SYNTHESIS_EVIDENCE_CHARS,
     )
@@ -735,6 +761,7 @@ def _fit_synthesis_context(
     notes: list[str],
     prioritized_payloads: list[dict[str, Any]],
     fixed_chars: int = 0,
+    inference: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
     """Share the adaptive synthesis budget between evidence and JSON prompt blocks.
 
@@ -743,7 +770,7 @@ def _fit_synthesis_context(
     preventing model-derived state or an audit near its output cap from overflowing a small model
     context.
     """
-    total_budget = _synthesis_evidence_budget(fixed_chars)
+    total_budget = _synthesis_evidence_budget(fixed_chars, inference)
     placeholder = "{}"
     minimum_evidence = min(_MIN_SYNTHESIS_EVIDENCE_CHARS, total_budget)
     remaining_payload_budget = max(
@@ -1854,7 +1881,9 @@ class ResearchSupervisor:
         )
         # The question is budgeted before the history but is unbounded on its own (a pasted document arrives
         # verbatim) and would overflow before planning.
-        planning_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+        planning_total = _prompt_char_budget(
+            _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
+        )
         planning_question = question[
             : max(
                 _MIN_QUESTION_CHARS,
@@ -1925,7 +1954,7 @@ class ResearchSupervisor:
         max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
         # On a tiny context the prompt overhead alone fills the window, so fall back to snippet-only.
         if max_auto_scrape > 0:
-            loaded_ctx = _loaded_context_length()
+            loaded_ctx = _loaded_context_length(_run_inference_request(run))
             if loaded_ctx is not None and loaded_ctx < _AUTO_SCRAPE_MIN_CONTEXT_TOKENS:
                 logger.info(
                     "research.auto_scrape_disabled_small_context run_id=%s context=%s",
@@ -2050,7 +2079,9 @@ class ResearchSupervisor:
             )
             # A fixed 60k evidence tail is many times a small context and this runs every step, so an overflow
             # here kills the run before it can synthesize.
-            decision_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+            decision_total = _prompt_char_budget(
+                _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
+            )
             decision_question, decision_plan_json = _fit_decision_inputs(
                 question,
                 run["plan"],
@@ -2386,7 +2417,9 @@ class ResearchSupervisor:
         )
         # Model-derived JSON shares the evidence budget, and conversation history receives only what the
         # fixed scaffold leaves.
-        total_budget = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+        total_budget = _prompt_char_budget(
+            _SYNTHESIS_CONTEXT_RESERVE_TOKENS, _run_inference_request(run)
+        )
         plan_json = json.dumps(run["plan"], ensure_ascii = False)
         audit_system = _system_prompt_with_instructions(
             _SYNTHESIS_AUDIT_SYSTEM_PROMPT,
@@ -2403,6 +2436,7 @@ class ResearchSupervisor:
             notes,
             [research_state],
             audit_scaffold_chars,
+            _run_inference_request(run),
         )
         audit_conversation_context = conversation_context[
             : _trimmable_budget(
@@ -2480,6 +2514,7 @@ class ResearchSupervisor:
             notes,
             [synthesis_audit, research_state],
             report_scaffold_chars,
+            _run_inference_request(run),
         )
         synthesis_conversation_context = conversation_context[
             : _trimmable_budget(
@@ -2568,7 +2603,7 @@ class ResearchSupervisor:
             ]
             recovery_max_tokens = _resolve_max_tokens(
                 16384,
-                run["config"].get("inferenceRequest") or {},
+                _run_inference_request(run),
                 recovery_messages,
             )
             (
@@ -2606,7 +2641,7 @@ class ResearchSupervisor:
             else:
                 requested_max_tokens = _resolve_max_tokens(
                     16384,
-                    run["config"].get("inferenceRequest") or {},
+                    _run_inference_request(run),
                     synthesis_messages,
                 )
             await self._check_active(run["id"])
@@ -2614,6 +2649,7 @@ class ResearchSupervisor:
                 truncation_notice = _synthesis_length_limit_error(
                     synthesis_usage,
                     requested_max_tokens = requested_max_tokens,
+                    inference = _run_inference_request(run),
                 ).rstrip(".")
         report = _validate_report_sources(report, sources)
         report = _validate_report_document_sources(report, document_sources)

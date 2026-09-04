@@ -9,10 +9,13 @@ import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 // lucide supplies the directional arrows used throughout the app.
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-attributes.ts";
-import { resolveFindScope, resolvePortalSurfaces } from "../lib/find-dom.ts";
+import {
+  resolveDismissiblePortalSurfaces,
+  resolveFindScope,
+} from "../lib/find-dom.ts";
 export type FindBarProps = {
   query: string;
   setQuery: (query: string) => void;
@@ -38,6 +41,22 @@ function rewindToStart(event: { currentTarget: HTMLInputElement }): void {
 /** The wash reads on both the light and dark find-bar surfaces. */
 const FIND_BUTTON_CLASS = "size-8 hover:bg-black/[0.06] dark:hover:bg-white/10";
 
+/** Coalesce a typing burst before the DOM search/highlight work runs. */
+export const FIND_QUERY_SETTLE_MS = 100;
+
+function useSettledQuery(query: string): [string, () => void] {
+  const [settled, setSettled] = useState(query);
+  useEffect(() => {
+    if (query.length === 0) {
+      setSettled("");
+      return;
+    }
+    const timer = setTimeout(() => setSettled(query), FIND_QUERY_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+  return [settled, () => setSettled(query)];
+}
+
 /** The on-demand UI and engine for an open find session. */
 // biome-ignore lint/style/noDefaultExport: React.lazy requires the component as a default export.
 export default function FindBar({
@@ -50,18 +69,31 @@ export default function FindBar({
   clearPendingStep,
 }: FindBarProps) {
   const t = useT();
-  const { count, active, capped, truncated, next, previous } =
-    useFindInPage(query);
+  const [settledQuery, settleQuery] = useSettledQuery(query);
+  const queryPending = query !== settledQuery;
+  const { count, active, capped, truncated, next, previous } = useFindInPage(
+    settledQuery,
+    queryPending,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
-  const appliedPendingStepRef = useRef(false);
-  useEffect(() => {
-    if (pendingStep === 0 || count === 0 || appliedPendingStepRef.current)
+  const queuedStepRef = useRef<-1 | 0 | 1>(pendingStep);
+  const stepWhenSettled = (delta: -1 | 1) => {
+    if (queryPending) {
+      queuedStepRef.current = delta;
+      settleQuery();
       return;
-    appliedPendingStepRef.current = true;
-    if (pendingStep < 0) previous();
+    }
+    if (delta < 0) previous();
+    else next();
+  };
+  useEffect(() => {
+    if (queryPending || count === 0 || queuedStepRef.current === 0) return;
+    const delta = queuedStepRef.current;
+    queuedStepRef.current = 0;
+    if (delta < 0) previous();
     else next();
     clearPendingStep();
-  }, [clearPendingStep, count, next, pendingStep, previous]);
+  }, [clearPendingStep, count, next, previous, queryPending]);
   // Hand focus back to whatever had it, usually the composer, so closing a search leaves the reader
   // typing. Declared above the focus effect so it reads `activeElement` before the field takes it.
   const barRef = useRef<HTMLDivElement>(null);
@@ -94,7 +126,8 @@ export default function FindBar({
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || isImeComposing(event)) return;
       if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
-      if (resolvePortalSurfaces(resolveFindScope()).length > 0) return;
+      if (resolveDismissiblePortalSurfaces(resolveFindScope()).length > 0)
+        return;
       event.preventDefault();
       event.stopPropagation();
       close();
@@ -113,10 +146,14 @@ export default function FindBar({
   }, [focusToken, restoreSelection]);
 
   const searching = query.length > 0;
-  const empty = searching && count === 0;
-  const counter = searching
-    ? `${count === 0 ? 0 : active + 1}/${count}${capped ? "+" : ""}`
-    : "";
+  const empty = !queryPending && searching && count === 0;
+  // A pending query has no count of its own yet, so the settled one's zero must not disable the
+  // walk: `stepWhenSettled` queues the press and runs it once the count arrives.
+  const canStep = searching && (count > 0 || queryPending);
+  const counter =
+    searching && !queryPending
+      ? `${count === 0 ? 0 : active + 1}/${count}${capped ? "+" : ""}`
+      : "";
 
   return (
     // `data-find-skip` keeps the bar out of its own index: without it every keystroke finds itself.
@@ -126,7 +163,7 @@ export default function FindBar({
       // biome-ignore lint/a11y/useSemanticElements: this landmark contains the field and its navigation controls.
       role="search"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[22.25rem] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 sm:w-[28.25rem]"
     >
       <input
         ref={inputRef}
@@ -135,11 +172,11 @@ export default function FindBar({
         onChange={(event) => setQuery(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
-            // The Enter committing an IME candidate arrives here too.
+            // The Enter committing an IME candidate arrives here too; taken, it walks to the next
+            // match and throws away the word.
             if (isImeComposing(event.nativeEvent)) return;
             event.preventDefault();
-            if (event.shiftKey) previous();
-            else next();
+            stepWhenSettled(event.shiftKey ? -1 : 1);
           }
         }}
         onBlur={rewindToStart}
@@ -149,7 +186,7 @@ export default function FindBar({
         autoComplete="off"
         autoCorrect="off"
         className={cn(
-          "w-40 min-w-0 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground sm:w-64",
+          "min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground",
           empty && "text-destructive",
         )}
       />
@@ -167,9 +204,9 @@ export default function FindBar({
         variant="ghost"
         size="icon"
         className={FIND_BUTTON_CLASS}
-        disabled={count === 0}
+        disabled={!canStep}
         onMouseDown={keepFocusInField}
-        onClick={previous}
+        onClick={() => stepWhenSettled(-1)}
         aria-label={t("shell.find.previous")}
         title={t("shell.find.previous")}
       >
@@ -179,9 +216,9 @@ export default function FindBar({
         variant="ghost"
         size="icon"
         className={FIND_BUTTON_CLASS}
-        disabled={count === 0}
+        disabled={!canStep}
         onMouseDown={keepFocusInField}
-        onClick={next}
+        onClick={() => stepWhenSettled(1)}
         aria-label={t("shell.find.next")}
         title={t("shell.find.next")}
       >

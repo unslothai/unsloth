@@ -15,15 +15,15 @@ import {
 import {
   ChatPage,
   type ChatSearch,
-  StopRunningChatsDialog,
   clearNewChatDraft,
   hydrateModelDisclaimerPreference,
+  StopRunningChatsDialog,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
@@ -46,13 +46,15 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  lazy,
+
   type ReactNode,
   Suspense,
-  lazy,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
+
   useState,
 } from "react";
 import { AppProvider } from "../provider";
@@ -101,7 +103,9 @@ function ReloadSnapshotPrivacy() {
       incognito,
     );
     return () => {
-      document.documentElement.removeAttribute("data-reload-snapshot-private");
+      document.documentElement.removeAttribute(
+        "data-reload-snapshot-private",
+      );
     };
   }, [incognito]);
 
@@ -157,6 +161,7 @@ function ChatSettingsHydrationMount() {
   return null;
 }
 
+
 function CredentialBootstrapGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const runRevision = useRef(0);
@@ -171,7 +176,11 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
       }
       setReady(false);
       void bootstrapPersistedCredentials().finally(() => {
-        if (active && revision === runRevision.current && hasAuthToken()) {
+        if (
+          active &&
+          revision === runRevision.current &&
+          hasAuthToken()
+        ) {
           setReady(true);
         }
       });
@@ -220,26 +229,17 @@ function waitsOutUnknownVerdict(pathname: string): boolean {
 }
 
 function isChatOnlyAllowed(pathname: string): boolean {
-  if (CHAT_ONLY_ALLOWED.has(pathname)) {
+  if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
+  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
-  }
-  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) {
-    return true;
-  }
   // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about training/export, so it must not redirect /images.
-  if (pathname === "/images" || pathname.startsWith("/images/")) {
-    return true;
-  }
+  if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   // Audio inference is CPU-capable too: GGUF TTS through llama.cpp and STT through the whisper.cpp / mtmd sidecars.
-  if (pathname === "/audio" || pathname.startsWith("/audio/")) {
-    return true;
-  }
+  if (pathname === "/audio" || pathname.startsWith("/audio/")) return true;
   // Video follows /export: the page explains an unsupported host itself from the backend's video
   // verdict, and on Apple Silicon a chat-only host is where video works anyway. So a direct link
   // or a reload must reach VideoPage's gate, which self-gates on videoSupported.
-  if (pathname === "/video" || pathname.startsWith("/video/")) {
-    return true;
-  }
+  if (pathname === "/video" || pathname.startsWith("/video/")) return true;
   return false;
 }
 
@@ -364,8 +364,7 @@ function RootLayout() {
   const shouldMountAudio = isAudioRoute || audioMounted;
   // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
-  const isChatLike =
-    isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
+  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -376,12 +375,8 @@ function RootLayout() {
     select: (matches) => {
       for (let i = matches.length - 1; i >= 0; i--) {
         const { title, titleKey } = matches[i].staticData;
-        if (titleKey) {
-          return t(titleKey);
-        }
-        if (title) {
-          return title;
-        }
+        if (titleKey) return t(titleKey);
+        if (title) return title;
       }
       return null;
     },
@@ -421,7 +416,8 @@ function RootLayout() {
   );
   useShortcut(
     "openKeyboardShortcuts",
-    () => useSettingsDialogStore.getState().openDialog("keyboard-shortcuts"),
+    () =>
+      useSettingsDialogStore.getState().openDialog("keyboard-shortcuts"),
     { enabled: !isAuthFlowRoute },
   );
   /** Every "new chat" chord lands here. `incognito` skips history,
@@ -452,7 +448,7 @@ function RootLayout() {
 
   // Gated like the workspace chords below: /login has no shell, and /chat
   // bounces straight back off requireAuth.
-  const routeShortcutEnabled = !(isAuthFlowRoute || settingsDialogOpen);
+  const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;
   useShortcut("newChat", () => startNewChat(), {
     enabled: routeShortcutEnabled,
   });
@@ -508,18 +504,14 @@ function RootLayout() {
   });
 
   useEffect(() => {
-    if (isChatRoute) {
-      return;
-    }
+    if (isChatRoute) return;
     const chatRuntime = useChatRuntimeStore.getState();
     // A URL-less chat's provider is keyed off the active thread id; clearing it
     // mid-generation would remount and cancel the stream. Only reset when idle.
     const anyRunning = Object.values(chatRuntime.runningByThreadId).some(
       Boolean,
     );
-    if (anyRunning) {
-      return;
-    }
+    if (anyRunning) return;
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setIncognito(false);
@@ -638,12 +630,7 @@ function RootLayout() {
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!(
-                isChatRoute ||
-                isImagesRoute ||
-                isVideoRoute ||
-                isAudioRoute
-              ) && (
+              {!isChatRoute && !isImagesRoute && !isVideoRoute && !isAudioRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}
@@ -653,9 +640,7 @@ function RootLayout() {
                     transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
-                    <RouteBoundary
-                      readyWhenCommitted={!routeOwnsReloadReadiness}
-                    >
+                    <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
                       <Outlet />
                     </RouteBoundary>
                   </motion.div>

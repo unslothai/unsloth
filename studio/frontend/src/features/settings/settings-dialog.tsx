@@ -13,8 +13,8 @@ import {
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
-import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
   Cancel01Icon,
@@ -58,36 +58,28 @@ import {
 // Statically imported, every panel ran before first paint even though the dialog
 // starts closed. Load each on first view instead; this map also drives the prefetch.
 const TAB_LOADERS = {
-  general: () =>
-    import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
-  profile: () =>
-    import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
+  profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
   appearance: () =>
     import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
   resources: () =>
     import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
   chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
-  voice: () =>
-    import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
+  voice: () => import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
   connections: () =>
-    import("./tabs/connections-tab").then((m) => ({
-      default: m.ConnectionsTab,
-    })),
+    import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
   "keyboard-shortcuts": () =>
     import("./tabs/keyboard-shortcuts-tab").then((m) => ({
       default: m.KeyboardShortcutsTab,
     })),
-  "api-keys": () =>
-    import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
   "remote-lan": () =>
     import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
-  agents: () =>
-    import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
+  agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
   debugging: () =>
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
-  about: () =>
-    import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
+  about: () => import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
 } satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
 
 function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
@@ -620,7 +612,6 @@ export function SettingsDialog() {
           </div>
         </DialogContent>
       </Dialog>
-
       <FloatingMonitor />
     </>
   );

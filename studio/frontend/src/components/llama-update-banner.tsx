@@ -126,6 +126,14 @@ export function LlamaUpdateBanner({
   const changelogAvailable = Boolean(changelogKey && !status?.source_build);
   const changelogOpen =
     changelogKey !== null && changelogVersion === changelogKey;
+  // Use the same predicate for the panel and its protective height floor.
+  const changelogPanelOpen = Boolean(
+    !applying &&
+      changelogAvailable &&
+      changelogOpen &&
+      installedTag &&
+      latestTag,
+  );
   const sizeLabel =
     sizeBytes && sizeBytes > 0
       ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
@@ -145,12 +153,18 @@ export function LlamaUpdateBanner({
       className={cn(
         positioned
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
-          : // The desktop updater's floor: in a capped stack only the notes give up height.
-            "pointer-events-auto flex min-h-[calc(117px+93px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+          : cn(
+              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              // Only an open changelog needs a shrinkable height floor.
+              changelogPanelOpen
+                ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+                : "shrink-0",
+            ),
       )}
       data-testid="llama-update-banner"
     >
-      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+      {/* Paint the full floor even when the changelog content is short. */}
+      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
         {applying ? null : (
           <button
             type="button"
@@ -201,14 +215,7 @@ export function LlamaUpdateBanner({
           </div>
         </div>
 
-        {/* changelogAvailable, not just changelogOpen: if the install turns into
-            a source build while the panel is open, the toggle unmounts and the
-            panel would otherwise be left on screen with no way to close it. */}
-        {!applying &&
-        changelogAvailable &&
-        changelogOpen &&
-        installedTag &&
-        latestTag ? (
+        {changelogPanelOpen && installedTag && latestTag ? (
           <LlamaUpdateChangelogPanel
             installedTag={installedTag}
             latestTag={latestTag}
