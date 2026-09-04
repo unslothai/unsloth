@@ -29,7 +29,8 @@ export const orbConfig = {
     duration: "1.4s",
     shadow: "0 0 32px 8px rgba(251,113,133,0.4)",
   },
-  // Grey-blue slow pulse: a model is loading / warming (voice slot or Whisper),
+  // Grey-blue slow pulse: a model is loading / warming (the voice slot, or the
+  // transcription model),
   // so it clearly reads as "not ready yet" -- distinct from the idle grey and the
   // ready green. Separate from lilac, which now means only TTS generating speech.
   loading: {
@@ -38,7 +39,8 @@ export const orbConfig = {
     duration: "2s",
     shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
   },
-  // Fuchsia quick pulse: Whisper is turning your captured speech into text. A
+  // Fuchsia quick pulse: the transcription engine is turning your captured
+  // speech into text. A
   // magenta hue -- the farthest from the idle/listening green on the palette -- so
   // "transcribing" never reads as "ready", and its pencil icon plus this colour
   // keep it distinct from the amber "generating LLM response" below.

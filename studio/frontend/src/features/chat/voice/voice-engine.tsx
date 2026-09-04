@@ -18,6 +18,8 @@
 import { resetPromptQueues } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/components/assistant-ui/voice-orb";
+import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
+import { StudioModelDictationAdapter } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { StudioWebSpeechDictationAdapter } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import {
   TTS_AUDIO_TYPES,
@@ -64,13 +66,33 @@ const VOICE_COALESCE_MS = 650;
 // past this (synthesis genuinely behind playback) shows lilac.
 const SYNTH_GAP_MS = 350;
 
+// --- Batch transcription -------------------------------------------------
+// The local ("model") and custom engines return one transcript when the session
+// ends, so the loop cannot watch it grow the way it does on Web Speech. It takes
+// end-of-utterance itself instead, from the microphone meter both adapters
+// already publish (subscribeDictationLevel).
+//
+// How long the mic must stay quiet, after the user has actually said something,
+// before the turn is finished. Comfortably above the model adapter's own 280ms
+// segment-cut pause so an ordinary mid-sentence breath cuts a segment at most,
+// and below the streaming engine's 1.5s so the batch path does not feel slower
+// than it already is.
+const VOICE_BATCH_SILENCE_MS = 900;
+// Published level (0..1) above which a frame counts as speech. The meter
+// publishes min(1, rms * 3.2) and the model adapter counts a frame as voiced
+// above raw RMS 0.015, so this is the same line, rounded.
+const VOICE_LEVEL_SPEECH = 0.05;
+// Ceiling on the wait for a batch transcript once the mic is closed. A local
+// Whisper on CPU is slow but not unbounded; past this the turn is sent with what
+// arrived (usually nothing, which just re-arms the mic) rather than stranding the
+// orb on "Transcribing" forever.
+const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
+
 /**
- * Whether the plus menu may offer Voice at all. It needs BOTH halves, and the
- * listening half is the narrower one. Speaking: the browser's speechSynthesis, or a
- * loaded TTS codec. Listening: the streaming Web Speech engine specifically,
- * because the loop's turn-taking watches the transcript grow. A batch engine
- * (local or custom transcription) holds its transcript until end-of-utterance, so
- * the orb would sit on "listening" and nothing would ever send.
+ * Whether the plus menu may offer Voice at all. It needs BOTH halves. Speaking:
+ * the browser's speechSynthesis, or a loaded TTS codec. Listening: whichever
+ * engine is configured, provided it can run here -- Web Speech needs
+ * SpeechRecognition, the batch engines need a secure context and MediaRecorder.
  *
  * Gating on TTS alone offered Voice in browsers with speechSynthesis but no
  * SpeechRecognition, where it could be switched on and never produce a word.
@@ -84,8 +106,9 @@ export function useVoiceAvailable(): boolean {
   return (
     ((typeof window !== "undefined" && "speechSynthesis" in window) ||
       TTS_AUDIO_TYPES.has(activeAudioType ?? "")) &&
-    dictationEngine === "browser" &&
-    StudioWebSpeechDictationAdapter.isSupported()
+    (dictationEngine === "browser"
+      ? StudioWebSpeechDictationAdapter.isSupported()
+      : StudioModelDictationAdapter.isSupported())
   );
 }
 
@@ -131,6 +154,11 @@ export const VoiceEngine: FC = () => {
     const m = s.models.find((m) => m.id === s.params.checkpoint);
     return m?.audioType ?? null;
   });
+  // Which listening engine is configured. "browser" streams a transcript that
+  // grows during the utterance; "model" and "custom" return one transcript when
+  // the session ends. Two different turn-taking paths, below.
+  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
+  const batchDictation = dictationEngine !== "browser";
   // The store field, synced from /voice/status -- not "a voice is selected", which
   // is true from the moment the picker changes and stays true while the slot is
   // still loading. The player keys both isTtsModel and streamMode off this, so the
@@ -218,7 +246,7 @@ export const VoiceEngine: FC = () => {
     return "";
   }, []);
 
-  // Submit a batch-STT (Whisper) transcript. The adapter has already committed
+  // Submit a batch-transcription transcript. The adapter has already committed
   // the final transcript into the composer via its onSpeech(isFinal) callback,
   // so here we just end dictation and send it — the run-lifecycle effect then
   // speaks the reply and re-arms the mic, same as the streaming path. Mirrors
@@ -424,11 +452,10 @@ export const VoiceEngine: FC = () => {
         streamPollRef.current = setInterval(() => {
           feedTextRef.current(latestAssistantText());
         }, 150);
-        // The mic is not re-armed during generation here: on the streaming engine
-        // the silence timer would send a second, concurrent run mid-generation.
-        // armDuringTts below arms it for the playback window instead. A batch STT
-        // engine wants the opposite (arm here, let its own VAD supersede the run),
-        // which is part of wiring that engine into the loop.
+        // The mic is not re-armed during generation, on either engine: the
+        // streaming engine's silence timer would send a second, concurrent run
+        // mid-generation, and a batch engine would be recording a turn the run
+        // has already consumed.
       }
       return;
     }
@@ -452,12 +479,22 @@ export const VoiceEngine: FC = () => {
     // Flush the remaining sentences (incl. the trailing one) and finish; the
     // stream's consumer calls resumeListen when playback drains.
     endStreamRef.current(text);
-    // Arm the mic DURING TTS so barge-in works: the streaming engine needs a live
-    // session for its transcript to grow. The just-ended turn's dictation can read
-    // as "set" for a few frames, and a single check would skip arming (leaving no
-    // mic to barge with), so retry until it clears, then click Dictate.
+    // Arm the mic DURING TTS so barge-in works -- the streaming engine needs a
+    // live session for its transcript to grow. The just-ended turn's dictation can
+    // read as "set" for a few frames, and a single check would skip arming
+    // (leaving no mic to barge with), so retry until it clears, then click
+    // Dictate.
+    //
+    // Not for a batch engine, deliberately. Its session records everything it
+    // hears and transcribes the whole recording on stop, so a mic open during
+    // playback would post the model's own words back as the user's next message,
+    // and there is no post-hoc echo check possible on a transcript that only
+    // arrives at the end. Barge-in for those engines needs acoustic echo
+    // cancellation on the capture stream and is deliberately absent here; the
+    // batch loop is listen, transcribe, generate, speak, then listen again.
     const armDuringTts = (n: number) => {
       if (voiceModeRef.current !== "active") return;
+      if (batchDictation) return;
       if (auiRef.current.composer().getState().dictation) {
         if (n < 6) setTimeout(() => armDuringTts(n + 1), 60);
         return;
@@ -465,7 +502,7 @@ export const VoiceEngine: FC = () => {
       auiRef.current.composer().startDictation();
     };
     armDuringTts(0);
-  }, [isThreadRunning, resumeListen, latestAssistantText]);
+  }, [batchDictation, isThreadRunning, resumeListen, latestAssistantText]);
 
   // Silence timer: only fires in "active" state. This watches the transcript
   // grow, so it needs the streaming (Web Speech) engine; VoiceControlButton
@@ -475,6 +512,9 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     if (dictationStatusType !== "running") return;
     if (voiceModeRef.current !== "active") return;
+    // A batch engine has no growing transcript to debounce against; the effect
+    // below owns its turn-taking, off the microphone meter.
+    if (batchDictation) return;
 
     // Barge-in (debounced): speech while TTS is playing only interrupts if it's
     // sustained. On the first fragment, open a window and snapshot the transcript
@@ -551,7 +591,100 @@ export const VoiceEngine: FC = () => {
         silenceTimerRef.current = null;
       }
     };
-  }, [dictationTranscript, dictationStatusType, stop, resumeListen]);
+  }, [batchDictation, dictationTranscript, dictationStatusType, stop, resumeListen]);
+
+  // Microphone meter. Both adapters publish it through startDictationLevelMeter,
+  // so this drives the orb's "hearing" state for either engine -- that state
+  // claims the mic is picking you up, and here it actually is the mic.
+  //
+  // It also carries turn-taking for the batch engines, which the effect above
+  // cannot serve: their transcript arrives once, at the end, so nothing grows for
+  // a debounce to watch and the 1.5s timer would close the mic and find an empty
+  // composer every time. Here the loop ends the turn itself, once the user has
+  // stopped talking, and sends the transcript down the same path.
+  //
+  // This is the only writer of voiceHearing and voiceTranscribing; the orb
+  // already renders both.
+  useEffect(() => {
+    if (voiceMode !== "active") return;
+    if (dictationStatusType !== "running") return;
+    const store = useChatRuntimeStore.getState();
+
+    let lastAt = 0;
+    let silenceMs = 0;
+    let voiced = false;
+    let hearing = false;
+    let finishing = false;
+
+    const setHearing = (next: boolean) => {
+      if (hearing === next) return;
+      hearing = next;
+      store.setVoiceHearing(next);
+    };
+
+    // Close the mic, wait for the adapter to hand its transcript to the composer,
+    // then send it the same way the streaming engine's silence timer does.
+    const endUtterance = () => {
+      finishing = true;
+      setHearing(false);
+      store.setVoiceTranscribing(true);
+      auiRef.current.composer().stopDictation();
+      const deadline = performance.now() + VOICE_TRANSCRIBE_TIMEOUT_MS;
+      const settle = () => {
+        if (voiceModeRef.current !== "active") {
+          store.setVoiceTranscribing(false);
+          return;
+        }
+        // The adapter commits the transcript through its onSpeech(isFinal)
+        // callback and only then ends the session, so a cleared dictation field
+        // means the composer already holds the text -- or the user said nothing,
+        // and submitTranscript just re-arms.
+        if (
+          auiRef.current.composer().getState().dictation &&
+          performance.now() < deadline
+        ) {
+          setTimeout(settle, 100);
+          return;
+        }
+        store.setVoiceTranscribing(false);
+        submitTranscript();
+      };
+      setTimeout(settle, 0);
+    };
+
+    const unsubscribe = subscribeDictationLevel((level) => {
+      const now = performance.now();
+      const dt = lastAt ? now - lastAt : 0;
+      lastAt = now;
+      if (finishing) return;
+      const speech = level > VOICE_LEVEL_SPEECH;
+      setHearing(speech);
+      if (!batchDictation) return;
+      // A batch mic is never open during playback (see armDuringTts), so anything
+      // heard here is the user. Belt and braces: if one ever is, do not let the
+      // model's own voice through the speakers end the turn.
+      if (isSpeakingRef.current || isPlayingRef.current) {
+        voiced = false;
+        silenceMs = 0;
+        return;
+      }
+      if (speech) {
+        voiced = true;
+        silenceMs = 0;
+        return;
+      }
+      // Silence before the user has said anything is just the room, so an idle
+      // mic listens indefinitely. Only a pause that follows speech ends the turn.
+      if (!voiced) return;
+      silenceMs += dt;
+      if (silenceMs >= VOICE_BATCH_SILENCE_MS) endUtterance();
+    });
+
+    return () => {
+      unsubscribe();
+      store.setVoiceHearing(false);
+    };
+  }, [batchDictation, voiceMode, dictationStatusType, submitTranscript]);
 
   const toggle = useCallback(() => {
     // OFF → CONFIGURING (show dropdown, don't start mic)
