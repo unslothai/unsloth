@@ -602,6 +602,9 @@ class _SentenceTransformersBackend:
     def dim(self, *, model_name = None):
         return _st_dim(model_name)
 
+    def max_tokens(self, *, model_name = None):
+        return getattr(_get(model_name), "max_seq_length", None)
+
     def warm(self, *, model_name = None):
         _get(model_name)
 
@@ -1141,6 +1144,10 @@ def encode(
 def dim(model_name: str | None = None) -> int:
     """Embedding dimension for the (loaded) model."""
     return _get_backend(model_name).dim(model_name = model_name)
+
+
+def max_tokens(model_name: str | None = None) -> int | None:
+    return _get_backend(model_name).max_tokens(model_name = model_name)
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:

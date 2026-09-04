@@ -1037,6 +1037,9 @@ class LlamaServerBackend:
             self._dim = width
             return width
 
+    def max_tokens(self, *, model_name = None) -> int | None:
+        return None
+
     def warm(self, *, model_name = None) -> None:
         """Start the server and probe dim off the request path.
 

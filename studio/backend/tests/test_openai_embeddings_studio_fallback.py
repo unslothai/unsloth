@@ -1,0 +1,214 @@
+import asyncio
+import base64
+import os
+import sys
+import threading
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+_backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend not in sys.path:
+    sys.path.insert(0, _backend)
+
+inference_route = pytest.importorskip("routes.inference", reason = "inference stack not installed")
+rag_embeddings = pytest.importorskip("core.rag.embeddings", reason = "rag stack not installed")
+rag_config = pytest.importorskip("core.rag.config", reason = "rag stack not installed")
+
+MODEL = "unsloth/bge-small-en-v1.5"
+
+
+class _Request:
+    def __init__(self, body):
+        self._body = body
+        self.method = "POST"
+        self.url = SimpleNamespace(path = "/v1/embeddings")
+        self.state = SimpleNamespace(skip_api_monitor = True)
+
+    async def json(self):
+        return self._body
+
+    async def is_disconnected(self):
+        return False
+
+
+def _vectors(texts, **_):
+    return np.array([[1.0, 0.0]] * len(texts), dtype = np.float32)
+
+
+@pytest.fixture
+def studio_embedder(monkeypatch):
+    async def passthrough(request, current_subject, **_kwargs):
+        return await request.json()
+
+    def no_proxy():
+        raise AssertionError("the llama-server proxy must not run")
+
+    monkeypatch.setattr(inference_route, "_should_validate_before_switch", lambda: False)
+    monkeypatch.setattr(inference_route, "_auto_switch_from_request_body", passthrough)
+    monkeypatch.setattr(inference_route, "_cancelable_nonstreaming_client", no_proxy)
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: MODEL)
+    monkeypatch.setattr(rag_embeddings, "encode", _vectors)
+    monkeypatch.setattr(rag_embeddings, "token_counter", lambda model_name = None: len)
+    monkeypatch.setattr(rag_embeddings, "max_tokens", lambda model_name = None: None)
+    monkeypatch.setattr(rag_embeddings, "dim", lambda model_name = None: 2)
+    return monkeypatch
+
+
+def _call(body):
+    response = asyncio.run(inference_route.openai_embeddings(_Request(body), "tester"))
+    assert response.status_code == 200
+    import json
+
+    return json.loads(response.body)
+
+
+def _http_error(body):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(_Request(body), "tester"))
+    return exc.value
+
+
+def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    payload = _call({"input": ["alpha", "beta"], "model": "text-embedding-3-small"})
+    assert payload["object"] == "list"
+    assert payload["model"] == MODEL
+    assert [row["index"] for row in payload["data"]] == [0, 1]
+    assert payload["data"][0]["embedding"] == [1.0, 0.0]
+    assert payload["usage"] == {"prompt_tokens": 9, "total_tokens": 9}
+
+
+def test_chat_model_loaded_serves_from_the_studio_embedder(studio_embedder):
+    started = []
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+    )
+    studio_embedder.setattr(
+        inference_route, "_direct_llama_request_started", lambda: started.append(1)
+    )
+    payload = _call({"input": "alpha"})
+    assert payload["model"] == MODEL
+    assert started == []
+
+
+def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
+    import httpx
+
+    class _Client:
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(200, json = {"data": [{"embedding": [0.5]}]})
+
+        async def aclose(self):
+            return None
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the studio embedder must not run")
+
+    studio_embedder.setattr(rag_embeddings, "encode", boom)
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+    payload = _call({"input": "alpha", "model": "org/E-GGUF"})
+    assert payload == {"data": [{"embedding": [0.5]}]}
+
+
+def test_base64_encoding_format(studio_embedder):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    payload = _call({"input": "alpha", "encoding_format": "base64"})
+    raw = base64.b64decode(payload["data"][0]["embedding"])
+    assert np.frombuffer(raw, dtype = np.float32).tolist() == [1.0, 0.0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"input": ""},
+        {"input": []},
+        {"input": [[1, 2, 3]]},
+        {"input": ["alpha", ""]},
+        {"input": "alpha", "encoding_format": "int8"},
+        {"input": "alpha", "dimensions": 999},
+    ],
+)
+def test_invalid_requests_are_400(studio_embedder, body):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    assert _http_error(body).status_code == 400
+
+
+def test_over_length_input_is_rejected_not_truncated(studio_embedder):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
+    error = _http_error({"input": ["ab", "abcd"]})
+    assert error.status_code == 400
+    assert "3-token limit" in error.detail
+
+
+def test_embedder_failure_is_502(studio_embedder):
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("llama-server embedder POST /v1/embeddings -> 500")
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", boom)
+    assert _http_error({"input": "alpha"}).status_code == 502
+
+
+def test_studio_embedder_requests_are_admission_limited(studio_embedder):
+    lock = threading.Lock()
+    gate = threading.Event()
+    active = {"now": 0, "peak": 0}
+
+    def encode(texts, **_kwargs):
+        with lock:
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+        gate.wait(timeout = 5)
+        with lock:
+            active["now"] -= 1
+        return _vectors(texts)
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", encode)
+
+    async def run():
+        tasks = [
+            asyncio.create_task(inference_route.openai_embeddings(_Request({"input": "x"}), "t"))
+            for _ in range(inference_route._STUDIO_EMBED_CONCURRENCY + 2)
+        ]
+        for _ in range(500):
+            await asyncio.sleep(0.01)
+            if active["now"] == inference_route._STUDIO_EMBED_CONCURRENCY:
+                break
+        assert active["now"] == inference_route._STUDIO_EMBED_CONCURRENCY
+        gate.set()
+        responses = await asyncio.gather(*tasks)
+        assert all(response.status_code == 200 for response in responses)
+
+    asyncio.run(run())
+    assert active["peak"] == inference_route._STUDIO_EMBED_CONCURRENCY

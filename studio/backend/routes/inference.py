@@ -25725,6 +25725,124 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 # =====================================================================
 
 
+_STUDIO_EMBED_CONCURRENCY = 4
+_STUDIO_EMBED_MAX_INPUTS = 2048
+_studio_embed_semaphores: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_studio_embed_semaphores_guard = threading.Lock()
+
+
+def _studio_embed_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _studio_embed_semaphores_guard:
+        semaphore = _studio_embed_semaphores.get(loop)
+        if semaphore is None:
+            semaphore = _studio_embed_semaphores[loop] = asyncio.Semaphore(_STUDIO_EMBED_CONCURRENCY)
+        return semaphore
+
+
+def _resident_serves_embeddings(llama_backend) -> bool:
+    return bool(llama_backend.is_loaded and getattr(llama_backend, "is_embedding_gguf", True))
+
+
+def _embeddings_texts(body: dict) -> list[str]:
+    value = body.get("input")
+    if isinstance(value, str):
+        texts = [value]
+    elif isinstance(value, (list, tuple)):
+        texts = list(value)
+    else:
+        texts = []
+    if not texts:
+        raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+    if len(texts) > _STUDIO_EMBED_MAX_INPUTS:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"'input' may hold at most {_STUDIO_EMBED_MAX_INPUTS} items.",
+        )
+    if not all(isinstance(text, str) and text for text in texts):
+        raise HTTPException(
+            status_code = 400,
+            detail = "'input' must be a non-empty string or an array of non-empty strings.",
+        )
+    return texts
+
+
+def _embedding_payload(vector, encoding_format: str):
+    if encoding_format == "base64":
+        import base64
+        import numpy as np
+
+        return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
+    return [float(x) for x in vector]
+
+
+async def _studio_embeddings(request: Request, body: dict, current_subject: str) -> Response:
+    from core.rag import config as rag_config
+    from core.rag import embeddings as rag_embeddings
+
+    texts = _embeddings_texts(body)
+    encoding_format = body.get("encoding_format") or "float"
+    if encoding_format not in ("float", "base64"):
+        raise HTTPException(
+            status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
+        )
+    dimensions = body.get("dimensions")
+    model_name = rag_config.effective_embedding_model()
+
+    def _embed():
+        limit = rag_embeddings.max_tokens()
+        count = rag_embeddings.token_counter()
+        token_counts = [count(text) for text in texts]
+        if limit and max(token_counts) > limit:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"'input' exceeds the {limit}-token limit of {model_name}.",
+            )
+        if dimensions is not None and dimensions != rag_embeddings.dim():
+            raise HTTPException(
+                status_code = 400, detail = f"'dimensions' is not supported by {model_name}."
+            )
+        return rag_embeddings.encode(texts, normalize = True), sum(token_counts), limit
+
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
+            method = request.method,
+            model = model_name,
+            prompt = _flatten_monitor_prompt(body.get("input", "")),
+            subject = current_subject,
+        )
+    try:
+        async with _studio_embed_semaphore():
+            vectors, prompt_tokens, limit = await asyncio.to_thread(_embed)
+    except HTTPException as exc:
+        api_monitor.fail(monitor_id, str(exc.detail))
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise HTTPException(
+            status_code = 502, detail = f"Embedding model failed: {_friendly_error(exc)}"
+        ) from exc
+    payload = {
+        "object": "list",
+        "data": [
+            {
+                "object": "embedding",
+                "index": index,
+                "embedding": _embedding_payload(vector, encoding_format),
+            }
+            for index, vector in enumerate(vectors)
+        ],
+        "model": model_name,
+        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+    }
+    _monitor_openai_chunk(monitor_id, payload, limit)
+    api_monitor.finish(monitor_id)
+    return Response(content = json.dumps(payload), media_type = "application/json")
+
+
 def _embeddings_input_present(body: dict) -> bool:
     """Whether an embeddings body carries a usable ``input`` (non-empty)."""
     inp = body.get("input")
@@ -25737,14 +25855,8 @@ def _embeddings_input_present(body: dict) -> bool:
 
 @router.post("/embeddings")
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
-    """
-    OpenAI-compatible embeddings endpoint.
-
-    Proxies to the running llama-server's ``/v1/embeddings``. Only available
-    when a GGUF model is loaded.
-    Note: the loaded model must support pooling, else llama-server returns an
-    error (expected).
-    """
+    """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
+    else Studio's configured embedding model."""
     llama_backend = get_llama_cpp_backend()
     # Reject a request with no input before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/responses/messages already validate before
@@ -25777,7 +25889,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
-    if not llama_backend.is_loaded:
+    if not llama_backend.is_loaded and not isinstance(body, dict):
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
             _raw_body_model(body),
@@ -25791,6 +25903,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    if not _resident_serves_embeddings(llama_backend):
+        return await _studio_embeddings(request, body, current_subject)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
     # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
