@@ -96,7 +96,7 @@ def test_direct_decision_cannot_replay_reserved_execution_metadata():
 
 
 def test_controller_strips_reserved_metadata_before_events_execution_and_replay():
-    controller = ToolLoopController([_tool("python")])
+    controller = ToolLoopController(tools = [_tool("python")])
     decision = controller.prepare_call(
         _call(
             "python",
