@@ -455,16 +455,15 @@ def test_cancelled_request_closes_its_monitor_row(studio_embedder):
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
-    studio_embedder.setattr(
-        inference_route.api_monitor, "start", lambda **_kwargs: "entry-1"
-    )
+    studio_embedder.setattr(inference_route.api_monitor, "start", lambda **_kwargs: "entry-1")
     studio_embedder.setattr(
         inference_route.api_monitor,
         "finish",
         lambda entry_id, *args, **_kw: closed.append((entry_id, args[0] if args else None)),
     )
     studio_embedder.setattr(
-        rag_embeddings, "encode_with_identity",
+        rag_embeddings,
+        "encode_with_identity",
         lambda texts, **_kw: (gate.wait(timeout = 5), (_vectors(texts), IDENTITY))[1],
     )
 
