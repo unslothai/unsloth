@@ -380,11 +380,12 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
 
     def test_the_index_re_export_is_not_trapped_either(self):
         blocks = self._enclosing_blocks(
-            self._setup(), "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl",
+            self._setup(),
+            "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl",
         )
-        assert not any("NoTorchMode" in b for b in blocks), (
-            f"the manifest is rewritten in no-torch mode too. Enclosing blocks: {blocks}"
-        )
+        assert not any(
+            "NoTorchMode" in b for b in blocks
+        ), f"the manifest is rewritten in no-torch mode too. Enclosing blocks: {blocks}"
 
     def test_the_recovered_index_is_put_back_in_the_environment(self):
         """
@@ -398,9 +399,9 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl")
         stack = text.index('python "$PSScriptRoot\\install_python_stack.py"')
         assert assign < export < stack, "recovered, re-exported, then read by the stack"
-        assert "if ($WinArm64TorchIndexUrl) {" in text[export - 120 : export], (
-            "guarded: an empty recovery must not export an empty value"
-        )
+        assert (
+            "if ($WinArm64TorchIndexUrl) {" in text[export - 120 : export]
+        ), "guarded: an empty recovery must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
         """
@@ -412,8 +413,8 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         call = source.index('req = REQ_ROOT / "studio.txt"')
         line_start = source.rfind("\n", 0, source.rindex("pip_install(", 0, call)) + 1
         indent = len(source[line_start:]) - len(source[line_start:].lstrip())
-        assert indent == 4, (
-            "the studio.txt install is no longer unconditional inside install_python_stack()"
-        )
-        skip_list = source[source.index("NO_TORCH_SKIP_PACKAGES = {"):][:400]
+        assert (
+            indent == 4
+        ), "the studio.txt install is no longer unconditional inside install_python_stack()"
+        skip_list = source[source.index("NO_TORCH_SKIP_PACKAGES = {") :][:400]
         assert "ddgs" not in skip_list, "ddgs is still installed when NO_TORCH is set"
