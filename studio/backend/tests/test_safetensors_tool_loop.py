@@ -5491,9 +5491,7 @@ def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
         return base64.b64encode(buffer.getvalue()).decode()
 
     attachment = _png((255, 0, 0))
-    envelope = json.dumps(
-        [{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)]
-    )
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
     result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
 
     def _call(n):
@@ -5527,9 +5525,9 @@ def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
     )
 
     assert attachment in sink, "the caller's attachment was trimmed away"
-    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES, (
-        "the attachment is spared, but it still counts against the cap"
-    )
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), "the attachment is spared, but it still counts against the cap"
     final = seen[-1]
     assert final[0]["content"][0] == {"type": "image"}, "its marker went with it"
     markers = sum(
@@ -5560,9 +5558,7 @@ def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
         return base64.b64encode(buffer.getvalue()).decode()
 
     replayed = [_png((0, 200 - index * 10, 0)) for index in range(4)]
-    envelope = json.dumps(
-        [{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)]
-    )
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
     result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
 
     def _call(n):
@@ -5589,9 +5585,9 @@ def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
         )
     )
 
-    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES, (
-        f"replay was exempted from the cap: {len(sink)} images in the prompt"
-    )
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), f"replay was exempted from the cap: {len(sink)} images in the prompt"
     assert replayed[0] not in sink, "the oldest replayed picture should have gone first"
     final = seen[-1]
     markers = sum(

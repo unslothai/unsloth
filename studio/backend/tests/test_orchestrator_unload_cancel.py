@@ -2692,6 +2692,5 @@ def test_both_generation_paths_forward_the_image_ordinal():
     ):
         assert "image_ordinal" in inspect.signature(method).parameters, method.__name__
         assert "image_ordinal = image_ordinal" in inspect.getsource(method), (
-            f"{method.__name__} accepts the ordinal but does not put it on the "
-            "worker command"
+            f"{method.__name__} accepts the ordinal but does not put it on the " "worker command"
         )

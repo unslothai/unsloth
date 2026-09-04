@@ -23405,10 +23405,7 @@ async def produce_openai_chat_completions(
         # only pictures are replayed MCP ones carries image input just the same, and
         # reading `image is None` there let the loop take the request and swap the
         # caller's schemas out on exactly the path this PR adds.
-        and (
-            not _sf_has_any_image
-            or (bool(_sf_model_info.get("is_vision")) and not payload.tools)
-        )
+        and (not _sf_has_any_image or (bool(_sf_model_info.get("is_vision")) and not payload.tools))
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -31922,7 +31919,9 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
 
 
 def _openai_messages_for_gguf_chat(
-    payload, is_vision: bool, promoted_out: "Optional[list]" = None
+    payload,
+    is_vision: bool,
+    promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
     """Build llama-server messages for the standard GGUF chat path.
 
@@ -31960,7 +31959,9 @@ def _openai_messages_for_gguf_chat(
 
 
 async def _openai_messages_for_gguf_chat_async(
-    payload, is_vision: bool, promoted_out: "Optional[list]" = None
+    payload,
+    is_vision: bool,
+    promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
     if _request_has_image(payload):
         return await asyncio.to_thread(
