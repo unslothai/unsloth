@@ -974,7 +974,8 @@ export function useChatModelRuntime() {
           ) &&
           // The id names the weights, not how the server was invoked: a remembered context length,
           // drafter, placement or extra arg the resident load does not run is a real reload. Not
-          // `pendingConfig`: with no saved record the caller has already reset the store to defaults,
+          // `pendingConfig`: with no saved record the caller has already run
+          // applyModelLoadConfigToRuntime(null), which resets the store to DEFAULT_PER_MODEL_CONFIG,
           // and performLoad reads the store for every field the config does not carry.
           residentRuntimeMatchesConfig(status, comparedConfig, {
             // What the applier fills an unset field with, so the comparison is against what /load would send
@@ -1866,10 +1867,9 @@ export function useChatModelRuntime() {
                 maxTokensCap: loadedContextCap,
               },
             );
-            // Qwen3.5/3.6 small models disable thinking by default. Anchored regex: the first "Xb" after
-            // start-of-string or [-_/.], so "Qwen3.5-35B-A3B" gives 35 rather than 3.
-            // Qwen3.5/3.6 small models are 0.8B, 2B, 4B and 9B. The regex matches the first "Xb" or "X.Xb"
-            // after start or [-_/.], so "Qwen3.5-35B-A3B" yields 35 (total), not 3 (MoE active).
+            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default. Anchored regex:
+            // first "Xb" / "X.Xb" after start-of-string or [-_/.] so the version literal in "qwen3.5" /
+            // "qwen3.6" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3 (MoE active).
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
             if (reasoningDefault) {
               const mid = modelId.toLowerCase();

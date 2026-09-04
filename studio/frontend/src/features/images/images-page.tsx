@@ -179,9 +179,10 @@ function useImageModels(host: HostClass): ModelOption[] {
   return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
 }
 
-// Workflow tabs. `requires` is the backend workflow id the model must support; null = always.
-// Each conditioned workflow names the images it consumed for the restore toast, since a
-// recipe keeps the scalar settings but not the uploads. txt2img restores completely.
+// Workflow tabs. `requires` is the backend workflow id (status.workflows) the model must
+// support; null = always. Each conditioned workflow names the images it consumed for the restore
+// toast, since a recipe keeps the scalar settings but not the uploads. Keys are the backend's own
+// workflow strings; txt2img is absent because it restores completely.
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
@@ -2324,7 +2325,7 @@ export function ImagesPage({
 
   // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
-  // LOAD-TIME half of the record: the backend rewrites the speed/attention entries at
+  // LOAD-TIME half of the record: the backend rewrites the speed/attention/cache entries at
   // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
@@ -3821,7 +3822,7 @@ export function ImagesPage({
                           onClick={() => setExtendSides((s) => ({ ...s, [key]: !s[key] }))}
                           className={cn(
                             // No border in either mode: the fill alone marks the state, and a ring would not survive
-                            // mouse focus anyway.
+                            // mouse focus anyway (index.css blanks it).
                             "rounded-lg px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
                               ? "bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"

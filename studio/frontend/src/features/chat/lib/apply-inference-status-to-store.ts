@@ -628,7 +628,8 @@ export function applyActiveModelStatusToStore(
     storedReasoningEnabled === null
   ) {
     // Anchored regex: first "Xb"/"X.Xb" after start or [-_/.] so the version literal in
-    // "qwen3.5" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3 (active).
+    // "qwen3.5" / "qwen3.6" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3
+    // (active).
     // Mirrors use-chat-model-runtime.ts and the inline regex in llama_cpp.py.
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
