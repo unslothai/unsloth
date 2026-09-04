@@ -1641,7 +1641,21 @@ async def stream_with_studio_tools(
             sensitive, and only the WAITING was ever worth overlapping.
             """
             nonlocal remaining, turn_executed_real_tool, executed_any, last_reprompt_text
-            decision, name, call_id, card_id, tool_stream, outcome, queue, pump = entry
+            if entry[0] == "lines":
+                # A call that produced its whole answer without running a tool: the budget
+                # was spent, the controller made it a no-op, or the user denied it. Those
+                # used to be written straight out from the preparing pass, which put them
+                # AHEAD of every call that was still running -- the order the client paints
+                # cards in, and the order the provider reads results in, both came out
+                # wrong for a mixed round. Held here instead so each one lands in its own
+                # place.
+                _, lines, tool_message = entry
+                for line in lines:
+                    yield line
+                if tool_message is not None:
+                    tool_messages.append(tool_message)
+                return
+            _, decision, name, call_id, card_id, tool_stream, outcome, queue, pump = entry
             # The pump queues _STEP_DONE from its own `finally` and then returns, so the
             # consumer can see the sentinel a tick before `pump.done()` is true. Reading
             # that gap as "still running" and setting the cancel flag would stop the whole
@@ -1705,14 +1719,18 @@ async def stream_with_studio_tools(
             # sequential round the list is empty and this is the check it always was.
             if not unlimited and remaining - len(pending_calls) <= 0:
                 # Budget spent.
-                for card_line in _unrun_call_card(
-                    tool_name = call["function"]["name"],
-                    tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
-                    arguments = call.get("arguments"),
-                    result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = _unrun_provenance(call["function"]["name"], round_id),
-                ):
-                    yield card_line
+                _exhausted_lines = list(
+                    _unrun_call_card(
+                        tool_name = call["function"]["name"],
+                        tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
+                        arguments = call.get("arguments"),
+                        result = _TOOL_BUDGET_EXHAUSTED,
+                        provenance = _unrun_provenance(call["function"]["name"], round_id),
+                    )
+                )
+                if not parallel_round:
+                    for card_line in _exhausted_lines:
+                        yield card_line
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
                 # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
                 # OpenAI, Anthropic and Gemini all reject that history instead of answering.
@@ -1726,14 +1744,17 @@ async def stream_with_studio_tools(
                 if isinstance(exhausted_extra, dict) and exhausted_extra:
                     exhausted_call["extra_content"] = exhausted_extra
                 assistant_tool_calls.append(exhausted_call)
-                tool_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call["id"],
-                        "name": call["function"]["name"],
-                        "content": _TOOL_BUDGET_EXHAUSTED,
-                    }
-                )
+                _exhausted_message = {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "name": call["function"]["name"],
+                    "content": _TOOL_BUDGET_EXHAUSTED,
+                }
+                if parallel_round:
+                    # In its own place, behind the calls above it that are still running.
+                    pending_calls.append(("lines", _exhausted_lines, _exhausted_message))
+                else:
+                    tool_messages.append(_exhausted_message)
                 continue
             decision = controller.prepare_call(call)
             # The frontend groups a round's reasoning by this id (codexLocalToolRoundId), so every tool card the loop
@@ -1752,16 +1773,22 @@ async def stream_with_studio_tools(
                 # off. That one is answered in the conversation only.
                 if decision.action == "disabled":
                     continue
-                for card_line in _unrun_call_card(
-                    tool_name = decision.tool_name,
-                    tool_call_id = (
-                        call.get("card_id") or call.get("stream_id") or decision.tool_call_id
-                    ),
-                    arguments = decision.arguments,
-                    result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
-                    provenance = decision.provenance,
-                ):
-                    yield card_line
+                _noop_lines = list(
+                    _unrun_call_card(
+                        tool_name = decision.tool_name,
+                        tool_call_id = (
+                            call.get("card_id") or call.get("stream_id") or decision.tool_call_id
+                        ),
+                        arguments = decision.arguments,
+                        result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
+                        provenance = decision.provenance,
+                    )
+                )
+                if parallel_round:
+                    pending_calls.append(("lines", _noop_lines, None))
+                else:
+                    for card_line in _noop_lines:
+                        yield card_line
                 continue
             assistant_call = decision.as_assistant_tool_call()
             call_extra = call.get("extra_content")
@@ -1829,7 +1856,7 @@ async def stream_with_studio_tools(
                     abort_tool_decision(decision_slot, approval_id)
 
             if denied:
-                yield _sse(
+                _denied_line = _sse(
                     {
                         "type": "tool_end",
                         "tool_name": name,
@@ -1845,6 +1872,15 @@ async def stream_with_studio_tools(
                 }
                 if call_id:
                     denied_message["tool_call_id"] = call_id
+                # A denial cannot occur in an overlapped round today, because a round that
+                # needs any approval is kept sequential. Deferred anyway: the branch is one
+                # `parallel_round` term away from being reachable, and this is the shape
+                # that goes wrong when it is.
+                if parallel_round:
+                    pending_calls.append(("lines", [_denied_line], denied_message))
+                    reprompts = max_reprompts
+                    continue
+                yield _denied_line
                 tool_messages.append(denied_message)
                 # A denial is an answer, not a stall: never nudge after one.
                 reprompts = max_reprompts
@@ -1899,7 +1935,7 @@ async def stream_with_studio_tools(
             pump = asyncio.create_task(
                 _pump_tool_stream(tool_stream, outcome, events, cancel_event)
             )
-            entry = (decision, name, call_id, card_id, tool_stream, outcome, events, pump)
+            entry = ("call", decision, name, call_id, card_id, tool_stream, outcome, events, pump)
             if parallel_round:
                 # Started, not awaited. The next call's tool is launched while this one is
                 # still working, and both are drained below in the order the model asked.

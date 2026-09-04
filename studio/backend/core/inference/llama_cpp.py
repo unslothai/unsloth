@@ -31214,13 +31214,24 @@ class LlamaCppBackend:
                             # turns the call into an internal no-op (duplicate /
                             # disabled / render_html_repeat).
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
-                            yield {
+                            _noop_end = {
                                 "type": "tool_end",
                                 "tool_name": decision.tool_name,
                                 "tool_call_id": decision.tool_call_id,
                                 "result": "",
                                 "provenance": decision.provenance,
                             }
+                            if _parallel_round:
+                                # Behind the calls above it, which are still running. Written
+                                # out here it would close this card before the cards above it
+                                # had closed, and the client paints them in the order they
+                                # arrive. The same mistake on the provider loop is what CI
+                                # caught: a mixed round reported ['c2', 'c1'].
+                                _pending_calls.append(
+                                    (None, None, None, _noop_end, None, None, None)
+                                )
+                            else:
+                                yield _noop_end
                         completion = tool_controller.record_noop(decision)
                         deferred_noop_msgs.append(completion.model_message())
                         deferred_noop_tools.add(decision.tool_name)
@@ -31975,6 +31986,11 @@ class LlamaCppBackend:
                     _p_budget,
                     _p_starved,
                 ) in _pending_calls:
+                    if _p_decision is None:
+                        # A card to close, not a call to settle: the controller made this
+                        # one an internal no-op and its provisional card is still on screen.
+                        yield _p_result
+                        continue
                     if _p_queue is None:
                         # Nothing was started for it: the RAG cap answered before the tool
                         # would have run. It is here only to keep its place in the round.

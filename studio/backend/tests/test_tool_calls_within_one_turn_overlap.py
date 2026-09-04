@@ -749,3 +749,55 @@ class TestTheControllerHasExactlyTwoIntraRoundDependencies:
             "so a third has to be added to it or it decides on state that does not exist "
             "yet."
         )
+
+
+class TestAMixedRoundStillAnswersInOrder:
+    """The ordering claim, tested where it actually broke.
+
+    Every earlier ordering test used a round in which every call ran. A call that produces
+    its answer WITHOUT running a tool -- the budget is spent, the controller made it a
+    no-op, the user denied it -- used to be written straight out from the preparing pass,
+    so it overtook every call that was still running. CI found it as
+    `['c2', 'c1'] == ['c1', 'c2']` on the cards, and the same inversion in the replayed
+    transcript, which providers reject outright.
+    """
+
+    def test_the_provider_loop_keeps_a_spent_budget_in_its_place(self, recorder):
+        """One call runs, the next is past the budget. The cards must close in call order."""
+        lines = _run(_two_calls("alpha", "beta"), max_calls = 1)
+        ends = [event.get("tool_call_id") for event in _events(lines, "tool_end")]
+        assert ends == [
+            "call_a",
+            "call_b",
+        ], f"cards closed {ends}: the call that never ran overtook the one that did"
+
+    def test_the_provider_loop_replays_them_in_order_too(self, recorder):
+        transport = _two_calls("alpha", "beta")
+        _run(transport, max_calls = 1)
+        messages = transport.requests[1]["messages"]
+        tool_rows = [m for m in messages if m.get("role") == "tool"]
+        assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b"], (
+            "the provider is handed results in an order that does not match its calls, "
+            "which OpenAI, Anthropic and Gemini all reject rather than answer"
+        )
+
+    def test_the_gguf_loop_keeps_a_capped_search_in_its_place(self, monkeypatch):
+        """The RAG cap is the GGUF loop's equivalent: an answer with no tool behind it."""
+        from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_TOOLS
+
+        tool = sorted(RAG_SEARCH_TOOLS)[0]
+
+        def _execute(name, arguments, **_kwargs):
+            return f"RESULT<{arguments.get('query')}>"
+
+        n = RAG_MAX_SEARCHES_PER_TURN + 2
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [(f"call_{i}", tool, {"query": f"q{i}"}) for i in range(n)],
+            _execute,
+            tools = [{"type": "function", "function": {"name": tool}}],
+        )
+        ends = [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"]
+        assert ends == [
+            f"call_{i}" for i in range(n)
+        ], f"cards closed {ends}: the capped calls overtook the ones still searching"
