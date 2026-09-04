@@ -3223,6 +3223,7 @@ from core.inference.mcp_images import (
     count_probably_decodable as _mcp_count_probably_decodable,
     append_placeholder_turn as mark_mcp_image_turn_local,
     image_marker_parts as mcp_image_marker_parts,
+    DETACHED_IMAGE_TURN_TEXT as _MCP_DETACHED_IMAGE_TURN_TEXT,
     insert_placeholder_turn as insert_mcp_image_turn_before,
     pixels_in_marker_order as mcp_pixels_in_marker_order,
     trim_image_turns as trim_mcp_image_turns,
@@ -19081,6 +19082,7 @@ def _build_external_messages(
     provider_type: Optional[str] = None,
     base_url: Optional[str] = None,
     promoted_out: "Optional[list]" = None,
+    promote_mcp_images: "Optional[bool]" = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -19088,6 +19090,10 @@ def _build_external_messages(
     Behaviour per content-part type:
     - `text`: always preserved.
     - `image_url`: preserved on vision providers; stripped on non-vision.
+      `promote_mcp_images` governs only whether a replayed MCP envelope becomes
+      image input; it defaults to `supports_vision` and must not be passed as
+      that flag, or a stricter MCP answer would also strip what the caller
+      attached.
     - `input_document`: preserved ONLY when the provider's stream helper has
       explicit translation logic (Anthropic + OpenAI today, see
       ``_INPUT_DOCUMENT_PROVIDERS``). Stripped for every other provider so the
@@ -19399,7 +19405,8 @@ def _build_external_messages(
                 entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"], replay_ids)
             if isinstance(entry.get("tool_call_id"), str):
                 entry["tool_call_id"] = replay_ids.get(entry["tool_call_id"], entry["tool_call_id"])
-    return promote_mcp_history_images(result, vision = supports_vision, promoted_out = promoted_out)
+    promote = supports_vision if promote_mcp_images is None else promote_mcp_images
+    return promote_mcp_history_images(result, vision = promote, promoted_out = promoted_out)
 
 
 async def _promote_local_mcp_images_async(messages, *, vision: bool):
@@ -19416,7 +19423,10 @@ async def _build_external_messages_async(messages, supports_vision, **kwargs) ->
     """Promoting a replayed envelope decodes and re-encodes every picture in it,
     which is PIL work on the shared loop. Hop to a thread only when there is an
     envelope to promote, so an ordinary text turn keeps its direct call."""
-    if supports_vision and _messages_have_mcp_image_envelope(messages):
+    promote = kwargs.get("promote_mcp_images")
+    if promote is None:
+        promote = supports_vision
+    if promote and _messages_have_mcp_image_envelope(messages):
         return await asyncio.to_thread(
             _build_external_messages, messages, supports_vision, **kwargs
         )
@@ -20012,10 +20022,18 @@ async def _proxy_to_external_provider(
     _external_promoted_parts: list = []
     chat_messages = await _build_external_messages_async(
         payload.messages,
-        _external_takes_mcp_images(provider_type, _supports_vision, model, _pinfo),
+        # The provider-wide flag, so an image the caller attached is preserved
+        # exactly as it was before MCP promotion existed. The stricter
+        # model-level answer gates promotion alone: openrouter and huggingface
+        # are vision-capable for the family and name no model, so folding the
+        # two together stripped a picture sent to a chosen vision model.
+        _supports_vision,
         provider_type = provider_type,
         base_url = base_url,
         promoted_out = _external_promoted_parts,
+        promote_mcp_images = _external_takes_mcp_images(
+            provider_type, _supports_vision, model, _pinfo
+        ),
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -23301,6 +23319,31 @@ async def produce_openai_chat_completions(
         _sf_template_tools
     )
 
+    # A replayed MCP picture sends generation down the processor path just as an
+    # attachment does, so protocol classification has to read the same template it
+    # will render with -- otherwise tool schemas and reasoning markers are derived
+    # from the tokenizer template while the prompt comes from the processor one.
+    _sf_has_any_image = image is not None or bool(sf_mcp_images)
+    # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    _sf_image_tpl = (
+        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
+        if _sf_has_any_image
+        else None
+    )
+    # Differs from processor_template: a template-less processor still places the image.
+    _sf_renders_image = _sf_has_any_image and bool(
+        (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
+    )
+    if _sf_image_tpl is not None:
+        # The WHOLE protocol, not just tool support: a processor body can carry a reasoning
+        # channel the tokenizer never declares, whose <think> markup then leaked as visible
+        # content. prefer_tool_use is off: a processor never selects "tool_use" (#10092).
+        _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+            _sf_template_tools,
+            template = _sf_image_tpl,
+            prefer_tool_use = False,
+        )
+
     # A continued turn renders no generation prompt, so nothing is prefilled and the
     # resumed text is the visible answer. Only the first turn continues; later tool-loop
     # turns render a fresh generation prompt and prefill as usual.
@@ -23343,7 +23386,17 @@ async def produce_openai_chat_completions(
         and _sf_features.get("supports_tools", False)
         # An attachment used to withdraw the tools: the loop had no way to carry
         # a picture. It has one now, so only a model that cannot read images does.
-        and (image is None or bool(_sf_model_info.get("is_vision")))
+        #
+        # Except when the caller sent its own catalog. #10092 routes image-plus-tools
+        # to the client passthrough so those schemas are the ones rendered; claiming
+        # the request here would answer it with Unsloth's built-ins instead, which is
+        # the client's tools silently gone. Studio's own chat names tools through
+        # enabled_tools rather than sending schemas, so the picture still reaches the
+        # loop there -- which is the request this whole path exists for.
+        and (
+            image is None
+            or (bool(_sf_model_info.get("is_vision")) and not payload.tools)
+        )
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -23907,30 +23960,10 @@ async def produce_openai_chat_completions(
     # tools into the template, generate one turn, heal text-form calls (#6801).
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    # A replayed MCP picture sends generation down the processor path just as an
-    # attachment does, so protocol classification has to read the same template it
-    # will render with -- otherwise tool schemas and reasoning markers are derived
-    # from the tokenizer template while the prompt comes from the processor one.
-    _sf_has_any_image = image is not None or bool(sf_mcp_images)
-    # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
-    _sf_image_tpl = (
-        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
-        if _sf_has_any_image
-        else None
-    )
-    # Differs from processor_template: a template-less processor still places the image.
-    _sf_renders_image = _sf_has_any_image and bool(
-        (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
-    )
-    if _sf_image_tpl is not None:
-        # The WHOLE protocol, not just tool support: a processor body can carry a reasoning
-        # channel the tokenizer never declares, whose <think> markup then leaked as visible
-        # content. prefer_tool_use is off: a processor never selects "tool_use" (#10092).
-        _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
-            _sf_template_tools,
-            template = _sf_image_tpl,
-            prefer_tool_use = False,
-        )
+    # Classified against the processor body above, before the server loop's own gate:
+    # that gate reads the same flag, and deciding it here left the loop enabled on a
+    # tokenizer body that renders tools while generation used a processor body that
+    # does not, so the model was never shown the schemas the loop was driving.
     _sf_supports_tools = _sf_features.get("supports_tools", False)
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
@@ -24038,16 +24071,32 @@ async def produce_openai_chat_completions(
         # transformers fallback collapses the tool history away.
         if gen_kwargs.get("images"):
             _sf_replayed = len(gen_kwargs["images"])
+            # The flatten cost them their positions, so this block is one turn rather
+            # than one per source result. Interleaving them back is not open: a marker
+            # turn between an assistant tool_call and its result breaks the tool
+            # protocol. What it must not do is claim an adjacency it no longer has --
+            # the default wording says "the tool call above", and above is now whatever
+            # turn precedes the block.
             if _sf_image_marker_idx is not None:
                 # Ahead of the turn carrying the attachment's marker: the pixels go
                 # history-first with the attachment last, and a positional processor
                 # binds them in document order, so appending here would hand the
                 # historical pixels to the attachment's marker and vice versa.
                 insert_mcp_image_turn_before(
-                    gen_kwargs["messages"], _sf_image_marker_idx, _sf_replayed, _sf_replayed
+                    gen_kwargs["messages"],
+                    _sf_image_marker_idx,
+                    _sf_replayed,
+                    _sf_replayed,
+                    lead = _MCP_DETACHED_IMAGE_TURN_TEXT,
                 )
             else:
-                mark_mcp_image_turn_local(gen_kwargs["messages"], _sf_replayed, _sf_replayed)
+                mark_mcp_image_turn_local(
+                    gen_kwargs["messages"],
+                    _sf_replayed,
+                    _sf_replayed,
+                    lead = _MCP_DETACHED_IMAGE_TURN_TEXT,
+                    annotate_merge = True,
+                )
         # tool_choice="none": keep history templating but advertise no tools
         # (heal_gate is off, markup would relay as prose). A forced function
         # narrows templating to that one schema. Both mirror the GGUF path,

@@ -5471,3 +5471,71 @@ def test_mcp_image_markers_merge_into_a_deferred_noop_turn(monkeypatch):
         if part.get("type") == "image"
     ]
     assert len(markers) == len(sink) == 1
+
+
+def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
+    """The sink is seeded with what the caller attached, and the MCP payloads land
+    behind it. A cap that trims from the front deleted that picture and its marker,
+    so a model asked to compare against it was handed screenshots instead."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps(
+        [{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)]
+    )
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    # Two DISTINCT calls: an identical repeat is suppressed as a no-op and the sink
+    # never reaches the cap, so the test would prove nothing.
+    turns = [_call(1), _call(2), "done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink = [attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 3,
+            images_sink = sink,
+        )
+    )
+
+    assert sink[0] == attachment, "the caller's attachment was trimmed away"
+    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1, (
+        "the MCP cap still bounds what the loop itself re-sends"
+    )
+    final = seen[-1]
+    assert final[0]["content"][0] == {"type": "image"}, "its marker went with it"
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel, or the processor miscounts"

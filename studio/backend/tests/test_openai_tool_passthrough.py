@@ -4027,6 +4027,78 @@ class TestGgufVisionMessages:
         assert all("__MCP_IMAGES__" not in str(m.get("content")) for m in priced)
         assert all(self._PNG_B64 not in str(m.get("content")) for m in priced)
 
+    def test_a_mixed_catalog_provider_still_forwards_an_attached_image(self):
+        """openrouter and huggingface are vision-capable for the family and name no
+        model, so the MCP gate says no for every model on them. Passed as the general
+        vision flag it also stripped the picture the caller attached to a chosen
+        vision model, which main forwarded."""
+        from core.inference.providers import get_provider_info
+        from routes.inference import _build_external_messages, _external_takes_mcp_images
+
+        attached = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what colour is this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{self._PNG_B64}"},
+                    },
+                ],
+            )
+        ]
+
+        for provider, model in (
+            ("openrouter", "openai/gpt-4o"),
+            ("huggingface", "Qwen/Qwen2.5-VL-7B-Instruct"),
+            ("mistral", "pixtral-large-latest"),
+        ):
+            info = get_provider_info(provider) or {}
+            vision = info.get("supports_vision", False)
+            gate = _external_takes_mcp_images(provider, vision, model, info)
+            assert gate is False, f"{provider} is expected to gate MCP promotion off"
+
+            built = _build_external_messages(
+                attached,
+                vision,
+                provider_type = provider,
+                promote_mcp_images = gate,
+            )
+
+            parts = built[0]["content"]
+            assert [p["type"] for p in parts] == ["text", "image_url"], provider
+
+            # The shape the regression had: one flag answering both questions.
+            # The image is gone and the lone text part collapses back to a string.
+            conflated = _build_external_messages(attached, gate, provider_type = provider)
+            assert conflated[0]["content"] == "what colour is this", (
+                f"{provider}: the two decisions must stay separate"
+            )
+
+    def test_the_mcp_gate_still_keeps_an_envelope_off_a_mixed_catalog_provider(self):
+        from core.inference.providers import get_provider_info
+        from routes.inference import _build_external_messages, _external_takes_mcp_images
+
+        history = [ChatMessage(**m) for m in self._mcp_tool_history()]
+        info = get_provider_info("openrouter") or {}
+        vision = info.get("supports_vision", False)
+
+        built = _build_external_messages(
+            history,
+            vision,
+            provider_type = "openrouter",
+            promote_mcp_images = _external_takes_mcp_images(
+                "openrouter", vision, "openai/gpt-4o", info
+            ),
+        )
+
+        assert all("__MCP_IMAGES__" not in str(m.get("content")) for m in built)
+        assert not any(
+            isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in built
+        )
+
     def test_tool_nudge_system_update_dedupes_non_leading_system(self):
         messages = [
             {"role": "user", "content": "earlier"},
