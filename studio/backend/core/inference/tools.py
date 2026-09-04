@@ -9025,6 +9025,9 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         return False
 
 
+# local models often emit q/search_query instead of query, or uri/href instead of url.
+_WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
+_WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
 # edit_file
 #
 # Without it, changing a file means a whole-file `cat > f <<'EOF'` or
@@ -9658,6 +9661,9 @@ WEB_SEARCH_TOOL = {
         "name": "web_search",
         "description": (
             "Search the web and fetch page content. Returns snippets for all results. "
+            "Provide a non-empty `query` to search the web, a non-empty `url` to fetch "
+            "a page, or non-empty `image_queries` when that field is available. Never "
+            "call web_search with no usable arguments. "
             "Use the url parameter to fetch full page text from a specific URL."
         ),
         "parameters": {
@@ -9676,6 +9682,43 @@ WEB_SEARCH_TOOL = {
         },
     },
 }
+
+
+def _first_nonempty_arg(arguments: dict, keys: tuple[str, ...]) -> str:
+    """First non-empty string among ``keys`` in a tool-call argument object."""
+    for key in keys:
+        if key not in arguments:
+            continue
+        value = arguments.get(key)
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if text:
+            return text
+    return ""
+
+
+def _resolve_web_search_args(arguments) -> tuple[str, str]:
+    """Return ``(query, url)``, healing common aliases from local models."""
+    args = arguments if isinstance(arguments, dict) else {}
+    return (
+        _first_nonempty_arg(args, _WEB_SEARCH_QUERY_ALIASES),
+        _first_nonempty_arg(args, _WEB_SEARCH_URL_ALIASES),
+    )
+
+
+def canonicalize_web_search_arguments(arguments) -> dict:
+    """Rewrite alias keys to ``query`` / ``url`` for duplicate detection and status."""
+    args = dict(arguments) if isinstance(arguments, dict) else {}
+    query, url = _resolve_web_search_args(args)
+    if url:
+        return {"url": url}
+    canonical: dict = {}
+    if query:
+        canonical["query"] = query
+    if "image_queries" in args:
+        canonical["image_queries"] = args["image_queries"]
+    return canonical
 
 
 def web_search_tool_with_images() -> dict:
@@ -10538,15 +10581,19 @@ def execute_tool(
             return "Error: deep_research needs a question to investigate."
         return DEEP_RESEARCH_STARTED
     if name == "web_search":
+        query, url = _resolve_web_search_args(arguments)
+        image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
+        if not query and not url and not _clean_image_queries(image_queries):
+            return "No query provided."
         return _fit_result_to_room(
             _web_search(
-                arguments.get("query", ""),
-                url = arguments.get("url"),
+                query,
+                url = url or None,
                 timeout = effective_timeout,
                 cancel_event = cancel_event,
                 website_policy = website_policy,
                 include_images = search_images,
-                image_queries = arguments.get("image_queries"),
+                image_queries = image_queries,
             ),
             name,
         )

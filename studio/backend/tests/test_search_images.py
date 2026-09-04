@@ -600,10 +600,13 @@ def test_persisted_metadata_is_re_checked_on_the_way_back_in(monkeypatch, tmp_pa
 
 def test_web_search_tool_with_images_adds_the_field_without_touching_the_base():
     with_images = tools.web_search_tool_with_images()
-    props = with_images["function"]["parameters"]["properties"]
+    function = with_images["function"]
+    props = function["parameters"]["properties"]
     assert "image_queries" in props
+    assert "non-empty `image_queries`" in function["description"]
+    assert "image_queries may also be sent alone" in function["description"]
     assert "image_queries" not in tools.WEB_SEARCH_TOOL["function"]["parameters"]["properties"]
-    assert with_images["function"]["name"] == "web_search"
+    assert function["name"] == "web_search"
 
 
 def test_image_search_caps_the_subject_count(monkeypatch):

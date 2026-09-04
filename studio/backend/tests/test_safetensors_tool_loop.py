@@ -1993,7 +1993,7 @@ def test_unrestricted_mode_split_rehearsal_name_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search" in t for t in contents), contents
 
@@ -2016,7 +2016,7 @@ def test_unrestricted_mode_split_after_bracket_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search[" in t for t in contents), contents
 
