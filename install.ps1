@@ -291,7 +291,6 @@ function Install-UnslothStudio {
     # the historical x64 path runs exactly as before.
     $script:WoaNativeCudaTorch = $false
     $script:WoaTorchIndexUrl = $null
-    $script:WoaPythonMinor = $null
 
     # NVIDIA's out-of-tree Windows-on-ARM wheel indexes, GA first and the nightly channel
     # behind it. UNSLOTH_WOA_TORCH_INDEX_URL replaces both (a mirror, or wherever these
@@ -524,9 +523,8 @@ function Install-UnslothStudio {
         $script:WoaNativeCudaTorch = $false
         $script:WoaTorchIndexUrl = $null
         # Cleared too, so a re-probe for another interpreter cannot inherit the first
-        # call's answers about a minor it is no longer asking about.
+        # call's answer about a minor it is no longer asking about.
         $script:WoaTorchAudio = $false
-        $script:WoaPythonMinor = $null
         if ((Get-HostMachineArch) -ne "arm64") { return }
         if ($SkipTorch) { return }
         # Escape hatch back to the historical x64-under-emulation path, for a host where
@@ -536,7 +534,6 @@ function Install-UnslothStudio {
             return
         }
         if (-not (Test-WoaNvidiaPresent)) { return }
-        $script:WoaPythonMinor = $PythonMinor
         # An explicit pin wins outright: the user named the index, so honour it and only
         # ask whether it can serve this machine natively.
         $pinned = @()
