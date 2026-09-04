@@ -7,6 +7,7 @@ import importlib.util
 import json
 import ntpath
 import os
+import platform
 import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -679,6 +680,15 @@ def _torch_runtime_tag() -> str:
     +cpu.cxx11.abi mark ABI splits no other field records.
     """
     tag = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
+    # torch's own build_folder is py<ver>_<cu_str> under a per-user cache dir, so two
+    # interpreters of one version and accelerator share a directory even when they cannot
+    # share a .so. One $HOME reaches two process architectures without anything being
+    # moved: an arm64 python and a Rosetta x86_64 python on the same Mac agree on
+    # version_info, abiflags, torch.__version__ and 'cpu', and ninja then reads the other
+    # one's build as up to date. The same shape applies to a $HOME an aarch64 and an
+    # x86_64 host both mount. Cheap to include, and this tag already widens torch's naming
+    # wherever torch under-isolates, so the ABI belongs in it too.
+    tag += "_" + _path_safe(f"{sys.platform}-{platform.machine() or 'unknown'}")
     try:
         fields = _torch_version_fields()
     except (ImportError, OSError, ValueError, AttributeError):
