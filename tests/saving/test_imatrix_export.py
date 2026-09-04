@@ -205,6 +205,9 @@ def test_unknown_quant_is_rejected():
         )
 
 
+# -- --imatrix actually reaches llama-quantize ---------------------------------------------
+
+
 @_needs_zoo_imatrix
 def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
     captured = {}
@@ -226,9 +229,7 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
     import shlex
 
     monkeypatch.setattr(L.subprocess, "run", _fake_run)
-    imat = str(
-        tmp_path / "imatrix it.dat"
-    )  # space in path -> must be shell-quoted quantize_gguf validates the
+    imat = str(tmp_path / "imatrix it.dat")  # space in path -> must be shell-quoted
     with open(imat, "wb") as f:  # quantize_gguf validates the imatrix exists before running
         f.write(b"\x00")
     L.quantize_gguf(

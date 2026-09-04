@@ -76,8 +76,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--port", type = int, default = 0, help = "0 picks a free port")
     ap.add_argument("--out", default = "probe", help = "directory for probe artefacts")
     # The desktop's own grace, BACKEND_STARTUP_GRACE_PERIOD = 5 min (commands.rs:9): less fails a leg the app would wait
-    # out.
-    # a missing import kills the backend and the loop breaks on proc.poll(), so this only bounds a LIVE backend.
+    # out. It cannot mask the bug: a missing import kills the backend and the loop breaks on proc.poll(), so this
+    # only bounds a LIVE backend.
     ap.add_argument("--boot-timeout", type = int, default = 300)
     a = ap.parse_args(argv)
 
@@ -124,7 +124,9 @@ def main(argv: list[str]) -> int:
     # app offers to repair.
     # "absent" (studio_install_ok predates the install manifest) and "unparseable" split only for a readable artefact:
     # the desktop reports Stale for both ("desktop_capability_probe_failed", managed.rs:521).
-    # bool() instead read the JSON string "false" as True and reported HEALTHY over a torn install.
+    # The field is Option<bool> (managed.rs:43), so serde rejects a non-boolean and the whole payload fails to
+    # deserialize -> Stale; bool() instead read the JSON string "false" as True and reported HEALTHY over a torn
+    # install. Only a literal JSON true counts.
     install_ok: object = "absent"
     try:
         parsed = json.loads(caps_out)
@@ -145,7 +147,8 @@ def main(argv: list[str]) -> int:
     # The desktop's own conclusion: Ready only on rc 0 plus a true studio_install_ok.
     # The predicate is `!= Some(true)` (managed.rs:445), so an ABSENT field is Stale exactly like a false one;
     # a CLI too old to answer is rejected one check earlier on desktop_manageability_version.
-    # Leaving "absent" undecided reported HEALTHY on every booting leg and skipped the repair assertion
+    # Leaving "absent" undecided reported HEALTHY on every booting leg and skipped the repair assertion: the
+    # regression `unsloth_cli/commands/studio.py` sits in the path filter to catch.
     caps_ready = caps_rc == 0 and install_ok is True
     say("desktop_would_call_install_ok", caps_ready)
 
@@ -185,6 +188,7 @@ def main(argv: list[str]) -> int:
     blog_fh = blog_path.open("w", encoding = "utf-8", errors = "replace")
     # An interrupted install can leave the console script with its venv interpreter gone.
     # An unguarded spawn raises, so no verdict.json is written and both workflows die on json.load.
+    # An unlaunchable CLI is a broken backend that `-h` flags.
     proc = None
     try:
         proc = subprocess.Popen(
@@ -225,9 +229,6 @@ def main(argv: list[str]) -> int:
                 pgid = os.getpgid(proc.pid)
             except OSError:
                 pgid = proc.pid
-            # Unconditional, and to the GROUP, the same escalation interrupt-install.sh makes: the leader exits
-            # promptly on SIGTERM while a uvicorn worker does not, so returning once proc.wait() succeeded left
-            # that worker holding the port and venv.
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(pgid, sig)
@@ -238,6 +239,10 @@ def main(argv: list[str]) -> int:
                     break
                 except subprocess.TimeoutExpired:
                     continue
+            # Unconditional, and to the GROUP, the same escalation interrupt-install.sh makes. The leader exits
+            # promptly on SIGTERM while a uvicorn worker does not, so returning once proc.wait() succeeded left that
+            # worker holding the port and venv while the repair reinstalled underneath. Signalling an empty group is
+            # a no-op.
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except OSError:
@@ -245,7 +250,7 @@ def main(argv: list[str]) -> int:
         else:
             # On win32 the CLI re-spawns the server as a CHILD and waits on it (unsloth_cli/commands/studio.py:1543),
             # and CREATE_NEW_PROCESS_GROUP does not make terminate() reach descendants, so killing the wrapper alone
-            # leaves the venv locked against the repair.
+            # leaves the venv locked against the repair. taskkill /T takes the tree.
             run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], timeout = 30)
             try:
                 proc.wait(timeout = 10)

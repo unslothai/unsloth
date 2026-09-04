@@ -61,6 +61,9 @@ def _body(name: str) -> str:
     return ast.get_source_segment(SRC, _function(name)) or ""
 
 
+# ── the split the child actually launches with ──
+
+
 @pytest.mark.parametrize(
     ("mode", "layers", "expected"),
     [
@@ -239,6 +242,9 @@ def test_requested_split_survives_a_shim_without_the_flag(llama_cpp):
     assert b.diffusion_requested_ngl == 20
 
 
+# ── the capability probe must read code, not prose ──
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -324,6 +330,9 @@ def test_training_guard_mirrors_shim_support():
     assert "diffusion_split_supported" in body
     assert body.index("diffusion_split_supported") < body.index("diffusion_ngl == 0")
     assert "_scale_diffusion_required_gb" in body
+
+
+# ── a positive split competes with its GPU share, not the whole file ──
 
 
 @pytest.mark.parametrize(

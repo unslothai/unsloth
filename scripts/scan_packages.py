@@ -1422,9 +1422,10 @@ def _extract_evidence(
         end = bisect.bisect_left(nl, m.end()) + 1
         if end <= start or (start, end) in seen:
             continue  # single-line matches are already covered by the pass above
-        # A giant greedy DOTALL span is bound by the full digest of its content: binding only the anchors leaves the
-        # bridged interior unhashed, so a new cross-line payload could be inserted between unchanged outer anchors and
-        # keep the same key.
+        # A giant greedy DOTALL span is bound by the full digest of its content (via _render, which renders a
+        # >_MAX_MULTILINE_LINES span as a head line plus a sha256 of the whole span). Binding only the anchors leaves
+        # the bridged interior unhashed, so a new cross-line payload could be inserted between unchanged outer anchors
+        # and keep the same key. A pure line shift stays stable because the digest is over the markerless code.
         if len(out) < _MAX_EVIDENCE_SPANS:
             seen.add((start, end))
         _emit(_render(start, end))
@@ -1518,7 +1519,10 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 _extract_evidence(content, RE_WORKFLOW_INJECT),
             )
         )
-    # Pin the whole file's content digest to EVERY JS finding (not just large bundles).
+    # Pin the whole file's content digest to EVERY JS finding (not just large bundles). _extract_evidence blanks only
+    # Python string forms before counting brackets, so a JS backtick template literal containing `)` can close a
+    # call's span early and omit the option/body lines that follow; binding the full content means a change to those
+    # omitted lines still reopens. A large bundle with no other heuristic is a standalone HIGH.
     if findings or is_large:
         digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
         if findings:
@@ -1905,7 +1909,8 @@ def _pip_download_env() -> dict[str, str]:
     return env
 
 
-# Pip resolver flags shared by both download branches.
+# Pip resolver flags shared by both download branches. The CLI index-URL pin is belt + braces with the env scrub;
+# `--only-binary :all:` avoids running setup.py.
 _PIP_DOWNLOAD_PIN_FLAGS = [
     "--index-url",
     "https://pypi.org/simple",
@@ -2216,11 +2221,12 @@ def _resolve_per_spec_with_deps(
                 f"alone (--no-deps), recovering deps individually.",
                 file = sys.stderr,
             )
-            # The --with-deps failure may have been a sdist-only TRANSITIVE dep, which --no-deps skips.
+            # The --with-deps failure may have been a sdist-only TRANSITIVE dep, which --no-deps skips. Recover the
+            # declared deps so that class is still scanned (each is fetched as a wheel or direct sdist below).
             if meta is not None:
                 sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
             continue
-        # no-deps also failed: last-ditch sdist fetch at the pinned version.
+        # --no-deps also failed: last-ditch sdist fetch at the pinned version.
         if meta is not None:
             fpath, _serr = _download_sdist_direct(name, version, dest, meta = meta)
             if fpath is not None:
@@ -2229,7 +2235,9 @@ def _resolve_per_spec_with_deps(
             f"per-spec failed for {spec} (with-deps and --no-deps): " f"{nd.stderr.strip()[:240]}"
         )
 
-    # Recover the transitive deps of sdist-only packages.
+    # Recover the transitive deps of sdist-only packages. A depth-bounded, deduped worklist so a wheel dep whose own
+    # child is sdist-only is itself fetched (--no-deps) and scanned, not silently dropped, and that child is then
+    # recovered in turn. `dep` carries the version specifier so a pinned version is fetched.
     seen: set[str] = set()
     worklist: list[tuple[str, int]] = [(d, 0) for d in sdist_dep_followups]
     while worklist:
@@ -2832,7 +2840,8 @@ def _norm_pkg(name: str) -> str:
     return re.sub(r"[-_.]+", "-", (name or "").strip().lower())
 
 
-# Leading "<name>-<version>/" archive root of an sdist member, which carries the version.
+# Leading "<name>-<version>/" archive root of an sdist member, which carries the version. Stripping it (but keeping
+# the rest of the path) gives a key stable across version bumps that still distinguishes same-named files.
 _RE_SDIST_ROOT = re.compile(r"^[^/]+-\d[^/]*/")
 
 
@@ -3150,7 +3159,9 @@ def main() -> int:
     tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
     atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
     download_errors: list[str] = []
-    # Scan-side failures, kept beside the download ones so both reach the SCAN INCOMPLETE block below.
+    # Scan-side failures, kept beside the download ones so both reach the SCAN INCOMPLETE block below. A stall has to
+    # exit 2 like any other partial scan: exit 1 is reserved for "non-baselined CRITICAL or HIGH findings detected",
+    # so exiting 1 on a dead worker would report an infrastructure failure as a threat.
     scan_errors: list[str] = []
     try:
         downloaded, download_errors = download_packages(
@@ -3259,7 +3270,8 @@ def main() -> int:
         )
         return 2
 
-    # write-baseline: persist the full current CRITICAL/HIGH set as the new allowlist (ignoring any loaded baseline)
+    # --write-baseline: persist the full current CRITICAL/HIGH set as the new allowlist (ignoring any loaded
+    # baseline), then exit 0. Only reached once the scan is known complete.
     if args.write_baseline:
         _write_baseline(args.write_baseline, all_findings, source = baseline_path)
         return 0

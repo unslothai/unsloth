@@ -121,6 +121,7 @@ HEALTH_PATH = "/api/health"
 # /api/liveness and falls back to /api/health.
 PROBE_PATHS = (LIVENESS_PATH, HEALTH_PATH)
 # Every tab the user reported interacting with, plus the ones that share the chat-only gate.
+# (route, nav row id, human name).
 TABS = [
     ("/chat", "projects", "Chat"),
     ("/hub", "hub", "Hub"),
@@ -215,7 +216,8 @@ def _read_within(resp, deadline: float) -> str:
         chunks.append(chunk)
         total += len(chunk)
         if total > _MAX_BODY_BYTES:
-            # A health reply is a few hundred bytes.
+            # A health reply is a few hundred bytes. Anything this large is a fault, and reading it to the end would
+            # be another way to sit here indefinitely.
             raise TimeoutError("response body exceeded the probe's size cap")
     return b"".join(chunks).decode("utf-8", "replace")
 
@@ -296,7 +298,8 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
     worker.join(timeout)
     if outcome:
         return outcome[0]
-    # Either still running, or it died without recording anything.
+    # Either still running, or it died without recording anything. Both are "no answer inside the budget", which is
+    # exactly what a timeout means here.
     return 0, None, "timeout"
 
 
@@ -470,7 +473,8 @@ class BackendSurvivalPoller:
                 f"{path}: {len(got)} samples, {len(bad)} miss(es), worst {worst}ms, "
                 f"{unmeasured} with an unmeasured verdict, {warming} with the warm still running"
             )
-            # These two are the backend saying something, not failing to.
+            # These two are the backend saying something, not failing to. Neither is a stall, so neither gets the
+            # watchdog's patience: they fail on sight.
             refused = [s for s in got if s["kind"] == "refused"]
             answered_badly = [s for s in got if s["kind"] == "http"]
             if refused:
@@ -495,6 +499,11 @@ class BackendSurvivalPoller:
         # BACKEND_STARTUP_GRACE_PERIOD is 300s before a backend that has not yet answered healthy counts a failure at
         # all. The watchdog is not running here either: this phase boots `unsloth studio` directly, with no Tauri
         # shell, and the watchdog's own behaviour is covered by the Rust tests beside it in commands.rs.
+        #
+        # What is left is the part that needs no arithmetic and cannot false-positive: a backend that stops answering
+        # and never comes back did not survive. Anything that answers again did, on any reading of any budget, so it
+        # warns and passes. A threshold put back here has to be strictly longer than the launcher's most generous
+        # path, and nothing that long fits in this window.
         #
         # One timeline: the poller's samples then the watch's probes, same clock. A span is therefore measured across
         # the join rather than truncated at it, and a stall that starts after sampling stops gets a span of its own
@@ -543,6 +552,8 @@ class BackendSurvivalPoller:
             # when it is not a fatal one, and it must not vanish into a pass.
             worst_ms = max(s["ms"] for s in observed)
             # Where the longest stall sits relative to the end of sampling decides what can honestly be said about it.
+            # All three cases are recovered stalls; only the first one cleared while the run was still watching in the
+            # normal way.
             if widest is None or widest[1] <= sampling_ended:
                 cleared = "It answered again before the run ended."
             elif widest[0] >= sampling_ended:
@@ -782,7 +793,8 @@ def assert_pending_state_on_forced_verdict(page) -> None:
         )
         return
     # A real reply with the measurement removed, so the only thing the browser sees differently is the field under test.
-    # device_type is what env.ts reads as "measured", and chat_only stays the conservative pre-detection default
+    # device_type is what env.ts reads as "measured", and chat_only stays the conservative pre-detection default --
+    # the exact pair a Mac got on first paint in the field report, where the row blacked out.
     provisional = {
         k: v for k, v in live.items() if k not in ("device_type", "hardware_detection_deferred")
     }

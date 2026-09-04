@@ -267,7 +267,7 @@ KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
 }
 
 # Hard pin-blocks for publicly confirmed malicious versions.
-# name -> {malicious_versions...}.
+# name -> {malicious_versions...}. A match short-circuits the scan at the lockfile-walk stage; no tarball is fetched.
 # keep in sync with scripts/lockfile_supply_chain_audit.py
 BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     # GHSA-g7cv-rxg3-hmpx -- TanStack May-11 2026 (84 versions).
@@ -862,7 +862,6 @@ def safe_extract(
 # forward cap so a host that sits deep inside a large options object (its opening
 # `{` many properties above) still binds the whole object, not just its own line;
 # a too-far start only over-binds (more context, still fail-closed), never less.
-
 _MAX_CONT_LINES = 200
 # Hard cap on how far forward a bracket group is followed to its close, measured from the matched line so the tail
 # after the match is always reachable even when the opener was found near the backward limit (digest input only, never
@@ -1023,7 +1022,9 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
     """(start, end) line indices of the bracket group enclosing line ``idx`` in one
     blanked view: scan back to the still-open opener, then forward to its close."""
     # Backward: find the line that opens a bracket still unclosed at the match, so a match inside a multi-line object
-    # starts from the object opener.
+    # starts from the object opener. Each line is reduced to (L, R) and applied in order: first the L closers consume
+    # open brackets from the running context (a stray closer whose opener is outside the window only clamps depth at
+    # 0, it never goes negative), then the R openers add to it.
     # Tracking order this way (rather than a single net per line) keeps a trailing opener visible even when leading
     # closers on the same line net it to <= 0, e.g. `}); const opts = {`, which a net count would drop,
     # letting a changed path/headers after such a line ride the unchanged-hostname key.
@@ -1043,7 +1044,9 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
 
     # Forward: extend until the group opened at `start` closes past the match. The same order-aware reduction is used
     # (clamping leading closers at 0) so the foreign `})` on the opener line does not drive the count negative and stop
-    # the scan before the real close. The cap is measured from the match (`idx`), not from `start`.
+    # the scan before the real close. The cap is measured from the match (`idx`), not from `start`, so an opener found
+    # near the backward limit does not eat the whole forward budget and drop the path/headers/body that follow the
+    # match.
     depth = 0
     end = start
     for j in range(start, min(len(blanked), idx + _MAX_GROUP_LINES)):
@@ -1120,7 +1123,11 @@ def _format_match(
     m: re.Match,
     max_chars: int,
 ) -> str:
-    idx = bisect.bisect_left(nl, m.start())
+    # The shown snippet is a small window around the match; a digest of the full LOGICAL line (the matched line plus
+    # its bracket-continuation lines) is appended whenever the snippet does not already show all of it, so a changed
+    # payload tail, a truncated body, or a multi-line option/header reopens. Offsets map to line numbers via bisect
+    # over precomputed newline positions, so this is O(log n) instead of rescanning the file prefix for every match.
+    idx = bisect.bisect_left(nl, m.start())  # 0-based line index of the match
     line_start = nl[idx - 1] + 1 if idx > 0 else 0
     ke = bisect.bisect_left(nl, m.end())
     line_end = nl[ke] if ke < len(nl) else len(text)
@@ -1246,13 +1253,13 @@ def _slash_is_regex(prev_tok: str) -> bool:
     detection.
     """
     if prev_tok == "":
-        return True
+        return True  # start of file -> expression position
     if prev_tok in _REGEX_PRECEDING_KEYWORDS:
         return True
     last = prev_tok[-1]
     if last.isalnum() or last in "_$)]":
         return False  # previous token ends a value -> division
-    return True
+    return True  # operators, punctuation, `{`, `}` -> regex (safe bias)
 
 
 def _strip_js_noncode(text: str) -> str:
@@ -1598,7 +1605,9 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     if rel.lower().endswith(_JS_FAMILY_SUFFIXES):
         text = _strip_js_noncode(text)
 
-    # IOC substrings (literal, case-sensitive).
+    # IOC substrings (literal, case-sensitive). Evidence is the matched-line context (with its bracket-group
+    # continuation), not the bare needle: an IOC host/hash left in place while the adjacent fetch/exfil body changes
+    # must reopen the key instead of riding the constant.
     for needle, (sev, why) in KNOWN_IOC_STRINGS.items():
         if needle in text:
             findings.append(
@@ -1612,7 +1621,8 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 )
             )
 
-    # Cred surfaces, tier 1: hosts with no legit use.
+    # Cred surfaces, tier 1: hosts with no legit use. Bind the outbound context (path/headers/body) when present so a
+    # changed exfil payload on the same call reopens; falls back to the bare host when it is not in an outbound call.
     for needle, why in CRED_HOST_ALWAYS_BAD:
         if needle in text:
             findings.append(

@@ -134,13 +134,16 @@ EAGER_CONSUMERS = {
 }
 # Values that re-select the platform default when passed as the encoding.
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
-# `Path.read_text(p)` is the unbound spelling of `p.read_text()`:
+# `Path.read_text(p)` is the unbound spelling of `p.read_text()`: same API, same platform default, but the instance
+# takes the first slot so every argument shifts one place right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
-# Modules whose `open` IS the builtin:
+# Modules whose `open` IS the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
 # Receivers `self.SOURCE` and `cls.SOURCE` reach a class attribute through.
 SELF_NAMES = {"cls", "self"}
 # A module-level name is normally an anchor, since a fixture cannot reach one.
+# These build a directory the run owns, so a name rooted in one is temp I/O however it is spelled, and the platform
+# default there is harmless.
 TEMP_FACTORIES = {
     "NamedTemporaryFile",
     "TemporaryDirectory",
@@ -356,9 +359,8 @@ def _eagerly_consumed(tree: ast.Module) -> set:
             consumed.update(id(_resolve(a)) for a in node.args)
             consumed.update(id(_resolve(k.value)) for k in node.keywords)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            consumed.add(
-                id(_resolve(node.iter))
-            )  # the loop pulls every item `list(enumerate(_paths()))` drains
+            consumed.add(id(_resolve(node.iter)))  # the loop pulls every item
+    # `list(enumerate(_paths()))` drains _paths() as well, one wrapper down.
     by_id = {id(n): n for n in ast.walk(tree)}
     queue = [by_id[i] for i in list(consumed) if i in by_id]
     while queue:
@@ -444,14 +446,16 @@ def _module_level_names(tree: ast.Module) -> set:
     for node in tree.body:
         if isinstance(node, ast.Assign):
             if _is_temp(node.value):
-                continue
+                continue  # TMP = Path(tempfile.mkdtemp()) is not checked in
             for target in node.targets:
                 names.update(_bound(target))
         elif isinstance(node, ast.AnnAssign):
             if _is_temp(node.value):
-                continue  # TMP = Path(tempfile.mkdtemp()) is not checked in
+                continue
             names.update(_bound(node.target))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # `start._CODEX_FALLBACK_PROMPT` is a path another module defines at its own module scope, so the import is
+            # an anchor like any constant.
             names.update((a.asname or a.name).split(".")[0] for a in node.names)
     return names
 
@@ -481,8 +485,6 @@ def _local_names(func) -> set:
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             names.add(node.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            # `start._CODEX_FALLBACK_PROMPT` is a path another module defines at its own module scope, so the import is
-            # an anchor like any constant.
             names.update((a.asname or a.name).split(".")[0] for a in node.names)
         stack.extend(ast.iter_child_nodes(node))
     return names
@@ -673,9 +675,7 @@ def _path_root(node: ast.AST) -> ast.AST:
                 and isinstance(node.value, ast.Name)
                 and node.value.id in SELF_NAMES
             ):
-                # An unrecognised call says nothing about where its result points, so tempfile.mkdtemp() and a helper
-                # that copies its argument into a temp dir both stop here.
-                return node
+                return node  # self.SOURCE names the class attribute, not self
             node = node.value
         elif isinstance(node, ast.Call):
             func = node.func
@@ -686,7 +686,9 @@ def _path_root(node: ast.AST) -> ast.AST:
             elif _is_path_preserving(func) and node.args:
                 node = node.args[0]
             else:
-                return node  # self.SOURCE names the class attribute, not self
+                # An unrecognised call says nothing about where its result points, so tempfile.mkdtemp() and a helper
+                # that copies its argument into a temp dir both stop here.
+                return node
         else:
             return node
 
@@ -752,7 +754,8 @@ def _class_path_attrs(tree: ast.Module, module_names: set) -> set:
             else:
                 continue
             bound = {t.id for t in targets if isinstance(t, ast.Name)}
-            # One attribute name, two classes, two meanings:
+            # One attribute name, two classes, two meanings: only one of them is provable, so neither is claimed.
+            # Same rule as the local walk.
             found = attrs if _is_checked_in_root(stmt.value, module_names, ()) else mixed
             found.update(bound)
     return attrs - mixed
@@ -913,9 +916,9 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 scope_of[id(child)] = scope
                 _index(child, child)
             elif isinstance(child, ast.ClassDef):
-                _index(child, scope)
-            else:
                 _index(child, scope)  # a class body is not a name lookup scope
+            else:
+                _index(child, scope)
 
     _index(tree, tree)
 
@@ -997,9 +1000,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 scope[id(caller)] = here
             positional = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
             if bound:
-                positional = positional[
-                    1:
-                ]  # the receiver already fills `self` A keyword-only parameter never takes a
+                positional = positional[1:]  # the receiver already fills `self`
             # A keyword-only parameter never takes a positional slot, so it is matched by name alone.
             params = positional + [a.arg for a in func.args.kwonlyargs]
             supplied = dict(zip(positional, call.args))
@@ -1045,7 +1046,8 @@ def _checked_in_path_calls(
     ):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _local_names(node)
-            # Seed with the parameters first:
+            # Seed with the parameters first: `p = root / "x.py"` is only derivable once `root` is known to hold a
+            # checked-in path.
             seeded = {p for f, p in params if f == id(node)}
             derived = _checked_in_locals(node, module_names, shadowed, seeded)
         elif _is_main_guard(node):
@@ -1215,11 +1217,11 @@ def _scan(tree: ast.Module, rel: str):
             and isinstance(func.value, ast.Name)
             and func.value.id in not_paths
         ):
-            continue  # the run made this file, so the platform default is safe
+            continue  # ZipFile.open and friends have no encoding to name
         expr = _path_expr(call, visible_at.get(id(call), modules))
         root = _path_root(expr) if expr is not None else None
         if isinstance(root, ast.Name) and root.id in temp_roots:
-            continue  # ZipFile.open and friends have no encoding to name
+            continue  # the run made this file, so the platform default is safe
         name = _offender(call, visible_at.get(id(call), modules))
         if name is not None:
             yield f"{rel}:{call.lineno}: {name}"

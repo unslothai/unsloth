@@ -14,7 +14,6 @@
 #
 # Tests for Q-GaLore integration (unsloth/optimizers/).
 
-# http://www.apache.org/licenses/LICENSE-2.0
 import pytest
 import sys
 import os
@@ -55,7 +54,8 @@ _adamw_mod = _load_module(
 )
 make_q_galore_param_groups = _adamw_mod.make_q_galore_param_groups
 
-
+# ======================================================================
+# Projector tests
 # ======================================================================
 
 
@@ -148,6 +148,8 @@ class TestGaLoreProjector:
 
 
 # ======================================================================
+# Quantization utility tests
+# ======================================================================
 
 
 class TestQuantizationUtils:
@@ -159,6 +161,7 @@ class TestQuantizationUtils:
         q, scales, zeros, shape = _quantize(w, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
 
+        # Error bounded by the quantization step size.
         error = (w - w_hat).abs().max()
         assert error < 0.1, f"Max error {error} exceeds threshold"
 
@@ -167,7 +170,6 @@ class TestQuantizationUtils:
         w = torch.randn(32, 64)
         q, scales, zeros, shape = _quantize(w, q_group_size = 32, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
-        # Error bounded by the quantization step size.
         error = (w - w_hat).abs().max()
         assert error < 0.1
 
@@ -199,6 +201,8 @@ class TestQuantizationUtils:
 
 
 # ======================================================================
+# Param group helper tests
+# ======================================================================
 
 
 class TestParamGroupHelper:
@@ -215,11 +219,13 @@ class TestParamGroupHelper:
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
+        # galore + non-galore.
         assert len(groups) == 2
 
         galore_group = [g for g in groups if "rank" in g][0]
         non_galore_group = [g for g in groups if "rank" not in g][0]
 
+        # q_proj + k_proj in galore group.
         assert len(galore_group["params"]) == 2
         assert len(non_galore_group["params"]) == 3  # embed weight + norm weight + norm bias
 
@@ -240,7 +246,7 @@ class TestParamGroupHelper:
         )
 
         galore_group = [g for g in groups if "rank" in g][0]
-        assert len(galore_group["params"]) == 1
+        assert len(galore_group["params"]) == 1  # Only q_proj
 
     def test_bias_excluded_from_galore(self):
         """1-D bias params matching target names must be excluded (project needs 2-D grads)."""
@@ -370,6 +376,7 @@ class TestQGaLoreIntegration:
             embed_params = []
             other_params = []
             for p in group["params"]:
+                # Real usage checks names; here we split by shape.
                 if p.shape[0] == 100:  # embedding
                     embed_params.append(p)
                 else:
@@ -406,9 +413,8 @@ class TestQGaLoreIntegration:
         _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
 
         p = torch.nn.Parameter(torch.ones(4, 4))
-        p._saved_data = (
-            torch.ones(4, 4) * 2.0
-        )  # Pre-update weights Simulate project-back: p.data = p._saved_data +
+        p._saved_data = torch.ones(4, 4) * 2.0  # Pre-update weights
+        # Simulate project-back: p.data = p._saved_data + projected update.
         p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)  # p.data is now 3.0
 
         group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}
@@ -421,6 +427,7 @@ class TestQGaLoreIntegration:
 
         del p._saved_data  # Clean up after all uses, matching fixed code
 
+        # 3.0 - (1.0 * 0.1 * 3.0) = 2.7
         assert torch.allclose(
             p.data, torch.tensor(2.7)
         ), "Weight decay didn't use p.data for decoupled decay!"

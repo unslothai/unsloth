@@ -226,7 +226,9 @@ def _peft_converter_source():
     pkg = base + "transformers_weight_conversion/"
     init = fetch(pkg + "__init__.py")
     if init is not None:
-        # Breadth-first, not one level:
+        # Breadth-first, not one level: importing the package runs `.core`, which runs whatever IT imports relatively,
+        # so a transformers import two levels down breaks startup exactly the same way. `seen` keeps a cycle from
+        # looping.
         sources = [init]
         # Each entry is the module's dotted path from the package root.
         # A child's own relative imports resolve against ITS package, not the root: in a nested split where `__init__`
@@ -278,9 +280,6 @@ def _peft_converter_source():
 
 
 # The converter package itself, so an absolute import of its own children can be told from an unrelated one.
-# Absolute, but still the package's own child: peft can re-export its implementation as `from
-# peft.utils.transformers_weight_conversion .core import build`, which loads the same file a relative import would and
-# was queued by neither branch.
 _CONVERTER_MODULE = "peft.utils.transformers_weight_conversion"
 
 
@@ -323,7 +322,10 @@ def _relative_import_targets(src):
 
     def visit(body) -> None:
         for node in body:
-            # Absolute, but still the package's own child:
+            # Absolute, but still the package's own child: peft can re-export its implementation as `from
+            # peft.utils.transformers_weight_conversion.core import build`, which loads the same file a relative
+            # import would and was queued by neither branch. Level 0 marks a name that is already rooted at the
+            # converter package.
             if (
                 isinstance(node, ast.ImportFrom)
                 and not node.level
@@ -355,7 +357,7 @@ def _relative_import_targets(src):
                         for alias in node.names
                         if alias.name != "*"
                     )
-                else:
+                else:  # `from . import a, b`
                     targets.extend((node.level, alias.name) for alias in node.names)
                 continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Import)):
@@ -363,7 +365,9 @@ def _relative_import_targets(src):
             if isinstance(node, ast.If) and _is_type_checking(node.test):
                 visit(node.body if isinstance(node.test, ast.UnaryOp) else node.orelse)
                 continue
-            # Same import-time traversal as `_transformers_imports`:
+            # Same import-time traversal as `_transformers_imports`: a package can pull its implementation in from
+            # inside `if not TYPE_CHECKING:` or a `try:`, and importing it still runs that, so those children have to
+            # be walked too.
             for field in ("body", "orelse", "finalbody", "handlers", "cases"):
                 child = getattr(node, field, None)
                 if not isinstance(child, list):
@@ -671,9 +675,9 @@ def test_an_unrecoverable_conversion_map_fails_on_use(caplog):
     assert copied.get("mixtral") == "mixtral"
     assert copied["mixtral"] == "mixtral"
 
+    # A fused-MoE lookup we cannot answer honestly raises where it happens.
     with pytest.raises(RuntimeError):
         copied.get("qwen3_moe", None)
-    # A fused-MoE lookup we cannot answer honestly raises where it happens.
     with pytest.raises(RuntimeError):
         copied["qwen3_moe"]
 
@@ -744,8 +748,9 @@ def test_a_re_exporting_package_is_followed_to_its_implementation(monkeypatch):
 
 def test_the_symbol_list_matches_what_peft_imports():
     """Two lists that can drift; peft's own source is the authority."""
-    # Not `importorskip`:
-    # Not `importorskip`: on pytest 8 to 9.0 that also swallows an ImportError raised INSIDE an existing converter
+    # Not `importorskip`: on pytest 8 to 9.0 that also swallows an ImportError raised INSIDE an existing converter,
+    # which is exactly the drift this test exists to catch -- peft adding an import we do not backfill would report as
+    # a skip. Skip only when the module is genuinely absent.
     imports = _transformers_imports(_peft_converter_source())
     known = F._PEFT_CONVERSION_SYMBOLS
     for module, imported in imports.items():
@@ -962,6 +967,7 @@ def test_a_fused_moe_type_that_does_not_say_moe_still_refuses():
         with pytest.raises(RuntimeError):
             stand_in[model_type]
 
+    # The naming convention is still honoured on top, for a type added later.
     with pytest.raises(RuntimeError):
         stand_in.get("some_new_moe", None)
     # And a non-MoE type is still answered with the default.
@@ -1010,7 +1016,6 @@ def test_only_an_unrelated_dictionary_leaves_the_map_unrecovered(fake_modules):
     assert F._backfill_missing_conversion_symbols() is True
     installed = real._MODEL_TO_CONVERSION_PATTERN
     assert isinstance(installed, F._UnavailableConversionPatternMap)
-    # The naming convention is still honoured on top, for a type added later.
     with pytest.raises(RuntimeError):
         installed.get("deepseek_v3", None)
 
