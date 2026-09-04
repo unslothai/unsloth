@@ -1277,6 +1277,7 @@ export function SharedComposer({
         );
         requestLocalPromptQueueStop(compareStopDecision?.promptQueueThreadIds);
       };
+      // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
@@ -1765,7 +1766,7 @@ export function SharedComposer({
 
       setComparing(true);
       try {
-        // Side 1: load, generate, wait
+        // Side 1: load → generate → wait
         if (handle1 && model1?.id) {
           toast("Loading Model 1…", {
             id: toastId,
@@ -1784,7 +1785,7 @@ export function SharedComposer({
           await done;
         }
 
-        // Side 2: load, generate, wait
+        // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
           acquireCompareModelLifecycle();
           const needsLoad = compareSelectionNeedsLoad(model2);
