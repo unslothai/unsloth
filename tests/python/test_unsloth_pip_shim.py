@@ -1331,3 +1331,99 @@ def test_the_value_flag_selfcheck_cannot_certify_what_it_cannot_inspect(shim):
         "refusing to" in body and "sys.exit(1)" in body
     ), "failing to introspect pip must be a FAILURE, never a silent pass"
     assert '[REAL["uv"], "--help"]' in body, "uv globals must be checked too"
+
+
+# uv changes directory BEFORE it resolves a relative `-r`/`-c` path, so the shim has
+# to read the file from there too. Reading it from our own cwd misses, and the miss
+# is silent: _filter_requirements_file forwards the untouched relative path and uv,
+# now chdir'd, installs a file we never inspected and recorded no transformers pin
+# from. `--directory` is a uv GLOBAL, so every argv position below is valid.
+
+
+def _working_dir_case(tmp_path):
+    """A cwd with NO requirements.txt, beside a directory that has one."""
+    here = tmp_path / "here"
+    there = tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    (there / "requirements.txt").write_text("transformers==4.55.0\nsnac\n", encoding = "utf-8")
+    return here, there
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda d: ["uv", "pip", "--directory", d, "install", "-r", "requirements.txt"],
+        lambda d: ["uv", "--directory", d, "pip", "install", "-r", "requirements.txt"],
+        lambda d: ["uv", "pip", "install", "--directory", d, "-r", "requirements.txt"],
+        lambda d: ["uv", "pip", "--directory=" + d, "install", "-r", "requirements.txt"],
+    ],
+    ids = ["between-pip-and-install", "before-pip", "after-install", "equals-form"],
+)
+def test_a_relative_requirements_file_is_read_from_uvs_working_directory(
+    shim, monkeypatch, tmp_path, build
+):
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    here, there = _working_dir_case(tmp_path)
+    monkeypatch.chdir(here)
+    ran = _full_argv(shim, build(str(there)))
+    assert ran is not None, "the shim ran nothing"
+    assert "requirements.txt" not in ran, f"forwarded the file unfiltered: {ran}"
+    assert shim._marker_path.exists(), "no transformers pin was recorded"
+    assert shim._marker_path.read_text() == "4.55.0"
+
+
+def test_the_uv_working_dir_env_moves_the_file_too(shim, monkeypatch, tmp_path):
+    """uv documents --directory as `[env: UV_WORKING_DIR=]`, so the variable alone
+    relocates the file with no flag on the command line at all."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    here, there = _working_dir_case(tmp_path)
+    monkeypatch.chdir(here)
+    monkeypatch.setenv("UV_WORKING_DIR", str(there))
+    ran = _full_argv(shim, ["uv", "pip", "install", "-r", "requirements.txt"])
+    assert ran is not None, "the shim ran nothing"
+    assert "requirements.txt" not in ran, f"forwarded the file unfiltered: {ran}"
+    assert shim._marker_path.read_text() == "4.55.0"
+
+
+def test_the_directory_flag_wins_over_the_working_dir_env(shim, monkeypatch, tmp_path):
+    """uv gives the flag precedence, so honouring the variable instead would filter
+    and record the wrong file."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    here, there = _working_dir_case(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "requirements.txt").write_text("transformers==1.0.0\n", encoding = "utf-8")
+    monkeypatch.chdir(here)
+    monkeypatch.setenv("UV_WORKING_DIR", str(other))
+    ran = _full_argv(
+        shim, ["uv", "pip", "--directory", str(there), "install", "-r", "requirements.txt"]
+    )
+    assert ran is not None, "the shim ran nothing"
+    assert shim._marker_path.read_text() == "4.55.0", "read the env's file, not the flag's"
+
+
+def test_a_nested_include_follows_uvs_working_directory(shim, monkeypatch, tmp_path):
+    """A nested `-r` is relative to the file that NAMES it, and that file now lives
+    in uv's directory rather than ours."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    here, there = _working_dir_case(tmp_path)
+    (there / "requirements.txt").write_text("-r nested.txt\nsnac\n", encoding = "utf-8")
+    (there / "nested.txt").write_text("transformers==4.55.0\n", encoding = "utf-8")
+    monkeypatch.chdir(here)
+    ran = _full_argv(
+        shim, ["uv", "pip", "--directory", str(there), "install", "-r", "requirements.txt"]
+    )
+    assert ran is not None, "the shim ran nothing"
+    assert shim._marker_path.read_text() == "4.55.0"
+
+
+def test_pip_keeps_resolving_a_relative_requirements_file_from_the_cwd(shim, monkeypatch, tmp_path):
+    """pip has no --directory and never chdirs, so none of this may change for it."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    here, _there = _working_dir_case(tmp_path)
+    (here / "requirements.txt").write_text("transformers==4.99.0\nsnac\n", encoding = "utf-8")
+    monkeypatch.chdir(here)
+    ran = _full_argv(shim, ["pip", "install", "-r", "requirements.txt"])
+    assert ran is not None, "the shim ran nothing"
+    assert shim._marker_path.read_text() == "4.99.0"

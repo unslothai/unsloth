@@ -489,18 +489,52 @@ def _logical_lines(lines):
         yield group
 
 
+# Where the real tool will resolve a relative `-r`/`-c` path from. None means our
+# own cwd, which is what pip always uses. main() sets it for uv.
+_WORKING_DIR = None
+
+
+def _uv_working_dir(tool, argv):
+    """The directory uv will change to before resolving a relative requirements
+    path, or None. `--directory` is a uv GLOBAL, so it is accepted in every
+    position: before `pip`, between `pip` and `install`, and after `install`. uv
+    rejects it more than once ("cannot be used multiple times"), so the first hit
+    is the only hit, and it overrides UV_WORKING_DIR. pip has no equivalent."""
+    if tool != "uv":
+        return None
+    for n, tok in enumerate(argv):
+        if tok == "--directory":
+            return argv[n + 1] if n + 1 < len(argv) else None
+        if tok.startswith("--directory="):
+            return tok[len("--directory=") :] or None
+    return os.environ.get("UV_WORKING_DIR") or None
+
+
+def _resolve_read_path(path):
+    """Read a relative requirements path from where the real tool will read it.
+    Reading it from our cwd instead makes open() miss, and a miss is silent: the
+    original relative path is forwarded unfiltered and uv, now chdir'd, installs a
+    file we never inspected and never recorded a transformers pin from."""
+    if not _WORKING_DIR or os.path.isabs(path):
+        return path
+    return os.path.join(_WORKING_DIR, path)
+
+
 def _filter_requirements_file(path, _depth = 0):
     """Strip protected packages out of a `-r` file, recursing into nested includes.
     Returns (path_to_use, recorded_transformers_version, dropped_specs)."""
+    read_path = _resolve_read_path(path)
     try:
         # utf-8-sig, not utf-8: a BOM would otherwise leave "\ufefftransformers==X" on
         # line 1, matching no handler, so a file whose ONLY protected pin is first
         # forwards unchanged. Both real tools strip it and honour the line.
-        with open(path, encoding = "utf-8-sig") as f:
+        with open(read_path, encoding = "utf-8-sig") as f:
             lines = f.readlines()
     except OSError:
+        # forward what the caller passed, not the resolved path: uv resolves it
+        # itself, and pip never had a working directory to resolve against
         return path, None, []
-    src_dir = os.path.dirname(os.path.abspath(path))
+    src_dir = os.path.dirname(os.path.abspath(read_path))
     out, dropped, recorded, changed = [], [], None, False
     for group in _logical_lines(lines):
         line = group[0]
@@ -839,6 +873,10 @@ def main():
             "this image is built on, and no --constraint can prevent a removal. Use "
             "`uv pip install -r <file>`, which adds without removing."
         )
+
+    global _WORKING_DIR
+    _wd = _uv_working_dir(tool, argv)
+    _WORKING_DIR = os.path.abspath(_wd) if _wd else None
 
     i = _install_index(tool, argv)
     if i is None:
