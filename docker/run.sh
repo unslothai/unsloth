@@ -52,8 +52,45 @@ WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 
+# Docker resolves --gpus in the DAEMON, before the container exists: on a host with
+# no NVIDIA GPU it dies with "failed to discover GPU vendor from CDI: no known GPU
+# vendor found" and exit 125, so entrypoint.sh never runs and its diagnostics never
+# print. Drop the flag instead and let the container start, so the user gets the
+# entrypoint's explanation (or, on :latest, Studio in CPU mode).
+# UNSLOTH_DEV_ROOT prefixes the /dev probes below (DESTDIR idiom). It exists so the
+# regression tests can stage a fake device tree; leave it unset in normal use.
+DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
+host_has_nvidia() {
+    [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
+    command -v nvidia-smi >/dev/null 2>&1 \
+        && nvidia-smi -L 2>/dev/null | grep -q '^GPU' && return 0
+    return 1
+}
+
+if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
+    printf "\033[1;33mWARN:\033[0m no NVIDIA GPU on this host; dropping --gpus %s.\n" "$GPUS" >&2
+    printf "      'docker run --gpus' would fail at the daemon (exit 125) before the\n" >&2
+    printf "      container starts. Set UNSLOTH_GPUS=none to silence this.\n" >&2
+    GPU_FLAG=()
+    # AMD host: hand llama.cpp/GGUF the render nodes. This is NOT torch acceleration
+    # -- torch in the image is cu128 and torch.cuda.is_available() stays False here.
+    # --group-add needs NUMERIC gids: a name is resolved INSIDE the container, where
+    # the host's video/render groups do not exist.
+    if [[ -e "$DEV_ROOT/dev/kfd" && -d "$DEV_ROOT/dev/dri" ]]; then
+        GPU_FLAG=(--device /dev/kfd --device /dev/dri)
+        if command -v getent >/dev/null 2>&1; then
+            for _grp in video render; do
+                _gid="$(getent group "$_grp" | cut -d: -f3)"
+                [[ -n "$_gid" ]] && GPU_FLAG+=(--group-add "$_gid")
+            done
+        fi
+        printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+    fi
+    printf "\n" >&2
+fi
+
 # warn, do not abort: some setups report runtimes differently
-if ! docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'; then
+if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'; then
     printf "\033[1;33mWARN:\033[0m 'docker info' does not list 'nvidia' as a runtime.\n" >&2
     printf "      If --gpus all fails below, install nvidia-container-toolkit:\n" >&2
     printf "      https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html\n\n" >&2

@@ -271,3 +271,56 @@ def test_a_notebook_still_on_disk_is_not_touched(tmp_path: Path):
 
     assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "MY OWN WORK"
     assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == UPSTREAM_COMMIT
+
+
+# --- a stale state staging file the populate cannot truncate --------------------------
+# A run killed between the truncate and the mv leaves $STATE.tmp behind. When that run
+# was a different uid (root once, then `--user`) the populate cannot empty it, every
+# append fails, and the mv -- which needs write on DEST, not on the file -- publishes
+# the FOREIGN file as our state. 0444 on a file this uid owns reproduces that, since
+# open-for-write consults the owner bits.
+@behavioural
+def test_a_stale_unwritable_state_temp_is_not_published_as_our_state(tmp_path: Path):
+    template = _template(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    stale = dest / ".unsloth_sync_state.tmp"
+    stale.write_text("deadbeef  stale.ipynb\n", encoding = "utf-8")
+    stale.chmod(0o444)
+
+    run = _run(tmp_path, template, dest)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    state = _state(dest)
+    assert (
+        "stale.ipynb" not in state
+    ), "a leftover from an interrupted run was adopted as the state of this one"
+    assert state == {
+        "a.ipynb": _sha256(dest / "a.ipynb"),
+        "sub/b.ipynb": _sha256(dest / "sub" / "b.ipynb"),
+    }, state
+    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == TEMPLATE_COMMIT
+    assert not (dest / ".unsloth_sync_partial").exists()
+
+
+@behavioural
+def test_an_unstageable_state_leaves_the_marker_off_instead_of_copying(tmp_path: Path):
+    """Fail CLOSED when the staging path cannot be cleared either, exactly as the
+    refresh child does: notebooks we cannot record read as user edits on the next run,
+    which is `kept`, not `failed`, so the marker would be stamped over them for good.
+    A DIRECTORY at the staging path is unlinkable and untruncatable for root too."""
+    template = _template(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / ".unsloth_sync_state.tmp").mkdir()
+
+    run = _run(tmp_path, template, dest)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert not (dest / ".unsloth_sync_state").exists(), run.stdout + run.stderr
+    assert not (
+        dest / ".unsloth_sync_commit"
+    ).exists(), "stamping the commit here strands every notebook this run copied"
+    assert (dest / ".unsloth_sync_partial").exists()
+    assert not (dest / "a.ipynb").exists(), "nothing may be published without a record"
+    assert "could not be staged" in run.stdout, run.stdout

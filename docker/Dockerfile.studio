@@ -51,7 +51,16 @@ ARG TARGETARCH
 # disabled unless PUBLIC_KEY/SSH_KEY is set (see studio_launch.sh). The
 # JUPYTER_PORT / UNSLOTH_ENABLE_SSHD defaults let supervisord's %(ENV_*)s resolve.
 USER root
+# UNSLOTH_ALLOW_CPU defaults to 1 on THIS image only. It publishes as :latest, so a
+# plain `docker run unsloth/unsloth` on a CPU-only, AMD or Docker-Desktop host would
+# otherwise exit 1 from entrypoint.sh before Studio ever starts. Most of what this
+# image offers (Studio chat over llama.cpp/GGUF, Data Recipes, JupyterLab, GGUF
+# tooling) needs no GPU. The entrypoint only takes the CPU path when no GPU is
+# visible, so this does not weaken the checks on a GPU host, and `-e
+# UNSLOTH_ALLOW_CPU=0` restores the strict behaviour. The base/training image keeps
+# the strict check: FastLanguageModel genuinely requires a GPU there.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
+    UNSLOTH_ALLOW_CPU=1 \
     JUPYTER_PORT=8888 \
     UNSLOTH_ENABLE_SSHD=false \
     DEBIAN_FRONTEND=noninteractive

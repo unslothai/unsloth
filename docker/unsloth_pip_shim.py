@@ -194,6 +194,12 @@ def _is_protected(name):
         return False
     if not (name in _KEEP or name.startswith(_KEEP_PREFIX)):
         return False
+    return _is_installed(name)
+
+
+def _is_installed(name):
+    """True when `name` is really in this venv, or when the scan failed and the
+    stricter "assume baked" answer is the safe one."""
     present = _installed_names()
     return present is None or name in present
 
@@ -482,6 +488,15 @@ def _filter_requirements_file(path, _depth = 0):
             v = _version_pin(classified)
             if v and not recorded:
                 recorded = v
+            # extras of the BAKED transformers are additive exactly as they are for
+            # every _KEEP package below, and the sidecar only replaces the version:
+            # dropping the whole token loses deepspeed/sentencepiece/... and still
+            # reports ok. The pin is stripped, so this can only ADD.
+            extras = _extras_only_target(spec) if _is_installed("transformers") else None
+            if extras is not None:
+                out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
+                changed = True
+                continue
             dropped.append(report)
             changed = True
             continue
@@ -736,6 +751,14 @@ def main():
             v = _version_pin(tok)
             if v:
                 recorded = v
+            # same additive-extras rule as the protected branch below: the version is
+            # what the sidecar replaces, so only the pin is suppressed here
+            extras = _extras_only_target(tok) if _is_installed("transformers") else None
+            if extras is not None:
+                keep_args.append(extras)
+                extras_only.append(extras)
+                has_target = True
+                continue
             dropped.append(tok)
             continue
         if _is_protected(name):

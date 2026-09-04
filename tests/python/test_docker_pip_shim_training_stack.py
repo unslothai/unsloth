@@ -43,6 +43,10 @@ class _BakedImage:
         self._mod = mod
 
     def __contains__(self, name):
+        # transformers is baked too; it is out of _KEEP only because the sidecar
+        # replaces its VERSION rather than the distribution
+        if name == "transformers":
+            return True
         return name in self._mod._KEEP or name.startswith(self._mod._KEEP_PREFIX)
 
 

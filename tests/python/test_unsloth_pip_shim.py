@@ -43,6 +43,10 @@ class _BakedImage:
         self._mod = mod
 
     def __contains__(self, name):
+        # transformers is baked too; it is out of _KEEP only because the sidecar
+        # replaces its VERSION rather than the distribution
+        if name == "transformers":
+            return True
         return name in self._mod._KEEP or name.startswith(self._mod._KEEP_PREFIX)
 
 
@@ -984,3 +988,60 @@ def test_extras_of_baked_package_in_requirements_file(shim, tmp_path):
     assert "datasets[audio]==4.3.0" not in filtered, filtered
     assert "torch" not in filtered, filtered
     assert "snac==1.2.0" in filtered, filtered
+
+
+# transformers is the one protected name outside _KEEP, because the sidecar replaces its
+# VERSION rather than the distribution. `pip install "transformers[deepspeed]"` is a
+# documented HF install line, so the extras must be forwarded here exactly as they are
+# for every _KEEP package; dropping the whole token recorded the pin and then printed
+# "nothing to install ... ok" while deepspeed never arrived.
+@pytest.mark.parametrize(
+    "arg, expected, expected_marker",
+    [
+        pytest.param(
+            "transformers[deepspeed]==5.5.0", "transformers[deepspeed]", "5.5.0", id = "pinned"
+        ),
+        pytest.param("transformers[torch]", "transformers[torch]", None, id = "bare"),
+        pytest.param(
+            "transformers[torch, sentencepiece]",
+            "transformers[torch, sentencepiece]",
+            None,
+            id = "multi",
+        ),
+    ],
+)
+def test_transformers_extras_are_forwarded_and_the_pin_is_still_recorded(
+    shim, arg, expected, expected_marker
+):
+    execd, marker = _run(shim, "pip", [arg])
+    assert execd == [expected], execd
+    assert marker == expected_marker, marker
+
+
+def test_transformers_extras_direct_reference_still_dropped(shim):
+    # a direct reference REPLACES transformers, which is what the sidecar is for
+    execd, marker = _run(
+        shim, "pip", ["transformers[torch] @ git+https://github.com/huggingface/transformers"]
+    )
+    assert execd is None, execd
+    assert marker is None, marker
+
+
+def test_transformers_extras_in_requirements_file(shim, tmp_path):
+    req = tmp_path / "reqs.txt"
+    req.write_text("transformers[deepspeed]==5.5.0\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, marker = _run(shim, "pip", ["-r", str(req)])
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "transformers[deepspeed]\n" in filtered, filtered
+    assert "5.5.0" not in filtered, filtered
+    assert "snac==1.2.0" in filtered, filtered
+    assert marker == "5.5.0", marker
+
+
+def test_transformers_extras_are_dropped_when_transformers_is_not_installed(shim, monkeypatch):
+    """No baked transformers means no version to hold in place: forwarding the extras
+    would install whatever transformers pip resolves, so keep the sidecar route."""
+    monkeypatch.setattr(shim, "_installed_names", lambda: set())
+    execd, marker = _run(shim, "pip", ["transformers[deepspeed]==5.5.0"])
+    assert execd is None, execd
+    assert marker == "5.5.0", marker

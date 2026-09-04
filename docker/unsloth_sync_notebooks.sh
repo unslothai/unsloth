@@ -207,9 +207,26 @@ record_state() {
 # state entry is never restored by 1b, and stamping the marker anyway makes 2) exit
 # early too. Process substitution, not a pipeline, so the counter survives the loop.
 if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
-    : > "$STATE.tmp" 2>/dev/null || true
+    # Same leftover as the refresh child clears below: a run killed between the
+    # truncate and the mv leaves $STATE.tmp behind, and when that run was a different
+    # uid (root once, then --user) the truncate here cannot empty it. Without the
+    # unlink the appends below fail one by one while the loop keeps going, and the mv
+    # -- which needs write on $DEST, not on the file -- then publishes the FOREIGN
+    # file as our state: every notebook this run copied is missing from it, so run 2
+    # reads them all as user edits and never refreshes them again, and the commit
+    # marker is stamped anyway because no copy failed.
+    rm -f "$STATE.tmp" 2>/dev/null || true
     populate_failed=0
+    stage_ok=1
+    if ! : > "$STATE.tmp" 2>/dev/null; then
+        # Still unstageable, so $DEST itself is the problem. Nothing has been copied
+        # yet, so bail like the refresh child does: leave the marker off and retry on
+        # the next start rather than publish notebooks we cannot record.
+        echo "[unsloth-nb] the sync state could not be staged in $DEST; leaving the sync marker off so the next start retries"
+        stage_ok=0
+    fi
     while IFS= read -r -d '' rel; do
+        [ "$stage_ok" = 1 ] || continue
         rel="${rel#./}"
         case "$rel" in .unsloth_template_commit) continue ;; esac
         mkdir_keep_owner "$DEST/$(dirname "$rel")"
@@ -238,7 +255,7 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     # file" branch, and the upstream-only ones are never visited at all. Keeping only
     # this loop's records hands all of them to the user permanently, while the commit
     # marker below is stamped anyway, so it looks converged.
-    if [ -f "$STATE" ]; then
+    if [ "$stage_ok" = 1 ] && [ -f "$STATE" ]; then
         declare -A POPULATED=()
         while IFS= read -r line; do
             p="${line#*  }"
@@ -252,8 +269,11 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
         done < "$STATE"
         unset POPULATED
     fi
-    mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"
-    if [ "$populate_failed" -eq 0 ]; then
+    [ "$stage_ok" = 1 ] && { mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"; }
+    if [ "$stage_ok" != 1 ]; then
+        : > "$PARTIAL" 2>/dev/null || true
+        rm -f "$SYNCED" 2>/dev/null || true
+    elif [ "$populate_failed" -eq 0 ]; then
         rm -f "$PARTIAL" 2>/dev/null || true
         cp -a "$TEMPLATE/.unsloth_template_commit" "$SYNCED" 2>/dev/null || true
         echo "[unsloth-nb] notebooks ready at $DEST"
