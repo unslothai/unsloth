@@ -47,7 +47,8 @@ async function refresh(threadId: string): Promise<void> {
   // returns without a row. The row decides that, not the id, since a `__LOCALID_` prefix belongs
   // to every chat the app creates. Skipped because the answer is already the empty map the entry
   // holds, not to dodge a failure: fork_counts_for_thread GROUPs without looking the source up,
-  // so an unknown thread gets 200 and an empty map. Only GET /threads/{id} 404s.
+  // so an unknown thread gets 200 and an empty map here, unlike the per-thread routes, which
+  // reject a missing thread.
   if (isThreadIncognito(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;

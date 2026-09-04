@@ -3730,8 +3730,9 @@ export function HubModelPicker({
     catalogSeedRows,
   ]);
 
-  // Ordered by the On Device dropdown (recent/download date/size/name). The gate keeps diffusion
-  // GGUFs in the Images/Video picker and out of chat.
+  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded). The gate keeps a
+  // supported diffusion GGUF listed here so picking one routes to Images or Video; only the
+  // never-loadable tag is dropped.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(

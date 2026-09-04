@@ -768,8 +768,10 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
 }
 
 // Gemini's thinking ladder: 3.x (Pro + Flash + Flash-Lite) and the gemini-pro-latest /
-// gemini-flash-latest aliases use the string `thinkingConfig.thinkingLevel`
-// (LOW/MEDIUM/HIGH/MINIMAL; Pro rejects MINIMAL); 2.5 Flash/Pro use the integer
+// gemini-flash-latest aliases use the string `thinkingConfig.thinkingLevel`. Flash takes
+// MINIMAL/LOW/MEDIUM/HIGH, 3.1+ Pro takes LOW/MEDIUM/HIGH, and undotted legacy `gemini-3-pro`
+// takes LOW/HIGH only, so the backend coerces MINIMAL to LOW on any Pro and MEDIUM to HIGH on
+// the legacy one. 2.5 Flash/Pro use the integer
 // `thinkingConfig.thinkingBudget` (0=off on Flash, -1=dynamic, N>0=cap, Pro rejects 0);
 // 2.5 Flash-Lite and image ids get none. 3.x minors match by pattern so a new
 // `gemini-3.6-flash` cannot fall into the 2.5 branch. Mirrors _GEMINI3_FAMILY/_GEMINI3_PRO.
