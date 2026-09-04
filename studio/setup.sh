@@ -2326,7 +2326,33 @@ if [ "$_setup_nvidia_usable" != true ]; then
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
-    step "gpu" "NVIDIA GPU detected"
+    # Mirrors install.sh: nvidia-smi is already known good here and was never asked which
+    # card it found, nor its compute target or driver.
+    _setup_nv_row=""
+    _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _setup_nv_idx=0
+        case "${CUDA_VISIBLE_DEVICES:-}" in ''|*[!0-9,]*) ;; *) _setup_nv_idx="${CUDA_VISIBLE_DEVICES%%,*}" ;; esac
+        _setup_nv_row=$(nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null | awk -v idx="$_setup_nv_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
+    fi
+    if [ -n "$_setup_nv_row" ]; then
+        _setup_nv_driver=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
+        _setup_nv_cc=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
+        _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
+        [ -n "$_setup_nv_name" ] || _setup_nv_name=$(printf '%s' "$_setup_nv_row" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        case "$_setup_nv_cc" in
+            [0-9]*.[0-9]*) _setup_nv_sm="sm_$(printf '%s' "$_setup_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
+        esac
+    fi
+    if [ -n "$_setup_nv_name" ] && [ -n "$_setup_nv_sm" ]; then
+        step "gpu" "$_setup_nv_name ($_setup_nv_sm)"
+    elif [ -n "$_setup_nv_name" ]; then
+        step "gpu" "$_setup_nv_name"
+    else
+        step "gpu" "NVIDIA GPU detected"
+    fi
+    [ -n "$_setup_nv_driver" ] && substep "Driver: $_setup_nv_driver"
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _setup_vis_idx=0
@@ -2432,7 +2458,11 @@ $_setup_unsup_pci
 EOF
         return 1
     }
-    if [ -n "$_setup_gfx" ]; then
+    # $_setup_mkt is already resolved above (rocminfo Marketing Name, else amd-smi Market
+    # Name) for the name -> arch inference; the banner just never printed it.
+    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        step "gpu" "$_setup_mkt ($_setup_gfx)"
+    elif [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
