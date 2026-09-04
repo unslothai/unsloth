@@ -824,7 +824,11 @@ def llama_bundle_dir() -> Path:
     return Path.home() / ".unsloth" / "llama.cpp"
 
 
-def _find_in_bundle(root: Path, names: Tuple[str, ...], executable: bool = False) -> Optional[Path]:
+def _find_in_bundle(
+    root: Path,
+    names: Tuple[str, ...],
+    executable: bool = False,
+) -> Optional[Path]:
     """The first of ``names`` present in any known bundle layout under ``root``."""
     for parts in _BUNDLE_SUBDIRS:
         base = root.joinpath(*parts) if parts else root
@@ -1046,9 +1050,7 @@ def peer_llama_bundle_identity(peer_ip: str, timeout: int = 30) -> Optional[Dict
 PROVISION_FIX = "run `unsloth spark provision` to copy this node's llama.cpp bundle to the peer"
 
 
-def compare_llama_bundles(
-    local: Dict[str, Any], peer: Optional[Dict[str, Any]]
-) -> Dict[str, Any]:
+def compare_llama_bundles(local: Dict[str, Any], peer: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Will llama-server here and ggml-rpc-server there speak the same RPC protocol?
 
     The protocol is pinned by the build, so two nodes on the same bundle tag with the
@@ -2295,9 +2297,9 @@ LAYER_SPLIT_FITTING_SPEEDUP = 0.92
 # length. Below ~256 tokens splitting costs 2-6%; above ~1024 it wins, and the win grows with
 # both prompt length and concurrency.
 LAYER_SPLIT_ASYNC_RPC_SPEEDUP = {
-    128:  {1: 0.94, 4: 0.95, 8: 0.95},
-    256:  {1: 0.98, 4: 1.00, 8: 1.00},
-    512:  {1: 0.96, 4: 1.05, 8: 1.07},
+    128: {1: 0.94, 4: 0.95, 8: 0.95},
+    256: {1: 0.98, 4: 1.00, 8: 1.00},
+    512: {1: 0.96, 4: 1.05, 8: 1.07},
     1024: {1: 1.02, 4: 1.12, 8: 1.17},
     2048: {1: 1.07, 4: 1.23, 8: 1.29},
     4096: {1: 1.11, 4: 1.35, 8: 1.45},
@@ -2305,7 +2307,11 @@ LAYER_SPLIT_ASYNC_RPC_SPEEDUP = {
 LAYER_SPLIT_BREAK_EVEN_TOKENS = 256
 
 
-def layer_split_speedup(prompt_tokens = None, concurrency = 1, async_rpc = False):
+def layer_split_speedup(
+    prompt_tokens = None,
+    concurrency = 1,
+    async_rpc = False,
+):
     """End-to-end speedup from splitting a model that already fits on one node.
 
     `async_rpc=False` is the conservative default and reports the flat 0.92x, because that is

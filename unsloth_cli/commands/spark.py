@@ -355,7 +355,6 @@ def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
     # path then reports the peer as unprovisioned when it is fine, or fine when it is not.
     try:
         from studio.spark_cluster import venv_activate
-
         _venv = venv_activate().rsplit("/bin/activate", 1)[0]
     except Exception:
         _venv = "$HOME/.unsloth/studio/unsloth_studio"

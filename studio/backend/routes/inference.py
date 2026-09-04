@@ -11768,7 +11768,6 @@ def _spark_topology() -> Optional[str]:
     """The two-Spark serving topology for the status poll; None off a paired Spark."""
     try:
         from core.inference.spark_serving import current_topology
-
         return current_topology()
     except Exception:
         return None

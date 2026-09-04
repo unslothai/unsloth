@@ -834,10 +834,13 @@ def test_layer_split_speedup_refuses_to_guess_without_a_prompt_length() -> None:
 def test_layer_split_speedup_snaps_down_to_a_measured_row() -> None:
     """Six measured points, not a fitted curve: do not interpolate precision we lack."""
     sc = _load("studio/spark_cluster.py")
-    assert sc.layer_split_speedup(2047, 8, async_rpc = True) == \
-        sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[1024][8]
-    assert sc.layer_split_speedup(99999, 8, async_rpc = True) == \
-        sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[4096][8]
+    assert (
+        sc.layer_split_speedup(2047, 8, async_rpc = True) == sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[1024][8]
+    )
+    assert (
+        sc.layer_split_speedup(99999, 8, async_rpc = True)
+        == sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[4096][8]
+    )
 
 
 # ── Replicas versus layer split for a model that fits ────────────────────────
@@ -1011,7 +1014,12 @@ def test_provision_copies_the_bundle_to_the_same_path(monkeypatch, tmp_path) -> 
 # Signal (b): a live HELLO against a running ggml-rpc-server.
 
 
-def _mk_bundle(root: Path, version = "b10796-mix-659e406", lib = b"rpc-lib-bytes", server = True):
+def _mk_bundle(
+    root: Path,
+    version = "b10796-mix-659e406",
+    lib = b"rpc-lib-bytes",
+    server = True,
+):
     bin_dir = root / "build" / "bin"
     bin_dir.mkdir(parents = True, exist_ok = True)
     if version is not None:
@@ -1091,10 +1099,14 @@ def test_peer_bundle_probe_is_self_contained_and_matches_local(tmp_path, monkeyp
 
     sc = _load("studio/spark_cluster.py")
     root = _mk_bundle(tmp_path / "llama.cpp")
-    source = sc._BUNDLE_PROBE.format(root = str(root), libs = sc._RPC_LIB_NAMES, servers = sc._RPC_SERVER_NAMES)
+    source = sc._BUNDLE_PROBE.format(
+        root = str(root), libs = sc._RPC_LIB_NAMES, servers = sc._RPC_SERVER_NAMES
+    )
     env = dict(os.environ)
     env.pop("UNSLOTH_LLAMA_CPP_PATH", None)
-    out = subprocess.run([sys.executable, "-"], input = source, capture_output = True, text = True, env = env, timeout = 60)
+    out = subprocess.run(
+        [sys.executable, "-"], input = source, capture_output = True, text = True, env = env, timeout = 60
+    )
     line = next(l for l in out.stdout.splitlines() if l.startswith("UNSLOTH_BUNDLE "))
     remote = json.loads(line[len("UNSLOTH_BUNDLE ") :])
     local = sc.llama_bundle_identity(root)
@@ -1104,8 +1116,13 @@ def test_peer_bundle_probe_is_self_contained_and_matches_local(tmp_path, monkeyp
 def test_peer_relative_path_keeps_a_home_path_home_relative(monkeypatch, tmp_path) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setattr(sc.Path, "home", classmethod(lambda cls: tmp_path / "me"))
-    assert sc._peer_relative_path(tmp_path / "me" / ".unsloth" / "llama.cpp") == "~/.unsloth/llama.cpp"
-    assert sc._peer_relative_path(tmp_path / "opt" / "llama") == (tmp_path / "opt" / "llama").as_posix()
+    assert (
+        sc._peer_relative_path(tmp_path / "me" / ".unsloth" / "llama.cpp") == "~/.unsloth/llama.cpp"
+    )
+    assert (
+        sc._peer_relative_path(tmp_path / "opt" / "llama")
+        == (tmp_path / "opt" / "llama").as_posix()
+    )
 
 
 def _fake_rpc_server(behaviour: str):
@@ -1184,10 +1201,16 @@ def test_rpc_hello_probe_survives_a_truncated_reply_and_a_hangup() -> None:
 def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch, tmp_path) -> None:
     sc = _load("studio/spark_cluster.py")
     new = sc.llama_bundle_identity(_mk_bundle(tmp_path / "new"))
-    old = sc.llama_bundle_identity(_mk_bundle(tmp_path / "old", version = "b10715-mix-86bd2d3", lib = b"x"))
+    old = sc.llama_bundle_identity(
+        _mk_bundle(tmp_path / "old", version = "b10715-mix-86bd2d3", lib = b"x")
+    )
     monkeypatch.setattr(sc, "llama_bundle_identity", lambda root = None: new)
     monkeypatch.setattr(sc, "peer_llama_bundle_identity", lambda *a, **k: old)
-    monkeypatch.setattr(sc, "rpc_hello_probe_detail", lambda host, port, **k: {"host": host, "port": port, "state": "refused", "version": None})
+    monkeypatch.setattr(
+        sc,
+        "rpc_hello_probe_detail",
+        lambda host, port, **k: {"host": host, "port": port, "state": "refused", "version": None},
+    )
     pre = sc.rpc_protocol_preflight("192.168.200.13")
     assert pre["ok"] is False and "unsloth spark provision" in pre["problems"][0]
 
@@ -1214,7 +1237,11 @@ def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch
 
     # Unverifiable peer, nothing listening: not a failure, but not a pass either.
     monkeypatch.setattr(sc, "peer_llama_bundle_identity", lambda *a, **k: None)
-    monkeypatch.setattr(sc, "rpc_hello_probe_detail", lambda host, port, **k: {"host": host, "port": port, "state": "refused", "version": None})
+    monkeypatch.setattr(
+        sc,
+        "rpc_hello_probe_detail",
+        lambda host, port, **k: {"host": host, "port": port, "state": "refused", "version": None},
+    )
     pre = sc.rpc_protocol_preflight("192.168.200.13")
     assert pre["ok"] is None and not pre["problems"] and "UNVERIFIED" in pre["notes"][0]
 

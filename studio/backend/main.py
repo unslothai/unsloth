@@ -855,7 +855,6 @@ async def lifespan(app: FastAPI):
     # llama-server goes down with the rest. A no-op unless a topology was attached.
     try:
         from core.inference.spark_serving import shutdown as _spark_serving_shutdown
-
         await _spark_serving_shutdown()
     except Exception as exc:
         _lifespan_log.warning("two-Spark serving teardown failed at shutdown: %s", exc)

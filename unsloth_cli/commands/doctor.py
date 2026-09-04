@@ -173,7 +173,6 @@ def _activate() -> str:
     """
     try:
         from studio.spark_cluster import venv_activate
-
         return venv_activate()
     except Exception:
         return "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
