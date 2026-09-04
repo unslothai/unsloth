@@ -1171,6 +1171,32 @@ def parallel_tool_calls_enabled() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+def round_call_key(name: Any, arguments: Any) -> tuple:
+    """A conservative identity for one call, computed before the controller heals it.
+
+    Used to decide whether a round may run its calls together, so it has to answer "these
+    two are the same request" for the shapes that reach it. The same call can arrive twice
+    in one turn in two different forms: llama.cpp can leak the raw `<tool_call>` markup AND
+    emit the parsed structured call, in which case one side's arguments are a dict and the
+    other's are the JSON text of that dict. Comparing them as they arrive calls them
+    different and runs a side-effecting tool twice for one model intent.
+
+    Parsed, then re-serialised with sorted keys, so both forms land on the same key. What it
+    still cannot see is a pair that only becomes identical after healing; that costs a
+    repeated result rather than a wrong answer, and is the price of not serialising every
+    round that calls one tool twice.
+    """
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except Exception:
+            return (name, "raw:" + arguments)
+    try:
+        return (name, json.dumps(arguments, sort_keys = True, default = str))
+    except Exception:
+        return (name, repr(arguments))
+
+
 async def _pump_tool_stream(
     tool_stream: Any,
     outcome: dict[str, Any],
@@ -1576,7 +1602,34 @@ async def stream_with_studio_tools(
                 )
                 for item in calls
             )
-        parallel_round = parallel_tool_calls_enabled() and len(calls) > 1 and not _approval_gate
+        # And only when the calls cannot depend on each other's RESULTS. `prepare_call` has
+        # exactly two such dependencies, both written by `record_result`: the same call twice
+        # in one turn is a no-op the second time, and a one-shot tool runs once per turn.
+        # Deciding either with both in flight runs the tool twice, which is what
+        # `test_text_and_structured_form_of_one_call_run_once` catches: a provider that sends
+        # one call in both its text and its structured form is asking for the same thing
+        # twice, and only the ledger knows that.
+        #
+        # Keyed on the arguments as they arrived rather than as healed, which is the one gap:
+        # two calls whose malformed arguments heal to the same canonical key would both run.
+        # That costs a repeated result, not a wrong answer, and the alternative is
+        # serialising every round that calls one tool twice.
+        _one_shot = frozenset(getattr(controller, "_one_shot_tools", ()) or ())
+        _round_keys = [
+            round_call_key(
+                (item.get("function") or {}).get("name", ""),
+                (item.get("function") or {}).get("arguments"),
+            )
+            for item in calls
+        ]
+        _round_one_shot = [name for name, _args in _round_keys if name in _one_shot]
+        parallel_round = (
+            parallel_tool_calls_enabled()
+            and len(calls) > 1
+            and not _approval_gate
+            and len(set(_round_keys)) == len(_round_keys)
+            and len(set(_round_one_shot)) == len(_round_one_shot)
+        )
         # (decision, name, call_id, card_id, tool_stream, outcome, queue, pump)
         pending_calls: list[tuple] = []
 

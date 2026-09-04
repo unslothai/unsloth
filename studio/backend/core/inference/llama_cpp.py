@@ -28857,6 +28857,7 @@ class LlamaCppBackend:
         # reason the names above are: this module is large and imported early.
         from core.inference.studio_tool_loop import (
             parallel_tool_calls_enabled as _parallel_tool_calls_enabled,
+            round_call_key as _round_call_key,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -31173,7 +31174,7 @@ class LlamaCppBackend:
                 for _tc in tool_calls or []:
                     _fn = (_tc or {}).get("function") or {}
                     _nm = _fn.get("name", "")
-                    _round_keys.append((_nm, json.dumps(_fn.get("arguments"), default = str)))
+                    _round_keys.append(_round_call_key(_nm, _fn.get("arguments")))
                     if _nm in _one_shot:
                         _round_one_shot.append(_nm)
                 _parallel_round = (
