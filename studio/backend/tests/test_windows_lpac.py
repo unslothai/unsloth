@@ -286,6 +286,186 @@ def test_environment_strips_host_channels_and_uses_private_temp(monkeypatch, tmp
     assert safe.keys().isdisjoint({"DOCKER_HOST", "HOMEDRIVE", "HOMEPATH", "SSH_AUTH_SOCK"})
 
 
+def test_initial_environment_uses_unredirected_prefix_without_mutating_plan(tmp_path):
+    moniker = "unsloth.studio.test"
+    profile = tmp_path / "Packages" / moniker / "AC"
+    identity = SimpleNamespace(profile_folder = str(profile), moniker = moniker)
+    env = {"LOCALAPPDATA": str(profile), "localappdata": "untrusted", "TEMP": str(profile / "Temp")}
+    original = env.copy()
+    initial = windows_lpac._initial_appcontainer_environment(env, identity)
+    assert initial["LOCALAPPDATA"] == str(tmp_path)
+    assert "localappdata" not in initial
+    assert initial["TEMP"] == str(profile / "Temp")
+    assert env == original
+
+
+@pytest.mark.parametrize("layout", ["elsewhere/AC", "Packages/foreign/AC", "Packages/owned/other"])
+def test_initial_environment_rejects_unexpected_profile_layout(tmp_path, layout):
+    identity = SimpleNamespace(profile_folder = str(tmp_path / layout), moniker = "owned")
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "profile directory layout"):
+        windows_lpac._initial_appcontainer_environment({}, identity)
+
+
+def test_private_temp_validation_accepts_current_and_legacy_owned_layouts(tmp_path):
+    profile = tmp_path / "profile"
+    current = profile / "Temp"
+    legacy = current / ("a" * 24)
+    assert windows_lpac._validated_private_temp(str(profile), str(current)) == str(current)
+    assert windows_lpac._validated_private_temp(str(profile), str(legacy)) == str(legacy)
+    for unsafe in (profile, profile / "foreign", tmp_path / "Temp", current / "foreign"):
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "outside its profile"):
+            windows_lpac._validated_private_temp(str(profile), str(unsafe))
+
+
+def test_legacy_private_temp_rejects_reparse_parent(monkeypatch, tmp_path):
+    profile = tmp_path / "profile"
+    parent = profile / "Temp"
+    parent.mkdir(parents = True)
+    legacy = parent / ("a" * 24)
+    real_lstat = windows_lpac.os.lstat
+
+    def reparse_parent(path, *args, **kwargs):
+        if os.path.normcase(os.fspath(path)) == os.path.normcase(str(parent)):
+            return SimpleNamespace(st_file_attributes = 0x400)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(windows_lpac.os, "lstat", reparse_parent)
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "reparse point"):
+        windows_lpac._validated_private_temp(str(profile), str(legacy))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "native Windows launcher regression")
+def test_native_shell_temp_matches_launch_plan_and_is_removed(tmp_path):
+    # This tests the real zero-capability launcher without claiming that Python
+    # or the backend as a whole qualifies. No capability or probe is overridden.
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    backend = windows_lpac.WindowsLpacBackend()
+    previous = None
+    for _ in range(2):
+        prepared = backend.prepare(_spec(workdir, os.environ["COMSPEC"], "/d", "/c", "echo %TEMP%"))
+        identity = prepared.spawn_callback._lpac_identity
+        private = Path(identity.private_temp)
+        profile = Path(identity.profile_folder)
+        manifest = Path(identity.manifest_path)
+        process = None
+        try:
+            assert private != previous
+            assert not (private / "previous-invocation").exists()
+            process = os_sandbox.spawn_prepared_launch(
+                prepared,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                stdin = subprocess.DEVNULL,
+                text = True,
+                close_fds = True,
+                creationflags = subprocess.CREATE_NO_WINDOW,
+            )
+            process.wait(timeout = 10)
+            output = process.stdout.read().strip()
+            assert process.returncode == 0, output
+            assert output == prepared.env["TEMP"] == str(private)
+            (private / "previous-invocation").write_text("owned sentinel")
+        finally:
+            prepared.cleanup()
+        assert not prepared.cleanup_diagnostics
+        assert not private.exists() and not profile.exists() and not manifest.exists()
+        previous = private
+
+
+def test_process_termination_does_not_depend_on_leader_liveness():
+    events = []
+    process = windows_lpac.WindowsLpacProcess(
+        (),
+        None,
+        None,
+        123,
+        None,
+        SimpleNamespace(terminate = lambda: events.append("terminate-job")),
+    )
+    process.returncode = 0
+    process.terminate()
+    assert events == ["terminate-job"]
+
+
+def test_process_cleanup_closes_job_before_output_stream():
+    events = []
+    process = windows_lpac.WindowsLpacProcess(
+        (),
+        None,
+        None,
+        123,
+        SimpleNamespace(close = lambda: events.append("close-stream")),
+        SimpleNamespace(close = lambda: events.append("close-job")),
+    )
+    process.close()
+    assert events == ["close-job", "close-stream"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "native Windows launcher regression")
+def test_native_cleanup_releases_blocked_output_reader(tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    prepared = windows_lpac.WindowsLpacBackend().prepare(
+        _spec(
+            workdir,
+            os.environ["COMSPEC"],
+            "/d",
+            "/c",
+            "for /l %i in (1,1,1000000000) do @rem waiting",
+        )
+    )
+    process = None
+    reader = None
+    closer = None
+    reading = threading.Event()
+    read_errors = []
+    stuck = False
+    try:
+        process = os_sandbox.spawn_prepared_launch(
+            prepared,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            stdin = subprocess.DEVNULL,
+            text = True,
+            close_fds = True,
+            creationflags = subprocess.CREATE_NO_WINDOW,
+        )
+        stream = process.stdout
+
+        def drain():
+            reading.set()
+            try:
+                stream.read()
+            except Exception as exc:
+                read_errors.append(exc)
+
+        reader = threading.Thread(target = drain, daemon = True)
+        reader.start()
+        assert reading.wait(2)
+        time.sleep(0.1)
+        assert process.poll() is None and reader.is_alive()
+        # Time the process-close callback separately from potentially slow ACL
+        # reconciliation; the latter still runs in the finally block below.
+        closer = threading.Thread(target = process.close, daemon = True)
+        closer.start()
+        closer.join(3)
+        stuck = closer.is_alive()
+    finally:
+        if process is not None and (closer is None or closer.is_alive()):
+            process._unsloth_job.terminate()
+        if closer is not None:
+            closer.join(5)
+        if reader is not None:
+            reader.join(5)
+        prepared.cleanup()
+    assert not stuck, "cleanup blocked on the reader before closing the Job Object"
+    assert reader is not None and not reader.is_alive()
+    assert not read_errors
+    assert not prepared.cleanup_diagnostics
+    assert windows_lpac._process_identity(process.pid) is None
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows runtime path validation")
 def test_runtime_roots_include_sandbox_site_and_reject_network_drives(monkeypatch, tmp_path):
     runtime = tmp_path / "runtime"

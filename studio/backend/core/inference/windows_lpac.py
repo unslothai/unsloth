@@ -461,14 +461,18 @@ def _validated_private_temp(profile_folder: str, private_temp: str) -> str:
     expected_parent = os.path.join(os.path.realpath(profile_folder), "Temp")
     spelled = os.path.abspath(private_temp)
     name = os.path.basename(spelled)
-    if (
-        os.path.normcase(os.path.dirname(spelled)) != os.path.normcase(expected_parent)
-        or len(name) != 24
-        or any(character not in "0123456789abcdef" for character in name.lower())
-    ):
+    current = os.path.normcase(spelled) == os.path.normcase(expected_parent)
+    # Older manifests owned a random child of Temp. Retain their cleanup path.
+    legacy = (
+        os.path.normcase(os.path.dirname(spelled)) == os.path.normcase(expected_parent)
+        and len(name) == 24
+        and all(character in "0123456789abcdef" for character in name.lower())
+    )
+    if not (current or legacy):
         raise SandboxUnavailableError("an LPAC private temp path is outside its profile")
-    if os.path.lexists(spelled) and getattr(os.lstat(spelled), "st_file_attributes", 0) & 0x400:
-        raise SandboxUnavailableError("the LPAC private temp root is a reparse point")
+    for root in {expected_parent, spelled}:
+        if os.path.lexists(root) and getattr(os.lstat(root), "st_file_attributes", 0) & 0x400:
+            raise SandboxUnavailableError("the LPAC private temp root is a reparse point")
     if os.path.isdir(spelled):
         for base, dirs, names in os.walk(spelled, followlinks = False):
             for name in [*dirs, *names]:
@@ -907,8 +911,11 @@ def _create_identity(granted_roots: tuple[str, ...]) -> _InvocationIdentity:
     try:
         sid_text = _sid_string(api, sid)
         profile_folder = _profile_folder(api, sid_text)
-        private_temp = os.path.join(profile_folder, "Temp", secrets.token_hex(12))
-        os.makedirs(private_temp, mode = 0o700, exist_ok = False)
+        # Windows redirects TEMP/TMP to this exact directory. The profile itself
+        # has a new random identity for every invocation; it is never reused.
+        private_temp = os.path.join(profile_folder, "Temp")
+        os.makedirs(private_temp, mode = 0o700, exist_ok = True)
+        _validated_private_temp(profile_folder, private_temp)
         manifest_path = os.path.join(_manifest_root(), moniker + ".json")
         permission_roots = (*granted_roots, private_temp)
         owner = _process_identity()
@@ -1002,12 +1009,14 @@ class WindowsLpacProcess:
         return self._read_returncode()
 
     def terminate(self) -> None:
-        if self.poll() is None:
-            self._unsloth_job.terminate()
+        # The leader may have exited while other processes still own the pipe.
+        self._unsloth_job.terminate()
 
     kill = terminate
 
     def close(self) -> None:
+        # Kill pipe writers before waiting for a concurrent reader's stream lock.
+        self._unsloth_job.close()
         if self.stdout is not None:
             try:
                 self.stdout.close()
@@ -1019,7 +1028,6 @@ class WindowsLpacProcess:
             if handle:
                 _api().kernel32.CloseHandle(handle)
                 setattr(self, name, None)
-        self._unsloth_job.close()
 
 
 def _environment_block(env: dict[str, str]) -> ctypes.Array[Any]:
@@ -1029,6 +1037,27 @@ def _environment_block(env: dict[str, str]) -> ctypes.Array[Any]:
             raise SandboxUnavailableError("the LPAC environment contains an invalid entry")
         entries.append(f"{key}={value}")
     return ctypes.create_unicode_buffer("\0".join(entries) + "\0\0")
+
+
+def _initial_appcontainer_environment(
+    env: dict[str, str], identity: _InvocationIdentity
+) -> dict[str, str]:
+    profile = Path(identity.profile_folder)
+    package = profile.parent
+    packages = package.parent
+    if (
+        not profile.is_absolute()
+        or profile.name.lower() != "ac"
+        or package.name != identity.moniker
+        or packages.name.lower() != "packages"
+    ):
+        raise SandboxUnavailableError("LPAC returned an unsupported profile directory layout")
+    # CreateProcessW constructs the package environment from the host LocalAppData
+    # prefix. Supplying the already redirected path duplicates Packages/<id>/AC.
+    # Only its input block uses this prefix; prepared.env describes the child.
+    initial = {key: value for key, value in env.items() if key.upper() != "LOCALAPPDATA"}
+    initial["LOCALAPPDATA"] = str(packages.parent)
+    return initial
 
 
 def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
@@ -1155,7 +1184,7 @@ def _spawn_lpac(
         startup.StartupInfo.hStdError = child_stdout
         startup.lpAttributeList = attribute_list
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(prepared.argv))
-        environment = _environment_block(prepared.env)
+        environment = _environment_block(_initial_appcontainer_environment(prepared.env, identity))
         flags = (
             int(popen_kwargs.get("creationflags", 0))
             | _CREATE_SUSPENDED
