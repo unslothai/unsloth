@@ -5177,6 +5177,16 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
         torch==*)
             # uv resolves an override file's relative includes (-r nested.txt) against THAT file's own directory, so a merge in $TMPDIR makes uv look for them beside the temp file.
             # Place the merge next to the caller's override when they share one writable directory (as install.ps1 does), else fall back to mktemp.
+            # Field splitting UV_OVERRIDE also globs, so pathname expansion is off for both
+            # walks below and restored afterwards, exactly as _path_has_dir does for PATH.
+            # uv reads the literal name, so a caller override called ov[1].txt beside an
+            # ov1.txt would otherwise make both loops iterate the sibling: the merge would
+            # carry the wrong requirements and --overrides replaces UV_OVERRIDE, so uv
+            # never sees the file the caller configured. install.ps1 splits on \s+ and
+            # tests with -LiteralPath, so it has never had this.
+            _ov_glob=on
+            case $- in *f*) _ov_glob=off ;; esac
+            set -f
             _ov_dir=""
             _ov_dir_ok=1
             for _ov_file in ${UV_OVERRIDE:-}; do
@@ -5215,6 +5225,9 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
             for _ov_file in ${UV_OVERRIDE:-}; do
                 [ -f "$_ov_file" ] && awk '!(tolower($0) ~ /^[[:space:]]*torch(vision|audio)?([[:space:]<>=!~;@[]|$)/)' "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
             done
+            # `if`, not `[ ... ] && set +f`: this is the last command of the case arm, so
+            # under `set -e` a false test would make the whole function exit non-zero.
+            if [ "$_ov_glob" = on ]; then set +f; fi
             ;;
     esac
 }

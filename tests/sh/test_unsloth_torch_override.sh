@@ -175,6 +175,67 @@ if [ "$(cat "$_mode_dir/stale_both")" = "600" ]; then _rc=0; else _rc=1; fi
 assert_true "umask plus chmod brings a stale file back to 0600" "$_rc"
 rm -rf "$_mode_dir"
 
+# 6. UV_OVERRIDE is split unquoted, so field splitting is followed by pathname
+#    expansion. uv reads the literal name (verified against uv 0.11.32: an
+#    UV_OVERRIDE of "ov[1].txt" beside an "ov1.txt" resolves the bracketed file),
+#    so without `set -f` both walks iterate the sibling instead: the merge carries
+#    the wrong requirements and --overrides replaces UV_OVERRIDE, so uv never sees
+#    the file the caller configured. install.ps1 splits on \s+ and tests with
+#    -LiteralPath and has never had this. Drive the real case arm.
+_arm=$(sed -n '/^        torch==\*)$/,/^            ;;$/p' "$INSTALL_SH")
+_arm_body=$(printf '%s\n' "$_arm" | sed '1d;$d')
+[ -n "$_arm_body" ]
+assert_true "the torch==* overrides arm was extracted from install.sh" "$?"
+
+_glob_dir=$(mktemp -d)
+printf 'idna==3.6\n' > "$_glob_dir/ov[1].txt"
+printf 'idna==3.7\n' > "$_glob_dir/ov1.txt"
+_glob_out=$(
+    UV_OVERRIDE="$_glob_dir/ov[1].txt"
+    _torch_trio_pins='torch==2.11.0+cu128'
+    eval "$_arm_body"
+    cat "$_UNSLOTH_TORCH_OVERRIDES"
+    rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+)
+if printf '%s\n' "$_glob_out" | grep -qx 'idna==3.6'; then _rc=0; else _rc=1; fi
+assert_true "a glob-metachar override path is read literally, not via its sibling" "$_rc"
+if printf '%s\n' "$_glob_out" | grep -qx 'idna==3.7'; then _rc=1; else _rc=0; fi
+assert_true "the unrelated sibling that the pattern matches is never folded in" "$_rc"
+if printf '%s\n' "$_glob_out" | grep -qx 'torch==2.11.0+cu128'; then _rc=0; else _rc=1; fi
+assert_true "the generated trio pin still leads the merged file" "$_rc"
+rm -rf "$_glob_dir"
+
+# set -f turns off pathname expansion but NOT field splitting, and uv takes
+# UV_OVERRIDE as a space-separated list, so the multi-file case has to keep working.
+# This is the one property the guard could plausibly break: quoting "$UV_OVERRIDE"
+# instead would also stop the globbing and would silently fold only the first file.
+_multi_dir=$(mktemp -d)
+printf 'idna==3.6\n' > "$_multi_dir/a.txt"
+printf 'certifi==2024.1.1\n' > "$_multi_dir/b.txt"
+_multi_out=$(
+    UV_OVERRIDE="$_multi_dir/a.txt $_multi_dir/b.txt"
+    _torch_trio_pins='torch==2.11.0+cu128'
+    eval "$_arm_body"
+    cat "$_UNSLOTH_TORCH_OVERRIDES"
+    rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+)
+if printf '%s\n' "$_multi_out" | grep -qx 'idna==3.6' &&
+   printf '%s\n' "$_multi_out" | grep -qx 'certifi==2024.1.1'; then _rc=0; else _rc=1; fi
+assert_true "every file of a space-separated UV_OVERRIDE is still folded in" "$_rc"
+rm -rf "$_multi_dir"
+
+# The guard must not leak: install.sh runs under `set -e` and callers below this
+# point rely on globbing (_dir_has_entries walks "$1"/*).
+_glob_state=$(
+    UV_OVERRIDE=""
+    _torch_trio_pins='torch==2.11.0+cu128'
+    eval "$_arm_body"
+    rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+    case $- in *f*) echo off ;; *) echo on ;; esac
+)
+if [ "$_glob_state" = on ]; then _rc=0; else _rc=1; fi
+assert_true "pathname expansion is restored after the arm" "$_rc"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
