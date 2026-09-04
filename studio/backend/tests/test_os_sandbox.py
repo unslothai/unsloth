@@ -936,9 +936,7 @@ def _invoke_tool(
         code = "print('ok')"
         if payload_sentinel is not None:
             code = f"from pathlib import Path; Path({str(payload_sentinel)!r}).write_text('ran')"
-        return inference_tools._python_exec(
-            code, disable_sandbox = disable_sandbox, **kwargs
-        )
+        return inference_tools._python_exec(code, disable_sandbox = disable_sandbox, **kwargs)
     command = "printf ok"
     if payload_sentinel is not None:
         command = (
@@ -1547,9 +1545,7 @@ print('PRIVATE_UNIX_FAILURE_CLEANUP_OK')
     assert "PRIVATE_UNIX_FAILURE_CLEANUP_OK" in completed.stdout
 
 
-def test_multiprocessing_resource_sharer_remains_supported(
-    qualified_native_capability, tmp_path
-):
+def test_multiprocessing_resource_sharer_remains_supported(qualified_native_capability, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     code = """
@@ -1571,9 +1567,7 @@ print('RESOURCE_SHARER_OK')
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason = "PyTorch is unavailable")
-def test_pytorch_tensor_sharing_remains_supported(
-    qualified_native_capability, tmp_path
-):
+def test_pytorch_tensor_sharing_remains_supported(qualified_native_capability, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     code = """

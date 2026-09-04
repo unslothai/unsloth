@@ -904,9 +904,7 @@ class LinuxBubblewrapBackend:
         )
         _validate_runtime_paths(runtime_paths, workdir, allow_nested_mounts = True)
         exposed_roots = tuple(
-            path
-            for path in (*system_roots, *runtime_paths)
-            if not _contained(path, workdir)
+            path for path in (*system_roots, *runtime_paths) if not _contained(path, workdir)
         )
         nested_mounts: list[tuple[_LinuxMount, bool]] = []
         for mount in _nested_exposed_mounts(exposed_roots):

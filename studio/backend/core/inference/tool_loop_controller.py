@@ -43,11 +43,7 @@ def sanitize_untrusted_tool_arguments(arguments: Any) -> dict[str, Any]:
     """Copy model/provider arguments without backend-owned card metadata."""
     if not isinstance(arguments, Mapping):
         return {}
-    return {
-        key: value
-        for key, value in arguments.items()
-        if key != TOOL_EXECUTION_RECORD_ARG_KEY
-    }
+    return {key: value for key, value in arguments.items() if key != TOOL_EXECUTION_RECORD_ARG_KEY}
 
 
 # Anything that ends a JSON token. A tail free of all of them never finished arriving.
@@ -286,9 +282,7 @@ class ToolCallDecision:
                 # that overflowed the window.
                 "arguments": json.dumps(_unreadable_arguments_summary(fragment))
                 if fragment is not None
-                else canonical_arguments_text(
-                    sanitize_untrusted_tool_arguments(self.arguments)
-                ),
+                else canonical_arguments_text(sanitize_untrusted_tool_arguments(self.arguments)),
             },
         }
         if self.tool_call_id:
