@@ -11314,13 +11314,18 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
 
 
 def _mlx_estimate_available() -> bool:
-    """Whether this host would actually run the load through MLX."""
+    """Whether this host would actually run the load through MLX.
+
+    The same criterion ``detect_hardware`` selects the MLX backend on, rather than a bare
+    ``import mlx.core``: that succeeds on a stack whose mlx-lm or mlx-vlm the worker refuses,
+    and the load then runs on a backend allocating to a different plan entirely.
+    """
     try:
-        from utils.mlx_repair import is_apple_silicon, mlx_available
+        from utils.mlx_repair import is_apple_silicon, mlx_stack_blockers
     except Exception:
         return False
     try:
-        return bool(is_apple_silicon() and mlx_available())
+        return bool(is_apple_silicon() and not mlx_stack_blockers())
     except Exception:
         return False
 

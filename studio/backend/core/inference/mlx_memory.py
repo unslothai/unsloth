@@ -72,6 +72,10 @@ _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
 # Fallback for mlx-vlm's own ``quantized_kv_start``, used where the loader cannot be reached.
 _VLM_QUANT_START = 5000
 
+# What safetensors itself will parse. The largest header across 255 locally cached shards is
+# 0.53 MB, so this rejects nothing a real checkpoint carries.
+_MAX_SAFETENSORS_HEADER = 100_000_000
+
 
 @dataclass
 class MlxMemoryBreakdown:
@@ -192,10 +196,11 @@ def _checkpoint_tensors(model_dir: str, config: Optional[dict], dtype):
     for shard in mlx_shard_files(model_dir, config):
         with open(shard, "rb") as handle:
             length = int.from_bytes(handle.read(8), "little")
-            # A header has to fit in the file that declares it. Without this the read is bounded
-            # only by the shard's own size, so a corrupt length pulls gigabytes of weights into
+            # Fitting inside the shard is not enough on a multi-gigabyte one, so the format's
+            # own ceiling is applied too: without both, a corrupt length pulls weights into
             # memory to be parsed as JSON.
-            if not 0 < length <= os.fstat(handle.fileno()).st_size - 8:
+            limit = min(_MAX_SAFETENSORS_HEADER, os.fstat(handle.fileno()).st_size - 8)
+            if not 0 < length <= limit:
                 raise ValueError(f"{shard} declares a {length}-byte safetensors header")
             header = json.loads(handle.read(length))
         for name, meta in header.items():
@@ -801,10 +806,14 @@ def _held_tokens(
         tokens += 1 if decoding else 0
         if block > 1:
             tokens = -(-tokens // block) * block
-    # A bounded cache stops tracking the context, but its bound is not a ceiling on the allocation.
+    # A bounded cache stops tracking the context, but its bound is not a ceiling on the
+    # allocation, and the block rounding above does not describe its allocator either: below
+    # roughly 600 tokens these classes hold a whole step beyond what they have been given, which
+    # is more than the rounding predicts rather than less. The peak is measured from the class,
+    # so it replaces the estimate rather than capping it.
     spec = entry.get("bound_spec")
     if spec:
-        tokens = min(tokens, _bounded_peak(*spec, n_ctx, prefill_chunk))
+        tokens = _bounded_peak(*spec, n_ctx, prefill_chunk)
     return tokens
 
 

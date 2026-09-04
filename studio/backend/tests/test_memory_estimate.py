@@ -886,6 +886,15 @@ class TestEstimateMemoryRoute:
         assert resp.available is False
         assert resp.reason == "unsupported_source"
 
+    def test_the_estimate_asks_the_question_the_worker_asks_of_the_stack(self, monkeypatch):
+        # `import mlx.core` succeeds on a stack whose mlx-lm or mlx-vlm the worker refuses, and
+        # detect_hardware then routes the load to a backend on a different allocation plan.
+        import utils.mlx_repair as repair
+        monkeypatch.setattr(repair, "is_apple_silicon", lambda: True)
+        for blockers, available in (([], True), (["mlx-vlm 0.0.1 is too old"], False)):
+            monkeypatch.setattr(repair, "mlx_stack_blockers", lambda b = blockers: b)
+            assert ri._mlx_estimate_available() is available
+
     def test_non_gguf_model_is_not_priced_without_mlx(self, monkeypatch):
         # Safetensors allocates differently, so the GGUF arithmetic would be invented.
         monkeypatch.setattr(
@@ -4105,6 +4114,13 @@ def test_the_peak_of_a_bounded_cache_is_measured_not_derived():
         ), f"{bound.__name__}({value}) at {n_ctx}"
     assert mm._bound_spec(type("E", (), {"max_size": 512})())
     assert mm._bound_spec(type("E", (), {"chunk_size": 512})())
+    # And what a bounded entry is charged IS that peak, not the generic block rounding capped by
+    # it. Below roughly 600 tokens these classes hold a step beyond what they were given, which
+    # is more than the rounding predicts: charging the smaller of the two halves the real cache.
+    spec = (C.RotatingKVCache, "max_size", 512)
+    entry = {"slope": 1.0, "block": mm.MLX_KV_BLOCK, "bound_spec": spec}
+    for n_ctx, charged in ((253, 508), (100, 355), (1024, 1023), (10**12, 2559)):
+        assert mm._held_tokens(entry, n_ctx, 2048) == charged
 
 
 @pytest.mark.skipif(not _HAVE_MLX, reason = "builds a real architecture")
@@ -4283,7 +4299,9 @@ class TestShardsTheLoaderReads:
         assert self._spread(tmp_path, self._VISION) == ["model-00001.safetensors"]
 
     @_NEEDS_MLX
-    @pytest.mark.parametrize("declared", [0, 1 << 40])
+    # 1_000_000 is under the format's ceiling and still past the end of this shard, so it is the
+    # file-size half of the bound that has to reject it.
+    @pytest.mark.parametrize("declared", [0, 1_000_000, 1 << 40])
     def test_a_shard_is_not_read_past_the_header_it_declares(self, tmp_path, declared):
         # The read is otherwise bounded only by the shard itself, so a corrupt length pulls the
         # weights into memory to be parsed as JSON. The panel prices whatever finished caching,
@@ -4298,6 +4316,23 @@ class TestShardsTheLoaderReads:
         # The honest length still reads, so the guard is not just refusing everything.
         shard.write_bytes(len(body).to_bytes(8, "little") + body.encode() + b"\0" * 4)
         assert list(mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16))
+
+    @_NEEDS_MLX
+    def test_a_header_is_capped_below_the_shard_it_sits_in(self, tmp_path, monkeypatch):
+        # Fitting inside the file is no bound on a multi-gigabyte shard, so the format's own
+        # ceiling applies as well. Measured against the cap rather than a real one, since a file
+        # large enough to exceed 100 MB is not something to write in a test.
+        import mlx.core as mx
+
+        body = json.dumps({"a.weight": {"dtype": "F16", "shape": [2], "data_offsets": [0, 4]}})
+        (tmp_path / "model.safetensors").write_bytes(
+            len(body).to_bytes(8, "little") + body.encode() + b"\0" * 4
+        )
+        read = lambda: mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16)
+        assert list(read())
+        monkeypatch.setattr(mm, "_MAX_SAFETENSORS_HEADER", len(body) - 1)
+        with pytest.raises(ValueError, match = "safetensors header"):
+            read()
 
     @pytest.mark.parametrize(
         "weight_map", [["model-00001.safetensors"], "model-00001.safetensors", 7, True, None]
