@@ -3966,7 +3966,11 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # that has no win_arm64 wheel at all, which fails the install after everything else
     # succeeded. A CPU build still falls through to the repair below, so a host that
     # genuinely lost its GPU torch is still fixed. Mirrors the same guard in setup.ps1.
-    if _is_win_arm64_interpreter():
+    # An explicit CPU pin is exempt: it is a stated instruction rather than a driver
+    # inference, and download.pytorch.org DOES publish win_arm64 /cpu wheels, so that
+    # repair resolves. Same inferred-vs-stated distinction the CUDA_VISIBLE_DEVICES
+    # check below draws with _expected_torch_flavor_is_explicit.
+    if _is_win_arm64_interpreter() and not _explicit_cpu_torch_index_pin():
         _installed = _probe_installed_torch_version()
         if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
             return True
@@ -5378,13 +5382,56 @@ WINDOWS_ARM64_SKIP_PACKAGES = {
 }
 
 
+def _wheel_matches_interpreter(filename: str) -> bool:
+    """Can THIS interpreter install the wheel named ``filename``?
+
+    A wheelhouse is not built for one interpreter: install.ps1 stages every win_arm64
+    wheel it finds, cp311 through cp314, as the wheelhouse published them. So a filename
+    is not proof on its own -- a cp311 tiktoken is invisible to a cp313 resolver, and
+    counting it as available drops the skip and sends the resolve to an sdist that cannot
+    build here. PEP 425: a wheel is installable when one of its (python, abi, platform)
+    triples is one the interpreter supports, and each filename field may be a
+    "."-separated set expanded as their cartesian product. Unparseable means not
+    installable, which only leaves the conservative skip in place.
+    """
+    stem = filename[:-4] if filename.lower().endswith(".whl") else filename
+    parts = stem.split("-")
+    if len(parts) < 5:
+        return False
+    py_tags, abi_tags, plat_tags = (set(field.split(".")) for field in parts[-3:])
+    this_platform = (sysconfig.get_platform() or "").replace("-", "_").replace(".", "_").lower()
+    if "any" not in plat_tags and this_platform not in plat_tags:
+        return False
+    major, minor = sys.version_info[:2]
+    free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+    this_cpython = f"cp{major}{minor}"
+    this_abi = f"{this_cpython}t" if free_threaded else this_cpython
+    for py_tag in py_tags:
+        for abi_tag in abi_tags:
+            if py_tag == this_cpython and abi_tag in ("none", "abi3", this_abi):
+                return True
+            if abi_tag == "none":
+                # py3 / py313 / py2.py3: any minor at or below this one.
+                pure = re.fullmatch(r"py(\d)(\d*)", py_tag)
+                if pure and int(pure.group(1)) == major and int(pure.group(2) or 0) <= minor:
+                    return True
+            elif abi_tag == "abi3" and not free_threaded:
+                # The stable ABI is forward compatible from 3.2 up; free-threaded builds
+                # do not implement it at all.
+                stable = re.fullmatch(r"cp(\d)(\d+)", py_tag)
+                if stable and int(stable.group(1)) == major and 2 <= int(stable.group(2)) <= minor:
+                    return True
+    return False
+
+
 @functools.lru_cache(maxsize = 1)
 def _find_links_wheel_names() -> frozenset[str]:
     """Canonical names of the wheels sitting in the configured find-links directories.
 
     install.ps1 points UV_FIND_LINKS / PIP_FIND_LINKS at a local wheelhouse on Windows on
     ARM, holding the wheels PyPI does not publish for win_arm64. Anything served there is
-    installable, so it must not also be filtered out as unavailable.
+    installable, so it must not also be filtered out as unavailable -- but only the wheels
+    tagged for this interpreter are, which is what the resolver will agree to.
     """
     names: set[str] = set()
     for value in (os.environ.get("UV_FIND_LINKS"), os.environ.get("PIP_FIND_LINKS")):
@@ -5394,20 +5441,26 @@ def _find_links_wheel_names() -> frozenset[str]:
                 continue  # a URL index cannot be listed cheaply; treat it as unknown
             try:
                 for wheel in Path(entry).glob("*.whl"):
+                    if not _wheel_matches_interpreter(wheel.name):
+                        continue
                     names.add(_canonical_dist_name(wheel.name.split("-", 1)[0]))
             except OSError:
                 continue
     return frozenset(names)
 
 
-# Some entries are skipped not for themselves but for a dependency with no win_arm64
+# Some entries are skipped not for themselves but for dependencies with no win_arm64
 # wheel: tensorboard is pure Python and only unavailable because grpcio is, and librosa
-# and openai-whisper are blocked by llvmlite (via numba). Hosting the blocker's wheel
-# re-enables them, so record what each one is actually waiting on.
+# and openai-whisper are blocked by the numba -> llvmlite pair, openai-whisper by tiktoken
+# as well -- an unconditional dependency in its metadata, so filtering the direct tiktoken
+# line out of extras.txt does not stop whisper pulling that same unbuildable sdist in
+# transitively. Every blocker has to be hosted before the feature is installable, so this
+# records the whole set. Keys are canonical (``[-_.]+`` -> ``_``), the form they are
+# looked up by; "openai-whisper" here would never match and the entry would be dead.
 WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
-    "tensorboard": "grpcio",
-    "librosa": "llvmlite",
-    "openai-whisper": "llvmlite",
+    "tensorboard": ("grpcio",),
+    "librosa": ("llvmlite", "numba"),
+    "openai_whisper": ("llvmlite", "numba", "tiktoken"),
 }
 
 
@@ -5422,8 +5475,8 @@ def _windows_arm64_skip_packages() -> set[str]:
         canonical = _canonical_dist_name(package)
         if canonical in available:
             continue
-        blocker = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
-        if blocker and _canonical_dist_name(blocker) in available:
+        blockers = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
+        if blockers and all(_canonical_dist_name(b) in available for b in blockers):
             continue
         keep_skipping.add(package)
     return keep_skipping

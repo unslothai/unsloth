@@ -362,6 +362,64 @@ function Install-UnslothStudio {
         }
     }
 
+    # Strip userinfo AND query/fragment so an authenticated pin never leaks. Shared with
+    # _strip_index_url_credentials (install.sh / py / setup.ps1). Defined here, not next to
+    # the torch steps: the Windows-on-ARM probe below prints an index URL long before those
+    # run, and PowerShell resolves a function only once its definition has executed.
+    function Remove-IndexUrlCredentials {
+        param([string]$Url)
+        # Ordinal, not culture-aware: on non-English locales (e.g. th-TH) linguistic
+        # IndexOf treats "://" as ignorable, mis-locates it, and crashes Substring (issue #7279).
+        $sep = $Url.IndexOf('://', [System.StringComparison]::Ordinal)
+        if ($sep -lt 0) { return $Url }
+        $scheme = $Url.Substring(0, $sep)
+        $rest = $Url.Substring($sep + 3)
+        # Drop query / fragment (may hold auth tokens).
+        $q = $rest.IndexOfAny([char[]]('?', '#'))
+        if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
+        $slash = $rest.IndexOf('/', [System.StringComparison]::Ordinal)
+        $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
+        $at = $authority.LastIndexOf('@', [System.StringComparison]::Ordinal)
+        $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
+        if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
+        return "${scheme}://${host_}"
+    }
+
+    # UNSLOTH_WOA_WHEELHOUSE takes a directory or a base URL, so ask the filesystem which
+    # one it is instead of pattern-matching the spelling: C:/wheels and .\wheels are
+    # ordinary directories that no drive-plus-backslash regex recognises, and treating one
+    # as a URL disables the native stack on a host whose wheels are right there.
+    function Test-WoaWheelhouseIsLocal {
+        param([string]$Value)
+        if (-not $Value) { return $false }
+        if ($Value -match '^[A-Za-z][A-Za-z0-9+.-]*://') { return $false }
+        try { return (Test-Path -LiteralPath $Value -PathType Container) } catch { return $false }
+    }
+
+    # uv reads UV_OVERRIDE as a SPACE-SEPARATED list of files (this script splits it on
+    # \s+ itself further down), so an overrides file under a $StudioHome containing a
+    # space -- C:\Users\First Last\.unsloth\studio is the ordinary shape of the default --
+    # is read as two paths, neither of which exists, and every uv call afterwards dies with
+    # "File not found". Same defect and same remedy as backend/utils/uv_path_safety.py
+    # (issue #6503), which the Python half of this installer already applies: hand uv the
+    # 8.3 short form. pip splits its repeatable options on spaces too. Returns $Path
+    # unchanged when it has no space, when 8.3 generation is off, or when the lookup fails.
+    function Get-UvSafePath {
+        param([string]$Path)
+        if (-not $Path -or -not $Path.Contains(" ")) { return $Path }
+        try {
+            $fso = New-Object -ComObject Scripting.FileSystemObject
+            # GetFile throws on a directory and GetFolder on a file, so ask which it is.
+            $short = if (Test-Path -LiteralPath $Path -PathType Container) {
+                $fso.GetFolder($Path).ShortPath
+            } else {
+                $fso.GetFile($Path).ShortPath
+            }
+            if ($short -and -not $short.Contains(" ")) { return $short }
+        } catch {}
+        return $Path
+    }
+
     # Can this host get a pyarrow that imports? PyPI first (so a published win_arm64 wheel
     # ends this special case for good), then an explicitly supplied wheel, then the
     # wheelhouse. Returns "" when nothing is reachable, which keeps the native path
@@ -378,12 +436,10 @@ function Install-UnslothStudio {
                 if ($match.Value -like "*$tag-$tag*") { return "pypi" }
             }
         } catch {}
-        if ($script:WoaWheelhouse -match '^[A-Za-z]:\\|^\\\\') {
-            if (Test-Path -LiteralPath $script:WoaWheelhouse) {
-                $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -like "*$tag-$tag*" } | Select-Object -First 1
-                if ($local) { return "wheelhouse" }
-            }
+        if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
+            $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like "*$tag-$tag*" } | Select-Object -First 1
+            if ($local) { return "wheelhouse" }
             return ""
         }
         try {
@@ -467,6 +523,10 @@ function Install-UnslothStudio {
         param([string]$PythonMinor)
         $script:WoaNativeCudaTorch = $false
         $script:WoaTorchIndexUrl = $null
+        # Cleared too, so a re-probe for another interpreter cannot inherit the first
+        # call's answers about a minor it is no longer asking about.
+        $script:WoaTorchAudio = $false
+        $script:WoaPythonMinor = $null
         if ((Get-HostMachineArch) -ne "arm64") { return }
         if ($SkipTorch) { return }
         # Escape hatch back to the historical x64-under-emulation path, for a host where
@@ -3672,7 +3732,7 @@ exit 0
     Initialize-WoaNativeCudaTorch -PythonMinor $PythonVersion
     if ($script:WoaNativeCudaTorch) {
         step "gpu" "Windows on ARM + NVIDIA: native CUDA wheels available -- installing the ARM64 stack" "Green"
-        substep "torch index: $($script:WoaTorchIndexUrl)"
+        substep "torch index: $(Remove-IndexUrlCredentials $script:WoaTorchIndexUrl)"
     }
     $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
@@ -3731,6 +3791,31 @@ exit 0
         }
     }
     # ── Windows on ARM + NVIDIA: make sure the interpreter really is ARM64 ──
+    # ── Windows on ARM + NVIDIA: re-probe for the interpreter actually selected ──
+    # The probe above answered for $PythonVersion, but Find-CompatiblePython settles on
+    # another supported minor whenever the requested one is not installed (3.13 asked for,
+    # a 3.12 already on the box). Every native decision is keyed to an interpreter tag --
+    # the cp3XX torch wheel on the index and the cp3XX pyarrow wheel staged later -- so a
+    # 3.13 answer carried into a 3.12 venv stages wheels that interpreter cannot install,
+    # and the pyarrow== override then forces the Arrow sdist this path exists to avoid.
+    # Ask again for the minor that was chosen; a changed answer also flips the arch
+    # preference inside Find-CompatiblePython, so the interpreter is chosen again under it.
+    if ($DetectedPython -and $DetectedPython.Version -ne $PythonVersion) {
+        $WoaNativeBeforeReprobe = $script:WoaNativeCudaTorch
+        Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version
+        if ($script:WoaNativeCudaTorch -ne $WoaNativeBeforeReprobe) {
+            # $null only if every candidate vanished between the two passes; keep the
+            # interpreter already in hand rather than continuing without one.
+            $ReselectedPython = Remove-SkippedPython (Find-CompatiblePython)
+            if ($ReselectedPython) { $DetectedPython = $ReselectedPython }
+            if ($script:WoaNativeCudaTorch) {
+                step "gpu" "Windows on ARM + NVIDIA: native CUDA wheels available -- installing the ARM64 stack" "Green"
+                substep "torch index: $(Remove-IndexUrlCredentials $script:WoaTorchIndexUrl)"
+            } else {
+                substep "windows on arm: no win_arm64 CUDA stack for Python $($DetectedPython.Version) -- using the x64 stack." "Yellow"
+            }
+        }
+    }
     # The native stack needs a native interpreter: an emulated x64 python cannot load the
     # win_arm64 CUDA wheels the probe just found. A leftover x64 install is the common
     # case here (an earlier run of this very script bootstrapped one), so swap it the
@@ -4580,6 +4665,38 @@ exit 0
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
     }
 
+    # ── Windows on ARM + NVIDIA: the venv itself has to be ARM64 ──
+    # The migration branches above keep a healthy legacy environment exactly as it is, and
+    # on this host those are x64 by design: every Windows-on-ARM install predating the
+    # native stack deliberately bootstrapped an emulated x64 interpreter. Nothing
+    # downstream re-checks -- Get-TorchIndexUrl returns $script:WoaTorchIndexUrl on the
+    # flag alone, while the win_arm64 spec lift is gated on the venv's platform tag -- so
+    # an x64 venv would be asked for the bounded x64 specs from NVIDIA's win_arm64-only
+    # index, with neither the PyPI extra index nor --prerelease, and abort with no
+    # fallback. Ask the venv the same question the spec branch asks, and on any answer but
+    # ARM64 take the emulated x64 path this host was already on. Probed inline because
+    # Get-VenvPlatformTag is not defined until well below here.
+    $WoaVenvMinor = if ($DetectedPython) { $DetectedPython.Version } else { $PythonVersion }
+    if ($script:WoaNativeCudaTorch) {
+        $_woaVenvPlatform = ""
+        try {
+            $_woaVenvPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+        } catch { $_woaVenvPlatform = "" }
+        if ($_woaVenvPlatform -ne "win-arm64") {
+            $_woaVenvLabel = if ($_woaVenvPlatform) { $_woaVenvPlatform } else { "unknown" }
+            substep "windows on arm: the existing environment is $_woaVenvLabel, not win-arm64 -- using the x64 stack." "Yellow"
+            $script:WoaNativeCudaTorch = $false
+            $script:WoaTorchIndexUrl = $null
+        } else {
+            # The venv answered, so key the staged wheel tags on its own interpreter.
+            $_woaVenvVersion = ""
+            try {
+                $_woaVenvVersion = (& $VenvPython -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null | Out-String).Trim()
+            } catch { $_woaVenvVersion = "" }
+            if ($_woaVenvVersion -match '^\d+\.\d+$') { $WoaVenvMinor = $_woaVenvVersion }
+        }
+    }
+
     # ── Windows on ARM + NVIDIA: resolver settings for the native stack ──
     # Every later dependency step -- the torch install below, the unsloth install, and
     # `unsloth studio setup`, which runs its own uv/pip passes in a child process --
@@ -4636,8 +4753,10 @@ exit 0
                 }
             }
         } elseif ($script:WoaPyarrowSource -eq "wheelhouse") {
-            $tag = "cp" + ($PythonVersion -replace '\.', '')
-            if ($script:WoaWheelhouse -match '^[A-Za-z]:\\|^\\\\') {
+            # The minor the probe answered for, which is the venv's interpreter, not
+            # $PythonVersion, which is only the minor this run asked for.
+            $tag = "cp" + ($WoaVenvMinor -replace '\.', '')
+            if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
                 $found = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -like "*$tag-$tag*" } | Select-Object -First 1
                 if ($found) {
@@ -4681,7 +4800,7 @@ exit 0
         # matching entry is dropped from the skip and override lists automatically -- so
         # publishing a wheel is the only action needed to re-enable a feature on this host.
         $WoaExtraStaged = 0
-        if ($script:WoaWheelhouse -match '^[A-Za-z]:\\|^\\\\') {
+        if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
             foreach ($wheel in @(Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "*.whl" -ErrorAction SilentlyContinue)) {
                 if ($wheel.Name -like "pyarrow-*") { continue }
                 if ($wheel.Name -notlike "*win_arm64*" -and $wheel.Name -notlike "*-any.whl") { continue }
@@ -4737,10 +4856,34 @@ exit 0
         # Anything the wheelhouse already carries is installable here, so it must not also
         # be dropped as unavailable. Keyed on the wheel's own distribution name, normalised
         # the way a requirement name is (underscores and dots are dashes, case-folded).
+        # Only the wheels tagged for THIS interpreter count. Staging above copies every
+        # win_arm64 wheel the wheelhouse publishes, cp311 through cp314, and a cp311
+        # filename in a cp313 venv is invisible to the resolver -- dropping the override on
+        # the strength of one sends the resolve to an sdist that cannot build here. PEP 425
+        # compatibility, the parts a wheelhouse can produce: this interpreter's own cp tag,
+        # a lower cp tag against the stable ABI, or py3/py3x-none.
+        $WoaWheelTag = "cp" + ($WoaVenvMinor -replace '\.', '')
+        $WoaWheelMinor = 0
+        if ($WoaVenvMinor -match '^\d+\.(\d+)') { $WoaWheelMinor = [int]$Matches[1] }
         $WoaWheelNames = @{}
         foreach ($wheel in @(Get-ChildItem -LiteralPath $WoaWheelDir -Filter "*.whl" -ErrorAction SilentlyContinue)) {
-            $dist = ($wheel.Name -split '-')[0]
-            $WoaWheelNames[($dist -replace '[-_.]+', '-').ToLowerInvariant()] = $true
+            $parts = [System.IO.Path]::GetFileNameWithoutExtension($wheel.Name) -split '-'
+            if ($parts.Count -lt 5) { continue }
+            $abiTags = $parts[-2] -split '\.'
+            $compatible = $false
+            foreach ($pyTag in ($parts[-3] -split '\.')) {
+                if ($pyTag -eq $WoaWheelTag) { $compatible = $true; break }
+                if (($abiTags -contains 'none') -and ($pyTag -match '^py3(\d*)$')) {
+                    if ([string]::IsNullOrEmpty($Matches[1]) -or ([int]$Matches[1] -le $WoaWheelMinor)) {
+                        $compatible = $true; break
+                    }
+                }
+                if (($abiTags -contains 'abi3') -and ($pyTag -match '^cp3(\d+)$')) {
+                    if ([int]$Matches[1] -le $WoaWheelMinor) { $compatible = $true; break }
+                }
+            }
+            if (-not $compatible) { continue }
+            $WoaWheelNames[($parts[0] -replace '[-_.]+', '-').ToLowerInvariant()] = $true
         }
         # Requirement overrides for the packages win_arm64 cannot resolve. These are
         # version-constraint replacements, not new requirements: a line marked
@@ -4787,9 +4930,12 @@ exit 0
             $WoaOverrideLines += "pyarrow==$($Matches[1])"
         }
         $WoaOverrideLines | Set-Content -Path $WoaOverrides -Encoding ascii
-        $env:UV_OVERRIDE = $WoaOverrides
+        # Space-safe: uv splits UV_OVERRIDE on whitespace and pip splits its repeatable
+        # options the same way, and the default StudioHome sits under %USERPROFILE%.
+        # UV_FIND_LINKS is comma-separated, so it is passed through untouched.
+        $env:UV_OVERRIDE = Get-UvSafePath $WoaOverrides
         $env:UV_FIND_LINKS = $WoaWheelDir
-        $env:PIP_FIND_LINKS = $WoaWheelDir
+        $env:PIP_FIND_LINKS = Get-UvSafePath $WoaWheelDir
         # studio/install_python_stack.py only drives uv when `uv` resolves on PATH, and
         # falls back to plain pip when it does not. pip has no equivalent of UV_OVERRIDE,
         # so on this host the managed uv must be reachable by name in that child process.
@@ -5621,25 +5767,6 @@ exit 0
         } catch {}
         substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
         return "$baseUrl/cu126"
-    }
-
-    function Remove-IndexUrlCredentials {
-        param([string]$Url)
-        # Ordinal, not culture-aware: on non-English locales (e.g. th-TH) linguistic
-        # IndexOf treats "://" as ignorable, mis-locates it, and crashes Substring (issue #7279).
-        $sep = $Url.IndexOf('://', [System.StringComparison]::Ordinal)
-        if ($sep -lt 0) { return $Url }
-        $scheme = $Url.Substring(0, $sep)
-        $rest = $Url.Substring($sep + 3)
-        # Drop query / fragment (may hold auth tokens).
-        $q = $rest.IndexOfAny([char[]]('?', '#'))
-        if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
-        $slash = $rest.IndexOf('/', [System.StringComparison]::Ordinal)
-        $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
-        $at = $authority.LastIndexOf('@', [System.StringComparison]::Ordinal)
-        $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
-        if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
-        return "${scheme}://${host_}"
     }
 
     # Append a path to a URL that may carry ?query / #fragment auth. A private mirror is

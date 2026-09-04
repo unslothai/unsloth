@@ -4016,7 +4016,16 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # cu130 that has no win_arm64 wheel at all. A CUDA build on this platform is by
     # construction the right one. Everything else, including a CPU build that should
     # become a GPU one, still falls through to the branches below.
-    if ((Test-WinArm64Venv) -and $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag)) {
+    # An explicit CPU pin is exempt. It is a stated instruction, not the host-family
+    # comparison this guard distrusts, and download.pytorch.org does publish win_arm64
+    # /cpu wheels, so the repair has somewhere to go. Suppressing the rebuild here would
+    # also leave $script:PinChangedForceReinstall false, which skips the dependency pass
+    # entirely, so nothing would force-reinstall off the pin and the CUDA build the user
+    # just asked to leave would be kept on a run that reports success. $_pinLeaf is not
+    # reused: it is assigned only inside `if ($_pinnedIdx)` above.
+    $_woaCpuPinned = [bool]$_pinnedIdx -and ((Get-TorchIndexLeaf $_pinnedIdx) -eq "cpu")
+    if ((Test-WinArm64Venv) -and $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
+        -not $_woaCpuPinned) {
         if ($shouldRebuild) {
             substep "windows on arm: keeping the installed CUDA torch ($installedTorchTag); it is the only win_arm64 CUDA build published." "Cyan"
         }

@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Windows on ARM: a wheelhouse wheel only counts for the interpreter it was built for.
+
+install.ps1 stages every win_arm64 wheel the wheelhouse publishes, cp311 through cp314,
+so a filename alone proves nothing: a cp311 tiktoken is invisible to a cp313 resolver.
+Counting one as available drops its skip and its requirement override, and the resolve
+then falls to an sdist that needs the toolchain this whole path exists to avoid.
+
+Also pins the blocker map's keys to their canonical form. WINDOWS_ARM64_SKIP_UNBLOCKED_BY
+is read with _canonical_dist_name, which maps "-" to "_", so an "openai-whisper" key is
+never found and the entry silently does nothing.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+import sys
+import sysconfig
+from pathlib import Path
+
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+INSTALL_PS1 = REPO_ROOT / "install.ps1"
+
+
+@pytest.fixture(scope = "module")
+def ips():
+    spec = importlib.util.spec_from_file_location(
+        "_ips_wheelhouse_tags", REPO_ROOT / "studio" / "install_python_stack.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _this_platform() -> str:
+    return (sysconfig.get_platform() or "").replace("-", "_").replace(".", "_").lower()
+
+
+def _wheel(dist: str, py: str, abi: str, plat: str | None = None) -> str:
+    return f"{dist}-1.0.0-{py}-{abi}-{plat or _this_platform()}.whl"
+
+
+class TestWheelMatchesInterpreter:
+    def test_own_tag_matches(self, ips):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        assert ips._wheel_matches_interpreter(_wheel("tiktoken", tag, tag))
+
+    @pytest.mark.parametrize("offset", [-2, -1, 1, 2])
+    def test_other_minors_do_not_match(self, ips, offset):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor + offset}"
+        assert not ips._wheel_matches_interpreter(_wheel("tiktoken", tag, tag))
+
+    def test_pure_python_any_matches(self, ips):
+        assert ips._wheel_matches_interpreter("six-1.17.0-py2.py3-none-any.whl")
+
+    def test_abi3_is_forward_compatible(self, ips):
+        major, minor = sys.version_info[:2]
+        free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+        matched = ips._wheel_matches_interpreter(_wheel("cffi", f"cp{major}2", "abi3"))
+        # The stable ABI is not implemented on free-threaded builds.
+        assert matched is not free_threaded
+        assert not ips._wheel_matches_interpreter(_wheel("cffi", f"cp{major}{minor + 1}", "abi3"))
+
+    def test_foreign_platform_does_not_match(self, ips):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        assert not ips._wheel_matches_interpreter(
+            _wheel("brotli", tag, tag, plat = "some_other_platform")
+        )
+
+    def test_unparseable_name_is_not_installable(self, ips):
+        assert not ips._wheel_matches_interpreter("garbage.whl")
+
+
+class TestWheelhouseSkipList:
+    def test_a_foreign_tagged_wheel_does_not_clear_the_skip(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        other = f"cp{major}{minor + 1}"
+        (tmp_path / _wheel("tiktoken", other, other)).write_bytes(b"")
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+        ips._find_links_wheel_names.cache_clear()
+        assert "tiktoken" not in ips._find_links_wheel_names()
+        assert "tiktoken" in ips._windows_arm64_skip_packages()
+        ips._find_links_wheel_names.cache_clear()
+
+    def test_a_matching_wheel_clears_the_skip(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        (tmp_path / _wheel("tiktoken", tag, tag)).write_bytes(b"")
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+        ips._find_links_wheel_names.cache_clear()
+        assert "tiktoken" not in ips._windows_arm64_skip_packages()
+        ips._find_links_wheel_names.cache_clear()
+
+
+class TestBlockerMap:
+    def test_every_key_is_canonical(self, ips):
+        for key in ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY:
+            assert key == ips._canonical_dist_name(key), f"{key} is looked up canonically"
+
+    def test_every_key_is_a_package_that_is_actually_skipped(self, ips):
+        skipped = {ips._canonical_dist_name(p) for p in ips.WINDOWS_ARM64_SKIP_PACKAGES}
+        assert set(ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY) <= skipped
+
+    def test_whisper_needs_tiktoken_as_well_as_the_numba_chain(self, ips):
+        # Whisper's metadata requires tiktoken unconditionally, so hosting llvmlite alone
+        # re-enables it straight into the tiktoken sdist.
+        blockers = ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY[ips._canonical_dist_name("openai-whisper")]
+        assert "tiktoken" in blockers
+        assert "numba" in blockers
+
+    def test_one_hosted_blocker_is_not_enough(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        (tmp_path / _wheel("llvmlite", tag, tag)).write_bytes(b"")
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+        ips._find_links_wheel_names.cache_clear()
+        skipped = ips._windows_arm64_skip_packages()
+        assert "librosa" in skipped, "librosa still needs numba"
+        assert "openai-whisper" in skipped, "whisper still needs numba and tiktoken"
+        ips._find_links_wheel_names.cache_clear()
+
+
+class TestInstallPs1Mirror:
+    """install.ps1 builds the same availability set for its requirement overrides."""
+
+    def test_wheel_names_are_filtered_by_interpreter_tag(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        block = source[source.index("$WoaWheelNames = @{}"):]
+        block = block[:block.index("$WoaDropCandidates")]
+        assert "$WoaWheelTag" in block, "the distribution name alone is not proof of availability"
+        assert re.search(r"if \(\$parts\.Count -lt 5\) \{ continue \}", block)
+        assert "abi3" in block and "^py3" in block
+
+    def test_uv_override_is_space_safe(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        # uv reads UV_OVERRIDE as a space-separated list, and the default StudioHome sits
+        # under %USERPROFILE%, which routinely contains a space.
+        assert re.search(r"\$env:UV_OVERRIDE\s*=\s*Get-UvSafePath\s+\$WoaOverrides", source)
+        assert not re.search(r"\$env:UV_OVERRIDE\s*=\s*\$WoaOverrides\s*$", source, flags = re.M)
+
+    def test_the_selected_torch_index_is_redacted(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        for line in source.splitlines():
+            if "torch index:" in line:
+                assert "Remove-IndexUrlCredentials" in line, line.strip()

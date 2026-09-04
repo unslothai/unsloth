@@ -816,6 +816,9 @@ def _run_flavor_invariant(
         patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
         patch.object(stack_mod.platform, "machine", return_value = "AMD64"),
         patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
+        # The interpreter's arch, which the CUDA-preservation shortcut reads. A native
+        # ARM64 venv is the only place both are true, and that is the host under test.
+        patch.object(stack_mod, "_is_win_arm64_interpreter", return_value = win_arm64),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = True),
@@ -1296,6 +1299,57 @@ class TestAPinnedCpuIndexIsEnforcedToo:
             installed = "2.11.0+cpu",
             expected_env = "cu124",
             backend = "cpu",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+
+class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
+    """The win_arm64 CUDA shortcut must not swallow an explicit CPU pin.
+
+    Preserving an installed cu* build is right for an expectation DERIVED from the driver:
+    download.pytorch.org publishes no win_arm64 CUDA wheel, so that "repair" resolves
+    nothing. A pin is not a derivation, and /cpu does publish win_arm64 torch and
+    torchvision, so that repair has somewhere to go.
+    """
+
+    _PIN = "https://download.pytorch.org/whl/cpu"
+
+    def test_an_explicit_cpu_pin_still_repairs_a_cuda_venv(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134", repaired = "2.10.0+cpu",
+            expected_env = "cpu", index_url = self._PIN,
+            backend = "cpu", win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip) == self._PIN
+        args = [str(a) for a in mock_pip.call_args.args]
+        # No win_arm64 torchaudio on /cpu either, so the existing drop still applies.
+        assert not any(a.startswith("torchaudio") for a in args)
+
+    def test_the_family_spelling_of_the_pin_is_honoured_too(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134", repaired = "2.10.0+cpu",
+            expected_env = "cpu", index_family = "cpu",
+            backend = "cpu", win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+
+    def test_a_driver_inferred_cuda_expectation_is_still_preserved(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134", expected_env = "cu130", win_arm64 = True,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_probed_cpu_tag_with_no_pin_does_not_downgrade_it(self):
+        # setup.ps1 also publishes "cpu" when its nvidia-smi probe comes back empty; that
+        # is a probe result, so the shortcut keeps the CUDA build as it does off-ARM.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134", expected_env = "cpu",
+            nvidia = False, win_arm64 = True,
         )
         assert ok is True
         mock_pip.assert_not_called()
