@@ -101,10 +101,9 @@ def _pyproject_extras() -> dict[str, list[Requirement]]:
     return out
 
 
-ALL_SOURCES: list[tuple[str, list[Requirement]]] = (
-    [(p.name, _rows(p)) for p in REQ_FILES]
-    + [(f"pyproject[{k}]", v) for k, v in _pyproject_extras().items()]
-)
+ALL_SOURCES: list[tuple[str, list[Requirement]]] = [(p.name, _rows(p)) for p in REQ_FILES] + [
+    (f"pyproject[{k}]", v) for k, v in _pyproject_extras().items()
+]
 
 
 @pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
@@ -156,9 +155,7 @@ def test_no_package_is_dropped_on_a_non_woa_platform(label, reqs):
                 continue
             env = _env(plat, py)
             live = [r for r in group if r.marker is None or r.marker.evaluate(env)]
-            assert live, (
-                f"{label}: {name} has no live row on {plat[0]}/{plat[2]}/py{py}"
-            )
+            assert live, f"{label}: {name} has no live row on {plat[0]}/{plat[2]}/py{py}"
 
 
 def test_arm64_marker_is_case_sensitive_and_windows_only():
@@ -172,16 +169,16 @@ def test_arm64_marker_is_case_sensitive_and_windows_only():
     for plat in PLATFORMS:
         env = _env(plat, "3.13")
         live = woa.marker.evaluate(env)
-        assert live == ((plat[0], plat[2]) == ("win32", "ARM64")), (
-            f"win-ARM64 marker fired on {plat[0]}/{plat[2]}"
-        )
+        assert live == (
+            (plat[0], plat[2]) == ("win32", "ARM64")
+        ), f"win-ARM64 marker fired on {plat[0]}/{plat[2]}"
     # The complement really is the complement.
     other = Requirement('x==1; sys_platform != "win32" or platform_machine != "ARM64"')
     for plat, py in itertools.product(PLATFORMS, PYTHONS):
         env = _env(plat, py)
-        assert woa.marker.evaluate(env) != other.marker.evaluate(env), (
-            f"the two halves are not complementary on {plat[0]}/{plat[2]}"
-        )
+        assert woa.marker.evaluate(env) != other.marker.evaluate(
+            env
+        ), f"the two halves are not complementary on {plat[0]}/{plat[2]}"
 
 
 @pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
@@ -208,8 +205,8 @@ def test_no_row_is_dead_on_arrival(label, reqs):
         ]
         assert live_on, (
             f"{label}: `{req}` is live in none of the {len(PLATFORMS) * len(PYTHONS)} "
-            f"environments tested, so it can never install. A lowercase \"arm64\" next "
-            f"to sys_platform == \"win32\" is the usual cause: Windows reports \"ARM64\"."
+            f'environments tested, so it can never install. A lowercase "arm64" next '
+            f'to sys_platform == "win32" is the usual cause: Windows reports "ARM64".'
         )
 
 
@@ -225,11 +222,16 @@ WOA_ROWS_BY_SOURCE = {
     "extras.txt": {"av": "split", "scikit-learn": "split"},
     "no-torch-runtime.txt": {"pymupdf": "split", "hf-transfer": "dropped"},
     "constraints.txt": {
-        "av": "split", "cryptography": "split", "pandas": "split", "pyarrow": "split",
+        "av": "split",
+        "cryptography": "split",
+        "pandas": "split",
+        "pyarrow": "split",
     },
     "studio.txt": {"cryptography": "split", "pandas": "split", "pymupdf": "split"},
     "pyproject[studio]": {
-        "cryptography": "split", "pandas": "split", "pymupdf": "split",
+        "cryptography": "split",
+        "pandas": "split",
+        "pymupdf": "split",
     },
     "pyproject[triton]": {"triton-windows": "split"},
     "pyproject[huggingfacenotorch]": {"hf-transfer": "dropped"},
@@ -243,9 +245,7 @@ def test_the_woa_split_is_used_where_we_claim_it_is(label, expected):
     groups = _by_name(dict(ALL_SOURCES)[label])
     for name, shape in sorted(expected.items()):
         markers = [
-            str(r.marker).replace("'", '"')
-            for r in groups.get(name, [])
-            if r.marker is not None
+            str(r.marker).replace("'", '"') for r in groups.get(name, []) if r.marker is not None
         ]
         positive = [m for m in markers if 'platform_machine == "ARM64"' in m]
         negative = [m for m in markers if 'platform_machine != "ARM64"' in m]
