@@ -209,11 +209,10 @@ class ExportOrchestrator:
         # delete a live worker's credential directory.
         store = getattr(self, "_token_store", None)
         if proc is None or not proc.is_alive():
-            # Nothing to cancel, but it may have died holding a store. Only if no reload has
-            # swapped in a worker since we read: then this pair is stale and the store we
-            # read belongs to the live one. The next liveness check reaps whatever is left.
-            if self._proc is proc:
-                self._discard_token_store(only = store)
+            # Nothing to cancel, but it may have died holding a store. owner= makes the
+            # "has a reload swapped in a worker since we read" test part of the same
+            # transaction as the clear, rather than a separate statement before it.
+            self._discard_token_store(only = store, owner = proc)
             return False
         logger.info(
             "Export cancel requested: terminating export subprocess (pid=%s)",
@@ -238,8 +237,7 @@ class ExportOrchestrator:
         # pulling the directory out from under it would both break its Hub calls and let it
         # recreate an untracked one. It is discarded by the next shutdown instead.
         if not proc.is_alive():
-            if self._proc is proc:
-                self._discard_token_store(only = store)
+            self._discard_token_store(only = store, owner = proc)
         else:
             logger.warning(
                 "Export subprocess survived cancellation; keeping its token store until it exits"
@@ -455,17 +453,24 @@ class ExportOrchestrator:
             with self._state_guard():
                 self._owned_token_stores.discard(path)
 
-    def _discard_token_store(self, only: Any = _UNPINNED) -> None:
+    def _discard_token_store(self, only: Any = _UNPINNED, owner: Any = _UNPINNED) -> None:
         """Retire the current worker's private token directory, credential and all.
 
         *only* pins the removal to one store, for a caller holding no lock: if a reload has
         already installed a replacement, that one belongs to the live worker, not to us.
         Pinning to ``None`` is meaningful, and means the cancelled worker had no store, so
         there is nothing of ours to remove; that is why the default is a separate sentinel.
+
+        *owner* pins it to a process too, checked under the same guard as the clear. A
+        lock-free caller that compared the process itself and then called in would leave a
+        window in which a spawn completes and its store is taken from under it.
         """
         # getattr throughout: an orchestrator built without __init__ (the shutdown tests do
         # exactly that) has none of these yet.
         with self._state_guard():
+            if owner is not _UNPINNED and self._proc is not owner:
+                # A reload installed a worker since the caller looked; nothing here is ours.
+                return
             store = getattr(self, "_token_store", None)
             if only is not _UNPINNED:
                 if store != only:
@@ -495,7 +500,10 @@ class ExportOrchestrator:
         (crash mid-wait, crash while idle, cancellation, a failed load), and its private token
         store must not outlive it on any of them.
         """
-        if self._proc is not None and self._proc.is_alive():
+        # One read: a concurrent public liveness check can reap and clear _proc between two,
+        # and the second would then be None.is_alive().
+        proc = self._proc
+        if proc is not None and proc.is_alive():
             return True
         self._reap_dead_worker()
         return False

@@ -1759,3 +1759,49 @@ def test_spawn_installs_the_worker_under_the_same_guard_the_reaper_uses():
     assert re.search(r"with self\._state_guard\(\):\s*\n\s+self\._proc = proc", guarded)
     # start() must stay outside the guard so process creation never holds it.
     assert src.index("proc.start()") < src.index("with self._state_guard():")
+
+
+def test_a_spawn_completing_mid_cancel_keeps_its_store():
+    """The interleaving the independent review found: cancel compares the process, a load
+    then spawns and attaches, and the old compare must not authorize the clear."""
+    import os
+
+    from core.export import orchestrator as orch
+
+    o = orch.ExportOrchestrator()
+    o._proc = None
+    pending = o._new_token_store()
+
+    spawned = type("P", (), {"is_alive": lambda self: True})()
+
+    real_guard = o._state_guard
+
+    def _guard_then_spawn():
+        # The load completes between cancel's comparison and the guarded clear.
+        if not getattr(o, "_raced", False):
+            o._raced = True
+            o._proc = spawned
+            o._attach_token_store()
+        return real_guard()
+
+    o._state_guard = _guard_then_spawn
+    try:
+        assert o.cancel_export() is False
+        assert os.path.isdir(pending), "the spawned worker's store must survive"
+        assert o._token_store == pending
+        assert o._proc is spawned
+    finally:
+        o._state_guard = real_guard
+        o._proc = None
+        o._discard_token_store()
+
+
+def test_liveness_reads_the_process_once():
+    """A concurrent public liveness check can clear _proc between two reads of it."""
+    import inspect
+
+    from core.export import orchestrator as orch
+
+    src = inspect.getsource(orch.ExportOrchestrator._ensure_subprocess_alive)
+    assert "proc = self._proc" in src
+    assert "self._proc.is_alive()" not in src, "must not re-read the attribute to call it"
