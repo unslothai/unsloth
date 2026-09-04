@@ -7,11 +7,20 @@
 
 "use client";
 
+import { Spinner } from "@/components/ui/spinner";
+import {
+  downloadUrl,
+  isDownloadCancelled,
+  urlToBlob,
+} from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type {
   ImageMessagePart,
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
 import {
   CopyIcon,
@@ -20,9 +29,6 @@ import {
   RefreshCwIcon,
   ShieldAlertIcon,
 } from "lucide-react";
-import { Spinner } from "@/components/ui/spinner";
-import { Download01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ComponentProps,
   type PropsWithChildren,
@@ -51,23 +57,7 @@ const extensionForMimeType = (mimeType?: string): string => {
   }
 };
 
-const DATA_URI_MIME_RE = /data:([^;]+)/;
-const DATA_URI_BASE64_RE = /;base64/i;
 const IMAGE_DATA_URI_MIME_RE = /^data:([^;,]+)/;
-
-export const dataUriToBlob = (dataUri: string): Blob => {
-  const [meta, data] = dataUri.split(",");
-  const mime = meta?.match(DATA_URI_MIME_RE)?.[1] ?? "application/octet-stream";
-  if (!DATA_URI_BASE64_RE.test(meta ?? "")) {
-    return new Blob([decodeURIComponent(data ?? "")], { type: mime });
-  }
-  const bytes = atob(data ?? "");
-  const arr = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i += 1) {
-    arr[i] = bytes.charCodeAt(i);
-  }
-  return new Blob([arr], { type: mime });
-};
 
 const mimeFromImage = (image: string): string | undefined =>
   image.match(IMAGE_DATA_URI_MIME_RE)?.[1];
@@ -80,21 +70,11 @@ export const downloadImagePart = (
   }
   const ext = extensionForMimeType(mimeFromImage(part.image));
   const filename = part.filename ?? `image.${ext}`;
-  const isDataUri = part.image.startsWith("data:");
-  const objectUrl = isDataUri
-    ? URL.createObjectURL(dataUriToBlob(part.image))
-    : null;
-  const href = objectUrl ?? part.image;
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = filename;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  if (objectUrl) {
-    URL.revokeObjectURL(objectUrl);
-  }
+  void downloadUrl(part.image, filename).catch((error) => {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Could not save image.");
+    }
+  });
 };
 
 export const copyImagePart = async (
@@ -107,9 +87,7 @@ export const copyImagePart = async (
   ) {
     throw new Error("Clipboard API is not available in this environment.");
   }
-  const blob = part.image.startsWith("data:")
-    ? dataUriToBlob(part.image)
-    : await fetch(part.image).then((r) => r.blob());
+  const blob = await urlToBlob(part.image);
   const mime = mimeFromImage(part.image) || blob.type || "image/png";
   await navigator.clipboard.write([new ClipboardItem({ [mime]: blob })]);
 };
@@ -330,7 +308,7 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
               data-slot="image-zoom-content"
               src={src}
               alt={alt}
-              className="aui-image-zoom-content fade-in zoom-in-95 max-h-[90vh] max-w-[90vw] animate-in cursor-zoom-out object-contain duration-200"
+              className="aui-image-zoom-content fade-in zoom-in-95 max-h-[90dvh] max-w-[90vw] animate-in cursor-zoom-out object-contain duration-200"
             />
           </button>,
           document.body,

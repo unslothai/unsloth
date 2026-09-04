@@ -9,7 +9,8 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, Query
 
 from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg
 
 from ..schemas import (
     MAX_CHAT_TEMPLATE_BYTES,
@@ -34,12 +35,17 @@ async def validate_chat_template_route(
 async def get_default_chat_template_route(
     model_name: str,
     gguf_variant: Optional[str] = Query(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
-    template = await asyncio.to_thread(
-        read_default_chat_template, model_name, hf_token, gguf_variant
-    )
+    # A cache miss falls through to the hub, and offline that costs one retry backoff per candidate template file.
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+    def _read():
+        with _hf_offline_if_unreachable_for(model_name):
+            return read_default_chat_template(model_name, hf_token, gguf_variant)
+
+    template = await asyncio.to_thread(_read)
     if template is not None and len(template.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
         template = None
     return ModelTemplateResponse(model_name = model_name, chat_template = template)

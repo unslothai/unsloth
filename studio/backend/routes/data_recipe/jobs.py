@@ -6,11 +6,19 @@
 from __future__ import annotations
 
 import copy
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    require_ui_session_for_local_commands,
+)
+from auth.storage import CredentialRotated
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -19,6 +27,7 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from core.data_recipe.service import recipe_has_stdio_mcp
 from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
@@ -30,6 +39,13 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
+_KEEPALIVE_EVERY_S = 15.0
+
+# A stdio provider is a command this host would run, so only a UI session may
+# supply one. Annotated, not a Depends default, so a direct call gets False.
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
 def _resolve_local_v1_endpoint(request: Request) -> str:
@@ -230,12 +246,10 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
-        # BaseInferenceParams is extra="forbid", so response_format can't sit at
-        # the top level. Its `extra_body` passthrough is spread into the request
-        # body top level by the OpenAI client, where llama-server reads
-        # response_format. Per tools/server/README.md the schema sits directly
-        # under response_format (not nested in a json_schema object as OpenAI
-        # expects) and is converted to a GBNF grammar for sampling.
+        # BaseInferenceParams is extra="forbid", so response_format rides `extra_body`; llama-server reads the schema
+        # directly under it, not nested in a json_schema object.
+        # Per tools/server/README.md the schema sits directly under response_format and is converted to a GBNF grammar
+        # for sampling.
         extra_body = params.get("extra_body")
         if not isinstance(extra_body, dict):
             extra_body = {}
@@ -243,11 +257,9 @@ def _inject_local_structured_response_format(
             "type": "json_schema",
             "schema": output_format,
         }
-        # The OpenAI chat endpoint now returns raw JSON by default for
-        # response_format requests (spec compliance for public clients). This
-        # internal opt-in flag rides through the OpenAI SDK's extra_body
-        # passthrough alongside response_format and re-enables the ```json
-        # markdown fence that data_designer's structured-output parser expects.
+        # Internal opt-in that re-enables the ```json fence data_designer's structured-output parser expects, which the
+        # spec-compliant default now omits.
+        # The flag rides through the OpenAI SDK's extra_body passthrough alongside response_format.
         extra_body["_unsloth_guided_fence"] = True
         params["extra_body"] = extra_body
         new_configs.append(clone)
@@ -257,7 +269,11 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
-def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
+def _inject_local_providers(
+    recipe: dict[str, Any],
+    request: Request,
+    expect_gen: Optional[str] = None,
+) -> Optional[int]:
     """Mutate recipe in-place: point is_local providers at this server and mint
     a short-lived internal sk-unsloth-* key for workflow auth.
 
@@ -268,8 +284,8 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
     if not providers:
         return None
 
-    # Collect local providers and pop is_local from ALL dicts. Strict `is True`
-    # guard so malformed payloads (1, "true") don't trigger the loopback rewrite.
+    # Strict `is True` so malformed payloads (1, "true") do not trigger the loopback rewrite.
+    # Collect local providers and pop is_local from ALL dicts.
     local_indices: list[int] = []
     for i, provider in enumerate(providers):
         if not isinstance(provider, dict):
@@ -283,9 +299,8 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
 
     endpoint = _resolve_local_v1_endpoint(request)
 
-    # Only gate on model-loaded if a local provider is reachable from an LLM
-    # column via a model_config. Orphan model_config nodes shouldn't block runs;
-    # the recipe never calls /v1 for them.
+    # Gate on model-loaded only for a local provider reachable from an LLM column: orphan
+    # model_config nodes never reach /v1 and must not block runs.
     local_names = {providers[i].get("name") for i in local_indices if providers[i].get("name")}
     used_aliases = _used_llm_model_aliases(recipe)
     referenced_providers = {
@@ -302,7 +317,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         # the model is unloaded or swapped before the subprocess calls it.
         _ensure_selected_local_model_loaded(recipe, local_names)
 
-        from auth import storage  # deferred: avoids circular import
+        from auth import storage
 
         # Mint an internal sk-unsloth-* key scoped to this run via the unified
         # API-key path. Marked internal so it's hidden from the user's key list;
@@ -313,12 +328,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
+            expect_gen = expect_gen,
         )
         internal_key_id = int(row["id"])
 
-    # Strip stale "external"-only fields (extra_headers/extra_body/api_key_env)
-    # the frontend may have serialized; a provider flipped from external to local
-    # could otherwise carry invalid JSON or rogue auth headers into the /v1 call.
+    # Strip stale external-only fields (extra_headers/extra_body/api_key_env): a provider
+    # flipped external -> local would carry invalid JSON or rogue auth headers into /v1.
     for i in local_indices:
         providers[i]["endpoint"] = endpoint
         providers[i]["api_key"] = token
@@ -327,21 +342,18 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
 
-    # Force skip_health_check on local model_configs. llama-server's /v1/models
-    # response can differ from the selected id (cache aliases, GGUF variants),
-    # and we already gated on a loaded backend, so the health check would be
-    # redundant and could reject valid local selections.
+    # llama-server's /v1/models can differ from the selected id (cache aliases, GGUF variants), and a loaded backend was
+    # already gated on, so the health check only mis-rejects.
+    # Force skip_health_check on local model_configs.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
-            # Disable thinking for local data-recipe inference. The
-            # <think>...</think> preamble roughly doubles tokens per row and
-            # pushes answers past data_designer's json-fence regex. Forward
-            # chat_template_kwargs={enable_thinking: False} via extra_body so
-            # llama-server renders the template without it: llm-text columns get
-            # the latency cut, structured columns stop leaking think tags.
+            # Disable thinking for local recipe inference: the <think> preamble roughly doubles tokens per row and
+            # pushes answers past data_designer's json-fence regex.
+            # Forwarded as chat_template_kwargs={enable_thinking: False} via extra_body so llama-server renders the
+            # template without it.
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
                 params = {}
@@ -375,10 +387,17 @@ def _normalize_run_name(value: Any) -> str | None:
 
 
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
-def create_job(payload: RecipePayload, request: Request):
+def create_job(
+    payload: RecipePayload,
+    request: Request,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: ViaApiKey = False,
+):
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+    if recipe_has_stdio_mcp(recipe):
+        require_ui_session_for_local_commands(via_api_key)
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)
@@ -406,7 +425,11 @@ def create_job(payload: RecipePayload, request: Request):
             ) from exc
 
     try:
-        internal_api_key_id = _inject_local_providers(recipe, request)
+        internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+    except CredentialRotated as exc:
+        # A reset-password landed after this request authenticated; the workflow key
+        # is refused, so answer like any other revoked credential rather than 500.
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -416,9 +439,8 @@ def create_job(payload: RecipePayload, request: Request):
             log = logger,
         ) from exc
 
-    # Single try over get_job_manager() AND mgr.start() so a minted key never
-    # outlives the request on an unexpected exception; without the bare except it
-    # would live until its 24h TTL.
+    # One try over get_job_manager() AND mgr.start(), so an unexpected exception cannot leave
+    # a minted key alive for its full 24h TTL.
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
@@ -457,7 +479,7 @@ def create_job(payload: RecipePayload, request: Request):
 def _revoke_internal_api_key_safe(key_id: int) -> None:
     """Best-effort revoke of a workflow-minted key; never mask the caller's error."""
     try:
-        from auth import storage  # deferred: avoids circular import
+        from auth import storage
         storage.revoke_internal_api_key(key_id)
     except Exception:
         pass
@@ -587,7 +609,9 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     }
 
 
-@router.get("/jobs/{job_id}/events")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/jobs/{job_id}/events")
+@router.get("/jobs/{job_id}/events", include_in_schema = False)
 async def job_events(request: Request, job_id: str):
     mgr = get_job_manager()
     last_id = request.headers.get("last-event-id")
@@ -611,6 +635,7 @@ async def job_events(request: Request, job_id: str):
 
     async def gen():
         try:
+            last_sent = time.monotonic()
             for event in sub.replay:
                 yield sub.format_sse(event)
 
@@ -619,9 +644,18 @@ async def job_events(request: Request, job_id: str):
                     break
                 event = await sub.next_event(timeout_sec = 1.0)
                 if event is None:
+                    # A quiet job would otherwise go silent for minutes and take a tunnel 524.
+                    if time.monotonic() - last_sent >= _KEEPALIVE_EVERY_S:
+                        last_sent = time.monotonic()
+                        yield ": keepalive\n\n"
                     continue
+                last_sent = time.monotonic()
                 yield sub.format_sse(event)
         finally:
             mgr.unsubscribe(sub)
 
-    return StreamingResponse(gen(), media_type = "text/event-stream")
+    return StreamingResponse(
+        gen(),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

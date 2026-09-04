@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Restore half of the built-frontend cache. Pair it with frontend-dist-save AFTER
+# the install, passing the outputs below.
+#
+# WHY THIS IS AN ACTION AND NOT FOUR STEPS IN A WORKFLOW
+# ---------------------------------------------------------------------------
+# The cache is correct only because two independent places agree:
+#
+#   studio/setup.sh    rebuilds when anything under frontend/ (maxdepth 1, minus
+#                      bun.lock), frontend/src or frontend/public is NEWER than
+#                      frontend/dist
+#   studio/setup.ps1   the same predicate, over the same three groups, against
+#                      `(Get-Item $DistDir).LastWriteTime`
+#   the key below      hashes exactly those three path groups
+#
+# A hit therefore means the build inputs are byte-identical, which is strictly
+# stronger than the mtime test it rides on, and it makes a restored dist correct
+# by construction rather than by luck.
+#
+# Break that agreement and NOTHING GOES RED. The cache keeps hitting and quietly
+# starts serving a dist built from inputs the key no longer covers. So the key
+# gets exactly one definition -- this one. `install-unsloth-local` delegates
+# here rather than carrying its own copy, because two copies of a key whose drift
+# is silent will drift, and the twelve workflows that now share it would drift twelve
+# ways. tests/studio/test_frontend_dist_cache.py holds the agreement together and
+# is where the reasoning lives.
+#
+# Measured: 36s median of a 74s install on Linux (13 jobs), and 96s of a ~257s
+# install on Windows (`[72s] building frontend...` -> `[168s] frontend built`),
+# every job, every commit, producing byte-identical output.
+
+name: Restore the built frontend
+description: >-
+  Restore studio/frontend/dist for this runner, keyed on exactly the sources
+  setup.sh and setup.ps1 check before rebuilding, and make the restored directory
+  outrank the checkout that just wrote those sources. Read-only: the save is a
+  separate action and runs on the default branch only.
+
+inputs:
+  path-prefix:
+    description: >-
+      Where actions/checkout put THIS repo, WITH a trailing slash ("unsloth/"),
+      or the empty string when it is at the workspace root.
+
+      Not cosmetic. `hashFiles()` resolves from GITHUB_WORKSPACE, not from the
+      workflow file, so a job that checks the repo out into a subdirectory and
+      leaves this empty gets globs that match nothing -- and hashFiles returns
+      the EMPTY STRING for that rather than failing, which collapses every commit
+      onto one key and serves an arbitrary dist. The degenerate-key step below
+      refuses that outright, and a prefix missing its trailing slash lands in the
+      same place (loudly), so both mistakes fail at the first step rather than
+      silently.
+    required: false
+    default: ''
+
+outputs:
+  cache-hit:
+    description: "'true' when the exact key was restored."
+    value: ${{ steps.restore.outputs.cache-hit }}
+  key:
+    description: The full cache key, to hand to frontend-dist-save.
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+  dist-path:
+    description: The dist directory this action restored, prefix included.
+    value: ${{ inputs.path-prefix }}studio/frontend/dist
+
+runs:
+  using: composite
+  steps:
+    # Before the restore, not after: an empty key would otherwise be used to look
+    # something up first, and on a repo where some other branch once saved under
+    # the same empty key that lookup HITS.
+    - name: Refuse a frontend cache key that hashes nothing
+      shell: bash
+      env:
+        FE_KEY: ${{ hashFiles(format('{0}studio/frontend/*', inputs.path-prefix), format('{0}studio/frontend/src/**', inputs.path-prefix), format('{0}studio/frontend/public/**', inputs.path-prefix), format('!{0}studio/frontend/tests/**', inputs.path-prefix), format('!{0}studio/frontend/scripts/**', inputs.path-prefix)) }}
+        FE_PREFIX: ${{ inputs.path-prefix }}
+      run: |
+        # hashFiles returns "" when a glob matches no file, which would collapse
+        # every commit onto one key and serve an arbitrary dist. That is the one
+        # way this cache can be actively WRONG rather than merely useless, and it
+        # is invisible: the restore succeeds and the build is skipped.
+        if [ -z "$FE_KEY" ]; then
+          echo "::error::hashFiles matched no frontend sources under '${FE_PREFIX}studio/frontend', so the dist cache key is degenerate. Either this job checks the repo out into a subdirectory and did not pass path-prefix (which must end in '/'), or the frontend layout moved -- in which case update this action and tests/studio/test_frontend_dist_cache.py together."
+          exit 1
+        fi
+
+    - name: Restore the built frontend
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      # A cache is an optimisation; a cache service blip must not fail the job.
+      continue-on-error: true
+      with:
+        path: ${{ inputs.path-prefix }}studio/frontend/dist
+        # NO restore-keys, deliberately, and the opposite of the uv download cache
+        # in install-unsloth-local. A near-miss download cache still supplies most
+        # of the wheels, which is most of the win. A near-miss dist is a bundle
+        # built from DIFFERENT source: wrong, not partial. Only an exact match may
+        # be served.
+        key: fe-dist-${{ runner.os }}-${{ hashFiles(format('{0}studio/frontend/*', inputs.path-prefix), format('{0}studio/frontend/src/**', inputs.path-prefix), format('{0}studio/frontend/public/**', inputs.path-prefix), format('!{0}studio/frontend/tests/**', inputs.path-prefix), format('!{0}studio/frontend/scripts/**', inputs.path-prefix)) }}
+
+    # THE STEP THE WHOLE CACHE RESTS ON, and the one that is silent when wrong.
+    #
+    # actions/cache restores through tar, which preserves the ORIGINAL mtimes. A
+    # dist restored that way is older than the checkout that just wrote every
+    # source file, so the staleness check sees the whole tree as newer and rebuilds
+    # anyway. The cache would report a hit, cost a download, and save nothing --
+    # green job, healthy-looking hit rate, 96s still spent.
+    #
+    # Touching the DIRECTORY is what makes the hit count, and it is honest because
+    # the key already proved the inputs are byte-identical. The directory only:
+    # both scripts compare against `frontend/dist` itself, not its contents.
+    - name: Make the restored frontend outrank its sources (POSIX)
+      if: steps.restore.outputs.cache-hit == 'true' && runner.os != 'Windows'
+      shell: bash
+      env:
+        DIST: ${{ inputs.path-prefix }}studio/frontend/dist
+        FE: ${{ inputs.path-prefix }}studio/frontend
+      run: |
+        if [ ! -d "$DIST" ]; then
+          echo "::error::the frontend dist cache reported a hit but restored no directory at $DIST"
+          exit 1
+        fi
+        touch "$DIST"
+        # Read it back and evaluate setup.sh's own predicate here, where it can be
+        # reported. `touch` succeeding is not the same claim as `find -newer dist`
+        # coming back empty, and only the second one stops the rebuild.
+        newer=$(find "$FE" -maxdepth 1 -type f ! -name 'bun.lock' -newer "$DIST" -print -quit 2> /dev/null)
+        if [ -z "$newer" ]; then
+          newer=$(find "$FE/src" "$FE/public" -type f -newer "$DIST" -print -quit 2> /dev/null) || true
+        fi
+        if [ -n "$newer" ]; then
+          echo "::error::$DIST was touched but $newer is still newer, so setup.sh will rebuild the frontend it just restored"
+          exit 1
+        fi
+        echo "restored a prebuilt frontend; setup.sh will report it up to date"
+
+    # pwsh rather than `shell: bash` + `touch`, even though Git Bash is present on
+    # windows-latest and these workflows already use it as their default shell.
+    #
+    # setup.ps1 reads `(Get-Item $DistDir).LastWriteTime`. This writes that exact
+    # property, by name, through the same API -- so no inference is required about
+    # whether MSYS `utimensat` on a DIRECTORY handle lands in the field NTFS
+    # reports there. `touch` may well work; it just cannot be checked from the
+    # Linux box where this was written, and the cost of it silently not working is
+    # a cache that hits and rebuilds anyway, which is the failure this whole action
+    # exists to prevent. The POSIX branch keeps the `touch` that is measured
+    # working on main rather than churning a proven path.
+    - name: Make the restored frontend outrank its sources (Windows)
+      if: steps.restore.outputs.cache-hit == 'true' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        DIST: ${{ inputs.path-prefix }}studio/frontend/dist
+        FE: ${{ inputs.path-prefix }}studio/frontend
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dist = $env:DIST
+        $fe = $env:FE
+        if (-not (Test-Path -LiteralPath $dist -PathType Container)) {
+          Write-Host "::error::the frontend dist cache reported a hit but restored no directory at $dist"
+          exit 1
+        }
+        (Get-Item -LiteralPath $dist).LastWriteTime = Get-Date
+
+        # Read it back and evaluate setup.ps1:3526-3549's own predicate here, over
+        # the same three groups, so a touch that did not take is reported instead of
+        # showing up as 96s nobody attributes.
+        $distTime = (Get-Item -LiteralPath $dist).LastWriteTime
+        $newer = $null
+        foreach ($subDir in @('src', 'public')) {
+          $subPath = Join-Path $fe $subDir
+          if (Test-Path -LiteralPath $subPath) {
+            $newer = Get-ChildItem -LiteralPath $subPath -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.LastWriteTime -gt $distTime } | Select-Object -First 1
+            if ($newer) { break }
+          }
+        }
+        if (-not $newer) {
+          $newer = Get-ChildItem -LiteralPath $fe -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'bun.lock' -and $_.LastWriteTime -gt $distTime } |
+            Select-Object -First 1
+        }
+        if ($newer) {
+          Write-Host "::error::$dist was stamped $distTime but $($newer.FullName) is still newer, so setup.ps1 will rebuild the frontend it just restored"
+          exit 1
+        }
+        Write-Host "restored a prebuilt frontend; setup.ps1 will report it up to date"

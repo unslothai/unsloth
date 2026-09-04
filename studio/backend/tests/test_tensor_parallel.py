@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import types as _types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -62,10 +63,22 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module
-from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
+from core.inference.llama_cpp import (
+    _CTX_FIT_VRAM_FRACTION,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
 from core.inference.llama_server_args import (
     _effective_tensor_parallel,
     resolve_tensor_parallel,
@@ -180,17 +193,19 @@ def _loaded_backend(tensor_parallel: bool) -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, tensor_parallel: bool) -> bool:
-    return backend._already_in_target_state(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        tensor_parallel = tensor_parallel,
+    return backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            tensor_parallel = tensor_parallel,
+        )
     )
 
 
@@ -209,23 +224,32 @@ def test_already_in_target_state_reloads_on_tensor_parallel_change(loaded, reque
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
+def test_already_in_target_state_reloads_when_swa_full_env_changes(monkeypatch):
+    backend = _loaded_backend(False)
+    backend._swa_full = False
+    monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
+    assert _target_state(backend, False) is False
+
+
 def test_already_in_target_state_reconciles_split_mode_extras():
     # Tensor engaged via --split-mode in extras (boolean omitted/default False)
     # must match a server already running tensor mode -- no spurious reload.
     backend = _loaded_backend(tensor_parallel = True)
     backend._extra_args = ["--split-mode", "tensor"]
     assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "owner/repo",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "auto",
-            chat_template_override = None,
-            extra_args = ["--split-mode", "tensor"],
-            is_vision = False,
-            tensor_parallel = False,
+        backend.adopt_load_intent_if_matched(
+            GgufLoadIntent(
+                gguf_path = None,
+                model_identifier = "owner/repo",
+                hf_variant = "Q4_K_M",
+                n_ctx = 8192,
+                cache_type_kv = None,
+                speculative_type = "auto",
+                chat_template_override = None,
+                extra_args = ["--split-mode", "tensor"],
+                is_vision = False,
+                tensor_parallel = False,
+            )
         )
         is True
     )
@@ -283,11 +307,13 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
     guard = src[max(0, probe - 400) : probe]
     assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
     # A hard fault retries FA-off (keeps MTP) before flipping healthy so the
-    # shared MTP-drop fallback fires.
+    # shared drafter-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
-    fallback = src.find("if not healthy and _spec_requested_mtp")
-    assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
+    fallback = src.find(
+        "and (_spec_requested_mtp or _spec_requested_dspark or _spec_requested_dflash)"
+    )
+    assert 0 <= probe < fallback, "the probe must precede the drafter-drop fallback"
 
 
 def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
@@ -331,12 +357,12 @@ def _recovery_backend() -> LlamaCppBackend:
     b._speculative_type = "draft-mtp"
     b._mtp_runtime_fallback_active = True
     b._process = _FakeProcess()
-    b._last_load_kwargs = {
-        "model_identifier": "owner/repo",
-        "tensor_parallel": True,
-        "speculative_type": "auto",
-        "n_parallel": 4,
-    }
+    b._last_load_intent = GgufLoadIntent(
+        model_identifier = "owner/repo",
+        tensor_parallel = True,
+        speculative_type = "auto",
+        n_parallel = 4,
+    )
     return b
 
 
@@ -354,8 +380,8 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     done = threading.Event()
     captured = {}
 
-    def _fake_load_model(**kwargs):
-        captured.update(kwargs)
+    def _fake_load_model(intent):
+        captured.update(vars(intent))
         done.set()
         return True
 
@@ -381,7 +407,7 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     "mutate",
     [
         lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
-        lambda b: setattr(b, "_last_load_kwargs", None),
+        lambda b: setattr(b, "_last_load_intent", None),
         lambda b: setattr(b, "_process", None),
         lambda b: b._cancel_event.set(),
     ],
@@ -392,7 +418,7 @@ def test_runtime_recovery_skips_when_not_applicable(monkeypatch, mutate):
     b = _recovery_backend()
     mutate(b)
     calls = []
-    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    monkeypatch.setattr(b, "load_model", lambda intent: calls.append(intent))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
     assert calls == []
 
@@ -428,8 +454,8 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
     done = threading.Event()
     captured = {}
 
-    def _fake_load_model(**kwargs):
-        captured.update(kwargs)
+    def _fake_load_model(intent):
+        captured.update(vars(intent))
         done.set()
         return True
 
@@ -441,14 +467,18 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
 
 def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
-    # (append a last-wins --spec-default) so MTP can't re-engage and loop.
+    # so MTP can't re-engage and loop. Appending --spec-default cannot do it:
+    # llama.cpp appends spec types rather than replacing, so the flag has to go.
     b = _recovery_backend()
-    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"])
+    b._last_load_intent = replace(
+        b._last_load_intent,
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
     done = threading.Event()
     captured = {}
 
-    def _fake_load_model(**kwargs):
-        captured.update(kwargs)
+    def _fake_load_model(intent):
+        captured.update(vars(intent))
         done.set()
         return True
 
@@ -456,17 +486,18 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
     assert done.wait(timeout = 5)
     assert captured["speculative_type"] == "off"
-    assert captured["extra_args"][-1] == "--spec-default"
+    assert "--spec-type" not in captured["extra_args"]
+    assert "draft-mtp" not in captured["extra_args"]
 
 
 def test_runtime_recovery_restores_requested_mode(monkeypatch):
     # After the off-reload, /status must show the user's requested mode + the
     # runtime-error note, not a bare "off" (matches the startup MTP fallback).
     b = _recovery_backend()
-    b._last_load_kwargs = dict(b._last_load_kwargs, speculative_type = "mtp")
+    b._last_load_intent = replace(b._last_load_intent, speculative_type = "mtp")
     done = threading.Event()
 
-    def _fake_load_model(**kwargs):
+    def _fake_load_model(intent):
         b._requested_spec_mode = "off"  # what a real off-reload would leave behind
         done.set()
         return True
@@ -481,6 +512,102 @@ def test_runtime_recovery_restores_requested_mode(monkeypatch):
     assert b._spec_fallback_reason == "runtime_error"
 
 
+def test_runtime_recovery_does_not_publish_state_when_reload_is_cancelled(monkeypatch):
+    b = _recovery_backend()
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    done = threading.Event()
+
+    def _cancelled_load(intent):
+        done.set()
+        return False
+
+    monkeypatch.setattr(b, "load_model", _cancelled_load)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._requested_spec_mode == "auto"
+    assert b._spec_fallback_reason == "existing"
+
+
+def test_runtime_recovery_undoes_an_unload_during_reload(monkeypatch):
+    b = _recovery_backend()
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    done = threading.Event()
+    unloads = []
+
+    def _racing_load(intent):
+        b._unload_epoch += 1
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _racing_load)
+    monkeypatch.setattr(b, "unload_model", lambda: unloads.append(1) or True)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert unloads == [1]
+    assert b._requested_spec_mode == "auto"
+    assert b._spec_fallback_reason == "existing"
+
+
+def test_runtime_recovery_publishes_state_atomically_with_unload(monkeypatch):
+    b = _recovery_backend()
+    b._last_load_intent = replace(
+        b._last_load_intent,
+        extra_args = ("--spec-type", "draft-mtp"),
+        gpu_ids = (0,),
+    )
+    b._requested_extra_args = ["old"]
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    load_finished = threading.Event()
+    unload_entered = threading.Event()
+    unload_done = threading.Event()
+    unload_threads = []
+
+    def _fake_load(intent):
+        load_finished.set()
+        return True
+
+    def _unload_state():
+        unload_entered.set()
+        b._cancel_event.set()
+        with b._lock:
+            b._unload_epoch += 1
+            b._requested_extra_args = None
+            b._requested_spec_mode = None
+            b._spec_fallback_reason = None
+        unload_done.set()
+
+    def _race_after_epoch_check(extra_args):
+        thread = threading.Thread(target = _unload_state)
+        unload_threads.append(thread)
+        thread.start()
+        assert unload_entered.wait(timeout = 2)
+        unload_done.wait(timeout = 0.2)
+        return list(extra_args)
+
+    monkeypatch.setattr(b, "load_model", _fake_load)
+    monkeypatch.setattr(b, "_strip_device_extra_args", _race_after_epoch_check)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert load_finished.wait(timeout = 5)
+    assert unload_done.wait(timeout = 5)
+    for thread in unload_threads:
+        thread.join(timeout = 2)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._requested_extra_args is None
+    assert b._requested_spec_mode is None
+    assert b._spec_fallback_reason is None
+
+
 def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
     # A newer user load that replaces the process during the death-confirm poll
     # must not be clobbered by the stale recovery replay.
@@ -488,7 +615,7 @@ def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
     p1 = _BlockingDeadProc()
     b._process = p1
     calls = []
-    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    monkeypatch.setattr(b, "load_model", lambda intent: calls.append(intent))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True  # captures p1
     b._process = _FakeProcess()  # a newer load swapped the live process
     p1.release()  # p1 now reports dead -> recovery runs its staleness check
@@ -502,9 +629,9 @@ def test_runtime_recovery_skips_when_snapshot_changed(monkeypatch):
     p1 = _BlockingDeadProc()
     b._process = p1
     calls = []
-    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    monkeypatch.setattr(b, "load_model", lambda intent: calls.append(intent))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
-    b._last_load_kwargs = dict(b._last_load_kwargs, model_identifier = "other/model")
+    b._last_load_intent = replace(b._last_load_intent, model_identifier = "other/model")
     p1.release()
     time.sleep(0.6)
     assert calls == []
@@ -516,7 +643,7 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def _slow_load(**kwargs):
+    def _slow_load(intent):
         started.set()
         release.wait(timeout = 5)
         return True
@@ -548,13 +675,12 @@ def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatc
     assert b._mtp_runtime_fallback_in_progress is False
 
 
-def test_load_kwargs_are_read_once_before_the_claim(monkeypatch):
+def test_load_intent_is_read_once_before_the_claim(monkeypatch):
     # Gate and snapshot must share one read: reading twice lets an unload null
-    # _last_load_kwargs in between, so dict(None) raises after the claim and strands
-    # the flag with no thread alive to clear it.
+    # the intent in between and strand the flag with no thread alive to clear it.
     b = _recovery_backend()
 
-    class _CountingKwargs:  # data descriptor, so it wins over the instance dict
+    class _CountingIntent:
         def __init__(self, value):
             self.value = value
             self.reads = 0
@@ -568,8 +694,8 @@ def test_load_kwargs_are_read_once_before_the_claim(monkeypatch):
         def __set__(self, obj, value):
             self.value = value
 
-    counter = _CountingKwargs({"model_identifier": "owner/repo"})
-    monkeypatch.setattr(type(b), "_last_load_kwargs", counter, raising = False)
+    counter = _CountingIntent(GgufLoadIntent(model_identifier = "owner/repo"))
+    monkeypatch.setattr(type(b), "_last_load_intent", counter, raising = False)
 
     class _UnstartedThread:  # keep the reload off-thread so only sync reads count
         def __init__(self, *args, **kwargs):
@@ -586,11 +712,11 @@ def test_load_kwargs_are_read_once_before_the_claim(monkeypatch):
 
 def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
     # "Already recovering" must not read as "not an MTP crash": respawning replays the
-    # crashing MTP kwargs and aborts the in-flight no-MTP reload on its "newer load" check.
+    # crashing MTP intent and aborts the in-flight no-MTP reload on its "newer load" check.
     b = _recovery_backend()
     b._mtp_runtime_fallback_in_progress = True
-    loads: list[dict] = []
-    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
     assert b._respawn_if_dead() is False
     assert loads == []
@@ -599,7 +725,7 @@ def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
     b._mtp_runtime_fallback_in_progress = False
     b._process.returncode = -9  # only the respawn path logs it
     assert b._respawn_if_dead() is True
-    assert [kw.get("speculative_type") for kw in loads] == ["auto"]
+    assert [intent.speculative_type for intent in loads] == ["auto"]
 
 
 def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
@@ -621,7 +747,7 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
     b._healthy = True
     b._process.returncode = -9  # only the respawn path logs it
     live = _LiveProcess()
-    loads: list[dict] = []
+    loads: list[GgufLoadIntent] = []
     guard = threading.Lock()
     all_in_flight = threading.Event()
 
@@ -646,14 +772,14 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
 
     b.__class__ = _Tracked
 
-    def _load(**kwargs):
+    def _load(intent):
         # A real load_model takes seconds, so every caller that lost this child is in
         # flight before the replacement appears; waiting reproduces that ordering. The
         # timeout keeps the pre-fix build, where losers cannot read until the lock is
         # free, from hanging instead of failing.
         all_in_flight.wait(timeout = 2)
         with guard:
-            loads.append(kwargs)
+            loads.append(intent)
         b._process = live
         b._healthy = True  # the real load_model marks the new server healthy
         return True
@@ -711,13 +837,13 @@ class _DyingChild(_FakeProcess):
 def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
     # unload_model() sets _cancel_event before killing, so a request that loses the
     # connection can watch that deliberate exit through the grace loop and call it a
-    # crash, with _last_load_kwargs still populated (unload clears it after the kill).
+    # crash, with _last_load_intent still populated (unload clears it after the kill).
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild()
     b._cancel_event.set()
-    loads: list[dict] = []
-    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
     assert b._respawn_if_dead() is False
     assert loads == [], "resurrected a model the user unloaded"
@@ -728,22 +854,22 @@ def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild(on_death = b._cancel_event.set)
-    loads: list[dict] = []
-    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
     assert b._respawn_if_dead() is False
     assert loads == [], "checked the cancel flag only before the wait"
 
 
 def test_respawn_does_not_revert_a_newer_load(monkeypatch):
-    # A model switch landing while we wait must win; replaying the old kwargs would
+    # A model switch landing while we wait must win; replaying the old intent would
     # swap the user's new model back out.
     b = _recovery_backend()
     b._healthy = True
     replacement = _DyingChild(alive_polls = 10**6)
     b._process = _DyingChild(on_death = lambda: setattr(b, "_process", replacement))
-    loads: list[dict] = []
-    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
     b._respawn_if_dead()
     assert loads == [], "replayed stale kwargs over a newer load"
@@ -755,8 +881,8 @@ def test_respawn_still_recovers_an_ordinary_crash(monkeypatch):
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild(code = -9)
-    loads: list[dict] = []
-    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
     assert b._respawn_if_dead() is True
     assert len(loads) == 1
@@ -784,8 +910,8 @@ def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
         b._healthy = True
         b._process = _NeverReapable()
         b._port = listener.getsockname()[1]
-        loads: list[dict] = []
-        monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+        loads: list[GgufLoadIntent] = []
+        monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
         started = time.monotonic()
         assert b._respawn_if_dead() is True
@@ -811,8 +937,8 @@ def test_a_closed_port_still_waits_for_the_child_to_be_reapable(monkeypatch):
     b._healthy = True
     b._process = _DyingChild(code = -9)
     b._port = dead_port
-    loads: list[dict] = []
-    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
     assert b._respawn_if_dead() is True
     assert len(loads) == 1
@@ -832,8 +958,8 @@ def test_socket_fast_path_honours_a_pending_unload(monkeypatch):
         b._process = _NeverReapable()
         b._port = listener.getsockname()[1]
         b._cancel_event.set()
-        loads: list[dict] = []
-        monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+        loads: list[GgufLoadIntent] = []
+        monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
         assert b._respawn_if_dead() is False
         assert loads == []
@@ -844,14 +970,14 @@ def test_socket_fast_path_honours_a_pending_unload(monkeypatch):
 def test_an_unload_landing_during_the_reload_is_undone(monkeypatch):
     # The cancel check cannot live under _serial_load_lock alone: unload_model never
     # takes that lock, so it can land entirely between the check and load_model and
-    # the captured kwargs then restart a model the user stopped. load_model clears
+    # the captured intent then restarts a model the user stopped. load_model clears
     # _cancel_event on the way in, so _unload_epoch is the surviving evidence.
     b = _recovery_backend()
     b._healthy = True
     b._process = _FakeProcess()
     b._process.returncode = -9
-    loads: list[dict] = []
-    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
 
     unloads: list[int] = []
     real_unload = b.unload_model
@@ -881,13 +1007,20 @@ def test_socket_probe_is_false_without_a_port():
     assert b._server_socket_is_open() is False
 
 
-def test_runtime_recovery_rechecks_cancel_before_reload():
-    # recover() must re-check the cancel flag after the death poll (load_model
-    # clears it), so a reload scheduled just before /unload can't resurrect it.
-    src = inspect.getsource(LlamaCppBackend._maybe_recover_from_mtp_crash)
-    cancel = src.rfind("self._cancel_event.is_set()")
-    load = src.find("self.load_model(")
-    assert 0 <= cancel < load, "recovery must re-check cancel before reloading"
+def test_runtime_recovery_rechecks_cancel_after_the_death_poll(monkeypatch):
+    b = _recovery_backend()
+    process = _BlockingDeadProc()
+    b._process = process
+    loads = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    b._cancel_event.set()
+    process.release()
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert loads == []
 
 
 def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
@@ -1049,6 +1182,97 @@ def test_fit_context_budget_frac_override_is_tighter():
     assert fit_tp <= fit_default, "a tighter budget must not allow MORE context"
     # Omitting the override must reproduce the default budget exactly.
     assert backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
+
+
+def test_fit_context_follows_the_user_vram_budget(monkeypatch):
+    """The VRAM budget setting moves the fitted context, in both directions.
+
+    This is the whole point of the setting: the reserve it controls is worth real
+    context. An unset budget must land exactly on the historical default, so the
+    change is a no-op for anyone who never touches it.
+    """
+    import utils.vram_budget_settings as vb
+
+    backend = _kv_seeded_backend()
+    model_size = 8 * 1024**3
+    pool_mib = 24 * 1024
+    total_mib = 24 * 1024
+
+    def _fit():
+        return backend._fit_context_to_vram(
+            131072, pool_mib, model_size, "f16", total_mib = total_mib
+        )
+
+    monkeypatch.delenv(vb.VRAM_FRACTION_ENV_VAR, raising = False)
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: None)
+    fit_default = _fit()
+    assert fit_default < 131072, "expected the context to be capped at this VRAM tier"
+
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: 1.0)
+    fit_max = _fit()
+
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: vb.VRAM_FRACTION_MIN)
+    fit_min = _fit()
+
+    assert fit_max > fit_default, "claiming the whole card must buy context back"
+    assert fit_min < fit_default, "a smaller budget must give context up"
+
+    # And clearing it returns to exactly the historical number, not merely close.
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: None)
+    assert _fit() == fit_default
+
+
+def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
+    """At 100% a tensor plan must leave the same 512 MiB the layer path leaves.
+
+    ``_plan_tensor_parallel`` sized its per-device budget with an inline
+    ``free - (1-frac)*total`` instead of ``_vram_usable_mib``, so it skipped
+    ``_VRAM_FLOOR_RESERVE_MIB``. The GPU ranking ahead of it applies the floor and
+    the model-config panel promises it in so many words ("At 100% a load still
+    leaves 512 MiB per card"), so a tensor plan could spend up to 512 MiB per card
+    that nothing had reserved -- and tensor mode has no ``--fit`` fallback to
+    absorb the overshoot, so it fails at startup instead.
+    """
+    import core.inference.llama_cpp as lc
+
+    backend = _kv_seeded_backend()
+    total_mib = 24 * 1024
+    gpus = [(0, total_mib), (1, total_mib)]
+    total_by_idx = {0: total_mib, 1: total_mib}
+
+    def _plan(frac: float, model_gb: int):
+        return backend._plan_tensor_parallel(
+            list(gpus),
+            model_gb * 1024**3,
+            131072,
+            cache_type_kv = "f16",
+            total_by_idx = dict(total_by_idx),
+            vram_fraction = frac,
+        )
+
+    # The fraction whose percentage reserve is exactly the floor on this card, so
+    # a floored 100% and this must plan identically.
+    floor_frac = 1.0 - lc._VRAM_FLOOR_RESERVE_MIB / total_mib
+    assert floor_frac > lc._CTX_FIT_VRAM_FRACTION, "24 GiB: 1% is under the floor"
+
+    # The weighted split exposes the per-device budget directly: each weight is
+    # the usable budget less the per-device buffers.
+    *_, split_full = _plan(1.0, 40)
+    *_, split_floor = _plan(floor_frac, 40)
+    *_, split_default = _plan(lc._CTX_FIT_VRAM_FRACTION, 40)
+    assert split_full is not None, "expected a weighted split at this model size"
+    assert (
+        split_full == split_floor
+    ), f"100% spent {split_full} per card where the floor allows {split_floor}"
+    # The default still reserves its full 3% (737 MiB > the floor), so the floor
+    # must not have flattened every budget onto the same number.
+    assert all(d < f for d, f in zip(split_default, split_full))
+
+    # And the fitted context, which is what actually OOMs at startup.
+    ctx_full, *_ = _plan(1.0, 36)
+    ctx_floor, *_ = _plan(floor_frac, 36)
+    assert ctx_full < 131072, "expected the context to be capped at this VRAM tier"
+    assert ctx_full == ctx_floor
 
 
 # ── unsupported-arch load failure -> clean message ───────────────────
@@ -1578,13 +1802,251 @@ def test_load_model_reserves_pipeline_per_device_overhead():
     assert "_subset_model_size(n_gpus)" in compact  # used in the layer-split fit
 
 
-def test_load_model_restores_quantized_kv_on_tensor_downgrade():
-    # A quantized KV dropped for the tensor attempt must be restored if tensor
-    # downgrades to layer split (Finding D); captured once, restored at both the
-    # GPU-count and capacity-gate downgrades.
-    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
-    # Restore is shared in one closure, called at every tensor->layer downgrade.
-    assert "cache_type_kv=_tensor_dropped_cache_type_kv" in compact  # restored in the closure
-    assert "def_restore_after_tensor_downgrade():" in compact  # one shared restore helper
-    assert compact.count("_restore_after_tensor_downgrade()") >= 3  # called at each downgrade
+def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():
+    # llama.cpp runs a quantized KV cache under --split-mode tensor (ggml-org/
+    # llama.cpp#23792), so Unsloth must not carry its own whitelist.
+    assert not hasattr(LlamaCppBackend, "_TENSOR_PARALLEL_KV_TYPES")
+
+
+# ── Pre-b9455 llama.cpp: one doomed attempt, latched, then never again ───────
+
+
+class TestLegacyBuildQuantizedKvInTensorMode:
+    """Unsloth stopped pre-emptively rewriting a quantized KV cache for the tensor
+    attempt (ggml-org/llama.cpp#23792, b9455), so an older binary now refuses the
+    load itself. That refusal is a clean LLAMA_LOG_ERROR + return nullptr, not a
+    GGML_ASSERT, so nothing in the #6415 path can see it -- these pin the marker's
+    own handling: skip the --fit retry, latch it, and hand the route a message that
+    names the remedy.
+
+    The child is a captured Popen; no llama-server runs.
+    """
+
+    _REJECTION = (
+        "llama_init_from_model: simultaneous use of SPLIT_MODE_TENSOR and "
+        "KV cache quantization not implemented"
+    )
+    _QUANTIZED = ("q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl")
+
+    @classmethod
+    def _doomed(cls, cmd) -> bool:
+        """What a pre-#23792 llama-server rejects: tensor split + a quantized axis."""
+        if "--split-mode" not in cmd or cmd[cmd.index("--split-mode") + 1] != "tensor":
+            return False
+        return any(
+            flag in ("--cache-type-k", "--cache-type-v") and cmd[i + 1] in cls._QUANTIZED
+            for i, flag in enumerate(cmd[:-1])
+        )
+
+    def _run(self, tmp_path, monkeypatch):
+        """One load_model call against a legacy child; returns the spawned commands."""
+        import subprocess
+        from unittest.mock import patch
+
+        import importlib.util
+        from pathlib import Path as _Path
+
+        spec = importlib.util.spec_from_file_location(
+            "_placement_harness_legacy_build",
+            _Path(__file__).resolve().parent / "test_llama_cpp_placement.py",
+        )
+        placement = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(placement)
+
+        backend, gguf = placement._backend(
+            tmp_path, vulkan = False, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
+        )
+        real_popen = subprocess.Popen
+        spawns: list[list[str]] = []
+
+        def fake_popen(cmd, **kwargs):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return real_popen(cmd, **kwargs)
+            cmd = list(cmd)
+            spawns.append(cmd)
+            doomed = self._doomed(cmd)
+            if doomed:
+                backend._stdout_lines = [self._REJECTION, "srv load_model: failed to load model"]
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 123,
+                    "stdout": (),
+                    "returncode": 1 if doomed else None,
+                    "poll": lambda _self, _d = doomed: 1 if _d else None,
+                    "terminate": lambda _self: None,
+                    "wait": lambda _self, timeout = None: 1 if doomed else 0,
+                    "kill": lambda _self: None,
+                },
+            )()
+
+        backend._wait_for_health = lambda timeout, **_kw: not self._doomed(spawns[-1])
+        error: list[BaseException] = []
+        with patch.object(subprocess, "Popen", side_effect = fake_popen):
+            try:
+                backend.load_model(
+                    GgufLoadIntent(
+                        gguf_path = str(gguf),
+                        model_identifier = "test",
+                        tensor_parallel = True,
+                        cache_type_kv = "q8_0",
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001
+                error.append(exc)
+        return backend, gguf, spawns, (error[0] if error else None)
+
+    @pytest.fixture(autouse = True)
+    def _clear_latch(self):
+        """Both latches are class-level and process-wide; a leak would make the
+        second cell pass for the first cell's reason (an already-latched binary
+        skips tensor up front, so no doomed spawn happens at all)."""
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+        yield
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+
+    def test_the_refusal_costs_exactly_one_spawn(self, tmp_path, monkeypatch):
+        """Not two. The --fit off -> --fit on retry cannot fix a missing capability,
+        and on a 27B each doomed attempt is a full model-load cycle."""
+        _backend, _gguf, spawns, error = self._run(tmp_path, monkeypatch)
+
+        assert len(spawns) == 1, [c[c.index("--split-mode") + 1] for c in spawns]
+        assert isinstance(error, RuntimeError), error
+
+    def test_it_raises_to_the_route_fallback_naming_the_build(self, tmp_path, monkeypatch):
+        """load_with_tensor_fallback catches the raise and relaunches layer-split;
+        the message is what reaches the user if anything reports it."""
+        _backend, _gguf, _spawns, error = self._run(tmp_path, monkeypatch)
+
+        assert "b9455" in str(error)
+        assert "layer split" in str(error)
+
+    def test_the_binary_is_latched_so_the_next_load_skips_tensor(self, tmp_path, monkeypatch):
+        """Without this the doomed attempt repeats on every load, forever."""
+        backend, gguf, _spawns, _error = self._run(tmp_path, monkeypatch)
+
+        # Binary-wide, not model-and-pair: the refusal is a capability this
+        # llama.cpp lacks for every model and every quantized type.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("q8_0", "q8_0")
+        )
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("q4_0", "q4_0")
+        )
+        # But f16 runs fine under a tensor split on such a binary, so the latch
+        # must not take tensor mode away from a config that works.
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("f16", "f16")
+        )
+        # The model+pair latch stays clean: this was never a geometry abort.
+        assert not LlamaCppBackend._tensor_split_abort_keys
+
+    def test_a_current_build_is_untouched(self, tmp_path, monkeypatch):
+        """The guard must not cost anything on a binary that supports the pair:
+        one spawn, tensor mode kept, quantized cache emitted."""
+        import importlib.util
+        from pathlib import Path as _Path
+
+        spec = importlib.util.spec_from_file_location(
+            "_placement_harness_current_build",
+            _Path(__file__).resolve().parent / "test_llama_cpp_placement.py",
+        )
+        placement = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(placement)
+
+        backend, gguf = placement._backend(
+            tmp_path, vulkan = False, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
+        )
+        backend._tensor_split_aborts = lambda *a, **k: False
+        cmd = placement._launch(backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0")["cmd"]
+
+        assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+        assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
+        assert not LlamaCppBackend._tensor_split_abort_keys
+
+
+class TestLegacyBuildLatchIsBinaryWide:
+    """The pre-b9455 refusal is a missing capability of the BINARY: llama.cpp
+    refuses every quantized type for every model on it. Keying it per model and
+    per cache pair (like the #6415 split-axis abort, which really is specific to
+    both) would pay another doomed full model load for each new model and each
+    q8_0 -> q4_0 switch."""
+
+    @pytest.fixture(autouse = True)
+    def _clear(self):
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+        yield
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+
+    def test_one_detection_covers_other_models_and_other_types(self, tmp_path):
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("x")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+
+        # Same model, a different quantized type.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "q4_0"))
+        # A completely different model.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+        # One quantized axis is enough, since llama.cpp checks both.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "f16"))
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("f16", "q4_0"))
+
+    def test_a_non_quantized_pair_still_gets_a_tensor_split(self, tmp_path):
+        """f16 runs fine under a tensor split on such a binary -- the refusal is
+        about quantization, so latching it must not cost the working config."""
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("x")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("f16", "f16"))
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("bf16", "f32"))
+
+    def test_a_replaced_binary_is_re_probed(self, tmp_path):
+        """An update is exactly what fixes this, so the mtime must invalidate it."""
+        import os
+        import time
+
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("old")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+
+        time.sleep(0.01)
+        Path(binary).write_text("new")
+        os.utime(binary, ns = (time.time_ns(), time.time_ns()))
+
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+
+    def test_an_unseen_binary_is_not_latched(self, tmp_path):
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            str(tmp_path / "never-seen"), ("q8_0", "q8_0")
+        )
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(None, ("q8_0", "q8_0"))
+
+    def test_the_skip_keeps_the_multi_gpu_request(self):
+        """A missing capability says nothing about capacity, so the layer load it
+        falls back to must still spread. Without the _layer_min_gpus bump the auto
+        layer planner starts at one GPU and stops there as soon as the model fits,
+        silently collapsing a multi-GPU request onto one card -- the same reason
+        the adjacent split-axis skip raises it."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        gate = load.find("self._tensor_quant_kv_unsupported_binary(")
+        assert gate != -1
+        # The bump sits inside this skip's own body, before the next gate.
+        nxt = load.find("self._tensor_split_aborts(", gate)
+        assert nxt != -1
+        assert "_layer_min_gpus=max(_layer_min_gpus,len(gpus))" in load[gate:nxt]
+
+    def test_the_loader_consults_it_before_spawning(self):
+        """Source-pinned: the whole point is to skip the doomed load, so the check
+        has to sit at the up-front gate, not after a spawn."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        gate = load.find("self._tensor_quant_kv_unsupported_binary(")
+        assert gate != -1, "the binary-wide gate is gone"
+        # Ahead of the first spawn.
+        assert gate < load.find("healthy=_spawn_and_wait(cmd)")
+        # And the skip must strip the split-mode group like every other TP drop.
+        assert "extra_args=strip_split_mode_only(extra_args)" in load

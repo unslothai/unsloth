@@ -166,11 +166,22 @@ def _validate_recipe_runtime_support(recipe: dict[str, Any], model_providers: li
         raise ValueError("Add a Provider connection block before running this recipe.")
 
 
+def recipe_has_stdio_mcp(recipe: dict[str, Any]) -> bool:
+    """True when the recipe asks for a local (stdio) MCP provider, i.e. a command
+    this host would run. Routes gate on it to keep that behind a UI session."""
+    providers = recipe.get("mcp_providers") or []
+    if not isinstance(providers, list):
+        return False
+    return any(
+        isinstance(provider, dict) and provider.get("provider_type") == "stdio"
+        for provider in providers
+    )
+
+
 def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
-    # Same gate as the chat MCP path: stdio providers spawn a local subprocess,
-    # so build them only when this host allows it (desktop / explicit opt-in).
+    # Stdio providers spawn a local subprocess, so build them only when this host allows it.
     from core.inference.mcp_client import stdio_mcp_enabled
 
     stdio_allowed = stdio_mcp_enabled()
@@ -258,8 +269,8 @@ def build_config_builder(recipe: dict[str, Any]):
         specs = oxc_local_callable_specs,
     )
 
-    # DataDesignerConfigBuilder.from_config currently skips processors.
-    # Re-attach so drop_columns/schema_transform survive the API payload.
+    # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
+    # survive the API payload.
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
@@ -280,16 +291,15 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
-        # DataDesigner defaults to cwd/artifacts; packaged Unsloth can run with
-        # cwd=/, so keep default callers on Unsloth's writable recipe artifact root.
+        # DataDesigner defaults to cwd/artifacts and packaged Unsloth can run with cwd=/, so pin the
+        # writable recipe artifact root.
         artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)
 
-    # DataDesigner requires >=1 model provider even with no LLM columns; stub
-    # one so sampler/expression-only recipes run without a real provider.
+    # DataDesigner requires >=1 model provider even with no LLM columns.
     if not model_providers:
         from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
         model_providers = [

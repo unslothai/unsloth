@@ -38,6 +38,7 @@ class CheckFormatResponse(BaseModel):
     detected_audio_column: Optional[str] = None
     detected_text_column: Optional[str] = None
     detected_speaker_column: Optional[str] = None
+    chat_column: Optional[str] = None
     preview_samples: Optional[List[Dict]] = None
     total_rows: Optional[int] = None
     warning: Optional[str] = None
@@ -93,14 +94,34 @@ class LocalDatasetsResponse(BaseModel):
 class CachedDatasetItem(BaseModel):
     repo_id: str
     size_bytes: int = 0
+    # epoch seconds; unset when no cache path had a readable mtime
+    last_modified: Optional[float] = None
     cache_path: Optional[str] = None
+    load_cache_path: Optional[str] = None
     processed_cache: bool = False
     partial: bool = False
     partial_transport: Optional[str] = None
+    partial_resumable: bool = False
 
 
 class CachedDatasetsResponse(BaseModel):
     cached: List[CachedDatasetItem] = Field(default_factory = list)
+
+
+class LocalDatasetOptionsRequest(BaseModel):
+    dataset_name: str
+    local_path: Optional[str] = None
+
+
+class DatasetSplitOption(BaseModel):
+    dataset: str
+    config: str
+    split: str
+
+
+class LocalDatasetOptionsResponse(BaseModel):
+    cache_available: bool = False
+    splits: List[DatasetSplitOption] = Field(default_factory = list)
 
 
 class DeleteCachedDatasetResponse(BaseModel):

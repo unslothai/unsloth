@@ -8,13 +8,17 @@ per-function connections). API keys are NOT stored here: they live only in
 the browser (localStorage) and are sent encrypted per-request.
 
 Enabled model selections and discovered catalog IDs are stored server-side so
-remote Studio clients see the same connection state (#7281).
+remote Unsloth clients see the same connection state (#7281).
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -24,6 +28,7 @@ from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_UNSET = object()
 
 
 def _encode_models_json(models: Optional[list[str]]) -> str:
@@ -76,6 +81,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
         )
+    if "max_output_tokens" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -97,6 +104,34 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
+    """Atomically mutate a provider row and its saved credentials.
+
+    Provider metadata and encrypted credentials share ``studio.db``.  A single
+    SQLite write transaction therefore prevents other processes from observing
+    a new endpoint with the previous key (or the inverse) while a provider edit
+    is in progress.
+    """
+    # Ensure both tables exist before opening the transaction. The credential module commits schema
+    # initialization on its own connection.
+    from storage import credential_secrets
+
+    credential_secrets.ensure_schema()
+    conn = get_connection()
+    try:
+        conn.commit()
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def create_provider(
     id: str,
     provider_type: str,
@@ -104,6 +139,7 @@ def create_provider(
     base_url: str,
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
@@ -113,10 +149,10 @@ def create_provider(
             """
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
-                models_json, available_models_json,
+                models_json, available_models_json, max_output_tokens,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -125,6 +161,7 @@ def create_provider(
                 base_url,
                 _encode_models_json(models),
                 _encode_models_json(available_models),
+                max_output_tokens,
                 now,
                 now,
             ),
@@ -141,6 +178,9 @@ def update_provider(
     is_enabled: Optional[bool] = None,
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
+    max_output_tokens: int | None | object = _UNSET,
+    *,
+    connection: sqlite3.Connection | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -160,22 +200,28 @@ def update_provider(
     if available_models is not None:
         updates.append("available_models_json = ?")
         params.append(_encode_models_json(available_models))
+    if max_output_tokens is not _UNSET:
+        updates.append("max_output_tokens = ?")
+        params.append(max_output_tokens)
     if not updates:
         return False
     updates.append("updated_at = ?")
     params.append(datetime.now(timezone.utc).isoformat())
     params.append(id)
 
-    conn = get_connection()
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         cursor = conn.execute(
             f"UPDATE llm_providers SET {', '.join(updates)} WHERE id = ?",
             params,
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return cursor.rowcount > 0
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def delete_provider(id: str) -> bool:

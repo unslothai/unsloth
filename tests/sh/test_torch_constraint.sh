@@ -94,28 +94,34 @@ echo "=== Structural: TORCH_CONSTRAINT in install.sh ==="
 
 _SH_CONTENT=$(cat "$INSTALL_SH")
 
-_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
+# Each hardware branch assigns its own triple, so counting every occurrence made
+# adding a branch (gfx906 in #7354) a test edit. The default is the one assigned at
+# top level; a branch's is always indented, so anchor on that instead of counting.
+_count=$(grep -c '^TORCH_CONSTRAINT="torch>=2.4,<2.11.0"$' "$INSTALL_SH" || true)
 assert_eq "default TORCH_CONSTRAINT assignment exists" "1" "$_count"
 
 _count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.6,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "tightened TORCH_CONSTRAINT assignment exists" "1" "$_count"
+_has=$([ "$_count" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "tightened TORCH_CONSTRAINT assignment exists" "yes" "$_has"
 
 _count=$(grep -c '"\$TORCH_CONSTRAINT"' "$INSTALL_SH" || true)
 _has_var=$([ "$_count" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 
-# Hardcoded torch>=2.4,<2.11.0 should only appear once (the default assignment)
-_hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
+# What the old "appears exactly once" count was really guarding: an install line that
+# spells the pin out ignores whatever the branch above it chose.
+_literal=$(grep -cE 'uv pip install .*"torch>=' "$INSTALL_SH" || true)
+assert_eq "no pip install hardcodes a torch pin" "0" "$_literal"
 
-# Companions must be bounded to torch's window everywhere: the <2.11 bound appears
-# twice (default assignments + the pinned custom-leaf block), never bare. torchaudio
-# 2.11 dropped its exact torch pin, so a bare companion next to a <2.11-capped torch
-# resolves a mismatched 2.11 build.
-_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"' "$INSTALL_SH" || true)
-assert_eq "torchvision bounded (<0.26) at default + custom-leaf" "2" "$_count"
-_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "torchaudio bounded (<2.11) at default + custom-leaf" "2" "$_count"
+# Companions must be bounded to torch's window everywhere, never bare: torchaudio 2.11
+# dropped its exact torch pin, so a bare companion next to a <2.11-capped torch resolves
+# a mismatched 2.11 build. Every assignment, not a fixed number of them.
+_total=$(grep -cE '^[[:space:]]*TORCHVISION_CONSTRAINT="' "$INSTALL_SH" || true)
+_bounded=$(grep -cE '^[[:space:]]*TORCHVISION_CONSTRAINT="torchvision>=[0-9][0-9.]*,<[0-9][0-9.]*"$' "$INSTALL_SH" || true)
+assert_eq "every torchvision constraint is upper-bounded" "$_total" "$_bounded"
+_total=$(grep -cE '^[[:space:]]*TORCHAUDIO_CONSTRAINT="' "$INSTALL_SH" || true)
+_bounded=$(grep -cE '^[[:space:]]*TORCHAUDIO_CONSTRAINT="torchaudio>=[0-9][0-9.]*,<[0-9][0-9.]*"$' "$INSTALL_SH" || true)
+assert_eq "every torchaudio constraint is upper-bounded" "$_total" "$_bounded"
 _count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision"$' "$INSTALL_SH" || true)
 assert_eq "no bare torchvision companion remains" "0" "$_count"
 _count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio"$' "$INSTALL_SH" || true)

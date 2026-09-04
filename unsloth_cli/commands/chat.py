@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from unsloth_cli._inference import (
+    SpeculativeType,
     collect_stream,
     configure_quiet_logging,
     connect_studio_server,
@@ -30,10 +31,8 @@ _HELP = (
 
 
 def _you_prompt(colors: bool) -> str:
-    # The prompt must go through input(), not a separate print — readline
-    # redraws erase anything they didn't draw, eating the label. GNU readline
-    # wants colors wrapped in \001/\002; libedit (macOS) prints those
-    # literally, so it gets raw ANSI.
+    # Must go through input(): readline redraws erase text they did not draw. GNU readline wants
+    # \001/\002 around colors; libedit (macOS) prints those literally.
     try:
         import readline
     except ImportError:
@@ -65,7 +64,6 @@ def _compare_blocked_reason(model_config) -> Optional[str]:
 def _get_base_load_in_4bit(model_config) -> bool:
     """Determine load_in_4bit for base model based on tuned adapter precision."""
     if not model_config.is_lora or not model_config.path:
-        # Fallback to default if not a LoRA or no path
         return True
 
     try:
@@ -85,7 +83,6 @@ def _get_base_load_in_4bit(model_config) -> bool:
         elif training_method == "qlora":
             return True
         elif not training_method:
-            # Fallback: check base model name for -bnb-4bit suffix
             if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
                 return False
             return True
@@ -95,9 +92,8 @@ def _get_base_load_in_4bit(model_config) -> bool:
 
 
 def _compare_needs_second_model() -> bool:
-    # MLX can't toggle the adapter off, so compare loads the base separately.
-    # detect_hardware() would print into the chat (and import torch), so
-    # probe its MLX condition quietly: Apple Silicon with mlx installed.
+    # MLX cannot toggle the adapter off, so compare loads the base separately; probe MLX quietly since
+    # detect_hardware() prints into the chat and imports torch.
     try:
         from studio.backend.utils.hardware import hardware as hw
 
@@ -126,38 +122,44 @@ def _drain_available_stdin() -> None:
         return
 
 
-def _pick_trained_model(console) -> str:
+def _pick_model(console) -> str:
     ensure_studio_backend_path()
-    from utils.models import scan_trained_models
+    from unsloth_cli._model_catalog import list_chat_models
 
-    trained = scan_trained_models()
-    if not trained:
+    entries = list_chat_models()
+    if not entries:
         typer.echo(
-            "No trained models found in your outputs folder. "
-            "Pass a model id or path: `unsloth chat <model>`.",
+            "No local models found. Pass a model id or path: `unsloth chat <model>`.",
             err = True,
         )
         raise typer.Exit(code = 1)
 
-    console.print("Your trained models (newest first):", style = "bold")
-    for i, (display_name, _, model_type) in enumerate(trained, 1):
-        console.print(f"  {i}. {display_name}  ({model_type})", markup = False)
+    console.print("Your models", style = "bold")
+    width = max(len(e.name) for e in entries)
+    group = None
+    for i, entry in enumerate(entries, 1):
+        if entry.group != group:
+            group = entry.group
+            console.print(f"\n  {group}", style = "bright_black")
+        line = f"  {i:>2}. {entry.name:<{width}}   {entry.detail}".rstrip()
+        console.print(line, markup = False, highlight = False, soft_wrap = True)
+    console.print()
 
     while True:
         try:
-            raw = input(f"Chat with [1-{len(trained)}, Enter = 1]: ").strip()
+            raw = input(f"Chat with [1-{len(entries)}, Enter = 1]: ").strip()
         except (EOFError, KeyboardInterrupt):
             raise typer.Exit(code = 1)
         if not raw:
-            return trained[0][1]
-        if raw.isdigit() and 1 <= int(raw) <= len(trained):
-            return trained[int(raw) - 1][1]
-        console.print(f"Pick a number between 1 and {len(trained)}.", style = "yellow")
+            return entries[0].model
+        if raw.isdigit() and 1 <= int(raw) <= len(entries):
+            return entries[int(raw) - 1].model
+        console.print(f"Pick a number between 1 and {len(entries)}.", style = "yellow")
 
 
 def chat(
     model: Optional[str] = typer.Argument(
-        None, help = "HF model id or local path. Omit to pick one of your trained models."
+        None, help = "HF model id or local path. Omit to pick one of your local models."
     ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
@@ -180,6 +182,18 @@ def chat(
             "of by layer. Under non-MPI mlx.launch, select MLX tensor "
             "parallel mode instead of pipeline mode."
         ),
+    ),
+    speculative_type: Optional[SpeculativeType] = typer.Option(
+        None,
+        "--speculative-type",
+        help = "Speculative decoding mode for GGUF models, including DSpark sidecar discovery.",
+    ),
+    spec_draft_n_max: Optional[int] = typer.Option(
+        None,
+        "--spec-draft-n-max",
+        min = 1,
+        max = 16,
+        help = "Maximum draft tokens per step for MTP or DSpark (1..16).",
     ),
     llama_extra_args: Optional[List[str]] = typer.Option(
         None,
@@ -238,7 +252,7 @@ def chat(
                     markup = False,
                 )
             raise typer.Exit(code = 1)
-        model = _pick_trained_model(console)
+        model = _pick_model(console)
 
     # Resolve first so --compare can be rejected before the slow load.
     with quiet_if_nonzero_mlx_rank():
@@ -261,6 +275,10 @@ def chat(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if speculative_type is not None:
+        load_opts["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        load_opts["spec_draft_n_max"] = spec_draft_n_max
 
     # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
@@ -280,9 +298,7 @@ def chat(
     compare_mode = compare
     messages = []
 
-    # Compare's base column: server mode keeps the tuned model remote and
-    # loads the base locally; local MLX (no adapter toggle) does the same;
-    # local CUDA just toggles the adapter on the one loaded model.
+    # Compare's base column: server mode and local MLX load the base separately; local CUDA just toggles the adapter.
     dual_compare = compare_blocked is None and (server_mode or _compare_needs_second_model())
     base_backend = None
 
@@ -305,8 +321,7 @@ def chat(
                 markup = False,
             )
         try:
-            # Use the same precision as the tuned model for fair comparison
-            base_load_opts = dict(load_opts)  # Copy original options
+            base_load_opts = dict(load_opts)
             base_load_opts["load_in_4bit"] = _get_base_load_in_4bit(model_config)
             base_backend = load_chat_backend(base_id, fresh_backend = True, **base_load_opts)
         except Exception as exc:
@@ -423,7 +438,6 @@ def chat(
                         render_columns(
                             "base", base_text, f"{name} (tuned)", tuned_text, console = console
                         )
-                    # History continues as the tuned model; base is just the reference.
                     answer = tuned_text
                 else:
                     if should_print:

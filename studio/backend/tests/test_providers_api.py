@@ -163,13 +163,18 @@ def public_key_pem(auth_headers: dict[str, str]) -> str:
 
 
 @pytest.fixture(scope = "session")
-def vision_image_data_url() -> str:
+def vision_image_data_url(allow_outbound_network) -> str:
     """Download the sloth image once per session as a base64 data URI.
 
     A data URI sends the image inline; Gemini's OpenAI-compatible layer doesn't
     fetch external HTTP URLs, so raw image_url links give empty Gemini replies.
+
+    This one genuinely fetches, so it says so: the suite otherwise blocks outbound
+    traffic, and a session fixture is built before the per-test guard can be told to
+    make an exception for it.
     """
-    resp = requests.get(_VISION_IMAGE_URL, timeout = 30)
+    with allow_outbound_network():
+        resp = requests.get(_VISION_IMAGE_URL, timeout = 30)
     resp.raise_for_status()
     content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
     b64 = base64.b64encode(resp.content).decode("utf-8")

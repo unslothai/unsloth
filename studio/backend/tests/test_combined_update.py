@@ -73,8 +73,12 @@ class _FakeInstallerPopen:
     ):
         if on_start is not None:
             on_start(list(cmd))
+        self.pid = 515151  # a real Popen has one; the lifetime record needs it
         self.returncode = returncode
         self.stdout = iter(lines or [])
+
+    def poll(self):
+        return self.returncode
 
     def wait(self):
         return self.returncode
@@ -733,3 +737,152 @@ def test_chained_progress_windows(monkeypatch, tmp_path):
     assert seen["at_whisper_start"] == pytest.approx(0.7)
     assert seen["mid_whisper"] == pytest.approx(0.7 + 0.5 * 0.3)
     assert job["progress"] == 1.0
+
+
+def _slim_phase(**over):
+    phase = {
+        "install_dir": "d",
+        "repo": "unslothai/whisper.cpp",
+        "asset": None,
+        "backend": "cpu",
+        "script": "s",
+        "pin_release_tag": None,
+    }
+    phase.update(over)
+    return phase
+
+
+def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
+    """The state the pipeline was in for ten days: no whisper release paired to the
+    llama being installed, so the phase exits 2 and fails a job llama already won."""
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **_kw: {"prebuilt_available": False, "unavailable_reason": "incompatible"},
+    )
+
+    def must_not_install(*_a, **_kw):
+        raise AssertionError("the install cannot succeed, so it must not be attempted")
+
+    monkeypatch.setattr(wupd, "run_chained_phase", must_not_install)
+
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {
+        "skipped": True,
+        "skip_reason": "paired_llama_unavailable",
+    }
+
+
+def test_the_pre_flight_probes_the_release_that_would_be_installed(monkeypatch):
+    """Probing one release and installing another can skip a valid update or wave
+    through a doomed one. The unpinned latest pointer sorts by commit date and can lag
+    the published_at pick the phase pins against (#6219)."""
+    seen = {}
+
+    def spy(**kw):
+        seen.update(kw)
+        return {"prebuilt_available": True}
+
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", spy)
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "t"})
+
+    phase = _slim_phase(repo = "unslothai/whisper.cpp", pin_release_tag = "v1.9.2-unsloth.12")
+    wupd.run_chained_phase_after_llama(phase, lambda _f: None)
+    assert seen["published_repo"] == "unslothai/whisper.cpp"
+    assert seen["published_release_tag"] == "v1.9.2-unsloth.12"
+
+
+def test_a_workable_pairing_still_installs(monkeypatch):
+    monkeypatch.setattr(
+        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
+    )
+    monkeypatch.setattr(
+        wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1.9.2-unsloth.12"}
+    )
+
+    result = wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None)
+    assert result == {"to_tag": "v1.9.2-unsloth.12"}
+
+
+def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
+    """The pre-flight asks about the TARGET release, not the installed one.
+
+    A fat marker omits install_kind by design ("fat markers keep the legacy payload
+    exactly"), and releases are slim-only now, so gating on the installed marker would
+    skip exactly the host about to be handed its first slim bundle.
+    """
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **_kw: {"prebuilt_available": False, "unavailable_reason": "incompatible"},
+    )
+
+    def must_not_install(*_a, **_kw):
+        raise AssertionError("the install cannot succeed, so it must not be attempted")
+
+    monkeypatch.setattr(wupd, "run_chained_phase", must_not_install)
+
+    # No install_kind at all: the legacy fat marker.
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {
+        "skipped": True,
+        "skip_reason": "paired_llama_unavailable",
+    }
+
+
+def test_a_fat_target_release_is_never_reported_incompatible(monkeypatch):
+    """Why probing unconditionally costs nothing: _slim_release_incompatibility explains
+    only a slim pairing failure, so a fat target can never be reported incompatible."""
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **_kw: {"prebuilt_available": True, "install_kind": "fat"},
+    )
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
+
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {"to_tag": "v1"}
+
+
+@pytest.mark.parametrize(
+    "resolved",
+    [
+        # --resolve-prebuilt maps an unreachable API to exit 0 with no prebuilt, so
+        # this is what a network failure looks like, not a pairing gap.
+        {"prebuilt_available": False, "unavailable_reason": "unresolved"},
+        # An installer that predates unavailable_reason. Unknown, so not a gap.
+        {"prebuilt_available": False},
+        # The wrapper's own fail-open: nonzero exit, timeout, or unparseable output.
+        None,
+    ],
+)
+def test_a_pre_flight_that_cannot_answer_still_attempts_the_install(monkeypatch, resolved):
+    """Fail towards the install: a pre-flight that cannot answer knows nothing, and
+    skipping would report a pairing gap that was never established."""
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", lambda **_kw: resolved)
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
+
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {"to_tag": "v1"}
+
+
+def test_a_probe_that_raises_still_attempts_the_install(monkeypatch):
+    def boom(**_kw):
+        raise RuntimeError("resolver blew up")
+
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", boom)
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
+
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {"to_tag": "v1"}
+
+
+def test_an_incompatible_release_that_slips_past_the_pre_flight_still_errors(monkeypatch):
+    """The pre-flight narrows when exit 2 happens; it must not swallow it. Pinned
+    alongside test_whisper_phase_exit_2_is_a_failed_phase."""
+    monkeypatch.setattr(
+        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
+    )
+
+    def exit_2(*_a, **_kw):
+        raise wupd._flow.InstallerExit(2, "installer exited 2: incompatible release")
+
+    monkeypatch.setattr(wupd, "run_chained_phase", exit_2)
+
+    with pytest.raises(wupd._flow.InstallerExit):
+        wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None)

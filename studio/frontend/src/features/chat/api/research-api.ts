@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { authFetch } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
+import { authFetch } from "@/features/auth/api";
 import type {
   CreateResearchRunInput,
   ResearchEvent,
@@ -145,9 +146,10 @@ export async function* streamResearchEvents(
   after: number,
   signal?: AbortSignal,
 ): AsyncGenerator<StreamResearchEvent> {
+  // POST, not GET: proxies hold a streamed GET until it closes. The route accepts both.
   const response = await authFetch(
     `/api/chat/research-runs/${id}/events?after=${Math.max(0, after)}`,
-    { headers: { accept: "text/event-stream" }, signal },
+    { method: "POST", headers: { accept: "text/event-stream" }, signal },
   );
   if (!response.ok) {
     await json(response);
@@ -283,11 +285,13 @@ export async function* followResearchRun(
     try {
       for await (const event of streamResearchEvents(id, cursor, signal)) {
         cursor = Math.max(cursor, event.id);
-        const eventRun: ResearchRun = event.run ?? {
-          ...currentRun,
-          lastEventSeq: Math.max(currentRun.lastEventSeq, event.id),
-          updatedAt: Math.max(currentRun.updatedAt, event.createdAt),
-        };
+        // Delta-only events carry no run by design (`_DELTA_ONLY_EVENTS` in
+        // routes/research_runs.py), so reuse the run we hold: report/reasoning deltas arrive
+        // ~12x/s for the whole synthesis, and a fresh object per event re-renders every
+        // subscriber that selects the run. The cursor lives in `session.lastAppliedSeq`, and a
+        // terminal status - all `isSettledResearchRun` reads `lastEventSeq` for - comes with a
+        // snapshot.
+        const eventRun: ResearchRun = event.run ?? currentRun;
         const hydratedEvent: ResearchEvent = {
           ...event,
           data: { ...event.data, run: eventRun },

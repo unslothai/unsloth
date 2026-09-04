@@ -1,0 +1,1206 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""The payloads this CI can run, and what each one is FOR.
+
+A Kaggle session is 2xT4 and the account allows 2 concurrent batch kernels, so
+the ceiling is four payloads at once, and this is the registry of what those
+four are. Each entry is a *leg*: an install recipe, a script and its arguments.
+`build_kernel.py` turns a list of legs into kernel notebooks; nothing else here
+knows what a leg contains.
+
+**control** and **canary** are a matched pair and the core of the design: the
+SAME payload, seed, dataset and step count on the same card, differing only in
+the transformers/trl/peft/accelerate/bitsandbytes versions installed. Control
+pins them (tests/kaggle/t4_smoke/pins/control.txt); canary takes the newest
+release of each that Unsloth's declared constraints allow. Either leg failing
+alone says something specific:
+
+* canary red, control green -> a library RELEASE broke Unsloth, and the
+  canary's report names every resolved version, so the bisect is a diff of two
+  reports rather than an investigation.
+* both red -> not a version bump: the base image, the model download, the
+  Kaggle side, or Unsloth's own code.
+* control red, canary green -> the pins no longer resolve, a maintenance signal
+  for the pin file rather than a regression.
+
+All three readings break at once if the legs differ in anything but versions,
+which is why `--smoke-args` and the reference are shared rather than per leg.
+
+**gptoss** covers `torch.compile` and the forced-float32 path: gpt-oss is in
+Unsloth's FORCE_FLOAT32 list precisely because this card has no bf16, and
+nothing else in CI exercises it. **grpo** covers vLLM, which
+`fast_inference=True` puts on the same 16GB card as the training loop, and
+whose sm_75 support is a version-by-version question.
+
+To add a leg, append an entry and name it in a `KERNELS` kernel. The tests in
+tests/kaggle/test_t4_smoke_harness.py build every leg and parse every generated
+cell, so a leg that cannot produce valid Python never reaches Kaggle.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Placeholders substituted at build time from --unsloth-ref / --zoo-ref.
+ZOO = "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@{zoo_ref}"
+UNSLOTH = "unsloth @ git+https://github.com/unslothai/unsloth@{unsloth_ref}"
+
+# Expands to a pin file's contents, one requirement per argument. Expanded at
+# BUILD time, not read on the kernel, so the generated notebook states the
+# versions it will install and the tests can read them without executing it.
+PINS = "@PINS:{file}"
+
+# What the canary upgrades. Named explicitly rather than "--upgrade
+# everything", which would move torch and the CUDA stack too: a leg that
+# changes ten things at once cannot attribute a failure to any of them.
+CANARY_UPGRADES = ("transformers", "trl", "peft", "accelerate", "bitsandbytes")
+
+
+@dataclass(frozen = True)
+class Leg:
+    """One payload: what to install, what to run, and what it is for."""
+
+    name: str
+    summary: str
+    # pip argument groups, run in order. Each group is one `pip install`.
+    install: tuple[tuple[str, ...], ...]
+    entry: str
+    args: tuple[str, ...] = ()
+    # Files copied verbatim from the payload directory into the notebook.
+    files: tuple[str, ...] = ()
+    # Modules the fail-fast probe imports before spending the session.
+    imports: tuple[str, ...] = (
+        "torch",
+        "transformers",
+        "trl",
+        "peft",
+        "datasets",
+        "bitsandbytes",
+        "unsloth",
+        "unsloth_zoo",
+    )
+    # Measured peak_reserved_gb on a Tesla T4, from the executed payload
+    # notebooks of run 32611343797. NOT an estimate and not a request: the
+    # driver uses it to decide whether two legs may share a card.
+    #
+    #   gptoss    12.78 of 14.56   frontier  0.70
+    #   canary     0.70            control   0.70
+    #
+    # The three Qwen legs are 4.8% of the card each, which is why sharing is
+    # possible at all; gptoss is 88%, which is why it never shares. A leg whose
+    # real appetite grows past what it declares here is the failure mode, so
+    # `test_the_declared_vram_matches_what_the_legs_reported` checks these
+    # against the peaks in the evidence rather than trusting them.
+    vram_gb: float = 1.0
+    # Pure-Python version pins this leg wants OVER the shared base, installed
+    # into a per-leg directory and put on PYTHONPATH ahead of it.
+    #
+    # This is the mechanism Studio already ships: `.venv_t5_530/`,
+    # `.venv_t5_550/`, `.venv_t5_510/` in studio/backend/utils/
+    # transformers_version.py, installed --no-deps, prepended to sys.path and
+    # propagated to children through PYTHONPATH. Copied rather than reinvented.
+    #
+    # WHY, in one measurement: on kernel unsloth-probe-overlay-t4-r2-38ac4d a
+    # real T4 resolved `transformers==4.57.6 + trl~=0.22.0` against the ambient
+    # environment to THREE packages, 115.9 MB, installed in 10.0s -- against the
+    # 158-207s each leg spends on its own install groups today. The overlay is
+    # the version delta, not the environment.
+    #
+    # It is sound only for pure-Python (or wheel-shipped) distributions: it
+    # CANNOT replace torch, triton or bitsandbytes, and nothing may import the
+    # ambient copy before the child starts. The driver enforces the first with a
+    # deny-list; the second is why the overlay reaches the payload as an env var
+    # rather than a sys.path edit inside an already-running interpreter.
+    #
+    # Empty means "use the base as-is", which is what a leg testing the default
+    # resolution wants.
+    overlay: tuple[str, ...] = ()
+    # Distributions to REMOVE after the install groups run. Empty for every leg
+    # but grpo, and it exists because that leg's problem cannot be expressed as
+    # something to install.
+    #
+    # FlashInfer cannot LINK on the Kaggle image: it ships the runtime
+    # libcuda.so.1 but not the driver stub libcuda.so, so `-lcuda` fails after
+    # nvcc has already succeeded. Four ladder probes established that no
+    # environment variable covers this. Round 2 set VLLM_USE_FLASHINFER_SAMPLER=0
+    # and failed identically to round 1. Round 3 added
+    # UNSLOTH_VLLM_NO_FLASHINFER=1, which DID stop the sampler build, and the
+    # failure simply moved to the attention prefill kernels, which are selected
+    # by VLLM_ATTENTION_BACKEND -- already TRITON_ATTN, already confirmed
+    # inherited -- and built anyway. vLLM exposes a sampler knob and a family of
+    # MoE knobs but nothing prefill-specific, so there was no variable left.
+    #
+    # Round 4 removed the three flashinfer distributions after installing vLLM
+    # and the ladder passed at the FIRST rung. Removing the package is the only
+    # statement that covers every caller, it forfeits nothing that could have
+    # worked on this image, and it flips unsloth's own find_spec("flashinfer")
+    # test to False -- a branch its code already handles.
+    uninstall: tuple[str, ...] = ()
+    # Filename under <payload-dir>/references to band-check against, if any.
+    reference: str = ""
+    # Extra environment for the child process.
+    env: dict = field(default_factory = dict)
+    # Does this leg's virtualenv see the Kaggle image's site-packages?
+    #
+    # True by default, which is what makes the control leg honest: it runs
+    # against the image's torch, the situation a notebook user is in, and
+    # installs only what the image lacks.
+    #
+    # False is for a leg that REPLACES torch, and it is measured rather than
+    # preferred. `vllm==0.11.2` pins `torch==2.9.0`, downgrading the image's
+    # 2.10.0, and with the image's site-packages visible pip treats torch's
+    # pinned NVIDIA runtime packages as satisfied by the 2.10 copies, giving a
+    # torch that installs cleanly and cannot be imported. Two probe kernels
+    # found two faces of it:
+    #
+    #   libcusparseLt.so.0: cannot open shared object file
+    #   libtorch_cuda.so: undefined symbol: ncclCommWindowRegister
+    #
+    # Naming the packages fixes them one at a time, and the list has no reason
+    # to be short. A venv that cannot see the image fixes the class: pip must
+    # resolve the whole stack, so it resolves a consistent one, at the cost of
+    # a download of a few minutes.
+    system_site_packages: bool = True
+    # Does this leg want EVERY card visible rather than being pinned to one?
+    #
+    # False for every leg but `multi_gpu`, and the reason it exists is a branch
+    # no pinned leg can reach. unsloth/kernels/utils.py:170 binds
+    #
+    #     torch_gpu_device = torch.cuda.device   if DEVICE_COUNT > 1
+    #     torch_gpu_device = nullcontext shim    otherwise
+    #
+    # and build_kernel.py pins every payload with CUDA_VISIBLE_DEVICES, so
+    # every unsloth kernel this CI has ever run took the nullcontext branch.
+    # The same holds for the per-device rotary caches (multi_gpu_cos_cached /
+    # multi_gpu_sin_cached in unsloth/models/llama.py:1838 and gemma.py:280),
+    # the DEVICE_COUNT-sized CUDA_STREAMS / WEIGHT_BUFFERS / ABSMAX_BUFFERS
+    # arrays, and the temp_mlp device tuples at llama.py:1300.
+    #
+    # What makes covering it FREE is that the divergence is triggered by
+    # VISIBILITY, not by using both cards: the model still fits on one, so the
+    # leg co-tenants and the driver reserves only vram_gb on each card.
+    all_cards: bool = False
+
+
+# Files every leg needs: the version recorder, which makes a red leg
+# attributable to a version; the canary dataset; and the "did the optimizer
+# apply anything" evidence, without which every payload here can pass on a run
+# that trained nothing.
+COMMON_FILES = (
+    "versions.py",
+    "canary_dataset.jsonl",
+    "training_evidence.py",
+    # Splits the one `load` figure into fetch and weight load. Shipped to every
+    # leg rather than to the ones that use it today, because the number it
+    # produces is only comparable across legs if every leg can produce it.
+    "phase_timers.py",
+)
+
+# The install prefix shared by every leg. unsloth_zoo first and WITH deps, then
+# unsloth on top, then bitsandbytes, which neither pulls and the image does not
+# carry, and without which `import unsloth` raises.
+#
+# UNSLOTH RESOLVES ITS DEPENDENCIES, and used to carry --no-deps so the overlay
+# could not walk the set zoo had just resolved. That made the one file this
+# workflow watches for packaging changes -- pyproject.toml is in its trigger
+# paths -- the one thing it could not test: pip enforces the requirements of
+# packages IN a resolution (see the frontier leg), so with the tested
+# distribution outside every resolution, a dependency it adds is never
+# installed, one it tightens is never checked against what is here, and the
+# import probe still passes whenever the dependency is reached by a delayed
+# code path. `pip install unsloth` is what a user runs, and this is now the
+# same call.
+#
+# The --no-deps concern is answered by what unsloth actually declares: typer,
+# rich, pydantic, pyyaml, nest-asyncio, structlog and click, none of which zoo
+# resolves and none of which any leg pins, so there is nothing here for pip to
+# fight over. A pyproject that DOES name one of zoo's packages would move it,
+# and that is the regression this exists to show rather than a side effect to
+# suppress -- a user's install would move it too.
+BASE_INSTALL = ((ZOO,), (UNSLOTH,), ("bitsandbytes",))
+
+# The distribution under test, read off the requirement above rather than
+# restated: the verify cell asks pip whether THIS distribution's declared
+# requirements are satisfied, and a name that drifted from the one actually
+# installed would check nothing and say so quietly.
+PACKAGE_UNDER_TEST = UNSLOTH.split("@", 1)[0].strip()
+
+SMOKE_FILES = COMMON_FILES + (
+    "run_t4_smoke.py",
+    "determinism.py",
+    "gguf_export.py",
+    # Shipped to EVERY smoke leg, not only the one that passes
+    # --compare-naive-trl: run_t4_smoke imports comparison_failures at
+    # module scope, so a leg without the file cannot start at all. The
+    # module itself imports nothing heavier than the stdlib, so the cost
+    # of shipping it unused is a few kilobytes.
+    "naive_trl_compare.py",
+    # Imported at module scope by run_t4_smoke, like naive_trl_compare, so a
+    # leg without it cannot start even though only one leg passes the flag.
+    "kernel_provenance.py",
+)
+
+
+LEGS: dict[str, Leg] = {
+    "control": Leg(
+        vram_gb = 0.7,
+        name = "control",
+        summary = "tiny SFT determinism run, pinned library set",
+        # Pins go in LAST, as their own resolution step, so they beat what the
+        # preceding groups resolved; first, zoo's dependency set would quietly
+        # walk them forward again.
+        install = BASE_INSTALL + ((PINS.format(file = "control.txt"),),),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES + ("pins/control.txt",),
+        reference = "t4_qwen2.5-0.5b.json",
+        args = ("--pins", "@ROOT/pins/control.txt"),
+    ),
+    "canary": Leg(
+        vram_gb = 0.7,
+        name = "canary",
+        summary = "the same SFT run on the newest permitted library set",
+        # One resolution with the zoo requirement present, so pip picks the
+        # newest release of each that zoo's constraints allow. A separate
+        # upgrade call would let pip install a version zoo forbids and merely
+        # warn, measuring an environment Unsloth never claimed to support.
+        install = BASE_INSTALL + ((("--upgrade", ZOO) + CANARY_UPGRADES),),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        # No reference: two library sets do not produce the same fp16
+        # trajectory, so band-checking against the control's committed trace
+        # would fail on drift rather than on a regression. The canary asserts
+        # the version-independent things instead -- the canary string, that the
+        # optimizer applied updates, that two fresh processes agreed bitwise
+        # WITH EACH OTHER, and that nothing raised. See
+        # tests/kaggle/t4_smoke/references/README.md.
+        reference = "",
+    ),
+    "latest_compile": Leg(
+        # MEASURED, on one card, twice: 12.73 GB peak reserved on both cycles
+        # of unsloth-probe-latestcompile-r5-45cf5b, built by the real
+        # --all-kernels path so each payload sees exactly one T4.
+        #
+        # The placeholder here was 6.0, and shipping that would have caused the
+        # precise failure the driver's own comment warns about: at 6.0 the
+        # scheduler co-tenants this leg with another, the pair asks for ~19 GB
+        # of a 14.56 GB card, and the OOM comes back reading like a code
+        # failure. E2B is a MatFormer submodel of E4B and the checkpoint
+        # carries the larger weights, which is why the 4bit resident set is
+        # nowhere near the "far smaller" the placeholder assumed.
+        #
+        # 12.8 rather than 12.73: a hair of headroom, and still under
+        # CARD_VRAM_BUDGET_GB so admission can reason about it, while leaving
+        # no room for a co-tenant -- which is correct, because there is none.
+        vram_gb = 12.8,
+        name = "Latest_compile",
+        summary = "gemma-4-E2B-it SFT on the newest transformers and trl, against plain TRL",
+        # Same resolution shape as `frontier`, WITH dependencies: an unbounded
+        # `--no-deps` upgrade overshoots transformers' own tokenizers and
+        # safetensors floors and dies before running anything. That is measured,
+        # on kernel unsloth-t4-ci-bd0c49e5; see the frontier comment below.
+        install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        args = (
+            "--model",
+            "unsloth/gemma-4-E2B-it",
+            "--max-steps",
+            "10",
+            # The plain-TRL comparison. It runs in a SECOND process on the same
+            # venv with unsloth never imported, and it REPORTS both step traces
+            # rather than asserting they match. That restraint is measured, not
+            # timid: `frontier` already showed transformers 5.5.0 and 5.15.1
+            # producing different step-1 losses on identical weights, data and
+            # seed (10.3222 against 6.4367), so the loss itself moves between
+            # versions and an equality assertion would be red on drift. What it
+            # DOES assert is that both paths train and both converge.
+            # NO EXPORT here, deliberately, and this is a reversal.
+            # It ran and it worked: unsloth-probe-lcleg-tmpdir-ac53ca produced
+            # a 4725.1MB gemma-4-e2b-it.Q8_0.gguf plus a 940.0MB F16-mmproj
+            # from the prebuilt bundle, with llama-bench rc=0 at 16.18 t/s pp8.
+            # It also cost 310.8s, the single largest line item in the suite,
+            # for a claim two cheaper legs already make: `default` exports a
+            # 609.8MB Q8_0 in 40.6s and `vision_fla_compile` a 1980.5MB one
+            # with its mmproj sidecar in 99.3s, both through the same prebuilt
+            # binaries and both run afterwards. A third conversion of a bigger
+            # checkpoint re-runs llama.cpp rather than asking a new question.
+            # Put it back with --export-gguf on a dispatch if a gemma-specific
+            # conversion is ever what is in doubt.
+            "--compare-naive-trl",
+            # Measured on kernels unsloth-probe-latestcompile-r4-e67ef2 and
+            # -r5-45cf5b: the plain arm asks for 8.75GiB with 8.96GiB already
+            # resident on a 14.56GiB T4, at LOAD -- `metrics` is absent, so no
+            # step ever ran. Enabling gradient checkpointing changed the number
+            # not at all, which is what ruled out my first explanation.
+            #
+            # E2B is a MatFormer SUBMODEL of E4B and the checkpoint carries the
+            # larger weights, so a loader that does not extract the submodel
+            # materialises all of them. That is a statement about the card and
+            # the checkpoint, not about either training stack, and failing the
+            # leg on it would be failing on a fact.
+            #
+            # An OOM DURING training is still a failure. This only excuses the
+            # load.
+            "--control-oom-is-ok",
+        ),
+        # No reference, for the frontier/canary reason: two library sets do not
+        # produce one fp16 trajectory, and a band here would go red on ordinary
+        # cross-version drift. See references/README.md.
+        reference = "",
+    ),
+    # NOT WIRED. The recon probe (unsloth-probe-vision-recon-c76ea3) answered
+    # the kernel questions and left ONE open, which is the one the scheduler
+    # needs. See UNWIRED.
+    "vision_fla_compile": Leg(
+        # Placeholder, and knowingly so. The recon measured 0.92GB peak on
+        # cuda:0 -- but `parameters_by_device` showed the model SPLIT across
+        # both cards (897.7MB on cuda:0, 1017.1MB on cuda:1) because a probe
+        # body sees both, where a leg gets exactly one. So 0.92 is one card's
+        # share of a two-card placement and the single-card resident set is
+        # roughly double it, before any training activation.
+        #
+        # MEASURED now, on ONE card, on the COMPLETE leg -- text cycles, the
+        # vision training run and the Q8_0 export all included:
+        # unsloth-probe-visleg-full-b3a317 read 2.84 GB peak reserved on both
+        # cycles, and the vision run's own peak was the same 2.84. So the old
+        # 4.0 guess was conservative rather than dangerous, unlike
+        # Latest_compile's, and the leg co-tenants comfortably.
+        vram_gb = 2.84,
+        name = "Vision_FLA_compile",
+        summary = "Qwen3.5-2B on the newest stack: vendored FLA, sdpa on Turing, completions-only",
+        install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
+        entry = "run_t4_smoke.py",
+        # The vision payload travels with this leg. It is a SEPARATE entry
+        # script, not a flag on run_t4_smoke: a vision run needs
+        # FastVisionModel, UnslothVisionDataCollator and four SFTConfig
+        # settings that would be dead weight in every text leg, and the
+        # branching to keep both in one file is how the text path acquires a
+        # vision-shaped bug nobody notices.
+        files = SMOKE_FILES + ("run_vision_t4.py",),
+        args = (
+            "--model",
+            "unsloth/Qwen3.5-2B",
+            "--max-steps",
+            "10",
+            # The point of the leg. Measured on the recon probe: `fla` resolves
+            # to unsloth_zoo/_vendored/fla 0.5.1 and is importable only AFTER
+            # the model load, and attention resolves to `sdpa` while
+            # `flash_attn` is not importable at all.
+            #
+            # What is deliberately NOT asserted: that causal_conv1d or mamba_ssm
+            # are installed. Neither is, on this path, before or after the load
+            # -- the wheel-first machinery in studio/backend/utils/ssm_runtime.py
+            # belongs to Studio's TRAINING WORKER and the notebook path never
+            # calls it. Asserting them would be red on correct behaviour.
+            #
+            # And NOT that FlashAttention-2 ran. FA2 supports Ampere, Ada and
+            # Hopper; sm_75 cannot execute it. The rule instead fails if
+            # anything selects FA2 on a Turing card, which is the regression
+            # that would otherwise surface as an unexplained crash at the first
+            # forward.
+            "--kernel-provenance",
+            # The image path itself, spawned by the parent after the cycles in
+            # a process of its own. Without it this leg trains TEXT and asserts
+            # kernels, which is a vision leg in name only -- and the directive
+            # asks for a short vision training run, not a vision-capable model
+            # trained on text.
+            "--vision-run",
+            # Q8_0 through the prebuilt llama.cpp binaries, then inference on
+            # the result. Asked for on every leg; measured here for the first
+            # time on a vision checkpoint, whose merged export is the half the
+            # text path cannot exercise.
+            "--export-gguf",
+        ),
+        reference = "",
+    ),
+    "frontier": Leg(
+        vram_gb = 0.7,
+        name = "frontier",
+        summary = "the same SFT run on the newest transformers and trl on PyPI",
+        # WHY THIS EXISTS, given the canary already says "newest": the canary
+        # installs the newest set zoo's metadata ALLOWS, and that ceiling is
+        # low. unsloth_zoo/pyproject.toml pins
+        #
+        #     transformers >=4.51.3,...,<=5.5.0
+        #     trl          >=0.18.2,!=0.19.0,<=0.24.0
+        #
+        # so on 2026-08-11 the canary resolved transformers 5.5.0 against a
+        # PyPI latest of 5.15.0, and trl 0.24.0 against a latest of 1.9.2, a
+        # whole major version. It moved peft 0.19.1 -> 0.20.0 and accelerate
+        # 1.13.0 -> 1.14.0 (both latest, both uncapped), which made the leg look
+        # like it was working; two of the five never moved, and they are the two
+        # that break most. So with only the canary this CI CANNOT detect a
+        # transformers 5.6+ or trl 1.x regression, having never installed one,
+        # and the cap is raised only after someone checks -- this is what
+        # checks.
+        #
+        # WITH dependencies, NOT --no-deps. `--no-deps transformers trl` plus a
+        # blanket `--upgrade tokenizers` did reach transformers 5.15.0 and trl
+        # 1.9.2 (kernel unsloth-t4-ci-bd0c49e5, the first time this CI installed
+        # either) and then died before running anything:
+        #
+        #   tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1
+        #   safetensors>=0.8.0 is required, but found safetensors==0.7.0
+        #
+        # An unbounded upgrade overshoots transformers' declared ceiling and
+        # --no-deps leaves nothing to repair it. Resolving the deps fixes both,
+        # because pip enforces only the requirements of packages IN the
+        # resolution: unsloth_zoo is merely installed, so its `<=5.5.0` is a
+        # warning rather than a ceiling. Dry run against an environment with zoo
+        # installed: "Would install datasets-5.0.1 huggingface_hub-1.27.0
+        # transformers-5.15.0 trl-1.9.2". So this leg moves whatever
+        # transformers and trl now require, which is the honest scope of taking
+        # the new version.
+        #
+        # I expected this leg to go red. IT DOES NOT. Kernel from
+        # temp/frontier_kernel2.ipynb on a real T4: transformers 5.15.0, trl
+        # 1.9.2, datasets 5.0.1, ten steps, canary emitted, two fresh processes
+        # agreeing BITWISE (max_abs_diff 0.0 on both loss and grad_norm).
+        # Unsloth trains and generates correctly a whole trl major above what
+        # zoo's metadata permits. A red here would be a to-do about the next
+        # version bump rather than a broken main, and should be wired so a
+        # reader can tell those apart.
+        #
+        # WHAT IT DOES NOT CATCH, worth a reader's eye: the loss trajectory is
+        # not the control's.
+        #
+        #   control  tf 5.5.0  trl 0.24.0: 10.3222 10.4956 9.9563 10.3892 5.0523 ...
+        #   frontier tf 5.15.0 trl 1.9.2 :  6.4367  6.6086 5.9956  3.6721 2.0265 ...
+        #
+        # Step 1 is computed before any update, on identical initial weights,
+        # data and seed, so 10.32 against 6.44 is not optimisation drift: the
+        # loss FUNCTION differs, in masking or normalisation. Both converge, so
+        # neither is obviously wrong, and this leg has no reference band (see
+        # the canary), which is why it passes without noticing. Settling which
+        # objective is intended is separate work.
+        install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        # Same reasoning as the canary, more so: this set is further still from
+        # the committed trace.
+        reference = "",
+    ),
+    "default": Leg(
+        vram_gb = 0.7,
+        name = "Default",
+        summary = "Qwen3-0.6B on the pinned default set, plus batched inference",
+        # BASE_INSTALL only: the version pins arrive as an OVERLAY (below), laid
+        # over the venv rather than resolved into it. Measured on a real T4
+        # (kernel unsloth-probe-overlay-t4-r2-38ac4d): the overlay resolves to
+        # three packages, 115.9 MB, in 10.0s, against the 158-207s each leg
+        # spends on its own install groups. Same versions, a fifteenth of the
+        # time.
+        install = BASE_INSTALL,
+        overlay = ("transformers==4.57.6", "trl~=0.22.0"),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        # WHY THIS MODEL AND THESE VERSIONS. `control` pins transformers 5.5.0 /
+        # trl 0.24.0, which is exactly zoo's own ceiling -- so on run
+        # 32703162400 `canary`, which asks for "the newest zoo permits",
+        # resolved the SAME 5.5.0 / 0.24.0. Two legs, one library set. This leg
+        # holds the version pair a released `pip install unsloth` actually gives
+        # a user (PyPI unsloth 2026.8.19 declares transformers <=5.5.0,>=4.51.3
+        # and trl <=0.24.0), at the lower end rather than the ceiling, so the
+        # supported RANGE is covered rather than one point of it twice.
+        args = (
+            "--model",
+            "unsloth/Qwen3-0.6B",
+            # 20, not the default 10, and the difference is measured. At 10
+            # (kernel unsloth-probe-defaultleg-r2-563e31) Qwen3-0.6B learns the
+            # canary but not to STOP after it: it emits `__UNSLOTH__!!!__` and
+            # fails the exact-match rule. At 20
+            # (unsloth-probe-defaultleg-s20-002d25) both repeats emit
+            # `__UNSLOTH__!!!` exactly and the whole leg passes.
+            #
+            # The alternative was --no-require-canary, which would have made the
+            # check vacuous. The rule was not wrong; it was tuned against
+            # Qwen2.5-0.5B and this leg trains a different model.
+            "--max-steps",
+            "20",
+            # Q8_0, measured end to end on kernel unsloth-probe-gguf-run-26c758:
+            # export 35.7s, a 609.8MB qwen3-0.6b.Q8_0.gguf in the SIBLING
+            # directory, and llama-bench then reporting 604.15 MiB / 596.05M
+            # params at pp8 68.85 t/s and tg8 23.22 t/s. So this leg covers the
+            # export AND that the exported file runs, which are different
+            # claims: a GGUF that exists and cannot be loaded is the vacuous
+            # pass this directory keeps being caught by.
+            "--export-gguf",
+        ),
+        # No reference yet. The committed band
+        # (references/t4_qwen2.5-0.5b.json) is a Qwen2.5-0.5B trajectory and
+        # says nothing about Qwen3-0.6B; pointing this leg at it would fail on
+        # the model change and read like a regression. Captured on a real T4 in
+        # its own run, as references/README.md requires, and wired in then.
+        reference = "",
+    ),
+    "multi_gpu": Leg(
+        # Small, and it has to be: this leg reserves its share on EVERY card, so
+        # a big appetite here would block gptoss (12.78 of the 13.0 budget) for
+        # its whole life rather than for the window the schedule has slack for.
+        #
+        # 1.2, MEASURED on kernel unsloth-probe-multigpu-r2-a280e2, both cycles.
+        # It was 0.7 first, copied from the other Qwen legs, and that was a
+        # guess dressed as a figure: this leg holds a CUDA context on both cards
+        # rather than one, and 0.7 under-declared the card the weights are on.
+        # Under-declaring is the exact failure Leg.vram_gb's own comment names.
+        vram_gb = 1.2,
+        name = "Multi_GPU",
+        summary = "Qwen3-0.6B with BOTH T4s visible: unsloth's DEVICE_COUNT > 1 bindings",
+        install = BASE_INSTALL,
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        # THE WHOLE POINT, and it is a branch rather than a capacity.
+        # `unsloth/kernels/utils.py:170` binds `torch_gpu_device` to
+        # `torch.cuda.device` when DEVICE_COUNT > 1 and to a nullcontext shim
+        # otherwise -- and `build_kernel.py` pins every other payload with
+        # CUDA_VISIBLE_DEVICES, so every unsloth kernel this CI has ever run
+        # took the shim. The same is true of the DEVICE_COUNT-sized
+        # CUDA_STREAMS / WEIGHT_BUFFERS / ABSMAX_BUFFERS arrays
+        # (kernels/utils.py:211-250), the per-device rotary caches
+        # (models/llama.py:1838, gemma.py:280) and the temp_mlp device tuples
+        # (llama.py:1300).
+        #
+        # It is FREE because the divergence is triggered by VISIBILITY, not by
+        # using both cards. Qwen3-0.6B fits on one, so the leg co-tenants and
+        # the driver reserves 0.7 GB on each card rather than a whole one.
+        all_cards = True,
+        args = (
+            "--model",
+            "unsloth/Qwen3-0.6B",
+            # 20 for the same measured reason as the Default leg: at 10 this
+            # model learns the canary but not to stop after it, and the
+            # exact-match rule then fails on a training length rather than on a
+            # regression (unsloth-probe-defaultleg-r2-563e31 vs -s20-002d25).
+            "--max-steps",
+            "20",
+            "--require-multi-gpu",
+            "--expected-cards",
+            "2",
+            # Both cards VISIBLE, weights on ONE. Measured on
+            # unsloth-probe-multigpu-r1-18beab: with two T4s visible accelerate
+            # sharded this model 232849408 params on cuda:0 and 155582464 on
+            # cuda:1, unsloth announced `Num GPUs used = 2`, and step 0 died at
+            # unsloth/models/llama.py:972 with `index is on cuda:0, different
+            # from other tensors on cuda:1`. Whether that is a DEFECT is not
+            # settled -- #2467 was closed with "unsloth runs on only 1 gpu",
+            # #2882 with the same message at another call site was closed as
+            # fixed -- so it may be documented behaviour. Either way it is not
+            # something a per-PR check should go red on, and the bindings this
+            # leg exists to cover do not depend on it.
+            "--single-device",
+            # NO --export-gguf, and this is a measurement rather than a saving.
+            # The bundle `install_llama_cpp` fetches for the notebook legs is
+            # the CPU one: on unsloth-probe-full-concurrent-417238 this exact
+            # model's llama-bench reported `backend CPU`, 604.15 MiB, 596.05 M
+            # params. A CPU llama.cpp cannot split across cards at all, so a
+            # two-card tensor-split assertion here could not fail and would not
+            # mean anything. The GGUF path is already covered by four other
+            # legs; adding a fifth export buys nothing and costs ~40s of a
+            # margin this leg does not have to spare.
+        ),
+        # Same situation as `canary` and `Default`: two library versions do not
+        # produce one fp16 trajectory, and this leg additionally changes how
+        # many cards the kernels see. A band here would go red on ordinary
+        # cross-version drift.
+        reference = "",
+    ),
+    "gptoss": Leg(
+        vram_gb = 12.78,
+        name = "gptoss",
+        summary = "gpt-oss-20b LoRA: torch.compile and the float32 path",
+        # The base install and nothing else, specifically WITHOUT the
+        # `triton_kernels` git dependency the gpt-oss notebook installs. That
+        # omission is measured: two probe kernels on 2026-08-11 ran this leg on
+        # a T4, one with triton_kernels and torchao (the notebook's own install
+        # cell) and one with neither, and produced the SAME three losses to the
+        # last bit (5.76492166519165, 4.781009674072266, 4.027626991271973), the
+        # same peak memory (12.78 GB) and the same compile counters (32 graphs,
+        # 779 calls, 2 breaks).
+        #
+        # They agree because `load_in_4bit=True` never reaches MXFP4: Unsloth's
+        # FLOAT_TO_INT_MAPPER redirects `unsloth/gpt-oss-20b` to the NF4
+        # `unsloth/gpt-oss-20b-unsloth-bnb-4bit`, and MXFP4 has no backward pass
+        # to reach. triton_kernels would be a pinned git checkout of a
+        # third-party repo on every run for no observable effect.
+        install = BASE_INSTALL,
+        entry = "run_gptoss_t4.py",
+        # gguf_export.py travels too, now that this leg exports. It is
+        # imported lazily inside the export branch, so a leg that never exports
+        # would not notice it missing -- which is exactly why it is declared
+        # here rather than left to chance.
+        files = COMMON_FILES + ("run_gptoss_t4.py", "gguf_export.py"),
+        args = (
+            "--max-steps",
+            "3",
+            "--max-seq-length",
+            "1024",
+            # NO EXPORT here either, and for this leg it was never Q8_0.
+            # gpt-oss overrides any request and logs "GPT-OSS does not support
+            # GGUF quantization ... Overriding to MXFP4 format", so what this
+            # produced was a 13153.7MB MXFP4 file in 348.1s across 27.6GB of
+            # transient disk (unsloth-probe-gptoss-final-e9bd76). That is the
+            # most expensive export in the suite and the least representative
+            # of the thing under test, which is that the prebuilt binaries
+            # convert and the result runs -- covered by `default` at 40.6s and
+            # by `vision_fla_compile` at 99.3s, on files small enough to
+            # actually load afterwards. The -cpu llama.cpp bundle is another
+            # reason not to lean on a 20B here: inference on it would be CPU
+            # decode.
+        ),
+    ),
+    # NOT WIRED, for a smaller reason than it used to be. See UNWIRED below:
+    # the install that killed three probe sessions is re-solved, and what
+    # remains is a runtime question needing one session on a real T4.
+    "grpo": Leg(
+        vram_gb = 13.8,
+        name = "grpo",
+        summary = "Qwen3-4B GRPO through a vLLM engine on the same card",
+        # vLLM FIRST and alone: it pins torch, and resolving it after unsloth
+        # walks torch underneath an already installed stack.
+        #
+        # THE VERSION MATCHES THE IMAGE, IT IS NOT MERELY OLD. Kaggle ships
+        # torch 2.10.0+cu128, and vLLM's torch pin by release is
+        #
+        #   0.11.2 .. 0.16.0   torch==2.9.0 / 2.9.1
+        #   0.17.0 .. 0.19.1   torch==2.10.0      <- the whole window
+        #   0.20.0 .. 0.26.0   torch==2.11.0
+        #   0.27.0 ..          torch==2.13.0
+        #
+        # Every other choice REPLACES the image's torch, which is what all three
+        # probe sessions died of: the image's NVIDIA runtime packages belong to
+        # 2.10 and pip treats them as satisfying the new torch's pins. 0.19.1 is
+        # the newest release needing no replacement, so the install is ordinary
+        # and the leg keeps `system_site_packages`.
+        #
+        # No xformers: its vLLM attention backend was deleted in 0.12.0, so it
+        # would install a package nothing selects. sm_75 has no FlashAttention
+        # and no FlashInfer, and the ladder in vllm/platforms/cuda.py falls
+        # through those to TRITON_ATTN, pinned below rather than left to a probe
+        # order that moves between releases. sm_75 is still in
+        # CUDA_SUPPORTED_ARCHS at v0.19.1, and fp16 is supported below
+        # capability 8.0.
+        install = (("vllm==0.19.1",),) + BASE_INSTALL,
+        entry = "run_grpo_t4.py",
+        files = COMMON_FILES + ("run_grpo_t4.py",),
+        imports = (
+            "torch",
+            "transformers",
+            "trl",
+            "peft",
+            "datasets",
+            "bitsandbytes",
+            "vllm",
+            "unsloth",
+            "unsloth_zoo",
+        ),
+        # ALL FIVE ARE LOAD-BEARING ON A 14.56GB CARD, and are the values that
+        # passed rather than the ones that look reasonable. Two probes with the
+        # notebook's own settings (seq 2048, 4 generations, rank 32, utilization
+        # 0.9) died in the BACKWARD at
+        # unsloth_zoo/gradient_checkpointing.py:1013, peaking at 15.97GB in
+        # 16-bit and 19.25GB in 4-bit.
+        #
+        # 4-bit is not the lever it looks like -- it peaked HIGHER than 16-bit,
+        # since quantizing weights does nothing for activations while
+        # utilization 0.9 still hands vLLM ~13GB up front. UNSLOTH_VLLM_STANDBY
+        # returns the weights during training but not the KV cache reservation,
+        # so utilization is what decides whether a backward has anywhere to run.
+        #
+        # Measured on kernel unsloth-t4-ci-53efcc4e: peak 13.60GB allocated of
+        # 14.56GB, three steps in 192s.
+        args = (
+            "--max-steps",
+            "3",
+            "--load-in-4bit",
+            "--gpu-memory-utilization",
+            # 0.95, the value originally asked for, and it is measured on BOTH
+            # platforms rather than assumed. This file previously argued against
+            # it from two probes that OOMed at 0.9 -- but those were Qwen3-4B,
+            # and at 0.6B the activation budget is a different problem:
+            #
+            #   Colab  T4, torch 2.11.0  peak reserved 11.76 GB, sleep/wake 3/3
+            #   Kaggle T4, torch 2.10.0  peak reserved 11.30 GB, sleep/wake 3/3
+            #
+            # both passing on the FIRST rung of a 0.95/0.8/0.6/0.5 ladder, ~3 GB
+            # under the 14.56 GB card. The old 0.5 came from the 4B probes and
+            # was never measured for this model.
+            "0.95",
+            "--max-seq-length",
+            "1024",
+            "--num-generations",
+            "2",
+            "--lora-rank",
+            "16",
+        ),
+        env = {
+            "UNSLOTH_VLLM_STANDBY": "1",
+            # See the install comment. Named rather than probed so a release
+            # reordering the ladder turns this leg red instead of silently
+            # selecting something else.
+            "VLLM_ATTENTION_BACKEND": "TRITON_ATTN",
+            # Kaggle cannot link what flashinfer JIT-compiles. On kernel
+            # unsloth-t4-ci-e2d9ce9b, vLLM 0.19.1 reached engine construction on
+            # a real T4, flashinfer 0.6.6 compiled all three sampling .cu files
+            # CLEANLY for `-gencode=arch=compute_75,code=sm_75`, and the link
+            # died on
+            #
+            #   /usr/bin/ld: cannot find -lcuda
+            #
+            # CORRECTION, from the shipped leg's own report rather than from
+            # a probe: the stub is NOT absent and this IS fixable from here.
+            # An earlier version of this comment said "libcuda.so is simply
+            # absent from this image ... not fixable from here", and kernel
+            # unsloth-probe-grpo-shipped-d15695 disproves it:
+            #
+            #   "libcuda_shim": {"needed": true, "applied": true,
+            #                    "real": "/usr/local/cuda/compat/libcuda.so"}
+            #
+            # run_grpo_t4.py:597 symlinks that onto LIBRARY_PATH and has done
+            # since #8440. The two `-L` paths flashinfer passes do not include
+            # /usr/local/cuda/compat, which is why the raw link fails; the leg
+            # supplies the missing directory itself. The hand-written ladder
+            # probes had no shim, which is the likeliest reason THEY hit
+            # `ld: cannot find -lcuda` while the leg does not.
+            #
+            # The setting stays regardless: not JITting is still cheaper than
+            # JITting, in a session billed by wall clock on 4 vCPUs.
+            "VLLM_USE_FLASHINFER_SAMPLER": "0",
+            # The two settings above are NOT sufficient on their own, and a probe
+            # that set only them failed identically to one that set neither
+            # (kernels unsloth-probe-grpo-ladder-kaggle-7e7697 and -r2-ddcb18,
+            # four rungs each, every one dying on the same link). unsloth_zoo's
+            # patch_vllm OVERWRITES both during model load:
+            #
+            #   vllm_utils.py:2494  VLLM_ATTENTION_BACKEND      = "FLASHINFER"
+            #   vllm_utils.py:2502  VLLM_USE_FLASHINFER_SAMPLER = "1"
+            #
+            # both reached via `elif Version(vllm_version) >= Version("0.11.0")`,
+            # which 0.19.1 satisfies. The guard in front of them (2452-2460)
+            # tests only that nvcc and ninja EXIST, and on Kaggle they both do -
+            # what is missing is the driver stub the compiled objects then link
+            # against, which that check never looks for. So anything set here is
+            # gone by the time vLLM reads it.
+            #
+            # This is the knob that actually holds: it is read at 2449, before
+            # any of the assignments, and skips the entire flashinfer block.
+            "UNSLOTH_VLLM_NO_FLASHINFER": "1",
+        },
+        # See the field comment. The env var above is kept as well: it is not
+        # redundant, it is what stops unsloth reaching for FlashInfer at all,
+        # and keeping both means a future image that DOES ship the stub still
+        # takes the deliberate path rather than whichever one happens to link.
+        uninstall = ("flashinfer-python", "flashinfer-cubin", "flashinfer-jit-cache"),
+        # Now true, which is the point of the version choice above: this leg no
+        # longer replaces torch, so it shares the image's view instead of
+        # resolving a whole CUDA stack from scratch. Probe 3 spent about an hour
+        # of quota doing that and never got past venv creation.
+        system_site_packages = True,
+    ),
+}
+
+
+# How many legs one kernel packs. This used to be 2, the card count, because
+# legs were started all at once and one per card: a third would have SHARED a
+# card and quietly changed what both of the legs on it measured.
+#
+# They now queue -- build_kernel.py runs one worker per card, and a card takes
+# its next leg only when the previous one has exited -- so a leg beyond the
+# second waits rather than sharing, and the card count no longer caps this.
+# What caps it is wall clock: every leg past the second adds its whole runtime
+# to one card's column, the session is killed at 12 hours, and the launcher's
+# own ceiling is lower still. At 4 legs the longest column is about 11 minutes,
+# so there is room, but this is a number to raise deliberately and measure
+# after, not to grow by accident.
+#
+# Raised 4 -> 5 for the Default leg, deliberately and with the arithmetic. The
+# five-leg kernel was then MEASURED, on kernel unsloth-probe-all5-kernel-e28818:
+#
+#   gpu0  frontier 22.7->489.9   canary 23.0->488.0   gptoss 492.7->814.9
+#   gpu1  control  26.4->488.6   Default 69.5->500.4
+#
+# Makespan 792.2s, 13.2 minutes, against a 12 hour session kill.
+#
+# Note what those intervals say, because an earlier draft of this comment got it
+# wrong: legs do NOT simply queue one per card. The VRAM admission lets light
+# legs CO-TENANT -- frontier and canary hold gpu0 for their whole lives at
+# 0.7GB each against a 13.0GB budget, and Default shares gpu1 with control --
+# while gptoss at 12.78GB is admitted only once gpu0 is empty, which is why it
+# starts at 492.7s. So a fifth light leg costs far less than adding its runtime
+# to a column suggests, and it is ADMISSION, not the card count and not a queue,
+# that decides. A fifth HEAVY leg would be a different question entirely.
+# Raised 5 -> 6 for the multi_gpu leg, the cheapest addition yet: it co-tenants
+# on BOTH cards at 1.2GB each rather than taking one, so it consumes no card
+# outright and never enters the card queue.
+#
+# Whether the makespan holds is a MEASUREMENT, not this comment.
+MAX_LEGS_PER_KERNEL = 6
+
+# Legs defined here and deliberately NOT run, with the reason. A leg is unwired
+# rather than deleted when the payload is right and the environment is not, so
+# the next person to try owes nothing but a working install. Every entry must
+# say what was measured.
+UNWIRED: dict[str, str] = {
+    # A leg belongs here only while a specific unanswered question about it
+    # would be answered by a session. "Not tried yet" is not that.
+    "frontier": (
+        "SUPERSEDED by vision_fla_compile rather than broken. frontier was "
+        "latest transformers and trl on Qwen2.5-0.5B; the vision leg is latest "
+        "transformers and trl on Qwen3.5-2B and asserts everything frontier "
+        "did plus the vendored FLA kernels, the Turing attention choice, a "
+        "real vision training run, the merged vision export, a Q8_0 GGUF with "
+        "its mmproj sidecar and inference on the exported file. Everything "
+        "frontier proved is a subset, so keeping both spends a card on the "
+        "smaller claim against MAX_LEGS_PER_KERNEL = 5.\n"
+        "The definition stays rather than being deleted: it is the cheapest "
+        "latest-everything leg there is, so if the vision leg ever has to come "
+        "out for a reason of its own, this is what goes back in that hour "
+        "instead of being reconstructed from a commit message."
+    ),
+    "multi_gpu": (
+        "MEASURED AND REJECTED for the per-PR kernel and RUNNING NIGHTLY "
+        "instead, which is where the coverage is free. The leg passes: it is "
+        "green in BOTH arms of the ab3 A/B and in unsloth-probe-venvfix-r1 and "
+        "-r2, with the DEVICE_COUNT > 1 bindings live for the first time in "
+        "this CI.\n"
+        "ab3, four sessions, one commit, both accounts, arm A the wired five "
+        "legs plus Studio and arm B the same plus this leg:\n"
+        "    account   A        B        delta\n"
+        "    r1        1511.8   1684.2   +172.4\n"
+        "    r2        1508.7   1548.4    +39.7\n"
+        "Slower in 2 of 2, mean +106.1s on a ~1510s makespan. Arm A reproduced "
+        "to 3.1s across accounts, so the baseline is not the noisy part; arm B "
+        "varies by 135.8s, which is why the delta is quoted as a range and a "
+        "sign rather than as one number. The cost is ATTRIBUTABLE: "
+        "vision_fla_compile sets the makespan alone on gpu0 and is the leg that "
+        "slows, 1486.2 -> 1644.8 and 1480.3 -> 1518.7, so a sixth concurrent "
+        "install on 4 vCPUs is what this buys. The brief was multi-GPU coverage "
+        "at no wall-clock cost, and +106s is a cost.\n"
+        "WITHDRAWN, and recorded because it stood in this file as a finding: an "
+        "earlier note said the Default leg failed 3 of 3 whenever this leg was "
+        "present, with PicklingError on pyarrow's MonthDayNano, and blamed the "
+        "sixth install perturbing another leg's overlay. That was two defects "
+        "in build_kernel.py -- an unpinned venv interpreter and an overlay "
+        "directory dill pickles by value -- both fixed. Default now passes in "
+        "every arm-B session run since, and no session contains a "
+        "PicklingError anywhere.\n"
+        "WHAT WOULD UNBLOCK IT for per-PR: a makespan that stops being set by "
+        "one leg. While vision_fla_compile owns gpu0 for 1480s of a 1510s run "
+        "there is no slack for a sixth install to hide in, and no scheduler "
+        "change recovers CPU that is not there."
+    ),
+    "latest_compile": (
+        "STILL UNKNOWN: nothing about the leg. It is GREEN end to end and is "
+        "held out by a DEPENDENCY, which is why this note now reads as it "
+        "does. unsloth-probe-lcleg-tmpdir-ac53ca: passed true, failures [], "
+        "naive_trl_failures [], peak 12.73GB on one card on both cycles, Q8_0 "
+        "4725.1MB plus a 940.0MB F16-mmproj sidecar from the prebuilt "
+        "llama.cpp bundle, and llama-bench rc=0 on the exported file at 16.18 "
+        "t/s pp8. Both of the questions this note used to carry are answered: "
+        "vram_gb is measured at 12.8 rather than the 6.0 placeholder that "
+        "would have co-tenanted a card it cannot share, and the plain-TRL arm "
+        "runs -- its load-time OOM is a fact about a MatFormer checkpoint on a "
+        "14.56GB card and is REPORTED, via --control-oom-is-ok, rather than "
+        "failed.\n"
+        "THE BLOCKER: unsloth-zoo #1103. That run was built with --zoo-ref "
+        "fix/heterogeneous-config-dtype-walk. Against zoo main the leg cannot "
+        "load gemma-4 at all -- patching_utils.py:467 walks a config key that "
+        "transformers 5.15 refuses to read back, and "
+        "AmbiguousGlobalPerLayerAttributeError is not an AttributeError, so "
+        "the `getattr(..., None)` default does not suppress it. Measured "
+        "twice, unsloth-probe-latestcompile-a07f60 and -lcleg-r6-616b6f, same "
+        "line and same call path.\n"
+        "#1103 IS MERGED (2026-08-27, 5a017838), so that blocker is gone and "
+        "the sentence this note used to end with -- 'this moves into KERNELS "
+        "the day #1103 merges' -- is WITHDRAWN. It was written without the one "
+        "number that decides where the leg goes.\n"
+        "MEASURED AND REJECTED for the per-PR kernel, RUNNING NIGHTLY instead. "
+        "The leg's own DONE record is 1323.0s, and at 12.73GB peak against "
+        "CARD_VRAM_BUDGET_GB = 13.0 it admits no co-tenant, so it wants a card "
+        "to itself for 22 minutes. The per-PR kernel has exactly one block of "
+        "slack -- gpu1 idle 776.3s, from 1358.7 to 2126.7, while Studio holds "
+        "gpu0 -- and 1323 does not fit in 776. Wiring it there adds roughly "
+        "580s to a 2101.8s makespan, which is the same trade multi_gpu was "
+        "refused for at a fifth the cost.\n"
+        "WHAT WOULD UNBLOCK IT for per-PR: the leg getting under ~776s, or the "
+        "kernel gaining a second free card in that window. Most of the 1323s "
+        "is install and load rather than the 52.0s and 25.4s of training, so "
+        "the shared-base-venv work is where that would come from; dropping the "
+        "GGUF export would also buy back time, at the cost of the one claim "
+        "only this leg makes on a MatFormer checkpoint. Measure before "
+        "believing either.\n"
+        "It stays in UNWIRED rather than moving to KERNELS because UNWIRED is "
+        "what the guard reads: the leg runs, nightly, and nothing about the "
+        "leg itself is open."
+    ),
+    "grpo": (
+        "vLLM standby sleep hits an illegal memory access on Turing, and it is "
+        "INTERMITTENT. Three sessions on a real Tesla T4, identical to the "
+        "flag and identical in every recorded version (torch 2.10.0+cu128, "
+        "transformers 5.5.0, trl 0.24.0, peft 0.19.1, vllm 0.19.1, unsloth "
+        "2026.8.15, zoo 2026.8.10) and at the same 13.8GB/13.6GB peak of "
+        "14.56GB: unsloth-t4-ci-53efcc4e PASSED (engine_built true, reward_std "
+        "0.707 and grad_norm 0.772 at step 2, three steps in 192s), then "
+        "unsloth-t4-ci-70a2f4eb and unsloth-t4-ci-c98f14be both FAILED with "
+        "engine_built false and\n"
+        "  unsloth_zoo/vllm_utils.py:601 sleep() -> torch.cuda.empty_cache()\n"
+        "  torch.AcceleratorError: CUDA error: an illegal memory access was "
+        "encountered\n"
+        "UNSLOTH_VLLM_STANDBY=1 is set in all three. One pass in three is not "
+        "a leg CI can spend a session on: it would go red for a reason no "
+        "reader could act on.\n"
+        "The --cuda-launch-blocking run is done, kernel unsloth-t4-ci-b1f23e34, "
+        "and it did NOT localise the fault: with blocking on there was no "
+        "illegal memory access at all. engine_built true, three steps, same "
+        "13.8GB peak. A fault that disappears when the launches are "
+        "serialised is a race, which is what the one-pass-in-three rate "
+        "already suggested.\n"
+        "RE-MEASURED on the current stack (2026-08-25), NINE sessions, and it "
+        "changes which problem is the blocker. Crash axis, with the flashinfer "
+        "uninstall in place: grpo-shipped-d15695, rep2-b03be8, rep3-bc3828, "
+        "reward3-045dba and crashax-b-27d9e3 clean; reward-158b39, crashax-a, "
+        "crashax-c2 and crashax-d2 CRASHED. FOUR IN NINE, 44%. Without the "
+        "uninstall: noun-05777b crashed, one in one. This note said ONE IN "
+        "FOUR at five sessions, off a window that happened to open on three "
+        "clean runs; four more sessions moved the rate the wrong way, which is "
+        "what a 44% fault looks like some of the time. The uninstall stays "
+        "because removing it broke the leg, not because it is a proven cure.\n"
+        "The crash is still what the --cuda-launch-blocking run said it was: a "
+        "race, not a capacity problem. Peak was 13.39-13.40GB of 14.56 in every "
+        "one of the nine, crashed or not, so memory does not distinguish them "
+        "either, and it survives BOTH the flashinfer uninstall and "
+        "UNSLOTH_VLLM_NO_FLASHINFER=1. Nine sessions at a 44% reproduction "
+        "rate is worth filing upstream.\n"
+        "It also exposed a SECOND problem, and the two are separate. That run "
+        "failed on reward_std = [0.0, 0.0, 0.0] with grad_norm 0.0 at every "
+        "step. The completions recorded in the report are coherent prose, not "
+        "degenerate, so this is not the model collapsing -- it is two "
+        "completions scoring identically. The leg runs num_generations = 2, "
+        "shrunk to fit a 14.56GB card, and at two samples a tie on a coarse "
+        "reward is ordinary rather than a bug. So the leg's own pass "
+        "criterion is fragile at the size it has to be to fit.\n"
+        "THAT SECOND PROBLEM IS NOW FIXED AND CONFIRMED ON HARDWARE, TWICE, "
+        "and it was the dominant failure rather than the crash: two of the "
+        "three clean-crash runs still went red on reward_std zero. The cause "
+        "was reward_length saturating at 200 characters while the model emits "
+        "2534-3396, so every completion scored 1.0 and every group tied. It is "
+        "now len/(len+200), which cannot saturate. Two independent sessions on "
+        "two accounts then recorded non-zero reward_std on every step -- "
+        "reward3-045dba and crashax-b-27d9e3 -- with frac_reward_zero_std 0.0 "
+        "throughout. The reward blocker is closed.\n"
+        "SO WHAT KEEPS THIS OUT OF THE PER-PR KERNEL IS THE CRASH ALONE, and "
+        "44% is the number that decides it: a coin-flip red in front of every "
+        "PR, for a fault no reader can act on, is how a check gets switched "
+        "off before the day it is right. The nightly is where it runs instead, "
+        "and it does -- kaggle-t4-notebook-ci.yml dispatches 'grpo,multi_gpu' "
+        "on the schedule, where a red costs nobody a merge.\n"
+        "STILL UNKNOWN: where the race is (the standby wake/sleep cycle on "
+        "sm_75 is the suspect, and UNSLOTH_VLLM_STANDBY=1 is set in every "
+        "session), and what pass criterion is honest at num_generations = 2."
+    ),
+}
+
+# Which legs travel in which kernel. ONE kernel, holding every leg, which its
+# 2xT4 session works through two at a time -- one per card, the next leg
+# starting on a card only when that card's previous leg has exited.
+#
+# This was two kernels, and the reason it is one now is NOT quota. A session
+# bills its wall clock once rather than per card, so two kernels of two legs
+# cost 662s of billing against 646s for one kernel of four: a rounding error.
+# What two kernels cost is the whole ACCOUNT. Kaggle allows two concurrent GPU
+# sessions, two kernels take both, and kaggle-t4-studio-gpu-ci.yml runs on the
+# same account -- so the notebook leg locked Unsloth out entirely for as long as
+# it ran (measured: Unsloth's run 32607617804 queued ~40 minutes behind notebook
+# run 32607621452). One kernel holds one session and leaves the other free, and
+# the two workflows now hold separate GitHub concurrency groups so they can
+# actually use it. Splitting the group without packing the kernel, or packing
+# without splitting the group, each make things worse on their own.
+#
+# gptoss sits THIRD, and that position is load-bearing. This is not the
+# longest-first order it used to be, and it is not tidy either, so it needs its
+# reasoning attached or the next reader will "fix" it back.
+#
+# The driver now prefetches the models on a lane that takes no card (see
+# kaggle_prefetch.py). A prefetch only pays for the work it finishes BEFORE the
+# leg that wants the model starts, so gptoss -- the only leg with a 12 GB
+# download -- must not start at t=0. Third is first pick of the SECOND WAVE: it
+# starts at ~190-220s, which is lead time the prefetch can spend, and a small
+# leg is still running beside it.
+#
+# Simulated over every permutation, against the durations measured on the real
+# one-kernel run 32611343797 (gptoss 384.1s, frontier 307.1s, canary 191.5s
+# warm, control 179.0s warm) and a range of the unknown gpt-oss download time D:
+#
+#   order                                  prefetch   worst (D 40..200)   mean
+#   canary, control, gptoss, frontier      yes            528.1s        504.1s
+#   control, canary, gptoss, frontier      yes            540.6s        500.8s
+#   gptoss, frontier, canary, control      no             563.1s        563.1s
+#   gptoss, frontier, canary, control      yes            603.1s        603.1s
+#   frontier, canary, control, gptoss      yes            651.1s        585.2s
+#
+# Three results, each contradicting something that sounds right:
+#
+#   * Prefetching WITHOUT reordering is a REGRESSION. gptoss starts at t=0, so
+#     there is no window in front of it to fill, and it waits on a download it
+#     could have started itself.
+#   * gptoss LAST is worse than doing nothing for any D under ~120s. It is the
+#     longest leg, so ending on it leaves the other card idle for its whole
+#     ~284s. Standard LPT; "run the big model last" is the intuition to resist.
+#   * This order is never worse than the old one at any D tested, including
+#     D=40 where the prefetch barely helps. Chosen on WORST CASE rather than
+#     mean, deliberately, because D is not measured yet.
+#
+# If the prefetch fails outright the schedule degrades to ~568s against the old
+# 563.1s: gptoss starts at ~184s and downloads for itself exactly as before.
+# Costing 5s to maybe save 35-65s is why this is safe to ship before D is known.
+#
+# control and canary stay in the same kernel, which is what their comparison
+# needs: same image, same driver, same hour. They no longer run on the two
+# cards SIMULTANEOUSLY, which is fine -- they were never compared against each
+# other, only each against its own committed reference, and neither reads a
+# clock. What would break them is landing in different SESSIONS, and packing
+# everything into one kernel makes that impossible rather than merely unlikely.
+#
+# `grpo` returns here once the illegal memory access in UNWIRED is understood.
+# It briefly had a kernel of its own, on the reasoning that pairing with gpt-oss
+# broke it: it failed paired and had passed alone. Running it ALONE again
+# (unsloth-t4-ci-c98f14be) reproduced the paired failure exactly, same stack,
+# same 13.8GB peak, same engine_built false, so the pairing was never the
+# variable and one contrasting observation was not enough to blame a shared
+# host. It stays unwired rather than re-paired, since a leg passing one session
+# in three tells CI nothing either way.
+#
+# `frontier` is REPLACED by `vision_fla_compile` rather than joined by it.
+# frontier was "latest transformers and trl on Qwen2.5-0.5B"; the vision leg is
+# latest transformers and trl on Qwen3.5-2B, and on top of that it asserts the
+# vendored FLA kernels, the attention choice on Turing, a real vision training
+# run with pixels on the card, the merged vision export, a Q8_0 GGUF with its
+# mmproj sidecar and inference on the exported file. Everything frontier proved
+# is a subset of that. Keeping both would spend a card on the smaller claim,
+# and MAX_LEGS_PER_KERNEL is 5.
+#
+# Verified GREEN as a whole leg before wiring, on one T4:
+# unsloth-probe-visleg-final-2b896b reports passed true with failures [],
+# vision_failures [] and kernel_failures [], at 2.84GB peak reserved -- so it
+# co-tenants comfortably rather than displacing anything.
+KERNELS: tuple[tuple[str, ...], ...] = (
+    ("canary", "control", "gptoss", "vision_fla_compile", "default"),
+)
+
+
+# What the prefetch lane warms, in order, into the Kaggle image's default HF
+# cache. See kaggle_prefetch.py for the mechanism and KERNELS above for why
+# gptoss is third.
+#
+# The SMALL model first, which inverts what looks obvious. gpt-oss is bigger,
+# but it is wanted by ONE leg whose own setup does not finish until ~160s, so a
+# fetch that lands by then is early enough. Qwen2.5-0.5B gates THREE legs and
+# the first of them starts at t=0, so it is the only fetch with no lead time in
+# front of it at all. Fetching the big one first pushes the small one out past
+# the moment the first leg is ready, delaying three legs to give one a head
+# start it did not need.
+#
+# These must match what the legs LOAD, which is not the same thing as what
+# they ASK FOR, and the difference cost a whole prefetch once already. The
+# gptoss payload declares DEFAULT_MODEL = "unsloth/gpt-oss-20b", but that is an
+# MXFP4 checkpoint and sm_75 cannot read MXFP4, so unsloth redirects to
+# `-unsloth-bnb-4bit` at load time; run_gptoss_t4.py's own docstring records the
+# redirect and the leg's output on run 32667451396 shows both strings. The
+# first version of this list prefetched the declared name and therefore pulled
+# 55.1 GB of a checkpoint no leg ever opens, while the leg downloaded the real
+# one for itself exactly as before.
+#
+# Nothing at runtime notices this: a prefetch of the wrong repo downloads
+# happily, warms a cache nobody reads, and reports success. The guard that was
+# supposed to catch it compared against DEFAULT_MODEL and so agreed with the
+# bug; it now knows about the redirect.
+PREFETCH_REPOS: tuple[str, ...] = (
+    # CRITICAL PATH FIRST, and that is a reversal of the original order.
+    #
+    # The earlier argument was gpt-oss first for MARGIN, because D -- how long
+    # 12.5 GB takes -- was unknown and gptoss was the leg the schedule was built
+    # around. D is now measured at 61.7s on kernel
+    # unsloth-probe-prefetch-verify-9568-7a0bdd (~203 MB/s once the symlinked
+    # blob double-count is removed), so every repo here lands inside ~90s
+    # whatever the order, and the leg that needs one EARLIEST should not be the
+    # one waiting.
+    #
+    # vision_fla_compile is that leg: it starts at t~21 and it sets the
+    # makespan, so its 4.58 GB checkpoint is what a background lane should be
+    # fetching while the legs are still installing.
+    "unsloth/Qwen3.5-2B",
+    # Default's model and the 4bit sibling `load_in_4bit=True` actually
+    # resolves to. Both, because FLOAT_TO_INT_MAPPER redirects at load time and
+    # warming only the name that appears in the args warms a cache the leg
+    # never reads -- which downloads happily and saves nothing.
+    "unsloth/Qwen3-0.6B",
+    "unsloth/qwen3-0.6b-unsloth-bnb-4bit",
+    # canary and control, which take the payload default.
+    "unsloth/Qwen2.5-0.5B-Instruct",
+    # Last now rather than first: gptoss is admitted only once a card empties,
+    # around t~500 on the measured schedule, so it has the most slack of
+    # anything here.
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+)
+
+# Declared name -> what actually gets loaded on an sm_75 card. Kept beside the
+# list it corrects so the two cannot drift apart silently.
+LOAD_REDIRECTS: dict[str, str] = {
+    "unsloth/gpt-oss-20b": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    # CASE MATTERS HERE, and it is not a typo. Two runs report
+    # `resolved_checkpoint: unsloth/qwen3-0.6b-unsloth-bnb-4bit` in lower case
+    # (all5-kernel-e28818 and defaultleg-s20-002d25), while gpt-oss above
+    # resolves with its capitals intact. The HF cache keys on the literal
+    # string -- `models--unsloth--qwen3-0.6b-unsloth-bnb-4bit` is a different
+    # directory from `models--unsloth--Qwen3-0.6B-unsloth-bnb-4bit` -- so
+    # prefetching the pretty spelling warms a directory the leg never reads and
+    # the download happens twice. Copied from the report rather than typed.
+    "unsloth/Qwen3-0.6B": "unsloth/qwen3-0.6b-unsloth-bnb-4bit",
+}
+
+
+def expand_install(
+    leg: Leg, *, unsloth_ref: str, zoo_ref: str, payload_dir: Path
+) -> list[list[str]]:
+    """Resolve a leg's install groups into concrete pip argument lists."""
+    groups: list[list[str]] = []
+    for group in leg.install:
+        expanded: list[str] = []
+        for item in group:
+            if item.startswith("@PINS:"):
+                expanded.extend(_read_pins(payload_dir / "pins" / item[len("@PINS:") :]))
+                continue
+            expanded.append(item.format(unsloth_ref = unsloth_ref, zoo_ref = zoo_ref))
+        if expanded:
+            groups.append(expanded)
+    return groups
+
+
+def _read_pins(path: Path) -> list[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"leg names a pin file that is not there: {path}")
+    out = []
+    for line in path.read_text(encoding = "utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.append(line)
+    if not out:
+        raise ValueError(
+            f"pin file {path} names no versions at all, so the control leg would pin nothing"
+        )
+    return out
+
+
+def resolve(names) -> list[Leg]:
+    """Legs by name, in the order given. Unknown names fail loudly here.
+
+    At build time rather than on the kernel: a typo in a workflow input must
+    cost a runner second, not a Kaggle session.
+    """
+    legs = []
+    for name in names:
+        if name not in LEGS:
+            raise SystemExit(f"unknown leg {name!r}; known legs are {', '.join(sorted(LEGS))}")
+        legs.append(LEGS[name])
+    return legs

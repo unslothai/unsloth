@@ -14,6 +14,7 @@ _TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
 _REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
+_SETUP_SH = _REPO_ROOT / "studio" / "setup.sh"
 _SETUP_PS1 = _REPO_ROOT / "studio" / "setup.ps1"
 _NO_TORCH_RT = _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 
@@ -167,6 +168,21 @@ class TestSetupPs1FastInstallIndex:
         assert 'Remove-Item "Env:$n"' in self._ps1
 
 
+def test_setup_sh_sidecar_installs_isolate_uv_override():
+    source = _read(_SETUP_SH)
+    helper = re.search(r"fast_install_sidecar\(\) \(\n.*?\n\)", source, re.S)
+    assert helper is not None
+    script = (
+        "UV_OVERRIDE=base\nfast_install() { printf 'child=%s\\n' \"${UV_OVERRIDE-unset}\"; }\n"
+        f"{helper.group()}\nfast_install_sidecar\nprintf 'parent=%s\\n' \"$UV_OVERRIDE\"\n"
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert result.returncode == 0 and result.stdout.splitlines() == ["child=unset", "parent=base"]
+    sidecars = source.split("# ── 6b.", 1)[1].split("# ── GPU detection", 1)[0]
+    assert sidecars.count("fast_install_sidecar --target") == 12
+    assert " fast_install --target" not in sidecars
+
+
 class TestInstallShUvDefaultIndex:
     """Linux/Mac installer torch indexes must override inherited uv defaults."""
 
@@ -176,7 +192,17 @@ class TestInstallShUvDefaultIndex:
         assert '--default-index "$TORCH_INDEX_URL"' in self._sh
 
     def test_torch_installs_do_not_use_deprecated_index_url(self):
-        assert '--index-url "$TORCH_INDEX_URL"' not in self._sh
+        # uv deprecated --index-url in favour of --default-index; pip never had it, so the XPU
+        # triton pre-fetch (`pip download`) legitimately uses --index-url. Checked per
+        # occurrence so a uv invocation still cannot slip one through. Backslash continuations
+        # are joined first, since the flag and its command are often on different lines.
+        joined = self._sh.replace("\\\n", " ")
+        offenders = [
+            " ".join(line.split())
+            for line in joined.splitlines()
+            if '--index-url "$TORCH_INDEX_URL"' in line and "pip download" not in line
+        ]
+        assert not offenders, offenders
 
     def test_torch_installs_neutralize_all_uv_index_env_vars(self):
         # --default-index installs run with all uv index env vars unset via `env -u`.

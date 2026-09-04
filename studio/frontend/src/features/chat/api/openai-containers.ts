@@ -4,7 +4,7 @@
 /**
  * Wrappers for the backend's three OpenAI shell-tool container endpoints
  * (studio/backend/routes/inference.py). Each proxies to OpenAI's
- * /v1/containers using the user's encrypted API key. Backend rejects any
+ * /v1/containers using a saved provider key or encrypted request override. Backend rejects any
  * base URL but api.openai.com (the shell tool is managed-cloud only).
  */
 
@@ -46,13 +46,17 @@ async function parseError(response: Response): Promise<string> {
 }
 
 interface AuthInputs {
-  apiKey: string;
+  providerId: string;
+  apiKey?: string | null;
   baseUrl: string | null;
 }
 
 async function buildAuthBody(auth: AuthInputs) {
   return {
-    encrypted_api_key: await encryptProviderApiKey(auth.apiKey),
+    provider_id: auth.providerId,
+    ...(auth.apiKey
+      ? { encrypted_api_key: await encryptProviderApiKey(auth.apiKey) }
+      : {}),
     provider_base_url: auth.baseUrl,
   };
 }

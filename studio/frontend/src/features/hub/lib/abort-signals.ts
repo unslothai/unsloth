@@ -28,10 +28,6 @@ export function disposableTimeoutSignal(ms: number): PollSignal {
   return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
 
-export function timeoutSignal(ms: number): AbortSignal {
-  return disposableTimeoutSignal(ms).signal;
-}
-
 // Callers MUST dispose() once the request settles so abort listeners don't pile up.
 export function combineAbortSignals(signals: AbortSignal[]): PollSignal {
   if (typeof AbortSignal.any === "function") {

@@ -162,18 +162,17 @@ def _run_multi_pass_advisor(
     variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
     backend = None
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
         backend = LlamaCppBackend()
         started = time.monotonic()
-        if not backend.load_model(
+        intent = GgufLoadIntent(
+            model_identifier = f"hub-advisor:{repo}:{variant}",
             hf_repo = repo,
             hf_variant = variant,
-            model_identifier = f"hub-advisor:{repo}:{variant}",
-            is_vision = False,
             n_ctx = 2048,
-            n_gpu_layers = -1,
-        ):
+        )
+        if not backend.load_model(intent):
             return None
         logger.info("Hub advisor model loaded in %.1fs", time.monotonic() - started)
 

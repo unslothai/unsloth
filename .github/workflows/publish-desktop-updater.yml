@@ -1,0 +1,607 @@
+name: Publish Desktop Release
+
+# Manual dispatch only: sharing release-desktop.yml's concurrency group, a publish-fired
+# run stalls the desktop build queued behind it -- and predates any bundles anyway.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Unified v... release to validate and expose to clients (for example, v0.1.61-beta)'
+        type: string
+        required: true
+      repair_pointer:
+        description: 'Release carries no bundles of its own: restore the newest complete Desktop release as GitHub latest'
+        type: boolean
+        required: false
+        default: false
+      bridge_legacy_channel:
+        description: 'One-time migration only: mirror this release manifest to existing desktop-latest'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-desktop-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  publish-updater:
+    name: Validate published desktop release
+    # A mistakenly flagged prerelease still reaches the job, so validation fails
+    # visibly instead of silently skipping.
+    if: ${{ startsWith(inputs.release_tag, 'v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+
+      # Only validate complete Desktop publications; bundleless releases are normal.
+      - name: Check for desktop bundles
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPAIR_POINTER: ${{ inputs.repair_pointer }}
+        run: |
+          set -euo pipefail
+          asset_names="$RUNNER_TEMP/release-asset-names.txt"
+          # Fail closed: an unreadable release must not look like one with no bundles.
+          if ! gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$asset_names"; then
+            echo "Could not list assets on ${RELEASE_TAG}; refusing to advance the channel." >&2
+            exit 1
+          fi
+          # Releases built before the rename carry the version in each filename, so
+          # completeness is judged against this tag's own scheme. Both spellings are
+          # whole publications; only a mixture of the two is partial. The same rule
+          # decides a repair source below, and the two must not disagree.
+          version="$(printf '%s' "${RELEASE_TAG#v}" | sed 's/[^0-9A-Za-z][^0-9A-Za-z]*/_/g; s/^_//; s/_$//')"
+          suffixes=(MacOS.dmg Linux.AppImage Ubuntu.deb Windows.exe)
+          stable_count=0
+          versioned_count=0
+          for suffix in "${suffixes[@]}"; do
+            if grep -Fxq "Unsloth-Desktop-${suffix}" "$asset_names"; then
+              stable_count=$(( stable_count + 1 ))
+            fi
+            if grep -Fxq "Unsloth-Desktop-${version}-${suffix}" "$asset_names"; then
+              versioned_count=$(( versioned_count + 1 ))
+            fi
+          done
+          complete=false
+          if [ "$stable_count" -eq "${#suffixes[@]}" ] || [ "$versioned_count" -eq "${#suffixes[@]}" ]; then
+            complete=true
+          fi
+          if grep -Fxq 'latest.json' "$asset_names" && [ "$complete" = 'true' ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          elif grep -Fxq 'latest.json' "$asset_names" || grep -q '^Unsloth-Desktop-' "$asset_names"; then
+            # Half a publication: bundles without a manifest, a manifest without
+            # bundles, or some of each. Never validate it. Never block the repair
+            # either: the repair reads other releases and writes nothing here, and
+            # this is one of the states that leaves the pointer needing repair.
+            if [ "$REPAIR_POINTER" = 'true' ]; then
+              echo "${RELEASE_TAG} carries no complete Desktop publication; repairing the pointer instead."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "${RELEASE_TAG} has an incomplete Desktop publication (${stable_count}/${#suffixes[@]} stable and ${versioned_count}/${#suffixes[@]} versioned downloads); refusing a partial publication." >&2
+              exit 1
+            fi
+          else
+            echo "${RELEASE_TAG} carries no Desktop publication yet; nothing to validate."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # /releases/latest is repo-wide. A bundleless release moves updater discovery
+      # and stable downloads to a 404, so restore the newest complete Desktop release
+      # as latest without duplicating its binaries.
+      - name: Restore latest complete Desktop release
+        if: ${{ inputs.repair_pointer && steps.gate.outputs.proceed == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The target's tag shape does not matter: nothing is written to it. A
+          # prebuilt llama.cpp release (b8475) or a dated one takes the repo-wide
+          # pointer exactly as a bundleless v... release does, and takes the stable
+          # download links down with it, so all of them are repairable here.
+          #
+          # 100 most recent releases: far more than the gap between desktop builds,
+          # and one page keeps this to a single API call.
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          python3 - "$RUNNER_TEMP/releases.json" "$RUNNER_TEMP/candidates.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          semver = re.compile(r'^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$')
+          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          SUFFIXES = ('MacOS.dmg', 'Linux.AppImage', 'Ubuntu.deb', 'Windows.exe')
+
+          def asset_prefixes(tag):
+              version = re.sub(r'[^0-9A-Za-z]+', '_', tag.removeprefix('v')).strip('_')
+              return ('Unsloth-Desktop', f'Unsloth-Desktop-{version}')
+
+          def has_complete_downloads(release):
+              names = {asset.get('name') for asset in release.get('assets', [])}
+              return any(
+                  {'latest.json', *(f'{prefix}-{suffix}' for suffix in SUFFIXES)}.issubset(names)
+                  for prefix in asset_prefixes(release.get('tag_name', ''))
+              )
+
+          def version_key(tag):
+              """SemVer precedence, so publish order can never pick an older build."""
+              major, minor, patch = (int(part) for part in re.findall(r'\d+', tag.split('-')[0]))
+              pre = tag.split('-', 1)[1] if '-' in tag else None
+              if pre is None:
+                  return ((major, minor, patch), (1,))
+              identifiers = []
+              for part in pre.split('.'):
+                  # Numeric identifiers rank below alphanumeric ones, as SemVer says.
+                  identifiers.append((0, int(part), '') if part.isdigit() else (1, 0, part))
+              return ((major, minor, patch), (0, tuple(identifiers)))
+
+          # Read the target here because /releases/tags/{tag} returns 404 for drafts.
+          target = next(
+              (r for r in releases if r.get('tag_name') == os.environ['RELEASE_TAG']),
+              None,
+          )
+          # Fail closed when a target beyond this page has an unreadable state.
+          if target is None:
+              sys.exit(
+                  f"{os.environ['RELEASE_TAG']} is not among the 100 most recent releases; "
+                  'refusing to repair latest for a target whose draft or '
+                  'prerelease state cannot be checked'
+              )
+          if target.get('draft') or target.get('prerelease'):
+              state = 'draft' if target.get('draft') else 'prerelease'
+              sys.exit(
+                  f"{os.environ['RELEASE_TAG']} is a {state}, which /releases/latest never "
+                  'resolves to; refusing a repair that cannot affect the pointer'
+              )
+
+          candidates = [
+              release for release in releases
+              if semver.fullmatch(release.get('tag_name') or '')
+              and release.get('tag_name') != os.environ['RELEASE_TAG']
+              and not release.get('draft') and not release.get('prerelease')
+              and has_complete_downloads(release)
+          ]
+          # Highest version first, publish time only as a tie-break: a release
+          # republished out of order must not drag the pointer onto an older build.
+          candidates.sort(
+              key=lambda release: (
+                  version_key(release['tag_name']),
+                  release.get('published_at') or '',
+              ),
+              reverse=True,
+          )
+          chosen = []
+          for release in candidates:
+              release_id = release.get('id')
+              if not isinstance(release_id, int):
+                  sys.exit(f"{release.get('tag_name')} is missing its GitHub release id")
+              tag = release['tag_name']
+              chosen.append({
+                  'tag': tag,
+                  'id': release_id,
+                  'assets': sorted(
+                      name for name in (a.get('name') for a in release.get('assets', []))
+                      if isinstance(name, str)
+                  ),
+                  # A pre-rename release restores update checks but not the stable
+                  # download links, which only exist on releases built after it.
+                  'stable_names': {f'Unsloth-Desktop-{s}' for s in SUFFIXES}.issubset(
+                      {a.get('name') for a in release.get('assets', [])}
+                  ),
+              })
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(chosen))
+          PY
+
+          # Validate candidates newest first and restore the first sound one. One bad
+          # manifest must not end the repair while a good pointer target is waiting.
+          cat > "$RUNNER_TEMP/validate-source.py" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+          import urllib.parse
+
+          source_tag = os.environ['SOURCE_TAG']
+          assets = set(json.loads(os.environ['SOURCE_ASSETS']))
+          data = json.loads(pathlib.Path(
+              os.environ['RUNNER_TEMP'], 'restore-latest', 'latest.json'
+          ).read_text())
+          version = data.get('version')
+          semver = r'v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?'
+          if not isinstance(version, str) or not re.fullmatch(semver, version):
+              sys.exit(f'{source_tag} latest.json declares invalid version {version!r}')
+
+          bundle_tag = version if version.startswith('v') else f'v{version}'
+          if bundle_tag != source_tag:
+              sys.exit(f'{source_tag} latest.json names {bundle_tag}; refusing to restore a pointer release')
+          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{source_tag}/'
+          platforms = data.get('platforms')
+          if not isinstance(platforms, dict) or not platforms:
+              sys.exit(f'{source_tag} latest.json has no platforms')
+          for platform, entry in sorted(platforms.items()):
+              url = (entry or {}).get('url')
+              signature = (entry or {}).get('signature')
+              if not isinstance(url, str) or not url.startswith(expected_prefix):
+                  sys.exit(f'{source_tag} latest.json {platform} URL is not pinned to its release: {url}')
+              if not isinstance(signature, str) or not signature.strip():
+                  sys.exit(f'{source_tag} latest.json {platform} has no signature')
+              # Prefix-matching a URL says nothing about the asset still being there.
+              # Promoting a release whose manifest names a deleted bundle hands every
+              # client on that platform a 404 instead of an update.
+              bundle = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit('/', 1)[-1])
+              if bundle not in assets:
+                  sys.exit(f'{source_tag} latest.json {platform} names a missing asset: {bundle}')
+          PY
+
+          source_tag=''
+          source_id=''
+          source_has_stable_names=''
+          candidate_count="$(python3 -c 'import json,os,pathlib; print(len(json.loads(pathlib.Path(os.environ["RUNNER_TEMP"], "candidates.json").read_text())))')"
+          index=0
+          while [ "$index" -lt "$candidate_count" ]; do
+            entry="$(INDEX="$index" python3 -c 'import json,os,pathlib; print(json.dumps(json.loads(pathlib.Path(os.environ["RUNNER_TEMP"], "candidates.json").read_text())[int(os.environ["INDEX"])]))')"
+            candidate_tag="$(printf '%s' "$entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag"])')"
+            candidate_id="$(printf '%s' "$entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+            candidate_assets="$(printf '%s' "$entry" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["assets"]))')"
+            candidate_stable="$(printf '%s' "$entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stable_names"])')"
+            index=$(( index + 1 ))
+            rm -rf "$RUNNER_TEMP/restore-latest"
+            mkdir -p "$RUNNER_TEMP/restore-latest"
+            if ! gh release download "$candidate_tag" --pattern latest.json \
+              --dir "$RUNNER_TEMP/restore-latest" --clobber; then
+              echo "${candidate_tag} has no readable latest.json; trying the next candidate." >&2
+              continue
+            fi
+            if ! SOURCE_TAG="$candidate_tag" SOURCE_ASSETS="$candidate_assets" \
+              python3 "$RUNNER_TEMP/validate-source.py"; then
+              echo "${candidate_tag} is not a sound pointer target; trying the next candidate." >&2
+              continue
+            fi
+            source_tag="$candidate_tag"
+            source_id="$candidate_id"
+            source_has_stable_names="$candidate_stable"
+            break
+          done
+
+          if [ -z "$source_tag" ]; then
+            echo "No published release carries a sound complete Desktop publication; nothing to restore." >&2
+            {
+              printf '### Desktop updater pointer\n\n'
+              printf 'GitHub latest still points at %s, which carries no Desktop build.\n\n' "$RELEASE_TAG"
+              printf 'No release among the 100 most recent could be restored, so update checks and\n'
+              printf 'stable downloads are still returning 404. Publish a Desktop release to fix this.\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Re-read the pointer against the world as it is now, not as the listing
+          # above found it. Promoting an older release over a healthy newer one, or
+          # over one another job just published, hands every client an older manifest.
+          current_latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [ "$current_latest" != "$RELEASE_TAG" ]; then
+            echo "GitHub latest is ${current_latest:-unset}, not ${RELEASE_TAG}; nothing to repair."
+            {
+              printf '### Desktop updater pointer\n\n'
+              printf 'Left GitHub latest on %s: it is no longer %s, so there was nothing to repair.\n' \
+                "${current_latest:-unset}" "$RELEASE_TAG"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${source_id}" \
+            -f make_latest=true > "$RUNNER_TEMP/restored-latest.json"
+          # The pointer is read back rather than assumed, with a little patience for
+          # propagation so a slow read does not report a repair that did happen as a
+          # failure. A disagreement that outlives the retries is a real one.
+          restored=''
+          for _ in 1 2 3 4 5; do
+            restored="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            [ "$restored" = "$source_tag" ] && break
+            sleep 2
+          done
+          if [ "$restored" != "$source_tag" ]; then
+            echo "GitHub latest reads ${restored:-unset} after promoting ${source_tag}; another run may have moved it." >&2
+            exit 1
+          fi
+          echo "Restored ${source_tag} as GitHub latest while ${RELEASE_TAG} has no Desktop build."
+          # Record the gap while GitHub latest pointed at a bundleless release.
+          {
+            printf '### Desktop updater pointer\n\n'
+            printf '%s carries no desktop bundles, so GitHub latest now points back to %s.\n\n' \
+              "$RELEASE_TAG" "$source_tag"
+            printf 'Update checks and stable downloads returned 404 between publication and this repair.\n'
+            if [ "$source_has_stable_names" != 'True' ]; then
+              printf '\n%s predates the stable asset names, so update checks work again but the\n' "$source_tag"
+              printf 'stable /releases/latest/download/Unsloth-Desktop-... links are still 404\n'
+              printf 'until a release built with the stable names is published.\n'
+            fi
+            printf '\nRe-dispatch without repair_pointer once %s carries its own bundles.\n' \
+              "$RELEASE_TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download updater metadata
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-updater"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
+          gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater"
+          test -s "$RUNNER_TEMP/desktop-updater/latest.json"
+
+      - name: Validate updater metadata
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+          import urllib.parse
+
+          release_tag = os.environ['RELEASE_TAG']
+          match = re.fullmatch(r'v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?)', release_tag)
+          if not match:
+              sys.exit(f'Not a unified desktop version release: {release_tag}')
+
+          source = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'source-release.json').read_text())
+          if source.get('tag_name') != release_tag or source.get('draft'):
+              sys.exit(f'Source release is not the published release {release_tag}')
+          if source.get('prerelease'):
+              sys.exit(f'{release_tag} must be a normal GitHub release, not a prerelease')
+          release_assets = {asset.get('name') for asset in source.get('assets', [])}
+          # Same rule as the gate: this tag's own naming scheme, whichever it is.
+          asset_version = re.sub(r'[^0-9A-Za-z]+', '_', match.group(1)).strip('_')
+          suffixes = ('MacOS.dmg', 'Linux.AppImage', 'Ubuntu.deb', 'Windows.exe')
+          download_sets = {
+              prefix: {f'{prefix}-{suffix}' for suffix in suffixes}
+              for prefix in ('Unsloth-Desktop', f'Unsloth-Desktop-{asset_version}')
+          }
+          if not any(names.issubset(release_assets) for names in download_sets.values()):
+              missing = sorted(min(download_sets.values(), key=lambda names: len(names - release_assets))
+                               - release_assets)
+              sys.exit(f'{release_tag} is missing public Desktop downloads: {missing}')
+
+          latest_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
+          data = json.loads(latest_path.read_text())
+          if not isinstance(data, dict):
+              sys.exit('latest.json must be a JSON object')
+          version = data.get('version')
+          if not isinstance(version, str) or version.removeprefix('v') != match.group(1):
+              sys.exit(f'latest.json version {version!r} does not match {release_tag}')
+
+          platforms = data.get('platforms')
+          if not isinstance(platforms, dict) or not platforms:
+              sys.exit('latest.json missing platforms')
+          required = {'darwin-aarch64': False, 'linux-x86_64': False, 'windows-x86_64': False}
+          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
+          forbidden = ('/releases/latest/', '/releases/download/desktop-latest/')
+          for platform, entry in platforms.items():
+              if not isinstance(entry, dict):
+                  sys.exit(f'Platform {platform} must be an object')
+              url = entry.get('url')
+              signature = entry.get('signature')
+              if not isinstance(url, str) or any(fragment in url for fragment in forbidden) or not url.startswith(expected_prefix):
+                  sys.exit(f'Platform {platform} URL must point at immutable assets on {release_tag}: {url}')
+              if not isinstance(signature, str) or not signature.strip():
+                  sys.exit(f'Platform {platform} missing signature')
+              bundle_name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit('/', 1)[-1])
+              if bundle_name not in release_assets:
+                  sys.exit(f'Platform {platform} bundle is missing from release assets: {bundle_name}')
+              for family in required:
+                  if platform == family or platform.startswith(family + '-'):
+                      required[family] = True
+          missing = [family for family, found in required.items() if not found]
+          if missing:
+              sys.exit('latest.json missing required platform families: ' + ', '.join(missing))
+          PY
+
+      - name: Prevent GitHub latest downgrade
+        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$RUNNER_TEMP/current-latest-release.json"
+          error="$RUNNER_TEMP/current-latest-release.err"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$current" 2> "$error"; then
+            if grep -Fq '(HTTP 404)' "$error"; then
+              exit 0
+            fi
+            cat "$error" >&2
+            exit 1
+          fi
+          python3 - "$current" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          def parse(value):
+              match = re.fullmatch(
+                  r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+                  r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?', value
+              )
+              if not match:
+                  sys.exit(f'Invalid desktop release version: {value}')
+              major, minor, patch, pre = match.groups()
+              return (int(major), int(minor), int(patch), pre)
+
+          def part(left, right):
+              if left.isdigit() and right.isdigit():
+                  return (int(left) > int(right)) - (int(left) < int(right))
+              if left.isdigit(): return -1
+              if right.isdigit(): return 1
+              left_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', left)
+              right_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', right)
+              if left_tail and right_tail and left_tail.group(1).lower() == right_tail.group(1).lower():
+                  return (int(left_tail.group(2)) > int(right_tail.group(2))) - (int(left_tail.group(2)) < int(right_tail.group(2)))
+              return (left > right) - (left < right)
+
+          def compare(left, right):
+              *left_core, left_pre = parse(left)
+              *right_core, right_pre = parse(right)
+              if left_core != right_core:
+                  return (left_core > right_core) - (left_core < right_core)
+              if left_pre == right_pre: return 0
+              if left_pre is None: return 1
+              if right_pre is None: return -1
+              left_parts, right_parts = left_pre.split('.'), right_pre.split('.')
+              for left_part, right_part in zip(left_parts, right_parts):
+                  order = part(left_part, right_part)
+                  if order: return order
+              return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
+
+          current = json.loads(pathlib.Path(sys.argv[1]).read_text()).get('tag_name')
+          candidate = os.environ['RELEASE_TAG']
+          if not isinstance(current, str):
+              sys.exit('GitHub latest release is missing tag_name')
+          if compare(candidate, current) < 0:
+              sys.exit(f'Refusing to replace GitHub latest {current} with older {candidate}')
+          PY
+
+
+      # Deletion is permanent and the tag is now hand-typed, so every check that can
+      # reject the target runs above this. Validation only asks whether each manifest
+      # bundle is present, so the surviving .sig assets do not change its verdict.
+      # The re-fetch keeps source-release.json current for the promotion below.
+      - name: Remove standalone signature assets
+        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Scoped to the desktop bundles: the v... release carries other assets too.
+          signature_assets="$(gh release view "$RELEASE_TAG" --json assets \
+            --jq '.assets[].name | select(startswith("Unsloth-Desktop-")) | select(endswith(".sig"))')"
+          while IFS= read -r asset_name; do
+            [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
+          done <<< "$signature_assets"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
+
+      - name: Mark published release as GitHub latest
+        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_id="$(python3 -c 'import json,os,pathlib; print(json.loads(pathlib.Path(os.environ["RUNNER_TEMP"], "source-release.json").read_text())["id"])')"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -f make_latest=true >/dev/null
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --json assets --jq '[.assets[].name]' \
+            > "$RUNNER_TEMP/promoted-asset-names.json"
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          names = set(json.loads(
+              pathlib.Path(os.environ['RUNNER_TEMP'], 'promoted-asset-names.json').read_text()
+          ))
+          tag = os.environ['RELEASE_TAG']
+          # The same either-scheme rule the gate applied to let this release through.
+          version = re.sub(r'[^0-9A-Za-z]+', '_', tag.removeprefix('v')).strip('_')
+          suffixes = ('MacOS.dmg', 'Linux.AppImage', 'Ubuntu.deb', 'Windows.exe')
+          if 'latest.json' not in names:
+              sys.exit(f'{tag} is GitHub latest but serves no latest.json')
+          if not any(
+              {f'{prefix}-{suffix}' for suffix in suffixes}.issubset(names)
+              for prefix in ('Unsloth-Desktop', f'Unsloth-Desktop-{version}')
+          ):
+              sys.exit(f'{tag} is GitHub latest but serves no complete Desktop download set')
+          PY
+
+      # The gate conjunct is load-bearing: this step reads the manifest fetched by
+      # "Download updater metadata", itself gated on proceed == 'true'. Without it a
+      # repair_pointer run that also bridges would die on a file it never downloaded.
+      - name: Bridge legacy desktop-latest clients once
+        if: ${{ steps.gate.outputs.proceed == 'true' && inputs.bridge_legacy_channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Never create or silently revive this deprecated release. It must be the
+          # existing channel established by publishing the final desktop-v bridge.
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$RUNNER_TEMP/legacy-channel.json"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
+          mkdir -p "$RUNNER_TEMP/legacy-current"
+          gh release download desktop-latest --pattern latest.json \
+            --dir "$RUNNER_TEMP/legacy-current" --clobber
+          python3 - "$RUNNER_TEMP/legacy-channel.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          channel = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if channel.get('draft') or channel.get('immutable') or not channel.get('prerelease'):
+              sys.exit('Existing desktop-latest is not a mutable legacy updater channel')
+
+          def parse(value):
+              match = re.fullmatch(
+                  r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+                  r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?', value
+              )
+              if not match:
+                  sys.exit(f'Invalid desktop release version: {value}')
+              major, minor, patch, pre = match.groups()
+              return (int(major), int(minor), int(patch), pre)
+
+          def part(left, right):
+              if left.isdigit() and right.isdigit():
+                  return (int(left) > int(right)) - (int(left) < int(right))
+              if left.isdigit(): return -1
+              if right.isdigit(): return 1
+              left_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', left)
+              right_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', right)
+              if left_tail and right_tail and left_tail.group(1).lower() == right_tail.group(1).lower():
+                  return (int(left_tail.group(2)) > int(right_tail.group(2))) - (int(left_tail.group(2)) < int(right_tail.group(2)))
+              return (left > right) - (left < right)
+
+          def compare(left, right):
+              *left_core, left_pre = parse(left)
+              *right_core, right_pre = parse(right)
+              if left_core != right_core:
+                  return (left_core > right_core) - (left_core < right_core)
+              if left_pre == right_pre: return 0
+              if left_pre is None: return 1
+              if right_pre is None: return -1
+              left_parts, right_parts = left_pre.split('.'), right_pre.split('.')
+              for left_part, right_part in zip(left_parts, right_parts):
+                  order = part(left_part, right_part)
+                  if order: return order
+              return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
+
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          current = json.loads((runner / 'legacy-current' / 'latest.json').read_text()).get('version')
+          candidate = json.loads((runner / 'desktop-updater' / 'latest.json').read_text()).get('version')
+          if not isinstance(current, str) or not isinstance(candidate, str):
+              sys.exit('Legacy or candidate latest.json is missing version')
+          if compare(candidate, current) < 0:
+              sys.exit(f'Refusing to move desktop-latest from {current} to older {candidate}')
+          PY
+          gh release upload desktop-latest "$RUNNER_TEMP/desktop-updater/latest.json" --clobber
+          test "$(gh release view desktop-latest --json assets --jq '[.assets[] | select(.name == "latest.json")] | length')" = 1
