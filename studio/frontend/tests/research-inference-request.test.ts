@@ -95,6 +95,11 @@ test("an undocumented model with no connection override sends no ceiling", () =>
     temperature: 0.2,
     topP: 0.9,
     maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
   });
   assert.equal("maxOutputTokens" in request, false);
 });
@@ -111,6 +116,11 @@ test("an explicit connection override is still sent", () => {
     temperature: 0.2,
     topP: 0.9,
     maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
   });
   assert.equal(request.maxOutputTokens, 20000);
 });
