@@ -116,6 +116,12 @@ SECRETS = [
     ('{"credentials":"opaqueCredential123456"}', "opaqueCredential123456"),
     ("credentials: opaqueCredential123456", "opaqueCredential123456"),
     ("credential=opaqueCredential123456", "opaqueCredential123456"),
+    # TOML triple quotes, a path-shaped ODBC password, and the AWS session token header.
+    ('password = """opaqueSecret123"""', "opaqueSecret123"),
+    ("password = '''opaqueSecret123'''", "opaqueSecret123"),
+    ("UID=alice;PWD=/hunter2;Encrypt=yes", "/hunter2"),
+    ("X-Amz-Security-Token: IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQ", "IQoJb3JpZ2luX2VjEJr"),
+    ('headers={"x-amz-security-token": "IQoJb3JpZ2luX2VjEJr"}', "IQoJb3JpZ2luX2VjEJr"),
 ]
 
 # Real log lines. Each one must come back byte for byte.
@@ -155,6 +161,7 @@ KEEP = [
     "server --token-id 128009",
     # The shell's working directory, and variables that name a file rather than hold a secret.
     "PWD=/home/dan/Downloads/unsloth-work",
+    "export PWD=/home/dan/Downloads/unsloth-work",
     "secret_sauce_path=/data/recipes/default.yaml",
     "PRIVATE_KEY_PATH=/etc/ssl/private/server.key",
     "HF_TOKEN_PATH=/home/dan/.cache/huggingface/token",
@@ -190,6 +197,7 @@ QUOTED = [
     ("password='correct horse battery staple'", "password='<redacted>'"),
     ('llama-server --api-key "abcdef ghijklmnop"', 'llama-server --api-key "<redacted>"'),
     ('llama-server --api-key="abcdef ghijklmnop"', 'llama-server --api-key="<redacted>"'),
+    ('password = """opaqueSecret123"""', 'password = """<redacted>"""'),
     (
         "ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes",
         "ODBC: UID=alice;PWD=<redacted>;Encrypt=yes",

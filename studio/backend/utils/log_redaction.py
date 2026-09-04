@@ -39,7 +39,7 @@ _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
 # Key names whose VALUE is a secret.
 # "token" alone is absent on purpose, so n_tokens = 4096 and token_id=128009 survive.
 _SECRET_KEYS = (
-    "authorization|x-api-key|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
+    "authorization|x-api-key|x-amz-security-token|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
     "refresh[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|"
     "session[-_]?token|"
     "aws_secret_access_key|aws_session_token|wandb[-_]?token|hub[-_]?token|"
@@ -135,16 +135,17 @@ _STRUCTURED_ENV_KV_RE = re.compile(
     r"(?P<quoted>" + _QUOTED_VALUE + r")(?P=quote)|"
     r"(?P<val>[^\"'\s,}\]]+))"
 )
+# a triple quote is left to _TRIPLE_QUOTED_KV_RE, or the first two would read as an empty value
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?"
-    r"(?P<quote>[\"'])"
+    r"(?P<quote>[\"'])(?!(?P=quote)(?P=quote))"
     r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
 _UNTERMINATED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?"
-    r"(?P<quote>[\"'])"
+    r"(?P<quote>[\"'])(?!(?P=quote)(?P=quote))"
     r"(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
     re.MULTILINE,
 )
@@ -172,6 +173,11 @@ _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
     r"(?P<val>[^\"'\s,}\]]+)"
+)
+# toml triple quotes: the ordinary quoted rule would take the first two as an empty value and leave the secret after them
+_TRIPLE_QUOTED_KV_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>\"\"\"|''')(?P<val>.*?)(?P=quote)"
 )
 _QUOTED_SCALAR_ONLY_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SCALAR_ONLY_KEYS + r")\b"
@@ -245,7 +251,7 @@ _OMITTED_QUOTED_START_RE = re.compile(
     + _SECRET_KEYS
     + r")|(?:set-)?cookie)\b[\"']?\s*[:=]\s*|--(?:"
     + _FLAG_SECRET_KEYS
-    + r")\s+)(?P<quote>[\"'])"
+    + r")(?:\s+|=))(?P<quote>[\"'])"
 )
 
 # An Authorization value, whatever the scheme. The key/value rule cannot reach
@@ -319,8 +325,9 @@ def _looks_like_credential(value: str) -> bool:
 
 def _redact_kv(match: re.Match[str]) -> str:
     value = match.group("val")
-    # the shell's PWD names the working directory; an odbc PWD= field, whatever its case, holds a password
-    if match.group("key") == "PWD" and _PATH_START_RE.match(value):
+    # a standalone PWD= holding a path is the shell's working directory; inside a ;-delimited odbc string it is a password
+    preceded_by = match.string[match.start() - 1] if match.start() else ""
+    if match.group("key") == "PWD" and _PATH_START_RE.match(value) and (not preceded_by or preceded_by.isspace()):
         return match.group(0)
     boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
     tail = ""
@@ -591,6 +598,9 @@ def _redact_credentials(text: str) -> str:
     text = _COOKIE_RE.sub(_redact_cookie, text)
     text = _ESCAPED_QUOTED_KV_RE.sub(_redact_escaped_quoted_kv, text)
     text = _QUOTED_HEADER_PAIR_RE.sub(_redact_quoted_header_pair, text)
+    text = _TRIPLE_QUOTED_KV_RE.sub(
+        lambda m: f"{m.group('key')}{m.group('sep')}{m.group('quote')}{REDACTED}{m.group('quote')}", text
+    )
     text = _QUOTED_KV_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_KV_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _PLAIN_SCALAR_KV_RE.sub(_redact_kv, text)
