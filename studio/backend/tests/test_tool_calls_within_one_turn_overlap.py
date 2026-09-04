@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
 import sys
 import threading
 from pathlib import Path
@@ -674,3 +675,77 @@ class TestTheReplayedTurnIsWhatTheModelSees:
             "RESULT<beta>",
             "RESULT<gamma>",
         ], "a result was attached to a call that did not produce it"
+
+
+class TestTheControllerHasExactlyTwoIntraRoundDependencies:
+    """The other place a round's calls could depend on each other: the controller.
+
+    The `nonlocal` guard above covers state shared through the loop's own scope. It says
+    nothing about `ToolLoopController`, which is where the FIRST bug of this class lived:
+    `prepare_call` reads `_successful_keys` and `_completed_one_shot_tools`, and
+    `record_result` writes them, so an overlapped round decides both before any result
+    exists. That is why a round containing a repeat or a repeated one-shot tool is kept
+    sequential.
+
+    Two is the number the gate is built for. A third would pass every behavioural test in
+    this file and silently break a round that both loops had already decided to overlap.
+    """
+
+    def _self_attrs(self, cls_node, method, kind):
+        import ast
+
+        out: set = set()
+        for node in cls_node.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name != method:
+                continue
+            for inner in ast.walk(node):
+                if (
+                    isinstance(inner, ast.Attribute)
+                    and isinstance(inner.value, ast.Name)
+                    and inner.value.id == "self"
+                    and isinstance(inner.ctx, kind)
+                ):
+                    out.add(inner.attr)
+                # a container mutated in place is a write, and `ast.Store` will not see it
+                if kind is ast.Store and isinstance(inner, ast.Call):
+                    func = inner.func
+                    if isinstance(func, ast.Attribute) and func.attr in {
+                        "add",
+                        "append",
+                        "update",
+                        "discard",
+                        "pop",
+                        "clear",
+                    }:
+                        target = func.value
+                        if (
+                            isinstance(target, ast.Attribute)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"
+                        ):
+                            out.add(target.attr)
+        return out
+
+    def test_only_the_two_the_gate_knows_about(self):
+        import ast
+
+        import core.inference.tool_loop_controller as mod
+
+        tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding = "utf-8"))
+        cls = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.ClassDef) and n.name == "ToolLoopController"
+        )
+        reads = self._self_attrs(cls, "prepare_call", ast.Load)
+        writes = self._self_attrs(cls, "record_result", ast.Store) | self._self_attrs(
+            cls, "record_noop", ast.Store
+        )
+        assert reads & writes == {"_successful_keys", "_completed_one_shot_tools"}, (
+            f"prepare_call now depends on {sorted(reads & writes)} being written by "
+            "record_result. A round is only kept sequential for the two the gate checks, "
+            "so a third has to be added to it or it decides on state that does not exist "
+            "yet."
+        )
