@@ -151,6 +151,7 @@ def test_backend_forwards_shard_size_to_the_local_export_it_then_uploads(tmp_pat
             folder_path,
             repo_id,
             repo_type,
+            allow_patterns = None,
             ignore_patterns = None,
         ):
             seen["upload"] = folder_path

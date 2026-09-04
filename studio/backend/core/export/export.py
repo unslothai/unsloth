@@ -1327,12 +1327,16 @@ class ExportBackend:
                             files = "\n".join(f"- `{os.path.basename(f)}`" for f in final_ggufs),
                         )
                     ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                    # Allow-list, not ignore_patterns: the save directory is user-picked and
+                    # may hold unrelated files, or a _tmp_model_* merge a failed export kept.
                     hf_api.upload_folder(
                         folder_path = output_path,
                         repo_id = repo_id,
                         repo_type = "model",
-                        # Studio-local discovery data, and it can carry a local base-model path.
-                        ignore_patterns = ["export_metadata.json"],
+                        allow_patterns = [
+                            *(os.path.basename(f) for f in final_ggufs),
+                            "Modelfile",
+                        ],
                     )
                 else:
                     self.current_model.push_to_hub_gguf(
