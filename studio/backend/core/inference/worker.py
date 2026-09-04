@@ -1761,7 +1761,7 @@ def run_inference_process(
             mask_accelerators_for_cpu_audio(os.environ)
             logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)
 
-    # ── 0. MLX fast-path — skip torch/transformers ──
+    # ── 0. MLX fast-path - skip torch/transformers ──
     _ensure_backend_on_path()
 
     if is_apple_silicon():

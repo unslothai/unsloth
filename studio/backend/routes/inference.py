@@ -21130,7 +21130,7 @@ async def produce_openai_chat_completions(
     # verbatim so structured `tool_calls` flow back to the client. This
     # branch runs BEFORE `_extract_content_parts` because that helper is
     # unaware of `role="tool"` messages and assistant messages that only
-    # carry `tool_calls` (content=None) — both of which are valid in
+    # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
 
@@ -25613,7 +25613,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         async def _stream():
             # Manual httpx client/response lifecycle AND explicit iterator
-            # close — see _anthropic_passthrough_stream for the full rationale.
+            # close - see _anthropic_passthrough_stream for the full rationale.
             # Saving the iterator and closing it in the finally block avoids the
             # Python 3.13 + httpcore 1.0.x "Exception ignored in:
             # <async_generator>" / anyio cancel-scope trace.
