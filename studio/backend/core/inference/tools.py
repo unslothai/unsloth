@@ -13073,7 +13073,7 @@ def _web_search(
                     cancel_event = cancel_event,
                     website_policy = website_policy,
                     api_key = parallel_api_key(),
-                    max_chars = max_chars,
+                    max_chars = _page_char_budget(),
                 )
         except Exception as exc:  # noqa: BLE001 - fall back to the direct fetch
             logger.debug("parallel fetch failed (%s), falling back", type(exc).__name__)

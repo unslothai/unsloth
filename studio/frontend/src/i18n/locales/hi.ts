@@ -1438,6 +1438,16 @@ export const hi = {
         images: "वेब खोज से छवियाँ दिखाएँ",
         imagesDescription:
           "वेब खोज को छवियाँ लौटाने दें और उत्तर में सूचीबद्ध हर चीज़ के लिए एक छवि लाएँ। थंबनेल Unsloth द्वारा लाए और छोटे किए जाते हैं, इसलिए ब्राउज़र कभी छवि होस्ट से संपर्क नहीं करता।",
+        provider: "Search provider",
+        providerDescription:
+          "DuckDuckGo is the default. Parallel runs searches through Parallel's free search API instead.",
+        duckduckgo: "DuckDuckGo",
+        parallel: "Parallel",
+        apiKey: "*** API key (optional)",
+        apiKeyDescription:
+          "Parallel works with no key. Add one for higher limits. Get a key at",
+        apiKeyLink: "platform.parallel.ai",
+        apiKeyPlaceholder: "Leave empty for free use",
       },
       artifacts: {
         title: "Canvas",
