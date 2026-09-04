@@ -2623,9 +2623,7 @@ class TestAnthropicMessagesToolRouting:
                     },
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "tool_result", "tool_use_id": "t1", "content": "42"}
-                        ],
+                        "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
                     },
                 ]
             },
@@ -2634,9 +2632,7 @@ class TestAnthropicMessagesToolRouting:
     )
     def test_client_tool_contract_without_passthrough_is_rejected(self, monkeypatch, fields):
         # /v1/chat/completions 400s this; /v1/messages answered in prose instead.
-        backend = _mock_backend(
-            monkeypatch, supports_tools = False, supports_tool_passthrough = False
-        )
+        backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
 
         with pytest.raises(HTTPException) as excinfo:
             _drive(
@@ -2651,17 +2647,13 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls == []
 
     def test_disabled_tool_choice_still_answers_without_passthrough(self, monkeypatch):
-        backend = _mock_backend(
-            monkeypatch, supports_tools = False, supports_tool_passthrough = False
-        )
+        backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
         payload = _basic_payload(
             tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
             tool_choice = {"type": "none"},
         )
 
-        response = _drive(
-            anthropic_messages(payload, request = self._Request(), current_subject = "t")
-        )
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert response.status_code == 200
         [(path, _kwargs)] = backend.calls
