@@ -244,7 +244,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const modelDefaultsPatch = mapBackendModelConfigToTrainingPatch(
               modelDetails.config,
             );
-            const patch = shouldApplyTrainingDefaults ? modelDefaultsPatch : {};
+            const preserveContextLength = get().contextLengthManuallySet;
 
             // Treat a model-config LR as authoritative so async auto-select won't overwrite it.
             const modelConfigHasLR =
@@ -272,6 +272,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               modelDefaultsPatch.trainOnCompletions = false;
             }
 
+            const patch = shouldApplyTrainingDefaults
+              ? { ...modelDefaultsPatch }
+              : {};
+            if (preserveContextLength) {
+              delete patch.contextLength;
+            }
+
             const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType = resolveTrainingModelType({
               modelType: modelDetails.model_type,
@@ -288,7 +295,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               get().trainingMethod !== "cpt"
                 ? selectTrainingMethodForHardware(
                     modelSizeBytes,
-                    patch.contextLength ?? get().contextLength,
+                    preserveContextLength
+                      ? get().contextLength
+                      : modelDefaultsPatch.contextLength ?? get().contextLength,
                     controller.signal,
                   )
                 : null;
@@ -793,6 +802,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsAppliedFor?: string | null;
           advancedSettingsBaseline?: null;
           trainOnCompletionsDefaultPendingFor?: null;
+          contextLengthManuallySet?: boolean;
         } = {
           selectedModel,
           modelDefaultsError: null,
@@ -805,6 +815,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         if (effectiveModelType) {
           patch.modelType = effectiveModelType;
         }
+        const modelIdentityChanged = selectedModel !== previousModel;
         if (selectionChanged) {
           patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
           patch.trustRemoteCode = false;
@@ -819,6 +830,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.modelDefaultsAppliedFor = null;
           patch.advancedSettingsBaseline = null;
           patch.trainOnCompletionsDefaultPendingFor = null;
+        }
+        if (modelIdentityChanged) {
+          patch.contextLengthManuallySet = false;
         }
         setUserEdit(patch);
 
@@ -1223,7 +1237,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             evalSteps: uploadedEvalFile ? 0.1 : 0,
           }),
         setEpochs: (epochs) => setUserEdit({ epochs }),
-        setContextLength: (contextLength) => setUserEdit({ contextLength }),
+        setContextLength: (contextLength) =>
+          setUserEdit({ contextLength, contextLengthManuallySet: true }),
         setVisionImageSize: (visionImageSize) =>
           setUserEdit({ visionImageSize }),
         setLearningRate: (learningRate) =>
@@ -1317,6 +1332,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const { selectedModel } = get();
           if (!selectedModel) return;
           setUserEdit({
+            contextLengthManuallySet: false,
             modelDefaultsAppliedFor: null,
             advancedSettingsBaseline: null,
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
@@ -1330,6 +1346,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
           setUserEdit((state) => ({
             ...patch,
+            ...(patch.contextLength !== undefined
+              ? { contextLengthManuallySet: true }
+              : {}),
             ...(patch.trainOnCompletions !== undefined
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),

@@ -38,7 +38,10 @@ function seedTunedModelDefaults(): void {
   const config = yaml.load(
     readFileSync(TUNED_MODEL_CONFIG, "utf8"),
   ) as BackendModelConfig;
-  useTrainingConfigStore.setState(mapBackendModelConfigToTrainingPatch(config));
+  useTrainingConfigStore.setState({
+    ...mapBackendModelConfigToTrainingPatch(config),
+    contextLengthManuallySet: false,
+  });
 }
 
 /**
@@ -80,10 +83,25 @@ test("a partial import patches only the keys the file names", () => {
 
   assert.deepEqual(
     changed,
-    ["contextLength"],
+    ["contextLengthManuallySet", "contextLength"],
     "a file naming one key must not reset the selected model's other tuned values",
   );
   assert.equal(useTrainingConfigStore.getState().contextLength, 4096);
+  assert.equal(
+    useTrainingConfigStore.getState().contextLengthManuallySet,
+    true,
+  );
+});
+
+test("a sparse import leaves untouched context defaults unarmed", () => {
+  seedTunedModelDefaults();
+  importConfig("lora:\n  lora_r: 64\n");
+
+  assert.equal(useTrainingConfigStore.getState().contextLength, 2048);
+  assert.equal(
+    useTrainingConfigStore.getState().contextLengthManuallySet,
+    false,
+  );
 });
 
 test("a tuned model recipe survives an unrelated import", () => {

@@ -62,7 +62,7 @@ test("migration preserves tuned values while protecting them from model defaults
     16,
   );
 
-  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 21);
+  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 22);
   assert.equal(migrated.learningRate, 0.000031);
   assert.equal(migrated.loraRank, 48);
   assert.equal(migrated.modelDefaultsAppliedFor, "org/model");
@@ -74,6 +74,93 @@ test("migration preserves tuned values while protecting them from model defaults
     targetModulesBeforeCpt: null,
   });
   assert.equal("wandbToken" in migrated, false);
+});
+
+test("migration infers context intent from a matching finite baseline", () => {
+  const changed = migrateTrainingConfig(
+    {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
+      contextLength: 4096,
+      advancedSettingsBaseline: { contextLength: 8192 },
+    },
+    21,
+  );
+  const untouched = migrateTrainingConfig(
+    {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
+      contextLength: 8192,
+      advancedSettingsBaseline: { contextLength: 8192 },
+    },
+    21,
+  );
+
+  assert.equal(changed.contextLengthManuallySet, true);
+  assert.equal(untouched.contextLengthManuallySet, false);
+});
+
+test("migration uses the generic default only without a matching baseline", () => {
+  const staleBaseline = migrateTrainingConfig(
+    {
+      selectedModel: "org/current",
+      modelDefaultsAppliedFor: "org/stale",
+      contextLength: 4096,
+      advancedSettingsBaseline: { contextLength: 8192 },
+    },
+    21,
+  );
+  const malformed = migrateTrainingConfig(
+    { contextLength: "4096", contextLengthManuallySet: "yes" },
+    21,
+  );
+
+  assert.equal(staleBaseline.contextLengthManuallySet, true);
+  assert.equal(malformed.contextLengthManuallySet, false);
+});
+
+test("merge preserves valid context intent and normalizes malformed values", () => {
+  const current = {
+    contextLength: 2048,
+    contextLengthManuallySet: false,
+    selectedModel: "org/model",
+    trainingMethod: "qlora",
+    trainOnCompletions: false,
+    wandbToken: "",
+  };
+  assert.equal(
+    mergeTrainingConfig(
+      { contextLength: 4096, contextLengthManuallySet: true },
+      current as never,
+    ).contextLengthManuallySet,
+    true,
+  );
+  assert.equal(
+    mergeTrainingConfig(
+      {
+        contextLength: 4096,
+        contextLengthManuallySet: "invalid",
+        selectedModel: "org/model",
+        modelDefaultsAppliedFor: "org/model",
+        advancedSettingsBaseline: { contextLength: 8192 },
+      },
+      current as never,
+    ).contextLengthManuallySet,
+    true,
+  );
+});
+
+test("partialize persists context intent and omits actions", () => {
+  const persisted = partializeTrainingConfig({
+    contextLength: 4096,
+    contextLengthManuallySet: true,
+    selectedModel: "org/model",
+    setContextLength: () => undefined,
+  } as never);
+
+  assert.equal(persisted.contextLength, 4096);
+  assert.equal(persisted.contextLengthManuallySet, true);
+  assert.equal("setContextLength" in persisted, false);
 });
 
 test("migration keeps method-default learning rates automatic", () => {
