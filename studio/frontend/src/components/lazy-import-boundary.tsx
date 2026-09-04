@@ -32,22 +32,37 @@ export function LazyImportFailure({
   reloadLabel,
   testId,
   className,
+  dismissLabel,
+  onDismiss,
 }: {
   message: string;
   reloadLabel: string;
   testId: string;
   className: string;
+  dismissLabel?: string;
+  onDismiss?: () => void;
 }) {
   return (
     <div role="alert" data-testid={testId} className={className}>
       <p className="text-sm">{message}</p>
-      <button
-        type="button"
-        onClick={() => window.location.reload()}
-        className="mt-2 rounded-md border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
-      >
-        {reloadLabel}
-      </button>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-md border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
+        >
+          {reloadLabel}
+        </button>
+        {dismissLabel && onDismiss ? (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-md border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
+          >
+            {dismissLabel}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

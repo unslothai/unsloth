@@ -214,11 +214,11 @@ test("the publish hook drops an unmeasurable box rather than publishing it", () 
 test("the lazy Settings mount survives an auth-route round trip", () => {
   assert.match(
     ROOT_SOURCE,
-    /<SettingsDialogMount active=\{!isAuthFlowRoute\} \/>/,
+    /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/,
   );
-  assert.doesNotMatch(
+  assert.match(
     ROOT_SOURCE,
-    /\{!isAuthFlowRoute && <SettingsDialogMount/,
+    /<SettingsDialogMount active=\{active && ready\} \/>/,
   );
   assert.match(
     SETTINGS_MOUNT_SOURCE,
@@ -228,5 +228,11 @@ test("the lazy Settings mount survives an auth-route round trip", () => {
   assert.match(
     SETTINGS_MOUNT_SOURCE,
     /const \[mounted, setMounted\] = useState\(open \|\| monitorOpen\)/,
+  );
+
+  assert.match(SETTINGS_MOUNT_SOURCE, /dismissLabel=\{t\("common\.close"\)\}/);
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /onDismiss=\{\(\) => \{\s*closeDialog\(\);\s*setMonitorOpen\(false\);/,
   );
 });

@@ -126,7 +126,10 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     direction: "forward" | "backward" | "none";
   } | null>(null);
 
-  const [pendingStep, setPendingStep] = useState<-1 | 0 | 1>(0);
+  const [pendingStep, setPendingStep] = useState<{
+    query: string;
+    delta: -1 | 1;
+  } | null>(null);
   const originRef = useRef<HTMLElement | null>(null);
   const requestFocus = useCallback(() => {
     const active = document.activeElement;
@@ -139,7 +142,7 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     }
     loadingSelectionRef.current = null;
 
-    setPendingStep(0);
+    setPendingStep(null);
     setOpen(true);
     setFocusToken((token) => token + 1);
   }, []);
@@ -151,10 +154,11 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     };
   }, []);
 
-  const queueLoadingStep = useCallback((delta: -1 | 1) => {
-    setPendingStep(delta);
-  }, []);
-  const clearPendingStep = useCallback(() => setPendingStep(0), []);
+  const queueLoadingStep = useCallback(
+    (delta: -1 | 1) => setPendingStep({ query, delta }),
+    [query],
+  );
+  const clearPendingStep = useCallback(() => setPendingStep(null), []);
   const restoreLoadingSelection = useCallback((input: HTMLInputElement) => {
     const selection = loadingSelectionRef.current;
     if (!selection) return false;

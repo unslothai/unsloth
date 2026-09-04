@@ -162,12 +162,23 @@ function ChatSettingsHydrationMount() {
 }
 
 
-function CredentialBootstrapGate({ children }: { children: ReactNode }) {
+function CredentialBootstrapGate({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: ReactNode;
+}) {
   const [ready, setReady] = useState(false);
   const runRevision = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    if (!active) {
+      runRevision.current += 1;
+      setReady(false);
+      return;
+    }
+    let mounted = true;
     const reconcile = () => {
       const revision = ++runRevision.current;
       if (!hasAuthToken()) {
@@ -177,7 +188,7 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
       setReady(false);
       void bootstrapPersistedCredentials().finally(() => {
         if (
-          active &&
+          mounted &&
           revision === runRevision.current &&
           hasAuthToken()
         ) {
@@ -190,13 +201,18 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
     window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     reconcile();
     return () => {
-      active = false;
+      mounted = false;
       runRevision.current += 1;
       window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
       window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     };
-  }, []);
-  return ready ? children : <RouteFallback />;
+  }, [active]);
+  return (
+    <>
+      <SettingsDialogMount active={active && ready} />
+      {active && !ready ? <RouteFallback /> : children}
+    </>
+  );
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -655,12 +671,9 @@ function RootLayout() {
 
   return (
     <AppProvider>
-      <SettingsDialogMount active={!isAuthFlowRoute} />
-      {isAuthFlowRoute ? (
-        content
-      ) : (
-        <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
-      )}
+      <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        {content}
+      </CredentialBootstrapGate>
     </AppProvider>
   );
 }

@@ -22,7 +22,7 @@ export type FindBarProps = {
   close: () => void;
   focusToken: number;
   restoreSelection: (input: HTMLInputElement) => boolean;
-  pendingStep: -1 | 0 | 1;
+  pendingStep: { query: string; delta: -1 | 1 } | null;
   clearPendingStep: () => void;
 };
 
@@ -76,8 +76,8 @@ export default function FindBar({
     queryPending,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const queuedStepRef = useRef<-1 | 0 | 1>(pendingStep);
-  const queuedStepQueryRef = useRef(query);
+  const queuedStepRef = useRef<-1 | 0 | 1>(pendingStep?.delta ?? 0);
+  const queuedStepQueryRef = useRef(pendingStep?.query ?? query);
   const stepWhenSettled = (delta: -1 | 1) => {
     if (queryPending) {
       queuedStepRef.current = delta;

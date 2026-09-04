@@ -36,8 +36,12 @@ function SettingsDialogLoading({ active }: { active: boolean }) {
 
 export function SettingsDialogMount({ active }: { active: boolean }) {
   const t = useT();
+
+  const closeDialog = useSettingsDialogStore((state) => state.closeDialog);
   const open = useSettingsDialogStore((state) => state.open);
   const monitorOpen = useMonitorOverlayStore((state) => state.isOpen);
+
+  const setMonitorOpen = useMonitorOverlayStore((state) => state.setIsOpen);
   const [mounted, setMounted] = useState(open || monitorOpen);
 
   useEffect(() => {
@@ -48,12 +52,19 @@ export function SettingsDialogMount({ active }: { active: boolean }) {
   return (
     <LazyImportBoundary
       fallback={
-        <LazyImportFailure
-          message={t("settings.dialog.panelFailed")}
-          reloadLabel={t("settings.dialog.panelReload")}
-          testId="settings-dialog-load-failure"
-          className="fixed top-1/2 left-1/2 z-[100] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-popover p-5 text-popover-foreground shadow-xl"
-        />
+        open || monitorOpen ? (
+          <LazyImportFailure
+            message={t("settings.dialog.panelFailed")}
+            reloadLabel={t("settings.dialog.panelReload")}
+            dismissLabel={t("common.close")}
+            onDismiss={() => {
+              closeDialog();
+              setMonitorOpen(false);
+            }}
+            testId="settings-dialog-load-failure"
+            className="fixed top-1/2 left-1/2 z-[100] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-popover p-5 text-popover-foreground shadow-xl"
+          />
+        ) : null
       }
     >
       <Suspense fallback={<SettingsDialogLoading active={open} />}>
