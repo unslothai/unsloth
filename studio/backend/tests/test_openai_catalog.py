@@ -604,3 +604,24 @@ def test_a_resident_quant_the_scan_cannot_see_is_not_advertised(monkeypatch):
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert "quant" not in ids["org/Foo"]
     assert "quants" not in ids["org/Foo"]
+
+
+def test_a_case_variant_copy_does_not_advertise_its_own_quants(monkeypatch):
+    # local_servable_index lowercases every alias and claims the first with setdefault,
+    # so `Org/Foo` and `org/Foo` resolve to one copy. Both rows are still listed, as
+    # before, but only the copy the resolver reaches may name the quants to pin.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("Q2_K",)]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _case_variants():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/lmstudio/Org/Foo", "Foo", model_id = "Org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _case_variants)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
+    # Listed as before, but Q2_K only exists on the copy `org/Foo:Q2_K` never reaches.
+    assert "quants" not in ids["Org/Foo"]

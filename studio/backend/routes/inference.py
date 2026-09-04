@@ -25271,6 +25271,10 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
+    # Which public ids already advertise their on-disk quants, keyed the way
+    # `local_servable_index` keys its aliases: lowercased, first copy wins. Rows are
+    # still listed exactly as before; only the quant list follows the resolver.
+    quants_claimed: set[str] = set()
     # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
@@ -25295,7 +25299,7 @@ async def _openai_catalog_objects() -> list[dict]:
             # never resolves; advertising its quants would hand out a `repo:quant` that
             # 404s with variant_not_found.
             listed = by_id[cid]
-            if quants and "quants" not in listed:
+            if quants and cid.lower() not in quants_claimed:
                 base = listed.get("quant")
                 if not base and listed.get("loaded"):
                     # A cold resolver index withholds the resident quant, because a pin
@@ -25312,6 +25316,7 @@ async def _openai_catalog_objects() -> list[dict]:
                         listed["quant"] = scanned
                 if base:
                     listed["quants"] = _quant_list(base, quants)
+                    quants_claimed.add(cid.lower())
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -25329,10 +25334,14 @@ async def _openai_catalog_objects() -> list[dict]:
         resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
         if is_gguf and loaded and resident_quant:
             obj["quant"] = resident_quant
-            obj["quants"] = _quant_list(resident_quant, quants)
+            if cid.lower() not in quants_claimed:
+                obj["quants"] = _quant_list(resident_quant, quants)
+                quants_claimed.add(cid.lower())
         elif quants:
             obj["quant"] = quants[0]
-            obj["quants"] = list(quants)
+            if cid.lower() not in quants_claimed:
+                obj["quants"] = list(quants)
+                quants_claimed.add(cid.lower())
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display
