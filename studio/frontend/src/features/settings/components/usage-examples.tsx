@@ -1051,7 +1051,11 @@ export function UsageExamples({
             <button
               type="button"
               onClick={handleCopy}
-              className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              // The placeholder names a model this server does not hold. With switching
+              // and auto-download both on, running it would fetch it, so the shape is
+              // shown to read, not handed over in one click.
+              disabled={example.placeholder}
+              className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={t("settings.apiKeys.copySnippet")}
             >
               <HugeiconsIcon

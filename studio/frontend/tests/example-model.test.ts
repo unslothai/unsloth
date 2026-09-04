@@ -228,3 +228,66 @@ test("the placeholder is the shipped example model", async () => {
     `${EXAMPLE_MODEL_REPO}:${EXAMPLE_MODEL_VARIANT}`,
   );
 });
+
+// list_local_gguf_variants qualifies a variant by its directory when the bare quant
+// would name several checkpoints, so `BF16/model-BF16` is a real pin. Splitting on the
+// last colon, or refusing a quant with a slash, dropped it and served another file.
+test("a quant qualified by its directory survives a round-trip", () => {
+  const qualified = "BF16/DeepSeek-R1-BF16";
+  const pinned = pinQuant("unsloth/DeepSeek-GGUF", qualified);
+  assert.equal(pinned, `unsloth/DeepSeek-GGUF:${qualified}`);
+  assert.deepEqual(splitPinnedQuant(pinned), {
+    repo: "unsloth/DeepSeek-GGUF",
+    quant: qualified,
+  });
+  const catalog = [
+    {
+      id: "unsloth/DeepSeek-GGUF",
+      loaded: false,
+      quant: "Q4_K_M",
+      quants: ["Q4_K_M", qualified],
+    },
+  ];
+  // The pick holds instead of snapping back to the repo's default quant.
+  const resolved = resolveExampleModel({
+    ...base,
+    catalog,
+    autoSwitch: true,
+    picked: pinned,
+    options: exampleModelOptions(catalog),
+  });
+  assert.equal(resolved.model, pinned);
+});
+
+// `loaded` marks the repo, not the file. Q4 resident and Q8 picked is a request the
+// server answers with model_not_found unless it may switch.
+test("another quant of the resident repo is not itself resident", () => {
+  const catalog = [
+    {
+      id: "unsloth/Qwen3-GGUF",
+      loaded: true,
+      quant: "Q4_K_M",
+      quants: ["Q4_K_M", "Q8_0"],
+    },
+  ];
+  const pick = (picked: string, over = {}) =>
+    resolveExampleModel({
+      ...base,
+      catalog,
+      picked,
+      options: exampleModelOptions(catalog),
+      ...over,
+    });
+  // The quant actually in memory needs nothing.
+  assert.equal(pick("unsloth/Qwen3-GGUF:Q4_K_M").servable, true);
+  assert.equal(pick("unsloth/Qwen3-GGUF:Q4_K_M").blockedBy, null);
+  // A different quant of the same repo does.
+  assert.equal(pick("unsloth/Qwen3-GGUF:Q8_0").servable, false);
+  assert.equal(pick("unsloth/Qwen3-GGUF:Q8_0").blockedBy, "autoSwitchOff");
+  assert.equal(pick("unsloth/Qwen3-GGUF:Q8_0", { autoSwitch: true }).servable, true);
+  // A keyless caller is refused the switch, so the toggle is not the remedy.
+  assert.equal(
+    pick("unsloth/Qwen3-GGUF:Q8_0", { autoSwitch: true, keylessOnly: true }).blockedBy,
+    "keyless",
+  );
+});

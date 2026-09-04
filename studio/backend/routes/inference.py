@@ -25371,17 +25371,9 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
-            # The catalog row for a loaded model is this entry plus the on-disk
-            # `quants`, so prefer it: LIST and RETRIEVE must describe one model the
-            # same way. It is cached for seconds, and a failed scan is no reason to
-            # 404 a model that is loaded, so fall back to the bare entry.
-            try:
-                for model in await _openai_catalog_objects():
-                    mid = model.get("id")
-                    if isinstance(mid, str) and mid.lower() == model_id.lower():
-                        return {**model, "loaded": True}
-            except Exception:
-                logger.debug("openai.retrieve_model.catalog_failed", exc_info = True)
+            # No `quants` here: filling it needs the servability scan this fast path
+            # exists to avoid, and a client that wants the alternatives reads the
+            # listing, which carries them for every model including this one.
             return {**entry, "loaded": True}
 
     objects = await _openai_catalog_objects()

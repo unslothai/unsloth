@@ -578,14 +578,3 @@ def test_a_resident_model_with_no_other_quant_advertises_no_list(monkeypatch):
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["org/Foo"]["quant"] == "Q8_0"
     assert "quants" not in ids["org/Foo"]
-
-
-def test_retrieve_describes_a_loaded_model_exactly_like_the_listing(monkeypatch):
-    # A client that reads GET /v1/models/{id} must see the same quants the listing
-    # advertises, or it can only pin alternatives for models that are not loaded.
-    _resident_repo_catalog(monkeypatch, on_disk = ("BF16", "Q4_K_M"))
-    listed = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}["org/Foo"]
-    retrieved = asyncio.run(inf.openai_retrieve_model("org/Foo", None))
-    assert retrieved["quants"] == listed["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
-    assert retrieved["quant"] == listed["quant"]
-    assert retrieved["loaded"] is True

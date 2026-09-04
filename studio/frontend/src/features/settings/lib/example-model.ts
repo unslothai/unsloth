@@ -34,15 +34,18 @@ export function splitPinnedQuant(model: string): {
   repo: string;
   quant: string | null;
 } {
-  const separator = model.lastIndexOf(":");
+  // A repo id carries no colon, so the first one opens the quant. Split there, not on
+  // the last: a variant qualified by its directory (`BF16/model-BF16`, what
+  // _qualified_variant_name advertises) contains slashes and its own hyphens, and
+  // rejecting those would silently drop the pin the user chose.
+  const separator = model.indexOf(":");
   if (separator <= 0) {
     return { repo: model, quant: null };
   }
   const quant = model.slice(separator + 1);
-  if (!quant || quant.includes("/")) {
-    return { repo: model, quant: null };
-  }
-  return { repo: model.slice(0, separator), quant };
+  return quant
+    ? { repo: model.slice(0, separator), quant }
+    : { repo: model, quant: null };
 }
 
 // The models the picker offers: every chat model the server can serve, resident first.
@@ -133,10 +136,18 @@ export type ResolvedExampleModel = {
 // it. Keyless callers never get that switch, so the toggle is not their remedy.
 function servability(
   option: ExampleModelOption,
+  pinned: string | null,
   keylessOnly: boolean,
   autoSwitch: boolean,
 ): { servable: boolean; blockedBy: "autoSwitchOff" | "keyless" | null } {
-  if (option.loaded) {
+  // `loaded` marks the repo, but only one quant of it is in memory, and the catalog
+  // lists that one first. Pinning any other quant still needs a switch to serve, so
+  // the resident shortcut only applies to the quant actually loaded.
+  const residentQuant = option.quants[0] ?? null;
+  if (
+    option.loaded &&
+    (pinned === null || residentQuant === null || pinned === residentQuant)
+  ) {
     return { servable: true, blockedBy: null };
   }
   if (keylessOnly) {
@@ -170,7 +181,7 @@ export function resolveExampleModel(
         model: pinQuant(option.id, pinned),
         followed,
         option,
-        ...servability(option, keylessOnly, autoSwitch),
+        ...servability(option, pinned, keylessOnly, autoSwitch),
         placeholder: false,
       };
     }
@@ -196,7 +207,7 @@ export function resolveExampleModel(
       model: pinQuant(first.id, first.quants[0]),
       followed: null,
       option: first,
-      ...servability(first, keylessOnly, autoSwitch),
+      ...servability(first, first.quants[0] ?? null, keylessOnly, autoSwitch),
       placeholder: false,
     };
   }
