@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Converts Open WebUI exports to Unsloth conversations. `history.messages` is
- * the authoritative DAG and `currentId` selects its active branch; flat
- * `messages` is a legacy fallback. Both modern output items and legacy details
- * blocks are converted to Unsloth message parts.
- */
+/** Converts Open WebUI exports to Unsloth conversations. `history.messages` is the
+ *  authoritative DAG and `currentId` selects its active branch; flat `messages` is a legacy
+ *  fallback. Modern output items and legacy details blocks both convert to message parts. */
 
 import type { MessageRecord, ParsedConversation } from "../types";
 
@@ -38,10 +35,9 @@ function epochMs(value: unknown): number | null {
     return null;
   }
   const ms = value < 1e12 ? Math.round(value * 1000) : Math.round(value);
-  // An out-of-range stamp (nanoseconds mistaken for milliseconds, say) has to be
-  // discarded rather than carried: past 2^53 `previousTs + 1` stops advancing, so
-  // every later message collapses onto one createdAt and the depth-first order
-  // below no longer survives the reload it exists to survive.
+  // An out-of-range stamp (nanoseconds read as milliseconds) is discarded rather than carried:
+  // past 2^53 `previousTs + 1` stops advancing, so every later message collapses onto one
+  // createdAt and the depth-first order no longer survives a reload.
   return ms > MAX_EPOCH_MS ? null : ms;
 }
 
@@ -63,8 +59,8 @@ function looksLikeOpenWebUIMessage(value: unknown): boolean {
     "modelIdx" in value ||
     "done" in value ||
     "output" in value ||
-    // A timestamp alone is generic enough for an OpenAI JSONL conversation to
-    // carry one; alongside a message id it is Open WebUI's own shape.
+    // A timestamp alone is generic enough for an OpenAI JSONL conversation to carry one;
+    // alongside a message id it is Open WebUI's own shape.
     ("timestamp" in value && typeof value.id === "string")
   );
 }
@@ -88,20 +84,16 @@ export function isOpenWebUIRecord(value: unknown): boolean {
   if (!blob) return false;
   if (isDict(blob.history) && isDict(blob.history.messages)) return true;
   if (!Array.isArray(blob.messages)) return false;
-  // One tool turn settles it: Open WebUI keeps tool calls in the message body,
-  // never as sibling Chat Completions turns.
+  // One tool turn settles it: Open WebUI keeps tool calls in the message body, never as sibling Chat Completions turns.
   if (blob.messages.some(looksLikeOpenAIToolMessage)) return false;
   return blob.messages.some(looksLikeOpenWebUIMessage);
 }
 
 // Content
 
-// A closed fence first, then an opener that never closed: an answer cut off
-// inside a code block still quotes code, not an Open WebUI construct. The
-// unclosed form is anchored to the start of a line, which is where markdown
-// requires a block fence to begin. Unanchored, a single stray ``` mid-sentence
-// swallowed the whole rest of the message, so every tool call after it was
-// rendered as literal markup and lost.
+// A closed fence first, then an opener that never closed: an answer cut off inside a code
+// block still quotes code. The unclosed form is anchored to line start, where markdown
+// requires a fence; unanchored, a stray ``` swallowed the rest of the message.
 const FENCED_CODE =
   /```[\s\S]*?```|~~~[\s\S]*?~~~|(?:^|\n)[ \t]{0,3}(?:```|~~~)[\s\S]*$/g;
 const DETAILS_BLOCK = /<details\b([^>]*)>([\s\S]*?)<\/details>/gi;
@@ -118,8 +110,8 @@ function numericEntity(digits: string, radix: number): string | null {
 
 function unescapeHtml(value: string): string {
   return value
-    // Numeric escapes first, and `&amp;` last, so a doubly-escaped `&amp;#39;`
-    // survives one pass as the literal text `&#39;` rather than an apostrophe.
+    // Numeric escapes first and `&amp;` last, so a doubly-escaped `&amp;#39;` survives one pass
+    // as the literal text rather than an apostrophe.
     .replace(/&#x([0-9a-f]+);/gi, (whole, hex: string) => numericEntity(hex, 16) ?? whole)
     .replace(/&#(\d+);/g, (whole, dec: string) => numericEntity(dec, 10) ?? whole)
     .replace(/&lt;/g, "<")
@@ -148,12 +140,9 @@ function parseJsonLoose(value: string | undefined): unknown {
   }
 }
 
-/**
- * `args` is typed as an object on a tool-call part, and the renderer indexes it.
- * A malformed `arguments` attribute parses loosely to a bare string, so the raw
- * text is kept where a reader can still see it instead of being passed off as
- * a structured argument object.
- */
+/** `args` is typed as an object on a tool-call part and the renderer indexes it. A malformed
+ *  `arguments` attribute parses loosely to a bare string, so the raw text is kept visible
+ *  instead of being passed off as a structured argument object. */
 function toolArgs(value: unknown): Dict {
   if (isDict(value)) return value;
   if (typeof value === "string" && value) return { arguments: value };
@@ -196,10 +185,8 @@ function fencedRanges(content: string): Array<[number, number]> {
   return ranges;
 }
 
-/**
- * Convert details blocks while preserving blocks quoted inside code fences.
- * A real tool result may itself contain fenced code.
- */
+/** Convert details blocks while preserving blocks quoted inside code fences. A real tool
+ *  result may itself contain fenced code. */
 function contentWithDetailsToParts(content: string): unknown[] {
   const parts: unknown[] = [];
   const fences = fencedRanges(content);
@@ -223,8 +210,7 @@ function contentWithDetailsToParts(content: string): unknown[] {
     const attributes = detailsAttributes(match[1]);
     const body = detailsBody(match[2], attributes.type === "reasoning");
     if (attributes.type === undefined) {
-      // A plain <details> the model wrote is formatting, not an Open WebUI
-      // construct, so it keeps its markup.
+      // A plain <details> the model wrote is formatting, not an Open WebUI construct, so it keeps its markup.
       pushText(parts, match[0]);
     } else if (attributes.type === "tool_calls") {
       const result =
@@ -279,9 +265,8 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
     if (!isDict(item)) continue;
 
     if (item.type === "reasoning") {
-      // `summary` is an empty array whenever summaries are off, so the source
-      // is whichever of the two actually holds text rather than whichever the
-      // item happens to carry.
+      // `summary` is an empty array whenever summaries are off, so the source is whichever of the
+      // two actually holds text.
       const summary = reasoningText(item.summary);
       const text = summary || reasoningText(item.content);
       if (text) parts.push({ type: "reasoning", text });
@@ -303,14 +288,13 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
     }
 
     if (item.type === "image_generation_call") {
-      // The item carries the generated image itself as base64. The call id is
-      // an OpenAI session reference that means nothing outside the export, so
-      // only the image comes over.
+      // The item carries the generated image itself as base64. The call id is an OpenAI session
+      // reference meaning nothing outside the export, so only the image comes over.
       const encoded = str(item.result) ?? str(item.b64_json);
       if (encoded) {
         const format = str(item.output_format) ?? "png";
-        // A url is already addressable. Wrapping one in a base64 data url makes
-        // a permanently broken image out of something that might have rendered.
+        // A url is already addressable. Wrapping one in a base64 data url makes a permanently broken
+        // image out of something that might have rendered.
         parts.push({
           type: "image",
           image: PORTABLE_IMAGE.test(encoded) ? encoded : `data:image/${format};base64,${encoded}`,
@@ -337,9 +321,9 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       continue;
     }
 
-    // Built-in Responses tools (`web_search_call`, `shell_call`, ...) follow the
-    // same `<tool>_call` / `<tool>_call_output` pair as a function call, so they
-    // become the same portable tool part rather than being dropped.
+    // Built-in Responses tools follow the same `<tool>_call` / `<tool>_call_output` pair as a
+    // function call, so they become the same portable tool part rather than being dropped.
+    // `web_search_call`, `shell_call` and the rest.
     const builtin = typeof item.type === "string" ? /^(\w+)_call$/.exec(item.type) : null;
     if (builtin) {
       const callId = str(item.call_id) ?? str(item.id) ?? crypto.randomUUID();
@@ -356,8 +340,7 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
 
     if (typeof item.type === "string" && item.type.endsWith("_call_output")) {
       const callId = str(item.call_id);
-      // `output` is a plain string for most tools and a content array only when
-      // the tool returned images or files.
+      // `output` is a plain string for most tools and a content array only when the tool returned images or files.
       const outputParts = Array.isArray(item.output) ? item.output : [];
       let resultText = typeof item.output === "string" ? item.output : "";
       const images: string[] = [];
@@ -373,17 +356,15 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       }
       const target = callId ? toolCallIndex.get(callId) : undefined;
       if (target) {
-        // A tool that returned only images has no result text, and its images
-        // are pushed as their own parts below. ToolFallbackResult renders
-        // nothing at all for an undefined result but draws a "Result:" heading
-        // over an empty block for "", which reads as "it returned nothing".
+        // A tool that returned only images has no result text; its images are pushed as their own
+        // parts below. ToolFallbackResult renders nothing for undefined but draws a "Result:"
+        // heading over an empty block for "", which reads as "it returned nothing".
         if (resultText) target.result = resultText;
       } else if (resultText.trim()) {
         pushText(parts, resultText);
       }
-      // A tool that returned images: keep them as image parts so they still
-      // render. A bare `/api/v1/files/<id>` is dead outside Open WebUI, but an
-      // absolute url resolves anywhere the chat is opened.
+      // A tool that returned images: keep them as image parts so they still render. A bare
+      // `/api/v1/files/<id>` is dead outside Open WebUI, but an absolute url resolves anywhere.
       for (const image of images) {
         if (PORTABLE_IMAGE.test(image)) parts.push({ type: "image", image });
       }
@@ -393,10 +374,8 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
   return { parts, sawMessage };
 }
 
-/**
- * Keep inline images. Keep document names without extracted text, which would
- * otherwise be resent to the model on the next turn.
- */
+/** Keep inline images. Keep document names without extracted text, which would otherwise be
+ *  resent to the model on the next turn. */
 function filesToParts(files: unknown): { parts: unknown[]; attachments: unknown[] } {
   const parts: unknown[] = [];
   const attachments: unknown[] = [];
@@ -424,12 +403,9 @@ function filesToParts(files: unknown): { parts: unknown[]; attachments: unknown[
   return { parts, attachments };
 }
 
-/**
- * Chat Completions multimodal content: `[{type:"text"}, {type:"image_url"}]`.
- * Detection cannot be perfect, so a record that lands here carrying the OpenAI
- * array shape has to keep its turns rather than lose them: reading only string
- * `content` dropped the whole message.
- */
+/** Chat Completions multimodal content. Detection cannot be perfect, so a record landing here
+ *  with the OpenAI array shape must keep its turns: reading only string `content` dropped
+ *  the whole message. */
 function arrayContentToParts(raw: unknown[]): unknown[] {
   return raw.flatMap((entry): unknown[] => {
     if (!isDict(entry)) return [];
@@ -462,12 +438,11 @@ function messageParts(
   }
 
   const content = typeof message.content === "string" ? message.content : "";
-  // `content` mirrors the answer an output message item already carries, so it
-  // is used whenever no such item produced text. A tool result left over from
-  // an earlier turn is not that answer.
+  // `content` mirrors the answer an output message item already carries, so it is used only
+  // when no such item produced text. A tool result from an earlier turn is not that answer.
   if (content && !sawMessage) {
-    // Open WebUI writes those details blocks into its own assistant output. The
-    // same markup in a prompt is text the user typed, not reasoning or a call.
+    // Open WebUI writes those details blocks into its own assistant output. The same markup in a
+    // prompt is text the user typed, not reasoning or a call.
     if (role === "assistant") parts.push(...contentWithDetailsToParts(content));
     // Literal prompt text: leading whitespace can be a markdown code block.
     else if (content.trim()) parts.push({ type: "text", text: content });
@@ -505,8 +480,8 @@ function collectNodes(chat: Dict): Node[] {
     byId.set(id, { id, parentId: str(raw.parentId), raw });
   }
 
-  // An empty or unusable DAG is damage like a missing one: the flat branch is
-  // then the only copy of the conversation left.
+  // An empty or unusable DAG is damage like a missing one: the flat branch is then the only
+  // copy of the conversation left.
   if (byId.size === 0) {
     // No DAG: the flat active branch is all that survived.
     const flat = Array.isArray(chat.messages) ? chat.messages : [];
@@ -525,8 +500,8 @@ function collectNodes(chat: Dict): Node[] {
     return nodes;
   }
 
-  // Re-derive children from parentId: `childrenIds` goes stale on edits, and an
-  // orphan parent (deleted message) has to fall back to being a root.
+  // Re-derive children from parentId: `childrenIds` goes stale on edits, and an orphan parent
+  // has to fall back to being a root.
   const children = new Map<string, Node[]>();
   const roots: Node[] = [];
   for (const node of byId.values()) {
@@ -545,10 +520,9 @@ function collectNodes(chat: Dict): Node[] {
   const ordered: Node[] = [];
   const visited = new Set<string>();
 
-  // Depth-first, active branch last: studio restores the head from the final
-  // message, so the branch the user had open is the one that opens here too.
-  // The traversal is iterative because a long chat is a chain thousands of
-  // messages deep, which overflows the call stack long before the cap above.
+  // Depth-first, active branch last: studio restores the head from the final message, so the
+  // branch the user had open opens here too. Iterative, since a chain thousands of messages
+  // deep overflows the call stack long before the cap above.
   const walk = (root: Node): void => {
     const stack: Node[] = [root];
     while (stack.length > 0) {
@@ -566,9 +540,9 @@ function collectNodes(chat: Dict): Node[] {
     }
   };
 
-  // What the roots can reach, before emitting any of it: the rest is trapped in
-  // a cycle and has to be walked between the other branches and the selected
-  // one, so the selected branch is still the last message studio reopens on.
+  // What the roots can reach, before emitting any of it: the rest is trapped in a cycle and is
+  // walked between the other branches and the selected one, so the selected branch is still
+  // the last message studio reopens on.
   const reachable = new Set<string>();
   const pending = [...roots];
   while (pending.length > 0) {
@@ -610,10 +584,8 @@ function roleOf(raw: Dict): MessageRecord["role"] {
   return "assistant";
 }
 
-/**
- * Convert one exported Open WebUI chat. Returns null when it holds no message
- * we can render (an empty chat, or one whose turns were all blank).
- */
+/** Convert one exported Open WebUI chat. Null when it holds no renderable message (an empty
+ *  chat, or one whose turns were all blank). */
 export function openWebUIRecordToConversation(
   record: unknown,
   fallbackTitle: string,
@@ -624,8 +596,8 @@ export function openWebUIRecordToConversation(
 
   const threadId = crypto.randomUUID();
   const nodes = collectNodes(chat);
-  // The first message is a better start than `updated_at`, which is the end of
-  // the conversation and would drag every message in it up to that moment.
+  // The first message is a better start than `updated_at`, which is the end of the
+  // conversation and would drag every message in it up to that moment.
   const createdAt =
     epochMs(outer.created_at) ??
     epochMs(chat.timestamp) ??
@@ -634,19 +606,18 @@ export function openWebUIRecordToConversation(
     Date.now();
 
   const messages: MessageRecord[] = [];
-  // Unsloth sorts stored messages by createdAt, so the timeline has to be
-  // strictly increasing or the depth-first order above would not survive a
-  // reload. Real timestamps are kept whenever they already increase.
+  // Unsloth sorts stored messages by createdAt, so the timeline must be strictly increasing or
+  // the depth-first order would not survive a reload. Real timestamps are kept when they
+  // already increase.
   let previousTs = createdAt - 1;
   const keptIdByOriginal = new Map<string, string>();
 
   for (const node of nodes) {
     const role = roleOf(node.raw);
     const { content, attachments } = messageParts(node.raw, role);
-    // A message that renders to nothing (a failed turn holding only an error)
-    // is dropped, and its children relink to the nearest ancestor that stayed.
-    // A user turn that uploaded a file and typed nothing still renders, as
-    // studio shows attachments on user messages.
+    // A message rendering to nothing is dropped and its children relink to the nearest surviving
+    // ancestor. A user turn that uploaded a file and typed nothing still renders, as studio
+    // shows attachments on user messages.
     const renders = content.length > 0 || (role === "user" && attachments.length > 0);
     const parentId = node.parentId ? (keptIdByOriginal.get(node.parentId) ?? null) : null;
     if (!renders) {
