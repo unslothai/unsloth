@@ -109,6 +109,24 @@ def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
     )
 
 
+# The generic bitsandbytes ROCm wheel is currently built for the rocm6.4 ABI. Keep
+# the published host-to-index mapping above literal (callers may still explicitly
+# select an older leaf), but floor automatic generic installs so torch and bnb agree.
+_GENERIC_ROCM_BNB_COMPAT_FLOOR = (6, 4)
+_GENERIC_ROCM_BNB_COMPAT_TAG = "rocm6.4"
+
+
+def _automatic_generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
+    """Generic tag for an automatic install, floored to the BNB-compatible ABI."""
+    tag = _generic_pytorch_rocm_tag(ver)
+    if tag is None:
+        return None
+    key = next((k for k, candidate in _ROCM_TORCH_INDEX.items() if candidate == tag), None)
+    if key is not None and key < _GENERIC_ROCM_BNB_COMPAT_FLOOR:
+        return _GENERIC_ROCM_BNB_COMPAT_TAG
+    return tag
+
+
 _ROCM_ARCH_INDEX_FLOOR = (7, 13)  # AMD per-arch index ships torch 2.11+rocm7.13
 
 
@@ -4205,6 +4223,12 @@ def _amd_torch_needs_dependency_pass() -> bool:
     # floor still needs the 7.13 fixes, and a sole gfx906 above rocm6.3 has no BLAS kernels.
     if _rocm_compat_reroute_pending(_tail_gfx, _tail_ver, _version.lower()):
         return True
+    # The generic bitsandbytes wheel is built for the rocm6.4 ABI. An automatic host therefore
+    # needs a torch reinstall when its existing generic wheel still names an older ABI;
+    # explicit pins, per-arch wheels, and gfx906 are excluded by the helper so their
+    # established routing remains authoritative.
+    if _generic_rocm_bnb_floor_pending(_tail_gfx, _detect_rocm_version(), _version.lower()):
+        return True
     return _rocm_torch_family_needs_repair(_tail_gfx, _detect_rocm_version(), _tail_host)
 
 
@@ -4257,6 +4281,38 @@ def _installed_generic_rocm_tag() -> "tuple[int, int] | None":
         return None
     _m = re.search(r"\+rocm(\d+)\.(\d+)", (_ver or "").lower())
     return (int(_m.group(1)), int(_m.group(2))) if _m else None
+
+
+def _generic_rocm_bnb_floor_pending(
+    runtime_gfx: "str | None", host_ver: "tuple[int, int] | None", installed_ver: str
+) -> bool:
+    """Whether an automatic generic torch install predates the generic BNB ABI floor.
+
+    This is deliberately separate from ``_generic_pytorch_rocm_tag``: the latter is the
+    literal host-to-published-index resolver and remains authoritative for explicit pins.
+    Per-architecture AMD wheels own their ROCm runtime, and gfx906 keeps its legacy
+    rocm6.3-or-older path, so neither is subject to the generic BNB floor.
+    """
+    if (
+        not runtime_gfx
+        or runtime_gfx.lower() == "gfx906"
+        or host_ver is None
+        or _explicit_torch_index_url() is not None
+    ):
+        return False
+    if _torch_requires_rocm_sdk():
+        return False
+    selected = _generic_pytorch_rocm_tag(host_ver)
+    if selected is None:
+        return False
+    _selected_match = re.fullmatch(r"rocm(\d+)\.(\d+)", selected.lower())
+    if _selected_match is None:
+        return False
+    _installed_match = re.search(r"\+rocm(\d+)\.(\d+)", (installed_ver or "").lower())
+    if _installed_match is None:
+        return False
+    _installed_ver = (int(_installed_match.group(1)), int(_installed_match.group(2)))
+    return _installed_ver < _GENERIC_ROCM_BNB_COMPAT_FLOOR
 
 
 def _rocm_torch_family_needs_repair(
@@ -4553,6 +4609,10 @@ def _ensure_rocm_torch() -> None:
     # for an arch the generic wheel carries no kernels for at all.
     _arch_index_url: "str | None" = None
     _arch_index_pkgs: "tuple[str, str, str] | None" = None
+    _runtime_gfx: "str | None" = None
+    gfx_codes: list[str] = []
+    _physical_gfx: "str | None" = None
+    _host_codes: list[str] = []
     # An explicit ROCm pin wins; otherwise both reroutes share one hardware probe. Skipped
     # once the inferred-arch install above has run: it resolves the same index, so re-deriving
     # it here only force-reinstalls what was just downloaded.
@@ -4809,6 +4869,23 @@ def _ensure_rocm_torch() -> None:
     # normalization, so asking it alone loses nothing, and ORing the override back in would
     # walk the no-GPU mask guard it applies above that read.
     _runtime_is_gfx906 = _runtime_target_is_gfx906()
+    # The generic bitsandbytes ROCm wheel targets the rocm6.4 ABI. Re-run the automatic
+    # generic torch selection when an existing generic wheel below that ABI would otherwise
+    # be paired with it. This is intentionally after the per-arch/missing-kernel routing and
+    # excludes explicit pins and gfx906's legacy path.
+    if (
+        rocm_torch_ready
+        and _rocm_pin is None
+        and not _inferred_arch_installed
+        and _arch_index_url is None
+        and not _runtime_is_gfx906
+        and _generic_rocm_bnb_floor_pending(_runtime_gfx, ver, _installed_torch_ver)
+    ):
+        _safe_print(
+            "   installed generic ROCm torch is below the rocm6.4 bitsandbytes ABI floor "
+            "-- reinstalling from the compatible generic index."
+        )
+        rocm_torch_ready = False
     # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
     # host ROCm version would otherwise pick a newer, kernel-less index -- and never
     # over an explicit pin or an active Strix reroute (the pin/Strix path installs
@@ -4886,7 +4963,14 @@ def _ensure_rocm_torch() -> None:
             index_url = _override_idx
             tag = _torch_index_leaf(index_url)
         else:
-            tag = _generic_pytorch_rocm_tag(ver)
+            # Automatic generic installs must use the ABI floor required by the
+            # generic bitsandbytes wheel. gfx906 is intentionally exempt: its
+            # legacy path remains on the literal rocm6.0-6.3 resolver.
+            tag = (
+                _generic_pytorch_rocm_tag(ver)
+                if _runtime_is_gfx906
+                else _automatic_generic_pytorch_rocm_tag(ver)
+            )
         if tag is None:
             _safe_print(
                 f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
