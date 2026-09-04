@@ -2772,3 +2772,10 @@ def test_a_recovering_caller_resets_the_worker_without_deadlocking_on_itself():
 
     assert done.is_set(), "the reset deadlocked on the lock it already held"
     assert sent == [{"type": "reset"}]
+
+
+def test_the_idle_wait_is_bounded_when_no_timeout_is_asked_for():
+    default = (
+        inspect.signature(InferenceOrchestrator._wait_worker_idle).parameters["timeout"].default
+    )
+    assert isinstance(default, float) and default > 0, default

@@ -1527,10 +1527,11 @@ class InferenceOrchestrator:
     def _wait_worker_idle(
         self,
         cancel_event = None,
-        timeout: Optional[float] = None,
+        timeout: float = _DISPATCH_IDLE_TIMEOUT,
     ) -> bool:
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while deadline is None or time.monotonic() < deadline:
+        # Unbounded would deadlock: callers wait holding _gen_lock or the reservation.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 return False
             if not self._replies_in_flight():
