@@ -25765,8 +25765,11 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     def _ok(item) -> bool:
         if isinstance(item, str):
             return bool(item)
-        return tokens_ok and isinstance(item, list) and bool(item) and all(
-            isinstance(token, int) for token in item
+        return (
+            tokens_ok
+            and isinstance(item, list)
+            and bool(item)
+            and all(isinstance(token, int) for token in item)
         )
 
     if not all(_ok(item) for item in items):
@@ -25787,7 +25790,6 @@ def _embeddings_texts(body: dict) -> list[str]:
 
 def _public_embedding_name(model_name: str) -> str:
     from utils.paths import is_local_path
-
     if not is_local_path(model_name):
         return model_name
     return os.path.basename(model_name.rstrip("/\\")) or model_name
