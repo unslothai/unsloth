@@ -29,14 +29,30 @@ it asserts the two halves that have each been forgotten once.
      released. There are more disarm sites than arm sites because a surface has several
      exits, so this asserts a floor, not equality.
 
-Deliberately NOT covered: Responses, Anthropic, and the two passthrough surfaces. They take
-leases too and the plan defers them; when one is armed, raise the number here.
+Every surface that takes a lease is now accounted for, in one of two ways.
+
+ARMED, because it drives `generate_chat_completion` and so has a Studio-side generator
+holding the conversation to resume from: the GGUF tool loop, plain streaming, non-streaming,
+and Anthropic.
+
+COUNTED BUT NEVER CHOSEN, because it streams upstream bytes straight to the client and has
+no conversation to resume: the Responses surface and the two llama-server passthroughs.
+Aborting one of those is a cancel, not a pause. They are registered as `STREAMING_RAW` so
+their cells appear in the ledger, because a holder the controller cannot see makes the
+watermark fire late by exactly its size and picks a victim from among the chats it CAN see
+to make room a passthrough is quietly holding.
+
+`/v1/completions` takes no lease at all and is out of scope for both.
 """
 
 import ast
 import pathlib
 
 ROUTES = pathlib.Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+PREEMPTION = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "core" / "inference" / "llama_preemption.py"
+)
 
 CHAT_HANDLER = "produce_openai_chat_completions"
 
@@ -104,6 +120,49 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
         )
         assert probes >= armed
 
+    def test_anthropic_arms_too(self):
+        """It drives `generate_chat_completion`, so it can be paused and resumed.
+
+        It was left out of the first pass with the surfaces that cannot be. Being armed is
+        the difference between a chat that waits its turn and one that either serialises
+        everybody or dies with them.
+        """
+        source = ROUTES.read_text()
+        assert "_anthropic_preempt_signal = PreemptSignal()" in source
+        assert "preempt_policy = _anthropic_preempt_policy" in source
+        assert "on_tokens = _anthropic_observe_tokens" in source
+        assert "gen_id = message_id" in source
+
+    def test_the_unpausable_surfaces_are_counted_rather_than_ignored(self):
+        """A holder the controller cannot see is worse than one it cannot pause.
+
+        The raw passthrough fills real cells. Uncounted, the watermark fires late by
+        exactly its size and then evicts a chat to make room the passthrough is holding.
+        Counted and unpreemptable is the truth about it.
+        """
+        source = ROUTES.read_text()
+        assert "_openai_llama_count_raw_holder" in source
+        assert source.count("_openai_llama_count_raw_holder") >= 2, "defined but never called"
+        preemption = PREEMPTION.read_text()
+        assert "STREAMING_RAW" in preemption
+        # In _HOLDS_KV so it counts, out of _PREEMPTABLE so it is never chosen.
+        #
+        # Read with the ast rather than by splitting on `frozenset({`: the formatter
+        # rewrites that to `frozenset(\n    {`, and a string-split version of this test
+        # would then find nothing and pass while asserting about an empty string.
+        module = ast.parse(preemption)
+        sets = {}
+        for node in ast.walk(module):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if isinstance(target, ast.Name) and target.id in ("_HOLDS_KV", "_PREEMPTABLE"):
+                    sets[target.id] = {
+                        n.attr for n in ast.walk(node.value) if isinstance(n, ast.Attribute)
+                    }
+        assert sets.keys() == {"_HOLDS_KV", "_PREEMPTABLE"}, "constants renamed or moved"
+        assert "STREAMING_RAW" in sets["_HOLDS_KV"]
+        assert "STREAMING_RAW" not in sets["_PREEMPTABLE"]
+
     def test_the_signal_reaches_the_generator(self):
         """Arming alone pauses nobody: the stream has to be given the event to notice.
 
@@ -116,3 +175,65 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
         source = ROUTES.read_text()
         assert "preempt_event = _plain_preempt_signal" in source
         assert "preempt_policy = _plain_preempt_policy" in source
+
+
+class TestEveryLeaseIsAccountedFor:
+    """The closing invariant, and the one that would have caught the original gap.
+
+    `_openai_llama_admission_reserve` had seven call sites and
+    `_openai_llama_preemption_arm` had one. Nothing said those numbers had to relate, so
+    six surfaces charged the cache and were invisible to the thing that manages it.
+
+    Every reserve must now be paired with one of two things, and the choice is a real
+    design decision rather than a formality:
+
+      * ARM, for a surface with a Studio-side generator holding the conversation, which can
+        therefore be paused and resumed.
+      * COUNT, for one that streams upstream bytes straight out and cannot. Aborting it is
+        a cancel; but leaving it out of the ledger makes the watermark fire late by exactly
+        its size, and then evicts a chat to free room the uncounted holder is using.
+
+    A new surface that does neither fails here, which is the point.
+    """
+
+    def test_the_numbers_add_up(self):
+        source = ROUTES.read_text()
+        tree = ast.parse(source)
+
+        def count(name):
+            return sum(
+                1 for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == name
+            )
+
+        reserves = count("_openai_llama_admission_reserve")
+        arms = count("_openai_llama_preemption_arm")
+        counted = count("_openai_llama_count_raw_holder")
+        # The reserve call inside the helper's own definition is not a surface.
+        assert reserves >= 7
+        assert arms + counted >= reserves, (
+            f"{reserves} admission reserve(s), but only {arms} armed and {counted} counted. "
+            "A surface that takes a lease and does neither is invisible to the preemptor "
+            "while occupying its cache."
+        )
+
+    def test_counting_is_paired_with_dropping(self):
+        """A counted holder that is never dropped is worse than one never counted.
+
+        An over-counted ledger only ever grows, and once it reads full the next chat waits
+        for room that cannot arrive.
+        """
+        source = ROUTES.read_text()
+        tree = ast.parse(source)
+        counted = sum(
+            1 for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "_openai_llama_count_raw_holder"
+        )
+        disarms = sum(
+            1 for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "_openai_llama_preemption_disarm"
+        )
+        assert disarms >= counted

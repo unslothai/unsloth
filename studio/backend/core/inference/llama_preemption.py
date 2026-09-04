@@ -388,6 +388,16 @@ class ParticipantState:
     # instant a victim was chosen is what let four chats commit 16384 of a 16384 cache
     # while the controller believed 8192 were in use.
     PREEMPTING = "preempting"
+    # Occupying the cache with no Studio-side generator behind it: the raw llama-server
+    # passthrough and the Responses surface, which stream upstream bytes to the client and
+    # hold no conversation to resume from. Aborting one is a CANCEL, not a pause, so it is
+    # never chosen as a victim.
+    #
+    # It is still registered, and that is the point. These surfaces take an admission lease
+    # and fill real cells; a holder the controller cannot see makes the watermark fire late
+    # by exactly its size, which is the same error as dropping a finished chat's charge and
+    # keeping its cells. Counted and unpreemptable is the truth about them.
+    STREAMING_RAW = "streaming_raw"
     PAUSED = "paused"
     DONE = "done"
 
@@ -399,11 +409,12 @@ _HOLDS_KV = frozenset(
         ParticipantState.PARKED_ON_TOOL,
         ParticipantState.TOOLS_RUNNING,
         ParticipantState.PREEMPTING,
+        ParticipantState.STREAMING_RAW,
     }
 )
 
 # May be asked to stop. QUEUED holds nothing yet, PAUSED already stopped, DONE is gone,
-# and TOOLS_RUNNING is excluded for the reason on its constant.
+# and TOOLS_RUNNING and STREAMING_RAW are excluded for the reasons on their constants.
 _PREEMPTABLE = frozenset(
     {
         ParticipantState.DECODING,

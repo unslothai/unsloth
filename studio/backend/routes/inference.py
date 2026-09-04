@@ -100,6 +100,7 @@ from core.inference.llama_preemption import (
     ControllerPreemptionPolicy,
     DeferredPreemptionPolicy,
     PreemptSignal,
+    ParticipantState,
     get_preemption_controller,
     preemption_enabled,
     read_slot_occupancy,
@@ -2460,6 +2461,44 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     return _gguf_refresh_residency, _gguf_observe_tokens
 
 
+def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None:
+    """Register a surface that occupies the cache but cannot be paused.
+
+    The raw llama-server passthrough and the Responses surface stream upstream bytes
+    straight to the client. There is no Studio-side generator holding the conversation, so
+    there is nothing to resume from: aborting one is a cancel, not a pause, and arming them
+    the way a chat is armed would hand the preemptor a victim it cannot actually reclaim
+    from without losing the turn outright.
+
+    They still take an admission lease and fill real cells. A holder the controller cannot
+    see makes the watermark fire late by exactly its size, and picks a victim from among the
+    chats it CAN see to make room a passthrough is quietly holding. That is the same error
+    as dropping a finished chat's charge while its cells stay resident, which is recorded on
+    `_openai_llama_preemption_disarm` and cost 0 of 4 completions when it shipped.
+
+    So: counted, and never chosen. `STREAMING_RAW` is in `_HOLDS_KV` and out of
+    `_PREEMPTABLE`.
+    """
+    try:
+        if not _openai_llama_preemption_will_apply(
+            llama_backend, _openai_llama_admission_budget(llama_backend)
+        ):
+            return
+        if lease is None:
+            return
+        get_preemption_controller(
+            str(getattr(llama_backend, "base_url", "llama-server"))
+        ).register(
+            gen_id,
+            lease = lease,
+            tokens = int(getattr(lease, "tokens", 0) or 0),
+            state = ParticipantState.STREAMING_RAW,
+        )
+    except Exception:
+        # Bookkeeping must never fail a request that is otherwise fine.
+        logger.debug("could not count the raw holder", exc_info = True)
+
+
 def _openai_llama_preemption_arm(
     *,
     request: Optional[Request],
@@ -3356,13 +3395,30 @@ def _discard_task_outcome(task: asyncio.Task) -> None:
         closing.add_done_callback(_LATE_CLOSE_TASKS.discard)
 
 
-def _release_admission(admission_lease = None, tracker = None) -> None:
+def _release_admission(
+    admission_lease = None,
+    tracker = None,
+    *,
+    llama_backend = None,
+    gen_id: Optional[str] = None,
+) -> None:
     """Give back the process-wide llama-server slot and the cancel-registry entry.
 
     Must run after the upstream response is closed: on disconnect llama-server keeps
     decoding until ``resp`` is closed, so releasing first admits a second request past
     --parallel. Safe behind the closes only because every teardown await is bounded. #7617
+
+    ``llama_backend`` and ``gen_id`` together drop a raw-stream holder from the preemption
+    ledger, and default to None so the seven callers that do not register one are unchanged.
+    Done BEFORE the lease goes back, for the reason `_openai_llama_preemption_disarm`
+    records: unregistering also releases the cells, and handing the tokens back first
+    invites the next admission to be granted against a ledger that still counts this one.
     """
+    try:
+        if llama_backend is not None and gen_id:
+            _openai_llama_preemption_disarm(llama_backend = llama_backend, gen_id = gen_id)
+    except Exception:
+        logger.debug("could not drop the raw holder", exc_info = True)
     try:
         if admission_lease is not None:
             admission_lease.release()
@@ -28646,6 +28702,13 @@ async def _responses_stream(
                 request = request,
                 cancel_event = cancel_event,
             )
+            # Counted, never chosen. This surface forwards llama-server's own stream to
+            # the client and holds no conversation to resume from, so pausing it is a
+            # cancel. It does fill real cells, and a holder the controller cannot see makes
+            # the watermark fire late by exactly its size.
+            _openai_llama_count_raw_holder(
+                llama_backend = llama_backend, lease = lease, gen_id = resp_id,
+            )
             iterator = event_generator()
             stream_started = True
             try:
@@ -28688,6 +28751,9 @@ async def _responses_stream(
             api_monitor.finish(monitor_id, "cancelled")
             raise
         finally:
+            # Before the lease goes back, so the next admission is not granted against a
+            # ledger that still counts this one.
+            _openai_llama_preemption_disarm(llama_backend = llama_backend, gen_id = resp_id)
             if lease is not None:
                 lease.release()
             if not stream_started:
@@ -29963,6 +30029,52 @@ async def anthropic_messages(
     # abandoned; the non-stream path holds it across the single awaited generation.
     _anthropic_admission_mode = "anthropic_stream" if payload.stream else "anthropic_nonstream"
 
+    # Preemption for the Anthropic surface. It takes an admission lease and drives
+    # `generate_chat_completion`, so unlike the raw passthrough it has a Studio-side
+    # generator holding the conversation and CAN be paused and resumed. It was left out of
+    # the first pass with the other four; being armed is the difference between a chat that
+    # waits its turn and one that either serialises everybody or dies with them.
+    #
+    # Created here because both the stream wrapper below and `_run_plain_gen` further down
+    # close over it, and the policy is bound later, once the lease is actually in hand.
+    _anthropic_preempt_signal = PreemptSignal()
+    _anthropic_preempt_policy = DeferredPreemptionPolicy()
+    try:
+        _anthropic_preempt_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _anthropic_preempt_loop = None
+    _anthropic_refresh_residency, _anthropic_observe_tokens = (
+        _openai_llama_residency_observer(
+            llama_backend = llama_backend, completion_id = message_id,
+        )
+    )
+
+    def _arm_anthropic(reservation) -> None:
+        """Probe first, then arm. Both are no-ops when preemption cannot apply."""
+        try:
+            get_preemption_controller(
+                str(getattr(llama_backend, "base_url", "llama-server"))
+            ).set_residency_probe(
+                lambda: _anthropic_refresh_residency(
+                    get_preemption_controller(
+                        str(getattr(llama_backend, "base_url", "llama-server"))
+                    ),
+                    force = True,
+                )
+            )
+        except Exception:
+            logger.debug("could not register the residency probe", exc_info = True)
+        _anthropic_preempt_policy.bind(
+            _openai_llama_preemption_arm(
+                request = request,
+                llama_backend = llama_backend,
+                reservation = reservation,
+                gen_id = message_id,
+                signal = _anthropic_preempt_signal,
+                loop = _anthropic_preempt_loop,
+            )
+        )
+
     async def _admitted_anthropic_stream(
         orig_body,
         reservation,
@@ -30003,6 +30115,9 @@ async def anthropic_messages(
                 )
             if lease is None:
                 return
+            # With the lease in hand, not beside the reservation: arming a generation that
+            # is still queued returns None and it never arms at all.
+            _arm_anthropic(reservation)
             body_started = True
             async for chunk in orig_body:
                 yield chunk
@@ -30051,6 +30166,13 @@ async def anthropic_messages(
                     api_monitor.finish(monitor_id, "cancelled")
                     await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
             finally:
+                # Arming registers a charge, so every exit unregisters it, and before the
+                # tokens go back. The tool path shipped without this once and the ledger
+                # only ever grew: one chat of four hung 2400s waiting for room that could
+                # not arrive while llama-server sat idle with every slot released.
+                _openai_llama_preemption_disarm(
+                    llama_backend = llama_backend, gen_id = message_id,
+                )
                 if lease is not None:
                     lease.release()
                 else:
@@ -30402,6 +30524,11 @@ async def anthropic_messages(
     # ── No-tool path ──────────────────────────────────────────
     def _run_plain_gen():
         return llama_backend.generate_chat_completion(
+            preempt_event = _anthropic_preempt_signal,
+            preempt_policy = _anthropic_preempt_policy,
+            # `observe()` is the only thing that plans an eviction and this is the only
+            # thing that calls it. Armed without it, a chat grows unchecked to the ceiling.
+            on_tokens = _anthropic_observe_tokens,
             reasoning_provenance = _think_prov,
             messages = openai_messages,
             temperature = temperature,
@@ -32723,6 +32850,14 @@ async def _openai_passthrough_stream_admitted(
     deliberately not re-parsed locally, unlike the ``/completion`` paths.
     """
     _tracker = tracker
+    # Counted, never chosen. This surface holds real cells and cannot be paused, so the
+    # controller has to know its size or it will evict a chat to make room a passthrough is
+    # quietly holding. See _openai_llama_count_raw_holder.
+    _openai_llama_count_raw_holder(
+        llama_backend = llama_backend,
+        lease = admission_lease,
+        gen_id = completion_id,
+    )
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
     # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
@@ -32837,7 +32972,10 @@ async def _openai_passthrough_stream_admitted(
                         finally:
                             # Only a retry that is actually going upstream keeps the slot.
                             if not closed:
-                                _release_admission(admission_lease, _tracker)
+                                _release_admission(
+                                    admission_lease, _tracker,
+                                    llama_backend = llama_backend, gen_id = completion_id,
+                                )
                         send_task = None
                         target_url = retry_url
                         # The relaunch minted a fresh --api-key, so the pre-crash
@@ -32856,7 +32994,10 @@ async def _openai_passthrough_stream_admitted(
                     try:
                         await _aclose_stream_resources(resp = resp, client = client)
                     finally:
-                        _release_admission(admission_lease, _tracker)
+                        _release_admission(
+                            admission_lease, _tracker,
+                            llama_backend = llama_backend, gen_id = completion_id,
+                        )
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
@@ -32873,7 +33014,10 @@ async def _openai_passthrough_stream_admitted(
                     try:
                         await _aclose_stream_resources(client = client)
                     finally:
-                        _release_admission(admission_lease, _tracker)
+                        _release_admission(
+                            admission_lease, _tracker,
+                            llama_backend = llama_backend, gen_id = completion_id,
+                        )
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
@@ -33516,7 +33660,10 @@ async def _openai_passthrough_stream_admitted(
                             client = client,
                         )
                     finally:
-                        _release_admission(admission_lease, _tracker)
+                        _release_admission(
+                            admission_lease, _tracker,
+                            llama_backend = llama_backend, gen_id = completion_id,
+                        )
 
         async def _unstarted_cleanup() -> None:
             # Client disconnected before the body stream started, so _stream()'s
@@ -33529,7 +33676,10 @@ async def _openai_passthrough_stream_admitted(
                 try:
                     await _aclose_stream_resources(resp = resp, client = client)
                 finally:
-                    _release_admission(admission_lease, _tracker)
+                    _release_admission(
+                        admission_lease, _tracker,
+                        llama_backend = llama_backend, gen_id = completion_id,
+                    )
 
         return _SameTaskStreamingResponse(
             _stream(),
@@ -33555,7 +33705,10 @@ async def _openai_passthrough_stream_admitted(
             try:
                 await _aclose_stream_resources(resp = resp, client = client)
             finally:
-                _release_admission(admission_lease, _tracker)
+                _release_admission(
+                    admission_lease, _tracker,
+                    llama_backend = llama_backend, gen_id = completion_id,
+                )
         raise
 
 
@@ -33569,6 +33722,10 @@ async def _openai_passthrough_non_streaming(
     cancel_event = None,
 ):
     """Non-streaming pass-through guarded by local llama-server admission."""
+    # No completion_id on this path, and the register and the drop have to agree on one.
+    # Derived from the reservation so it is stable for this request and unique across
+    # concurrent ones; it is a ledger key and never reaches a client.
+    _raw_gen_id = monitor_id or f"passthrough-nonstream-{id(payload):x}"
     try:
         reservation, admission_config = _openai_llama_admission_reserve(
             request = request,
@@ -33618,6 +33775,11 @@ async def _openai_passthrough_non_streaming(
             request = request,
             cancel_event = cancel_event,
         )
+        # Counted, never chosen: one upstream generation per HTTP call, with no Studio-side
+        # conversation to resume, so it cannot be paused. It still fills cells.
+        _openai_llama_count_raw_holder(
+            llama_backend = llama_backend, lease = lease, gen_id = _raw_gen_id,
+        )
         return await _openai_passthrough_non_streaming_upstream(
             llama_backend,
             payload,
@@ -33656,6 +33818,8 @@ async def _openai_passthrough_non_streaming(
         reservation.cancel()
         raise
     finally:
+        # Before the lease goes back, like every other holder.
+        _openai_llama_preemption_disarm(llama_backend = llama_backend, gen_id = _raw_gen_id)
         if lease is not None:
             lease.release()
 
