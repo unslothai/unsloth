@@ -11239,40 +11239,6 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
     )
 
-    # Whole-document mode: a thread-attached file under budget is injected in
-    # full. A KB selection is exclusive so whole-doc never preempts it; project
-    # sources are still retrieved top-K and appended under one citation
-    # numbering. Oversized/absent thread docs fall through to top-K below.
-    if whole_doc_requested:
-        try:
-            budget = _whole_doc_budget(rag_scope, conversation)
-            whole = whole_document_context(scope_thread_id = thread_id, max_tokens = budget)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("RAG whole-document context failed: %s", exc)
-            whole = None
-        if whole is not None:
-            text, sources = whole
-            project_id = rag_scope.get("project_id")
-            if project_id:
-                try:
-                    proj = search_for_autoinject(
-                        query = query,
-                        scope_project_id = project_id,
-                        top_k = top_k,
-                        min_dense_score = floor,
-                        **_scope_retrieval_kwargs(rag_scope),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
-                    proj = None
-                if proj is not None:
-                    merged = sources + proj[1]
-                    merged_text = render_sources(merged)
-                    if max(1, len(merged_text) // 4) <= budget:
-                        sources = merged
-                        text = merged_text
-            logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
-
     def _fits(candidate_text, max_tokens) -> bool:
         # None means the estimate itself failed, so there is nothing to enforce.
         # Zero is the opposite: a measured "no room left".
@@ -11302,6 +11268,42 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             kept = kept[:-1]
             rendered = render_sources(kept)
         return (rendered, kept) if _fits(rendered, max_tokens) else None
+
+    # Whole-document mode: a thread-attached file under budget is injected in
+    # full. A KB selection is exclusive so whole-doc never preempts it; project
+    # sources are still retrieved top-K and appended under one citation
+    # numbering. Oversized/absent thread docs fall through to top-K below.
+    if whole_doc_requested:
+        try:
+            budget = _whole_doc_budget(rag_scope, conversation)
+            whole = whole_document_context(scope_thread_id = thread_id, max_tokens = budget)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG whole-document context failed: %s", exc)
+            whole = None
+        if whole is not None:
+            text, sources = whole
+            project_id = rag_scope.get("project_id")
+            if project_id:
+                try:
+                    proj = search_for_autoinject(
+                        query = query,
+                        scope_project_id = project_id,
+                        top_k = top_k,
+                        min_dense_score = floor,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
+                    proj = None
+                if proj is not None:
+                    # Trim the combination against the measured cost, as the fallback
+                    # companion path does; the tail is all project, so the whole
+                    # document survives whatever does not fit beside it.
+                    merged = sources + proj[1]
+                    trimmed = _trim(render_sources(merged), merged, budget)
+                    if trimmed is not None:
+                        text, sources = trimmed
+            logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
     def retrieve(*, max_tokens = None, **scope):
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
