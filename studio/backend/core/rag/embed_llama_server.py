@@ -1082,11 +1082,25 @@ class LlamaServerBackend:
             self._dim = width
             return width
 
+    def _server_context(self) -> int | None:
+        try:
+            data = httpx.get(f"{self._base_url}/props", timeout = 2.0, trust_env = False).json()
+        except (*_TRANSPORT_ERRORS, httpx.TimeoutException, ValueError):
+            return None
+        settings = data.get("default_generation_settings") if isinstance(data, dict) else None
+        n_ctx = settings.get("n_ctx") if isinstance(settings, dict) else None
+        return n_ctx if isinstance(n_ctx, int) and n_ctx > 0 else None
+
     def max_tokens(self, *, model_name = None) -> int | None:
         with self._operation(), self._serve_lock:
             self._ensure_ready(model_name)
             if self._max_tokens is None and self._model_path:
                 limit = _gguf_context_length(self._model_path)
+                running = self._server_context()
+                if limit and running:
+                    limit = min(limit, running)
+                elif running:
+                    limit = running
                 if limit:
                     data = self._post(
                         "/tokenize",

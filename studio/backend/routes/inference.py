@@ -25746,27 +25746,64 @@ def _resident_serves_embeddings(llama_backend) -> bool:
     return bool(llama_backend.is_loaded and getattr(llama_backend, "is_embedding_gguf", True))
 
 
-def _embeddings_texts(body: dict) -> list[str]:
+def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     value = body.get("input")
     if isinstance(value, str):
-        texts = [value]
+        items = [value]
     elif isinstance(value, (list, tuple)):
-        texts = list(value)
+        items = list(value)
     else:
-        texts = []
-    if not texts:
+        items = []
+    if not items:
         raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
-    if len(texts) > _STUDIO_EMBED_MAX_INPUTS:
+    if len(items) > _STUDIO_EMBED_MAX_INPUTS:
         raise HTTPException(
             status_code = 400,
             detail = f"'input' may hold at most {_STUDIO_EMBED_MAX_INPUTS} items.",
         )
-    if not all(isinstance(text, str) and text for text in texts):
+
+    def _ok(item) -> bool:
+        if isinstance(item, str):
+            return bool(item)
+        return tokens_ok and isinstance(item, list) and bool(item) and all(
+            isinstance(token, int) for token in item
+        )
+
+    if not all(_ok(item) for item in items):
         raise HTTPException(
             status_code = 400,
             detail = "'input' must be a non-empty string or an array of non-empty strings.",
         )
-    return texts
+    if (body.get("encoding_format") or "float") not in ("float", "base64"):
+        raise HTTPException(
+            status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
+        )
+    return items
+
+
+def _embeddings_texts(body: dict) -> list[str]:
+    return _embeddings_items(body, tokens_ok = False)
+
+
+def _public_embedding_name(model_name: str) -> str:
+    from utils.paths import is_local_path
+
+    if not is_local_path(model_name):
+        return model_name
+    return os.path.basename(model_name.rstrip("/\\")) or model_name
+
+
+def _public_embedding_identity(identity: str, model_name: str, label: str) -> str:
+    if label == model_name:
+        return identity
+    from core.rag.config import _escape_identity_segment, effective_gguf_repo_for_embedding_model
+
+    repo = effective_gguf_repo_for_embedding_model(model_name)
+    for private, public in ((model_name, label), (repo, _public_embedding_name(repo))):
+        identity = identity.replace(
+            _escape_identity_segment(private), _escape_identity_segment(public)
+        )
+    return identity
 
 
 def _embedding_payload(vector, encoding_format: str):
@@ -25826,12 +25863,9 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
 
     texts = _embeddings_texts(body)
     encoding_format = body.get("encoding_format") or "float"
-    if encoding_format not in ("float", "base64"):
-        raise HTTPException(
-            status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
-        )
     dimensions = body.get("dimensions")
     model_name = rag_config.effective_embedding_model()
+    label = _public_embedding_name(model_name)
 
     def _embed():
         # Every helper takes the model captured above. Left to default they each re-read the
@@ -25843,11 +25877,11 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
         if limit and max(token_counts) > limit:
             raise HTTPException(
                 status_code = 400,
-                detail = f"'input' exceeds the {limit}-token limit of {model_name}.",
+                detail = f"'input' exceeds the {limit}-token limit of {label}.",
             )
         if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
-                status_code = 400, detail = f"'dimensions' is not supported by {model_name}."
+                status_code = 400, detail = f"'dimensions' is not supported by {label}."
             )
         # encode_with_identity, not encode: an ST failure swaps the process to llama-server
         # mid-encode, which is a different embedding space. Reporting the configured name for
@@ -25863,7 +25897,7 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
             endpoint = request.url.path,
             via_api_key = _request_used_api_key(request),
             method = request.method,
-            model = model_name,
+            model = label,
             prompt = _flatten_monitor_prompt(body.get("input", "")),
             subject = current_subject,
         )
@@ -25911,7 +25945,7 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
             }
             for index, vector in enumerate(vectors)
         ],
-        "model": identity,
+        "model": _public_embedding_identity(identity, model_name, label),
         "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
     }
     # limit is the per-text token cap but prompt_tokens is the batch sum, so the monitor's
@@ -25956,6 +25990,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+            _embeddings_items(_pre, tokens_ok = True)
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the

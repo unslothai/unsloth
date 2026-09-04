@@ -583,6 +583,7 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
     )
     monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_server_context", lambda: None)
     posts = []
 
     def post(
@@ -599,3 +600,82 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
     assert posts == [("/tokenize", {"content": "", "add_special": True})]
     backend._adopt_model_path(backend._model_path, "unsloth/other-GGUF")
     assert backend._max_tokens is None
+
+
+def test_st_max_tokens_reserves_the_default_prompt(monkeypatch):
+    tokenizer = SimpleNamespace(
+        num_special_tokens_to_add = lambda: 2,
+        encode = lambda text, add_special_tokens = False: text.split(),
+    )
+    model = SimpleNamespace(
+        max_seq_length = 512,
+        tokenizer = tokenizer,
+        prompts = {"query": "Represent this sentence for retrieval:"},
+        default_prompt_name = "query",
+    )
+    monkeypatch.setattr(rag_embeddings, "_get", lambda model_name = None: model)
+    assert rag_embeddings._SentenceTransformersBackend().max_tokens() == 512 - 2 - 5
+
+
+def test_llama_max_tokens_is_capped_by_the_running_context(tmp_path, monkeypatch):
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    backend._model_path = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
+    )
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_server_context", lambda: 256)
+    monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
+    assert backend.max_tokens() == 254
+
+
+@pytest.mark.parametrize(
+    ("body", "switched"),
+    [
+        ({"input": [""], "model": "org/chat-GGUF"}, False),
+        ({"input": ["alpha", 7], "model": "org/chat-GGUF"}, False),
+        ({"input": "alpha", "encoding_format": "int8", "model": "org/chat-GGUF"}, False),
+        ({"input": [[1, 2, 3]], "model": "org/chat-GGUF"}, True),
+    ],
+)
+def test_invalid_fallback_input_is_rejected_before_the_switch(studio_embedder, body, switched):
+    seen = []
+
+    async def record(request, current_subject, **_kwargs):
+        seen.append(current_subject)
+        return await request.json()
+
+    studio_embedder.setattr(inference_route, "_should_validate_before_switch", lambda: True)
+    studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", record)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+    )
+    assert _http_error(body).status_code == 400
+    assert bool(seen) is switched
+
+
+def test_local_path_models_are_not_exposed(studio_embedder, tmp_path):
+    from core.rag.config import _escape_identity_segment
+
+    model_dir = str(tmp_path / "bge")
+    studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: model_dir)
+    studio_embedder.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    identity = f"sentence-transformers:{_escape_identity_segment(model_dir)}"
+    studio_embedder.setattr(
+        rag_embeddings,
+        "encode_with_identity",
+        lambda texts, **_kwargs: (_vectors(texts), identity),
+    )
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    assert _call({"input": "alpha"})["model"] == "sentence-transformers:bge"
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
+    error = _http_error({"input": "alphabet"})
+    assert error.status_code == 400
+    assert "bge" in error.detail and str(tmp_path) not in error.detail

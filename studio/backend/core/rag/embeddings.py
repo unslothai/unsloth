@@ -548,7 +548,12 @@ def _st_max_tokens(model_name: str | None = None) -> int | None:
             return None
         tokenizer = getattr(model, "tokenizer", None)
         specials = getattr(tokenizer, "num_special_tokens_to_add", None)
-        return max(1, int(limit) - (int(specials()) if callable(specials) else 0))
+        reserved = int(specials()) if callable(specials) else 0
+        prompts = getattr(model, "prompts", None) or {}
+        prompt = prompts.get(getattr(model, "default_prompt_name", None))
+        if prompt and tokenizer is not None:
+            reserved += len(tokenizer.encode(prompt, add_special_tokens = False))
+        return max(1, int(limit) - reserved)
 
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
