@@ -963,11 +963,14 @@ export function UsageExamples({
               ))}
             </SelectContent>
           </Select>
-          {example.option && example.option.quants.length > 0 ? (
+          {/* Only when there is a choice. A repo the server can only name one quant for
+              -- a standalone .gguf, or weights with no quant sub-selection -- rendered a
+              control that looked switchable and was not. The one quant is already in
+              the snippet below. */}
+          {example.option && example.option.quants.length > 1 ? (
             <Select
               value={splitPinnedQuant(model ?? "").quant ?? ""}
               onValueChange={handlePickQuant}
-              disabled={example.option.quants.length === 1}
             >
               <SelectTrigger
                 size="sm"

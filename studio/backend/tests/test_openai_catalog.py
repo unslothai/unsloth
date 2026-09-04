@@ -703,3 +703,24 @@ def test_a_stale_hf_variant_does_not_label_a_non_llama_resident(monkeypatch):
     row = ids.get("org/Foo", {})
     # The scan's quants may be offered, but never as "the loaded one is Q8_0".
     assert row.get("quant") != "Q8_0" or row.get("loaded") is not True
+
+
+def test_a_standalone_gguf_beside_a_repo_keeps_the_repo_quant_list(monkeypatch):
+    # The ./models drop-in shape: an HF-cache repo directory holding several quants, plus
+    # a loose .gguf that resolves to the same public id. A standalone file reports no
+    # variants by design (it loads by its own path, with no quant sub-selection), so it
+    # is not a competing opinion about what is on disk -- treating it as one cost the
+    # repo its whole quant picker.
+    _resident_repo_catalog(monkeypatch, on_disk = ("Q4_K_M",))
+    quant_sets = [("Q4_K_M", "BF16"), ()]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _dir_and_file():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/data/models/Foo.gguf", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _dir_and_file)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "Q4_K_M", "BF16"]

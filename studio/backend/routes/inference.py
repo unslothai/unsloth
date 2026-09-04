@@ -25296,9 +25296,11 @@ async def _openai_catalog_objects() -> list[dict]:
     def _offer_quants(row: dict, base: Optional[str], found) -> None:
         """Record what this copy of ``row["id"]`` holds, and publish it if it is alone.
 
-        Every servable copy is recorded, including one with no quants at all: a
-        non-GGUF copy reports an empty tuple, and if the resolver reaches that one a
-        GGUF sibling's quants are just as unreachable.
+        Only a copy that actually offers quants gets a say. An empty tuple is not a
+        competing opinion about what is on disk: a standalone ``.gguf`` and non-GGUF
+        weights both report ``()`` because they have no quant sub-selection at all, and
+        one sitting beside a repo directory must not cost that directory its quant
+        picker -- the common `./models` drop-in shape.
         """
         key = str(row.get("id", "")).lower()
         if not key:
@@ -25312,6 +25314,8 @@ async def _openai_catalog_objects() -> list[dict]:
         # Compare the way `_quant_list` dedupes, or two copies that hold the same
         # files under different spellings read as a disagreement and lose their list.
         found_key = tuple(q.lower() for q in found)
+        if not found_key:
+            return
         seen = quants_seen.get(key)
         if seen is None:
             quants_seen[key] = found_key

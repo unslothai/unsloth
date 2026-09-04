@@ -445,3 +445,30 @@ test("the followed model does not pin a quant the server withheld", () => {
     "org/Foo",
   );
 });
+
+// A repo the server can only name one quant for offers no choice, so the panel must not
+// render a control that looks switchable and is not.
+test("a single-quant model offers no quant choice", () => {
+  const one = exampleModelOptions([
+    { id: "org/Foo", loaded: true, quant: "Q4_K_M" },
+  ]);
+  assert.deepEqual(one[0].quants, ["Q4_K_M"]);
+  // Several quants is a real choice, and every one of them stays selectable.
+  const many = exampleModelOptions([
+    { id: "org/Foo", loaded: true, quant: "Q4_K_M", quants: ["Q4_K_M", "Q8_0", "BF16"] },
+  ]);
+  assert.deepEqual(many[0].quants, ["Q4_K_M", "Q8_0", "BF16"]);
+  const catalog = [
+    { id: "org/Foo", loaded: true, quant: "Q4_K_M", quants: ["Q4_K_M", "Q8_0", "BF16"] },
+  ];
+  const options = exampleModelOptions(catalog);
+  for (const quant of ["Q8_0", "BF16", "Q4_K_M"]) {
+    const r = resolveExampleModel({
+      ...base,
+      catalog,
+      picked: pinQuant("org/Foo", quant),
+      options,
+    });
+    assert.equal(r.model, `org/Foo:${quant}`);
+  }
+});
