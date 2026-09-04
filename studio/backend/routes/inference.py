@@ -26260,6 +26260,26 @@ def _responses_reasoning_output_item(
     return ResponsesOutputReasoning(**kwargs).model_dump()
 
 
+def _reject_unsupported_responses_message_part(part) -> None:
+    """Refuse the two attachment shapes the local adapter cannot serve, instead of dropping them.
+
+    ``_responses_tool_output_content`` already answers these exact shapes with a typed 400.
+    Genuinely unmodelled future part types still drop.
+    """
+    part_type = getattr(part, "type", None)
+    if part_type == "input_file":
+        _raise_unsupported_openai_parameter(
+            "input",
+            "Responses input_file message parts are not supported by the local adapter.",
+        )
+    if part_type == "input_image" and getattr(part, "file_id", None):
+        _raise_unsupported_openai_parameter(
+            "input",
+            "Responses input_image message parts with file_id are not supported by the local "
+            "adapter. Use image_url instead.",
+        )
+
+
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into a Chat-format ``ChatMessage`` list.
 
@@ -26403,8 +26423,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                 messages.append(ChatMessage(role = "assistant", content = text))
             continue
 
-        # User (and any other remaining roles) -- keep multimodal when present,
-        # drop unknown content parts silently.
+        # User (and any other remaining roles) -- refuse an attachment we cannot serve,
+        # drop genuinely unmodelled parts silently.
         parts: list = []
         for part in item.content:
             if isinstance(part, (ResponsesInputTextPart, ResponsesOutputTextPart)):
@@ -26416,7 +26436,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                         image_url = ImageUrl(url = part.image_url, detail = part.detail),
                     )
                 )
-            # ResponsesUnknownContentPart and anything else: drop.
+            else:
+                _reject_unsupported_responses_message_part(part)
         if parts:
             # Collapse single-text-part content to a plain string so roles that
             # reject multimodal arrays (e.g. legacy templates) still accept it.

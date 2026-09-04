@@ -818,6 +818,61 @@ class TestNormaliseResponsesInputWithTools:
         assert exc.value.status_code == 400
         assert "image_url" in str(exc.value.detail)
 
+    def test_input_file_message_part_rejected_clearly(self):
+        # Same shape function_call_output already refuses; dropped here, it answered 200.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "summarise this"},
+                        {
+                            "type": "input_file",
+                            "file_data": "data:application/pdf;base64,AAA",
+                            "filename": "report.pdf",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_file_id_image_message_part_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {"type": "input_image", "file_id": "file_abc"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "file_id" in str(exc.value.detail)
+
+    def test_unmodelled_message_part_still_drops_silently(self):
+        # A future part type must not 400 a turn whose text is perfectly servable.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hello"},
+                        {"type": "input_something_new", "value": 1},
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [("user", "hello")]
+
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
             input = [
