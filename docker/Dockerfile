@@ -580,13 +580,25 @@ RUN set -eux \
  && mkdir -p /opt/unsloth-nb/ipython/profile_default/startup \
  && cp /opt/unsloth-nb/unsloth_ipython_startup.py /opt/unsloth-nb/ipython/profile_default/startup/00-unsloth-nb.py \
  && chmod -R a+rX /opt/unsloth-nb/ipython \
+ && chmod 1777 /opt/unsloth-nb/ipython /opt/unsloth-nb/ipython/profile_default \
  && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat, unsloth_colab_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))" \
  && /opt/unsloth-venv/bin/python /opt/unsloth-nb/unsloth_pip_shim.py --unsloth-selfcheck-value-flags
 # Shim dir AHEAD of the venv bin so `!pip`/`!uv` resolve to the shim, not the real tool.
 ENV PATH=/opt/unsloth-nb/bin:${PATH}
 # Load the notebook startup hook for EVERY kernel, any uid: IPYTHONDIR points
 # IPython at this shared profile, so it loads under `--user <uid>` too (unlike
-# /root/.ipython). Writable state (history.sqlite) still lands per-user.
+# /root/.ipython).
+#
+# The profile has to be WRITABLE by that uid, which is what the 1777 above is for.
+# IPython.paths.get_ipython_dir() discards an IPYTHONDIR it cannot write to and
+# silently substitutes tempfile.mkdtemp(), and an empty temp profile has no
+# startup/ -- so a root-owned 0755 profile did not merely lose history.sqlite, it
+# dropped the hook entirely and every kernel under `--user <uid>` ran with no
+# sidecar activation, no %pip/%uv magic and no colab-compat. ProfileDir then also
+# creates security/, log/, pid/ and db/ INSIDE profile_default, so making only the
+# top dir writable is worse still: the kernel dies on PermissionError. The sticky
+# bit keeps the shared hook read-only -- 00-unsloth-nb.py and its startup/ dir stay
+# a+rX and no other uid can unlink or rename them.
 ENV IPYTHONDIR=/opt/unsloth-nb/ipython
 
 # Pre-clone unslothai/notebooks so JupyterLab opens with them present. Baked as a
